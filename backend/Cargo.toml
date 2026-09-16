@@ -1,0 +1,23 @@
+[package]
+name = "openwebide-backend"
+description = "Open WebIDE Spin backend component"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = { workspace = true }
+http-body-util = { workspace = true }
+openwebide-core = { workspace = true }
+openwebide-llm = { workspace = true }
+openwebide-storage = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+spin-sdk = { workspace = true }

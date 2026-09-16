@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  backend-and-crates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-wasip2, wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy (native crates)
+        run: cargo clippy -p openwebide-core -p openwebide-llm -p openwebide-storage --all-targets -- -D warnings
+
+      - name: Clippy (backend, wasm32-wasip2)
+        run: cargo clippy -p openwebide-backend --target wasm32-wasip2 -- -D warnings
+
+      - name: Clippy (frontend, wasm32-unknown-unknown)
+        run: cargo clippy -p openwebide-frontend --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Tests (native)
+        run: cargo test -p openwebide-core -p openwebide-llm -p openwebide-storage
+
+      - name: Build backend component
+        run: cargo build -p openwebide-backend --target wasm32-wasip2 --release
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Trunk
+        run: |
+          curl -sSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C /usr/local/bin trunk
+
+      - name: Build frontend
+        run: cd frontend && trunk build --release

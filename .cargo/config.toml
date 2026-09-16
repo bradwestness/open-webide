@@ -1,0 +1,4 @@
+[alias]
+build-backend = "build -p openwebide-backend --target wasm32-wasip2 --release"
+build-frontend = "build -p openwebide-frontend --target wasm32-unknown-unknown --release"
+test-native = "test -p openwebide-core -p openwebide-llm -p openwebide-storage"

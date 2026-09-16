@@ -1,0 +1,16 @@
+[package]
+name = "openwebide-frontend"
+description = "Open WebIDE Leptos frontend (WASM)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+gloo-net = { workspace = true }
+leptos = { workspace = true }
+openwebide-core = { workspace = true }
+serde = { workspace = true }
+web-sys = { workspace = true }

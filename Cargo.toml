@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "backend",
+    "crates/core",
+    "crates/llm",
+    "crates/storage",
+    "frontend",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+authors = ["Brad Westness"]
+
+[workspace.dependencies]
+anyhow = "1"
+bytes = "1"
+futures = "0.3"
+gloo-net = "0.7"
+http-body-util = "0.1.3"
+leptos = { version = "0.8", features = ["csr"] }
+openwebide-core = { path = "crates/core" }
+openwebide-llm = { path = "crates/llm" }
+openwebide-storage = { path = "crates/storage" }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+spin-sdk = { version = "7.0.0", default-features = false, features = ["http", "sqlite"] }
+thiserror = "2"
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

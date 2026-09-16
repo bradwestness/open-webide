@@ -1,0 +1,21 @@
+[package]
+name = "openwebide-storage"
+description = "SQLite persistence for Open WebIDE (Spin sqlite capability on wasm, rusqlite natively)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+openwebide-core = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+spin-sdk = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }
