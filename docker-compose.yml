@@ -1,0 +1,14 @@
+services:
+  open-webide:
+    build: .
+    image: open-webide:local
+    ports:
+      # Host port differs from bare `spin build --up` (3000) so both can
+      # run side by side; the container itself always listens on 3000.
+      - "8080:3000"
+    volumes:
+      - openwebide-data:/app/.spin
+    restart: unless-stopped
+
+volumes:
+  openwebide-data:

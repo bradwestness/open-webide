@@ -1,0 +1,7 @@
+.git
+.spin
+target
+frontend/dist
+*.db
+*.db-*
+.qwen
