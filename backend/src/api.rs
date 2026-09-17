@@ -2,7 +2,9 @@
 
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use openwebide_core::{ChatRequest, Health, NewConnection, NewProject, Role, SystemPrompt};
+use openwebide_core::{
+    ChatRequest, FileEntry, Health, NewConnection, NewProject, Role, SystemPrompt,
+};
 use openwebide_llm::{LlmProvider, registry::Provider};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -200,8 +202,14 @@ fn project_files_path(path: &str) -> Result<(i64, &str), ApiError> {
 }
 
 /// Load a remote-mode project and join its workspace path with a
-/// project-relative path.
-async fn remote_project_path(state: &AppState, id: i64, rel: &str) -> Result<String, ApiError> {
+/// project-relative path. Returns the full preopen-relative path (for
+/// filesystem access) and the project's base path (so returned entry paths
+/// can be stripped back to project-relative form).
+async fn remote_project_path(
+    state: &AppState,
+    id: i64,
+    rel: &str,
+) -> Result<(String, String), ApiError> {
     let project = state.store.get_project(id).await?;
     if project.mode != openwebide_core::WorkspaceMode::Remote {
         return Err(ApiError::bad_request(
@@ -209,20 +217,68 @@ async fn remote_project_path(state: &AppState, id: i64, rel: &str) -> Result<Str
         ));
     }
     let base = project.path.unwrap_or_default();
-    if base.is_empty() {
-        Ok(rel.to_string())
+    let full = if base.is_empty() {
+        rel.to_string()
     } else if rel.is_empty() {
-        Ok(base)
+        base.clone()
     } else {
-        Ok(format!("{base}/{rel}"))
+        format!("{base}/{rel}")
+    };
+    Ok((full, base))
+}
+
+/// Strip the project's base-path prefix from each entry's path so the
+/// returned paths are project-relative — matching what the read, write,
+/// create, and search endpoints expect in `?path=`.
+fn strip_base(base: &str, entries: Vec<FileEntry>) -> Vec<FileEntry> {
+    if base.is_empty() {
+        return entries;
     }
+    let prefix = format!("{base}/");
+    entries
+        .into_iter()
+        .map(|e| {
+            let path = e
+                .path
+                .strip_prefix(prefix.as_str())
+                .unwrap_or(e.path.as_str())
+                .to_string();
+            FileEntry { path, ..e }
+        })
+        .collect()
 }
 
 fn files_query(req: &Request, key: &str) -> Option<String> {
     req.uri().query()?.split('&').find_map(|pair| {
         let (k, v) = pair.split_once('=')?;
-        (k == key).then(|| v.to_string())
+        (k == key).then(|| urldecode(v))
     })
+}
+
+/// Percent-decode a query parameter value (e.g. `src%2Fhello.rs` ->
+/// `src/hello.rs`). The frontend percent-encodes every non-unreserved byte in
+/// a path, including `/`, so the backend must decode before using it.
+fn urldecode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+            if let Ok(b) = u8::from_str_radix(hex, 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 pub async fn files_get(req: Request, state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
@@ -230,14 +286,14 @@ pub async fn files_get(req: Request, state: &AppState, path: &str) -> Result<Jso
     match sub {
         "files" => {
             let rel = files_query(&req, "path").unwrap_or_default();
-            let full = remote_project_path(state, id, &rel).await?;
+            let (full, base) = remote_project_path(state, id, &rel).await?;
             let entries = crate::files::list(&full).await?;
-            Ok(json_response(200, &entries))
+            Ok(json_response(200, &strip_base(&base, entries)))
         }
         "files/read" => {
             let rel =
                 files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
-            let full = remote_project_path(state, id, &rel).await?;
+            let (full, _) = remote_project_path(state, id, &rel).await?;
             let content = crate::files::read(&full).await?;
             Ok(json_response(
                 200,
@@ -247,9 +303,9 @@ pub async fn files_get(req: Request, state: &AppState, path: &str) -> Result<Jso
         "files/search" => {
             let q = files_query(&req, "q").ok_or_else(|| ApiError::bad_request("missing ?q="))?;
             let rel = files_query(&req, "path").unwrap_or_default();
-            let full = remote_project_path(state, id, &rel).await?;
+            let (full, base) = remote_project_path(state, id, &rel).await?;
             let entries = crate::files::search(&full, &q).await?;
-            Ok(json_response(200, &entries))
+            Ok(json_response(200, &strip_base(&base, entries)))
         }
         other => Err(ApiError::not_found(format!("no file route for {other}"))),
     }
@@ -261,7 +317,7 @@ pub async fn files_put(req: Request, state: &AppState, path: &str) -> Result<Jso
         return Err(ApiError::not_found(format!("no file route for {sub}")));
     }
     let rel = files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
-    let full = remote_project_path(state, id, &rel).await?;
+    let (full, _) = remote_project_path(state, id, &rel).await?;
     let content = read_body(req).await?;
     crate::files::write(&full, &content).await?;
     Ok(json_response(200, &json!({ "path": rel })))
@@ -275,7 +331,7 @@ pub async fn files_post(req: Request, state: &AppState, path: &str) -> Result<Js
     let rel = files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
     let kind = files_query(&req, "type").unwrap_or_else(|| "file".into());
     let is_dir = kind == "dir";
-    let full = remote_project_path(state, id, &rel).await?;
+    let (full, _) = remote_project_path(state, id, &rel).await?;
     crate::files::create(&full, is_dir).await?;
     Ok(json_response(
         201,
