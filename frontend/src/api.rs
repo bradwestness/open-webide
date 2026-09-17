@@ -1,7 +1,10 @@
 //! Thin client for the backend REST API, including SSE streaming.
 
 use gloo_net::http::{Method, Request, RequestBuilder};
-use openwebide_core::{ChatMessage, ChatSession, Connection, Health, NewSession};
+use openwebide_core::{
+    ChatMessage, ChatSession, Connection, FileEntry, Health, NewProject, NewSession, Project,
+    WorkspaceMode,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -67,13 +70,126 @@ impl BackendApi {
         name: &str,
         connection_id: Option<i64>,
         system_prompt_id: Option<i64>,
+        project_id: Option<i64>,
     ) -> Result<ChatSession, String> {
         let body = NewSession {
             name: name.to_string(),
             connection_id,
             system_prompt_id,
+            project_id,
         };
         self.post("/sessions", &body).await
+    }
+
+    // -- projects ----------------------------------------------------------
+
+    pub async fn list_projects(&self) -> Result<Vec<Project>, String> {
+        self.get("/projects").await
+    }
+
+    pub async fn create_project(
+        &self,
+        name: &str,
+        mode: WorkspaceMode,
+        path: Option<String>,
+    ) -> Result<Project, String> {
+        let body = NewProject {
+            name: name.to_string(),
+            mode,
+            path,
+        };
+        self.post("/projects", &body).await
+    }
+
+    #[allow(dead_code)] // wired to the project UI in a later step
+    pub async fn rename_project(&self, id: i64, name: &str) -> Result<Project, String> {
+        self.put(&format!("/projects/{id}"), &json!({ "name": name }))
+            .await
+    }
+
+    #[allow(dead_code)] // wired to the project UI in a later step
+    pub async fn delete_project(&self, id: i64) -> Result<(), String> {
+        self.request::<(), _>(Method::DELETE, &format!("/projects/{id}"), None)
+            .await
+    }
+
+    // -- project files (remote mode) ---------------------------------------
+
+    pub async fn list_files(&self, project_id: i64, path: &str) -> Result<Vec<FileEntry>, String> {
+        self.get(&format!(
+            "/projects/{project_id}/files?path={}",
+            urlenc(path)
+        ))
+        .await
+    }
+
+    /// Read a file's contents as text.
+    pub async fn read_file(&self, project_id: i64, path: &str) -> Result<String, String> {
+        let value: serde_json::Value = self
+            .get(&format!(
+                "/projects/{project_id}/files/read?path={}",
+                urlenc(path)
+            ))
+            .await?;
+        Ok(value["content"].as_str().unwrap_or_default().to_string())
+    }
+
+    /// Write text to a file (raw text body, not JSON).
+    pub async fn write_file(
+        &self,
+        project_id: i64,
+        path: &str,
+        content: &str,
+    ) -> Result<(), String> {
+        let url = format!(
+            "{}/projects/{project_id}/files/write?path={}",
+            self.base,
+            urlenc(path)
+        );
+        let req = RequestBuilder::new(&url)
+            .method(Method::PUT)
+            .header("content-type", "text/plain")
+            .body(content.to_string())
+            .map_err(|e| e.to_string())?;
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        if !resp.ok() {
+            return Err(self.error_from(resp).await);
+        }
+        Ok(())
+    }
+
+    /// Create an empty file or a directory.
+    pub async fn create_file(
+        &self,
+        project_id: i64,
+        path: &str,
+        is_dir: bool,
+    ) -> Result<(), String> {
+        let kind = if is_dir { "dir" } else { "file" };
+        let _value: serde_json::Value = self
+            .post(
+                &format!(
+                    "/projects/{project_id}/files/create?path={}&type={kind}",
+                    urlenc(path)
+                ),
+                &json!({}),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn search_files(
+        &self,
+        project_id: i64,
+        query: &str,
+        path: &str,
+    ) -> Result<Vec<FileEntry>, String> {
+        self.get(&format!(
+            "/projects/{project_id}/files/search?q={}&path={}",
+            urlenc(query),
+            urlenc(path)
+        ))
+        .await
     }
 
     pub async fn rename_session(&self, id: i64, name: &str) -> Result<ChatSession, String> {
@@ -232,4 +348,18 @@ fn query_param(query: &str, key: &str) -> Option<String> {
         let (k, v) = pair.split_once('=')?;
         (k == key).then(|| v.to_string())
     })
+}
+
+/// Percent-encode a path or query value, leaving unreserved characters intact.
+fn urlenc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

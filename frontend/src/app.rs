@@ -1,94 +1,434 @@
+use std::collections::{HashMap, HashSet};
+
 use leptos::prelude::*;
-use openwebide_core::{ChatMessage, ChatSession, Connection, Role};
+use leptos::task::spawn_local;
+use openwebide_core::{
+    ChatMessage, ChatSession, Connection, FileEntry, Project, Role, WorkspaceMode,
+};
 use web_sys::AbortController;
 
 use crate::api::{BackendApi, HealthState, SseEvent};
-use crate::components::{ChatPane, Sidebar, StatusBar, TopBar};
+use crate::components::{ChatPane, Editor, FileTree, Sidebar, StatusBar, TabBar, TopBar};
+
+/// Per-project workspace state, preserved across tab switches so each project
+/// keeps its own open file, tree expansion, and active chat session.
+#[derive(Clone, Default)]
+struct ProjectWorkspace {
+    entries: HashMap<String, Vec<FileEntry>>,
+    expanded: HashSet<String>,
+    open_file: Option<String>,
+    content: String,
+    dirty: bool,
+    search: Option<Vec<FileEntry>>,
+    active_session: Option<i64>,
+}
+
+/// The directory containing `path` ("" for a top-level path).
+fn parent_dir(path: &str) -> String {
+    path.rfind('/')
+        .map(|i| path[..i].to_string())
+        .unwrap_or_default()
+}
 
 #[component]
 pub fn App() -> impl IntoView {
     let api = BackendApi::from_location();
 
-    let (health, set_health) = signal(Option::<HealthState>::None);
-    let (connections, set_connections) = signal(Vec::<Connection>::new());
-    let (sessions, set_sessions) = signal(Vec::<ChatSession>::new());
-    let (active_id, set_active_id) = signal(Option::<i64>::None);
-    let (messages, set_messages) = signal(Vec::<ChatMessage>::new());
-    let (streaming, set_streaming) = signal(false);
-    let (error, set_error) = signal(Option::<String>::None);
-    let (draft, set_draft) = signal(String::new());
-    let (has_session, set_has_session) = signal(false);
-    let abort = RwSignal::new(None);
+    // -- global state ------------------------------------------------------
+    let health = RwSignal::new(Option::<HealthState>::None);
+    let connections = RwSignal::new(Vec::<Connection>::new());
+    let projects = RwSignal::new(Vec::<Project>::new());
+    let open_tabs = RwSignal::new(Vec::<Project>::new());
+    let active_project = RwSignal::new(Option::<i64>::None);
+    let sessions = RwSignal::new(Vec::<ChatSession>::new());
+    let active_session = RwSignal::new(Option::<i64>::None);
+    let messages = RwSignal::new(Vec::<ChatMessage>::new());
+    let streaming = RwSignal::new(false);
+    let error = RwSignal::new(Option::<String>::None);
+    let draft = RwSignal::new(String::new());
+    let abort = RwSignal::new(Option::<AbortController>::None);
 
-    // Derive a plain `bool` from the active-session id for the chat pane.
-    Effect::new(move || {
-        set_has_session.set(active_id.get().is_some());
-    });
+    // -- active project's workspace state ----------------------------------
+    let ws_entries = RwSignal::new(HashMap::<String, Vec<FileEntry>>::new());
+    let ws_expanded = RwSignal::new(HashSet::<String>::new());
+    let ws_open_file = RwSignal::new(Option::<String>::None);
+    let ws_content = RwSignal::new(String::new());
+    let ws_dirty = RwSignal::new(false);
+    let ws_search = RwSignal::new(Option::<Vec<FileEntry>>::None);
+    // Saved workspace state for every project that has (or had) a tab open.
+    let saved = RwSignal::new(HashMap::<i64, ProjectWorkspace>::new());
 
-    // One-shot initial load: check the backend, then fetch connections and sessions.
-    Effect::new({
+    // -- new-project form state --------------------------------------------
+    let show_new_project = RwSignal::new(false);
+    let np_name = RwSignal::new(String::new());
+    let np_mode = RwSignal::new(WorkspaceMode::Remote);
+    let np_path = RwSignal::new("workspace".to_string());
+
+    // -- helpers -----------------------------------------------------------
+
+    // Load a directory's entries into the cache (overwriting any stale copy).
+    let load_dir = {
         let api = api.clone();
-        move || {
+        Callback::new(move |(id, dir): (i64, String)| {
             let api = api.clone();
-            leptos::task::spawn_local(async move {
-                let (state, backend_ok) = match api.health().await {
-                    Ok(h) => (HealthState::Online { version: h.version }, true),
-                    Err(_) => (HealthState::Offline, false),
-                };
-                set_health.set(Some(state));
-                if !backend_ok {
-                    return;
-                }
-                if let Ok(conns) = api.list_connections().await {
-                    set_connections.set(conns);
-                }
-                if let Ok(list) = api.list_sessions().await {
-                    set_sessions.set(list);
-                }
-            });
-        }
-    });
-
-    // Load the message history whenever the active session changes.
-    Effect::new({
-        let api = api.clone();
-        move || {
-            let id = active_id.get();
-            let api = api.clone();
-            leptos::task::spawn_local(async move {
-                let msgs = match id {
-                    Some(id) => api.list_messages(id).await.unwrap_or_default(),
-                    None => Vec::new(),
-                };
-                set_messages.set(msgs);
-            });
-        }
-    });
-
-    let on_select = Callback::new(move |id: i64| {
-        set_error.set(None);
-        set_active_id.set(Some(id));
-    });
-
-    let on_new = {
-        let api = api.clone();
-        Callback::new(move |_| {
-            let api = api.clone();
-            let name = format!("Session {}", sessions.get_untracked().len() + 1);
-            leptos::task::spawn_local(async move {
-                match api.create_session(&name, None, None).await {
-                    Ok(session) => {
-                        set_sessions.update(|list| list.push(session.clone()));
-                        set_error.set(None);
-                        set_active_id.set(Some(session.id));
+            spawn_local(async move {
+                match api.list_files(id, &dir).await {
+                    Ok(entries) => {
+                        if active_project.get() == Some(id) {
+                            ws_entries.update(|m| {
+                                m.insert(dir, entries);
+                            });
+                        }
                     }
-                    Err(e) => set_error.set(Some(e)),
+                    Err(e) => {
+                        if active_project.get() == Some(id) {
+                            error.set(Some(e));
+                        }
+                    }
                 }
             });
         })
     };
 
-    let on_rename = {
+    // Make sure the active project's root directory is loaded (remote only).
+    let ensure_root = Callback::new(move |id: i64| {
+        let project = projects.get().into_iter().find(|p| p.id == id);
+        let Some(project) = project else {
+            return;
+        };
+        if project.mode != WorkspaceMode::Remote {
+            return;
+        }
+        if ws_entries.get().contains_key("") {
+            return;
+        }
+        load_dir.run((id, String::new()));
+    });
+
+    // Open a file: clear the dirty flag and load its contents.
+    let on_open = {
+        let api = api.clone();
+        Callback::new(move |path: String| {
+            let Some(pid) = active_project.get() else {
+                return;
+            };
+            ws_dirty.set(false);
+            ws_open_file.set(Some(path.clone()));
+            ws_content.set(String::new());
+            error.set(None);
+            let api = api.clone();
+            spawn_local(async move {
+                match api.read_file(pid, &path).await {
+                    Ok(content) => {
+                        if ws_open_file.get().as_deref() == Some(&path) {
+                            ws_content.set(content);
+                        }
+                    }
+                    Err(e) => {
+                        if ws_open_file.get().as_deref() == Some(&path) {
+                            error.set(Some(e));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    // Toggle a directory's expansion, lazily loading its children on first open.
+    let on_toggle = Callback::new(move |dir: String| {
+        let mut ex = ws_expanded.get();
+        let opening = !ex.contains(&dir);
+        if opening {
+            ex.insert(dir.clone());
+        } else {
+            ex.remove(&dir);
+        }
+        ws_expanded.set(ex);
+        if opening
+            && let Some(pid) = active_project.get()
+            && !ws_entries.get().contains_key(&dir)
+        {
+            load_dir.run((pid, dir));
+        }
+    });
+
+    // Save the open file's contents to disk.
+    let on_save = {
+        let api = api.clone();
+        Callback::new(move |_| {
+            let Some(pid) = active_project.get() else {
+                return;
+            };
+            let Some(path) = ws_open_file.get() else {
+                return;
+            };
+            if !ws_dirty.get() {
+                return;
+            }
+            let content = ws_content.get();
+            error.set(None);
+            let api = api.clone();
+            spawn_local(async move {
+                match api.write_file(pid, &path, &content).await {
+                    Ok(()) => ws_dirty.set(false),
+                    Err(e) => error.set(Some(e)),
+                }
+            });
+        })
+    };
+
+    // Create a new empty file and open it.
+    let on_new_file = {
+        let api = api.clone();
+        Callback::new(move |_| {
+            let Some(pid) = active_project.get() else {
+                return;
+            };
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let Ok(Some(prompt)) = window
+                .prompt_with_message_and_default("New file path (relative to project):", "new.txt")
+            else {
+                return;
+            };
+            let path = prompt.trim().to_string();
+            if path.is_empty() {
+                return;
+            }
+            error.set(None);
+            let api = api.clone();
+            let open = on_open;
+            let ld = load_dir;
+            spawn_local(async move {
+                match api.create_file(pid, &path, false).await {
+                    Ok(()) => {
+                        if active_project.get() == Some(pid) {
+                            ld.run((pid, parent_dir(&path)));
+                            open.run(path);
+                        }
+                    }
+                    Err(e) => {
+                        if active_project.get() == Some(pid) {
+                            error.set(Some(e));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    // Create a new directory and refresh its parent.
+    let on_new_dir = {
+        let api = api.clone();
+        Callback::new(move |_| {
+            let Some(pid) = active_project.get() else {
+                return;
+            };
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let Ok(Some(prompt)) =
+                window.prompt_with_message_and_default("New folder path:", "new-folder")
+            else {
+                return;
+            };
+            let path = prompt.trim().to_string();
+            if path.is_empty() {
+                return;
+            }
+            error.set(None);
+            let api = api.clone();
+            let ld = load_dir;
+            spawn_local(async move {
+                match api.create_file(pid, &path, true).await {
+                    Ok(()) => {
+                        if active_project.get() == Some(pid) {
+                            ld.run((pid, parent_dir(&path)));
+                        }
+                    }
+                    Err(e) => {
+                        if active_project.get() == Some(pid) {
+                            error.set(Some(e));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    // Search the project's files.
+    let on_search = {
+        let api = api.clone();
+        Callback::new(move |q: String| {
+            let Some(pid) = active_project.get() else {
+                return;
+            };
+            let api = api.clone();
+            spawn_local(async move {
+                match api.search_files(pid, &q, "").await {
+                    Ok(results) => {
+                        if active_project.get() == Some(pid) {
+                            ws_search.set(Some(results));
+                        }
+                    }
+                    Err(e) => {
+                        if active_project.get() == Some(pid) {
+                            error.set(Some(e));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    let on_clear_search = Callback::new(move |_| {
+        ws_search.set(None);
+    });
+
+    // Switch the active tab: snapshot the current project's workspace, then
+    // restore the target project's (or start fresh).
+    let select_project = Callback::new(move |id: i64| {
+        let cur = active_project.get();
+        if cur == Some(id) {
+            return;
+        }
+        if let Some(old) = cur {
+            let ws = ProjectWorkspace {
+                entries: ws_entries.get(),
+                expanded: ws_expanded.get(),
+                open_file: ws_open_file.get(),
+                content: ws_content.get(),
+                dirty: ws_dirty.get(),
+                search: ws_search.get(),
+                active_session: active_session.get(),
+            };
+            saved.update(|m| {
+                m.insert(old, ws);
+            });
+        }
+        active_project.set(Some(id));
+        let ws = saved.with(|m| m.get(&id).cloned()).unwrap_or_default();
+        ws_entries.set(ws.entries);
+        ws_expanded.set(ws.expanded);
+        ws_open_file.set(ws.open_file);
+        ws_content.set(ws.content);
+        ws_dirty.set(ws.dirty);
+        ws_search.set(ws.search);
+        active_session.set(ws.active_session);
+        error.set(None);
+        ensure_root.run(id);
+    });
+
+    // Close a project tab; if it was active, switch to another open tab.
+    let close_project = Callback::new(move |id: i64| {
+        open_tabs.update(|tabs| tabs.retain(|p| p.id != id));
+        if active_project.get() == Some(id) {
+            let next = open_tabs.get().into_iter().next().map(|p| p.id);
+            match next {
+                Some(nid) => select_project.run(nid),
+                None => {
+                    active_project.set(None);
+                    active_session.set(None);
+                    ws_entries.set(HashMap::new());
+                    ws_expanded.set(HashSet::new());
+                    ws_open_file.set(None);
+                    ws_content.set(String::new());
+                    ws_dirty.set(false);
+                    ws_search.set(None);
+                }
+            }
+        }
+    });
+
+    // Open an existing project (from the list) as a tab.
+    let on_open_project = Callback::new(move |id: i64| {
+        open_tabs.update(|tabs| {
+            if !tabs.iter().any(|t| t.id == id)
+                && let Some(p) = projects.get().into_iter().find(|p| p.id == id)
+            {
+                tabs.push(p);
+            }
+        });
+        select_project.run(id);
+    });
+
+    // Show the new-project form, resetting its fields.
+    let on_new_project = Callback::new(move |_| {
+        show_new_project.set(true);
+        np_name.set(String::new());
+        np_mode.set(WorkspaceMode::Remote);
+        np_path.set("workspace".to_string());
+    });
+
+    let on_cancel_new = Callback::new(move |_| {
+        show_new_project.set(false);
+    });
+
+    // Create a project (open a folder) and open it as a tab.
+    let on_create_project = {
+        let api = api.clone();
+        Callback::new(move |_| {
+            let name = np_name.get().trim().to_string();
+            if name.is_empty() {
+                error.set(Some("Project name is required.".to_string()));
+                return;
+            }
+            let mode = np_mode.get();
+            let path = if mode == WorkspaceMode::Remote {
+                let p = np_path.get().trim().to_string();
+                Some(if p.is_empty() {
+                    "workspace".to_string()
+                } else {
+                    p
+                })
+            } else {
+                None
+            };
+            error.set(None);
+            let api = api.clone();
+            spawn_local(async move {
+                match api.create_project(&name, mode, path).await {
+                    Ok(p) => {
+                        projects.update(|all| all.push(p.clone()));
+                        open_tabs.update(|tabs| tabs.push(p.clone()));
+                        show_new_project.set(false);
+                        select_project.run(p.id);
+                    }
+                    Err(e) => error.set(Some(e)),
+                }
+            });
+        })
+    };
+
+    // -- session callbacks -------------------------------------------------
+
+    let on_select_session = Callback::new(move |id: i64| {
+        active_session.set(Some(id));
+    });
+
+    let on_new_session = {
+        let api = api.clone();
+        Callback::new(move |_| {
+            let Some(pid) = active_project.get() else {
+                return;
+            };
+            let name = format!("Session {}", sessions.get().len() + 1);
+            let api = api.clone();
+            spawn_local(async move {
+                match api.create_session(&name, None, None, Some(pid)).await {
+                    Ok(s) => {
+                        sessions.update(|all| all.push(s.clone()));
+                        active_session.set(Some(s.id));
+                        error.set(None);
+                    }
+                    Err(e) => error.set(Some(e)),
+                }
+            });
+        })
+    };
+
+    let on_rename_session = {
         let api = api.clone();
         Callback::new(move |id: i64| {
             let Some(window) = web_sys::window() else {
@@ -106,20 +446,20 @@ pub fn App() -> impl IntoView {
                 return;
             }
             let api = api.clone();
-            leptos::task::spawn_local(async move {
+            spawn_local(async move {
                 match api.rename_session(id, &name).await {
-                    Ok(updated) => set_sessions.update(|list| {
+                    Ok(updated) => sessions.update(|list| {
                         if let Some(s) = list.iter_mut().find(|s| s.id == id) {
                             *s = updated;
                         }
                     }),
-                    Err(e) => set_error.set(Some(e)),
+                    Err(e) => error.set(Some(e)),
                 }
             });
         })
     };
 
-    let on_delete = {
+    let on_delete_session = {
         let api = api.clone();
         Callback::new(move |id: i64| {
             let Some(window) = web_sys::window() else {
@@ -134,38 +474,40 @@ pub fn App() -> impl IntoView {
                 return;
             }
             let api = api.clone();
-            leptos::task::spawn_local(async move {
+            spawn_local(async move {
                 if let Err(e) = api.delete_session(id).await {
-                    set_error.set(Some(e));
+                    error.set(Some(e));
                     return;
                 }
-                set_sessions.update(|list| list.retain(|s| s.id != id));
-                if active_id.get_untracked() == Some(id) {
-                    set_active_id.set(None);
+                sessions.update(|list| list.retain(|s| s.id != id));
+                if active_session.get() == Some(id) {
+                    active_session.set(None);
                 }
             });
         })
     };
 
+    // -- send / stop -------------------------------------------------------
+
     let on_send = {
         let api = api.clone();
         Callback::new(move |_| {
             let content = draft.with(|d| d.trim().to_string());
-            if content.is_empty() || streaming.get_untracked() {
+            if content.is_empty() || streaming.get() {
                 return;
             }
-            let Some(session_id) = active_id.get_untracked() else {
+            let Some(session_id) = active_session.get() else {
                 return;
             };
             let Ok(controller) = AbortController::new() else {
                 return;
             };
-            set_draft.set(String::new());
-            set_streaming.set(true);
-            set_error.set(None);
+            draft.set(String::new());
+            streaming.set(true);
+            error.set(None);
             abort.set(Some(controller.clone()));
             let api = api.clone();
-            leptos::task::spawn_local(async move {
+            spawn_local(async move {
                 let result = api
                     .send_message(
                         session_id,
@@ -173,18 +515,15 @@ pub fn App() -> impl IntoView {
                         None,
                         Some(&controller.signal()),
                         move |event| {
-                            // Only touch the view if this session is still on screen;
-                            // the stream keeps going in the background and the
-                            // server persists the reply either way.
-                            if active_id.get_untracked() != Some(session_id) {
+                            if active_session.get() != Some(session_id) {
                                 return;
                             }
                             match event {
                                 SseEvent::Message(msg) => {
-                                    set_messages.update(|m| m.push(msg));
+                                    messages.update(|m| m.push(msg));
                                 }
                                 SseEvent::Delta(delta) => {
-                                    set_messages.update(|m| {
+                                    messages.update(|m| {
                                         let extend_last = m
                                             .last()
                                             .is_some_and(|last| last.role == Role::Assistant);
@@ -204,7 +543,7 @@ pub fn App() -> impl IntoView {
                                     });
                                 }
                                 SseEvent::Done(msg) => {
-                                    set_messages.update(|m| {
+                                    messages.update(|m| {
                                         if let Some(last) = m.last_mut()
                                             && last.role == Role::Assistant
                                         {
@@ -212,18 +551,17 @@ pub fn App() -> impl IntoView {
                                         }
                                     });
                                 }
-                                SseEvent::Error(e) => set_error.set(Some(e)),
+                                SseEvent::Error(e) => error.set(Some(e)),
                             }
                         },
                     )
                     .await;
-                if let Err(e) = result {
-                    // An abort surfaces as a transport error; don't show it.
-                    if !controller.signal().aborted() {
-                        set_error.set(Some(e));
-                    }
+                if let Err(e) = result
+                    && !controller.signal().aborted()
+                {
+                    error.set(Some(e));
                 }
-                set_streaming.set(false);
+                streaming.set(false);
                 abort.set(None);
             });
         })
@@ -237,31 +575,152 @@ pub fn App() -> impl IntoView {
         });
     });
 
+    // -- effects -----------------------------------------------------------
+
+    // One-shot initial load: health, connections, projects, sessions, then
+    // auto-open the first project as a tab.
+    {
+        let api = api.clone();
+        let sel = select_project;
+        Effect::new(move || {
+            let api = api.clone();
+            spawn_local(async move {
+                let backend_ok = match api.health().await {
+                    Ok(h) => {
+                        health.set(Some(HealthState::Online { version: h.version }));
+                        true
+                    }
+                    Err(_) => {
+                        health.set(Some(HealthState::Offline));
+                        false
+                    }
+                };
+                if !backend_ok {
+                    return;
+                }
+                if let Ok(conns) = api.list_connections().await {
+                    connections.set(conns);
+                }
+                if let Ok(p) = api.list_projects().await {
+                    projects.set(p);
+                }
+                if let Ok(s) = api.list_sessions().await {
+                    sessions.set(s);
+                }
+                if let Some(first) = projects.get().into_iter().next() {
+                    open_tabs.update(|tabs| {
+                        if !tabs.iter().any(|t| t.id == first.id) {
+                            tabs.push(first.clone());
+                        }
+                    });
+                    sel.run(first.id);
+                }
+            });
+        });
+    }
+
+    // Load the message history whenever the active session changes.
+    {
+        let api = api.clone();
+        Effect::new(move || {
+            let id = active_session.get();
+            let api = api.clone();
+            spawn_local(async move {
+                match id {
+                    Some(id) => match api.list_messages(id).await {
+                        Ok(m) => messages.set(m),
+                        Err(e) => error.set(Some(e)),
+                    },
+                    None => messages.set(Vec::new()),
+                }
+            });
+        });
+    }
+
+    // Derived values for the view.
+    let ws_mode = RwSignal::new(WorkspaceMode::Remote);
+    Effect::new(move || {
+        let id = active_project.get();
+        let ps = projects.get();
+        ws_mode.set(
+            id.and_then(|i| ps.into_iter().find(|p| p.id == i))
+                .map(|p| p.mode)
+                .unwrap_or(WorkspaceMode::Remote),
+        );
+    });
+    let has_session = RwSignal::new(false);
+    Effect::new(move || {
+        has_session.set(active_session.get().is_some());
+    });
+
     view! {
         <div class="app">
-            <TopBar health=health />
+            <TopBar health=health.read_only() />
+            <TabBar
+                open_tabs=open_tabs.read_only()
+                active_project=active_project.read_only()
+                on_new=on_new_project
+                on_select=select_project
+                on_close=close_project
+            />
             <div class="app-body">
                 <Sidebar
-                    connections=connections
-                    sessions=sessions
-                    active_id=active_id
-                    on_select=on_select
-                    on_new=on_new
-                    on_rename=on_rename
-                    on_delete=on_delete
+                    connections=connections.read_only()
+                    projects=projects.read_only()
+                    sessions=sessions.read_only()
+                    active_project=active_project.read_only()
+                    active_session=active_session.read_only()
+                    show_new_project=show_new_project.read_only()
+                    np_name=np_name.read_only()
+                    set_np_name=np_name.write_only()
+                    np_mode=np_mode.read_only()
+                    set_np_mode=np_mode.write_only()
+                    np_path=np_path.read_only()
+                    set_np_path=np_path.write_only()
+                    on_new_project=on_new_project
+                    on_create_project=on_create_project
+                    on_cancel_new=on_cancel_new
+                    on_open_project=on_open_project
+                    on_select_session=on_select_session
+                    on_new_session=on_new_session
+                    on_rename_session=on_rename_session
+                    on_delete_session=on_delete_session
+                />
+                <FileTree
+                    mode=ws_mode.read_only()
+                    entries=ws_entries.read_only()
+                    expanded=ws_expanded.read_only()
+                    open_file=ws_open_file.read_only()
+                    search_results=ws_search.read_only()
+                    error=error.read_only()
+                    on_toggle=on_toggle
+                    on_open=on_open
+                    on_new_file=on_new_file
+                    on_new_dir=on_new_dir
+                    on_search=on_search
+                    on_clear_search=on_clear_search
+                />
+                <Editor
+                    open_file=ws_open_file.read_only()
+                    content=ws_content.read_only()
+                    set_content=ws_content.write_only()
+                    dirty=ws_dirty.read_only()
+                    set_dirty=ws_dirty.write_only()
+                    on_save=on_save
+                    error=error.read_only()
                 />
                 <ChatPane
-                    messages=messages
-                    streaming=streaming
-                    draft=draft
-                    set_draft=set_draft
-                    error=error
-                    has_session=has_session
+                    messages=messages.read_only()
+                    streaming=streaming.read_only()
+                    draft=draft.read_only()
+                    set_draft=draft.write_only()
+                    error=error.read_only()
+                    has_session=has_session.read_only()
                     on_send=on_send
                     on_stop=on_stop
                 />
             </div>
-            <StatusBar health=health />
+            <StatusBar health=health.read_only() />
         </div>
     }
 }

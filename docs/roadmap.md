@@ -64,6 +64,10 @@ One image, one port, one volume — the whole stack in a single container.
 The IDE operates on a project folder. Where it lives defines the mode;
 the UI sits behind a `Workspace` trait with one impl per mode.
 
+**Progress:** Remote mode (backend file API + frontend file tree, browse,
+create/edit/save) and multi-project tabs are done and verified end-to-end.
+Local mode (File System Access API) is the remaining piece.
+
 - **Remote** (folder on the machine running Spin): Spin `filesystem`
   capability, backend `/api/files` API (list, read, write, search), host
   folder mounted in the container
