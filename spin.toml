@@ -23,6 +23,11 @@ allowed_outbound_hosts = [
     "*://localhost:*",
     "*://127.0.0.1:*",
 ]
+# Remote-mode workspace: a host folder preopened into the component. Spin
+# copies `source` into a temp dir and preopens it at `/`, exposing the folder
+# under its destination basename. Project `path` values are relative to that
+# preopen root, so the mounted folder lives at `workspace`.
+files = [{ source = "workspace", destination = "/workspace" }]
 
 [component.backend.build]
 command = "cargo build -p openwebide-backend --target wasm32-wasip2 --release"

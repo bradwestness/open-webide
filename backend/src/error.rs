@@ -73,3 +73,18 @@ impl From<openwebide_llm::ProviderError> for ApiError {
         }
     }
 }
+
+impl From<anyhow::Error> for ApiError {
+    fn from(err: anyhow::Error) -> Self {
+        let msg = err.to_string();
+        if msg.contains("escapes the workspace root") {
+            Self::bad_request(msg)
+        } else if msg.contains("filesystem error: NoEntry") {
+            Self::not_found(msg)
+        } else if msg.contains("not valid UTF-8") || msg.contains("too large to read") {
+            Self::bad_request(msg)
+        } else {
+            Self::internal(msg)
+        }
+    }
+}

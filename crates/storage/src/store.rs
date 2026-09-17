@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, NewConnection, ProviderKind, Role, SystemPrompt,
+    ChatMessage, ChatSession, Connection, NewConnection, NewProject, Project, ProviderKind, Role,
+    SystemPrompt, WorkspaceMode,
 };
 
 use crate::db::{Db, DbValue, QueryRow};
@@ -220,15 +221,106 @@ impl<D: Db> Store<D> {
         Ok(())
     }
 
+    // -- projects ------------------------------------------------------------
+
+    pub async fn list_projects(&self) -> Result<Vec<Project>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT id, name, mode, path, created_at FROM projects ORDER BY id",
+                &[],
+            )
+            .await?;
+        res.rows.iter().map(project_from_row).collect()
+    }
+
+    pub async fn get_project(&self, id: i64) -> Result<Project, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT id, name, mode, path, created_at FROM projects WHERE id = ?",
+                &[DbValue::Int(id)],
+            )
+            .await?;
+        res.rows
+            .first()
+            .map(project_from_row)
+            .transpose()?
+            .ok_or_else(|| StorageError::NotFound(format!("project {id}")))
+    }
+
+    pub async fn create_project(
+        &self,
+        new: &NewProject,
+        created_at: i64,
+    ) -> Result<Project, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "INSERT INTO projects (name, mode, path, created_at) VALUES (?, ?, ?, ?)",
+                &[
+                    DbValue::Text(new.name.clone()),
+                    DbValue::Text(new.mode.as_str().into()),
+                    new.path
+                        .as_ref()
+                        .map(|p| DbValue::Text(p.clone()))
+                        .unwrap_or(DbValue::Null),
+                    DbValue::Int(created_at),
+                ],
+            )
+            .await?;
+        self.get_project(res.last_insert_rowid).await
+    }
+
+    pub async fn rename_project(&self, id: i64, name: &str) -> Result<Project, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "UPDATE projects SET name = ? WHERE id = ?",
+                &[DbValue::Text(name.into()), DbValue::Int(id)],
+            )
+            .await?;
+        if res.changes == 0 {
+            return Err(StorageError::NotFound(format!("project {id}")));
+        }
+        self.get_project(id).await
+    }
+
+    pub async fn delete_project(&self, id: i64) -> Result<(), StorageError> {
+        let res = self
+            .db
+            .execute("DELETE FROM projects WHERE id = ?", &[DbValue::Int(id)])
+            .await?;
+        if res.changes == 0 {
+            return Err(StorageError::NotFound(format!("project {id}")));
+        }
+        Ok(())
+    }
+
     // -- sessions ------------------------------------------------------------
 
     pub async fn list_sessions(&self) -> Result<Vec<ChatSession>, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, connection_id, system_prompt_id, created_at
+                "SELECT id, name, connection_id, system_prompt_id, project_id, created_at
                  FROM sessions ORDER BY id",
                 &[],
+            )
+            .await?;
+        res.rows.iter().map(session_from_row).collect()
+    }
+
+    pub async fn list_sessions_for_project(
+        &self,
+        project_id: i64,
+    ) -> Result<Vec<ChatSession>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT id, name, connection_id, system_prompt_id, project_id, created_at
+                 FROM sessions WHERE project_id = ? ORDER BY id",
+                &[DbValue::Int(project_id)],
             )
             .await?;
         res.rows.iter().map(session_from_row).collect()
@@ -238,7 +330,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, connection_id, system_prompt_id, created_at
+                "SELECT id, name, connection_id, system_prompt_id, project_id, created_at
                  FROM sessions WHERE id = ?",
                 &[DbValue::Int(id)],
             )
@@ -255,17 +347,19 @@ impl<D: Db> Store<D> {
         name: &str,
         connection_id: Option<i64>,
         system_prompt_id: Option<i64>,
+        project_id: Option<i64>,
         created_at: i64,
     ) -> Result<ChatSession, StorageError> {
         let res = self
             .db
             .execute(
-                "INSERT INTO sessions (name, connection_id, system_prompt_id, created_at)
-                 VALUES (?, ?, ?, ?)",
+                "INSERT INTO sessions (name, connection_id, system_prompt_id, project_id, created_at)
+                 VALUES (?, ?, ?, ?, ?)",
                 &[
                     DbValue::Text(name.into()),
                     connection_id.map(DbValue::Int).unwrap_or(DbValue::Null),
                     system_prompt_id.map(DbValue::Int).unwrap_or(DbValue::Null),
+                    project_id.map(DbValue::Int).unwrap_or(DbValue::Null),
                     DbValue::Int(created_at),
                 ],
             )
@@ -379,6 +473,19 @@ fn session_from_row(row: &QueryRow) -> Result<ChatSession, StorageError> {
         name: row.get_text(1)?.to_string(),
         connection_id: opt_int(row, 2, "connection_id")?,
         system_prompt_id: opt_int(row, 3, "system_prompt_id")?,
+        project_id: opt_int(row, 4, "project_id")?,
+        created_at: row.get_int(5)?,
+    })
+}
+
+fn project_from_row(row: &QueryRow) -> Result<Project, StorageError> {
+    let mode = row.get_text(2)?;
+    Ok(Project {
+        id: row.get_int(0)?,
+        name: row.get_text(1)?.to_string(),
+        mode: WorkspaceMode::parse(mode)
+            .ok_or_else(|| StorageError::InvalidValue(format!("unknown workspace mode: {mode}")))?,
+        path: row.get_text_opt(3).map(str::to_string),
         created_at: row.get_int(4)?,
     })
 }
@@ -485,7 +592,7 @@ mod tests {
         let store = test_store();
         block_on(async {
             let session = store
-                .create_session("first session", None, None, 1_700_000_000)
+                .create_session("first session", None, None, None, 1_700_000_000)
                 .await
                 .unwrap();
             assert!(session.id > 0);
@@ -523,7 +630,7 @@ mod tests {
                 .await
                 .unwrap();
             let session = store
-                .create_session("s", None, Some(prompt.id), 1)
+                .create_session("s", None, Some(prompt.id), None, 1)
                 .await
                 .unwrap();
             assert_eq!(session.system_prompt_id, Some(prompt.id));
@@ -548,7 +655,7 @@ mod tests {
                 .await
                 .unwrap();
             let session = store
-                .create_session("s", Some(conn.id), None, 1)
+                .create_session("s", Some(conn.id), None, None, 1)
                 .await
                 .unwrap();
             assert_eq!(session.connection_id, Some(conn.id));
@@ -557,6 +664,73 @@ mod tests {
 
             let sessions = store.list_sessions().await.unwrap();
             assert_eq!(sessions[0].connection_id, None);
+        });
+    }
+
+    #[test]
+    fn project_crud() {
+        let store = test_store();
+        block_on(async {
+            let project = store
+                .create_project(
+                    &NewProject {
+                        name: "my-app".into(),
+                        mode: WorkspaceMode::Remote,
+                        path: Some("projects/my-app".into()),
+                    },
+                    1_700_000_000,
+                )
+                .await
+                .unwrap();
+            assert!(project.id > 0);
+            assert_eq!(project.mode, WorkspaceMode::Remote);
+            assert_eq!(project.path.as_deref(), Some("projects/my-app"));
+
+            let reloaded = store.get_project(project.id).await.unwrap();
+            assert_eq!(reloaded.name, "my-app");
+
+            let renamed = store
+                .rename_project(project.id, "renamed-app")
+                .await
+                .unwrap();
+            assert_eq!(renamed.name, "renamed-app");
+
+            assert_eq!(store.list_projects().await.unwrap().len(), 1);
+
+            store.delete_project(project.id).await.unwrap();
+            assert!(store.get_project(project.id).await.is_err());
+            assert!(store.list_projects().await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn session_belongs_to_project() {
+        let store = test_store();
+        block_on(async {
+            let project = store
+                .create_project(
+                    &NewProject {
+                        name: "my-app".into(),
+                        mode: WorkspaceMode::Local,
+                        path: None,
+                    },
+                    1,
+                )
+                .await
+                .unwrap();
+            let session = store
+                .create_session("s", None, None, Some(project.id), 2)
+                .await
+                .unwrap();
+            assert_eq!(session.project_id, Some(project.id));
+
+            let for_project = store.list_sessions_for_project(project.id).await.unwrap();
+            assert_eq!(for_project.len(), 1);
+            assert_eq!(for_project[0].id, session.id);
+
+            // Deleting the project cascades to its sessions.
+            store.delete_project(project.id).await.unwrap();
+            assert!(store.get_session(session.id).await.is_err());
         });
     }
 }

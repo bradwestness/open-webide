@@ -25,6 +25,13 @@ pub const MIGRATIONS: &[&str] = &[
         name TEXT NOT NULL UNIQUE,
         content TEXT NOT NULL
     )",
+    "CREATE TABLE IF NOT EXISTS projects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('remote', 'local')),
+        path TEXT,
+        created_at INTEGER NOT NULL
+    )",
     "CREATE TABLE IF NOT EXISTS sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -46,6 +53,7 @@ pub async fn apply<D: Db>(db: &D) -> Result<(), StorageError> {
         db.execute(stmt, &[]).await?;
     }
     add_session_system_prompt_column(db).await?;
+    add_session_project_column(db).await?;
     Ok(())
 }
 
@@ -61,6 +69,27 @@ async fn add_session_system_prompt_column<D: Db>(db: &D) -> Result<(), StorageEr
         db.execute(
             "ALTER TABLE sessions ADD COLUMN system_prompt_id INTEGER
              REFERENCES system_prompts(id) ON DELETE SET NULL",
+            &[],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// `ALTER TABLE ... ADD COLUMN` is not idempotent, so probe first. The
+/// `projects` table is created above before this runs, so the FK target
+/// exists.
+async fn add_session_project_column<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'project_id'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE sessions ADD COLUMN project_id INTEGER
+             REFERENCES projects(id) ON DELETE CASCADE",
             &[],
         )
         .await?;

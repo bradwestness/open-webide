@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use openwebide_core::{ChatRequest, Health, NewConnection, Role, SystemPrompt};
+use openwebide_core::{ChatRequest, Health, NewConnection, NewProject, Role, SystemPrompt};
 use openwebide_llm::{LlmProvider, registry::Provider};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -142,6 +142,147 @@ pub async fn delete_system_prompt(state: &AppState, path: &str) -> Result<JsonRe
     Ok(json_response(200, &json!({ "deleted": id })))
 }
 
+// -- projects --------------------------------------------------------------------
+
+pub async fn list_projects(state: &AppState) -> Result<JsonResp, ApiError> {
+    let projects = state.store.list_projects().await?;
+    Ok(json_response(200, &projects))
+}
+
+pub async fn create_project(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    let body = read_body(req).await?;
+    let new: NewProject = parse_json(body)?;
+    let project = state.store.create_project(&new, now()).await?;
+    Ok(json_response(201, &project))
+}
+
+#[derive(Deserialize)]
+struct RenameProjectBody {
+    name: String,
+}
+
+pub async fn rename_project(
+    req: Request,
+    state: &AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let id = path_id(path, "/api/projects")?;
+    let body = read_body(req).await?;
+    let rename: RenameProjectBody = parse_json(body)?;
+    let project = state.store.rename_project(id, &rename.name).await?;
+    Ok(json_response(200, &project))
+}
+
+pub async fn delete_project(state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let id = path_id(path, "/api/projects")?;
+    state.store.delete_project(id).await?;
+    Ok(json_response(200, &json!({ "deleted": id })))
+}
+
+// -- project files (remote mode) ---------------------------------------------------
+
+/// Parse `/api/projects/<id>/files...` into the project id and the
+/// `files...` sub-path (e.g. `files`, `files/read`, `files/write`).
+fn project_files_path(path: &str) -> Result<(i64, &str), ApiError> {
+    let rest = path
+        .strip_prefix("/api/projects/")
+        .ok_or_else(|| ApiError::bad_request("expected /api/projects/<id>/files..."))?;
+    let (id, sub) = rest
+        .split_once('/')
+        .ok_or_else(|| ApiError::bad_request("expected /api/projects/<id>/files..."))?;
+    let id = id
+        .parse::<i64>()
+        .map_err(|_| ApiError::bad_request("expected a numeric project id"))?;
+    if !sub.starts_with("files") {
+        return Err(ApiError::bad_request("expected a /files sub-path"));
+    }
+    Ok((id, sub))
+}
+
+/// Load a remote-mode project and join its workspace path with a
+/// project-relative path.
+async fn remote_project_path(state: &AppState, id: i64, rel: &str) -> Result<String, ApiError> {
+    let project = state.store.get_project(id).await?;
+    if project.mode != openwebide_core::WorkspaceMode::Remote {
+        return Err(ApiError::bad_request(
+            "file access is only available for remote-mode projects",
+        ));
+    }
+    let base = project.path.unwrap_or_default();
+    if base.is_empty() {
+        Ok(rel.to_string())
+    } else if rel.is_empty() {
+        Ok(base)
+    } else {
+        Ok(format!("{base}/{rel}"))
+    }
+}
+
+fn files_query(req: &Request, key: &str) -> Option<String> {
+    req.uri().query()?.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+pub async fn files_get(req: Request, state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let (id, sub) = project_files_path(path)?;
+    match sub {
+        "files" => {
+            let rel = files_query(&req, "path").unwrap_or_default();
+            let full = remote_project_path(state, id, &rel).await?;
+            let entries = crate::files::list(&full).await?;
+            Ok(json_response(200, &entries))
+        }
+        "files/read" => {
+            let rel =
+                files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
+            let full = remote_project_path(state, id, &rel).await?;
+            let content = crate::files::read(&full).await?;
+            Ok(json_response(
+                200,
+                &json!({ "path": rel, "content": content }),
+            ))
+        }
+        "files/search" => {
+            let q = files_query(&req, "q").ok_or_else(|| ApiError::bad_request("missing ?q="))?;
+            let rel = files_query(&req, "path").unwrap_or_default();
+            let full = remote_project_path(state, id, &rel).await?;
+            let entries = crate::files::search(&full, &q).await?;
+            Ok(json_response(200, &entries))
+        }
+        other => Err(ApiError::not_found(format!("no file route for {other}"))),
+    }
+}
+
+pub async fn files_put(req: Request, state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let (id, sub) = project_files_path(path)?;
+    if sub != "files/write" {
+        return Err(ApiError::not_found(format!("no file route for {sub}")));
+    }
+    let rel = files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
+    let full = remote_project_path(state, id, &rel).await?;
+    let content = read_body(req).await?;
+    crate::files::write(&full, &content).await?;
+    Ok(json_response(200, &json!({ "path": rel })))
+}
+
+pub async fn files_post(req: Request, state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let (id, sub) = project_files_path(path)?;
+    if sub != "files/create" {
+        return Err(ApiError::not_found(format!("no file route for {sub}")));
+    }
+    let rel = files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
+    let kind = files_query(&req, "type").unwrap_or_else(|| "file".into());
+    let is_dir = kind == "dir";
+    let full = remote_project_path(state, id, &rel).await?;
+    crate::files::create(&full, is_dir).await?;
+    Ok(json_response(
+        201,
+        &json!({ "path": rel, "is_dir": is_dir }),
+    ))
+}
+
 // -- sessions --------------------------------------------------------------------
 
 pub async fn list_sessions(state: &AppState) -> Result<JsonResp, ApiError> {
@@ -156,6 +297,8 @@ struct CreateSessionBody {
     connection_id: Option<i64>,
     #[serde(default)]
     system_prompt_id: Option<i64>,
+    #[serde(default)]
+    project_id: Option<i64>,
 }
 
 pub async fn create_session(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
@@ -163,7 +306,13 @@ pub async fn create_session(req: Request, state: &AppState) -> Result<JsonResp, 
     let new: CreateSessionBody = parse_json(body)?;
     let session = state
         .store
-        .create_session(&new.name, new.connection_id, new.system_prompt_id, now())
+        .create_session(
+            &new.name,
+            new.connection_id,
+            new.system_prompt_id,
+            new.project_id,
+            now(),
+        )
         .await?;
     Ok(json_response(201, &session))
 }

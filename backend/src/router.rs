@@ -37,6 +37,19 @@ pub async fn route(req: Request) -> JsonResp {
             ("DELETE", p) if p.starts_with("/api/system-prompts/") => {
                 api::delete_system_prompt(&state, p).await
             }
+            ("GET", "/api/projects") => api::list_projects(&state).await,
+            ("POST", "/api/projects") => api::create_project(req, &state).await,
+            // Project file routes must precede the generic PUT/DELETE
+            // project routes, which also match `/api/projects/...`.
+            ("GET", p) if is_project_files(p) => api::files_get(req, &state, p).await,
+            ("PUT", p) if is_project_files(p) => api::files_put(req, &state, p).await,
+            ("POST", p) if is_project_files(p) => api::files_post(req, &state, p).await,
+            ("PUT", p) if p.starts_with("/api/projects/") => {
+                api::rename_project(req, &state, p).await
+            }
+            ("DELETE", p) if p.starts_with("/api/projects/") => {
+                api::delete_project(&state, p).await
+            }
             ("GET", "/api/sessions") => api::list_sessions(&state).await,
             ("POST", "/api/sessions") => api::create_session(req, &state).await,
             ("PUT", p) if p.starts_with("/api/sessions/") && !p.contains("/messages") => {
@@ -64,6 +77,11 @@ pub async fn route(req: Request) -> JsonResp {
     };
 
     with_cors(resp)
+}
+
+/// Match the project file routes: `/api/projects/<id>/files...`.
+fn is_project_files(p: &str) -> bool {
+    p.starts_with("/api/projects/") && p.contains("/files")
 }
 
 fn preflight() -> JsonResp {

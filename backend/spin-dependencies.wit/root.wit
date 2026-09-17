@@ -1,0 +1,10 @@
+package openwebide:backend;
+
+/// Extra component dependencies beyond the Spin HTTP service world.
+///
+/// The `wasi:filesystem` interfaces let the backend read and write the host
+/// folder that Spin mounts for remote-mode projects.
+world root {
+    import wasi:filesystem/types@0.3.0;
+    import wasi:filesystem/preopens@0.3.0;
+}
