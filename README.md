@@ -11,21 +11,21 @@ backend) runs on WebAssembly.
 
 ## Status
 
-The provider HTTP layer is in: `/api/models` and `/api/chat` reach real
-engines through Spin's outbound HTTP.
+Chat sessions are in: multi-turn conversations stream token-by-token from
+the backend, persist across reloads, and show history in the sidebar.
 
 Working:
 - Repo layout and workspace wiring
 - Domain types (`crates/core`)
 - Provider interface with Ollama / llama.cpp implementations (`crates/llm`), tested against a fake HTTP client
 - SQLite-backed storage with migrations and typed repositories (`crates/storage`), tested natively with rusqlite
-- Backend REST API: health, connections CRUD, settings, system prompts, models, chat
-- Frontend shell: top bar with live backend health, sidebar listing connections, empty chat pane, status bar
+- Backend REST API: health, connections CRUD, settings, system prompts, models, chat, sessions, message streaming (SSE)
+- Frontend: top bar with live backend health, sidebar (sessions: new/switch/rename/delete, connections), chat pane with markdown rendering + streaming, input, send, stop, status bar
 - CI: fmt, clippy, native tests, WASM builds, Trunk build
 
 Not yet:
-- Chat session UI (the API is ready for it)
-- Streaming responses
+- Workspace modes (open/browse/edit a project folder)
+- Agentic coding (tool calls + agent loop)
 
 ## Prerequisites
 

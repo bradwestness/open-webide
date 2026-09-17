@@ -1,3 +1,6 @@
+use std::pin::Pin;
+
+use futures::Stream;
 use openwebide_core::{ChatRequest, Connection, ModelInfo, ProviderKind};
 
 use crate::{
@@ -49,6 +52,16 @@ impl<C: HttpClient> LlmProvider for Provider<C> {
         match self {
             Self::Ollama(p) => p.chat(request).await,
             Self::LlamaCpp(p) => p.chat(request).await,
+        }
+    }
+
+    fn chat_stream(
+        &self,
+        request: &ChatRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + 'static>> {
+        match self {
+            Self::Ollama(p) => p.chat_stream(request),
+            Self::LlamaCpp(p) => p.chat_stream(request),
         }
     }
 }

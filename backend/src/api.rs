@@ -1,23 +1,25 @@
 //! API handlers.
 
+use bytes::Bytes;
 use http_body_util::BodyExt;
-use openwebide_core::{ChatRequest, Health, NewConnection, SystemPrompt};
+use openwebide_core::{ChatRequest, Health, NewConnection, Role, SystemPrompt};
 use openwebide_llm::{LlmProvider, registry::Provider};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
-use spin_sdk::http::Request;
+use spin_sdk::http::{FullBody, Request, Response, box_body};
 
 use crate::error::{ApiError, JsonResp};
 use crate::http_client::SpinHttpClient;
-use crate::state::AppState;
+use crate::sse::{SseBody, message_stream};
+use crate::state::{AppState, now};
 
 fn json_response(status: u16, value: &impl serde::Serialize) -> JsonResp {
     let body = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
-    spin_sdk::http::Response::builder()
+    Response::builder()
         .status(status)
         .header("content-type", "application/json")
-        .body(body)
+        .body(box_body(FullBody::new(Bytes::from(body))))
         .expect("valid status and headers")
 }
 
@@ -138,6 +140,123 @@ pub async fn delete_system_prompt(state: &AppState, path: &str) -> Result<JsonRe
     let id = path_id(path, "/api/system-prompts")?;
     state.store.delete_system_prompt(id).await?;
     Ok(json_response(200, &json!({ "deleted": id })))
+}
+
+// -- sessions --------------------------------------------------------------------
+
+pub async fn list_sessions(state: &AppState) -> Result<JsonResp, ApiError> {
+    let sessions = state.store.list_sessions().await?;
+    Ok(json_response(200, &sessions))
+}
+
+#[derive(Deserialize)]
+struct CreateSessionBody {
+    name: String,
+    #[serde(default)]
+    connection_id: Option<i64>,
+    #[serde(default)]
+    system_prompt_id: Option<i64>,
+}
+
+pub async fn create_session(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    let body = read_body(req).await?;
+    let new: CreateSessionBody = parse_json(body)?;
+    let session = state
+        .store
+        .create_session(&new.name, new.connection_id, new.system_prompt_id, now())
+        .await?;
+    Ok(json_response(201, &session))
+}
+
+#[derive(Deserialize)]
+struct RenameSessionBody {
+    name: String,
+}
+
+pub async fn rename_session(
+    req: Request,
+    state: &AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let id = session_id(path)?;
+    let body = read_body(req).await?;
+    let rename: RenameSessionBody = parse_json(body)?;
+    let session = state.store.rename_session(id, &rename.name).await?;
+    Ok(json_response(200, &session))
+}
+
+pub async fn delete_session(state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let id = session_id(path)?;
+    state.store.delete_session(id).await?;
+    Ok(json_response(200, &json!({ "deleted": id })))
+}
+
+pub async fn list_messages(state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let id = session_id(path)?;
+    let messages = state.store.list_messages(id).await?;
+    Ok(json_response(200, &messages))
+}
+
+#[derive(Deserialize)]
+struct SendMessageBody {
+    content: String,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// Send a user message and stream the assistant reply back as SSE.
+///
+/// `state` is taken by value: the store is moved into the response body so
+/// the assistant message can be persisted from inside the stream.
+pub async fn send_session_message(
+    req: Request,
+    state: AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let session_id = session_id(path)?;
+    let body = read_body(req).await?;
+    let send: SendMessageBody = parse_json(body)?;
+
+    let session = state.store.get_session(session_id).await?;
+    let connection_id = session
+        .connection_id
+        .ok_or_else(|| ApiError::bad_request("session has no connection; pick one first"))?;
+    let connection = state.store.get_connection(connection_id).await?;
+    let system_prompt = match session.system_prompt_id {
+        Some(id) => Some(state.store.get_system_prompt(id).await?.content),
+        None => None,
+    };
+    let history = state.store.list_messages(session_id).await?;
+    let user_message = state
+        .store
+        .insert_message(session_id, Role::User, &send.content, now())
+        .await?;
+
+    let mut messages = history;
+    messages.push(user_message.clone());
+    let request = ChatRequest {
+        connection_id,
+        system_prompt,
+        model: send.model,
+        messages,
+    };
+    let provider = Provider::for_connection(&connection, SpinHttpClient);
+    let stream = message_stream(state.store, session_id, user_message, request, provider);
+
+    Ok(Response::builder()
+        .status(200)
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        .body(box_body(SseBody::new(stream)))
+        .expect("valid status and headers"))
+}
+
+/// Parse `/api/sessions/<id>...` into the session id.
+fn session_id(path: &str) -> Result<i64, ApiError> {
+    path.strip_prefix("/api/sessions/")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|id| id.parse::<i64>().ok())
+        .ok_or_else(|| ApiError::bad_request("expected /api/sessions/<id>..."))
 }
 
 // -- models & chat ----------------------------------------------------------------

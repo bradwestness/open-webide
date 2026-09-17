@@ -45,5 +45,25 @@ pub async fn apply<D: Db>(db: &D) -> Result<(), StorageError> {
     for stmt in MIGRATIONS {
         db.execute(stmt, &[]).await?;
     }
+    add_session_system_prompt_column(db).await?;
+    Ok(())
+}
+
+/// `ALTER TABLE ... ADD COLUMN` is not idempotent, so probe first.
+async fn add_session_system_prompt_column<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'system_prompt_id'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE sessions ADD COLUMN system_prompt_id INTEGER
+             REFERENCES system_prompts(id) ON DELETE SET NULL",
+            &[],
+        )
+        .await?;
+    }
     Ok(())
 }

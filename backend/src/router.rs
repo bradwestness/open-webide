@@ -1,7 +1,8 @@
 //! Manual routing: Spin's `http_service` gives us one entry point, so we
 //! dispatch on (method, path) ourselves.
 
-use spin_sdk::http::{Request, Response};
+use bytes::Bytes;
+use spin_sdk::http::{FullBody, Request, Response, box_body};
 
 use crate::api;
 use crate::error::{ApiError, JsonResp};
@@ -36,6 +37,21 @@ pub async fn route(req: Request) -> JsonResp {
             ("DELETE", p) if p.starts_with("/api/system-prompts/") => {
                 api::delete_system_prompt(&state, p).await
             }
+            ("GET", "/api/sessions") => api::list_sessions(&state).await,
+            ("POST", "/api/sessions") => api::create_session(req, &state).await,
+            ("PUT", p) if p.starts_with("/api/sessions/") && !p.contains("/messages") => {
+                api::rename_session(req, &state, p).await
+            }
+            ("DELETE", p) if p.starts_with("/api/sessions/") && !p.contains("/messages") => {
+                api::delete_session(&state, p).await
+            }
+            ("GET", p) if p.starts_with("/api/sessions/") && p.ends_with("/messages") => {
+                api::list_messages(&state, p).await
+            }
+            ("POST", p) if p.starts_with("/api/sessions/") && p.ends_with("/messages") => {
+                // Moves `state`: the store is consumed by the SSE stream.
+                api::send_session_message(req, state, p).await
+            }
             ("GET", "/api/models") => api::list_models(req, &state).await,
             ("POST", "/api/chat") => api::chat(req, &state).await,
             _ => Err(ApiError::not_found(format!("no route for {method} {path}"))),
@@ -53,7 +69,7 @@ pub async fn route(req: Request) -> JsonResp {
 fn preflight() -> JsonResp {
     Response::builder()
         .status(204)
-        .body(String::new())
+        .body(box_body(FullBody::new(Bytes::new())))
         .expect("valid status and headers")
 }
 

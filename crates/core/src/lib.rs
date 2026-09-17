@@ -99,7 +99,18 @@ pub struct ChatSession {
     pub id: i64,
     pub name: String,
     pub connection_id: Option<i64>,
+    /// Optional system prompt attached to the session.
+    #[serde(default)]
+    pub system_prompt_id: Option<i64>,
     pub created_at: i64,
+}
+
+/// Payload for creating a new chat session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewSession {
+    pub name: String,
+    pub connection_id: Option<i64>,
+    pub system_prompt_id: Option<i64>,
 }
 
 /// A named system prompt the user can attach to a session.

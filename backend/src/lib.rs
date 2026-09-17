@@ -5,6 +5,7 @@ mod api;
 mod error;
 mod http_client;
 mod router;
+mod sse;
 mod state;
 
 use spin_sdk::http::{IntoResponse, Request};

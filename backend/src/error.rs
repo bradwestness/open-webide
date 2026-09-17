@@ -1,11 +1,12 @@
 //! API error type and JSON response helpers.
 
+use bytes::Bytes;
 use serde_json::json;
-use spin_sdk::http::Response;
+use spin_sdk::http::{BoxBody, FullBody, Response, box_body};
 
 /// The response type used across the API: a plain `http` response with a
-/// `String` body (http-body implements `Body` for `String`).
-pub type JsonResp = Response<String>;
+/// type-erased body, so JSON responses and SSE streams share one type.
+pub type JsonResp = Response<BoxBody>;
 
 pub struct ApiError {
     status: u16,
@@ -49,7 +50,7 @@ impl ApiError {
         Response::builder()
             .status(self.status)
             .header("content-type", "application/json")
-            .body(body)
+            .body(box_body(FullBody::new(Bytes::from(body))))
             .expect("valid status and headers")
     }
 }

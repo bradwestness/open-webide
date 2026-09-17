@@ -34,7 +34,7 @@ Make the LLM calls real. The UI never cares which engine serves.
 **Done when:** with Ollama running locally, `/api/models` lists real
 models and `/api/chat` returns a completion for a stored connection.
 
-## 3. Chat sessions 🔜
+## 3. Chat sessions ✅
 
 The Open WebUI-shaped core: conversations you can come back to.
 
@@ -59,7 +59,7 @@ One image, one port, one volume — the whole stack in a single container.
 - Verified: all endpoints on 8080, data persists across container
   recreation
 
-## 5. Workspace modes
+## 5. Workspace modes 🔜
 
 The IDE operates on a project folder. Where it lives defines the mode;
 the UI sits behind a `Workspace` trait with one impl per mode.
@@ -73,9 +73,14 @@ the UI sits behind a `Workspace` trait with one impl per mode.
 - File tree in the UI for both modes
 - Mode picker in the sidebar; coherent modes only (remote = files + LLM
   on host; local = files + LLM on laptop)
+- **Multi-project tabs (Rider-style):** multiple projects open at once,
+  each tab = one project (its workspace + chat sessions); tab bar with
+  new/switch/close. Project is a first-class entity in the data model —
+  sessions and settings belong to a project
 
 **Done when:** you can open a folder in either mode, browse it, and
-create/edit/save a file from the UI.
+create/edit/save a file from the UI, with two projects open in tabs and
+switching between them.
 
 ## 6. Agentic coding
 
@@ -99,7 +104,10 @@ edits, and reports, with every step visible in the conversation.
 From "chat that can edit files" to "IDE".
 
 - In-browser code editor (CodeMirror 6, WASM) with syntax highlighting
-- Diff view for agent edits with accept/reject
+- File viewer **defaults to diff mode** for agent edits, with accept/reject;
+  toggle between display modes: **inline diff**, **side-by-side diff**,
+  **updated content** (plain file), **preview** (markdown rendered to HTML,
+  images viewable)
 - Full-text file search (backend, remote mode)
 - Settings UI: theme, default connection, default system prompt
 - System prompt manager (the API already exists)
@@ -122,4 +130,3 @@ Ideas without a phase yet:
 - Model management (pull/delete models through the Ollama API)
 - Multi-model comparison for a single prompt (an Open WebUI classic)
 - Conversation export (markdown)
-- Multiple workspaces / project switcher

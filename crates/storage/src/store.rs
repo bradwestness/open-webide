@@ -191,6 +191,21 @@ impl<D: Db> Store<D> {
             })
     }
 
+    pub async fn get_system_prompt(&self, id: i64) -> Result<SystemPrompt, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT id, name, content FROM system_prompts WHERE id = ?",
+                &[DbValue::Int(id)],
+            )
+            .await?;
+        res.rows
+            .first()
+            .map(prompt_from_row)
+            .transpose()?
+            .ok_or_else(|| StorageError::NotFound(format!("system prompt {id}")))
+    }
+
     pub async fn delete_system_prompt(&self, id: i64) -> Result<(), StorageError> {
         let res = self
             .db
@@ -211,7 +226,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, connection_id, created_at
+                "SELECT id, name, connection_id, system_prompt_id, created_at
                  FROM sessions ORDER BY id",
                 &[],
             )
@@ -219,30 +234,57 @@ impl<D: Db> Store<D> {
         res.rows.iter().map(session_from_row).collect()
     }
 
+    pub async fn get_session(&self, id: i64) -> Result<ChatSession, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT id, name, connection_id, system_prompt_id, created_at
+                 FROM sessions WHERE id = ?",
+                &[DbValue::Int(id)],
+            )
+            .await?;
+        res.rows
+            .first()
+            .map(session_from_row)
+            .transpose()?
+            .ok_or_else(|| StorageError::NotFound(format!("session {id}")))
+    }
+
     pub async fn create_session(
         &self,
         name: &str,
         connection_id: Option<i64>,
+        system_prompt_id: Option<i64>,
         created_at: i64,
     ) -> Result<ChatSession, StorageError> {
         let res = self
             .db
             .execute(
-                "INSERT INTO sessions (name, connection_id, created_at) VALUES (?, ?, ?)",
+                "INSERT INTO sessions (name, connection_id, system_prompt_id, created_at)
+                 VALUES (?, ?, ?, ?)",
                 &[
                     DbValue::Text(name.into()),
                     connection_id.map(DbValue::Int).unwrap_or(DbValue::Null),
+                    system_prompt_id.map(DbValue::Int).unwrap_or(DbValue::Null),
                     DbValue::Int(created_at),
                 ],
             )
             .await?;
-        let id = res.last_insert_rowid;
-        Ok(ChatSession {
-            id,
-            name: name.into(),
-            connection_id,
-            created_at,
-        })
+        self.get_session(res.last_insert_rowid).await
+    }
+
+    pub async fn rename_session(&self, id: i64, name: &str) -> Result<ChatSession, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "UPDATE sessions SET name = ? WHERE id = ?",
+                &[DbValue::Text(name.into()), DbValue::Int(id)],
+            )
+            .await?;
+        if res.changes == 0 {
+            return Err(StorageError::NotFound(format!("session {id}")));
+        }
+        self.get_session(id).await
     }
 
     pub async fn delete_session(&self, id: i64) -> Result<(), StorageError> {
@@ -321,20 +363,23 @@ fn prompt_from_row(row: &QueryRow) -> Result<SystemPrompt, StorageError> {
     })
 }
 
+fn opt_int(row: &QueryRow, idx: usize, field: &str) -> Result<Option<i64>, StorageError> {
+    match &row.values[idx] {
+        DbValue::Int(i) => Ok(Some(*i)),
+        DbValue::Null => Ok(None),
+        other => Err(StorageError::InvalidValue(format!(
+            "{field} is not an integer: {other:?}"
+        ))),
+    }
+}
+
 fn session_from_row(row: &QueryRow) -> Result<ChatSession, StorageError> {
     Ok(ChatSession {
         id: row.get_int(0)?,
         name: row.get_text(1)?.to_string(),
-        connection_id: match &row.values[2] {
-            DbValue::Int(i) => Some(*i),
-            DbValue::Null => None,
-            other => {
-                return Err(StorageError::InvalidValue(format!(
-                    "connection_id is not an integer: {other:?}"
-                )));
-            }
-        },
-        created_at: row.get_int(3)?,
+        connection_id: opt_int(row, 2, "connection_id")?,
+        system_prompt_id: opt_int(row, 3, "system_prompt_id")?,
+        created_at: row.get_int(4)?,
     })
 }
 
@@ -440,10 +485,17 @@ mod tests {
         let store = test_store();
         block_on(async {
             let session = store
-                .create_session("first session", None, 1_700_000_000)
+                .create_session("first session", None, None, 1_700_000_000)
                 .await
                 .unwrap();
             assert!(session.id > 0);
+            assert_eq!(session.system_prompt_id, None);
+
+            let reloaded = store.get_session(session.id).await.unwrap();
+            assert_eq!(reloaded.name, "first session");
+
+            let renamed = store.rename_session(session.id, "renamed").await.unwrap();
+            assert_eq!(renamed.name, "renamed");
 
             let msg = store
                 .insert_message(session.id, Role::User, "hello", 1_700_000_001)
@@ -457,7 +509,28 @@ mod tests {
             assert_eq!(messages[0].content, "hello");
 
             store.delete_session(session.id).await.unwrap();
+            assert!(store.get_session(session.id).await.is_err());
             assert!(store.list_messages(session.id).await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn session_system_prompt_reference() {
+        let store = test_store();
+        block_on(async {
+            let prompt = store
+                .insert_system_prompt("coder", "You are a coding agent.")
+                .await
+                .unwrap();
+            let session = store
+                .create_session("s", None, Some(prompt.id), 1)
+                .await
+                .unwrap();
+            assert_eq!(session.system_prompt_id, Some(prompt.id));
+
+            store.delete_system_prompt(prompt.id).await.unwrap();
+            let reloaded = store.get_session(session.id).await.unwrap();
+            assert_eq!(reloaded.system_prompt_id, None);
         });
     }
 
@@ -474,7 +547,10 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let session = store.create_session("s", Some(conn.id), 1).await.unwrap();
+            let session = store
+                .create_session("s", Some(conn.id), None, 1)
+                .await
+                .unwrap();
             assert_eq!(session.connection_id, Some(conn.id));
 
             store.delete_connection(conn.id).await.unwrap();

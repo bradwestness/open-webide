@@ -10,7 +10,11 @@ publish = false
 
 [dependencies]
 gloo-net = { workspace = true }
+js-sys = { workspace = true }
 leptos = { workspace = true }
 openwebide-core = { workspace = true }
+pulldown-cmark = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true }
