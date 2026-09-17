@@ -7,24 +7,25 @@ backend) runs on WebAssembly.
 - **Frontend:** Rust + [Leptos](https://leptos.dev) compiled to WASM, built with [Trunk](https://trunkrs.dev)
 - **Backend:** a [Spin](https://spinframework.dev) component (Rust → `wasm32-wasip2`) exposing a small REST API
 - **Persistence:** SQLite via Spin's `sqlite` capability (file-backed, like Open WebUI)
-- **LLM providers:** Ollama and llama.cpp behind a common provider interface (HTTP calls stubbed for now)
+- **LLM providers:** Ollama and llama.cpp behind a common provider interface
 
 ## Status
 
-This is the **scaffold milestone**: a clean, compiling skeleton.
+The provider HTTP layer is in: `/api/models` and `/api/chat` reach real
+engines through Spin's outbound HTTP.
 
 Working:
 - Repo layout and workspace wiring
 - Domain types (`crates/core`)
-- Provider interface with Ollama / llama.cpp stubs (`crates/llm`)
+- Provider interface with Ollama / llama.cpp implementations (`crates/llm`), tested against a fake HTTP client
 - SQLite-backed storage with migrations and typed repositories (`crates/storage`), tested natively with rusqlite
-- Backend REST API: health, connections CRUD, settings, system prompts, models, chat (the last two return `501` until the provider HTTP layer lands)
+- Backend REST API: health, connections CRUD, settings, system prompts, models, chat
 - Frontend shell: top bar with live backend health, sidebar listing connections, empty chat pane, status bar
 - CI: fmt, clippy, native tests, WASM builds, Trunk build
 
-Stubbed:
-- `OllamaProvider` / `LlamaCppProvider` HTTP calls (return `NotImplemented` → HTTP 501)
-- Chat session UI
+Not yet:
+- Chat session UI (the API is ready for it)
+- Streaming responses
 
 ## Prerequisites
 
@@ -100,8 +101,12 @@ curl -s -X POST localhost:3000/api/system-prompts \
   -H 'content-type: application/json' \
   -d '{"name":"coder","content":"You are a coding agent."}'
 
-# provider endpoints (501 until the HTTP layer is implemented)
+# provider endpoints (need a running engine at the connection's base_url)
 curl -s 'localhost:3000/api/models?connection_id=1'
+
+curl -s -X POST localhost:3000/api/chat \
+  -H 'content-type: application/json' \
+  -d '{"connection_id":1,"messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ## Development
@@ -120,15 +125,16 @@ at the API with `?api=http://localhost:3000/api`.
 
 ```
 crates/core       shared domain types (serde)
-crates/llm        LlmProvider trait + Ollama/llama.cpp stubs
+crates/llm        LlmProvider trait + Ollama/llama.cpp providers
 crates/storage    Db abstraction, migrations, Store repositories
 backend           Spin HTTP component (REST API)
 frontend          Leptos WASM app (Trunk)
 docs/architecture.md   design notes
+docs/roadmap.md        phase-by-phase plan
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the architecture and
-the plan for upcoming milestones.
+[docs/roadmap.md](docs/roadmap.md) for the plan.
 
 ## License
 

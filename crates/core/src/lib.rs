@@ -80,10 +80,16 @@ impl Role {
 /// A single chat message within a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessage {
+    /// Set by the server on insert; clients may omit it in requests.
+    #[serde(default)]
     pub id: i64,
+    /// Set by the server on insert; clients may omit it in requests.
+    #[serde(default)]
     pub session_id: i64,
     pub role: Role,
     pub content: String,
+    /// Set by the server on insert; clients may omit it in requests.
+    #[serde(default)]
     pub created_at: i64,
 }
 
@@ -115,6 +121,9 @@ pub struct ModelInfo {
 pub struct ChatRequest {
     pub connection_id: i64,
     pub system_prompt: Option<String>,
+    /// Model override; falls back to the connection's model when absent.
+    #[serde(default)]
+    pub model: Option<String>,
     pub messages: Vec<ChatMessage>,
 }
 

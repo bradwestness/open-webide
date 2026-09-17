@@ -67,6 +67,7 @@ impl From<openwebide_llm::ProviderError> for ApiError {
     fn from(err: openwebide_llm::ProviderError) -> Self {
         match err {
             openwebide_llm::ProviderError::NotImplemented(msg) => Self::not_implemented(msg),
+            openwebide_llm::ProviderError::NoModel => Self::bad_request(err.to_string()),
             other => Self::internal(other.to_string()),
         }
     }

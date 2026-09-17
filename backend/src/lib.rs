@@ -3,6 +3,7 @@
 
 mod api;
 mod error;
+mod http_client;
 mod router;
 mod state;
 

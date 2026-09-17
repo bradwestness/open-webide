@@ -150,16 +150,8 @@ Constraints:
 - Keep the modes coherent: remote = files + LLM on the host, local = files +
   LLM on the laptop. A mixed split (remote files, local LLM) is deferred.
 
-## Milestones
+## Roadmap
 
-1. **Scaffold (done)** — layout, compiling skeleton, storage + API + shell.
-2. **Provider HTTP** — implement `HttpClient`, Ollama + llama.cpp call
-   paths, wire `/api/models` and `/api/chat` through for real.
-3. **Chat sessions** — session list, message persistence, streaming
-   responses in the chat pane.
-4. **Container deployment** — single image via Dockerfile/compose (one
-   port, DB volume); Podman quadlet units for Linux.
-5. **Workspace modes** — `Workspace` trait; remote file API + Spin
-   filesystem capability; local File System Access API impl.
-6. **Agentic coding** — tool calls and the agent loop on top of the
-   workspace.
+The phase-by-phase plan (scaffold → provider HTTP → chat sessions →
+container deployment → workspace modes → agentic coding → IDE surface →
+distribution) lives in [roadmap.md](roadmap.md).

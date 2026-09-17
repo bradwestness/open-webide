@@ -1,26 +1,36 @@
 use openwebide_core::{ChatRequest, Connection, ModelInfo, ProviderKind};
 
-use crate::{LlmProvider, ProviderError, llamacpp::LlamaCppProvider, ollama::OllamaProvider};
+use crate::{
+    HttpClient, LlmProvider, ProviderError, llamacpp::LlamaCppProvider, ollama::OllamaProvider,
+};
 
 /// The concrete provider set, selected by the connection's kind.
 ///
 /// An enum rather than `Box<dyn LlmProvider>`: async trait methods are not
 /// dyn-compatible, and the set of local-LLM runtimes is closed.
-pub enum Provider {
-    Ollama(OllamaProvider),
-    LlamaCpp(LlamaCppProvider),
+pub enum Provider<C: HttpClient> {
+    Ollama(OllamaProvider<C>),
+    LlamaCpp(LlamaCppProvider<C>),
 }
 
-impl Provider {
-    pub fn for_connection(conn: &Connection) -> Self {
+impl<C: HttpClient> Provider<C> {
+    pub fn for_connection(conn: &Connection, http: C) -> Self {
         match conn.kind {
-            ProviderKind::Ollama => Self::Ollama(OllamaProvider::new(conn.base_url.clone())),
-            ProviderKind::LlamaCpp => Self::LlamaCpp(LlamaCppProvider::new(conn.base_url.clone())),
+            ProviderKind::Ollama => Self::Ollama(OllamaProvider::new(
+                conn.base_url.clone(),
+                conn.model.clone(),
+                http,
+            )),
+            ProviderKind::LlamaCpp => Self::LlamaCpp(LlamaCppProvider::new(
+                conn.base_url.clone(),
+                conn.model.clone(),
+                http,
+            )),
         }
     }
 }
 
-impl LlmProvider for Provider {
+impl<C: HttpClient> LlmProvider for Provider<C> {
     fn kind(&self) -> ProviderKind {
         match self {
             Self::Ollama(p) => p.kind(),

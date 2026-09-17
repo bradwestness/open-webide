@@ -9,6 +9,7 @@ use serde_json::json;
 use spin_sdk::http::Request;
 
 use crate::error::{ApiError, JsonResp};
+use crate::http_client::SpinHttpClient;
 use crate::state::AppState;
 
 fn json_response(status: u16, value: &impl serde::Serialize) -> JsonResp {
@@ -147,7 +148,7 @@ pub async fn list_models(req: Request, state: &AppState) -> Result<JsonResp, Api
         .and_then(|s| s.parse::<i64>().ok())
         .ok_or_else(|| ApiError::bad_request("missing ?connection_id=<id>"))?;
     let connection = state.store.get_connection(id).await?;
-    let provider = Provider::for_connection(&connection);
+    let provider = Provider::for_connection(&connection, SpinHttpClient);
     let models = provider.list_models().await?;
     Ok(json_response(200, &models))
 }
@@ -156,7 +157,7 @@ pub async fn chat(req: Request, state: &AppState) -> Result<JsonResp, ApiError> 
     let body = read_body(req).await?;
     let request: ChatRequest = parse_json(body)?;
     let connection = state.store.get_connection(request.connection_id).await?;
-    let provider = Provider::for_connection(&connection);
+    let provider = Provider::for_connection(&connection, SpinHttpClient);
     let reply = provider.chat(&request).await?;
     Ok(json_response(200, &json!({ "reply": reply })))
 }
