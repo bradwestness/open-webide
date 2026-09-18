@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, FileEntry, Project, Role, SearchHit, WorkspaceMode,
+    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Project, Role, SearchHit,
+    WorkspaceMode,
 };
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
@@ -27,6 +28,8 @@ struct ProjectWorkspace {
     dirty: bool,
     search: Option<Vec<SearchHit>>,
     active_session: Option<i64>,
+    /// Pending agent edits awaiting accept/reject, keyed by file path.
+    pending_edits: HashMap<String, FileDiff>,
 }
 
 /// The directory containing `path` ("" for a top-level path).
@@ -61,6 +64,10 @@ pub fn App() -> impl IntoView {
     let ws_content = RwSignal::new(String::new());
     let ws_dirty = RwSignal::new(false);
     let ws_search = RwSignal::new(Option::<Vec<SearchHit>>::None);
+    let ws_pending_edits = RwSignal::new(HashMap::<String, FileDiff>::new());
+    // The pending edit for the currently open file (drives the editor's diff
+    // view), derived from the open file and the per-project pending edits.
+    let pending_diff = RwSignal::new(Option::<FileDiff>::None);
     // Saved workspace state for every project that has (or had) a tab open.
     let saved = RwSignal::new(HashMap::<i64, ProjectWorkspace>::new());
     // Directory handles for local-mode projects, keyed by project id. Loaded
@@ -194,6 +201,77 @@ pub fn App() -> impl IntoView {
         });
     });
 
+    // Accept a pending agent edit: the file is already on disk with the new
+    // contents, so just clear the pending entry, show the new contents, and
+    // refresh the tree (so a newly created file appears).
+    let on_accept = Callback::new(move |_| {
+        let Some(pid) = active_project.get() else {
+            return;
+        };
+        let Some(path) = ws_open_file.get() else {
+            return;
+        };
+        let Some(diff) = ws_pending_edits.with(|m| m.get(&path).cloned()) else {
+            return;
+        };
+        ws_pending_edits.update(|m| {
+            m.remove(&path);
+        });
+        ws_content.set(diff.new);
+        ws_dirty.set(false);
+        load_dir.run((pid, parent_dir(&path)));
+    });
+
+    // Reject a pending agent edit: restore the previous contents (or delete a
+    // newly created file), then refresh the tree.
+    let on_reject = Callback::new(move |_| {
+        let Some(pid) = active_project.get() else {
+            return;
+        };
+        let Some(path) = ws_open_file.get() else {
+            return;
+        };
+        let Some(diff) = ws_pending_edits.with(|m| m.get(&path).cloned()) else {
+            return;
+        };
+        ws_pending_edits.update(|m| {
+            m.remove(&path);
+        });
+        error.set(None);
+        let is_new = diff.old.is_none();
+        let prev = diff.old;
+        let ld = load_dir;
+        spawn_local(async move {
+            let Some(ws) = workspace_for.run(pid) else {
+                return;
+            };
+            let result = match prev {
+                Some(prev) => {
+                    let r = ws.write(&path, &prev).await;
+                    r.map(|()| prev)
+                }
+                None => ws.delete(&path).await.map(|_| String::new()),
+            };
+            match result {
+                Ok(content) => {
+                    if active_project.get() == Some(pid) {
+                        if is_new {
+                            ws_open_file.set(None);
+                        }
+                        ws_content.set(content);
+                        ws_dirty.set(false);
+                        ld.run((pid, parent_dir(&path)));
+                    }
+                }
+                Err(e) => {
+                    if active_project.get() == Some(pid) {
+                        error.set(Some(e));
+                    }
+                }
+            }
+        });
+    });
+
     // Create a new empty file and open it.
     let on_new_file = Callback::new(move |_| {
         let Some(pid) = active_project.get() else {
@@ -316,6 +394,7 @@ pub fn App() -> impl IntoView {
                 dirty: ws_dirty.get(),
                 search: ws_search.get(),
                 active_session: active_session.get(),
+                pending_edits: ws_pending_edits.get(),
             };
             saved.update(|m| {
                 m.insert(old, ws);
@@ -329,6 +408,7 @@ pub fn App() -> impl IntoView {
         ws_content.set(ws.content);
         ws_dirty.set(ws.dirty);
         ws_search.set(ws.search);
+        ws_pending_edits.set(ws.pending_edits);
         active_session.set(ws.active_session);
         error.set(None);
         ensure_root.run(id);
@@ -350,6 +430,7 @@ pub fn App() -> impl IntoView {
                     ws_content.set(String::new());
                     ws_dirty.set(false);
                     ws_search.set(None);
+                    ws_pending_edits.set(HashMap::new());
                 }
             }
         }
@@ -598,6 +679,18 @@ pub fn App() -> impl IntoView {
                                     });
                                 }
                                 SseEvent::ToolResult { id, name, ok, summary, diff } => {
+                                    // Record the agent's edit as a pending diff
+                                    // and open the file so the editor shows it
+                                    // in diff mode.
+                                    if let Some(d) = &diff {
+                                        ws_pending_edits.update(|m| {
+                                            m.insert(d.path.clone(), d.clone());
+                                        });
+                                        if ws_open_file.get().as_deref() != Some(d.path.as_str()) {
+                                            ws_open_file.set(Some(d.path.clone()));
+                                            ws_dirty.set(false);
+                                        }
+                                    }
                                     messages.update(|m| {
                                         let idx = m.iter().rposition(|item| {
                                             matches!(
@@ -746,6 +839,14 @@ pub fn App() -> impl IntoView {
         has_session.set(active_session.get().is_some());
     });
 
+    // The pending edit for the currently open file, if any.
+    Effect::new(move || {
+        let open = ws_open_file.get();
+        let pending = ws_pending_edits.get();
+        let diff = open.as_ref().and_then(|p| pending.get(p).cloned());
+        pending_diff.set(diff);
+    });
+
     // Agentic file tools only run for remote (Spin-hosted) projects; the
     // backend can't reach a local-mode project's browser-side files.
     let local_mode = RwSignal::new(false);
@@ -812,7 +913,10 @@ pub fn App() -> impl IntoView {
                     set_content=ws_content.write_only()
                     dirty=ws_dirty.read_only()
                     set_dirty=ws_dirty.write_only()
+                    pending_diff=pending_diff.read_only()
                     on_save=on_save
+                    on_accept=on_accept
+                    on_reject=on_reject
                     error=error.read_only()
                 />
                 <ChatPane

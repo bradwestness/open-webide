@@ -75,6 +75,16 @@ pub async fn create(
     write_file_handle(&file_handle, "").await
 }
 
+/// Delete the file at `path`.
+pub async fn delete(root: &FileSystemDirectoryHandle, path: &str) -> Result<(), String> {
+    let (parent, name) = split_path(path);
+    let parent_dir = resolve_dir(root, &parent).await?;
+    JsFuture::from(parent_dir.remove_entry(&name))
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    Ok(())
+}
+
 /// Full-text search: return the lines of every readable text file under `dir`
 /// whose content contains `query` (case-insensitive).
 pub async fn search_content(

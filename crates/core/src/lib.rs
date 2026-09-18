@@ -197,6 +197,88 @@ pub struct FileDiff {
     pub new: String,
 }
 
+/// Compute the changed middle of a file edit as inline `(marker, line)` pairs.
+///
+/// The common prefix and suffix lines are stripped; the result holds the
+/// removed middle lines (marker `-`, from `old`) followed by the added middle
+/// lines (marker `+`, from `new`). For a new file (`old` is `None`) every line
+/// is `+`. Pure and natively unit-testable.
+pub fn diff_inline_lines(diff: &FileDiff) -> Vec<(char, String)> {
+    let old_lines: Vec<&str> = diff.old.as_deref().unwrap_or_default().lines().collect();
+    let new_lines: Vec<&str> = diff.new.lines().collect();
+
+    let mut i = 0;
+    let mut j = 0;
+    while i < old_lines.len() && j < new_lines.len() && old_lines[i] == new_lines[j] {
+        i += 1;
+        j += 1;
+    }
+    let mut old_end = old_lines.len();
+    let mut new_end = new_lines.len();
+    while old_end > i && new_end > j && old_lines[old_end - 1] == new_lines[new_end - 1] {
+        old_end -= 1;
+        new_end -= 1;
+    }
+
+    let mut out = Vec::new();
+    for line in &old_lines[i..old_end] {
+        out.push(('-', line.to_string()));
+    }
+    for line in &new_lines[j..new_end] {
+        out.push(('+', line.to_string()));
+    }
+    out
+}
+
+/// Compute the changed middle of a file edit as side-by-side `(old, new)` rows.
+///
+/// The common prefix and suffix lines appear on both sides. The changed middle
+/// is aligned row-by-row, padding the shorter side with `None` (a pure
+/// addition or removal). For a new file (`old` is `None`) every left cell is
+/// `None`. Pure and natively unit-testable.
+pub fn diff_side_by_side(diff: &FileDiff) -> Vec<(Option<String>, Option<String>)> {
+    let old_lines: Vec<&str> = diff.old.as_deref().unwrap_or_default().lines().collect();
+    let new_lines: Vec<&str> = diff.new.lines().collect();
+
+    let mut prefix = 0;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < old_lines.len() - prefix
+        && suffix < new_lines.len() - prefix
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let mut rows = Vec::new();
+    for i in 0..prefix {
+        rows.push((
+            Some(old_lines[i].to_string()),
+            Some(new_lines[i].to_string()),
+        ));
+    }
+    let old_mid = &old_lines[prefix..old_lines.len() - suffix];
+    let new_mid = &new_lines[prefix..new_lines.len() - suffix];
+    for i in 0..old_mid.len().max(new_mid.len()) {
+        rows.push((
+            old_mid.get(i).map(|s| s.to_string()),
+            new_mid.get(i).map(|s| s.to_string()),
+        ));
+    }
+    for i in 0..suffix {
+        rows.push((
+            Some(old_lines[old_lines.len() - suffix + i].to_string()),
+            Some(new_lines[new_lines.len() - suffix + i].to_string()),
+        ));
+    }
+    rows
+}
+
 /// Health/status payload returned by the backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
@@ -322,5 +404,96 @@ mod tests {
     #[test]
     fn content_matches_no_match_is_empty() {
         assert!(find_content_matches("hello world", "zzz").is_empty());
+    }
+
+    #[test]
+    fn diff_inline_strips_common_prefix_suffix() {
+        let diff = FileDiff {
+            path: "a.txt".into(),
+            old: Some("a\nb\nc\nd".into()),
+            new: "a\nX\nc\nd".into(),
+        };
+        assert_eq!(
+            diff_inline_lines(&diff),
+            vec![('-', "b".into()), ('+', "X".into())]
+        );
+    }
+
+    #[test]
+    fn diff_inline_new_file_is_all_additions() {
+        let diff = FileDiff {
+            path: "new.txt".into(),
+            old: None,
+            new: "a\nb".into(),
+        };
+        assert_eq!(
+            diff_inline_lines(&diff),
+            vec![('+', "a".into()), ('+', "b".into())]
+        );
+    }
+
+    #[test]
+    fn diff_inline_full_replacement_lists_all() {
+        let diff = FileDiff {
+            path: "a.txt".into(),
+            old: Some("a\nb".into()),
+            new: "x\ny".into(),
+        };
+        assert_eq!(
+            diff_inline_lines(&diff),
+            vec![
+                ('-', "a".into()),
+                ('-', "b".into()),
+                ('+', "x".into()),
+                ('+', "y".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_side_by_side_aligns_changed_middle() {
+        let diff = FileDiff {
+            path: "a.txt".into(),
+            old: Some("a\nb\nc".into()),
+            new: "a\nx\nc".into(),
+        };
+        assert_eq!(
+            diff_side_by_side(&diff),
+            vec![
+                (Some("a".into()), Some("a".into())),
+                (Some("b".into()), Some("x".into())),
+                (Some("c".into()), Some("c".into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_side_by_side_new_file_pads_left() {
+        let diff = FileDiff {
+            path: "new.txt".into(),
+            old: None,
+            new: "a\nb".into(),
+        };
+        assert_eq!(
+            diff_side_by_side(&diff),
+            vec![(None, Some("a".into())), (None, Some("b".into()))]
+        );
+    }
+
+    #[test]
+    fn diff_side_by_side_deletion_pads_right() {
+        let diff = FileDiff {
+            path: "a.txt".into(),
+            old: Some("a\nb\nc".into()),
+            new: "a\nc".into(),
+        };
+        assert_eq!(
+            diff_side_by_side(&diff),
+            vec![
+                (Some("a".into()), Some("a".into())),
+                (Some("b".into()), None),
+                (Some("c".into()), Some("c".into()))
+            ]
+        );
     }
 }

@@ -54,4 +54,11 @@ impl Workspace {
             Workspace::Local { handle } => local_fs::search_content(handle, query, dir).await,
         }
     }
+
+    pub async fn delete(&self, path: &str) -> Result<(), String> {
+        match self {
+            Workspace::Remote { api, project_id } => api.delete_file(*project_id, path).await,
+            Workspace::Local { handle } => local_fs::delete(handle, path).await,
+        }
+    }
 }

@@ -368,6 +368,21 @@ pub async fn files_post(req: Request, state: &AppState, path: &str) -> Result<Js
     ))
 }
 
+pub async fn files_delete(
+    req: Request,
+    state: &AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let (id, sub) = project_files_path(path)?;
+    if sub != "files/delete" {
+        return Err(ApiError::not_found(format!("no file route for {sub}")));
+    }
+    let rel = files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
+    let (full, _) = remote_project_path(state, id, &rel).await?;
+    crate::files::delete(&full).await?;
+    Ok(json_response(200, &json!({ "path": rel })))
+}
+
 // -- sessions --------------------------------------------------------------------
 
 pub async fn list_sessions(state: &AppState) -> Result<JsonResp, ApiError> {

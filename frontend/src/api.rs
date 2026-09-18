@@ -192,6 +192,16 @@ impl BackendApi {
         Ok(())
     }
 
+    /// Delete the file at `path`.
+    pub async fn delete_file(&self, project_id: i64, path: &str) -> Result<(), String> {
+        self.request::<(), _>(
+            Method::DELETE,
+            &format!("/projects/{project_id}/files/delete?path={}", urlenc(path)),
+            None,
+        )
+        .await
+    }
+
     /// Full-text search: return the lines of every file whose content contains
     /// `query` (case-insensitive).
     pub async fn search_content(

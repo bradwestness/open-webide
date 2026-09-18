@@ -262,6 +262,13 @@ pub async fn create(rel: &str, is_dir: bool) -> Result<()> {
     }
 }
 
+/// Delete the file at `rel`.
+pub async fn delete(rel: &str) -> Result<()> {
+    let rel = sanitize(rel)?;
+    let root = root()?;
+    root.unlink_file_at(rel).await.map_err(fs_error)
+}
+
 /// Recursively walk the directory at `rel` and return files whose path
 /// contains `query` (case-insensitive).
 pub async fn search(rel: &str, query: &str) -> Result<Vec<FileEntry>> {

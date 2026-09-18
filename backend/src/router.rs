@@ -44,6 +44,7 @@ pub async fn route(req: Request) -> JsonResp {
             ("GET", p) if is_project_files(p) => api::files_get(req, &state, p).await,
             ("PUT", p) if is_project_files(p) => api::files_put(req, &state, p).await,
             ("POST", p) if is_project_files(p) => api::files_post(req, &state, p).await,
+            ("DELETE", p) if is_project_files(p) => api::files_delete(req, &state, p).await,
             ("PUT", p) if p.starts_with("/api/projects/") => {
                 api::rename_project(req, &state, p).await
             }

@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use openwebide_core::{ChatMessage, FileDiff, Role};
+use openwebide_core::{ChatMessage, FileDiff, Role, diff_inline_lines};
 use web_sys::wasm_bindgen::JsCast;
 
 /// One item in the conversation: a chat message or an agent tool step.
@@ -36,41 +36,12 @@ fn item_key(item: &ConversationItem) -> String {
     }
 }
 
-/// Render markdown to HTML for display in an assistant message.
-fn render_markdown(md: &str) -> String {
+/// Render markdown to HTML for display in an assistant message or the editor
+/// preview.
+pub(crate) fn render_markdown(md: &str) -> String {
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(md));
     html
-}
-
-/// A minimal line-based diff: strip the common prefix and suffix lines, then
-/// emit the removed middle (from `old`) and the added middle (from `new`).
-/// Each line is `(marker, text)` with marker `+` or `-`.
-fn render_diff(diff: &FileDiff) -> Vec<(char, String)> {
-    let old_lines: Vec<&str> = diff.old.as_deref().unwrap_or_default().lines().collect();
-    let new_lines: Vec<&str> = diff.new.lines().collect();
-
-    let mut i = 0;
-    let mut j = 0;
-    while i < old_lines.len() && j < new_lines.len() && old_lines[i] == new_lines[j] {
-        i += 1;
-        j += 1;
-    }
-    let mut old_end = old_lines.len();
-    let mut new_end = new_lines.len();
-    while old_end > i && new_end > j && old_lines[old_end - 1] == new_lines[new_end - 1] {
-        old_end -= 1;
-        new_end -= 1;
-    }
-
-    let mut out = Vec::new();
-    for line in &old_lines[i..old_end] {
-        out.push(('-', line.to_string()));
-    }
-    for line in &new_lines[j..new_end] {
-        out.push(('+', line.to_string()));
-    }
-    out
 }
 
 /// Render a single chat message (assistant = markdown, user = plain text).
@@ -113,7 +84,7 @@ fn render_message(m: ChatMessage) -> impl IntoView {
 /// Render the diff for a file edit: the changed path and the removed/added
 /// middle lines.
 fn render_diff_view(diff: FileDiff) -> impl IntoView {
-    let lines = render_diff(&diff);
+    let lines = diff_inline_lines(&diff);
     let path = diff.path.clone();
     view! {
         <div class="tool-diff">
