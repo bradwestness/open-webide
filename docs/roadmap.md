@@ -131,10 +131,13 @@ From "chat that can edit files" to "IDE".
 
 Self-hosted on a private machine, so auth stays deliberately simple: users
 create an account and password locally. No external identity provider, no
-OAuth — just a `users` table and a login screen.
+OAuth, no email verification — just a `users` table and a login screen.
 
-- `users` table: id, username (unique), password hash (argon2id), created_at
-- First run with no users → registration screen to create the first account
+- `users` table: id, username (unique), password hash (argon2id), role,
+  created_at
+- First run with no users → registration screen; the first registered user
+  becomes admin (no default credentials), later signups are regular users
+- Minimal roles: `admin` (manages accounts) and `user`; no pending/approval
 - Register + login endpoints; passwords hashed locally, never stored in
   plaintext
 - Session auth: a simple signed token (cookie or bearer) — no JWT ceremony
