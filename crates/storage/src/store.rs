@@ -207,6 +207,29 @@ impl<D: Db> Store<D> {
             .ok_or_else(|| StorageError::NotFound(format!("system prompt {id}")))
     }
 
+    pub async fn update_system_prompt(
+        &self,
+        id: i64,
+        name: &str,
+        content: &str,
+    ) -> Result<SystemPrompt, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "UPDATE system_prompts SET name = ?, content = ? WHERE id = ?",
+                &[
+                    DbValue::Text(name.into()),
+                    DbValue::Text(content.into()),
+                    DbValue::Int(id),
+                ],
+            )
+            .await?;
+        if res.changes == 0 {
+            return Err(StorageError::NotFound(format!("system prompt {id}")));
+        }
+        self.get_system_prompt(id).await
+    }
+
     pub async fn delete_system_prompt(&self, id: i64) -> Result<(), StorageError> {
         let res = self
             .db
@@ -585,6 +608,16 @@ mod tests {
             assert_eq!(prompt.name, "coder");
 
             assert_eq!(store.list_system_prompts().await.unwrap().len(), 1);
+
+            let updated = store
+                .update_system_prompt(prompt.id, "helper", "You are a helpful agent.")
+                .await
+                .unwrap();
+            assert_eq!(updated.id, prompt.id);
+            assert_eq!(updated.name, "helper");
+            assert_eq!(updated.content, "You are a helpful agent.");
+
+            assert!(store.update_system_prompt(9999, "x", "y").await.is_err());
 
             store.delete_system_prompt(prompt.id).await.unwrap();
             assert!(store.list_system_prompts().await.unwrap().is_empty());

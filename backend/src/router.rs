@@ -34,6 +34,9 @@ pub async fn route(req: Request) -> JsonResp {
             ("PUT", "/api/settings") => api::set_setting(req, &state).await,
             ("GET", "/api/system-prompts") => api::list_system_prompts(&state).await,
             ("POST", "/api/system-prompts") => api::create_system_prompt(req, &state).await,
+            ("PUT", p) if p.starts_with("/api/system-prompts/") => {
+                api::update_system_prompt(req, &state, p).await
+            }
             ("DELETE", p) if p.starts_with("/api/system-prompts/") => {
                 api::delete_system_prompt(&state, p).await
             }

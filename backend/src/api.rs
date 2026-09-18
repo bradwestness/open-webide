@@ -141,6 +141,21 @@ pub async fn create_system_prompt(req: Request, state: &AppState) -> Result<Json
     Ok(json_response(201, &prompt))
 }
 
+pub async fn update_system_prompt(
+    req: Request,
+    state: &AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let id = path_id(path, "/api/system-prompts")?;
+    let body = read_body(req).await?;
+    let prompt_body: PromptBody = parse_json(body)?;
+    let prompt: SystemPrompt = state
+        .store
+        .update_system_prompt(id, &prompt_body.name, &prompt_body.content)
+        .await?;
+    Ok(json_response(200, &prompt))
+}
+
 pub async fn delete_system_prompt(state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
     let id = path_id(path, "/api/system-prompts")?;
     state.store.delete_system_prompt(id).await?;

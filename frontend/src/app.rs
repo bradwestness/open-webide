@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, FileDiff, FileEntry, ModelInfo, Project, Role, SearchHit,
-    WorkspaceMode,
+    SystemPrompt, WorkspaceMode,
 };
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
@@ -83,6 +83,15 @@ pub fn App() -> impl IntoView {
     let np_name = RwSignal::new(String::new());
     let np_mode = RwSignal::new(WorkspaceMode::Remote);
     let np_path = RwSignal::new("workspace".to_string());
+
+    // -- system prompts ----------------------------------------------------
+    let system_prompts = RwSignal::new(Vec::<SystemPrompt>::new());
+    // The create/edit form. `prompt_edit_id` is None when creating, Some(id)
+    // when editing an existing prompt.
+    let show_prompt_form = RwSignal::new(false);
+    let prompt_edit_id = RwSignal::new(Option::<i64>::None);
+    let prompt_name = RwSignal::new(String::new());
+    let prompt_content = RwSignal::new(String::new());
 
     // -- helpers -----------------------------------------------------------
 
@@ -609,6 +618,90 @@ pub fn App() -> impl IntoView {
         })
     };
 
+    // -- system prompt callbacks -------------------------------------------
+
+    // Show the form to create a new prompt.
+    let on_new_prompt = Callback::new(move |_| {
+        show_prompt_form.set(true);
+        prompt_edit_id.set(None);
+        prompt_name.set(String::new());
+        prompt_content.set(String::new());
+    });
+
+    // Show the form to edit an existing prompt, loading its current values.
+    let on_edit_prompt = Callback::new(move |id: i64| {
+        let Some(p) = system_prompts.get().into_iter().find(|p| p.id == id) else {
+            return;
+        };
+        prompt_edit_id.set(Some(id));
+        prompt_name.set(p.name);
+        prompt_content.set(p.content);
+        show_prompt_form.set(true);
+    });
+
+    let on_cancel_prompt = Callback::new(move |_| {
+        show_prompt_form.set(false);
+    });
+
+    // Create or update the prompt, then refresh the list.
+    let on_save_prompt = {
+        let api = api.clone();
+        Callback::new(move |_| {
+            let name = prompt_name.get().trim().to_string();
+            if name.is_empty() {
+                error.set(Some("Prompt name is required.".to_string()));
+                return;
+            }
+            let content = prompt_content.get();
+            let edit_id = prompt_edit_id.get();
+            error.set(None);
+            let api = api.clone();
+            spawn_local(async move {
+                let result = match edit_id {
+                    Some(id) => api.update_system_prompt(id, &name, &content).await,
+                    None => api.create_system_prompt(&name, &content).await,
+                };
+                match result {
+                    Ok(p) => {
+                        system_prompts.update(|list| match edit_id {
+                            Some(id) => {
+                                if let Some(existing) = list.iter_mut().find(|x| x.id == id) {
+                                    *existing = p;
+                                }
+                            }
+                            None => list.push(p),
+                        });
+                        show_prompt_form.set(false);
+                    }
+                    Err(e) => error.set(Some(e)),
+                }
+            });
+        })
+    };
+
+    let on_delete_prompt = {
+        let api = api.clone();
+        Callback::new(move |id: i64| {
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let Ok(confirmed) = window.confirm_with_message("Delete this system prompt?") else {
+                return;
+            };
+            if !confirmed {
+                return;
+            }
+            let api = api.clone();
+            spawn_local(async move {
+                if let Err(e) = api.delete_system_prompt(id).await {
+                    error.set(Some(e));
+                    return;
+                }
+                system_prompts.update(|list| list.retain(|p| p.id != id));
+            });
+        })
+    };
+
     // -- send / stop -------------------------------------------------------
 
     let on_send = {
@@ -806,6 +899,9 @@ pub fn App() -> impl IntoView {
                 if let Ok(s) = api.list_sessions().await {
                     sessions.set(s);
                 }
+                if let Ok(prompts) = api.list_system_prompts().await {
+                    system_prompts.set(prompts);
+                }
                 if let Some(first) = projects.get().into_iter().next() {
                     open_tabs.update(|tabs| {
                         if !tabs.iter().any(|t| t.id == first.id) {
@@ -942,6 +1038,18 @@ pub fn App() -> impl IntoView {
                     on_new_session=on_new_session
                     on_rename_session=on_rename_session
                     on_delete_session=on_delete_session
+                    system_prompts=system_prompts.read_only()
+                    show_prompt_form=show_prompt_form.read_only()
+                    prompt_edit_id=prompt_edit_id.read_only()
+                    prompt_name=prompt_name.read_only()
+                    set_prompt_name=prompt_name.write_only()
+                    prompt_content=prompt_content.read_only()
+                    set_prompt_content=prompt_content.write_only()
+                    on_new_prompt=on_new_prompt
+                    on_edit_prompt=on_edit_prompt
+                    on_save_prompt=on_save_prompt
+                    on_cancel_prompt=on_cancel_prompt
+                    on_delete_prompt=on_delete_prompt
                 />
                 <FileTree
                     entries=ws_entries.read_only()

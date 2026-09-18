@@ -3,7 +3,7 @@
 use gloo_net::http::{Method, Request, RequestBuilder};
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Health, ModelInfo, NewProject,
-    NewSession, Project, SearchHit, WorkspaceMode,
+    NewSession, Project, SearchHit, SystemPrompt, WorkspaceMode,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -82,6 +82,42 @@ impl BackendApi {
     /// List the models a connection's provider reports.
     pub async fn list_models(&self, connection_id: i64) -> Result<Vec<ModelInfo>, String> {
         self.get(&format!("/models?connection_id={connection_id}"))
+            .await
+    }
+
+    // -- system prompts ----------------------------------------------------
+
+    pub async fn list_system_prompts(&self) -> Result<Vec<SystemPrompt>, String> {
+        self.get("/system-prompts").await
+    }
+
+    pub async fn create_system_prompt(
+        &self,
+        name: &str,
+        content: &str,
+    ) -> Result<SystemPrompt, String> {
+        self.post(
+            "/system-prompts",
+            &json!({ "name": name, "content": content }),
+        )
+        .await
+    }
+
+    pub async fn update_system_prompt(
+        &self,
+        id: i64,
+        name: &str,
+        content: &str,
+    ) -> Result<SystemPrompt, String> {
+        self.put(
+            &format!("/system-prompts/{id}"),
+            &json!({ "name": name, "content": content }),
+        )
+        .await
+    }
+
+    pub async fn delete_system_prompt(&self, id: i64) -> Result<(), String> {
+        self.request::<(), _>(Method::DELETE, &format!("/system-prompts/{id}"), None)
             .await
     }
 
