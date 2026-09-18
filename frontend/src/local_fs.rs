@@ -1,0 +1,269 @@
+//! File System Access API helpers for local-mode workspaces. Paths are
+//! project-relative (the picked directory is the project root, path "").
+
+use openwebide_core::FileEntry;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{
+    Blob, DirectoryPickerOptions, FileSystemDirectoryHandle, FileSystemFileHandle,
+    FileSystemGetDirectoryOptions, FileSystemHandle, FileSystemHandleKind,
+    FileSystemPermissionMode, FileSystemWritableFileStream,
+};
+
+/// Prompt the user to pick a directory to work on.
+pub async fn pick_directory() -> Result<FileSystemDirectoryHandle, String> {
+    let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
+    let options = DirectoryPickerOptions::new();
+    options.set_mode(FileSystemPermissionMode::Readwrite);
+    let promise = window
+        .show_directory_picker_with_options(&options)
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    JsFuture::from(promise)
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())
+}
+
+/// List a directory's entries, returning project-relative paths.
+pub async fn list(root: &FileSystemDirectoryHandle, dir: &str) -> Result<Vec<FileEntry>, String> {
+    let dir_handle = resolve_dir(root, dir).await?;
+    dir_entries(&dir_handle, dir).await
+}
+
+/// Read a file's contents as text.
+pub async fn read(root: &FileSystemDirectoryHandle, path: &str) -> Result<String, String> {
+    let (parent, name) = split_path(path);
+    let parent_dir = resolve_dir(root, &parent).await?;
+    let file_handle = file_handle(&parent_dir, &name).await?;
+    let file_value = JsFuture::from(file_handle.get_file())
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    let blob: Blob = file_value
+        .dyn_into()
+        .map_err(|_| format!("no such file: {path}"))?;
+    let text = JsFuture::from(blob.text())
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    Ok(text.as_string().unwrap_or_default())
+}
+
+/// Write text to a file, creating parent directories as needed.
+pub async fn write(
+    root: &FileSystemDirectoryHandle,
+    path: &str,
+    content: &str,
+) -> Result<(), String> {
+    let (parent, name) = split_path(path);
+    let parent_dir = ensure_dir(root, &parent).await?;
+    let file_handle = file_handle(&parent_dir, &name).await?;
+    write_file_handle(&file_handle, content).await
+}
+
+/// Create an empty file or a directory, creating parent directories as needed.
+pub async fn create(
+    root: &FileSystemDirectoryHandle,
+    path: &str,
+    is_dir: bool,
+) -> Result<(), String> {
+    if is_dir {
+        ensure_dir(root, path).await?;
+        return Ok(());
+    }
+    let (parent, name) = split_path(path);
+    let parent_dir = ensure_dir(root, &parent).await?;
+    let file_handle = file_handle(&parent_dir, &name).await?;
+    write_file_handle(&file_handle, "").await
+}
+
+/// Search for files whose name contains `query` (case-insensitive) under `dir`.
+pub async fn search(
+    root: &FileSystemDirectoryHandle,
+    query: &str,
+    dir: &str,
+) -> Result<Vec<FileEntry>, String> {
+    let start = resolve_dir(root, dir).await?;
+    let mut results = Vec::new();
+    search_recursive(&start, dir, query, &mut results).await?;
+    Ok(results)
+}
+
+// -- internals ---------------------------------------------------------------
+
+/// Get a file handle by name, or fail if it does not exist.
+async fn file_handle(
+    dir: &FileSystemDirectoryHandle,
+    name: &str,
+) -> Result<FileSystemFileHandle, String> {
+    let value = JsFuture::from(dir.get_file_handle(name))
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    value
+        .dyn_into::<FileSystemFileHandle>()
+        .map_err(|_| format!("no such file: {name}"))
+}
+
+/// Get an existing directory handle by name, or fail if it does not exist.
+async fn dir_handle(
+    dir: &FileSystemDirectoryHandle,
+    name: &str,
+) -> Result<FileSystemDirectoryHandle, String> {
+    let value = JsFuture::from(dir.get_directory_handle(name))
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    value
+        .dyn_into::<FileSystemDirectoryHandle>()
+        .map_err(|_| format!("no such directory: {name}"))
+}
+
+/// Get a directory handle by name, creating it if it does not exist.
+async fn dir_handle_create(
+    dir: &FileSystemDirectoryHandle,
+    name: &str,
+) -> Result<FileSystemDirectoryHandle, String> {
+    let options = FileSystemGetDirectoryOptions::new();
+    options.set_create(true);
+    let value = JsFuture::from(dir.get_directory_handle_with_options(name, &options))
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    value
+        .dyn_into::<FileSystemDirectoryHandle>()
+        .map_err(|_| format!("cannot create directory: {name}"))
+}
+
+async fn write_file_handle(
+    file_handle: &FileSystemFileHandle,
+    content: &str,
+) -> Result<(), String> {
+    let writable_value = JsFuture::from(file_handle.create_writable())
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    let writable: FileSystemWritableFileStream = writable_value
+        .dyn_into()
+        .map_err(|_| "failed to open writable stream".to_string())?;
+    let write_promise = writable
+        .write_with_str(content)
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    JsFuture::from(write_promise)
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    // web-sys does not expose `FileSystemWritableFileStream::close`, so call it
+    // through Reflect.
+    let writable_js: JsValue = writable.unchecked_into();
+    let close_fn_value = js_sys::Reflect::get(&writable_js, &JsValue::from_str("close"))
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    let close_fn: js_sys::Function = close_fn_value
+        .dyn_into()
+        .map_err(|_| "close is not a function".to_string())?;
+    let close_promise_value =
+        js_sys::Reflect::apply(&close_fn, &writable_js, &js_sys::Array::new())
+            .map_err(|e| e.as_string().unwrap_or_default())?;
+    let close_promise: js_sys::Promise = close_promise_value.unchecked_into();
+    JsFuture::from(close_promise)
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    Ok(())
+}
+
+/// Walk `dir` (project-relative) from `root`, returning the directory handle.
+async fn resolve_dir(
+    root: &FileSystemDirectoryHandle,
+    dir: &str,
+) -> Result<FileSystemDirectoryHandle, String> {
+    let mut current = root.clone();
+    for part in dir.split('/').filter(|p| !p.is_empty()) {
+        current = dir_handle(&current, part).await?;
+    }
+    Ok(current)
+}
+
+/// Walk `path` from `root`, creating any missing directories.
+async fn ensure_dir(
+    root: &FileSystemDirectoryHandle,
+    path: &str,
+) -> Result<FileSystemDirectoryHandle, String> {
+    let mut current = root.clone();
+    for part in path.split('/').filter(|p| !p.is_empty()) {
+        current = dir_handle_create(&current, part).await?;
+    }
+    Ok(current)
+}
+
+/// List a directory's entries with their handles (for recursive search).
+async fn dir_entries_with_handles(
+    dir_handle: &FileSystemDirectoryHandle,
+    prefix: &str,
+) -> Result<Vec<(FileEntry, FileSystemHandle)>, String> {
+    let iter = dir_handle.values();
+    let mut entries = Vec::new();
+    loop {
+        let next_promise = iter.next().map_err(|e| e.as_string().unwrap_or_default())?;
+        let result = JsFuture::from(next_promise)
+            .await
+            .map_err(|e| e.as_string().unwrap_or_default())?;
+        let done = js_sys::Reflect::get(&result, &JsValue::from_str("done"))
+            .map_err(|e| e.as_string().unwrap_or_default())?;
+        if done.as_bool().unwrap_or(true) {
+            break;
+        }
+        let value = js_sys::Reflect::get(&result, &JsValue::from_str("value"))
+            .map_err(|e| e.as_string().unwrap_or_default())?;
+        let handle: FileSystemHandle = value
+            .dyn_into()
+            .map_err(|_| "not a file system handle".to_string())?;
+        let name = handle.name();
+        let is_dir = handle.kind() == FileSystemHandleKind::Directory;
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        entries.push((
+            FileEntry {
+                name,
+                path,
+                is_dir,
+                size: 0,
+            },
+            handle,
+        ));
+    }
+    Ok(entries)
+}
+
+async fn dir_entries(
+    dir_handle: &FileSystemDirectoryHandle,
+    prefix: &str,
+) -> Result<Vec<FileEntry>, String> {
+    dir_entries_with_handles(dir_handle, prefix)
+        .await
+        .map(|pairs| pairs.into_iter().map(|(entry, _)| entry).collect())
+}
+
+async fn search_recursive(
+    dir_handle: &FileSystemDirectoryHandle,
+    prefix: &str,
+    query: &str,
+    results: &mut Vec<FileEntry>,
+) -> Result<(), String> {
+    let query_lower = query.to_lowercase();
+    let pairs = dir_entries_with_handles(dir_handle, prefix).await?;
+    for (entry, handle) in pairs {
+        if !entry.is_dir && entry.name.to_lowercase().contains(&query_lower) {
+            results.push(entry.clone());
+        }
+        if entry.is_dir
+            && let Some(sub) = handle.dyn_ref::<FileSystemDirectoryHandle>()
+        {
+            Box::pin(search_recursive(sub, &entry.path, query, results)).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Split `path` into its parent directory and file name.
+fn split_path(path: &str) -> (String, String) {
+    match path.rfind('/') {
+        Some(i) => (path[..i].to_string(), path[i + 1..].to_string()),
+        None => (String::new(), path.to_string()),
+    }
+}

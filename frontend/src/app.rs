@@ -5,10 +5,13 @@ use leptos::task::spawn_local;
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, FileEntry, Project, Role, WorkspaceMode,
 };
-use web_sys::AbortController;
+use web_sys::{AbortController, FileSystemDirectoryHandle};
 
 use crate::api::{BackendApi, HealthState, SseEvent};
 use crate::components::{ChatPane, Editor, FileTree, Sidebar, StatusBar, TabBar, TopBar};
+use crate::idb;
+use crate::local_fs;
+use crate::workspace::Workspace;
 
 /// Per-project workspace state, preserved across tab switches so each project
 /// keeps its own open file, tree expansion, and active chat session.
@@ -57,6 +60,9 @@ pub fn App() -> impl IntoView {
     let ws_search = RwSignal::new(Option::<Vec<FileEntry>>::None);
     // Saved workspace state for every project that has (or had) a tab open.
     let saved = RwSignal::new(HashMap::<i64, ProjectWorkspace>::new());
+    // Directory handles for local-mode projects, keyed by project id. Loaded
+    // from IndexedDB on startup and when a local project is created.
+    let local_handles = RwSignal::new(HashMap::<i64, FileSystemDirectoryHandle>::new());
 
     // -- new-project form state --------------------------------------------
     let show_new_project = RwSignal::new(false);
@@ -66,39 +72,49 @@ pub fn App() -> impl IntoView {
 
     // -- helpers -----------------------------------------------------------
 
+    // Build the workspace for a project based on its mode. Remote wraps the
+    // backend API; local wraps the project's directory handle (if loaded).
+    let ws_api = api.clone();
+    let workspace_for = Callback::new(move |pid: i64| -> Option<Workspace> {
+        let project = projects.get().into_iter().find(|p| p.id == pid)?;
+        match project.mode {
+            WorkspaceMode::Remote => Some(Workspace::Remote {
+                api: ws_api.clone(),
+                project_id: pid,
+            }),
+            WorkspaceMode::Local => local_handles
+                .get()
+                .get(&pid)
+                .cloned()
+                .map(|handle| Workspace::Local { handle }),
+        }
+    });
+
     // Load a directory's entries into the cache (overwriting any stale copy).
-    let load_dir = {
-        let api = api.clone();
-        Callback::new(move |(id, dir): (i64, String)| {
-            let api = api.clone();
-            spawn_local(async move {
-                match api.list_files(id, &dir).await {
-                    Ok(entries) => {
-                        if active_project.get() == Some(id) {
-                            ws_entries.update(|m| {
-                                m.insert(dir, entries);
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        if active_project.get() == Some(id) {
-                            error.set(Some(e));
-                        }
+    let load_dir = Callback::new(move |(id, dir): (i64, String)| {
+        spawn_local(async move {
+            let Some(ws) = workspace_for.run(id) else {
+                return;
+            };
+            match ws.list(&dir).await {
+                Ok(entries) => {
+                    if active_project.get() == Some(id) {
+                        ws_entries.update(|m| {
+                            m.insert(dir, entries);
+                        });
                     }
                 }
-            });
-        })
-    };
+                Err(e) => {
+                    if active_project.get() == Some(id) {
+                        error.set(Some(e));
+                    }
+                }
+            }
+        });
+    });
 
-    // Make sure the active project's root directory is loaded (remote only).
+    // Make sure the active project's root directory is loaded.
     let ensure_root = Callback::new(move |id: i64| {
-        let project = projects.get().into_iter().find(|p| p.id == id);
-        let Some(project) = project else {
-            return;
-        };
-        if project.mode != WorkspaceMode::Remote {
-            return;
-        }
         if ws_entries.get().contains_key("") {
             return;
         }
@@ -106,33 +122,32 @@ pub fn App() -> impl IntoView {
     });
 
     // Open a file: clear the dirty flag and load its contents.
-    let on_open = {
-        let api = api.clone();
-        Callback::new(move |path: String| {
-            let Some(pid) = active_project.get() else {
+    let on_open = Callback::new(move |path: String| {
+        let Some(pid) = active_project.get() else {
+            return;
+        };
+        ws_dirty.set(false);
+        ws_open_file.set(Some(path.clone()));
+        ws_content.set(String::new());
+        error.set(None);
+        spawn_local(async move {
+            let Some(ws) = workspace_for.run(pid) else {
                 return;
             };
-            ws_dirty.set(false);
-            ws_open_file.set(Some(path.clone()));
-            ws_content.set(String::new());
-            error.set(None);
-            let api = api.clone();
-            spawn_local(async move {
-                match api.read_file(pid, &path).await {
-                    Ok(content) => {
-                        if ws_open_file.get().as_deref() == Some(&path) {
-                            ws_content.set(content);
-                        }
-                    }
-                    Err(e) => {
-                        if ws_open_file.get().as_deref() == Some(&path) {
-                            error.set(Some(e));
-                        }
+            match ws.read(&path).await {
+                Ok(content) => {
+                    if ws_open_file.get().as_deref() == Some(&path) {
+                        ws_content.set(content);
                     }
                 }
-            });
-        })
-    };
+                Err(e) => {
+                    if ws_open_file.get().as_deref() == Some(&path) {
+                        error.set(Some(e));
+                    }
+                }
+            }
+        });
+    });
 
     // Toggle a directory's expansion, lazily loading its children on first open.
     let on_toggle = Callback::new(move |dir: String| {
@@ -153,134 +168,130 @@ pub fn App() -> impl IntoView {
     });
 
     // Save the open file's contents to disk.
-    let on_save = {
-        let api = api.clone();
-        Callback::new(move |_| {
-            let Some(pid) = active_project.get() else {
+    let on_save = Callback::new(move |_| {
+        let Some(pid) = active_project.get() else {
+            return;
+        };
+        let Some(path) = ws_open_file.get() else {
+            return;
+        };
+        if !ws_dirty.get() {
+            return;
+        }
+        let content = ws_content.get();
+        error.set(None);
+        spawn_local(async move {
+            let Some(ws) = workspace_for.run(pid) else {
                 return;
             };
-            let Some(path) = ws_open_file.get() else {
-                return;
-            };
-            if !ws_dirty.get() {
-                return;
+            match ws.write(&path, &content).await {
+                Ok(()) => ws_dirty.set(false),
+                Err(e) => error.set(Some(e)),
             }
-            let content = ws_content.get();
-            error.set(None);
-            let api = api.clone();
-            spawn_local(async move {
-                match api.write_file(pid, &path, &content).await {
-                    Ok(()) => ws_dirty.set(false),
-                    Err(e) => error.set(Some(e)),
-                }
-            });
-        })
-    };
+        });
+    });
 
     // Create a new empty file and open it.
-    let on_new_file = {
-        let api = api.clone();
-        Callback::new(move |_| {
-            let Some(pid) = active_project.get() else {
+    let on_new_file = Callback::new(move |_| {
+        let Some(pid) = active_project.get() else {
+            return;
+        };
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Ok(Some(prompt)) = window
+            .prompt_with_message_and_default("New file path (relative to project):", "new.txt")
+        else {
+            return;
+        };
+        let path = prompt.trim().to_string();
+        if path.is_empty() {
+            return;
+        }
+        error.set(None);
+        let open = on_open;
+        let ld = load_dir;
+        spawn_local(async move {
+            let Some(ws) = workspace_for.run(pid) else {
                 return;
             };
-            let Some(window) = web_sys::window() else {
-                return;
-            };
-            let Ok(Some(prompt)) = window
-                .prompt_with_message_and_default("New file path (relative to project):", "new.txt")
-            else {
-                return;
-            };
-            let path = prompt.trim().to_string();
-            if path.is_empty() {
-                return;
-            }
-            error.set(None);
-            let api = api.clone();
-            let open = on_open;
-            let ld = load_dir;
-            spawn_local(async move {
-                match api.create_file(pid, &path, false).await {
-                    Ok(()) => {
-                        if active_project.get() == Some(pid) {
-                            ld.run((pid, parent_dir(&path)));
-                            open.run(path);
-                        }
-                    }
-                    Err(e) => {
-                        if active_project.get() == Some(pid) {
-                            error.set(Some(e));
-                        }
+            match ws.create(&path, false).await {
+                Ok(()) => {
+                    if active_project.get() == Some(pid) {
+                        ld.run((pid, parent_dir(&path)));
+                        open.run(path);
                     }
                 }
-            });
-        })
-    };
+                Err(e) => {
+                    if active_project.get() == Some(pid) {
+                        error.set(Some(e));
+                    }
+                }
+            }
+        });
+    });
 
     // Create a new directory and refresh its parent.
-    let on_new_dir = {
-        let api = api.clone();
-        Callback::new(move |_| {
-            let Some(pid) = active_project.get() else {
+    let on_new_dir = Callback::new(move |_| {
+        let Some(pid) = active_project.get() else {
+            return;
+        };
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Ok(Some(prompt)) =
+            window.prompt_with_message_and_default("New folder path:", "new-folder")
+        else {
+            return;
+        };
+        let path = prompt.trim().to_string();
+        if path.is_empty() {
+            return;
+        }
+        error.set(None);
+        let ld = load_dir;
+        spawn_local(async move {
+            let Some(ws) = workspace_for.run(pid) else {
                 return;
             };
-            let Some(window) = web_sys::window() else {
-                return;
-            };
-            let Ok(Some(prompt)) =
-                window.prompt_with_message_and_default("New folder path:", "new-folder")
-            else {
-                return;
-            };
-            let path = prompt.trim().to_string();
-            if path.is_empty() {
-                return;
-            }
-            error.set(None);
-            let api = api.clone();
-            let ld = load_dir;
-            spawn_local(async move {
-                match api.create_file(pid, &path, true).await {
-                    Ok(()) => {
-                        if active_project.get() == Some(pid) {
-                            ld.run((pid, parent_dir(&path)));
-                        }
-                    }
-                    Err(e) => {
-                        if active_project.get() == Some(pid) {
-                            error.set(Some(e));
-                        }
+            match ws.create(&path, true).await {
+                Ok(()) => {
+                    if active_project.get() == Some(pid) {
+                        ld.run((pid, parent_dir(&path)));
                     }
                 }
-            });
-        })
-    };
+                Err(e) => {
+                    if active_project.get() == Some(pid) {
+                        error.set(Some(e));
+                    }
+                }
+            }
+        });
+    });
 
     // Search the project's files.
-    let on_search = {
-        let api = api.clone();
-        Callback::new(move |q: String| {
-            let Some(pid) = active_project.get() else {
+    let on_search = Callback::new(move |q: String| {
+        let Some(pid) = active_project.get() else {
+            return;
+        };
+        spawn_local(async move {
+            let Some(ws) = workspace_for.run(pid) else {
                 return;
             };
-            let api = api.clone();
-            spawn_local(async move {
-                match api.search_files(pid, &q, "").await {
-                    Ok(results) => {
-                        if active_project.get() == Some(pid) {
-                            ws_search.set(Some(results));
-                        }
-                    }
-                    Err(e) => {
-                        if active_project.get() == Some(pid) {
-                            error.set(Some(e));
-                        }
+            match ws.search(&q, "").await {
+                Ok(results) => {
+                    if active_project.get() == Some(pid) {
+                        ws_search.set(Some(results));
                     }
                 }
-            });
-        })
-    };
+                Err(e) => {
+                    if active_project.get() == Some(pid) {
+                        error.set(Some(e));
+                    }
+                }
+            }
+        });
+    });
 
     let on_clear_search = Callback::new(move |_| {
         ws_search.set(None);
@@ -375,19 +386,42 @@ pub fn App() -> impl IntoView {
                 return;
             }
             let mode = np_mode.get();
-            let path = if mode == WorkspaceMode::Remote {
-                let p = np_path.get().trim().to_string();
-                Some(if p.is_empty() {
-                    "workspace".to_string()
-                } else {
-                    p
-                })
-            } else {
-                None
-            };
             error.set(None);
             let api = api.clone();
             spawn_local(async move {
+                // Local mode: pick a directory in the browser, persist its
+                // handle, then create the project record.
+                if mode == WorkspaceMode::Local {
+                    let Ok(handle) = local_fs::pick_directory().await else {
+                        return;
+                    };
+                    let path = handle.name();
+                    let Ok(project) = api.create_project(&name, mode, Some(path)).await else {
+                        return;
+                    };
+                    if let Err(e) = idb::save_handle(project.id, &handle).await {
+                        let _ = api.delete_project(project.id).await;
+                        error.set(Some(e));
+                        return;
+                    }
+                    local_handles.update(|m| {
+                        m.insert(project.id, handle);
+                    });
+                    projects.update(|all| all.push(project.clone()));
+                    open_tabs.update(|tabs| tabs.push(project.clone()));
+                    show_new_project.set(false);
+                    select_project.run(project.id);
+                    return;
+                }
+                // Remote mode: the path is the folder on the Spin host.
+                let path = {
+                    let p = np_path.get().trim().to_string();
+                    Some(if p.is_empty() {
+                        "workspace".to_string()
+                    } else {
+                        p
+                    })
+                };
                 match api.create_project(&name, mode, path).await {
                     Ok(p) => {
                         projects.update(|all| all.push(p.clone()));
@@ -604,6 +638,20 @@ pub fn App() -> impl IntoView {
                 if let Ok(p) = api.list_projects().await {
                     projects.set(p);
                 }
+                // Load persisted directory handles for local-mode projects so
+                // they can be browsed after a page reload.
+                for project in projects
+                    .get()
+                    .into_iter()
+                    .filter(|p| p.mode == WorkspaceMode::Local)
+                {
+                    if let Ok(Some(handle)) = idb::load_handle(project.id).await {
+                        let _ = idb::request_permission(&handle).await;
+                        local_handles.update(|m| {
+                            m.insert(project.id, handle);
+                        });
+                    }
+                }
                 if let Ok(s) = api.list_sessions().await {
                     sessions.set(s);
                 }
@@ -638,16 +686,6 @@ pub fn App() -> impl IntoView {
     }
 
     // Derived values for the view.
-    let ws_mode = RwSignal::new(WorkspaceMode::Remote);
-    Effect::new(move || {
-        let id = active_project.get();
-        let ps = projects.get();
-        ws_mode.set(
-            id.and_then(|i| ps.into_iter().find(|p| p.id == i))
-                .map(|p| p.mode)
-                .unwrap_or(WorkspaceMode::Remote),
-        );
-    });
     let has_session = RwSignal::new(false);
     Effect::new(move || {
         has_session.set(active_session.get().is_some());
@@ -687,7 +725,6 @@ pub fn App() -> impl IntoView {
                     on_delete_session=on_delete_session
                 />
                 <FileTree
-                    mode=ws_mode.read_only()
                     entries=ws_entries.read_only()
                     expanded=ws_expanded.read_only()
                     open_file=ws_open_file.read_only()

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
-use openwebide_core::{FileEntry, WorkspaceMode};
+use openwebide_core::FileEntry;
 use web_sys::wasm_bindgen::JsCast;
 
 /// The project file explorer: a collapsible directory tree with create and
@@ -9,7 +9,6 @@ use web_sys::wasm_bindgen::JsCast;
 /// `entries` (keyed by directory path, root = "").
 #[component]
 pub fn FileTree(
-    mode: ReadSignal<WorkspaceMode>,
     entries: ReadSignal<HashMap<String, Vec<FileEntry>>>,
     expanded: ReadSignal<HashSet<String>>,
     open_file: ReadSignal<Option<String>>,
@@ -94,64 +93,55 @@ pub fn FileTree(
                 when=move || search_results.get().is_some()
                 fallback=move || {
                     view! {
-                        <Show
-                            when=move || mode.get() == WorkspaceMode::Local
-                            fallback=move || {
-                                view! {
-                                    <div class="tree-root">
-                                        <For
-                                            each=move || flat.get()
-                                            key=|e| e.0.path.clone()
-                                            children=move |(entry, depth)| {
-                                                let is_dir = entry.is_dir;
-                                                let name = entry.name.clone();
-                                                let path_class = entry.path.clone();
-                                                let path_click = entry.path.clone();
-                                                let path_icon = entry.path.clone();
-                                                view! {
-                                                    <div
-                                                        class=move || {
-                                                            if open_file.get().as_deref()
-                                                                == Some(path_class.as_str())
-                                                            {
-                                                                "tree-item selected".to_string()
-                                                            } else {
-                                                                "tree-item".to_string()
-                                                            }
-                                                        }
-                                                        style=move || {
-                                                            format!("padding-left: {}px", 8 + depth as usize * 14)
-                                                        }
-                                                        on:click=move |_| {
-                                                            if is_dir {
-                                                                on_toggle.run(path_click.clone());
-                                                            } else {
-                                                                on_open.run(path_click.clone());
-                                                            }
-                                                        }
-                                                    >
-                                                        <span class="tree-icon">
-                                                            {move || if is_dir {
-                                                                if expanded.get().contains(&path_icon) {
-                                                                    "▾"
-                                                                } else {
-                                                                    "▸"
-                                                                }
-                                                            } else {
-                                                                "·"
-                                                            }}
-                                                        </span>
-                                                        <span class="tree-name">{name}</span>
-                                                    </div>
+                        <div class="tree-root">
+                            <For
+                                each=move || flat.get()
+                                key=|e| e.0.path.clone()
+                                children=move |(entry, depth)| {
+                                    let is_dir = entry.is_dir;
+                                    let name = entry.name.clone();
+                                    let path_class = entry.path.clone();
+                                    let path_click = entry.path.clone();
+                                    let path_icon = entry.path.clone();
+                                    view! {
+                                        <div
+                                            class=move || {
+                                                if open_file.get().as_deref()
+                                                    == Some(path_class.as_str())
+                                                {
+                                                    "tree-item selected".to_string()
+                                                } else {
+                                                    "tree-item".to_string()
                                                 }
                                             }
-                                        />
-                                    </div>
+                                            style=move || {
+                                                format!("padding-left: {}px", 8 + depth as usize * 14)
+                                            }
+                                            on:click=move |_| {
+                                                if is_dir {
+                                                    on_toggle.run(path_click.clone());
+                                                } else {
+                                                    on_open.run(path_click.clone());
+                                                }
+                                            }
+                                        >
+                                            <span class="tree-icon">
+                                                {move || if is_dir {
+                                                    if expanded.get().contains(&path_icon) {
+                                                        "▾"
+                                                    } else {
+                                                        "▸"
+                                                    }
+                                                } else {
+                                                    "·"
+                                                }}
+                                            </span>
+                                            <span class="tree-name">{name}</span>
+                                        </div>
+                                    }
                                 }
-                            }
-                        >
-                            <p class="empty">"Local mode opens a folder in your browser (coming soon)."</p>
-                        </Show>
+                            />
+                        </div>
                     }
                 }
             >

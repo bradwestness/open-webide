@@ -11,10 +11,11 @@ backend) runs on WebAssembly.
 
 ## Status
 
-Chat sessions and remote workspace mode are in: multi-turn conversations
+Chat sessions and both workspace modes are in: multi-turn conversations
 stream token-by-token from the backend and persist across reloads, and you
-can open a folder on the machine running Spin, browse it, and create/edit/
-save files — with several projects open in tabs at once.
+can open a folder — on the machine running Spin (remote) or in the browser
+via the File System Access API (local) — browse it, and create/edit/save
+files, with several projects open in tabs at once.
 
 Working:
 - Repo layout and workspace wiring
@@ -23,10 +24,10 @@ Working:
 - SQLite-backed storage with migrations and typed repositories (`crates/storage`), tested natively with rusqlite
 - Backend REST API: health, connections CRUD, settings, system prompts, models, chat, sessions, message streaming (SSE), projects, and remote-mode file access (list/read/write/create/search)
 - Frontend: top bar with live backend health, sidebar (projects with a remote/local mode picker, sessions: new/switch/rename/delete, connections), file tree explorer (browse, create file/folder, search), code editor with save, multi-project tabs (open/switch/close), chat pane with markdown rendering + streaming, input, send, stop, status bar
+- Local workspace mode: open a folder in the browser via the File System Access API, with the directory handle persisted in IndexedDB and permission re-requested on reload
 - CI: fmt, clippy, native tests, WASM builds, Trunk build
 
 Not yet:
-- Local workspace mode (open a folder in the browser via the File System Access API)
 - Agentic coding (tool calls + agent loop)
 
 ## Prerequisites

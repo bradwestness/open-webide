@@ -27,7 +27,7 @@ pub fn ChatPane(
     Effect::new(move || {
         let _ = messages.get();
         if let Some(el) = scroll_ref.get() {
-            el.set_scroll_top(el.scroll_height());
+            el.set_scroll_top(el.scroll_height() as f64);
         }
     });
 
