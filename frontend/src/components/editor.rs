@@ -1,5 +1,8 @@
 use leptos::prelude::*;
-use openwebide_core::{FileDiff, diff_inline_lines, diff_side_by_side};
+use openwebide_core::{
+    FileDiff, diff_inline_lines, diff_side_by_side,
+    highlight::{Language, TokenKind, highlight_lines, language_from_path},
+};
 use web_sys::wasm_bindgen::JsCast;
 
 use crate::components::chat_pane::render_markdown;
@@ -21,6 +24,59 @@ fn mode_class(view_mode: ReadSignal<ViewMode>, target: ViewMode) -> String {
     } else {
         "mode-opt".to_string()
     }
+}
+
+/// The CSS class for a token category.
+fn token_class(kind: TokenKind) -> &'static str {
+    match kind {
+        TokenKind::Plain => "tok-plain",
+        TokenKind::Keyword => "tok-keyword",
+        TokenKind::Type => "tok-type",
+        TokenKind::String => "tok-string",
+        TokenKind::Char => "tok-char",
+        TokenKind::Comment => "tok-comment",
+        TokenKind::Number => "tok-number",
+        TokenKind::Function => "tok-function",
+        TokenKind::Operator => "tok-operator",
+        TokenKind::Punct => "tok-punct",
+        TokenKind::Attribute => "tok-attribute",
+        TokenKind::Macro => "tok-macro",
+        TokenKind::Lifetime => "tok-lifetime",
+        TokenKind::Boolean => "tok-boolean",
+    }
+}
+
+/// Escape the few characters that are special in HTML element content.
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Render the highlighted source as an HTML string for the overlay: one line
+/// per source line (newline-separated), each token wrapped in a colored span.
+/// Plain tokens are emitted bare so they don't add span overhead.
+fn highlight_html(source: &str, language: Language) -> String {
+    let lines = highlight_lines(source, language);
+    let mut html = String::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx > 0 {
+            html.push('\n');
+        }
+        for tok in line {
+            match tok.kind {
+                TokenKind::Plain => html.push_str(&escape_html(&tok.text)),
+                kind => {
+                    html.push_str("<span class=\"");
+                    html.push_str(token_class(kind));
+                    html.push_str("\">");
+                    html.push_str(&escape_html(&tok.text));
+                    html.push_str("</span>");
+                }
+            }
+        }
+    }
+    html
 }
 
 /// Render the changed middle of a file edit as inline removed/added lines.
@@ -109,6 +165,7 @@ pub fn Editor(
     error: ReadSignal<Option<String>>,
 ) -> impl IntoView {
     let ta = NodeRef::<leptos::html::Textarea>::new();
+    let hl = NodeRef::<leptos::html::Div>::new();
     let view_mode = RwSignal::new(ViewMode::InlineDiff);
 
     // When a pending edit appears, default to the inline diff view.
@@ -209,19 +266,39 @@ pub fn Editor(
                     when=move || pending_diff.get().is_some()
                     fallback=move || {
                         view! {
-                            <textarea
-                                class="editor-textarea"
-                                spellcheck="false"
-                                node_ref=ta
-                                on:input=move |e: web_sys::Event| {
-                                    if let Some(target) = e.target()
-                                        && let Some(textarea) = target.dyn_ref::<web_sys::HtmlTextAreaElement>()
-                                    {
-                                        set_content.set(textarea.value());
-                                        set_dirty.set(true);
+                            <div class="editor-code">
+                                <div
+                                    class="editor-highlight"
+                                    node_ref=hl
+                                    inner_html=move || {
+                                        let lang = open_file
+                                            .get()
+                                            .as_deref()
+                                            .map(language_from_path)
+                                            .unwrap_or(Language::Plain);
+                                        highlight_html(&content.get(), lang)
                                     }
-                                }
-                            />
+                                />
+                                <textarea
+                                    class="editor-textarea"
+                                    spellcheck="false"
+                                    node_ref=ta
+                                    on:input=move |e: web_sys::Event| {
+                                        if let Some(target) = e.target()
+                                            && let Some(textarea) = target.dyn_ref::<web_sys::HtmlTextAreaElement>()
+                                        {
+                                            set_content.set(textarea.value());
+                                            set_dirty.set(true);
+                                        }
+                                    }
+                                    on:scroll=move |_| {
+                                        if let (Some(ta_el), Some(hl_el)) = (ta.get(), hl.get()) {
+                                            hl_el.set_scroll_top(ta_el.scroll_top());
+                                            hl_el.set_scroll_left(ta_el.scroll_left());
+                                        }
+                                    }
+                                />
+                            </div>
                         }
                     }
                 >

@@ -1,5 +1,7 @@
 //! Shared domain types used across the Open WebIDE frontend, backend, and crates.
 
+pub mod highlight;
+
 use serde::{Deserialize, Serialize};
 
 /// A local-LLM runtime the IDE can talk to.
