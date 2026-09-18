@@ -106,19 +106,26 @@ The point of the project: the model edits your code.
 **Done when:** "fix the failing test in this folder" → the agent reads,
 edits, and reports, with every step visible in the conversation.
 
-## 7. IDE surface
+## 7. IDE surface 🔜
 
 From "chat that can edit files" to "IDE".
 
-- In-browser code editor (CodeMirror 6, WASM) with syntax highlighting
-- File viewer **defaults to diff mode** for agent edits, with accept/reject;
+**Progress:** The core IDE surface is done — the editor, the diff-first file
+viewer, full-text search, and the per-session model picker are all verified
+end-to-end. Settings UI and the system prompt manager are deferred.
+
+- ✅ In-browser code editor with syntax highlighting — a pure-Rust,
+  dependency-free highlighter (Rust, Python, JS, TS, JSON) rendered as a
+  colored overlay behind a transparent textarea (chosen over CodeMirror 6 to
+  stay fully Rust/WASM with no JS dependencies)
+- ✅ File viewer **defaults to diff mode** for agent edits, with accept/reject;
   toggle between display modes: **inline diff**, **side-by-side diff**,
   **updated content** (plain file), **preview** (markdown rendered to HTML,
   images viewable)
-- Full-text file search (backend, remote mode)
-- Settings UI: theme, default connection, default system prompt
-- System prompt manager (the API already exists)
-- Model picker per session
+- ✅ Full-text file search (backend, remote mode)
+- ✅ Model picker per session
+- ⬜ Settings UI: theme, default connection, default system prompt
+- ⬜ System prompt manager (the API already exists)
 
 ## 8. Hardening & distribution
 
