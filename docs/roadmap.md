@@ -122,11 +122,29 @@ From "chat that can edit files" to "IDE".
 
 ## 8. Hardening & distribution
 
-- Auth (at minimum a shared token) so the container can be exposed beyond
-  loopback safely
+- Auth: local user accounts (Phase 9) — what makes exposing beyond loopback safe
 - Releases: versioned multi-arch images to GHCR, CHANGELOG
 - Token/cost accounting per session (local models: just tokens)
 - Better offline/error states (engine down, workspace lost)
+
+## 9. Local user accounts
+
+Self-hosted on a private machine, so auth stays deliberately simple: users
+create an account and password locally. No external identity provider, no
+OAuth — just a `users` table and a login screen.
+
+- `users` table: id, username (unique), password hash (argon2id), created_at
+- First run with no users → registration screen to create the first account
+- Register + login endpoints; passwords hashed locally, never stored in
+  plaintext
+- Session auth: a simple signed token (cookie or bearer) — no JWT ceremony
+- Data scoping: projects (and their sessions) owned by a user via `user_id`
+- Frontend: login/register gate before the app, auth state, logout
+- One shared container, multiple local accounts; each user sees only their
+  own projects and sessions
+
+**Done when:** you can register a local account, log out, log back in, and
+your projects/sessions are scoped to that account.
 
 ## Parking lot
 
