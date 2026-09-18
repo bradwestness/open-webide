@@ -111,8 +111,8 @@ edits, and reports, with every step visible in the conversation.
 From "chat that can edit files" to "IDE".
 
 **Progress:** The core IDE surface is done — the editor, the diff-first file
-viewer, full-text search, and the per-session model picker are all verified
-end-to-end. Settings UI and the system prompt manager are deferred.
+viewer, full-text search, the per-session model picker, and the system prompt
+manager are all verified end-to-end. Only the Settings UI is deferred.
 
 - ✅ In-browser code editor with syntax highlighting — a pure-Rust,
   dependency-free highlighter (Rust, Python, JS, TS, JSON) rendered as a
@@ -125,7 +125,8 @@ end-to-end. Settings UI and the system prompt manager are deferred.
 - ✅ Full-text file search (backend, remote mode)
 - ✅ Model picker per session
 - ⬜ Settings UI: theme, default connection, default system prompt
-- ⬜ System prompt manager (the API already exists)
+- ✅ System prompt manager — list/create/edit/delete in the sidebar (added the
+  missing update endpoint end-to-end)
 
 ## 8. Hardening & distribution
 
