@@ -41,6 +41,8 @@ web-sys = { version = "0.3", features = [
     "Window",
     "Location",
     "Element",
+    "Document",
+    "Storage",
     "HtmlTextAreaElement",
     "HtmlInputElement",
     "AbortController",

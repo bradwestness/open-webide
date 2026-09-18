@@ -121,6 +121,19 @@ impl BackendApi {
             .await
     }
 
+    // -- settings ----------------------------------------------------------
+
+    pub async fn get_settings(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
+        self.get("/settings").await
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let _resp: serde_json::Value = self
+            .put("/settings", &json!({ "key": key, "value": value }))
+            .await?;
+        Ok(())
+    }
+
     pub async fn create_session(
         &self,
         name: &str,

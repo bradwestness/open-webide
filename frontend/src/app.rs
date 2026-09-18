@@ -10,8 +10,8 @@ use web_sys::{AbortController, FileSystemDirectoryHandle};
 
 use crate::api::{BackendApi, HealthState, SseEvent};
 use crate::components::{
-    ChatPane, ConversationItem, Editor, FileTree, Sidebar, StatusBar, TabBar, ToolStepResult,
-    TopBar,
+    ChatPane, ConversationItem, Editor, FileTree, Settings, Sidebar, StatusBar, TabBar,
+    ToolStepResult, TopBar,
 };
 use crate::idb;
 use crate::local_fs;
@@ -37,6 +37,24 @@ fn parent_dir(path: &str) -> String {
     path.rfind('/')
         .map(|i| path[..i].to_string())
         .unwrap_or_default()
+}
+
+/// The cached theme from localStorage, applied before the backend responds so
+/// the correct theme shows without a flash. Defaults to dark.
+fn read_theme_from_storage() -> String {
+    let theme = web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|ls| ls.get_item("owide-theme").ok().flatten());
+    match theme.as_deref() {
+        Some("light") => "light".to_string(),
+        _ => "dark".to_string(),
+    }
+}
+
+fn write_theme_to_storage(theme: &str) {
+    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = ls.set_item("owide-theme", theme);
+    }
 }
 
 #[component]
@@ -92,6 +110,13 @@ pub fn App() -> impl IntoView {
     let prompt_edit_id = RwSignal::new(Option::<i64>::None);
     let prompt_name = RwSignal::new(String::new());
     let prompt_content = RwSignal::new(String::new());
+
+    // -- settings ----------------------------------------------------------
+    let show_settings = RwSignal::new(false);
+    let theme = RwSignal::new(read_theme_from_storage());
+    // Defaults applied to new sessions (None = the connection's own default).
+    let default_connection = RwSignal::new(Option::<i64>::None);
+    let default_prompt = RwSignal::new(Option::<i64>::None);
 
     // -- helpers -----------------------------------------------------------
 
@@ -546,8 +571,10 @@ pub fn App() -> impl IntoView {
             };
             let name = format!("Session {}", sessions.get().len() + 1);
             let api = api.clone();
+            let conn = default_connection.get();
+            let prompt = default_prompt.get();
             spawn_local(async move {
-                match api.create_session(&name, None, None, Some(pid)).await {
+                match api.create_session(&name, conn, prompt, Some(pid)).await {
                     Ok(s) => {
                         sessions.update(|all| all.push(s.clone()));
                         active_session.set(Some(s.id));
@@ -698,6 +725,58 @@ pub fn App() -> impl IntoView {
                     return;
                 }
                 system_prompts.update(|list| list.retain(|p| p.id != id));
+            });
+        })
+    };
+
+    // -- settings callbacks ------------------------------------------------
+
+    let on_open_settings = Callback::new(move |_| {
+        show_settings.set(true);
+    });
+
+    let on_close_settings = Callback::new(move |_| {
+        show_settings.set(false);
+    });
+
+    let on_set_theme = {
+        let api = api.clone();
+        Callback::new(move |value: String| {
+            theme.set(value.clone());
+            write_theme_to_storage(&value);
+            let api = api.clone();
+            spawn_local(async move {
+                if let Err(e) = api.set_setting("theme", &value).await {
+                    error.set(Some(e));
+                }
+            });
+        })
+    };
+
+    let on_set_default_connection = {
+        let api = api.clone();
+        Callback::new(move |value: Option<i64>| {
+            default_connection.set(value);
+            let v = value.map(|id| id.to_string()).unwrap_or_default();
+            let api = api.clone();
+            spawn_local(async move {
+                if let Err(e) = api.set_setting("default_connection", &v).await {
+                    error.set(Some(e));
+                }
+            });
+        })
+    };
+
+    let on_set_default_prompt = {
+        let api = api.clone();
+        Callback::new(move |value: Option<i64>| {
+            default_prompt.set(value);
+            let v = value.map(|id| id.to_string()).unwrap_or_default();
+            let api = api.clone();
+            spawn_local(async move {
+                if let Err(e) = api.set_setting("default_prompt", &v).await {
+                    error.set(Some(e));
+                }
             });
         })
     };
@@ -855,6 +934,16 @@ pub fn App() -> impl IntoView {
 
     // -- effects -----------------------------------------------------------
 
+    // Apply the theme to the document root so the CSS variables switch.
+    Effect::new(move || {
+        let t = theme.get();
+        if let Some(doc) = web_sys::window().and_then(|w| w.document())
+            && let Some(root) = doc.document_element()
+        {
+            let _ = root.set_attribute("data-theme", &t);
+        }
+    });
+
     // One-shot initial load: health, connections, projects, sessions, then
     // auto-open the first project as a tab.
     {
@@ -901,6 +990,22 @@ pub fn App() -> impl IntoView {
                 }
                 if let Ok(prompts) = api.list_system_prompts().await {
                     system_prompts.set(prompts);
+                }
+                if let Ok(s) = api.get_settings().await {
+                    if let Some(t) = s.get("theme").map(String::as_str)
+                        && (t == "dark" || t == "light")
+                    {
+                        theme.set(t.to_string());
+                    }
+                    if let Some(v) = s
+                        .get("default_connection")
+                        .and_then(|v| v.parse::<i64>().ok())
+                    {
+                        default_connection.set(Some(v));
+                    }
+                    if let Some(v) = s.get("default_prompt").and_then(|v| v.parse::<i64>().ok()) {
+                        default_prompt.set(Some(v));
+                    }
                 }
                 if let Some(first) = projects.get().into_iter().next() {
                     open_tabs.update(|tabs| {
@@ -1008,7 +1113,10 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div class="app">
-            <TopBar health=health.read_only() />
+            <TopBar
+                health=health.read_only()
+                on_open_settings=on_open_settings
+            />
             <TabBar
                 open_tabs=open_tabs.read_only()
                 active_project=active_project.read_only()
@@ -1092,6 +1200,19 @@ pub fn App() -> impl IntoView {
                 />
             </div>
             <StatusBar health=health.read_only() />
+            <Show when=move || show_settings.get() fallback=|| ()>
+                <Settings
+                    theme=theme.read_only()
+                    default_connection=default_connection.read_only()
+                    default_prompt=default_prompt.read_only()
+                    connections=connections.read_only()
+                    system_prompts=system_prompts.read_only()
+                    on_close=on_close_settings
+                    on_set_theme=on_set_theme
+                    on_set_default_connection=on_set_default_connection
+                    on_set_default_prompt=on_set_default_prompt
+                />
+            </Show>
         </div>
     }
 }
