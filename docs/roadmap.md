@@ -106,13 +106,14 @@ The point of the project: the model edits your code.
 **Done when:** "fix the failing test in this folder" → the agent reads,
 edits, and reports, with every step visible in the conversation.
 
-## 7. IDE surface 🔜
+## 7. IDE surface ✅
 
 From "chat that can edit files" to "IDE".
 
-**Progress:** The core IDE surface is done — the editor, the diff-first file
-viewer, full-text search, the per-session model picker, and the system prompt
-manager are all verified end-to-end. Only the Settings UI is deferred.
+**Progress:** The full IDE surface is done — the editor, the diff-first file
+viewer, full-text search, the per-session model picker, the system prompt
+manager, and the Settings UI (theme, default connection, default system
+prompt) are all verified end-to-end.
 
 - ✅ In-browser code editor with syntax highlighting — a pure-Rust,
   dependency-free highlighter (Rust, Python, JS, TS, JSON) rendered as a
@@ -124,7 +125,9 @@ manager are all verified end-to-end. Only the Settings UI is deferred.
   images viewable)
 - ✅ Full-text file search (backend, remote mode)
 - ✅ Model picker per session
-- ⬜ Settings UI: theme, default connection, default system prompt
+- ✅ Settings UI: theme (dark/light), default connection, default system
+  prompt — a dialog from the top bar; the theme applies via a `data-theme`
+  attribute with CSS variable overrides and is cached in localStorage
 - ✅ System prompt manager — list/create/edit/delete in the sidebar (added the
   missing update endpoint end-to-end)
 
