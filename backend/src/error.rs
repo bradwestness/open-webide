@@ -79,7 +79,9 @@ impl From<anyhow::Error> for ApiError {
         let msg = err.to_string();
         if msg.contains("escapes the workspace root") {
             Self::bad_request(msg)
-        } else if msg.contains("filesystem error: NoEntry") {
+        } else if msg.contains("filesystem error: NoEntry")
+            || msg.contains("not found in workspace")
+        {
             Self::not_found(msg)
         } else if msg.contains("not valid UTF-8") || msg.contains("too large to read") {
             Self::bad_request(msg)

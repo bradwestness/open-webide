@@ -100,7 +100,7 @@ pub fn App() -> impl IntoView {
     let show_new_project = RwSignal::new(false);
     let np_name = RwSignal::new(String::new());
     let np_mode = RwSignal::new(WorkspaceMode::Remote);
-    let np_path = RwSignal::new("workspace".to_string());
+    let np_path = RwSignal::new(String::new());
 
     // -- system prompts ----------------------------------------------------
     let system_prompts = RwSignal::new(Vec::<SystemPrompt>::new());
@@ -142,6 +142,14 @@ pub fn App() -> impl IntoView {
     let load_dir = Callback::new(move |(id, dir): (i64, String)| {
         spawn_local(async move {
             let Some(ws) = workspace_for.run(id) else {
+                // A local project whose directory handle is missing (e.g. the
+                // browser permission was not granted after a reload). Surface
+                // it instead of leaving the tree silently empty.
+                if active_project.get() == Some(id) {
+                    error.set(Some(
+                        "Folder not available. Re-open the project to pick it again.".to_string(),
+                    ));
+                }
                 return;
             };
             match ws.list(&dir).await {
@@ -491,7 +499,7 @@ pub fn App() -> impl IntoView {
         show_new_project.set(true);
         np_name.set(String::new());
         np_mode.set(WorkspaceMode::Remote);
-        np_path.set("workspace".to_string());
+        np_path.set(String::new());
     });
 
     let on_cancel_new = Callback::new(move |_| {
@@ -514,12 +522,24 @@ pub fn App() -> impl IntoView {
                 // Local mode: pick a directory in the browser, persist its
                 // handle, then create the project record.
                 if mode == WorkspaceMode::Local {
-                    let Ok(handle) = local_fs::pick_directory().await else {
+                    let picked = match local_fs::pick_directory().await {
+                        Ok(picked) => picked,
+                        Err(e) => {
+                            error.set(Some(e));
+                            return;
+                        }
+                    };
+                    let Some(handle) = picked else {
+                        // The user dismissed the picker; nothing to do.
                         return;
                     };
                     let path = handle.name();
-                    let Ok(project) = api.create_project(&name, mode, Some(path)).await else {
-                        return;
+                    let project = match api.create_project(&name, mode, Some(path)).await {
+                        Ok(project) => project,
+                        Err(e) => {
+                            error.set(Some(e));
+                            return;
+                        }
                     };
                     if let Err(e) = idb::save_handle(project.id, &handle).await {
                         let _ = api.delete_project(project.id).await;
@@ -535,15 +555,9 @@ pub fn App() -> impl IntoView {
                     select_project.run(project.id);
                     return;
                 }
-                // Remote mode: the path is the folder on the Spin host.
-                let path = {
-                    let p = np_path.get().trim().to_string();
-                    Some(if p.is_empty() {
-                        "workspace".to_string()
-                    } else {
-                        p
-                    })
-                };
+                // Remote mode: the path is relative to the mounted host folder
+                // (see spin.toml). Empty means the root of the mount.
+                let path = Some(np_path.get().trim().to_string());
                 match api.create_project(&name, mode, path).await {
                     Ok(p) => {
                         projects.update(|all| all.push(p.clone()));

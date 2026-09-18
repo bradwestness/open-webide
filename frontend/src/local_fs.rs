@@ -12,16 +12,37 @@ use web_sys::{
 };
 
 /// Prompt the user to pick a directory to work on.
-pub async fn pick_directory() -> Result<FileSystemDirectoryHandle, String> {
+///
+/// Returns `Ok(Some(handle))` on a pick, `Ok(None)` if the user dismissed the
+/// picker, and `Err` on a real failure. The dismissal case matters: the
+/// picker rejects with a `DOMException` whose `name` is `"AbortError"`, and a
+/// rejected promise's reason is an *object* (so `JsValue::as_string` is
+/// `None`) — treating it as a string would surface an empty error.
+pub async fn pick_directory() -> Result<Option<FileSystemDirectoryHandle>, String> {
     let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
     let options = DirectoryPickerOptions::new();
     options.set_mode(FileSystemPermissionMode::Readwrite);
     let promise = window
         .show_directory_picker_with_options(&options)
-        .map_err(|e| e.as_string().unwrap_or_default())?;
-    JsFuture::from(promise)
-        .await
-        .map_err(|e| e.as_string().unwrap_or_default())
+        .map_err(|e| {
+            e.as_string()
+                .unwrap_or_else(|| "directory picker failed".to_string())
+        })?;
+    match JsFuture::from(promise).await {
+        Ok(handle) => Ok(Some(handle)),
+        Err(e) => {
+            let name = js_sys::Reflect::get(&e, &JsValue::from_str("name"))
+                .ok()
+                .and_then(|v| v.as_string());
+            if name.as_deref() == Some("AbortError") {
+                Ok(None)
+            } else {
+                Err(e
+                    .as_string()
+                    .unwrap_or_else(|| "directory picker failed".to_string()))
+            }
+        }
+    }
 }
 
 /// List a directory's entries, returning project-relative paths.

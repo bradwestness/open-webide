@@ -21,6 +21,15 @@ fn fs_error(code: ErrorCode) -> anyhow::Error {
     anyhow::anyhow!("filesystem error: {code:?}")
 }
 
+/// Like [`fs_error`] but names the path, so a missing entry reads as
+/// "not found in workspace: <path>" instead of a bare WASI code.
+fn fs_error_at(code: ErrorCode, path: &str) -> anyhow::Error {
+    match code {
+        ErrorCode::NoEntry => anyhow::anyhow!("not found in workspace: {path}"),
+        other => anyhow::anyhow!("filesystem error: {other:?} (at {path})"),
+    }
+}
+
 /// The preopened workspace root descriptor.
 fn root() -> Result<Descriptor> {
     preopens::get_directories()
@@ -57,12 +66,12 @@ async fn dir_at(rel: &str) -> Result<Descriptor> {
     }
     root.open_at(
         PathFlags::SYMLINK_FOLLOW,
-        rel,
+        rel.clone(),
         OpenFlags::DIRECTORY,
         DescriptorFlags::empty(),
     )
     .await
-    .map_err(fs_error)
+    .map_err(|code| fs_error_at(code, &rel))
 }
 
 /// Open an existing file for reading.
@@ -71,12 +80,12 @@ async fn file_at_read(rel: &str) -> Result<Descriptor> {
     let root = root()?;
     root.open_at(
         PathFlags::SYMLINK_FOLLOW,
-        rel,
+        rel.clone(),
         OpenFlags::empty(),
         DescriptorFlags::READ,
     )
     .await
-    .map_err(fs_error)
+    .map_err(|code| fs_error_at(code, &rel))
 }
 
 /// Open a file for writing, creating it (and any missing parent directories)
@@ -87,12 +96,12 @@ async fn file_at_write(rel: &str) -> Result<Descriptor> {
     let root = root()?;
     root.open_at(
         PathFlags::SYMLINK_FOLLOW,
-        rel,
+        rel.clone(),
         OpenFlags::CREATE | OpenFlags::TRUNCATE,
         DescriptorFlags::WRITE,
     )
     .await
-    .map_err(fs_error)
+    .map_err(|code| fs_error_at(code, &rel))
 }
 
 /// Create every ancestor directory of `rel`, ignoring "already exists".
@@ -111,7 +120,7 @@ async fn ensure_parent_dirs(rel: &str) -> Result<()> {
         match root.create_directory_at(prefix.clone()).await {
             Ok(()) => {}
             Err(ErrorCode::Exist) => {}
-            Err(code) => return Err(fs_error(code)),
+            Err(code) => return Err(fs_error_at(code, &prefix)),
         }
     }
     Ok(())
@@ -165,7 +174,7 @@ pub async fn read(rel: &str) -> Result<String> {
     let st = root
         .stat_at(PathFlags::SYMLINK_FOLLOW, rel.clone())
         .await
-        .map_err(fs_error)?;
+        .map_err(|code| fs_error_at(code, &rel))?;
     if st.size > MAX_READ_BYTES {
         return Err(anyhow::anyhow!(
             "file is too large to read ({size} bytes, max {MAX_READ_BYTES})",
@@ -251,10 +260,10 @@ pub async fn create(rel: &str, is_dir: bool) -> Result<()> {
     let root = root()?;
     if is_dir {
         ensure_parent_dirs(&rel).await?;
-        match root.create_directory_at(rel).await {
+        match root.create_directory_at(rel.clone()).await {
             Ok(()) => Ok(()),
             Err(ErrorCode::Exist) => Ok(()),
-            Err(code) => Err(fs_error(code)),
+            Err(code) => Err(fs_error_at(code, &rel)),
         }
     } else {
         let file = file_at_write(&rel).await?;
@@ -266,7 +275,9 @@ pub async fn create(rel: &str, is_dir: bool) -> Result<()> {
 pub async fn delete(rel: &str) -> Result<()> {
     let rel = sanitize(rel)?;
     let root = root()?;
-    root.unlink_file_at(rel).await.map_err(fs_error)
+    root.unlink_file_at(rel.clone())
+        .await
+        .map_err(|code| fs_error_at(code, &rel))
 }
 
 /// Recursively walk the directory at `rel` and return files whose path

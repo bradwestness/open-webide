@@ -117,7 +117,7 @@ pub fn Sidebar(
                             <input
                                 type="text"
                                 class="form-input"
-                                placeholder="Folder path (e.g. workspace)"
+                                placeholder="Path relative to ~/source (e.g. repos/myproject)"
                                 value=move || np_path.get()
                                 on:input=move |e: web_sys::Event| {
                                     if let Some(target) = e.target()
