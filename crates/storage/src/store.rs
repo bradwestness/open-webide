@@ -310,6 +310,20 @@ impl<D: Db> Store<D> {
     }
 
     pub async fn delete_project(&self, id: i64) -> Result<(), StorageError> {
+        // Remove the project's sessions and their messages first so no
+        // orphans are left behind.
+        self.db
+            .execute(
+                "DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?)",
+                &[DbValue::Int(id)],
+            )
+            .await?;
+        self.db
+            .execute(
+                "DELETE FROM sessions WHERE project_id = ?",
+                &[DbValue::Int(id)],
+            )
+            .await?;
         let res = self
             .db
             .execute("DELETE FROM projects WHERE id = ?", &[DbValue::Int(id)])

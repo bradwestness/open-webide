@@ -176,7 +176,6 @@ impl BackendApi {
             .await
     }
 
-    #[allow(dead_code)] // wired to the project UI in a later step
     pub async fn delete_project(&self, id: i64) -> Result<(), String> {
         self.request::<(), _>(Method::DELETE, &format!("/projects/{id}"), None)
             .await

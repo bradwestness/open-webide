@@ -1118,6 +1118,16 @@ textarea.form-input {
   letter-spacing: 0.05em;
 }
 
+.project-actions {
+  display: none;
+  gap: 2px;
+}
+
+.project:hover .project-actions,
+.project.active .project-actions {
+  display: inline-flex;
+}
+
 .icon-btn:disabled {
   opacity: 0.4;
   cursor: default;

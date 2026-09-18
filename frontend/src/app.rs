@@ -659,6 +659,42 @@ pub fn App() -> impl IntoView {
         })
     };
 
+    // Delete a project: remove it (and its sessions) from the backend, drop
+    // its cached workspace state and local directory handle, then close its
+    // tab (switching the active project if it was open).
+    let on_delete_project = {
+        let api = api.clone();
+        Callback::new(move |id: i64| {
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let Ok(confirmed) = window.confirm_with_message(
+                "Delete this project? Its sessions and messages will be removed too.",
+            ) else {
+                return;
+            };
+            if !confirmed {
+                return;
+            }
+            let api = api.clone();
+            spawn_local(async move {
+                if let Err(e) = api.delete_project(id).await {
+                    error.set(Some(e));
+                    return;
+                }
+                saved.update(|m| {
+                    m.remove(&id);
+                });
+                local_handles.update(|m| {
+                    m.remove(&id);
+                });
+                projects.update(|all| all.retain(|p| p.id != id));
+                sessions.update(|list| list.retain(|s| s.project_id != Some(id)));
+                close_project.run(id);
+            });
+        })
+    };
+
     // -- system prompt callbacks -------------------------------------------
 
     // Show the form to create a new prompt.
@@ -1156,6 +1192,7 @@ pub fn App() -> impl IntoView {
                     on_create_project=on_create_project
                     on_cancel_new=on_cancel_new
                     on_open_project=on_open_project
+                    on_delete_project=on_delete_project
                     on_select_session=on_select_session
                     on_new_session=on_new_session
                     on_rename_session=on_rename_session

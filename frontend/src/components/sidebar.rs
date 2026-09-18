@@ -20,6 +20,7 @@ pub fn Sidebar(
     on_create_project: Callback<()>,
     on_cancel_new: Callback<()>,
     on_open_project: Callback<i64>,
+    on_delete_project: Callback<i64>,
     on_select_session: Callback<i64>,
     on_new_session: Callback<()>,
     on_rename_session: Callback<i64>,
@@ -164,6 +165,18 @@ pub fn Sidebar(
                             >
                                 <span class="project-name">{name}</span>
                                 <span class="project-mode">{mode.as_str()}</span>
+                                <span class="project-actions">
+                                    <button
+                                        class="icon-btn"
+                                        title="Delete project"
+                                        on:click=move |e: web_sys::MouseEvent| {
+                                            e.stop_propagation();
+                                            on_delete_project.run(id);
+                                        }
+                                    >
+                                        "✕"
+                                    </button>
+                                </span>
                             </div>
                         }
                     }
