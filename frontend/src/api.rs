@@ -2,8 +2,8 @@
 
 use gloo_net::http::{Method, Request, RequestBuilder};
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Health, NewProject, NewSession,
-    Project, SearchHit, WorkspaceMode,
+    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Health, ModelInfo, NewProject,
+    NewSession, Project, SearchHit, WorkspaceMode,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -77,6 +77,12 @@ impl BackendApi {
 
     pub async fn list_sessions(&self) -> Result<Vec<ChatSession>, String> {
         self.get("/sessions").await
+    }
+
+    /// List the models a connection's provider reports.
+    pub async fn list_models(&self, connection_id: i64) -> Result<Vec<ModelInfo>, String> {
+        self.get(&format!("/models?connection_id={connection_id}"))
+            .await
     }
 
     pub async fn create_session(

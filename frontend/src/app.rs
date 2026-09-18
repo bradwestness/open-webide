@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Project, Role, SearchHit,
+    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, ModelInfo, Project, Role, SearchHit,
     WorkspaceMode,
 };
 use web_sys::{AbortController, FileSystemDirectoryHandle};
@@ -56,6 +56,10 @@ pub fn App() -> impl IntoView {
     let error = RwSignal::new(Option::<String>::None);
     let draft = RwSignal::new(String::new());
     let abort = RwSignal::new(Option::<AbortController>::None);
+    // Models reported by the active session's connection, and the model each
+    // session has chosen (None = the connection's default).
+    let models = RwSignal::new(Vec::<ModelInfo>::new());
+    let session_model = RwSignal::new(HashMap::<i64, Option<String>>::new());
 
     // -- active project's workspace state ----------------------------------
     let ws_entries = RwSignal::new(HashMap::<String, Vec<FileEntry>>::new());
@@ -617,6 +621,7 @@ pub fn App() -> impl IntoView {
             let Some(session_id) = active_session.get() else {
                 return;
             };
+            let model = session_model.get().get(&session_id).cloned().flatten();
             let Ok(controller) = AbortController::new() else {
                 return;
             };
@@ -630,7 +635,7 @@ pub fn App() -> impl IntoView {
                     .send_message(
                         session_id,
                         &content,
-                        None,
+                        model.as_deref(),
                         Some(&controller.signal()),
                         move |event| {
                             if active_session.get() != Some(session_id) {
@@ -833,6 +838,50 @@ pub fn App() -> impl IntoView {
         });
     }
 
+    // Load the models the active session's connection offers.
+    {
+        let api = api.clone();
+        Effect::new(move || {
+            let sid = active_session.get();
+            let conn = sid.and_then(|id| {
+                sessions
+                    .get()
+                    .into_iter()
+                    .find(|s| s.id == id)
+                    .and_then(|s| s.connection_id)
+            });
+            let api = api.clone();
+            spawn_local(async move {
+                let list = match conn {
+                    Some(cid) => api.list_models(cid).await.unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                if active_session.get() == sid {
+                    models.set(list);
+                }
+            });
+        });
+    }
+
+    // The model chosen for the active session (drives the picker's value).
+    let selected_model = RwSignal::new(Option::<String>::None);
+    Effect::new(move || {
+        let sel = active_session
+            .get()
+            .and_then(|id| session_model.get().get(&id).cloned())
+            .flatten();
+        selected_model.set(sel);
+    });
+
+    let on_select_model = Callback::new(move |model: Option<String>| {
+        let Some(sid) = active_session.get() else {
+            return;
+        };
+        session_model.update(|m| {
+            m.insert(sid, model);
+        });
+    });
+
     // Derived values for the view.
     let has_session = RwSignal::new(false);
     Effect::new(move || {
@@ -927,6 +976,9 @@ pub fn App() -> impl IntoView {
                     error=error.read_only()
                     has_session=has_session.read_only()
                     local_mode=local_mode.read_only()
+                    models=models.read_only()
+                    selected_model=selected_model.read_only()
+                    on_select_model=on_select_model
                     on_send=on_send
                     on_stop=on_stop
                 />

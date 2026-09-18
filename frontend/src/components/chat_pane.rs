@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use openwebide_core::{ChatMessage, FileDiff, Role, diff_inline_lines};
+use openwebide_core::{ChatMessage, FileDiff, ModelInfo, Role, diff_inline_lines};
 use web_sys::wasm_bindgen::JsCast;
 
 /// One item in the conversation: a chat message or an agent tool step.
@@ -165,11 +165,26 @@ pub fn ChatPane(
     error: ReadSignal<Option<String>>,
     has_session: ReadSignal<bool>,
     local_mode: ReadSignal<bool>,
+    models: ReadSignal<Vec<ModelInfo>>,
+    selected_model: ReadSignal<Option<String>>,
+    on_select_model: Callback<Option<String>>,
     on_send: Callback<()>,
     on_stop: Callback<()>,
 ) -> impl IntoView {
     let scroll_ref = NodeRef::<leptos::html::Div>::new();
     let input_ref = NodeRef::<leptos::html::Textarea>::new();
+    let model_ref = NodeRef::<leptos::html::Select>::new();
+
+    // Keep the model picker's value in sync with the chosen model. Leptos 0.8
+    // has no reactive `value` attribute for `<select>`, so set the DOM value
+    // directly whenever the selection or the option list changes.
+    Effect::new(move || {
+        let value = selected_model.get().unwrap_or_default();
+        let _ = models.get();
+        if let Some(el) = model_ref.get() {
+            el.set_value(&value);
+        }
+    });
 
     // Keep the newest message in view as tokens arrive.
     Effect::new(move || {
@@ -268,6 +283,34 @@ pub fn ChatPane(
                 </div>
             </Show>
             <div class="composer">
+                <Show when=move || has_session.get() && !models.get().is_empty() fallback=|| ()>
+                    <select
+                        class="model-select"
+                        node_ref=model_ref
+                        on:change=move |e: web_sys::Event| {
+                            if let Some(target) = e.target()
+                                && let Some(sel) = target.dyn_ref::<web_sys::HtmlSelectElement>()
+                            {
+                                let value = sel.value();
+                                on_select_model.run(if value.is_empty() {
+                                    None
+                                } else {
+                                    Some(value)
+                                });
+                            }
+                        }
+                    >
+                        <option value="">Default model</option>
+                        {models
+                            .get()
+                            .into_iter()
+                            .map(|m| {
+                                let name = m.name.clone();
+                                view! { <option value=name>{name.clone()}</option> }
+                            })
+                            .collect::<Vec<_>>()}
+                    </select>
+                </Show>
                 <textarea
                     class="composer-input"
                     node_ref=input_ref

@@ -432,6 +432,24 @@ body {
   border-color: var(--accent);
 }
 
+.model-select {
+  flex-shrink: 0;
+  height: 40px;
+  max-width: 200px;
+  padding: 0 8px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.model-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .btn {
   padding: 9px 16px;
   border: 1px solid var(--border);
