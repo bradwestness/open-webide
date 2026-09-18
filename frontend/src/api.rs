@@ -3,7 +3,7 @@
 use gloo_net::http::{Method, Request, RequestBuilder};
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Health, NewProject, NewSession,
-    Project, WorkspaceMode,
+    Project, SearchHit, WorkspaceMode,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -192,14 +192,16 @@ impl BackendApi {
         Ok(())
     }
 
-    pub async fn search_files(
+    /// Full-text search: return the lines of every file whose content contains
+    /// `query` (case-insensitive).
+    pub async fn search_content(
         &self,
         project_id: i64,
         query: &str,
         path: &str,
-    ) -> Result<Vec<FileEntry>, String> {
+    ) -> Result<Vec<SearchHit>, String> {
         self.get(&format!(
-            "/projects/{project_id}/files/search?q={}&path={}",
+            "/projects/{project_id}/files/content-search?q={}&path={}",
             urlenc(query),
             urlenc(path)
         ))

@@ -7,7 +7,7 @@
 use std::path::Component;
 
 use anyhow::{Context, Result};
-use openwebide_core::FileEntry;
+use openwebide_core::{FileEntry, SearchHit, find_content_matches};
 
 use crate::wasi::filesystem::preopens;
 use crate::wasi::filesystem::types::{
@@ -281,6 +281,38 @@ async fn walk(dir_rel: &str, query: &str, out: &mut Vec<FileEntry>) -> Result<()
             Box::pin(walk(&e.path, query, out)).await?;
         } else if e.path.to_lowercase().contains(query) {
             out.push(e);
+        }
+    }
+    Ok(())
+}
+
+/// Recursively walk the directory at `rel` and return the lines of every
+/// readable text file whose content contains `query` (case-insensitive).
+///
+/// Files that are too large or not valid UTF-8 are skipped (their `read`
+/// errors are ignored), so a binary or huge file can't break the search.
+pub async fn full_text_search(rel: &str, query: &str) -> Result<Vec<SearchHit>> {
+    let mut out = Vec::new();
+    walk_content(rel, query, &mut out).await?;
+    Ok(out)
+}
+
+async fn walk_content(dir_rel: &str, query: &str, out: &mut Vec<SearchHit>) -> Result<()> {
+    let entries = match list(dir_rel).await {
+        Ok(e) => e,
+        Err(_) => return Ok(()), // not a directory or unreadable; skip
+    };
+    for e in entries {
+        if e.is_dir {
+            Box::pin(walk_content(&e.path, query, out)).await?;
+        } else if let Ok(content) = read(&e.path).await {
+            for (line, text) in find_content_matches(&content, query) {
+                out.push(SearchHit {
+                    path: e.path.clone(),
+                    line,
+                    text,
+                });
+            }
         }
     }
     Ok(())

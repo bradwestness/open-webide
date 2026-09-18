@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
-use openwebide_core::FileEntry;
+use openwebide_core::{FileEntry, SearchHit};
 use web_sys::wasm_bindgen::JsCast;
 
 /// The project file explorer: a collapsible directory tree with create and
@@ -12,7 +12,7 @@ pub fn FileTree(
     entries: ReadSignal<HashMap<String, Vec<FileEntry>>>,
     expanded: ReadSignal<HashSet<String>>,
     open_file: ReadSignal<Option<String>>,
-    search_results: ReadSignal<Option<Vec<FileEntry>>>,
+    search_results: ReadSignal<Option<Vec<SearchHit>>>,
     error: ReadSignal<Option<String>>,
     on_toggle: Callback<String>,
     on_open: Callback<String>,
@@ -148,11 +148,13 @@ pub fn FileTree(
                 <div class="tree-root search-results">
                     <For
                         each=move || search_results.get().unwrap_or_default()
-                        key=|e| e.path.clone()
+                        key=|e| format!("{}:{}", e.path, e.line)
                         children=move |e| {
                             let path_class = e.path.clone();
                             let path_click = e.path.clone();
-                            let name = e.name.clone();
+                            let path = e.path.clone();
+                            let line = e.line;
+                            let text = e.text.clone();
                             view! {
                                 <div
                                     class=move || {
@@ -164,8 +166,9 @@ pub fn FileTree(
                                     }
                                     on:click=move |_| on_open.run(path_click.clone())
                                 >
-                                    <span class="tree-icon">"·"</span>
-                                    <span class="tree-name">{name}</span>
+                                    <span class="tree-hit-path">{path}</span>
+                                    <span class="tree-hit-line">{line}</span>
+                                    <span class="tree-hit-text">{text}</span>
                                 </div>
                             }
                         }

@@ -89,7 +89,7 @@ browser, so it is not exercised headlessly).
 create/edit/save a file from the UI, with two projects open in tabs and
 switching between them.
 
-## 6. Agentic coding
+## 6. Agentic coding ✅
 
 The point of the project: the model edits your code.
 

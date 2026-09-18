@@ -1,7 +1,7 @@
 //! File System Access API helpers for local-mode workspaces. Paths are
 //! project-relative (the picked directory is the project root, path "").
 
-use openwebide_core::FileEntry;
+use openwebide_core::{FileEntry, SearchHit, find_content_matches};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
@@ -75,15 +75,16 @@ pub async fn create(
     write_file_handle(&file_handle, "").await
 }
 
-/// Search for files whose name contains `query` (case-insensitive) under `dir`.
-pub async fn search(
+/// Full-text search: return the lines of every readable text file under `dir`
+/// whose content contains `query` (case-insensitive).
+pub async fn search_content(
     root: &FileSystemDirectoryHandle,
     query: &str,
     dir: &str,
-) -> Result<Vec<FileEntry>, String> {
+) -> Result<Vec<SearchHit>, String> {
     let start = resolve_dir(root, dir).await?;
     let mut results = Vec::new();
-    search_recursive(&start, dir, query, &mut results).await?;
+    content_search_recursive(&start, dir, query, &mut results).await?;
     Ok(results)
 }
 
@@ -239,25 +240,45 @@ async fn dir_entries(
         .map(|pairs| pairs.into_iter().map(|(entry, _)| entry).collect())
 }
 
-async fn search_recursive(
+async fn content_search_recursive(
     dir_handle: &FileSystemDirectoryHandle,
     prefix: &str,
     query: &str,
-    results: &mut Vec<FileEntry>,
+    results: &mut Vec<SearchHit>,
 ) -> Result<(), String> {
-    let query_lower = query.to_lowercase();
     let pairs = dir_entries_with_handles(dir_handle, prefix).await?;
     for (entry, handle) in pairs {
-        if !entry.is_dir && entry.name.to_lowercase().contains(&query_lower) {
-            results.push(entry.clone());
-        }
-        if entry.is_dir
-            && let Some(sub) = handle.dyn_ref::<FileSystemDirectoryHandle>()
+        if entry.is_dir {
+            if let Some(sub) = handle.dyn_ref::<FileSystemDirectoryHandle>() {
+                Box::pin(content_search_recursive(sub, &entry.path, query, results)).await?;
+            }
+        } else if let Some(file) = handle.dyn_ref::<FileSystemFileHandle>()
+            && let Ok(content) = file_handle_text(file).await
         {
-            Box::pin(search_recursive(sub, &entry.path, query, results)).await?;
+            for (line, text) in find_content_matches(&content, query) {
+                results.push(SearchHit {
+                    path: entry.path.clone(),
+                    line,
+                    text,
+                });
+            }
         }
     }
     Ok(())
+}
+
+/// Read a file handle's contents as text.
+async fn file_handle_text(file: &FileSystemFileHandle) -> Result<String, String> {
+    let file_value = JsFuture::from(file.get_file())
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    let blob: Blob = file_value
+        .dyn_into()
+        .map_err(|_| "not a file".to_string())?;
+    let text = JsFuture::from(blob.text())
+        .await
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    Ok(text.as_string().unwrap_or_default())
 }
 
 /// Split `path` into its parent directory and file name.

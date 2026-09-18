@@ -4,7 +4,8 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use openwebide_agent::AgentConfig;
 use openwebide_core::{
-    ChatRequest, FileEntry, Health, NewConnection, NewProject, Role, SystemPrompt, WorkspaceMode,
+    ChatRequest, FileEntry, Health, NewConnection, NewProject, Role, SearchHit, SystemPrompt,
+    WorkspaceMode,
 };
 use openwebide_llm::{LlmProvider, registry::Provider};
 use serde::Deserialize;
@@ -250,6 +251,25 @@ fn strip_base(base: &str, entries: Vec<FileEntry>) -> Vec<FileEntry> {
         .collect()
 }
 
+/// Strip the project's base-path prefix from each search hit's path so the
+/// returned paths are project-relative.
+fn strip_base_hits(base: &str, hits: Vec<SearchHit>) -> Vec<SearchHit> {
+    if base.is_empty() {
+        return hits;
+    }
+    let prefix = format!("{base}/");
+    hits.into_iter()
+        .map(|h| {
+            let path = h
+                .path
+                .strip_prefix(prefix.as_str())
+                .unwrap_or(h.path.as_str())
+                .to_string();
+            SearchHit { path, ..h }
+        })
+        .collect()
+}
+
 fn files_query(req: &Request, key: &str) -> Option<String> {
     req.uri().query()?.split('&').find_map(|pair| {
         let (k, v) = pair.split_once('=')?;
@@ -308,6 +328,13 @@ pub async fn files_get(req: Request, state: &AppState, path: &str) -> Result<Jso
             let (full, base) = remote_project_path(state, id, &rel).await?;
             let entries = crate::files::search(&full, &q).await?;
             Ok(json_response(200, &strip_base(&base, entries)))
+        }
+        "files/content-search" => {
+            let q = files_query(&req, "q").ok_or_else(|| ApiError::bad_request("missing ?q="))?;
+            let rel = files_query(&req, "path").unwrap_or_default();
+            let (full, base) = remote_project_path(state, id, &rel).await?;
+            let hits = crate::files::full_text_search(&full, &q).await?;
+            Ok(json_response(200, &strip_base_hits(&base, hits)))
         }
         other => Err(ApiError::not_found(format!("no file route for {other}"))),
     }

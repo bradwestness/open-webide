@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, FileEntry, Project, Role, WorkspaceMode,
+    ChatMessage, ChatSession, Connection, FileEntry, Project, Role, SearchHit, WorkspaceMode,
 };
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
@@ -25,7 +25,7 @@ struct ProjectWorkspace {
     open_file: Option<String>,
     content: String,
     dirty: bool,
-    search: Option<Vec<FileEntry>>,
+    search: Option<Vec<SearchHit>>,
     active_session: Option<i64>,
 }
 
@@ -60,7 +60,7 @@ pub fn App() -> impl IntoView {
     let ws_open_file = RwSignal::new(Option::<String>::None);
     let ws_content = RwSignal::new(String::new());
     let ws_dirty = RwSignal::new(false);
-    let ws_search = RwSignal::new(Option::<Vec<FileEntry>>::None);
+    let ws_search = RwSignal::new(Option::<Vec<SearchHit>>::None);
     // Saved workspace state for every project that has (or had) a tab open.
     let saved = RwSignal::new(HashMap::<i64, ProjectWorkspace>::new());
     // Directory handles for local-mode projects, keyed by project id. Loaded
@@ -272,7 +272,7 @@ pub fn App() -> impl IntoView {
         });
     });
 
-    // Search the project's files.
+    // Full-text search the project's file contents.
     let on_search = Callback::new(move |q: String| {
         let Some(pid) = active_project.get() else {
             return;
@@ -281,7 +281,7 @@ pub fn App() -> impl IntoView {
             let Some(ws) = workspace_for.run(pid) else {
                 return;
             };
-            match ws.search(&q, "").await {
+            match ws.search_content(&q, "").await {
                 Ok(results) => {
                     if active_project.get() == Some(pid) {
                         ws_search.set(Some(results));

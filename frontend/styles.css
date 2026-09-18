@@ -580,6 +580,29 @@ body {
   text-overflow: ellipsis;
 }
 
+.tree-hit-path {
+  color: var(--text-muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-hit-line {
+  color: var(--text-muted);
+  font-size: 10px;
+  flex-shrink: 0;
+  min-width: 22px;
+  text-align: right;
+}
+
+.tree-hit-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
 .tree-error {
   padding: 6px 8px;
   border: 1px solid var(--offline);

@@ -266,3 +266,61 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub size: u64,
 }
+
+/// A single full-text search hit: one matching line in one file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    /// Path relative to the project root.
+    pub path: String,
+    /// 1-based line number of the match.
+    pub line: usize,
+    /// The full text of the matching line.
+    pub text: String,
+}
+
+/// Find every line in `content` that contains `query` (case-insensitive).
+///
+/// Returns `(1-based line number, line text)` pairs in file order. Pure and
+/// allocation-light enough to run per-file on the backend, and natively
+/// unit-testable in this crate.
+pub fn find_content_matches(content: &str, query: &str) -> Vec<(usize, String)> {
+    let q = query.to_lowercase();
+    content
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.to_lowercase().contains(&q))
+        .map(|(i, line)| (i + 1, line.to_string()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_matches_finds_case_insensitive_lines() {
+        let content = "fn main() {\n    let x = 1;\n    println!(\"Hello\");\n}\nfn MAIN() {}\n";
+        let hits = find_content_matches(content, "main");
+        assert_eq!(
+            hits,
+            vec![
+                (1, "fn main() {".to_string()),
+                (5, "fn MAIN() {}".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn content_matches_empty_query_matches_every_line() {
+        let content = "a\nb\nc";
+        assert_eq!(
+            find_content_matches(content, ""),
+            vec![(1, "a".into()), (2, "b".into()), (3, "c".into())]
+        );
+    }
+
+    #[test]
+    fn content_matches_no_match_is_empty() {
+        assert!(find_content_matches("hello world", "zzz").is_empty());
+    }
+}
