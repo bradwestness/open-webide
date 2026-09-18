@@ -2,8 +2,8 @@
 
 use gloo_net::http::{Method, Request, RequestBuilder};
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, FileEntry, Health, NewProject, NewSession, Project,
-    WorkspaceMode,
+    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Health, NewProject, NewSession,
+    Project, WorkspaceMode,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -30,6 +30,20 @@ pub enum SseEvent {
     Message(ChatMessage),
     /// A token delta appended to the in-progress assistant reply.
     Delta(String),
+    /// The agent requested a tool call.
+    ToolCall {
+        id: String,
+        name: String,
+        summary: String,
+    },
+    /// A tool call finished.
+    ToolResult {
+        id: String,
+        name: String,
+        ok: bool,
+        summary: String,
+        diff: Option<FileDiff>,
+    },
     /// The final, persisted assistant reply.
     Done(ChatMessage),
     /// A provider or persistence error; the stream ends after this.
@@ -337,6 +351,20 @@ fn parse_sse_frame(frame: &str) -> Option<SseEvent> {
     Some(match event {
         "message" => SseEvent::Message(serde_json::from_value(value).ok()?),
         "delta" => SseEvent::Delta(value.get("content")?.as_str()?.to_string()),
+        "tool_call" => SseEvent::ToolCall {
+            id: value.get("id")?.as_str()?.to_string(),
+            name: value.get("name")?.as_str()?.to_string(),
+            summary: value.get("summary")?.as_str()?.to_string(),
+        },
+        "tool_result" => SseEvent::ToolResult {
+            id: value.get("id")?.as_str()?.to_string(),
+            name: value.get("name")?.as_str()?.to_string(),
+            ok: value.get("ok")?.as_bool().unwrap_or(false),
+            summary: value.get("summary")?.as_str()?.to_string(),
+            diff: value
+                .get("diff")
+                .and_then(|d| serde_json::from_value(d.clone()).ok().flatten()),
+        },
         "done" => SseEvent::Done(serde_json::from_value(value).ok()?),
         "error" => SseEvent::Error(value.get("error")?.as_str()?.to_string()),
         _ => return None,

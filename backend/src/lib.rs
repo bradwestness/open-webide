@@ -1,6 +1,7 @@
 //! Open WebIDE backend: a Spin HTTP component exposing the REST API over
 //! Spin's `sqlite` capability.
 
+mod agent;
 mod api;
 mod error;
 mod files;

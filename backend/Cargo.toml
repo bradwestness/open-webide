@@ -17,6 +17,7 @@ bytes = { workspace = true }
 futures = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
+openwebide-agent = { workspace = true }
 openwebide-core = { workspace = true }
 openwebide-llm = { workspace = true }
 openwebide-storage = { workspace = true }

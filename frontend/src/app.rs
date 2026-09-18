@@ -8,7 +8,10 @@ use openwebide_core::{
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
 use crate::api::{BackendApi, HealthState, SseEvent};
-use crate::components::{ChatPane, Editor, FileTree, Sidebar, StatusBar, TabBar, TopBar};
+use crate::components::{
+    ChatPane, ConversationItem, Editor, FileTree, Sidebar, StatusBar, TabBar, ToolStepResult,
+    TopBar,
+};
 use crate::idb;
 use crate::local_fs;
 use crate::workspace::Workspace;
@@ -45,7 +48,7 @@ pub fn App() -> impl IntoView {
     let active_project = RwSignal::new(Option::<i64>::None);
     let sessions = RwSignal::new(Vec::<ChatSession>::new());
     let active_session = RwSignal::new(Option::<i64>::None);
-    let messages = RwSignal::new(Vec::<ChatMessage>::new());
+    let messages = RwSignal::new(Vec::<ConversationItem>::new());
     let streaming = RwSignal::new(false);
     let error = RwSignal::new(Option::<String>::None);
     let draft = RwSignal::new(String::new());
@@ -554,31 +557,81 @@ pub fn App() -> impl IntoView {
                             }
                             match event {
                                 SseEvent::Message(msg) => {
-                                    messages.update(|m| m.push(msg));
+                                    messages.update(|m| m.push(ConversationItem::Message(msg)));
                                 }
                                 SseEvent::Delta(delta) => {
                                     messages.update(|m| {
                                         let extend_last = m
                                             .last()
-                                            .is_some_and(|last| last.role == Role::Assistant);
+                                            .is_some_and(|last| {
+                                                matches!(
+                                                    last,
+                                                    ConversationItem::Message(msg)
+                                                        if msg.role == Role::Assistant
+                                                )
+                                            });
                                         if extend_last {
-                                            if let Some(last) = m.last_mut() {
-                                                last.content.push_str(&delta);
+                                            if let Some(ConversationItem::Message(msg)) = m.last_mut() {
+                                                msg.content.push_str(&delta);
                                             }
                                         } else {
-                                            m.push(ChatMessage {
+                                            m.push(ConversationItem::Message(ChatMessage {
                                                 id: 0,
                                                 session_id,
                                                 role: Role::Assistant,
                                                 content: delta,
                                                 created_at: 0,
-                                            });
+                                                tool_calls: None,
+                                                tool_call_id: None,
+                                            }));
+                                        }
+                                    });
+                                }
+                                SseEvent::ToolCall { id, name, summary } => {
+                                    messages.update(|m| {
+                                        m.push(ConversationItem::ToolStep {
+                                            id,
+                                            name,
+                                            summary,
+                                            result: None,
+                                        })
+                                    });
+                                }
+                                SseEvent::ToolResult { id, name, ok, summary, diff } => {
+                                    messages.update(|m| {
+                                        let idx = m.iter().rposition(|item| {
+                                            matches!(
+                                                item,
+                                                ConversationItem::ToolStep { id: tid, .. } if *tid == id
+                                            )
+                                        });
+                                        match idx {
+                                            Some(i) => {
+                                                if let ConversationItem::ToolStep {
+                                                    result: r, ..
+                                                } = &mut m[i]
+                                                {
+                                                    *r = Some(ToolStepResult {
+                                                        ok,
+                                                        summary: summary.clone(),
+                                                        diff: diff.clone(),
+                                                    });
+                                                }
+                                            }
+                                            None => {
+                                                m.push(ConversationItem::ToolStep {
+                                                    id,
+                                                    name,
+                                                    summary: summary.clone(),
+                                                    result: Some(ToolStepResult { ok, summary, diff }),
+                                                });
+                                            }
                                         }
                                     });
                                 }
                                 SseEvent::Done(msg) => {
                                     messages.update(|m| {
-                                        if let Some(last) = m.last_mut()
+                                        if let Some(ConversationItem::Message(last)) = m.last_mut()
                                             && last.role == Role::Assistant
                                         {
                                             *last = msg;
@@ -676,7 +729,9 @@ pub fn App() -> impl IntoView {
             spawn_local(async move {
                 match id {
                     Some(id) => match api.list_messages(id).await {
-                        Ok(m) => messages.set(m),
+                        Ok(m) => {
+                            messages.set(m.into_iter().map(ConversationItem::Message).collect())
+                        }
                         Err(e) => error.set(Some(e)),
                     },
                     None => messages.set(Vec::new()),
@@ -689,6 +744,20 @@ pub fn App() -> impl IntoView {
     let has_session = RwSignal::new(false);
     Effect::new(move || {
         has_session.set(active_session.get().is_some());
+    });
+
+    // Agentic file tools only run for remote (Spin-hosted) projects; the
+    // backend can't reach a local-mode project's browser-side files.
+    let local_mode = RwSignal::new(false);
+    Effect::new(move || {
+        let mode = active_project.get().and_then(|pid| {
+            projects
+                .get()
+                .into_iter()
+                .find(|p| p.id == pid)
+                .map(|p| p.mode)
+        });
+        local_mode.set(mode == Some(WorkspaceMode::Local));
     });
 
     view! {
@@ -753,6 +822,7 @@ pub fn App() -> impl IntoView {
                     set_draft=draft.write_only()
                     error=error.read_only()
                     has_session=has_session.read_only()
+                    local_mode=local_mode.read_only()
                     on_send=on_send
                     on_stop=on_stop
                 />

@@ -1,11 +1,11 @@
 //! Server-Sent Events for streaming chat responses.
 //!
 //! One SSE stream per sent message: the user message (already persisted),
-//! content deltas as the provider produces them, then the persisted
-//! assistant message. Frame format:
+//! then either content deltas (plain chat) or agent tool steps (agentic
+//! coding), and finally the persisted assistant message. Frame format:
 //!
 //! ```text
-//! event: message | delta | done | error
+//! event: message | delta | tool_call | tool_result | done | error
 //! data: {json}
 //!
 //! ```
@@ -17,7 +17,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 use http_body::{Frame, SizeHint};
-use openwebide_core::{ChatMessage, ChatRequest, Role};
+use openwebide_core::{ChatMessage, ChatRequest, FileDiff, Role};
 use openwebide_llm::{LlmProvider, registry::Provider};
 use openwebide_storage::{Store, spin_db::SpinDb};
 use serde_json::json;
@@ -31,6 +31,20 @@ pub enum SseEvent {
     Message(ChatMessage),
     /// A content delta from the provider.
     Delta(String),
+    /// The agent requested a tool call.
+    ToolCall {
+        id: String,
+        name: String,
+        summary: String,
+    },
+    /// A tool call finished.
+    ToolResult {
+        id: String,
+        name: String,
+        ok: bool,
+        summary: String,
+        diff: Option<FileDiff>,
+    },
     /// The persisted assistant message; the stream ends after this.
     Done(ChatMessage),
     /// A failure; the stream ends after this.
@@ -42,6 +56,21 @@ fn frame(event: &SseEvent) -> Bytes {
     let (name, data) = match event {
         SseEvent::Message(message) => ("message", serde_json::to_string(message).unwrap()),
         SseEvent::Delta(delta) => ("delta", json!({ "content": delta }).to_string()),
+        SseEvent::ToolCall { id, name, summary } => (
+            "tool_call",
+            json!({ "id": id, "name": name, "summary": summary }).to_string(),
+        ),
+        SseEvent::ToolResult {
+            id,
+            name,
+            ok,
+            summary,
+            diff,
+        } => (
+            "tool_result",
+            json!({ "id": id, "name": name, "ok": ok, "summary": summary, "diff": diff })
+                .to_string(),
+        ),
         SseEvent::Done(message) => ("done", serde_json::to_string(message).unwrap()),
         SseEvent::Error(error) => ("error", json!({ "error": error }).to_string()),
     };

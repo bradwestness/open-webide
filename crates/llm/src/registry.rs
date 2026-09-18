@@ -1,7 +1,7 @@
 use std::pin::Pin;
 
 use futures::Stream;
-use openwebide_core::{ChatRequest, Connection, ModelInfo, ProviderKind};
+use openwebide_core::{ChatRequest, ChatResponse, Connection, ModelInfo, ProviderKind};
 
 use crate::{
     HttpClient, LlmProvider, ProviderError, llamacpp::LlamaCppProvider, ollama::OllamaProvider,
@@ -62,6 +62,13 @@ impl<C: HttpClient> LlmProvider for Provider<C> {
         match self {
             Self::Ollama(p) => p.chat_stream(request),
             Self::LlamaCpp(p) => p.chat_stream(request),
+        }
+    }
+
+    async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatResponse, ProviderError> {
+        match self {
+            Self::Ollama(p) => p.chat_tools(request).await,
+            Self::LlamaCpp(p) => p.chat_tools(request).await,
         }
     }
 }

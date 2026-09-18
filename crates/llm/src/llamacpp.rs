@@ -1,12 +1,12 @@
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt, stream};
-use openwebide_core::{ChatRequest, ModelInfo, ProviderKind};
+use openwebide_core::{ChatRequest, ChatResponse, ModelInfo, ProviderKind, Role, ToolCall};
 use serde_json::{Value, json};
 
 use crate::{
     HttpClient, LineStream, LlmProvider, ProviderError, StreamLine, chat_messages, stream_error,
-    url_for,
+    tools_wire, url_for,
 };
 
 /// Provider for a [llama.cpp](https://github.com/ggml-org/llama.cpp) server
@@ -117,6 +117,122 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
             }
         }))
     }
+
+    async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatResponse, ProviderError> {
+        let model = request
+            .model
+            .clone()
+            .or_else(|| self.model.clone())
+            .ok_or(ProviderError::NoModel)?;
+        let body = json!({
+            "model": model,
+            "messages": llamacpp_tool_messages(request),
+            "stream": false,
+            "tools": tools_wire(&request.tools),
+        });
+        let value = self
+            .http
+            .post_json(&url_for(&self.base_url, "/v1/chat/completions"), &body)
+            .await?;
+        let message = value
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|c| c.first())
+            .and_then(|c| c.get("message"))
+            .ok_or_else(|| {
+                ProviderError::Parse(
+                    "llama.cpp /v1/chat/completions: missing `choices[0].message`".into(),
+                )
+            })?;
+        if let Some(calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
+            let mut tool_calls = Vec::new();
+            for call in calls {
+                let function = call.get("function").ok_or_else(|| {
+                    ProviderError::Parse("llama.cpp tool call missing `function`".into())
+                })?;
+                let name = function
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ProviderError::Parse("llama.cpp tool call missing `name`".into())
+                    })?
+                    .to_string();
+                // The OpenAI-compatible API returns `arguments` as a JSON
+                // string, which is already the canonical form.
+                let arguments = function
+                    .get("arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let id = call
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                tool_calls.push(ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+            return Ok(ChatResponse::ToolCalls(tool_calls));
+        }
+        let content = message
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        Ok(ChatResponse::Text(content))
+    }
+}
+
+/// OpenAI-compatible wire format for messages, including tool calls and tool
+/// results. Tool calls carry an `id` and a string `arguments`; tool results
+/// carry a `tool_call_id`.
+fn llamacpp_tool_messages(request: &ChatRequest) -> Vec<Value> {
+    let mut messages = Vec::new();
+    if let Some(system) = &request.system_prompt
+        && !system.is_empty()
+    {
+        messages.push(json!({ "role": "system", "content": system }));
+    }
+    for message in &request.messages {
+        match message.role {
+            Role::Tool => {
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id.clone().unwrap_or_default(),
+                    "content": message.content,
+                }));
+            }
+            Role::Assistant if message.tool_calls.is_some() => {
+                let calls: Vec<Value> = message
+                    .tool_calls
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|call| {
+                        json!({
+                            "id": call.id,
+                            "type": "function",
+                            "function": { "name": call.name, "arguments": call.arguments }
+                        })
+                    })
+                    .collect();
+                let content = if message.content.is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(message.content.clone())
+                };
+                messages
+                    .push(json!({ "role": "assistant", "content": content, "tool_calls": calls }));
+            }
+            _ => {
+                messages.push(json!({ "role": message.role.as_str(), "content": message.content }))
+            }
+        }
+    }
+    messages
 }
 
 /// Parse one SSE line of llama.cpp's streaming `/v1/chat/completions`
@@ -155,7 +271,7 @@ mod tests {
     use super::*;
     use crate::fake::{FakeHttpClient, FakeState};
     use futures::executor::block_on;
-    use openwebide_core::{ChatMessage, Role};
+    use openwebide_core::{ChatMessage, Role, ToolDefinition};
 
     const BASE: &str = "http://localhost:8080";
 
@@ -174,6 +290,8 @@ mod tests {
             role,
             content: content.into(),
             created_at: 0,
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 
@@ -183,6 +301,19 @@ mod tests {
             system_prompt: system.map(str::to_string),
             model: model.map(str::to_string),
             messages: vec![message(Role::User, "hi")],
+            tools: vec![],
+        }
+    }
+
+    fn read_file_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }),
         }
     }
 
@@ -354,6 +485,131 @@ mod tests {
 
         assert!(matches!(
             result.into_iter().next().unwrap(),
+            Err(ProviderError::NoModel)
+        ));
+        assert!(state.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn chat_tools_returns_tool_calls() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "choices": [ {
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_abc",
+                            "type": "function",
+                            "function": { "name": "read_file", "arguments": "{\"path\":\"src/main.rs\"}" }
+                        }
+                    ]
+                }
+            } ]
+        })));
+
+        let mut req = request(None, None);
+        req.tools = vec![read_file_tool()];
+        let response = block_on(provider.chat_tools(&req)).unwrap();
+
+        // The provider-supplied id and string arguments are preserved as-is.
+        assert_eq!(
+            response,
+            ChatResponse::ToolCalls(vec![ToolCall {
+                id: "call_abc".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"src/main.rs"}"#.into(),
+            }])
+        );
+        let calls = state.calls.lock().unwrap();
+        let body = calls[0].body.as_ref().unwrap();
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["tools"][0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn chat_tools_returns_text_when_no_calls() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "choices": [ { "message": { "role": "assistant", "content": "all done" } } ]
+        })));
+
+        let response = block_on(provider.chat_tools(&request(None, None))).unwrap();
+        assert_eq!(response, ChatResponse::Text("all done".into()));
+    }
+
+    #[test]
+    fn chat_tools_sends_tool_call_and_result_messages() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "choices": [ { "message": { "role": "assistant", "content": "fixed it" } } ]
+        })));
+
+        let assistant = ChatMessage {
+            id: 2,
+            session_id: 1,
+            role: Role::Assistant,
+            content: String::new(),
+            created_at: 0,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_abc".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"src/main.rs"}"#.into(),
+            }]),
+            tool_call_id: None,
+        };
+        let tool_result = ChatMessage {
+            id: 3,
+            session_id: 1,
+            role: Role::Tool,
+            content: "fn main() {}".into(),
+            created_at: 0,
+            tool_calls: None,
+            tool_call_id: Some("call_abc".into()),
+        };
+        let req = ChatRequest {
+            connection_id: 1,
+            system_prompt: None,
+            model: None,
+            messages: vec![message(Role::User, "fix it"), assistant, tool_result],
+            tools: vec![read_file_tool()],
+        };
+        block_on(provider.chat_tools(&req)).unwrap();
+
+        let calls = state.calls.lock().unwrap();
+        let body = calls[0].body.as_ref().unwrap();
+        // Assistant message carries id, type, and string arguments (OpenAI
+        // wire format).
+        assert_eq!(
+            body["messages"][1],
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": { "name": "read_file", "arguments": "{\"path\":\"src/main.rs\"}" }
+                    }
+                ]
+            })
+        );
+        // Tool result carries the tool_call_id (OpenAI wire format).
+        assert_eq!(
+            body["messages"][2],
+            json!({ "role": "tool", "tool_call_id": "call_abc", "content": "fn main() {}" })
+        );
+    }
+
+    #[test]
+    fn chat_tools_without_any_model_is_an_error() {
+        let http = FakeHttpClient::new();
+        let state = http.state();
+        let provider = LlamaCppProvider::new(BASE, None, http);
+
+        assert!(matches!(
+            block_on(provider.chat_tools(&request(None, None))),
             Err(ProviderError::NoModel)
         ));
         assert!(state.calls.lock().unwrap().is_empty());

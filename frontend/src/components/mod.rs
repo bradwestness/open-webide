@@ -6,7 +6,7 @@ mod status_bar;
 mod tab_bar;
 mod top_bar;
 
-pub use chat_pane::ChatPane;
+pub use chat_pane::{ChatPane, ConversationItem, ToolStepResult};
 pub use editor::Editor;
 pub use file_tree::FileTree;
 pub use sidebar::Sidebar;

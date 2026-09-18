@@ -17,7 +17,7 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use futures::Stream;
-use openwebide_core::{ChatRequest, ModelInfo, ProviderKind};
+use openwebide_core::{ChatRequest, ChatResponse, ModelInfo, ProviderKind, ToolDefinition};
 use serde_json::json;
 
 pub use error::ProviderError;
@@ -45,6 +45,26 @@ pub(crate) fn chat_messages(request: &ChatRequest) -> Vec<serde_json::Value> {
         messages.push(json!({ "role": message.role.as_str(), "content": message.content }));
     }
     messages
+}
+
+/// Provider wire format for the `tools` array, shared by both providers
+/// (Ollama and the OpenAI-compatible llama.cpp API use the same shape).
+pub(crate) fn tools_wire(tools: &[ToolDefinition]) -> serde_json::Value {
+    serde_json::Value::Array(
+        tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    }
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Minimal HTTP surface a provider needs to talk to a local-LLM runtime.
@@ -83,6 +103,12 @@ pub trait LlmProvider: Send + Sync {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + 'static>>;
+    /// A tool-capable chat completion. Returns the model's text reply or the
+    /// tool calls it wants to run (see [`ChatRequest::tools`]).
+    fn chat_tools(
+        &self,
+        request: &ChatRequest,
+    ) -> impl Future<Output = Result<ChatResponse, ProviderError>> + Send;
 }
 
 /// Extract a provider error from a stream line's `error` field, which may

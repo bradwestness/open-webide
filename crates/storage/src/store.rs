@@ -432,6 +432,8 @@ impl<D: Db> Store<D> {
             role,
             content: content.into(),
             created_at,
+            tool_calls: None,
+            tool_call_id: None,
         })
     }
 }
@@ -499,6 +501,8 @@ fn message_from_row(row: &QueryRow) -> Result<ChatMessage, StorageError> {
             .ok_or_else(|| StorageError::InvalidValue(format!("unknown role: {role}")))?,
         content: row.get_text(3)?.to_string(),
         created_at: row.get_int(4)?,
+        tool_calls: None,
+        tool_call_id: None,
     })
 }
 

@@ -209,18 +209,23 @@ async fn write_stream(file: &Descriptor, bytes: Vec<u8>) -> Result<()> {
     let mut drain = Box::pin(file.write_via_stream(reader, 0).into_future());
     let mut write_fut = Box::pin(writer.write(bytes));
 
-    let waker = futures::task::noop_waker();
-    let mut cx = Context::from_waker(&waker);
-
     // Drive the host's read and the write together until the write completes
     // (the host has consumed the bytes). The host's read is async, so it may
     // take several polls to reach the point where it reads the queued bytes;
     // each drain poll advances the host, and the write future is started on
     // the first write poll and completes once the host has the bytes.
-    for _ in 0..100 {
-        let _ = drain.as_mut().poll(&mut cx);
-        if write_fut.as_mut().poll(&mut cx).is_ready() {
-            break;
+    //
+    // The `Context` borrows a local waker and is not `Send`, so it is scoped
+    // to this block and dropped before the `drain.await` below; otherwise the
+    // whole future would be non-`Send` (a problem for the agent's executor).
+    {
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        for _ in 0..100 {
+            let _ = drain.as_mut().poll(&mut cx);
+            if write_fut.as_mut().poll(&mut cx).is_ready() {
+                break;
+            }
         }
     }
 

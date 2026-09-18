@@ -1,6 +1,40 @@
 use leptos::prelude::*;
-use openwebide_core::{ChatMessage, Role};
+use openwebide_core::{ChatMessage, FileDiff, Role};
 use web_sys::wasm_bindgen::JsCast;
+
+/// One item in the conversation: a chat message or an agent tool step.
+#[derive(Debug, Clone)]
+pub enum ConversationItem {
+    /// A user or assistant chat message.
+    Message(ChatMessage),
+    /// An agent tool step: the call (always known) and, once it finishes, its
+    /// result (which may carry a file diff for edits).
+    ToolStep {
+        id: String,
+        name: String,
+        summary: String,
+        result: Option<ToolStepResult>,
+    },
+}
+
+/// The outcome of a finished tool step.
+#[derive(Debug, Clone)]
+pub struct ToolStepResult {
+    pub ok: bool,
+    pub summary: String,
+    pub diff: Option<FileDiff>,
+}
+
+/// A key for a conversation item that changes when the item's content changes
+/// (a streamed delta, a tool result arriving) so Leptos' `For` re-renders it.
+fn item_key(item: &ConversationItem) -> String {
+    match item {
+        ConversationItem::Message(m) => format!("m-{}-{}", m.id, m.content.len()),
+        ConversationItem::ToolStep { id, result, .. } => {
+            format!("t-{}-{}", id, if result.is_some() { 1 } else { 0 })
+        }
+    }
+}
 
 /// Render markdown to HTML for display in an assistant message.
 fn render_markdown(md: &str) -> String {
@@ -9,14 +43,157 @@ fn render_markdown(md: &str) -> String {
     html
 }
 
+/// A minimal line-based diff: strip the common prefix and suffix lines, then
+/// emit the removed middle (from `old`) and the added middle (from `new`).
+/// Each line is `(marker, text)` with marker `+` or `-`.
+fn render_diff(diff: &FileDiff) -> Vec<(char, String)> {
+    let old_lines: Vec<&str> = diff.old.as_deref().unwrap_or_default().lines().collect();
+    let new_lines: Vec<&str> = diff.new.lines().collect();
+
+    let mut i = 0;
+    let mut j = 0;
+    while i < old_lines.len() && j < new_lines.len() && old_lines[i] == new_lines[j] {
+        i += 1;
+        j += 1;
+    }
+    let mut old_end = old_lines.len();
+    let mut new_end = new_lines.len();
+    while old_end > i && new_end > j && old_lines[old_end - 1] == new_lines[new_end - 1] {
+        old_end -= 1;
+        new_end -= 1;
+    }
+
+    let mut out = Vec::new();
+    for line in &old_lines[i..old_end] {
+        out.push(('-', line.to_string()));
+    }
+    for line in &new_lines[j..new_end] {
+        out.push(('+', line.to_string()));
+    }
+    out
+}
+
+/// Render a single chat message (assistant = markdown, user = plain text).
+fn render_message(m: ChatMessage) -> impl IntoView {
+    let is_assistant = m.role == Role::Assistant;
+    let role = m.role.as_str().to_string();
+    // Hold the (fixed, per-key) content in a signal so the view closures below
+    // stay re-callable (`Fn`).
+    let (content, _set_content) = signal(m.content.clone());
+    view! {
+        <div
+            class=move || {
+                if is_assistant {
+                    "message assistant".to_string()
+                } else {
+                    "message user".to_string()
+                }
+            }
+        >
+            <div class="msg-role">{role}</div>
+            <Show
+                when=move || is_assistant
+                fallback=move || {
+                    view! {
+                        <div class="msg-body plain">{content.get()}</div>
+                    }
+                }
+            >
+                {view! {
+                    <div
+                        class="msg-body markdown"
+                        inner_html=move || render_markdown(&content.get())
+                    />
+                }}
+            </Show>
+        </div>
+    }
+}
+
+/// Render the diff for a file edit: the changed path and the removed/added
+/// middle lines.
+fn render_diff_view(diff: FileDiff) -> impl IntoView {
+    let lines = render_diff(&diff);
+    let path = diff.path.clone();
+    view! {
+        <div class="tool-diff">
+            <div class="tool-diff-path">{path}</div>
+            {lines.into_iter().map(|(mark, line)| {
+                let text = format!("{mark} {line}");
+                let line_class = if mark == '+' {
+                    "diff-line add".to_string()
+                } else {
+                    "diff-line del".to_string()
+                };
+                view! {
+                    <div class=move || line_class.clone()>
+                        {text}
+                    </div>
+                }
+            }).collect::<Vec<_>>()}
+        </div>
+    }
+}
+
+/// Render an agent tool step as a card: which file, what action, and the
+/// result (a diff for edits, or a one-line summary otherwise). The three
+/// possible bodies (pending / diff / summary) are mutually exclusive, so each
+/// is a flat `Show` — `view!` blocks have content-dependent types and can't be
+/// branched with Rust `if`/`match`.
+fn render_tool_step(
+    name: String,
+    summary: String,
+    result: Option<ToolStepResult>,
+) -> impl IntoView {
+    let status_class = match result.as_ref() {
+        Some(r) if r.ok => "ok",
+        Some(_) => "err",
+        None => "pending",
+    };
+    let header_class = format!("tool-step-header {status_class}");
+    let (result_sig, _set_result) = signal(result);
+    view! {
+        <div class="tool-step">
+            <div class=move || header_class.clone()>
+                <span class="tool-step-name">{name}</span>
+                <span class="tool-step-summary">{summary}</span>
+            </div>
+            <Show when=move || result_sig.get().is_none() fallback=|| ()>
+                <div class="tool-pending">"running…"</div>
+            </Show>
+            <Show
+                when=move || result_sig.get().is_some_and(|r| r.diff.is_some())
+                fallback=|| ()
+            >
+                {move || {
+                    let r = result_sig.get().unwrap();
+                    render_diff_view(r.diff.clone().unwrap())
+                }}
+            </Show>
+            <Show
+                when=move || result_sig.get().is_some_and(|r| r.diff.is_none())
+                fallback=|| ()
+            >
+                {move || {
+                    let r = result_sig.get().unwrap();
+                    view! {
+                        <div class="tool-result">{r.summary.clone()}</div>
+                    }
+                }}
+            </Show>
+        </div>
+    }
+}
+
 #[component]
 pub fn ChatPane(
-    messages: ReadSignal<Vec<ChatMessage>>,
+    messages: ReadSignal<Vec<ConversationItem>>,
     streaming: ReadSignal<bool>,
     draft: ReadSignal<String>,
     set_draft: WriteSignal<String>,
     error: ReadSignal<Option<String>>,
     has_session: ReadSignal<bool>,
+    local_mode: ReadSignal<bool>,
     on_send: Callback<()>,
     on_stop: Callback<()>,
 ) -> impl IntoView {
@@ -70,40 +247,42 @@ pub fn ChatPane(
                 <div class="messages" node_ref=scroll_ref>
                     <For
                         each=move || messages.get()
-                        key=|m| (m.id, m.role as u8, m.content.len())
-                        children=move |m| {
-                            let is_assistant = m.role == Role::Assistant;
-                            let role = m.role.as_str().to_string();
-                            // Hold the (fixed, per-key) content in a signal so the
-                            // view closures below stay re-callable (`Fn`).
-                            let (content, _set_content) = signal(m.content.clone());
+                        key=|item| item_key(item)
+                        children=move |item| {
+                            // `view!` blocks have content-dependent types, so the
+                            // message/tool-step dispatch can't be a Rust `match`;
+                            // use `Show` to branch between the two renderers.
+                            let (item_sig, _set_item) = signal(item);
+                            let is_message = matches!(item_sig.get(), ConversationItem::Message(_));
+                            let (is_msg, _set_is_msg) = signal(is_message);
                             view! {
-                                <div
-                                    class=move || {
-                                        if is_assistant {
-                                            "message assistant".to_string()
-                                        } else {
-                                            "message user".to_string()
-                                        }
+                                <Show
+                                    when=move || is_msg.get()
+                                    fallback=move || {
+                                        let (name, summary, result) = match item_sig.get() {
+                                            ConversationItem::ToolStep {
+                                                id: _,
+                                                name,
+                                                summary,
+                                                result,
+                                            } => (name, summary, result),
+                                            ConversationItem::Message(_) => {
+                                                unreachable!("not a tool step")
+                                            }
+                                        };
+                                        render_tool_step(name, summary, result)
                                     }
                                 >
-                                    <div class="msg-role">{role}</div>
-                                    <Show
-                                        when=move || is_assistant
-                                        fallback=move || {
-                                            view! {
-                                                <div class="msg-body plain">{content.get()}</div>
+                                    {move || {
+                                        let m = match item_sig.get() {
+                                            ConversationItem::Message(m) => m,
+                                            ConversationItem::ToolStep { .. } => {
+                                                unreachable!("not a message")
                                             }
-                                        }
-                                    >
-                                        {view! {
-                                            <div
-                                                class="msg-body markdown"
-                                                inner_html=move || render_markdown(&content.get())
-                                            />
-                                        }}
-                                    </Show>
-                                </div>
+                                        };
+                                        render_message(m)
+                                    }}
+                                </Show>
                             }
                         }
                     />
@@ -111,6 +290,11 @@ pub fn ChatPane(
             </Show>
             <Show when=move || error.get().is_some() fallback=|| ()>
                 <div class="chat-error">{move || error.get().unwrap_or_default()}</div>
+            </Show>
+            <Show when=move || local_mode.get() fallback=|| ()>
+                <div class="chat-hint">
+                    "Local-mode projects use plain chat; agentic file tools need a remote (Spin-hosted) project."
+                </div>
             </Show>
             <div class="composer">
                 <textarea

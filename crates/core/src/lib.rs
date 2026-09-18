@@ -50,12 +50,17 @@ pub struct NewConnection {
 }
 
 /// Role of a chat message.
+///
+/// `Tool` is a transient role used only inside the agent loop to carry a
+/// tool result back to the model; it is never persisted (the `messages`
+/// table rejects it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
     User,
     Assistant,
+    Tool,
 }
 
 impl Role {
@@ -64,6 +69,7 @@ impl Role {
             Self::System => "system",
             Self::User => "user",
             Self::Assistant => "assistant",
+            Self::Tool => "tool",
         }
     }
 
@@ -72,6 +78,7 @@ impl Role {
             "system" => Some(Self::System),
             "user" => Some(Self::User),
             "assistant" => Some(Self::Assistant),
+            "tool" => Some(Self::Tool),
             _ => None,
         }
     }
@@ -91,6 +98,13 @@ pub struct ChatMessage {
     /// Set by the server on insert; clients may omit it in requests.
     #[serde(default)]
     pub created_at: i64,
+    /// Tool calls this assistant message requested. Transient: set only in
+    /// the in-memory agent loop, never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// For `role = Tool`: the id of the tool call this result answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 /// A chat session bound to an optional LLM connection and project.
@@ -141,6 +155,46 @@ pub struct ChatRequest {
     #[serde(default)]
     pub model: Option<String>,
     pub messages: Vec<ChatMessage>,
+    /// Tools offered to the model; empty disables tool calling.
+    #[serde(default)]
+    pub tools: Vec<ToolDefinition>,
+}
+
+/// A tool the agent may call, described by a name and a JSON-schema
+/// parameter object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema object describing the tool's arguments.
+    pub parameters: serde_json::Value,
+}
+
+/// A tool call requested by the model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    /// The call's arguments, encoded as a JSON string.
+    pub arguments: String,
+}
+
+/// The outcome of a tool-capable chat completion: either the model's text
+/// reply or the tool calls it wants to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatResponse {
+    Text(String),
+    ToolCalls(Vec<ToolCall>),
+}
+
+/// A file edit produced by the agent, for diff rendering in the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub path: String,
+    /// Previous contents; `None` when the file is new.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old: Option<String>,
+    pub new: String,
 }
 
 /// Health/status payload returned by the backend.

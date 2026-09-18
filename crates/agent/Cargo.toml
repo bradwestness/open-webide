@@ -1,6 +1,6 @@
 [package]
-name = "openwebide-core"
-description = "Shared domain types for Open WebIDE"
+name = "openwebide-agent"
+description = "Tool-calling agent loop for Open WebIDE"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,5 +8,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-serde = { workspace = true }
+futures = { workspace = true }
+openwebide-core = { workspace = true }
+openwebide-llm = { workspace = true }
 serde_json = { workspace = true }

@@ -2,8 +2,9 @@
 
 use bytes::Bytes;
 use http_body_util::BodyExt;
+use openwebide_agent::AgentConfig;
 use openwebide_core::{
-    ChatRequest, FileEntry, Health, NewConnection, NewProject, Role, SystemPrompt,
+    ChatRequest, FileEntry, Health, NewConnection, NewProject, Role, SystemPrompt, WorkspaceMode,
 };
 use openwebide_llm::{LlmProvider, registry::Provider};
 use serde::Deserialize;
@@ -11,6 +12,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use spin_sdk::http::{FullBody, Request, Response, box_body};
 
+use crate::agent::{agent_stream, workspace_tools};
 use crate::error::{ApiError, JsonResp};
 use crate::http_client::SpinHttpClient;
 use crate::sse::{SseBody, message_stream};
@@ -437,6 +439,18 @@ pub async fn send_session_message(
         .insert_message(session_id, Role::User, &send.content, now())
         .await?;
 
+    // Remote-mode projects run the agentic loop with workspace tools;
+    // everything else is plain chat.
+    let (is_remote, base) = match session.project_id {
+        Some(id) => match state.store.get_project(id).await {
+            Ok(project) if project.mode == WorkspaceMode::Remote => {
+                (true, project.path.unwrap_or_default())
+            }
+            _ => (false, String::new()),
+        },
+        None => (false, String::new()),
+    };
+
     let mut messages = history;
     messages.push(user_message.clone());
     let request = ChatRequest {
@@ -444,9 +458,26 @@ pub async fn send_session_message(
         system_prompt,
         model: send.model,
         messages,
+        tools: if is_remote {
+            workspace_tools()
+        } else {
+            Vec::new()
+        },
     };
     let provider = Provider::for_connection(&connection, SpinHttpClient);
-    let stream = message_stream(state.store, session_id, user_message, request, provider);
+    let stream = if is_remote {
+        agent_stream(
+            state.store,
+            session_id,
+            user_message,
+            request,
+            provider,
+            base,
+            AgentConfig::default(),
+        )
+    } else {
+        message_stream(state.store, session_id, user_message, request, provider)
+    };
 
     Ok(Response::builder()
         .status(200)

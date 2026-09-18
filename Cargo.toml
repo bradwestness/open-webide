@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "backend",
+    "crates/agent",
     "crates/core",
     "crates/llm",
     "crates/storage",
@@ -24,6 +25,7 @@ http-body = "1"
 http-body-util = "0.1.3"
 js-sys = "0.3"
 leptos = { version = "0.8", features = ["csr"] }
+openwebide-agent = { path = "crates/agent" }
 openwebide-core = { path = "crates/core" }
 openwebide-llm = { path = "crates/llm" }
 openwebide-storage = { path = "crates/storage" }
