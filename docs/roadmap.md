@@ -160,6 +160,25 @@ OAuth, no email verification — just a `users` table and a login screen.
 **Done when:** you can register a local account, log out, log back in, and
 your projects/sessions are scoped to that account.
 
+## 10. Custom dialogs & remote file browser
+
+Themed in-app modals instead of browser-native `alert`/`confirm`/`prompt`
+(none are used today — this is the standard to keep as dialogs are added).
+
+- **Confirmation dialogs** — confirm destructive actions (delete
+  project/session/file, accept/reject a diff, logout) in a themed modal
+  rather than `confirm()`
+- **Remote file browser** — a modal that lists the host (remote) file system
+  so you can pick a folder to open as a project, instead of typing a path
+  blindly. Local mode keeps the system directory picker — the File System
+  Access API requires it and it cannot be replaced with a custom modal
+- **Message surface** — a non-blocking way to surface informational/error
+  messages (generalizes the current shared inline `error` signal)
+
+**Done when:** deleting a project asks for confirmation in a themed modal,
+and opening a remote project lets you browse the host folder tree instead of
+typing a path.
+
 ## Parking lot
 
 Ideas without a phase yet:

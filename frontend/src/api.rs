@@ -1,12 +1,13 @@
 //! Thin client for the backend REST API, including SSE streaming.
 
 use gloo_net::http::{Method, Request, RequestBuilder};
+use leptos::prelude::*;
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Health, ModelInfo, NewProject,
-    NewSession, Project, SearchHit, SystemPrompt, WorkspaceMode,
+    NewSession, Project, SearchHit, SystemPrompt, User, WorkspaceMode,
 };
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::wasm_bindgen::JsCast;
@@ -15,6 +16,14 @@ use web_sys::{AbortSignal, ReadableStreamDefaultReader, ReadableStreamReadResult
 #[derive(Clone)]
 pub struct BackendApi {
     base: String,
+    token: RwSignal<Option<String>>,
+}
+
+/// The `{user, token}` payload returned by register and login.
+#[derive(Deserialize)]
+struct AuthResponse {
+    user: User,
+    token: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,7 +73,57 @@ impl BackendApi {
             .and_then(|search| query_param(&search, "api"))
             .map(|v| v.trim_end_matches('/').to_string())
             .unwrap_or_else(|| format!("{origin}/api"));
-        Self { base }
+        Self {
+            base,
+            token: RwSignal::new(read_token_from_storage()),
+        }
+    }
+
+    // -- auth --------------------------------------------------------------
+
+    /// The current bearer token, if any.
+    pub fn token(&self) -> Option<String> {
+        self.token.get()
+    }
+
+    /// Set (or clear) the bearer token, persisting it to localStorage.
+    pub fn set_token(&self, token: Option<String>) {
+        self.token.set(token.clone());
+        match &token {
+            Some(t) => write_token_to_storage(t),
+            None => clear_token_from_storage(),
+        }
+    }
+
+    /// Register a new local account (only the first account may register).
+    /// On success the returned token is stored for subsequent requests.
+    pub async fn register(&self, username: &str, password: &str) -> Result<User, String> {
+        let resp: AuthResponse = self
+            .post(
+                "/auth/register",
+                &json!({ "username": username, "password": password }),
+            )
+            .await?;
+        self.set_token(Some(resp.token));
+        Ok(resp.user)
+    }
+
+    /// Log in with an existing account. On success the token is stored.
+    pub async fn login(&self, username: &str, password: &str) -> Result<User, String> {
+        let resp: AuthResponse = self
+            .post(
+                "/auth/login",
+                &json!({ "username": username, "password": password }),
+            )
+            .await?;
+        self.set_token(Some(resp.token));
+        Ok(resp.user)
+    }
+
+    /// The account for the current token.
+    pub async fn me(&self) -> Result<User, String> {
+        let resp: serde_json::Value = self.get("/auth/me").await?;
+        serde_json::from_value(resp["user"].clone()).map_err(|e| e.to_string())
     }
 
     pub async fn health(&self) -> Result<Health, String> {
@@ -214,9 +273,13 @@ impl BackendApi {
             self.base,
             urlenc(path)
         );
-        let req = RequestBuilder::new(&url)
+        let mut builder = RequestBuilder::new(&url)
             .method(Method::PUT)
-            .header("content-type", "text/plain")
+            .header("content-type", "text/plain");
+        if let Some(token) = self.token.get() {
+            builder = builder.header("authorization", &format!("Bearer {token}"));
+        }
+        let req = builder
             .body(content.to_string())
             .map_err(|e| e.to_string())?;
         let resp = req.send().await.map_err(|e| e.to_string())?;
@@ -298,7 +361,11 @@ impl BackendApi {
         signal: Option<&AbortSignal>,
         mut on_event: impl FnMut(SseEvent),
     ) -> Result<(), String> {
-        let req = Request::post(&format!("{}/sessions/{session_id}/messages", self.base))
+        let mut builder = Request::post(&format!("{}/sessions/{session_id}/messages", self.base));
+        if let Some(token) = self.token.get() {
+            builder = builder.header("authorization", &format!("Bearer {token}"));
+        }
+        let req = builder
             .abort_signal(signal)
             .json(&json!({ "content": content, "model": model }))
             .map_err(|e| e.to_string())?;
@@ -370,7 +437,10 @@ impl BackendApi {
     {
         let url = format!("{}{path}", self.base);
         let is_delete = method == Method::DELETE;
-        let builder = RequestBuilder::new(&url).method(method);
+        let mut builder = RequestBuilder::new(&url).method(method);
+        if let Some(token) = self.token.get() {
+            builder = builder.header("authorization", &format!("Bearer {token}"));
+        }
         let req = match body {
             Some(body) => builder.json(body),
             None => builder.build(),
@@ -442,6 +512,25 @@ fn query_param(query: &str, key: &str) -> Option<String> {
         let (k, v) = pair.split_once('=')?;
         (k == key).then(|| v.to_string())
     })
+}
+
+/// The bearer token cached in localStorage, if any.
+fn read_token_from_storage() -> Option<String> {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|ls| ls.get_item("owide_token").ok().flatten())
+}
+
+fn write_token_to_storage(token: &str) {
+    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = ls.set_item("owide_token", token);
+    }
+}
+
+fn clear_token_from_storage() {
+    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = ls.remove_item("owide_token");
+    }
 }
 
 /// Percent-encode a path or query value, leaving unreserved characters intact.

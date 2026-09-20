@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, NewConnection, NewProject, Project, ProviderKind, Role,
-    SystemPrompt, WorkspaceMode,
+    SystemPrompt, User, UserRole, WorkspaceMode,
 };
 
 use crate::db::{Db, DbValue, QueryRow};
@@ -12,6 +12,29 @@ use crate::{StorageError, migrations};
 
 pub struct Store<D: Db> {
     db: D,
+}
+
+/// A user row including the password hash. The hash is internal to storage;
+/// the API never returns it (it maps to [`User`], which omits it).
+#[derive(Debug, Clone)]
+pub struct UserRecord {
+    pub id: i64,
+    pub username: String,
+    pub password_hash: String,
+    pub role: UserRole,
+    pub created_at: i64,
+}
+
+impl UserRecord {
+    /// The public form of this account, without the password hash.
+    pub fn public(&self) -> User {
+        User {
+            id: self.id,
+            username: self.username.clone(),
+            role: self.role,
+            created_at: self.created_at,
+        }
+    }
 }
 
 impl<D: Db> Store<D> {
@@ -22,6 +45,112 @@ impl<D: Db> Store<D> {
     /// Apply idempotent schema migrations.
     pub async fn migrate(&self) -> Result<(), StorageError> {
         migrations::apply(&self.db).await
+    }
+
+    // -- users -------------------------------------------------------------
+
+    const USER_COLUMNS: &'static str = "id, username, password_hash, role, created_at";
+
+    pub async fn insert_user(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: UserRole,
+        created_at: i64,
+    ) -> Result<UserRecord, StorageError> {
+        self.db
+            .execute(
+                "INSERT INTO users (username, password_hash, role, created_at)
+                 VALUES (?, ?, ?, ?)",
+                &[
+                    DbValue::Text(username.into()),
+                    DbValue::Text(password_hash.into()),
+                    DbValue::Text(role.as_str().into()),
+                    DbValue::Int(created_at),
+                ],
+            )
+            .await?;
+        self.get_user_by_username(username).await?.ok_or_else(|| {
+            StorageError::NotFound(format!("user {username} not found after insert"))
+        })
+    }
+
+    pub async fn get_user_by_username(
+        &self,
+        username: &str,
+    ) -> Result<Option<UserRecord>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                &format!(
+                    "SELECT {} FROM users WHERE username = ?",
+                    Self::USER_COLUMNS
+                ),
+                &[DbValue::Text(username.into())],
+            )
+            .await?;
+        res.rows.first().map(user_from_row).transpose()
+    }
+
+    pub async fn get_user(&self, id: i64) -> Result<Option<UserRecord>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                &format!("SELECT {} FROM users WHERE id = ?", Self::USER_COLUMNS),
+                &[DbValue::Int(id)],
+            )
+            .await?;
+        res.rows.first().map(user_from_row).transpose()
+    }
+
+    pub async fn count_users(&self) -> Result<i64, StorageError> {
+        let res = self.db.execute("SELECT COUNT(*) FROM users", &[]).await?;
+        Ok(res
+            .rows
+            .first()
+            .and_then(|r| r.values.first())
+            .and_then(|v| match v {
+                DbValue::Int(i) => Some(*i),
+                _ => None,
+            })
+            .unwrap_or(0))
+    }
+
+    pub async fn list_users(&self) -> Result<Vec<UserRecord>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                &format!("SELECT {} FROM users ORDER BY id", Self::USER_COLUMNS),
+                &[],
+            )
+            .await?;
+        res.rows.iter().map(user_from_row).collect()
+    }
+
+    /// Give the first registered user ownership of any projects created
+    /// before accounts existed.
+    pub async fn reassign_orphaned_projects(&self, user_id: i64) -> Result<u64, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "UPDATE projects SET user_id = ? WHERE user_id IS NULL",
+                &[DbValue::Int(user_id)],
+            )
+            .await?;
+        Ok(res.changes)
+    }
+
+    /// Give the first registered user ownership of any sessions created before
+    /// accounts existed, so pre-auth chat history isn't lost to scoping.
+    pub async fn reassign_orphaned_sessions(&self, user_id: i64) -> Result<u64, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "UPDATE sessions SET user_id = ? WHERE user_id IS NULL",
+                &[DbValue::Int(user_id)],
+            )
+            .await?;
+        Ok(res.changes)
     }
 
     // -- settings ----------------------------------------------------------
@@ -245,24 +374,35 @@ impl<D: Db> Store<D> {
     }
 
     // -- projects ------------------------------------------------------------
+    //
+    // Every project is owned by a user; these methods always filter by
+    // `user_id` so one account never sees another's projects.
 
-    pub async fn list_projects(&self) -> Result<Vec<Project>, StorageError> {
+    const PROJECT_COLUMNS: &'static str = "id, name, mode, path, user_id, created_at";
+
+    pub async fn list_projects(&self, user_id: i64) -> Result<Vec<Project>, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, mode, path, created_at FROM projects ORDER BY id",
-                &[],
+                &format!(
+                    "SELECT {} FROM projects WHERE user_id = ? ORDER BY id",
+                    Self::PROJECT_COLUMNS
+                ),
+                &[DbValue::Int(user_id)],
             )
             .await?;
         res.rows.iter().map(project_from_row).collect()
     }
 
-    pub async fn get_project(&self, id: i64) -> Result<Project, StorageError> {
+    pub async fn get_project(&self, id: i64, user_id: i64) -> Result<Project, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, mode, path, created_at FROM projects WHERE id = ?",
-                &[DbValue::Int(id)],
+                &format!(
+                    "SELECT {} FROM projects WHERE id = ? AND user_id = ?",
+                    Self::PROJECT_COLUMNS
+                ),
+                &[DbValue::Int(id), DbValue::Int(user_id)],
             )
             .await?;
         res.rows
@@ -275,12 +415,14 @@ impl<D: Db> Store<D> {
     pub async fn create_project(
         &self,
         new: &NewProject,
+        user_id: i64,
         created_at: i64,
     ) -> Result<Project, StorageError> {
         let res = self
             .db
             .execute(
-                "INSERT INTO projects (name, mode, path, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO projects (name, mode, path, user_id, created_at)
+                 VALUES (?, ?, ?, ?, ?)",
                 &[
                     DbValue::Text(new.name.clone()),
                     DbValue::Text(new.mode.as_str().into()),
@@ -288,28 +430,38 @@ impl<D: Db> Store<D> {
                         .as_ref()
                         .map(|p| DbValue::Text(p.clone()))
                         .unwrap_or(DbValue::Null),
+                    DbValue::Int(user_id),
                     DbValue::Int(created_at),
                 ],
             )
             .await?;
-        self.get_project(res.last_insert_rowid).await
+        self.get_project(res.last_insert_rowid, user_id).await
     }
 
-    pub async fn rename_project(&self, id: i64, name: &str) -> Result<Project, StorageError> {
+    pub async fn rename_project(
+        &self,
+        id: i64,
+        name: &str,
+        user_id: i64,
+    ) -> Result<Project, StorageError> {
         let res = self
             .db
             .execute(
-                "UPDATE projects SET name = ? WHERE id = ?",
-                &[DbValue::Text(name.into()), DbValue::Int(id)],
+                "UPDATE projects SET name = ? WHERE id = ? AND user_id = ?",
+                &[
+                    DbValue::Text(name.into()),
+                    DbValue::Int(id),
+                    DbValue::Int(user_id),
+                ],
             )
             .await?;
         if res.changes == 0 {
             return Err(StorageError::NotFound(format!("project {id}")));
         }
-        self.get_project(id).await
+        self.get_project(id, user_id).await
     }
 
-    pub async fn delete_project(&self, id: i64) -> Result<(), StorageError> {
+    pub async fn delete_project(&self, id: i64, user_id: i64) -> Result<(), StorageError> {
         // Remove the project's sessions and their messages first so no
         // orphans are left behind.
         self.db
@@ -326,7 +478,10 @@ impl<D: Db> Store<D> {
             .await?;
         let res = self
             .db
-            .execute("DELETE FROM projects WHERE id = ?", &[DbValue::Int(id)])
+            .execute(
+                "DELETE FROM projects WHERE id = ? AND user_id = ?",
+                &[DbValue::Int(id), DbValue::Int(user_id)],
+            )
             .await?;
         if res.changes == 0 {
             return Err(StorageError::NotFound(format!("project {id}")));
@@ -335,14 +490,22 @@ impl<D: Db> Store<D> {
     }
 
     // -- sessions ------------------------------------------------------------
+    //
+    // Sessions are owned by a user (set at creation); every lookup filters by
+    // `user_id` so one account never reads another's conversations.
 
-    pub async fn list_sessions(&self) -> Result<Vec<ChatSession>, StorageError> {
+    const SESSION_COLUMNS: &'static str =
+        "id, name, connection_id, system_prompt_id, project_id, user_id, created_at";
+
+    pub async fn list_sessions(&self, user_id: i64) -> Result<Vec<ChatSession>, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, connection_id, system_prompt_id, project_id, created_at
-                 FROM sessions ORDER BY id",
-                &[],
+                &format!(
+                    "SELECT {} FROM sessions WHERE user_id = ? ORDER BY id",
+                    Self::SESSION_COLUMNS
+                ),
+                &[DbValue::Int(user_id)],
             )
             .await?;
         res.rows.iter().map(session_from_row).collect()
@@ -351,25 +514,30 @@ impl<D: Db> Store<D> {
     pub async fn list_sessions_for_project(
         &self,
         project_id: i64,
+        user_id: i64,
     ) -> Result<Vec<ChatSession>, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, connection_id, system_prompt_id, project_id, created_at
-                 FROM sessions WHERE project_id = ? ORDER BY id",
-                &[DbValue::Int(project_id)],
+                &format!(
+                    "SELECT {} FROM sessions WHERE project_id = ? AND user_id = ? ORDER BY id",
+                    Self::SESSION_COLUMNS
+                ),
+                &[DbValue::Int(project_id), DbValue::Int(user_id)],
             )
             .await?;
         res.rows.iter().map(session_from_row).collect()
     }
 
-    pub async fn get_session(&self, id: i64) -> Result<ChatSession, StorageError> {
+    pub async fn get_session(&self, id: i64, user_id: i64) -> Result<ChatSession, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, connection_id, system_prompt_id, project_id, created_at
-                 FROM sessions WHERE id = ?",
-                &[DbValue::Int(id)],
+                &format!(
+                    "SELECT {} FROM sessions WHERE id = ? AND user_id = ?",
+                    Self::SESSION_COLUMNS
+                ),
+                &[DbValue::Int(id), DbValue::Int(user_id)],
             )
             .await?;
         res.rows
@@ -385,43 +553,57 @@ impl<D: Db> Store<D> {
         connection_id: Option<i64>,
         system_prompt_id: Option<i64>,
         project_id: Option<i64>,
+        user_id: i64,
         created_at: i64,
     ) -> Result<ChatSession, StorageError> {
         let res = self
             .db
             .execute(
-                "INSERT INTO sessions (name, connection_id, system_prompt_id, project_id, created_at)
-                 VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO sessions (name, connection_id, system_prompt_id, project_id, user_id, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)",
                 &[
                     DbValue::Text(name.into()),
                     connection_id.map(DbValue::Int).unwrap_or(DbValue::Null),
                     system_prompt_id.map(DbValue::Int).unwrap_or(DbValue::Null),
                     project_id.map(DbValue::Int).unwrap_or(DbValue::Null),
+                    DbValue::Int(user_id),
                     DbValue::Int(created_at),
                 ],
             )
             .await?;
-        self.get_session(res.last_insert_rowid).await
+        self.get_session(res.last_insert_rowid, user_id).await
     }
 
-    pub async fn rename_session(&self, id: i64, name: &str) -> Result<ChatSession, StorageError> {
+    pub async fn rename_session(
+        &self,
+        id: i64,
+        name: &str,
+        user_id: i64,
+    ) -> Result<ChatSession, StorageError> {
         let res = self
             .db
             .execute(
-                "UPDATE sessions SET name = ? WHERE id = ?",
-                &[DbValue::Text(name.into()), DbValue::Int(id)],
+                "UPDATE sessions SET name = ? WHERE id = ? AND user_id = ?",
+                &[
+                    DbValue::Text(name.into()),
+                    DbValue::Int(id),
+                    DbValue::Int(user_id),
+                ],
             )
             .await?;
         if res.changes == 0 {
             return Err(StorageError::NotFound(format!("session {id}")));
         }
-        self.get_session(id).await
+        self.get_session(id, user_id).await
     }
 
-    pub async fn delete_session(&self, id: i64) -> Result<(), StorageError> {
+    pub async fn delete_session(&self, id: i64, user_id: i64) -> Result<(), StorageError> {
         let res = self
             .db
-            .execute("DELETE FROM sessions WHERE id = ?", &[DbValue::Int(id)])
+            .execute(
+                "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+                &[DbValue::Int(id), DbValue::Int(user_id)],
+            )
             .await?;
         if res.changes == 0 {
             return Err(StorageError::NotFound(format!("session {id}")));
@@ -513,7 +695,8 @@ fn session_from_row(row: &QueryRow) -> Result<ChatSession, StorageError> {
         connection_id: opt_int(row, 2, "connection_id")?,
         system_prompt_id: opt_int(row, 3, "system_prompt_id")?,
         project_id: opt_int(row, 4, "project_id")?,
-        created_at: row.get_int(5)?,
+        user_id: opt_int(row, 5, "user_id")?,
+        created_at: row.get_int(6)?,
     })
 }
 
@@ -525,6 +708,19 @@ fn project_from_row(row: &QueryRow) -> Result<Project, StorageError> {
         mode: WorkspaceMode::parse(mode)
             .ok_or_else(|| StorageError::InvalidValue(format!("unknown workspace mode: {mode}")))?,
         path: row.get_text_opt(3).map(str::to_string),
+        user_id: opt_int(row, 4, "user_id")?,
+        created_at: row.get_int(5)?,
+    })
+}
+
+fn user_from_row(row: &QueryRow) -> Result<UserRecord, StorageError> {
+    let role = row.get_text(3)?;
+    Ok(UserRecord {
+        id: row.get_int(0)?,
+        username: row.get_text(1)?.to_string(),
+        password_hash: row.get_text(2)?.to_string(),
+        role: UserRole::parse(role)
+            .ok_or_else(|| StorageError::InvalidValue(format!("unknown role: {role}")))?,
         created_at: row.get_int(4)?,
     })
 }
@@ -554,6 +750,19 @@ mod tests {
         let store = Store::new(db);
         block_on(store.migrate()).unwrap();
         store
+    }
+
+    /// Create a user and return its id, for tests that need scoped data.
+    /// Call this *before* the test's `block_on` block (it runs its own
+    /// executor, so it must not be nested inside one).
+    fn test_user(store: &Store<RusqliteDb>, username: &str, role: UserRole) -> i64 {
+        block_on(async {
+            store
+                .insert_user(username, "hash", role, 1)
+                .await
+                .unwrap()
+                .id
+        })
     }
 
     #[test]
@@ -641,18 +850,23 @@ mod tests {
     #[test]
     fn sessions_and_messages() {
         let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
         block_on(async {
             let session = store
-                .create_session("first session", None, None, None, 1_700_000_000)
+                .create_session("first session", None, None, None, user_id, 1_700_000_000)
                 .await
                 .unwrap();
             assert!(session.id > 0);
             assert_eq!(session.system_prompt_id, None);
+            assert_eq!(session.user_id, Some(user_id));
 
-            let reloaded = store.get_session(session.id).await.unwrap();
+            let reloaded = store.get_session(session.id, user_id).await.unwrap();
             assert_eq!(reloaded.name, "first session");
 
-            let renamed = store.rename_session(session.id, "renamed").await.unwrap();
+            let renamed = store
+                .rename_session(session.id, "renamed", user_id)
+                .await
+                .unwrap();
             assert_eq!(renamed.name, "renamed");
 
             let msg = store
@@ -666,8 +880,8 @@ mod tests {
             assert_eq!(messages[0].role, Role::User);
             assert_eq!(messages[0].content, "hello");
 
-            store.delete_session(session.id).await.unwrap();
-            assert!(store.get_session(session.id).await.is_err());
+            store.delete_session(session.id, user_id).await.unwrap();
+            assert!(store.get_session(session.id, user_id).await.is_err());
             assert!(store.list_messages(session.id).await.unwrap().is_empty());
         });
     }
@@ -675,19 +889,20 @@ mod tests {
     #[test]
     fn session_system_prompt_reference() {
         let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
         block_on(async {
             let prompt = store
                 .insert_system_prompt("coder", "You are a coding agent.")
                 .await
                 .unwrap();
             let session = store
-                .create_session("s", None, Some(prompt.id), None, 1)
+                .create_session("s", None, Some(prompt.id), None, user_id, 1)
                 .await
                 .unwrap();
             assert_eq!(session.system_prompt_id, Some(prompt.id));
 
             store.delete_system_prompt(prompt.id).await.unwrap();
-            let reloaded = store.get_session(session.id).await.unwrap();
+            let reloaded = store.get_session(session.id, user_id).await.unwrap();
             assert_eq!(reloaded.system_prompt_id, None);
         });
     }
@@ -695,6 +910,7 @@ mod tests {
     #[test]
     fn deleting_connection_nulls_session() {
         let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
         block_on(async {
             let conn = store
                 .insert_connection(&NewConnection {
@@ -706,14 +922,14 @@ mod tests {
                 .await
                 .unwrap();
             let session = store
-                .create_session("s", Some(conn.id), None, None, 1)
+                .create_session("s", Some(conn.id), None, None, user_id, 1)
                 .await
                 .unwrap();
             assert_eq!(session.connection_id, Some(conn.id));
 
             store.delete_connection(conn.id).await.unwrap();
 
-            let sessions = store.list_sessions().await.unwrap();
+            let sessions = store.list_sessions(user_id).await.unwrap();
             assert_eq!(sessions[0].connection_id, None);
         });
     }
@@ -721,6 +937,7 @@ mod tests {
     #[test]
     fn project_crud() {
         let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
         block_on(async {
             let project = store
                 .create_project(
@@ -729,6 +946,7 @@ mod tests {
                         mode: WorkspaceMode::Remote,
                         path: Some("projects/my-app".into()),
                     },
+                    user_id,
                     1_700_000_000,
                 )
                 .await
@@ -736,27 +954,29 @@ mod tests {
             assert!(project.id > 0);
             assert_eq!(project.mode, WorkspaceMode::Remote);
             assert_eq!(project.path.as_deref(), Some("projects/my-app"));
+            assert_eq!(project.user_id, Some(user_id));
 
-            let reloaded = store.get_project(project.id).await.unwrap();
+            let reloaded = store.get_project(project.id, user_id).await.unwrap();
             assert_eq!(reloaded.name, "my-app");
 
             let renamed = store
-                .rename_project(project.id, "renamed-app")
+                .rename_project(project.id, "renamed-app", user_id)
                 .await
                 .unwrap();
             assert_eq!(renamed.name, "renamed-app");
 
-            assert_eq!(store.list_projects().await.unwrap().len(), 1);
+            assert_eq!(store.list_projects(user_id).await.unwrap().len(), 1);
 
-            store.delete_project(project.id).await.unwrap();
-            assert!(store.get_project(project.id).await.is_err());
-            assert!(store.list_projects().await.unwrap().is_empty());
+            store.delete_project(project.id, user_id).await.unwrap();
+            assert!(store.get_project(project.id, user_id).await.is_err());
+            assert!(store.list_projects(user_id).await.unwrap().is_empty());
         });
     }
 
     #[test]
     fn session_belongs_to_project() {
         let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
         block_on(async {
             let project = store
                 .create_project(
@@ -765,23 +985,115 @@ mod tests {
                         mode: WorkspaceMode::Local,
                         path: None,
                     },
+                    user_id,
                     1,
                 )
                 .await
                 .unwrap();
             let session = store
-                .create_session("s", None, None, Some(project.id), 2)
+                .create_session("s", None, None, Some(project.id), user_id, 2)
                 .await
                 .unwrap();
             assert_eq!(session.project_id, Some(project.id));
 
-            let for_project = store.list_sessions_for_project(project.id).await.unwrap();
+            let for_project = store
+                .list_sessions_for_project(project.id, user_id)
+                .await
+                .unwrap();
             assert_eq!(for_project.len(), 1);
             assert_eq!(for_project[0].id, session.id);
 
             // Deleting the project cascades to its sessions.
-            store.delete_project(project.id).await.unwrap();
-            assert!(store.get_session(session.id).await.is_err());
+            store.delete_project(project.id, user_id).await.unwrap();
+            assert!(store.get_session(session.id, user_id).await.is_err());
+        });
+    }
+
+    #[test]
+    fn users_scoping_isolates_data() {
+        let store = test_store();
+        let alice = test_user(&store, "alice", UserRole::Admin);
+        let bob = test_user(&store, "bob", UserRole::User);
+        block_on(async {
+            let project = store
+                .create_project(
+                    &NewProject {
+                        name: "alice-app".into(),
+                        mode: WorkspaceMode::Local,
+                        path: None,
+                    },
+                    alice,
+                    1,
+                )
+                .await
+                .unwrap();
+            let session = store
+                .create_session("s", None, None, Some(project.id), alice, 2)
+                .await
+                .unwrap();
+
+            // Bob sees none of Alice's projects or sessions.
+            assert!(store.list_projects(bob).await.unwrap().is_empty());
+            assert!(store.list_sessions(bob).await.unwrap().is_empty());
+            assert!(store.get_project(project.id, bob).await.is_err());
+            assert!(store.get_session(session.id, bob).await.is_err());
+
+            // Alice still sees her own.
+            assert_eq!(store.list_projects(alice).await.unwrap().len(), 1);
+            assert_eq!(store.list_sessions(alice).await.unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    fn first_user_inherits_orphaned_projects() {
+        let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            // A project created before accounts existed has no owner.
+            let res = store
+                .db
+                .execute(
+                    "INSERT INTO projects (name, mode, path, created_at) VALUES (?, ?, ?, ?)",
+                    &[
+                        DbValue::Text("legacy".into()),
+                        DbValue::Text("local".into()),
+                        DbValue::Null,
+                        DbValue::Int(1),
+                    ],
+                )
+                .await
+                .unwrap();
+            let orphan_id = res.last_insert_rowid;
+
+            let reassigned = store.reassign_orphaned_projects(user_id).await.unwrap();
+            assert_eq!(reassigned, 1);
+
+            let reloaded = store.get_project(orphan_id, user_id).await.unwrap();
+            assert_eq!(reloaded.user_id, Some(user_id));
+        });
+    }
+
+    #[test]
+    fn first_user_inherits_orphaned_sessions() {
+        let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            // A session created before accounts existed has no owner.
+            let res = store
+                .db
+                .execute(
+                    "INSERT INTO sessions (name, created_at) VALUES (?, ?)",
+                    &[DbValue::Text("legacy".into()), DbValue::Int(1)],
+                )
+                .await
+                .unwrap();
+            let orphan_id = res.last_insert_rowid;
+
+            let reassigned = store.reassign_orphaned_sessions(user_id).await.unwrap();
+            assert_eq!(reassigned, 1);
+
+            let reloaded = store.get_session(orphan_id, user_id).await.unwrap();
+            assert_eq!(reloaded.user_id, Some(user_id));
         });
     }
 }

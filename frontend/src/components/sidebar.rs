@@ -65,19 +65,21 @@ pub fn Sidebar(
                 </div>
                 <Show when=move || show_new_project.get() fallback=|| ()>
                     <div class="new-project-form">
-                        <input
-                            type="text"
-                            class="form-input"
-                            placeholder="Project name"
-                            value=move || np_name.get()
-                            on:input=move |e: web_sys::Event| {
-                                if let Some(target) = e.target()
-                                    && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
-                                {
-                                    set_np_name.set(input.value());
+                        <Show when=move || np_mode.get() == WorkspaceMode::Remote fallback=|| ()>
+                            <input
+                                type="text"
+                                class="form-input"
+                                placeholder="Project name"
+                                value=move || np_name.get()
+                                on:input=move |e: web_sys::Event| {
+                                    if let Some(target) = e.target()
+                                        && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
+                                    {
+                                        set_np_name.set(input.value());
+                                    }
                                 }
-                            }
-                        />
+                            />
+                        </Show>
                         <div class="mode-picker">
                             <label
                                 class=move || {

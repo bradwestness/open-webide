@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "backend",
     "crates/agent",
+    "crates/auth",
     "crates/core",
     "crates/llm",
     "crates/storage",
@@ -18,18 +19,24 @@ authors = ["Brad Westness"]
 
 [workspace.dependencies]
 anyhow = "1"
+argon2 = "0.5"
+base64 = "0.22"
 bytes = "1"
 futures = "0.3"
 gloo-net = "0.7"
+hmac = "0.12"
 http-body = "1"
 http-body-util = "0.1.3"
 js-sys = "0.3"
 leptos = { version = "0.8", features = ["csr"] }
 openwebide-agent = { path = "crates/agent" }
+openwebide-auth = { path = "crates/auth" }
 openwebide-core = { path = "crates/core" }
 openwebide-llm = { path = "crates/llm" }
 openwebide-storage = { path = "crates/storage" }
 pulldown-cmark = "0.13"
+rand = "0.9"
+sha2 = "0.10"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

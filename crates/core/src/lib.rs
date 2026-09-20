@@ -121,6 +121,9 @@ pub struct ChatSession {
     /// The project this session belongs to.
     #[serde(default)]
     pub project_id: Option<i64>,
+    /// The owning user, once accounts exist.
+    #[serde(default)]
+    pub user_id: Option<i64>,
     pub created_at: i64,
 }
 
@@ -317,6 +320,41 @@ impl WorkspaceMode {
     }
 }
 
+/// Account role. `Admin` manages accounts; `User` is a regular local account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserRole {
+    Admin,
+    User,
+}
+
+impl UserRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            UserRole::Admin => "admin",
+            UserRole::User => "user",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "admin" => Some(Self::Admin),
+            "user" => Some(Self::User),
+            _ => None,
+        }
+    }
+}
+
+/// A local user account. The password hash is internal to storage and is
+/// never exposed through this type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: i64,
+    pub username: String,
+    pub role: UserRole,
+    pub created_at: i64,
+}
+
 /// A project: a named folder the IDE operates on, plus its workspace mode.
 /// Sessions belong to a project; a project is a first-class entity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,6 +367,10 @@ pub struct Project {
     /// directory handle).
     #[serde(default)]
     pub path: Option<String>,
+    /// The owning user, once accounts exist. `None` for projects created
+    /// before auth was introduced (reassigned to the first registered user).
+    #[serde(default)]
+    pub user_id: Option<i64>,
     pub created_at: i64,
 }
 

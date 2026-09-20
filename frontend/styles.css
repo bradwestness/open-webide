@@ -782,6 +782,7 @@ body {
 .editor-highlight {
   position: absolute;
   inset: 0;
+  z-index: 1;
   overflow: hidden;
   pointer-events: none;
   margin: 0;
@@ -806,7 +807,10 @@ body {
   margin: 0;
   padding: 12px 16px;
   background: transparent;
-  color: transparent;
+  /* Visible fallback: if the highlight overlay is blank the raw text still
+     shows, so file content is never invisible. The overlay (z-index: 1)
+     paints the colored tokens on top when it has content. */
+  color: var(--text);
   caret-color: var(--text);
   font-family: var(--mono);
   font-size: 13px;
@@ -1190,4 +1194,90 @@ textarea.form-input {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
+}
+
+/* -- top bar: user --------------------------------------------------------- */
+
+.topbar-user {
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text-muted);
+}
+
+/* -- auth gate ------------------------------------------------------------- */
+
+.auth-gate {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.auth-loading {
+  color: var(--text-muted);
+}
+
+.auth-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  padding: 28px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.auth-logo {
+  margin: 0;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.auth-subtitle {
+  margin: 0 0 6px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.auth-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--offline);
+}
+
+.auth-toggle {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.auth-toggle:hover {
+  text-decoration: underline;
 }

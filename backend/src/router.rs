@@ -11,17 +11,33 @@ use crate::state::AppState;
 pub async fn route(req: Request) -> JsonResp {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
+    // Read the token before the match below moves `req`.
+    let token = bearer_token(&req);
 
     let resp = if method.as_str() == "OPTIONS" {
         preflight()
     } else {
-        let state = match AppState::new().await {
+        let mut state = match AppState::new().await {
             Ok(state) => state,
             Err(e) => return ApiError::internal(e.to_string()).into_response(),
         };
 
+        // Every non-public route requires a valid bearer token. Public routes
+        // (health, register, login, logout) run without one; a valid token on
+        // any other route sets `state.current_user` for the handlers.
+        if !is_public(&path) {
+            match crate::auth::authenticate(&state, token.as_deref()).await {
+                Ok(user) => state.current_user = Some(user),
+                Err(e) => return with_cors(e.into_response()),
+            }
+        }
+
         let result: Result<JsonResp, ApiError> = match (method.as_str(), path.as_str()) {
             ("GET", "/api/health") => Ok(api::health()),
+            ("POST", "/api/auth/register") => api::register(req, &state).await,
+            ("POST", "/api/auth/login") => api::login(req, &state).await,
+            ("GET", "/api/auth/me") => api::me(&state).await,
+            ("POST", "/api/auth/logout") => Ok(api::logout()),
             ("GET", "/api/connections") => api::list_connections(&state).await,
             ("POST", "/api/connections") => api::create_connection(req, &state).await,
             ("PUT", p) if p.starts_with("/api/connections/") => {
@@ -88,6 +104,23 @@ fn is_project_files(p: &str) -> bool {
     p.starts_with("/api/projects/") && p.contains("/files")
 }
 
+/// Routes that run without a bearer token.
+fn is_public(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/health" | "/api/auth/register" | "/api/auth/login" | "/api/auth/logout"
+    )
+}
+
+/// Extract the bearer token from the `Authorization` header, if present.
+fn bearer_token(req: &Request) -> Option<String> {
+    req.headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|v| v.trim().to_string())
+}
+
 fn preflight() -> JsonResp {
     Response::builder()
         .status(204)
@@ -106,7 +139,7 @@ fn with_cors(mut resp: JsonResp) -> JsonResp {
     );
     headers.insert(
         "access-control-allow-headers",
-        "content-type".parse().unwrap(),
+        "content-type, authorization".parse().unwrap(),
     );
     resp
 }

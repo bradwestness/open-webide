@@ -15,6 +15,8 @@ use web_sys::{
     FileSystemPermissionMode, IdbDatabase, IdbObjectStore, IdbRequest, IdbTransactionMode,
 };
 
+use crate::local_fs::js_error;
+
 const DB_NAME: &str = "openwebide";
 const STORE: &str = "directories";
 
@@ -122,6 +124,14 @@ fn get_store(db: &IdbDatabase, mode: IdbTransactionMode) -> Result<IdbObjectStor
     })
 }
 
+/// Build the IndexedDB key for a project. IndexedDB keys must be a number,
+/// string, Date, or buffer — `JsValue::from(i64)` yields a BigInt, which
+/// IndexedDB rejects with a DataError. Project ids are small, so an f64 number
+/// is exact.
+fn key(project_id: i64) -> JsValue {
+    JsValue::from_f64(project_id as f64)
+}
+
 /// Persist a directory handle keyed by project id.
 pub async fn save_handle(
     project_id: i64,
@@ -130,17 +140,13 @@ pub async fn save_handle(
     let db = open_db().await?;
     let store = get_store(&db, IdbTransactionMode::Readwrite)?;
     let record = js_sys::Object::new();
-    js_sys::Reflect::set(
-        &record,
-        &JsValue::from_str("projectId"),
-        &JsValue::from(project_id),
-    )
-    .map_err(|e| e.as_string().unwrap_or_default())?;
+    js_sys::Reflect::set(&record, &JsValue::from_str("projectId"), &key(project_id))
+        .map_err(|e| js_error(&e))?;
     js_sys::Reflect::set(&record, &JsValue::from_str("handle"), handle)
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     let request = store
-        .put_with_key(&record, &JsValue::from(project_id))
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .put_with_key(&record, &key(project_id))
+        .map_err(|e| js_error(&e))?;
     let (tx, rx) = oneshot::channel();
     let mut closures = Vec::new();
     attach(&request, &mut closures, tx, "put");
@@ -157,9 +163,7 @@ pub async fn save_handle(
 pub async fn load_handle(project_id: i64) -> Result<Option<FileSystemDirectoryHandle>, String> {
     let db = open_db().await?;
     let store = get_store(&db, IdbTransactionMode::Readonly)?;
-    let request = store
-        .get(&JsValue::from(project_id))
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+    let request = store.get(&key(project_id)).map_err(|e| js_error(&e))?;
     let (tx, rx) = oneshot::channel();
     let mut closures = Vec::new();
     attach(&request, &mut closures, tx, "get");
@@ -173,8 +177,8 @@ pub async fn load_handle(project_id: i64) -> Result<Option<FileSystemDirectoryHa
         return Ok(None);
     }
     let record = result.unchecked_into::<js_sys::Object>();
-    let handle = js_sys::Reflect::get(&record, &JsValue::from_str("handle"))
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+    let handle =
+        js_sys::Reflect::get(&record, &JsValue::from_str("handle")).map_err(|e| js_error(&e))?;
     if handle.is_null() || handle.is_undefined() {
         return Ok(None);
     }
@@ -195,6 +199,6 @@ pub async fn request_permission(handle: &FileSystemDirectoryHandle) -> Result<bo
     let promise = handle_ref.request_permission_with_descriptor(&descriptor);
     let result = wasm_bindgen_futures::JsFuture::from(promise)
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     Ok(result.as_string().as_deref() == Some("granted"))
 }

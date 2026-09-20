@@ -4,13 +4,13 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, FileDiff, FileEntry, ModelInfo, Project, Role, SearchHit,
-    SystemPrompt, WorkspaceMode,
+    SystemPrompt, User, WorkspaceMode,
 };
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
 use crate::api::{BackendApi, HealthState, SseEvent};
 use crate::components::{
-    ChatPane, ConversationItem, Editor, FileTree, Settings, Sidebar, StatusBar, TabBar,
+    AuthGate, ChatPane, ConversationItem, Editor, FileTree, Settings, Sidebar, StatusBar, TabBar,
     ToolStepResult, TopBar,
 };
 use crate::idb;
@@ -60,6 +60,15 @@ fn write_theme_to_storage(theme: &str) {
 #[component]
 pub fn App() -> impl IntoView {
     let api = BackendApi::from_location();
+
+    // -- auth --------------------------------------------------------------
+    // The signed-in account, once the cached token has been verified (or the
+    // user has logged in). `None` while the gate is showing.
+    let current_user = RwSignal::new(Option::<User>::None);
+    // True once the initial token check has finished (regardless of outcome).
+    let auth_checked = RwSignal::new(false);
+    // The signed-in user's name, for the top bar.
+    let username = RwSignal::new(Option::<String>::None);
 
     // -- global state ------------------------------------------------------
     let health = RwSignal::new(Option::<HealthState>::None);
@@ -119,6 +128,45 @@ pub fn App() -> impl IntoView {
     let default_prompt = RwSignal::new(Option::<i64>::None);
 
     // -- helpers -----------------------------------------------------------
+
+    // A successful login / registration: record the account. The main
+    // initial-load effect keys off `current_user`, so the user's data loads
+    // as soon as this is set.
+    let on_authed = Callback::new(move |user: User| {
+        current_user.set(Some(user));
+    });
+
+    // Log out: discard the token and reset all per-user state so the gate
+    // reappears with a clean slate.
+    let on_logout = {
+        let api = api.clone();
+        Callback::new(move |_| {
+            api.set_token(None);
+            current_user.set(None);
+            open_tabs.set(Vec::new());
+            active_project.set(None);
+            active_session.set(None);
+            projects.set(Vec::new());
+            sessions.set(Vec::new());
+            messages.set(Vec::new());
+            ws_entries.set(HashMap::new());
+            ws_expanded.set(HashSet::new());
+            ws_open_file.set(None);
+            ws_content.set(String::new());
+            ws_dirty.set(false);
+            ws_search.set(None);
+            ws_pending_edits.set(HashMap::new());
+            saved.set(HashMap::new());
+            local_handles.set(HashMap::new());
+            error.set(None);
+        })
+    };
+
+    // `Copy` handles so the auth-gate fallback (a `view!` inside a closure) can
+    // hand the API and the auth callback to the gate without moving them out of
+    // the closure, which would make the fallback `FnOnce`.
+    let api_ref = RwSignal::new(api.clone());
+    let on_authed_ref = RwSignal::new(on_authed);
 
     // Build the workspace for a project based on its mode. Remote wraps the
     // backend API; local wraps the project's directory handle (if loaded).
@@ -510,17 +558,13 @@ pub fn App() -> impl IntoView {
     let on_create_project = {
         let api = api.clone();
         Callback::new(move |_| {
-            let name = np_name.get().trim().to_string();
-            if name.is_empty() {
-                error.set(Some("Project name is required.".to_string()));
-                return;
-            }
             let mode = np_mode.get();
             error.set(None);
             let api = api.clone();
             spawn_local(async move {
                 // Local mode: pick a directory in the browser, persist its
-                // handle, then create the project record.
+                // handle, then create the project record. The picked folder's
+                // name is the project name, so no name is asked for up front.
                 if mode == WorkspaceMode::Local {
                     let picked = match local_fs::pick_directory().await {
                         Ok(picked) => picked,
@@ -533,8 +577,8 @@ pub fn App() -> impl IntoView {
                         // The user dismissed the picker; nothing to do.
                         return;
                     };
-                    let path = handle.name();
-                    let project = match api.create_project(&name, mode, Some(path)).await {
+                    let name = handle.name();
+                    let project = match api.create_project(&name, mode, Some(name.clone())).await {
                         Ok(project) => project,
                         Err(e) => {
                             error.set(Some(e));
@@ -557,6 +601,11 @@ pub fn App() -> impl IntoView {
                 }
                 // Remote mode: the path is relative to the mounted host folder
                 // (see spin.toml). Empty means the root of the mount.
+                let name = np_name.get().trim().to_string();
+                if name.is_empty() {
+                    error.set(Some("Project name is required.".to_string()));
+                    return;
+                }
                 let path = Some(np_path.get().trim().to_string());
                 match api.create_project(&name, mode, path).await {
                     Ok(p) => {
@@ -994,12 +1043,41 @@ pub fn App() -> impl IntoView {
         }
     });
 
-    // One-shot initial load: health, connections, projects, sessions, then
-    // auto-open the first project as a tab.
+    // One-shot auth check: if a token is cached, verify it with /me. A
+    // failure (or no token) leaves us unauthenticated, so the gate shows.
+    {
+        let api = api.clone();
+        Effect::new(move || {
+            if auth_checked.get() {
+                return;
+            }
+            let api = api.clone();
+            spawn_local(async move {
+                let user = if api.token().is_some() {
+                    api.me().await.ok()
+                } else {
+                    None
+                };
+                current_user.set(user);
+                auth_checked.set(true);
+            });
+        });
+    }
+
+    // The signed-in user's name for the top bar.
+    Effect::new(move || {
+        username.set(current_user.get().map(|u| u.username));
+    });
+
+    // Initial load: health, connections, projects, sessions, then auto-open
+    // the first project as a tab. Runs once the user is authenticated.
     {
         let api = api.clone();
         let sel = select_project;
         Effect::new(move || {
+            if current_user.get().is_none() {
+                return;
+            }
             let api = api.clone();
             spawn_local(async move {
                 let backend_ok = match api.health().await {
@@ -1162,12 +1240,33 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        <div class="app">
-            <TopBar
-                health=health.read_only()
-                on_open_settings=on_open_settings
-            />
-            <TabBar
+        <Show
+            when=move || auth_checked.get() && current_user.get().is_some()
+            fallback=move || {
+                view! {
+                    <Show
+                        when=move || auth_checked.get()
+                        fallback=move || {
+                            view! {
+                                <div class="auth-gate">
+                                    <div class="auth-loading">"Loading…"</div>
+                                </div>
+                            }
+                        }
+                    >
+                        <AuthGate api={api_ref.get()} on_authed={on_authed_ref.get()} />
+                    </Show>
+                }
+            }
+        >
+            <div class="app">
+                <TopBar
+                    health=health.read_only()
+                    username=username.read_only()
+                    on_open_settings=on_open_settings
+                    on_logout=on_logout
+                />
+                <TabBar
                 open_tabs=open_tabs.read_only()
                 active_project=active_project.read_only()
                 on_new=on_new_project
@@ -1265,5 +1364,6 @@ pub fn App() -> impl IntoView {
                 />
             </Show>
         </div>
+        </Show>
     }
 }

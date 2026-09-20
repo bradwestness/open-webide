@@ -12,6 +12,13 @@ pub const MIGRATIONS: &[&str] = &[
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     )",
+    "CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin', 'user')) DEFAULT 'user',
+        created_at INTEGER NOT NULL
+    )",
     "CREATE TABLE IF NOT EXISTS connections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
@@ -54,6 +61,45 @@ pub async fn apply<D: Db>(db: &D) -> Result<(), StorageError> {
     }
     add_session_system_prompt_column(db).await?;
     add_session_project_column(db).await?;
+    add_project_user_column(db).await?;
+    add_session_user_column(db).await?;
+    Ok(())
+}
+
+/// `ALTER TABLE ... ADD COLUMN` is not idempotent, so probe first. The
+/// `users` table is created above before this runs, so the FK target exists.
+async fn add_project_user_column<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('projects') WHERE name = 'user_id'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE projects ADD COLUMN user_id INTEGER REFERENCES users(id)",
+            &[],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// `ALTER TABLE ... ADD COLUMN` is not idempotent, so probe first.
+async fn add_session_user_column<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'user_id'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE sessions ADD COLUMN user_id INTEGER REFERENCES users(id)",
+            &[],
+        )
+        .await?;
+    }
     Ok(())
 }
 

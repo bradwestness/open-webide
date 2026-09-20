@@ -3,6 +3,7 @@
 
 mod agent;
 mod api;
+mod auth;
 mod error;
 mod files;
 mod http_client;

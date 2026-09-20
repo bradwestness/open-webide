@@ -11,6 +11,71 @@ use web_sys::{
     FileSystemPermissionMode, FileSystemWritableFileStream,
 };
 
+/// Extract a human-readable message from a rejected JS value. File System
+/// Access API and IndexedDB failures reject with a `DOMException` (an
+/// object), whose `as_string()` is `None`; defaulting that to `""` would
+/// surface an empty error. Fall back to the object's `name`/`message` fields.
+pub fn js_error(e: &JsValue) -> String {
+    if let Some(s) = e.as_string() {
+        return s;
+    }
+    let get = |k: &str| {
+        js_sys::Reflect::get(e, &JsValue::from_str(k))
+            .ok()
+            .and_then(|v| v.as_string())
+            .filter(|s| !s.is_empty())
+    };
+    match (get("name"), get("message")) {
+        (Some(n), Some(m)) if n != "Error" => format!("{n}: {m}"),
+        (Some(n), None) => n,
+        (None, Some(m)) => m,
+        _ => "operation failed".to_string(),
+    }
+}
+
+/// Call a `FileSystemHandle` permission method with an explicit readwrite
+/// descriptor and await its promise. web-sys 0.3.x only exposes the no-arg
+/// overloads (which default to "read"), but writes need readwrite, so the JS
+/// methods are called directly.
+async fn call_permission_method(
+    handle: &FileSystemDirectoryHandle,
+    method: &str,
+) -> Result<JsValue, String> {
+    let desc = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &desc,
+        &JsValue::from_str("mode"),
+        &JsValue::from_str("readwrite"),
+    );
+    let this: JsValue = handle.clone().unchecked_into();
+    let fn_value =
+        js_sys::Reflect::get(&this, &JsValue::from_str(method)).map_err(|e| js_error(&e))?;
+    let fn_value: js_sys::Function = fn_value
+        .dyn_into()
+        .map_err(|_| format!("{method} is not a function"))?;
+    let promise_value = fn_value.call1(&this, &desc).map_err(|e| js_error(&e))?;
+    let promise: js_sys::Promise = promise_value
+        .dyn_into()
+        .map_err(|_| "permission method did not return a promise".to_string())?;
+    JsFuture::from(promise).await.map_err(|e| js_error(&e))
+}
+
+/// Ensure the handle has readwrite permission, prompting the user if needed.
+/// A freshly picked handle is already granted; one restored from IndexedDB
+/// after a reload reverts to "prompt" and must be re-requested before use.
+async fn ensure_permission(handle: &FileSystemDirectoryHandle) -> Result<(), String> {
+    let query = call_permission_method(handle, "queryPermission").await?;
+    if query.as_string().as_deref() == Some("granted") {
+        return Ok(());
+    }
+    let request = call_permission_method(handle, "requestPermission").await?;
+    if request.as_string().as_deref() == Some("granted") {
+        Ok(())
+    } else {
+        Err("permission to access the folder was not granted".to_string())
+    }
+}
+
 /// Prompt the user to pick a directory to work on.
 ///
 /// Returns `Ok(Some(handle))` on a pick, `Ok(None)` if the user dismissed the
@@ -47,24 +112,26 @@ pub async fn pick_directory() -> Result<Option<FileSystemDirectoryHandle>, Strin
 
 /// List a directory's entries, returning project-relative paths.
 pub async fn list(root: &FileSystemDirectoryHandle, dir: &str) -> Result<Vec<FileEntry>, String> {
+    ensure_permission(root).await?;
     let dir_handle = resolve_dir(root, dir).await?;
     dir_entries(&dir_handle, dir).await
 }
 
 /// Read a file's contents as text.
 pub async fn read(root: &FileSystemDirectoryHandle, path: &str) -> Result<String, String> {
+    ensure_permission(root).await?;
     let (parent, name) = split_path(path);
     let parent_dir = resolve_dir(root, &parent).await?;
     let file_handle = file_handle(&parent_dir, &name).await?;
     let file_value = JsFuture::from(file_handle.get_file())
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     let blob: Blob = file_value
         .dyn_into()
         .map_err(|_| format!("no such file: {path}"))?;
     let text = JsFuture::from(blob.text())
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     Ok(text.as_string().unwrap_or_default())
 }
 
@@ -74,6 +141,7 @@ pub async fn write(
     path: &str,
     content: &str,
 ) -> Result<(), String> {
+    ensure_permission(root).await?;
     let (parent, name) = split_path(path);
     let parent_dir = ensure_dir(root, &parent).await?;
     let file_handle = file_handle(&parent_dir, &name).await?;
@@ -86,6 +154,7 @@ pub async fn create(
     path: &str,
     is_dir: bool,
 ) -> Result<(), String> {
+    ensure_permission(root).await?;
     if is_dir {
         ensure_dir(root, path).await?;
         return Ok(());
@@ -98,11 +167,12 @@ pub async fn create(
 
 /// Delete the file at `path`.
 pub async fn delete(root: &FileSystemDirectoryHandle, path: &str) -> Result<(), String> {
+    ensure_permission(root).await?;
     let (parent, name) = split_path(path);
     let parent_dir = resolve_dir(root, &parent).await?;
     JsFuture::from(parent_dir.remove_entry(&name))
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     Ok(())
 }
 
@@ -113,6 +183,7 @@ pub async fn search_content(
     query: &str,
     dir: &str,
 ) -> Result<Vec<SearchHit>, String> {
+    ensure_permission(root).await?;
     let start = resolve_dir(root, dir).await?;
     let mut results = Vec::new();
     content_search_recursive(&start, dir, query, &mut results).await?;
@@ -128,7 +199,7 @@ async fn file_handle(
 ) -> Result<FileSystemFileHandle, String> {
     let value = JsFuture::from(dir.get_file_handle(name))
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     value
         .dyn_into::<FileSystemFileHandle>()
         .map_err(|_| format!("no such file: {name}"))
@@ -141,7 +212,7 @@ async fn dir_handle(
 ) -> Result<FileSystemDirectoryHandle, String> {
     let value = JsFuture::from(dir.get_directory_handle(name))
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     value
         .dyn_into::<FileSystemDirectoryHandle>()
         .map_err(|_| format!("no such directory: {name}"))
@@ -156,7 +227,7 @@ async fn dir_handle_create(
     options.set_create(true);
     let value = JsFuture::from(dir.get_directory_handle_with_options(name, &options))
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     value
         .dyn_into::<FileSystemDirectoryHandle>()
         .map_err(|_| format!("cannot create directory: {name}"))
@@ -168,31 +239,29 @@ async fn write_file_handle(
 ) -> Result<(), String> {
     let writable_value = JsFuture::from(file_handle.create_writable())
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     let writable: FileSystemWritableFileStream = writable_value
         .dyn_into()
         .map_err(|_| "failed to open writable stream".to_string())?;
-    let write_promise = writable
-        .write_with_str(content)
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+    let write_promise = writable.write_with_str(content).map_err(|e| js_error(&e))?;
     JsFuture::from(write_promise)
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     // web-sys does not expose `FileSystemWritableFileStream::close`, so call it
     // through Reflect.
     let writable_js: JsValue = writable.unchecked_into();
     let close_fn_value = js_sys::Reflect::get(&writable_js, &JsValue::from_str("close"))
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     let close_fn: js_sys::Function = close_fn_value
         .dyn_into()
         .map_err(|_| "close is not a function".to_string())?;
     let close_promise_value =
         js_sys::Reflect::apply(&close_fn, &writable_js, &js_sys::Array::new())
-            .map_err(|e| e.as_string().unwrap_or_default())?;
+            .map_err(|e| js_error(&e))?;
     let close_promise: js_sys::Promise = close_promise_value.unchecked_into();
     JsFuture::from(close_promise)
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     Ok(())
 }
 
@@ -228,17 +297,17 @@ async fn dir_entries_with_handles(
     let iter = dir_handle.values();
     let mut entries = Vec::new();
     loop {
-        let next_promise = iter.next().map_err(|e| e.as_string().unwrap_or_default())?;
+        let next_promise = iter.next().map_err(|e| js_error(&e))?;
         let result = JsFuture::from(next_promise)
             .await
-            .map_err(|e| e.as_string().unwrap_or_default())?;
-        let done = js_sys::Reflect::get(&result, &JsValue::from_str("done"))
-            .map_err(|e| e.as_string().unwrap_or_default())?;
+            .map_err(|e| js_error(&e))?;
+        let done =
+            js_sys::Reflect::get(&result, &JsValue::from_str("done")).map_err(|e| js_error(&e))?;
         if done.as_bool().unwrap_or(true) {
             break;
         }
-        let value = js_sys::Reflect::get(&result, &JsValue::from_str("value"))
-            .map_err(|e| e.as_string().unwrap_or_default())?;
+        let value =
+            js_sys::Reflect::get(&result, &JsValue::from_str("value")).map_err(|e| js_error(&e))?;
         let handle: FileSystemHandle = value
             .dyn_into()
             .map_err(|_| "not a file system handle".to_string())?;
@@ -302,13 +371,13 @@ async fn content_search_recursive(
 async fn file_handle_text(file: &FileSystemFileHandle) -> Result<String, String> {
     let file_value = JsFuture::from(file.get_file())
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     let blob: Blob = file_value
         .dyn_into()
         .map_err(|_| "not a file".to_string())?;
     let text = JsFuture::from(blob.text())
         .await
-        .map_err(|e| e.as_string().unwrap_or_default())?;
+        .map_err(|e| js_error(&e))?;
     Ok(text.as_string().unwrap_or_default())
 }
 

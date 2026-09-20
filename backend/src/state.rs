@@ -1,6 +1,7 @@
 //! Per-request application state.
 
 use anyhow::Context;
+use openwebide_core::User;
 use openwebide_storage::{Store, spin_db::SpinDb};
 
 /// Spin components are stateless: each request gets a fresh connection to
@@ -8,6 +9,10 @@ use openwebide_storage::{Store, spin_db::SpinDb};
 /// re-applying migrations per request is cheap.
 pub struct AppState {
     pub store: Store<SpinDb>,
+    /// The authenticated account for this request, set by the router after
+    /// verifying the bearer token. `None` on public routes (health,
+    /// register, login).
+    pub current_user: Option<User>,
 }
 
 impl AppState {
@@ -17,7 +22,10 @@ impl AppState {
             .context("open default sqlite database")?;
         let store = Store::new(db);
         store.migrate().await.context("apply schema migrations")?;
-        Ok(Self { store })
+        Ok(Self {
+            store,
+            current_user: None,
+        })
     }
 }
 

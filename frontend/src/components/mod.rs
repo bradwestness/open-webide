@@ -1,3 +1,4 @@
+mod auth_gate;
 mod chat_pane;
 mod editor;
 mod file_tree;
@@ -7,6 +8,7 @@ mod status_bar;
 mod tab_bar;
 mod top_bar;
 
+pub use auth_gate::AuthGate;
 pub use chat_pane::{ChatPane, ConversationItem, ToolStepResult};
 pub use editor::Editor;
 pub use file_tree::FileTree;
