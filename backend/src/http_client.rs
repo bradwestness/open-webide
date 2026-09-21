@@ -13,11 +13,24 @@ use spin_sdk::http::{self, Response};
 /// Outbound HTTP client backed by Spin's WASI HTTP handler.
 pub struct SpinHttpClient;
 
+/// Turn a failed outbound request into an actionable error. Spin denies
+/// requests to hosts not in `allowed_outbound_hosts` with a
+/// `HttpRequestDenied` error — that's the one failure where we can tell the
+/// user exactly what to do.
+fn outbound_error(url: &str, e: impl std::fmt::Display) -> ProviderError {
+    let detail = e.to_string();
+    if detail.contains("HttpRequestDenied") {
+        ProviderError::Http(format!(
+            "outbound to {url} is blocked by Spin's `allowed_outbound_hosts` allowlist. Add the host to spin.toml (see README → Host egress) and restart Spin"
+        ))
+    } else {
+        ProviderError::Http(format!("cannot reach {url}: {detail}"))
+    }
+}
+
 impl HttpClient for SpinHttpClient {
     async fn get_json(&self, url: &str) -> Result<serde_json::Value, ProviderError> {
-        let response = http::get(url)
-            .await
-            .map_err(|e| ProviderError::Http(format!("cannot reach {url}: {e}")))?;
+        let response = http::get(url).await.map_err(|e| outbound_error(url, e))?;
         json_from_response(response).await
     }
 
@@ -30,7 +43,7 @@ impl HttpClient for SpinHttpClient {
             .map_err(|e| ProviderError::Parse(format!("serialize request: {e}")))?;
         let response = http::post(url, payload)
             .await
-            .map_err(|e| ProviderError::Http(format!("cannot reach {url}: {e}")))?;
+            .map_err(|e| outbound_error(url, e))?;
         json_from_response(response).await
     }
 
@@ -42,6 +55,7 @@ impl HttpClient for SpinHttpClient {
         let url = url.to_string();
         let payload = serde_json::to_string(body).unwrap_or_default();
         Box::pin(SpinStream {
+            url: url.clone(),
             state: SpinStreamState::Request(Box::pin(async move {
                 http::post(url, payload).await.map_err(|e| e.to_string())
             })),
@@ -75,6 +89,7 @@ async fn json_from_response(response: Response) -> Result<serde_json::Value, Pro
 /// they arrive. Non-success statuses are read in full and reported as a
 /// single [`ProviderError::Http`], mirroring `json_from_response`.
 struct SpinStream {
+    url: String,
     state: SpinStreamState,
 }
 
@@ -104,9 +119,7 @@ impl Stream for SpinStream {
                         };
                     }
                     Poll::Ready(Err(e)) => {
-                        return Poll::Ready(Some(Err(ProviderError::Http(format!(
-                            "cannot reach provider: {e}"
-                        )))));
+                        return Poll::Ready(Some(Err(outbound_error(&self.url, e))));
                     }
                     Poll::Pending => {
                         self.state = SpinStreamState::Request(future);

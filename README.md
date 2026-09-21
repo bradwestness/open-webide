@@ -112,6 +112,67 @@ curl -s -X POST localhost:3000/api/chat \
   -d '{"connection_id":1,"messages":[{"role":"user","content":"hello"}]}'
 ```
 
+## Host egress
+
+The backend is a Spin component, so it runs in a sandbox that can only
+reach the network hosts you explicitly allow. Outbound requests to any
+other host are denied by Spin *before* they leave the sandbox — the app
+can't change this at runtime.
+
+Allowed hosts are declared in [spin.toml](spin.toml) under
+`[component.backend]`:
+
+```toml
+allowed_outbound_hosts = [
+    # Localhost — engines running on the machine running Spin.
+    "*://localhost:*",
+    "*://127.0.0.1:*",
+    # Tailscale MagicDNS — engines on a tailnet.
+    "*://*.ts.net:*",
+    # Cloudflare Quick Tunnel — no-account tunnels.
+    "*://*.trycloudflare.com:*",
+    # ngrok — free tier.
+    "*://*.ngrok-free.app:*",
+    # NetBird — WireGuard mesh (Tailscale-style).
+    "*://*.netbird.cloud:*",
+    # Nord — NordLynx.
+    "*://*.nord:*",
+    # Cloudflare Mesh.
+    "*://*.cloudflaremesh.com:*",
+]
+```
+
+The defaults cover engines on the local machine plus the common
+MagicDNS-style / tunnel services used to reach engines on other machines
+(Tailscale, Cloudflare, ngrok, NetBird, Nord).
+
+### Allowing another host
+
+Add the host to `allowed_outbound_hosts` in [spin.toml](spin.toml), then
+**restart** Spin (`spin build --up`) — manifest changes only take effect on
+startup.
+
+- **A LAN IP** (e.g. llama.cpp on `192.168.1.50:8080`):
+  ```toml
+  "http://192.168.1.50:8080",
+  ```
+- **A Headscale tailnet** (your own Tailscale control server): use the
+  tailnet's DNS domain, e.g. `"*://*.my-tailnet.example:*"`.
+- **A custom tunnel / domain**: `"*://*.my-tunnel.example:*"`.
+
+Pattern format is `scheme://host:port` with `*` as a wildcard for each
+part. **Wildcards only work as DNS subdomains, not IP octets** — so
+`*://192.168.*:*` is rejected by Spin; list LAN hosts by their specific IP.
+
+When a request is denied, the API returns an actionable error pointing at
+this section:
+
+```
+HTTP error: outbound to http://10.0.0.99:9/v1/models is blocked by Spin's
+`allowed_outbound_hosts` allowlist. Add the host to spin.toml (see README
+→ Host egress) and restart Spin
+```
+
 ## Development
 
 ```sh

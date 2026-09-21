@@ -20,8 +20,21 @@ component = "frontend"
 source = "target/wasm32-wasip2/release/openwebide_backend.wasm"
 sqlite_databases = ["default"]
 allowed_outbound_hosts = [
+    # Localhost — engines running on the machine running Spin.
     "*://localhost:*",
     "*://127.0.0.1:*",
+    # Tailscale MagicDNS — engines on a tailnet.
+    "*://*.ts.net:*",
+    # Cloudflare Quick Tunnel — no-account tunnels.
+    "*://*.trycloudflare.com:*",
+    # ngrok — free tier.
+    "*://*.ngrok-free.app:*",
+    # NetBird — WireGuard mesh (Tailscale-style).
+    "*://*.netbird.cloud:*",
+    # Nord — NordLynx.
+    "*://*.nord:*",
+    # Cloudflare Mesh.
+    "*://*.cloudflaremesh.com:*",
 ]
 # Remote-mode workspace: the user's `~/source` directory, preopened into the
 # component. Spin copies `source` into a temp dir and preopens it at `/`.
