@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use openwebide_core::{ChatSession, Connection, Project, ProviderKind, SystemPrompt};
+use openwebide_core::{ChatSession, Connection, ProviderKind, SystemPrompt};
 use web_sys::wasm_bindgen::JsCast;
 
 #[component]
@@ -20,14 +20,9 @@ pub fn Sidebar(
     on_save_connection: Callback<()>,
     on_cancel_connection: Callback<()>,
     on_delete_connection: Callback<i64>,
-    projects: ReadSignal<Vec<Project>>,
     sessions: ReadSignal<Vec<ChatSession>>,
     active_project: ReadSignal<Option<i64>>,
     active_session: ReadSignal<Option<i64>>,
-    on_open_local: Callback<()>,
-    on_open_remote: Callback<()>,
-    on_open_project: Callback<i64>,
-    on_delete_project: Callback<i64>,
     on_select_session: Callback<i64>,
     on_new_session: Callback<()>,
     on_rename_session: Callback<i64>,
@@ -58,60 +53,6 @@ pub fn Sidebar(
 
     view! {
         <aside class="sidebar">
-            // -- projects ---------------------------------------------------
-            <div class="sidebar-section">
-                <div class="section-header">
-                    <h2>"Projects"</h2>
-                </div>
-                <div class="open-project-actions">
-                    <button class="btn" on:click=move |_| on_open_local.run(())>
-                        "Open local"
-                    </button>
-                    <button class="btn" on:click=move |_| on_open_remote.run(())>
-                        "Open remote"
-                    </button>
-                </div>
-                <For
-                    each=move || projects.get()
-                    key=|p| p.id
-                    children=move |p| {
-                        let id = p.id;
-                        let name = p.name.clone();
-                        let mode = p.mode;
-                        view! {
-                            <div
-                                class=move || {
-                                    if active_project.get() == Some(id) {
-                                        "project active".to_string()
-                                    } else {
-                                        "project".to_string()
-                                    }
-                                }
-                                on:click=move |_| on_open_project.run(id)
-                            >
-                                <span class="project-name">{name}</span>
-                                <span class="project-mode">{mode.as_str()}</span>
-                                <span class="project-actions">
-                                    <button
-                                        class="icon-btn"
-                                        title="Delete project"
-                                        on:click=move |e: web_sys::MouseEvent| {
-                                            e.stop_propagation();
-                                            on_delete_project.run(id);
-                                        }
-                                    >
-                                        "✕"
-                                    </button>
-                                </span>
-                            </div>
-                        }
-                    }
-                />
-                <Show when=move || projects.get().is_empty() fallback=|| ()>
-                    <p class="empty">"No projects yet — open a folder."</p>
-                </Show>
-            </div>
-
             // -- sessions (scoped to the active project) ---------------------
             <div class="sidebar-section">
                 <div class="section-header">

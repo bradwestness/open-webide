@@ -573,7 +573,9 @@ pub fn App() -> impl IntoView {
         ensure_root.run(id);
     });
 
-    // Close a project tab; if it was active, switch to another open tab.
+    // Close a project tab: the project itself is kept (and stays in the
+    // tab bar's "Recent" menu); if the closed tab was active, switch to
+    // another open tab.
     let close_project = Callback::new(move |id: i64| {
         open_tabs.update(|tabs| tabs.retain(|p| p.id != id));
         if active_project.get() == Some(id) {
@@ -595,7 +597,7 @@ pub fn App() -> impl IntoView {
         }
     });
 
-    // Open an existing project (from the list) as a tab.
+    // Open an existing project (from the tab bar's "Recent" menu) as a tab.
     let on_open_project = Callback::new(move |id: i64| {
         open_tabs.update(|tabs| {
             if !tabs.iter().any(|t| t.id == id)
@@ -638,8 +640,13 @@ pub fn App() -> impl IntoView {
                         return;
                     }
                 };
+                // create_project dedups by folder, so re-picking an already
+                // saved folder returns the existing project.
+                let preexisting = projects.get().iter().any(|p| p.id == project.id);
                 if let Err(e) = idb::save_handle(project.id, &handle).await {
-                    let _ = api.delete_project(project.id).await;
+                    if !preexisting {
+                        let _ = api.delete_project(project.id).await;
+                    }
                     error.set(Some(e));
                     return;
                 }
@@ -1456,11 +1463,16 @@ pub fn App() -> impl IntoView {
                     on_logout=on_logout
                 />
                 <TabBar
-                open_tabs=open_tabs.read_only()
-                active_project=active_project.read_only()
-                on_select=select_project
-                on_close=close_project
-            />
+                    open_tabs=open_tabs.read_only()
+                    projects=projects.read_only()
+                    active_project=active_project.read_only()
+                    on_select=select_project
+                    on_close=close_project
+                    on_open_local=on_open_local
+                    on_open_remote=on_open_remote
+                    on_open_project=on_open_project
+                    on_delete_project=on_delete_project
+                />
             <div class="app-body">
                 <Sidebar
                     connections=connections.read_only()
@@ -1479,14 +1491,9 @@ pub fn App() -> impl IntoView {
                     on_save_connection=on_save_connection
                     on_cancel_connection=on_cancel_connection
                     on_delete_connection=on_delete_connection
-                    projects=projects.read_only()
                     sessions=sessions.read_only()
                     active_project=active_project.read_only()
                     active_session=active_session.read_only()
-                    on_open_local=on_open_local
-                    on_open_remote=on_open_remote
-                    on_open_project=on_open_project
-                    on_delete_project=on_delete_project
                     on_select_session=on_select_session
                     on_new_session=on_new_session
                     on_rename_session=on_rename_session

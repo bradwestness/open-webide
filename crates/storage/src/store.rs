@@ -418,6 +418,26 @@ impl<D: Db> Store<D> {
         user_id: i64,
         created_at: i64,
     ) -> Result<Project, StorageError> {
+        // Re-opening a folder that already has a project returns that
+        // project instead of creating a duplicate: closing a tab only hides
+        // it, so the same folder can be opened again later.
+        if let Some(path) = &new.path {
+            let res = self
+                .db
+                .execute(
+                    "SELECT id FROM projects
+                     WHERE user_id = ? AND mode = ? AND path = ?",
+                    &[
+                        DbValue::Int(user_id),
+                        DbValue::Text(new.mode.as_str().into()),
+                        DbValue::Text(path.clone()),
+                    ],
+                )
+                .await?;
+            if let Some(row) = res.rows.first() {
+                return self.get_project(row.get_int(0)?, user_id).await;
+            }
+        }
         let res = self
             .db
             .execute(
@@ -970,6 +990,53 @@ mod tests {
             store.delete_project(project.id, user_id).await.unwrap();
             assert!(store.get_project(project.id, user_id).await.is_err());
             assert!(store.list_projects(user_id).await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn create_project_dedups_by_folder() {
+        let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            let new = NewProject {
+                name: "my-app".into(),
+                mode: WorkspaceMode::Remote,
+                path: Some("projects/my-app".into()),
+            };
+            let first = store.create_project(&new, user_id, 1).await.unwrap();
+            // The same folder again returns the existing project.
+            let again = store.create_project(&new, user_id, 2).await.unwrap();
+            assert_eq!(again.id, first.id);
+            assert_eq!(store.list_projects(user_id).await.unwrap().len(), 1);
+
+            // A different mode or a pathless project is a distinct project.
+            let local = store
+                .create_project(
+                    &NewProject {
+                        name: "my-app".into(),
+                        mode: WorkspaceMode::Local,
+                        path: Some("projects/my-app".into()),
+                    },
+                    user_id,
+                    3,
+                )
+                .await
+                .unwrap();
+            assert_ne!(local.id, first.id);
+            let pathless = store
+                .create_project(
+                    &NewProject {
+                        name: "other".into(),
+                        mode: WorkspaceMode::Local,
+                        path: None,
+                    },
+                    user_id,
+                    4,
+                )
+                .await
+                .unwrap();
+            assert_ne!(pathless.id, local.id);
+            assert_eq!(store.list_projects(user_id).await.unwrap().len(), 3);
         });
     }
 
