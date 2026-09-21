@@ -2,12 +2,12 @@ use leptos::prelude::*;
 use openwebide_core::Project;
 
 /// Rider-style project tabs: each open project is a tab; the active one is
-/// highlighted. A trailing "+" opens the new-project form in the sidebar.
+/// highlighted. New projects are opened from the sidebar's "Open local" /
+/// "Open remote" buttons.
 #[component]
 pub fn TabBar(
     open_tabs: ReadSignal<Vec<Project>>,
     active_project: ReadSignal<Option<i64>>,
-    on_new: Callback<()>,
     on_select: Callback<i64>,
     on_close: Callback<i64>,
 ) -> impl IntoView {
@@ -45,13 +45,6 @@ pub fn TabBar(
                     }
                 }
             />
-            <button
-                class="icon-btn tab-new"
-                title="New project"
-                on:click=move |_| on_new.run(())
-            >
-                "+"
-            </button>
         </div>
     }
 }

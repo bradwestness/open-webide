@@ -162,7 +162,6 @@ pub fn Editor(
     on_save: Callback<()>,
     on_accept: Callback<()>,
     on_reject: Callback<()>,
-    error: ReadSignal<Option<String>>,
 ) -> impl IntoView {
     let ta = NodeRef::<leptos::html::Textarea>::new();
     let hl = NodeRef::<leptos::html::Div>::new();
@@ -251,9 +250,6 @@ pub fn Editor(
                     </div>
                 </Show>
             </div>
-            <Show when=move || error.get().is_some() fallback=|| ()>
-                <div class="editor-error">{move || error.get().unwrap_or_default()}</div>
-            </Show>
             <Show
                 when=move || open_file.get().is_some()
                 fallback=move || {

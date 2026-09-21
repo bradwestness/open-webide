@@ -500,6 +500,19 @@ pub async fn files_delete(
     Ok(json_response(200, &json!({ "path": rel })))
 }
 
+// -- host file browser (Phase 10) --------------------------------------------------
+
+/// List a directory of the host mount (the preopen root, e.g. `~/source`)
+/// for the remote file browser. `?path=` is relative to the mount root;
+/// empty = the root itself. Paths that would escape the root are rejected by
+/// the filesystem layer, so this only ever exposes the mounted folder.
+pub async fn browse(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    let _user_id = current_user_id(state)?;
+    let rel = files_query(&req, "path").unwrap_or_default();
+    let entries = crate::files::list(&rel).await?;
+    Ok(json_response(200, &entries))
+}
+
 // -- sessions --------------------------------------------------------------------
 
 pub async fn list_sessions(state: &AppState) -> Result<JsonResp, ApiError> {

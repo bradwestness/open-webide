@@ -3,8 +3,8 @@
 use gloo_net::http::{Method, Request, RequestBuilder};
 use leptos::prelude::*;
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Health, ModelInfo, NewProject,
-    NewSession, Project, SearchHit, SystemPrompt, User, WorkspaceMode,
+    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Health, ModelInfo, NewConnection,
+    NewProject, NewSession, Project, ProviderKind, SearchHit, SystemPrompt, User, WorkspaceMode,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -132,6 +132,32 @@ impl BackendApi {
 
     pub async fn list_connections(&self) -> Result<Vec<Connection>, String> {
         self.get("/connections").await
+    }
+
+    pub async fn create_connection(
+        &self,
+        name: &str,
+        kind: ProviderKind,
+        base_url: &str,
+        model: Option<&str>,
+    ) -> Result<Connection, String> {
+        let body = NewConnection {
+            name: name.to_string(),
+            kind,
+            base_url: base_url.to_string(),
+            model: model.map(str::to_string),
+        };
+        self.post("/connections", &body).await
+    }
+
+    pub async fn update_connection(&self, connection: &Connection) -> Result<Connection, String> {
+        self.put(&format!("/connections/{}", connection.id), connection)
+            .await
+    }
+
+    pub async fn delete_connection(&self, id: i64) -> Result<(), String> {
+        self.request::<(), _>(Method::DELETE, &format!("/connections/{id}"), None)
+            .await
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<ChatSession>, String> {
@@ -319,6 +345,13 @@ impl BackendApi {
         .await
     }
 
+    /// List a directory of the host mount for the remote file browser.
+    /// `path` is relative to the mount root (e.g. `~/source`); empty = the
+    /// root itself.
+    pub async fn browse(&self, path: &str) -> Result<Vec<FileEntry>, String> {
+        self.get(&format!("/browse?path={}", urlenc(path))).await
+    }
+
     /// Full-text search: return the lines of every file whose content contains
     /// `query` (case-insensitive).
     pub async fn search_content(
@@ -385,11 +418,15 @@ impl BackendApi {
         let mut pending = String::new();
         loop {
             let read = reader.read();
+            // `reader.read()` resolves to a plain `{done, value}` object — a
+            // dictionary type with no JS constructor — so `dyn_into` (an
+            // `instanceof` check) would reject it. `unchecked_into` just
+            // reinterprets the value, which is safe here because the shape is
+            // guaranteed by the stream API.
             let chunk: ReadableStreamReadResult = JsFuture::from(read)
                 .await
                 .map_err(|e| format!("{e:?}"))?
-                .dyn_into()
-                .map_err(|e| format!("{e:?}"))?;
+                .unchecked_into();
             if chunk.get_done().unwrap_or(false) {
                 break;
             }

@@ -162,7 +162,6 @@ pub fn ChatPane(
     streaming: ReadSignal<bool>,
     draft: ReadSignal<String>,
     set_draft: WriteSignal<String>,
-    error: ReadSignal<Option<String>>,
     has_session: ReadSignal<bool>,
     local_mode: ReadSignal<bool>,
     models: ReadSignal<Vec<ModelInfo>>,
@@ -218,7 +217,7 @@ pub fn ChatPane(
                                     <div class="empty-state">
                                         <h1>"Open WebIDE"</h1>
                                         <p>"A WebAssembly IDE for local-LLM coding agents."</p>
-                                        <p class="muted">"Create a session in the sidebar to start chatting."</p>
+                                        <p class="muted">"Start chatting — a session is created from your first message."</p>
                                     </div>
                                 }
                             }
@@ -274,9 +273,6 @@ pub fn ChatPane(
                     />
                 </div>
             </Show>
-            <Show when=move || error.get().is_some() fallback=|| ()>
-                <div class="chat-error">{move || error.get().unwrap_or_default()}</div>
-            </Show>
             <Show when=move || local_mode.get() fallback=|| ()>
                 <div class="chat-hint">
                     "Local-mode projects use plain chat; agentic file tools need a remote (Spin-hosted) project."
@@ -318,7 +314,7 @@ pub fn ChatPane(
                         if has_session.get() {
                             "Send a message… (Enter to send, Shift+Enter for a newline)"
                         } else {
-                            "Create a session to start chatting"
+                            "Start a new chat… (Enter to send, Shift+Enter for a newline)"
                         }
                     }
                     on:input=move |e: web_sys::Event| {
@@ -341,7 +337,7 @@ pub fn ChatPane(
                         view! {
                             <button
                                 class="btn send"
-                                disabled=move || draft.with(|d| d.trim().is_empty()) || !has_session.get()
+                                disabled=move || draft.with(|d| d.trim().is_empty())
                                 on:click=move |_| on_send.run(())
                             >
                                 "Send"

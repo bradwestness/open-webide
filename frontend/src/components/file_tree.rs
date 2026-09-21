@@ -13,7 +13,6 @@ pub fn FileTree(
     expanded: ReadSignal<HashSet<String>>,
     open_file: ReadSignal<Option<String>>,
     search_results: ReadSignal<Option<Vec<SearchHit>>>,
-    error: ReadSignal<Option<String>>,
     on_toggle: Callback<String>,
     on_open: Callback<String>,
     on_new_file: Callback<()>,
@@ -59,10 +58,10 @@ pub fn FileTree(
                 <h2>"Explorer"</h2>
                 <span class="file-tree-actions">
                     <button class="icon-btn" title="New file" on:click=move |_| on_new_file.run(())>
-                        "🗎"
+                        "📄"
                     </button>
                     <button class="icon-btn" title="New folder" on:click=move |_| on_new_dir.run(())>
-                        "🗀"
+                        "📁"
                     </button>
                 </span>
             </div>
@@ -86,9 +85,6 @@ pub fn FileTree(
                     }
                 />
             </div>
-            <Show when=move || error.get().is_some() fallback=|| ()>
-                <div class="tree-error">{move || error.get().unwrap_or_default()}</div>
-            </Show>
             <Show
                 when=move || search_results.get().is_some()
                 fallback=move || {

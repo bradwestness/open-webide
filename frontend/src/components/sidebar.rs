@@ -1,24 +1,31 @@
 use leptos::prelude::*;
-use openwebide_core::{ChatSession, Connection, Project, SystemPrompt, WorkspaceMode};
+use openwebide_core::{ChatSession, Connection, Project, ProviderKind, SystemPrompt};
 use web_sys::wasm_bindgen::JsCast;
 
 #[component]
 pub fn Sidebar(
     connections: ReadSignal<Vec<Connection>>,
+    show_conn_form: ReadSignal<bool>,
+    conn_edit_id: ReadSignal<Option<i64>>,
+    conn_name: ReadSignal<String>,
+    set_conn_name: WriteSignal<String>,
+    conn_kind: ReadSignal<ProviderKind>,
+    set_conn_kind: WriteSignal<ProviderKind>,
+    conn_base_url: ReadSignal<String>,
+    set_conn_base_url: WriteSignal<String>,
+    conn_model: ReadSignal<String>,
+    set_conn_model: WriteSignal<String>,
+    on_new_connection: Callback<()>,
+    on_edit_connection: Callback<i64>,
+    on_save_connection: Callback<()>,
+    on_cancel_connection: Callback<()>,
+    on_delete_connection: Callback<i64>,
     projects: ReadSignal<Vec<Project>>,
     sessions: ReadSignal<Vec<ChatSession>>,
     active_project: ReadSignal<Option<i64>>,
     active_session: ReadSignal<Option<i64>>,
-    show_new_project: ReadSignal<bool>,
-    np_name: ReadSignal<String>,
-    set_np_name: WriteSignal<String>,
-    np_mode: ReadSignal<WorkspaceMode>,
-    set_np_mode: WriteSignal<WorkspaceMode>,
-    np_path: ReadSignal<String>,
-    set_np_path: WriteSignal<String>,
-    on_new_project: Callback<()>,
-    on_create_project: Callback<()>,
-    on_cancel_new: Callback<()>,
+    on_open_local: Callback<()>,
+    on_open_remote: Callback<()>,
     on_open_project: Callback<i64>,
     on_delete_project: Callback<i64>,
     on_select_session: Callback<i64>,
@@ -55,98 +62,15 @@ pub fn Sidebar(
             <div class="sidebar-section">
                 <div class="section-header">
                     <h2>"Projects"</h2>
-                    <button
-                        class="icon-btn"
-                        title="New project"
-                        on:click=move |_| on_new_project.run(())
-                    >
-                        "+"
+                </div>
+                <div class="open-project-actions">
+                    <button class="btn" on:click=move |_| on_open_local.run(())>
+                        "Open local"
+                    </button>
+                    <button class="btn" on:click=move |_| on_open_remote.run(())>
+                        "Open remote"
                     </button>
                 </div>
-                <Show when=move || show_new_project.get() fallback=|| ()>
-                    <div class="new-project-form">
-                        <Show when=move || np_mode.get() == WorkspaceMode::Remote fallback=|| ()>
-                            <input
-                                type="text"
-                                class="form-input"
-                                placeholder="Project name"
-                                value=move || np_name.get()
-                                on:input=move |e: web_sys::Event| {
-                                    if let Some(target) = e.target()
-                                        && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
-                                    {
-                                        set_np_name.set(input.value());
-                                    }
-                                }
-                            />
-                        </Show>
-                        <div class="mode-picker">
-                            <label
-                                class=move || {
-                                    if np_mode.get() == WorkspaceMode::Remote {
-                                        "mode-opt active".to_string()
-                                    } else {
-                                        "mode-opt".to_string()
-                                    }
-                                }
-                            >
-                                <input
-                                    type="radio"
-                                    name="ws-mode"
-                                    checked=move || np_mode.get() == WorkspaceMode::Remote
-                                    on:click=move |_| set_np_mode.set(WorkspaceMode::Remote)
-                                />
-                                "Remote"
-                            </label>
-                            <label
-                                class=move || {
-                                    if np_mode.get() == WorkspaceMode::Local {
-                                        "mode-opt active".to_string()
-                                    } else {
-                                        "mode-opt".to_string()
-                                    }
-                                }
-                            >
-                                <input
-                                    type="radio"
-                                    name="ws-mode"
-                                    checked=move || np_mode.get() == WorkspaceMode::Local
-                                    on:click=move |_| set_np_mode.set(WorkspaceMode::Local)
-                                />
-                                "Local"
-                            </label>
-                        </div>
-                        <Show when=move || np_mode.get() == WorkspaceMode::Remote fallback=|| ()>
-                            <input
-                                type="text"
-                                class="form-input"
-                                placeholder="Path relative to ~/source (e.g. repos/myproject)"
-                                value=move || np_path.get()
-                                on:input=move |e: web_sys::Event| {
-                                    if let Some(target) = e.target()
-                                        && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
-                                    {
-                                        set_np_path.set(input.value());
-                                    }
-                                }
-                            />
-                        </Show>
-                        <div class="form-actions">
-                            <button
-                                class="btn send"
-                                on:click=move |_| on_create_project.run(())
-                            >
-                                "Open"
-                            </button>
-                            <button
-                                class="btn"
-                                on:click=move |_| on_cancel_new.run(())
-                            >
-                                "Cancel"
-                            </button>
-                        </div>
-                    </div>
-                </Show>
                 <For
                     each=move || projects.get()
                     key=|p| p.id
@@ -194,7 +118,7 @@ pub fn Sidebar(
                     <h2>"Sessions"</h2>
                     <button
                         class="icon-btn"
-                        title="New session"
+                        title="New chat"
                         disabled=move || active_project.get().is_none()
                         on:click=move |_| on_new_session.run(())
                     >
@@ -261,28 +185,155 @@ pub fn Sidebar(
                         }
                         fallback=|| ()
                     >
-                        <p class="empty">"No sessions yet — create one."</p>
+                        <p class="empty">"No sessions yet — start chatting to create one."</p>
                     </Show>
                 </Show>
             </div>
 
             // -- connections --------------------------------------------------
             <div class="sidebar-section">
-                <h2>"Connections"</h2>
+                <div class="section-header">
+                    <h2>"Connections"</h2>
+                    <button
+                        class="icon-btn"
+                        title="New connection"
+                        on:click=move |_| on_new_connection.run(())
+                    >
+                        "+"
+                    </button>
+                </div>
+                <Show when=move || show_conn_form.get() fallback=|| ()>
+                    <div class="new-project-form">
+                        <input
+                            type="text"
+                            class="form-input"
+                            placeholder="Connection name"
+                            value=move || conn_name.get()
+                            on:input=move |e: web_sys::Event| {
+                                if let Some(target) = e.target()
+                                    && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
+                                {
+                                    set_conn_name.set(input.value());
+                                }
+                            }
+                        />
+                        <div class="mode-picker">
+                            <label
+                                class=move || {
+                                    if conn_kind.get() == ProviderKind::Ollama {
+                                        "mode-opt active".to_string()
+                                    } else {
+                                        "mode-opt".to_string()
+                                    }
+                                }
+                            >
+                                <input
+                                    type="radio"
+                                    name="conn-kind"
+                                    checked=move || conn_kind.get() == ProviderKind::Ollama
+                                    on:click=move |_| set_conn_kind.set(ProviderKind::Ollama)
+                                />
+                                "Ollama"
+                            </label>
+                            <label
+                                class=move || {
+                                    if conn_kind.get() == ProviderKind::LlamaCpp {
+                                        "mode-opt active".to_string()
+                                    } else {
+                                        "mode-opt".to_string()
+                                    }
+                                }
+                            >
+                                <input
+                                    type="radio"
+                                    name="conn-kind"
+                                    checked=move || conn_kind.get() == ProviderKind::LlamaCpp
+                                    on:click=move |_| set_conn_kind.set(ProviderKind::LlamaCpp)
+                                />
+                                "llama.cpp"
+                            </label>
+                        </div>
+                        <input
+                            type="text"
+                            class="form-input"
+                            placeholder="Base URL (e.g. http://localhost:11434)"
+                            value=move || conn_base_url.get()
+                            on:input=move |e: web_sys::Event| {
+                                if let Some(target) = e.target()
+                                    && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
+                                {
+                                    set_conn_base_url.set(input.value());
+                                }
+                            }
+                        />
+                        <input
+                            type="text"
+                            class="form-input"
+                            placeholder="Model (optional)"
+                            value=move || conn_model.get()
+                            on:input=move |e: web_sys::Event| {
+                                if let Some(target) = e.target()
+                                    && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
+                                {
+                                    set_conn_model.set(input.value());
+                                }
+                            }
+                        />
+                        <div class="form-actions">
+                            <button
+                                class="btn send"
+                                on:click=move |_| on_save_connection.run(())
+                            >
+                                {move || {
+                                    if conn_edit_id.get().is_some() {
+                                        "Save".to_string()
+                                    } else {
+                                        "Create".to_string()
+                                    }
+                                }}
+                            </button>
+                            <button
+                                class="btn"
+                                on:click=move |_| on_cancel_connection.run(())
+                            >
+                                "Cancel"
+                            </button>
+                        </div>
+                    </div>
+                </Show>
                 <For
                     each=move || connections.get()
                     key=|c| c.id
                     children=move |c| {
+                        let id = c.id;
+                        let name = c.name.clone();
+                        let kind = c.kind;
                         view! {
                             <div class="connection">
-                                <span class="conn-name">{move || c.name.clone()}</span>
-                                <span class="conn-kind">{c.kind.as_str()}</span>
+                                <span class="conn-name">{name}</span>
+                                <span class="conn-kind">{kind.as_str()}</span>
+                                <span class="conn-actions">
+                                    <button
+                                        class="icon-btn"
+                                        title="Edit"
+                                        on:click=move |_| on_edit_connection.run(id)
+                                    >
+                                        "✎"
+                                    </button>
+                                    <button
+                                        class="icon-btn"
+                                        title="Delete"
+                                        on:click=move |_| on_delete_connection.run(id)
+                                    >
+                                        "✕"
+                                    </button>
+                                </span>
                             </div>
                         }
                     }
                 />
                 <Show when=move || connections.get().is_empty() fallback=|| ()>
-                    <p class="empty">"No connections yet — add one via the API."</p>
+                    <p class="empty">"No connections yet — add one."</p>
                 </Show>
             </div>
 

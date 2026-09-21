@@ -1,7 +1,10 @@
 mod auth_gate;
 mod chat_pane;
+mod confirm_dialog;
 mod editor;
+mod file_browser;
 mod file_tree;
+mod prompt_dialog;
 mod settings;
 mod sidebar;
 mod status_bar;
@@ -10,8 +13,11 @@ mod top_bar;
 
 pub use auth_gate::AuthGate;
 pub use chat_pane::{ChatPane, ConversationItem, ToolStepResult};
+pub use confirm_dialog::{ConfirmDialog, ConfirmRequest};
 pub use editor::Editor;
+pub use file_browser::FileBrowser;
 pub use file_tree::FileTree;
+pub use prompt_dialog::{PromptDialog, PromptRequest};
 pub use settings::Settings;
 pub use sidebar::Sidebar;
 pub use status_bar::StatusBar;

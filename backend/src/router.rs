@@ -70,6 +70,7 @@ pub async fn route(req: Request) -> JsonResp {
             ("DELETE", p) if p.starts_with("/api/projects/") => {
                 api::delete_project(&state, p).await
             }
+            ("GET", "/api/browse") => api::browse(req, &state).await,
             ("GET", "/api/sessions") => api::list_sessions(&state).await,
             ("POST", "/api/sessions") => api::create_session(req, &state).await,
             ("PUT", p) if p.starts_with("/api/sessions/") && !p.contains("/messages") => {

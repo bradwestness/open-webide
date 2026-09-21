@@ -179,6 +179,54 @@ Themed in-app modals instead of browser-native `alert`/`confirm`/`prompt`
 and opening a remote project lets you browse the host folder tree instead of
 typing a path.
 
+## 11. Local agentic coding
+
+Agentic file tools for **local-mode** projects, where the folder lives on the
+machine running the browser. Today local mode is plain chat: the backend
+silently drops the tools and streams a plain completion, because the agent loop
+and tool execution run server-side in Spin and can't reach a browser-side
+folder (there is no bidirectional channel between the two).
+
+**Approach (browser-driven loop):** for local projects, run the agent loop in
+the browser. The browser executes the file tools against the local folder
+(File System Access API) and calls the backend for each LLM completion. Remote
+mode keeps its existing server-side loop. This is viable because
+`openwebide-agent` and `openwebide-llm` are dependency-clean for WASM (no Spin
+SDK, no std-only I/O) — the same compiled loop runs in both places.
+
+**Sharing via traits (minimize duplication):** the loop is *already* generic
+over two traits, so both modes reuse one loop instead of forking — the work is
+adding the browser-side impls, not new traits:
+- `ToolExecutor` (`crates/agent`) — read / write / list / search. Today one
+  impl: `WorkspaceExecutor` → `backend/src/files.rs` (host mount). Add a
+  browser impl over the existing `frontend/src/local_fs.rs` (near-identical
+  surface to the backend's `files.rs`).
+- `LlmProvider` (`crates/llm`) — `chat_tools` returns `Text` or `ToolCalls`.
+  Today one path: `Provider` + `SpinHttpClient`. Add a browser impl: an
+  `HttpClient` over gloo-net that posts to a backend tool-completion endpoint.
+
+The loop itself (model → tool call → execute → feed result back → repeat until
+`Text` or budget) lives once, not twice.
+
+**Gaps to close:**
+- **Tool-completion endpoint** — `POST /api/chat` calls `provider.chat` and
+  drops `ChatRequest.tools`; a new endpoint (e.g. `POST /api/chat-tools`) must
+  expose `provider.chat_tools` and return the `Text`/`ToolCalls` response so
+  the browser can drive the loop
+- **Browser `ToolExecutor` + `LlmProvider`** — implement both over
+  `local_fs` / gloo-net (add `openwebide-agent` + `openwebide-llm` to the
+  frontend)
+- **Persistence** — the `messages` table only allows roles
+  `system`/`user`/`assistant`, so `Role::Tool` steps can't be stored; the
+  backend needs an endpoint to persist the final assistant message for
+  browser-driven runs (today only the backend streams persist it)
+- **Surface agent steps** (cards + diffs) in the local chat pane the same way
+  remote does, and drop the "local mode is plain chat" hint
+
+**Done when:** with a local project open, "fix the failing test in this folder"
+→ the agent reads, edits, and reports against the browser's local folder, every
+step visible — running the same shared agent-loop code as remote mode.
+
 ## Parking lot
 
 Ideas without a phase yet:
