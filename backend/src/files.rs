@@ -191,56 +191,35 @@ pub async fn read(rel: &str) -> Result<String> {
     String::from_utf8(bytes).context("file is not valid UTF-8")
 }
 
-/// Drive a file write: hand `bytes` to a fresh stream, let the host read them
-/// via `write_via_stream`, then close the write end so the host sees EOF and
-/// finalizes.
+/// Write `bytes` to `file` by streaming them through a component-model
+/// stream that the host drains into the file.
 ///
-/// The host reads the stream until EOF before the `write_via_stream` future
-/// resolves, so the writer must be dropped to signal EOF. But the write
-/// future returned by `writer.write` holds a `&mut` borrow of the writer, so
-/// we cannot drop the writer while the write future is alive. Dropping a
-/// still-pending write future also cancels the in-flight write (losing the
-/// bytes and trapping the worker), so the write future must be *completed*
-/// before it is dropped.
+/// `write_via_stream` starts the host's read of the stream (and its write to
+/// the file) synchronously, so the host is already consuming from the stream
+/// by the time we write. We then write all bytes with `write_all`; each
+/// `await` yields to the runtime, which drives the host's read forward, and
+/// the write completes once the host has the bytes. Dropping the writer
+/// signals EOF, and awaiting the host's future finalizes the file (this is
+/// where a file-level error such as `NotPermitted` surfaces).
 ///
-/// The host's read is async and needs several polls before it reaches the
-/// point where it consumes the queued bytes, so a single "poll the read once,
-/// then poll the write once" is racy. Instead we drive both together: poll
-/// the host's read and the write future in a loop until the write future is
-/// ready (the host has the bytes). Only then is it safe to drop the write
-/// future (a no-op now that it is done) and the writer (EOF), and await the
-/// host to finalize.
+/// This mirrors the working `read` path (`read_via_stream` + `collect`). A
+/// tight manual-poll loop with a `noop_waker` does not work here: these
+/// operations complete via a host callback, so a loop that never yields to
+/// the runtime stalls, and dropping the still-pending write future cancels
+/// it, silently losing the bytes (a 0-byte file).
 async fn write_stream(file: &Descriptor, bytes: Vec<u8>) -> Result<()> {
-    use std::future::{Future, IntoFuture};
-    use std::task::Context;
-
+    let total = bytes.len();
     let (mut writer, reader) = crate::wit_stream::new::<u8>();
-    let mut drain = Box::pin(file.write_via_stream(reader, 0).into_future());
-    let mut write_fut = Box::pin(writer.write(bytes));
+    let drain = file.write_via_stream(reader, 0);
 
-    // Drive the host's read and the write together until the write completes
-    // (the host has consumed the bytes). The host's read is async, so it may
-    // take several polls to reach the point where it reads the queued bytes;
-    // each drain poll advances the host, and the write future is started on
-    // the first write poll and completes once the host has the bytes.
-    //
-    // The `Context` borrows a local waker and is not `Send`, so it is scoped
-    // to this block and dropped before the `drain.await` below; otherwise the
-    // whole future would be non-`Send` (a problem for the agent's executor).
-    {
-        let waker = futures::task::noop_waker();
-        let mut cx = Context::from_waker(&waker);
-        for _ in 0..100 {
-            let _ = drain.as_mut().poll(&mut cx);
-            if write_fut.as_mut().poll(&mut cx).is_ready() {
-                break;
-            }
-        }
+    let remaining = writer.write_all(bytes).await;
+    if !remaining.is_empty() {
+        return Err(anyhow::anyhow!(
+            "stream closed before all {total} bytes were written ({} delivered)",
+            total - remaining.len()
+        ));
     }
 
-    // The bytes are consumed. Drop the write future (a no-op now that it is
-    // done) and the writer (EOF), then await the host to finalize.
-    drop(write_fut);
     drop(writer);
     match drain.await {
         Ok(()) => Ok(()),
