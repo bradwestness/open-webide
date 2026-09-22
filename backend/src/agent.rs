@@ -363,8 +363,11 @@ pub fn agent_stream(
 ) -> Pin<Box<dyn Stream<Item = SseEvent> + Send + 'static>> {
     let executor = WorkspaceExecutor { base };
     let events = openwebide_agent::run(provider, executor, request, config, cancel, gate);
-    let tail = stream::unfold((store, session_id, events), |state| async move {
-        let (store, session_id, mut events) = state;
+    // Tool steps anchor to the user message that started this turn, so a
+    // reloaded session renders them right after it.
+    let anchor = user_message.id;
+    let tail = stream::unfold((store, session_id, anchor, events), |state| async move {
+        let (store, session_id, anchor, mut events) = state;
         let Some(event) = events.next().await else {
             // The run finished (completed, failed, or cancelled): drop the
             // flag and any recorded decisions so a late or stale cancel or
@@ -374,8 +377,16 @@ pub fn agent_stream(
             return None;
         };
         let sse = match event {
-            AgentEvent::ToolCall { id, name, summary } => SseEvent::ToolCall { id, name, summary },
+            AgentEvent::ToolCall { id, name, summary } => {
+                let _ = store
+                    .upsert_tool_step(session_id, anchor, &id, &name, &summary, now())
+                    .await;
+                SseEvent::ToolCall { id, name, summary }
+            }
             AgentEvent::PermissionRequest { id, name, summary } => {
+                let _ = store
+                    .upsert_tool_step(session_id, anchor, &id, &name, &summary, now())
+                    .await;
                 SseEvent::PermissionRequest { id, name, summary }
             }
             AgentEvent::ToolResult {
@@ -384,13 +395,18 @@ pub fn agent_stream(
                 ok,
                 summary,
                 diff,
-            } => SseEvent::ToolResult {
-                id,
-                name,
-                ok,
-                summary,
-                diff,
-            },
+            } => {
+                let _ = store
+                    .complete_tool_step(session_id, &id, ok, &summary, diff.as_ref())
+                    .await;
+                SseEvent::ToolResult {
+                    id,
+                    name,
+                    ok,
+                    summary,
+                    diff,
+                }
+            }
             AgentEvent::FinalText(text) => match store
                 .insert_message(session_id, Role::Assistant, &text, now())
                 .await
@@ -401,7 +417,7 @@ pub fn agent_stream(
             AgentEvent::Cancelled => SseEvent::Cancelled,
             AgentEvent::Error(message) => SseEvent::Error(message),
         };
-        Some((sse, (store, session_id, events)))
+        Some((sse, (store, session_id, anchor, events)))
     });
     Box::pin(stream::iter([SseEvent::Message(user_message)]).chain(tail))
 }

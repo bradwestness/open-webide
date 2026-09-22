@@ -202,6 +202,44 @@ pub struct FileDiff {
     pub new: String,
 }
 
+/// A persisted agent tool step: the call and, once it finishes, its result.
+///
+/// Stored separately from chat messages (which feed the LLM context) so a
+/// session's tool steps can be reloaded when switching tabs. The step renders
+/// right after the user message that started its turn ([`ToolStep::anchor_message_id`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolStep {
+    /// The agent's tool call id (matches the SSE `tool_call`/`tool_result` id).
+    pub tool_call_id: String,
+    /// The tool name (e.g. `write_file`).
+    pub name: String,
+    /// A human-readable description of the call (e.g. `write foo.txt`).
+    pub summary: String,
+    /// Whether the call succeeded; `None` while it is still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+    /// A one-line result summary; `None` while the call is still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<String>,
+    /// A file diff for edits; `None` for non-edit tools or while running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<FileDiff>,
+    /// The id of the user message that started this turn.
+    pub anchor_message_id: i64,
+}
+
+/// One item in a session's persisted conversation, in the order it occurred:
+/// a chat message or an agent tool step. Returned by the message-list
+/// endpoint so a reloaded session shows its tool steps again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConversationEntry {
+    /// A user or assistant chat message.
+    Message(ChatMessage),
+    /// An agent tool step and, once it finished, its result.
+    ToolStep(ToolStep),
+}
+
 /// Compute the changed middle of a file edit as inline `(marker, line)` pairs.
 ///
 /// The common prefix and suffix lines are stripped; the result holds the

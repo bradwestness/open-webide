@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, ModelInfo, Project, ProviderKind,
-    Role, SearchHit, SystemPrompt, User, WorkspaceMode,
+    ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, FileEntry, ModelInfo,
+    Project, ProviderKind, Role, SearchHit, SystemPrompt, User, WorkspaceMode,
 };
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
@@ -1459,9 +1459,25 @@ pub fn App() -> impl IntoView {
             spawn_local(async move {
                 match id {
                     Some(id) => match api.list_messages(id).await {
-                        Ok(m) => {
-                            messages.set(m.into_iter().map(ConversationItem::Message).collect())
-                        }
+                        Ok(entries) => messages.set(
+                            entries
+                                .into_iter()
+                                .map(|e| match e {
+                                    ConversationEntry::Message(m) => ConversationItem::Message(m),
+                                    ConversationEntry::ToolStep(ts) => ConversationItem::ToolStep {
+                                        id: ts.tool_call_id,
+                                        name: ts.name,
+                                        summary: ts.summary,
+                                        result: ts.ok.map(|ok| ToolStepResult {
+                                            ok,
+                                            summary: ts.result_summary.clone().unwrap_or_default(),
+                                            diff: ts.diff.clone(),
+                                        }),
+                                        awaiting_permission: false,
+                                    },
+                                })
+                                .collect(),
+                        ),
                         Err(e) => error.set(Some(e)),
                     },
                     None => messages.set(Vec::new()),

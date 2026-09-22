@@ -1174,6 +1174,7 @@ dependencies = [
  "futures",
  "openwebide-core",
  "rusqlite",
+ "serde_json",
  "spin-sdk",
  "thiserror 2.0.20",
 ]

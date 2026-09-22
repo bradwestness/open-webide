@@ -3,8 +3,9 @@
 use gloo_net::http::{Method, Request, RequestBuilder};
 use leptos::prelude::*;
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, FileDiff, FileEntry, Health, ModelInfo, NewConnection,
-    NewProject, NewSession, Project, ProviderKind, SearchHit, SystemPrompt, User, WorkspaceMode,
+    ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, FileEntry, Health,
+    ModelInfo, NewConnection, NewProject, NewSession, Project, ProviderKind, SearchHit,
+    SystemPrompt, User, WorkspaceMode,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -417,7 +418,9 @@ impl BackendApi {
         Ok(())
     }
 
-    pub async fn list_messages(&self, session_id: i64) -> Result<Vec<ChatMessage>, String> {
+    /// The session's conversation: chat messages interleaved with the agent's
+    /// tool steps, in order.
+    pub async fn list_messages(&self, session_id: i64) -> Result<Vec<ConversationEntry>, String> {
         self.get(&format!("/sessions/{session_id}/messages")).await
     }
 

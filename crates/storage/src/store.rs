@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, NewConnection, NewProject, Project, ProviderKind, Role,
-    SystemPrompt, User, UserRole, WorkspaceMode,
+    ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, NewConnection, NewProject,
+    Project, ProviderKind, Role, SystemPrompt, ToolStep, User, UserRole, WorkspaceMode,
 };
 
 use crate::db::{Db, DbValue, QueryRow};
@@ -676,6 +676,118 @@ impl<D: Db> Store<D> {
         })
     }
 
+    // -- tool steps ------------------------------------------------------------
+    //
+    // Agent tool steps are persisted separately from chat messages so a
+    // session's steps survive a tab switch without polluting the LLM context.
+    // `anchor_message_id` is the user message that started the turn; a step
+    // renders right after it.
+
+    /// Record (or refresh) a tool step as it is requested. Called for both a
+    /// `tool_call` and a `permission_request` (which share an id), so a gated
+    /// write is stored once.
+    pub async fn upsert_tool_step(
+        &self,
+        session_id: i64,
+        anchor_message_id: i64,
+        tool_call_id: &str,
+        name: &str,
+        summary: &str,
+        created_at: i64,
+    ) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "INSERT INTO tool_steps
+                     (session_id, anchor_message_id, tool_call_id, name, summary, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (session_id, tool_call_id)
+                 DO UPDATE SET name = excluded.name, summary = excluded.summary",
+                &[
+                    DbValue::Int(session_id),
+                    DbValue::Int(anchor_message_id),
+                    DbValue::Text(tool_call_id.into()),
+                    DbValue::Text(name.into()),
+                    DbValue::Text(summary.into()),
+                    DbValue::Int(created_at),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Fill in a tool step's outcome once it finishes.
+    pub async fn complete_tool_step(
+        &self,
+        session_id: i64,
+        tool_call_id: &str,
+        ok: bool,
+        result_summary: &str,
+        diff: Option<&FileDiff>,
+    ) -> Result<(), StorageError> {
+        let diff_json = diff
+            .map(|d| serde_json::to_string(d).map_err(|e| StorageError::Db(e.to_string())))
+            .transpose()?;
+        self.db
+            .execute(
+                "UPDATE tool_steps
+                 SET ok = ?, result_summary = ?, diff = ?
+                 WHERE session_id = ? AND tool_call_id = ?",
+                &[
+                    DbValue::Int(i64::from(ok)),
+                    DbValue::Text(result_summary.into()),
+                    diff_json.map(DbValue::Text).unwrap_or(DbValue::Null),
+                    DbValue::Int(session_id),
+                    DbValue::Text(tool_call_id.into()),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// The session's tool steps in the order they were recorded.
+    pub async fn list_tool_steps(&self, session_id: i64) -> Result<Vec<ToolStep>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT tool_call_id, name, summary, ok, result_summary, diff, anchor_message_id
+                 FROM tool_steps WHERE session_id = ? ORDER BY id",
+                &[DbValue::Int(session_id)],
+            )
+            .await?;
+        res.rows.iter().map(tool_step_from_row).collect()
+    }
+
+    /// The session's conversation as a single ordered list of messages and
+    /// tool steps: each message, then the steps anchored to it. This is what
+    /// the message-list endpoint returns so a reloaded session shows its steps.
+    pub async fn list_conversation(
+        &self,
+        session_id: i64,
+    ) -> Result<Vec<ConversationEntry>, StorageError> {
+        let messages = self.list_messages(session_id).await?;
+        let steps = self.list_tool_steps(session_id).await?;
+        let mut by_anchor: BTreeMap<i64, Vec<ToolStep>> = BTreeMap::new();
+        for step in steps {
+            by_anchor
+                .entry(step.anchor_message_id)
+                .or_default()
+                .push(step);
+        }
+        let mut out: Vec<ConversationEntry> = Vec::new();
+        for message in messages {
+            let anchor = message.id;
+            out.push(ConversationEntry::Message(message));
+            if let Some(steps) = by_anchor.remove(&anchor) {
+                out.extend(steps.into_iter().map(ConversationEntry::ToolStep));
+            }
+        }
+        // Steps whose anchor message is gone (shouldn't happen) go at the end.
+        for steps in by_anchor.into_values() {
+            out.extend(steps.into_iter().map(ConversationEntry::ToolStep));
+        }
+        Ok(out)
+    }
+
     // -- run cancellation ----------------------------------------------------
 
     /// Mark the session's in-flight run for cancellation. The streaming
@@ -857,6 +969,32 @@ fn message_from_row(row: &QueryRow) -> Result<ChatMessage, StorageError> {
     })
 }
 
+fn tool_step_from_row(row: &QueryRow) -> Result<ToolStep, StorageError> {
+    let ok = match &row.values[3] {
+        DbValue::Int(i) => Some(*i != 0),
+        DbValue::Null => None,
+        other => {
+            return Err(StorageError::InvalidValue(format!(
+                "tool step ok is not an integer: {other:?}"
+            )));
+        }
+    };
+    let diff = row
+        .get_text_opt(5)
+        .map(serde_json::from_str::<FileDiff>)
+        .transpose()
+        .map_err(|e| StorageError::InvalidValue(format!("bad tool step diff: {e}")))?;
+    Ok(ToolStep {
+        tool_call_id: row.get_text(0)?.to_string(),
+        name: row.get_text(1)?.to_string(),
+        summary: row.get_text(2)?.to_string(),
+        ok,
+        result_summary: row.get_text_opt(4).map(str::to_string),
+        diff,
+        anchor_message_id: row.get_int(6)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1001,6 +1139,111 @@ mod tests {
             store.delete_session(session.id, user_id).await.unwrap();
             assert!(store.get_session(session.id, user_id).await.is_err());
             assert!(store.list_messages(session.id).await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn conversation_interleaves_tool_steps() {
+        let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            let session = store
+                .create_session("s", None, None, None, user_id, 1)
+                .await
+                .unwrap();
+
+            // Turn 1: user message, a gated write that succeeds, assistant reply.
+            let user1 = store
+                .insert_message(session.id, Role::User, "make a file", 2)
+                .await
+                .unwrap();
+            store
+                .upsert_tool_step(
+                    session.id,
+                    user1.id,
+                    "call-1",
+                    "write_file",
+                    "write a.txt",
+                    3,
+                )
+                .await
+                .unwrap();
+            let diff = FileDiff {
+                path: "a.txt".into(),
+                old: None,
+                new: "hi".into(),
+            };
+            store
+                .complete_tool_step(session.id, "call-1", true, "wrote a.txt", Some(&diff))
+                .await
+                .unwrap();
+            store
+                .insert_message(session.id, Role::Assistant, "done", 4)
+                .await
+                .unwrap();
+
+            // Turn 2: another message and step, to prove per-anchor ordering.
+            let user2 = store
+                .insert_message(session.id, Role::User, "again", 5)
+                .await
+                .unwrap();
+            store
+                .upsert_tool_step(session.id, user2.id, "call-2", "read_file", "read a.txt", 6)
+                .await
+                .unwrap();
+            store
+                .complete_tool_step(session.id, "call-2", true, "read a.txt", None)
+                .await
+                .unwrap();
+            store
+                .insert_message(session.id, Role::Assistant, "done again", 7)
+                .await
+                .unwrap();
+
+            let convo = store.list_conversation(session.id).await.unwrap();
+            assert_eq!(convo.len(), 6);
+            assert!(matches!(
+                convo[0],
+                ConversationEntry::Message(ref m)
+                    if m.role == Role::User && m.content == "make a file"
+            ));
+            match &convo[1] {
+                ConversationEntry::ToolStep(ts) => {
+                    assert_eq!(ts.tool_call_id, "call-1");
+                    assert_eq!(ts.name, "write_file");
+                    assert_eq!(ts.ok, Some(true));
+                    assert_eq!(ts.result_summary.as_deref(), Some("wrote a.txt"));
+                    assert_eq!(ts.anchor_message_id, user1.id);
+                    assert!(ts.diff.is_some());
+                }
+                other => panic!("expected tool step, got {other:?}"),
+            }
+            assert!(matches!(
+                convo[2],
+                ConversationEntry::Message(ref m)
+                    if m.role == Role::Assistant && m.content == "done"
+            ));
+            assert!(matches!(
+                convo[3],
+                ConversationEntry::Message(ref m) if m.role == Role::User && m.content == "again"
+            ));
+            match &convo[4] {
+                ConversationEntry::ToolStep(ts) => {
+                    assert_eq!(ts.tool_call_id, "call-2");
+                    assert_eq!(ts.ok, Some(true));
+                    assert!(ts.diff.is_none());
+                }
+                other => panic!("expected tool step, got {other:?}"),
+            }
+            assert!(matches!(
+                convo[5],
+                ConversationEntry::Message(ref m)
+                    if m.role == Role::Assistant && m.content == "done again"
+            ));
+
+            // The LLM context path is unchanged: messages only, no tool steps.
+            let messages = store.list_messages(session.id).await.unwrap();
+            assert_eq!(messages.len(), 4);
         });
     }
 

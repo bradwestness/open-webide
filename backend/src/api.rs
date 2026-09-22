@@ -623,8 +623,10 @@ pub async fn list_messages(state: &AppState, path: &str) -> Result<JsonResp, Api
     let id = session_id(path)?;
     // Verify ownership before exposing the (unscoped) message list.
     state.store.get_session(id, user_id).await?;
-    let messages = state.store.list_messages(id).await?;
-    Ok(json_response(200, &messages))
+    // Messages plus the agent's tool steps, interleaved, so a reloaded session
+    // shows its steps again.
+    let conversation = state.store.list_conversation(id).await?;
+    Ok(json_response(200, &conversation))
 }
 
 #[derive(Deserialize)]

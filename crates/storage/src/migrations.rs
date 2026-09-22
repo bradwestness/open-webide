@@ -53,6 +53,23 @@ pub const MIGRATIONS: &[&str] = &[
         created_at INTEGER NOT NULL
     )",
     "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (session_id)",
+    // Agent tool steps, persisted so a session's steps survive a tab switch.
+    // Kept out of `messages` (which feeds the LLM context); `anchor_message_id`
+    // is the user message that started the turn, so steps render right after it.
+    "CREATE TABLE IF NOT EXISTS tool_steps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        anchor_message_id INTEGER NOT NULL,
+        tool_call_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        ok INTEGER,
+        result_summary TEXT,
+        diff TEXT,
+        created_at INTEGER NOT NULL,
+        UNIQUE (session_id, tool_call_id)
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_tool_steps_session ON tool_steps (session_id)",
     "CREATE TABLE IF NOT EXISTS run_cancels (
         session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE
     )",
