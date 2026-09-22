@@ -1,8 +1,11 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use leptos::prelude::*;
 use openwebide_core::{ChatMessage, FileDiff, ModelInfo, Role, diff_inline_lines};
 use web_sys::wasm_bindgen::JsCast;
 
-/// One item in the conversation: a chat message or an agent tool step.
+/// One item in the conversation: a chat message, an agent tool step, or a
+/// stop marker.
 #[derive(Debug, Clone)]
 pub enum ConversationItem {
     /// A user or assistant chat message.
@@ -15,6 +18,18 @@ pub enum ConversationItem {
         summary: String,
         result: Option<ToolStepResult>,
     },
+    /// A marker that the user stopped the run. The nonce keeps the item key
+    /// unique when a conversation has several stops.
+    Stopped { nonce: u64 },
+}
+
+/// A fresh "stopped" marker for the conversation list.
+static STOP_NONCE: AtomicU64 = AtomicU64::new(0);
+
+pub fn stopped_marker() -> ConversationItem {
+    ConversationItem::Stopped {
+        nonce: STOP_NONCE.fetch_add(1, Ordering::Relaxed),
+    }
 }
 
 /// The outcome of a finished tool step.
@@ -33,6 +48,7 @@ fn item_key(item: &ConversationItem) -> String {
         ConversationItem::ToolStep { id, result, .. } => {
             format!("t-{}-{}", id, if result.is_some() { 1 } else { 0 })
         }
+        ConversationItem::Stopped { nonce } => format!("s-{nonce}"),
     }
 }
 
@@ -235,38 +251,46 @@ pub fn ChatPane(
                         key=|item| item_key(item)
                         children=move |item| {
                             // `view!` blocks have content-dependent types, so the
-                            // message/tool-step dispatch can't be a Rust `match`;
-                            // use `Show` to branch between the two renderers.
+                            // item dispatch can't be a Rust `match`; use `Show`
+                            // to branch between the renderers.
                             let (item_sig, _set_item) = signal(item);
+                            let is_stopped = matches!(item_sig.get(), ConversationItem::Stopped { .. });
+                            let (stopped, _set_stopped) = signal(is_stopped);
                             let is_message = matches!(item_sig.get(), ConversationItem::Message(_));
                             let (is_msg, _set_is_msg) = signal(is_message);
                             view! {
                                 <Show
-                                    when=move || is_msg.get()
+                                    when=move || stopped.get()
                                     fallback=move || {
-                                        let (name, summary, result) = match item_sig.get() {
-                                            ConversationItem::ToolStep {
-                                                id: _,
-                                                name,
-                                                summary,
-                                                result,
-                                            } => (name, summary, result),
-                                            ConversationItem::Message(_) => {
-                                                unreachable!("not a tool step")
-                                            }
-                                        };
-                                        render_tool_step(name, summary, result)
+                                        view! {
+                                            <Show
+                                                when=move || is_msg.get()
+                                                fallback=move || {
+                                                    let (name, summary, result) =
+                                                        match item_sig.get() {
+                                                            ConversationItem::ToolStep {
+                                                                name,
+                                                                summary,
+                                                                result,
+                                                                ..
+                                                            } => (name, summary, result),
+                                                            _ => unreachable!("not a tool step"),
+                                                        };
+                                                    render_tool_step(name, summary, result)
+                                                }
+                                            >
+                                                {move || {
+                                                    let m = match item_sig.get() {
+                                                        ConversationItem::Message(m) => m,
+                                                        _ => unreachable!("not a message"),
+                                                    };
+                                                    render_message(m)
+                                                }}
+                                            </Show>
+                                        }
                                     }
                                 >
-                                    {move || {
-                                        let m = match item_sig.get() {
-                                            ConversationItem::Message(m) => m,
-                                            ConversationItem::ToolStep { .. } => {
-                                                unreachable!("not a message")
-                                            }
-                                        };
-                                        render_message(m)
-                                    }}
+                                    <div class="stopped-marker">"⏹ stopped"</div>
                                 </Show>
                             }
                         }

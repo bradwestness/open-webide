@@ -12,7 +12,7 @@ mod tab_bar;
 mod top_bar;
 
 pub use auth_gate::AuthGate;
-pub use chat_pane::{ChatPane, ConversationItem, ToolStepResult};
+pub use chat_pane::{ChatPane, ConversationItem, ToolStepResult, stopped_marker};
 pub use confirm_dialog::{ConfirmDialog, ConfirmRequest};
 pub use editor::Editor;
 pub use file_browser::FileBrowser;

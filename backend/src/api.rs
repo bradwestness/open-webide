@@ -1,5 +1,7 @@
 //! API handlers.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use openwebide_agent::AgentConfig;
@@ -13,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use spin_sdk::http::{FullBody, Request, Response, box_body};
 
-use crate::agent::{agent_stream, workspace_tools};
+use crate::agent::{CancelFlag, agent_stream, workspace_tools};
 use crate::auth;
 use crate::error::{ApiError, JsonResp};
 use crate::http_client::SpinHttpClient;
@@ -578,6 +580,18 @@ pub async fn delete_session(state: &AppState, path: &str) -> Result<JsonResp, Ap
     Ok(json_response(200, &json!({ "deleted": id })))
 }
 
+/// Request cancellation of the session's in-flight run. The flag is picked
+/// up by the streaming request at its next step boundary (before the next
+/// model call or tool execution); a run that is not in flight is unaffected.
+pub async fn cancel_session(state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
+    let id = session_id(path)?;
+    // Verify ownership before setting the flag.
+    state.store.get_session(id, user_id).await?;
+    state.store.request_cancel(id).await?;
+    Ok(json_response(200, &json!({ "cancelled": id })))
+}
+
 pub async fn list_messages(state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
     let id = session_id(path)?;
@@ -609,6 +623,8 @@ pub async fn send_session_message(
     let send: SendMessageBody = parse_json(body)?;
 
     let session = state.store.get_session(session_id, user_id).await?;
+    // A new run starts: clear any stale cancel flag from a previous run.
+    let _ = state.store.clear_cancel(session_id).await;
     let connection_id = session
         .connection_id
         .ok_or_else(|| ApiError::bad_request("session has no connection; pick one first"))?;
@@ -649,18 +665,21 @@ pub async fn send_session_message(
         },
     };
     let provider = Provider::for_connection(&connection, SpinHttpClient);
+    let store = Arc::new(state.store);
+    let cancel = CancelFlag::new(store.clone(), session_id);
     let stream = if is_remote {
         agent_stream(
-            state.store,
+            store.clone(),
             session_id,
             user_message,
             request,
             provider,
             base,
             AgentConfig::default(),
+            cancel,
         )
     } else {
-        message_stream(state.store, session_id, user_message, request, provider)
+        message_stream(store, session_id, user_message, request, provider)
     };
 
     Ok(Response::builder()

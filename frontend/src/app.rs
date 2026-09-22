@@ -12,7 +12,7 @@ use crate::api::{BackendApi, HealthState, SseEvent};
 use crate::components::{
     AuthGate, ChatPane, ConfirmDialog, ConfirmRequest, ConversationItem, Editor, FileBrowser,
     FileTree, PromptDialog, PromptRequest, Settings, Sidebar, StatusBar, TabBar, ToolStepResult,
-    TopBar,
+    TopBar, stopped_marker,
 };
 use crate::idb;
 use crate::local_fs;
@@ -84,6 +84,8 @@ pub fn App() -> impl IntoView {
     let error = RwSignal::new(Option::<String>::None);
     let draft = RwSignal::new(String::new());
     let abort = RwSignal::new(Option::<AbortController>::None);
+    // The session whose run is streaming, so Stop can cancel it server-side.
+    let streaming_session = RwSignal::new(Option::<i64>::None);
     // Models reported by the active session's connection, and the model each
     // session has chosen (None = the connection's default).
     let models = RwSignal::new(Vec::<ModelInfo>::new());
@@ -1097,6 +1099,7 @@ pub fn App() -> impl IntoView {
                     return;
                 };
                 abort.set(Some(controller.clone()));
+                streaming_session.set(Some(session_id));
                 let api = api.clone();
                 let result = api
                     .send_message(
@@ -1203,6 +1206,9 @@ pub fn App() -> impl IntoView {
                                         }
                                     });
                                 }
+                                SseEvent::Cancelled => {
+                                    messages.update(|m| m.push(stopped_marker()));
+                                }
                                 SseEvent::Error(e) => error.set(Some(e)),
                             }
                         },
@@ -1215,17 +1221,31 @@ pub fn App() -> impl IntoView {
                 }
                 streaming.set(false);
                 abort.set(None);
+                streaming_session.set(None);
             });
         })
     };
 
-    let on_stop = Callback::new(move |_| {
-        abort.with(|a| {
-            if let Some(c) = a.as_ref() {
-                c.abort();
+    let on_stop = {
+        let api = api.clone();
+        Callback::new(move |_| {
+            // Ask the server to stop the run; the browser abort below can't do it.
+            if let Some(session_id) = streaming_session.get() {
+                let api = api.clone();
+                spawn_local(async move {
+                    let _ = api.cancel_session(session_id).await;
+                });
             }
-        });
-    });
+            // The abort tears down the stream before the server's Cancelled
+            // event can arrive, so mark the stop here.
+            messages.update(|m| m.push(stopped_marker()));
+            abort.with(|a| {
+                if let Some(c) = a.as_ref() {
+                    c.abort();
+                }
+            });
+        })
+    };
 
     // -- effects -----------------------------------------------------------
 

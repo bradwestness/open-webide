@@ -2,10 +2,12 @@
 //! (workspace-confined file tools) and the SSE stream that wraps the agent
 //! loop from the `openwebide-agent` crate.
 
+use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use futures::{Stream, StreamExt, stream};
-use openwebide_agent::{AgentConfig, AgentEvent, ToolExecutor, ToolOutcome};
+use openwebide_agent::{AgentConfig, AgentEvent, CancelCheck, ToolExecutor, ToolOutcome};
 use openwebide_core::{ChatMessage, ChatRequest, FileDiff, Role, ToolCall, ToolDefinition};
 use openwebide_llm::registry::Provider;
 use openwebide_storage::{Store, spin_db::SpinDb};
@@ -262,25 +264,56 @@ fn fail(name: &str, target: &str, message: &str) -> ToolOutcome {
     }
 }
 
+/// A per-session cancel flag backed by SQLite. The cancel POST arrives as a
+/// separate Spin request (stateless, possibly another component instance),
+/// so the flag lives in the database; the in-flight stream polls it at step
+/// boundaries.
+pub struct CancelFlag {
+    store: Arc<Store<SpinDb>>,
+    session_id: i64,
+}
+
+impl CancelFlag {
+    pub fn new(store: Arc<Store<SpinDb>>, session_id: i64) -> Self {
+        Self { store, session_id }
+    }
+}
+
+impl CancelCheck for CancelFlag {
+    fn check(&self) -> impl Future<Output = bool> + Send {
+        let store = self.store.clone();
+        let session_id = self.session_id;
+        async move { store.cancel_requested(session_id).await.unwrap_or(false) }
+    }
+}
+
 /// Build the SSE event stream for one agentic message: the user message, the
 /// agent's tool steps, and (on success) the persisted assistant message.
 ///
-/// The store is moved in: the assistant message is persisted from inside the
-/// stream, so the response body outlives the request handler.
+/// The store is shared: the agent loop polls the cancel flag from inside the
+/// stream and the tail persists the reply, so the response body outlives the
+/// request handler.
+#[allow(clippy::too_many_arguments)]
 pub fn agent_stream(
-    store: Store<SpinDb>,
+    store: Arc<Store<SpinDb>>,
     session_id: i64,
     user_message: ChatMessage,
     request: ChatRequest,
     provider: Provider<SpinHttpClient>,
     base: String,
     config: AgentConfig,
+    cancel: CancelFlag,
 ) -> Pin<Box<dyn Stream<Item = SseEvent> + Send + 'static>> {
     let executor = WorkspaceExecutor { base };
-    let events = openwebide_agent::run(provider, executor, request, config);
+    let events = openwebide_agent::run(provider, executor, request, config, cancel);
     let tail = stream::unfold((store, session_id, events), |state| async move {
         let (store, session_id, mut events) = state;
-        let event = events.next().await?;
+        let Some(event) = events.next().await else {
+            // The run finished (completed, failed, or cancelled): drop the
+            // flag so a late or stale cancel can't affect the next run.
+            let _ = store.clear_cancel(session_id).await;
+            return None;
+        };
         let sse = match event {
             AgentEvent::ToolCall { id, name, summary } => SseEvent::ToolCall { id, name, summary },
             AgentEvent::ToolResult {
@@ -303,6 +336,7 @@ pub fn agent_stream(
                 Ok(message) => SseEvent::Done(message),
                 Err(error) => SseEvent::Error(format!("failed to save reply: {error}")),
             },
+            AgentEvent::Cancelled => SseEvent::Cancelled,
             AgentEvent::Error(message) => SseEvent::Error(message),
         };
         Some((sse, (store, session_id, events)))

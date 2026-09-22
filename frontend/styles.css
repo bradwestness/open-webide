@@ -399,6 +399,13 @@ body {
   font-size: 12px;
 }
 
+.stopped-marker {
+  max-width: 720px;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .tool-result {
   padding: 6px 10px;
   font-size: 12px;

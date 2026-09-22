@@ -55,6 +55,8 @@ pub enum SseEvent {
     },
     /// The final, persisted assistant reply.
     Done(ChatMessage),
+    /// The run was cancelled; the stream ends after this.
+    Cancelled,
     /// A provider or persistence error; the stream ends after this.
     Error(String),
 }
@@ -378,6 +380,19 @@ impl BackendApi {
             .await
     }
 
+    /// Ask the backend to stop the session's in-flight run. The run ends at
+    /// its next step boundary; the stream then emits `Cancelled`.
+    pub async fn cancel_session(&self, session_id: i64) -> Result<(), String> {
+        let _value: serde_json::Value = self
+            .request::<(), _>(
+                Method::POST,
+                &format!("/sessions/{session_id}/cancel"),
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn list_messages(&self, session_id: i64) -> Result<Vec<ChatMessage>, String> {
         self.get(&format!("/sessions/{session_id}/messages")).await
     }
@@ -539,6 +554,7 @@ fn parse_sse_frame(frame: &str) -> Option<SseEvent> {
                 .and_then(|d| serde_json::from_value(d.clone()).ok().flatten()),
         },
         "done" => SseEvent::Done(serde_json::from_value(value).ok()?),
+        "cancelled" => SseEvent::Cancelled,
         "error" => SseEvent::Error(value.get("error")?.as_str()?.to_string()),
         _ => return None,
     })

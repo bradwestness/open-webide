@@ -53,6 +53,9 @@ pub const MIGRATIONS: &[&str] = &[
         created_at INTEGER NOT NULL
     )",
     "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (session_id)",
+    "CREATE TABLE IF NOT EXISTS run_cancels (
+        session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE
+    )",
 ];
 
 pub async fn apply<D: Db>(db: &D) -> Result<(), StorageError> {

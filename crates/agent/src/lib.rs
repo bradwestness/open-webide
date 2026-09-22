@@ -70,6 +70,8 @@ pub enum AgentEvent {
     FinalText(String),
     /// The run stopped with an error (budget exhausted or provider failure).
     Error(String),
+    /// The user cancelled the run; no final text will follow.
+    Cancelled,
 }
 
 /// Executes the tool calls the model requests.
@@ -84,24 +86,54 @@ pub trait ToolExecutor: Send {
     fn execute(&self, call: &ToolCall) -> impl Future<Output = ToolOutcome> + Send;
 }
 
+/// Decides whether the current run should stop.
+///
+/// The loop calls this at step boundaries — before each model call and before
+/// each tool execution — so a cancel takes effect at the next boundary
+/// without interrupting an in-flight request.
+pub trait CancelCheck: Send {
+    /// Returns `true` when the run should stop.
+    ///
+    /// `async fn` in a trait cannot express the `Send` bound the agent loop
+    /// needs (the check's future is awaited inside a `Send` stream), so this
+    /// is an explicit `impl Future` (and impls allow the lint that suggests
+    /// the `async fn` form).
+    fn check(&self) -> impl Future<Output = bool> + Send;
+}
+
+/// A cancel check that never fires; for hosts without cancellation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopCancel;
+
+impl CancelCheck for NoopCancel {
+    #[allow(clippy::manual_async_fn)]
+    fn check(&self) -> impl Future<Output = bool> + Send {
+        async { false }
+    }
+}
+
 /// Run the agent loop, streaming one [`AgentEvent`] per step.
 ///
-/// The loop ends with a [`AgentEvent::FinalText`] (the model's answer) or an
-/// [`AgentEvent::Error`] (a budget was exhausted or the provider failed).
-pub fn run<P, T>(
+/// The loop ends with a [`AgentEvent::FinalText`] (the model's answer), an
+/// [`AgentEvent::Error`] (a budget was exhausted or the provider failed), or
+/// an [`AgentEvent::Cancelled`] (the cancel check fired at a step boundary).
+pub fn run<P, T, C>(
     provider: P,
     executor: T,
     request: ChatRequest,
     config: AgentConfig,
+    cancel: C,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send + 'static>>
 where
     P: LlmProvider + 'static,
     T: ToolExecutor + 'static,
+    C: CancelCheck + 'static,
 {
     Box::pin(stream::unfold(
         LoopState {
             provider,
             executor,
+            cancel,
             connection_id: request.connection_id,
             system_prompt: request.system_prompt,
             model: request.model,
@@ -119,6 +151,10 @@ where
                 match state.next {
                     Next::Stop => return None,
                     Next::CallModel => {
+                        if state.cancel.check().await {
+                            state.next = Next::Stop;
+                            return Some((AgentEvent::Cancelled, state));
+                        }
                         if state.turn >= state.config.max_turns {
                             state.next = Next::Stop;
                             return Some((
@@ -190,6 +226,10 @@ where
                         ));
                     }
                     Next::RunTool => {
+                        if state.cancel.check().await {
+                            state.next = Next::Stop;
+                            return Some((AgentEvent::Cancelled, state));
+                        }
                         let call = state
                             .current
                             .take()
@@ -224,9 +264,10 @@ where
 }
 
 /// The agent loop's mutable state, threaded through `stream::unfold`.
-struct LoopState<P, T> {
+struct LoopState<P, T, C> {
     provider: P,
     executor: T,
+    cancel: C,
     connection_id: i64,
     system_prompt: Option<String>,
     model: Option<String>,
@@ -392,7 +433,13 @@ mod tests {
         ]);
         let executor = FakeExecutor::new(vec![outcome("fn main() {}", "read src/main.rs")]);
 
-        let events = collect(run(provider, executor, request(), AgentConfig::default()));
+        let events = collect(run(
+            provider,
+            executor,
+            request(),
+            AgentConfig::default(),
+            NoopCancel,
+        ));
 
         assert_eq!(
             events,
@@ -437,7 +484,13 @@ mod tests {
             FakeProvider::new(vec![Ok(ChatResponse::Text("just an answer".into()))]);
         let executor = FakeExecutor::new(Vec::new());
 
-        let events = collect(run(provider, executor, request(), AgentConfig::default()));
+        let events = collect(run(
+            provider,
+            executor,
+            request(),
+            AgentConfig::default(),
+            NoopCancel,
+        ));
 
         assert_eq!(events, vec![AgentEvent::FinalText("just an answer".into())]);
         assert_eq!(requests.lock().unwrap().len(), 1);
@@ -460,6 +513,7 @@ mod tests {
                 max_turns: 2,
                 max_tool_calls: 10,
             },
+            NoopCancel,
         ));
 
         assert_eq!(
@@ -511,6 +565,7 @@ mod tests {
                 max_turns: 10,
                 max_tool_calls: 1,
             },
+            NoopCancel,
         ));
 
         assert_eq!(
@@ -539,8 +594,64 @@ mod tests {
             FakeProvider::new(vec![Err(ProviderError::Http("boom".into()))]);
         let executor = FakeExecutor::new(Vec::new());
 
-        let events = collect(run(provider, executor, request(), AgentConfig::default()));
+        let events = collect(run(
+            provider,
+            executor,
+            request(),
+            AgentConfig::default(),
+            NoopCancel,
+        ));
 
         assert_eq!(events, vec![AgentEvent::Error("HTTP error: boom".into())]);
+    }
+
+    /// A cancel check that fires on its second call.
+    struct FlippingCancel {
+        calls: Arc<Mutex<u32>>,
+    }
+
+    impl CancelCheck for FlippingCancel {
+        fn check(&self) -> impl Future<Output = bool> + Send {
+            let calls = self.calls.clone();
+            async move {
+                let n = *calls.lock().unwrap() + 1;
+                *calls.lock().unwrap() = n;
+                n >= 2
+            }
+        }
+    }
+
+    #[test]
+    fn stops_when_cancel_requested() {
+        let (provider, _requests) = FakeProvider::new(vec![
+            Ok(ChatResponse::ToolCalls(vec![call("a", "read_file", "{}")])),
+            Ok(ChatResponse::Text("too late".into())),
+        ]);
+        let executor = FakeExecutor::new(vec![outcome("1", "s1")]);
+
+        // The first check (before the model call) passes; the second (before
+        // the tool runs) fires, so the tool never executes and the run ends
+        // with Cancelled.
+        let events = collect(run(
+            provider,
+            executor,
+            request(),
+            AgentConfig::default(),
+            FlippingCancel {
+                calls: Arc::new(Mutex::new(0)),
+            },
+        ));
+
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::ToolCall {
+                    id: "a".into(),
+                    name: "read_file".into(),
+                    summary: "read_file {}".into(),
+                },
+                AgentEvent::Cancelled,
+            ]
+        );
     }
 }

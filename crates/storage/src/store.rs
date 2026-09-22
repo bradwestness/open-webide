@@ -675,6 +675,44 @@ impl<D: Db> Store<D> {
             tool_call_id: None,
         })
     }
+
+    // -- run cancellation ----------------------------------------------------
+
+    /// Mark the session's in-flight run for cancellation. The streaming
+    /// request polls [`Self::cancel_requested`] at step boundaries; Spin
+    /// requests are stateless, so the flag lives in the database.
+    pub async fn request_cancel(&self, session_id: i64) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "INSERT OR IGNORE INTO run_cancels (session_id) VALUES (?)",
+                &[DbValue::Int(session_id)],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Whether a cancel has been requested for the session's in-flight run.
+    pub async fn cancel_requested(&self, session_id: i64) -> Result<bool, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT 1 FROM run_cancels WHERE session_id = ?",
+                &[DbValue::Int(session_id)],
+            )
+            .await?;
+        Ok(!res.rows.is_empty())
+    }
+
+    /// Clear the cancel flag, called when a run finishes or a new one starts.
+    pub async fn clear_cancel(&self, session_id: i64) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "DELETE FROM run_cancels WHERE session_id = ?",
+                &[DbValue::Int(session_id)],
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 fn connection_from_row(row: &QueryRow) -> Result<Connection, StorageError> {
@@ -1161,6 +1199,27 @@ mod tests {
 
             let reloaded = store.get_session(orphan_id, user_id).await.unwrap();
             assert_eq!(reloaded.user_id, Some(user_id));
+        });
+    }
+
+    #[test]
+    fn cancel_flag_lifecycle() {
+        let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            let session = store
+                .create_session("s", None, None, None, user_id, 1)
+                .await
+                .unwrap();
+            assert!(!store.cancel_requested(session.id).await.unwrap());
+
+            store.request_cancel(session.id).await.unwrap();
+            // Repeating the request is a no-op.
+            store.request_cancel(session.id).await.unwrap();
+            assert!(store.cancel_requested(session.id).await.unwrap());
+
+            store.clear_cancel(session.id).await.unwrap();
+            assert!(!store.cancel_requested(session.id).await.unwrap());
         });
     }
 }

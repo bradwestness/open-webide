@@ -86,6 +86,9 @@ pub async fn route(req: Request) -> JsonResp {
                 // Moves `state`: the store is consumed by the SSE stream.
                 api::send_session_message(req, state, p).await
             }
+            ("POST", p) if p.starts_with("/api/sessions/") && p.ends_with("/cancel") => {
+                api::cancel_session(&state, p).await
+            }
             ("GET", "/api/models") => api::list_models(req, &state).await,
             ("POST", "/api/chat") => api::chat(req, &state).await,
             _ => Err(ApiError::not_found(format!("no route for {method} {path}"))),

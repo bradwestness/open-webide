@@ -5,7 +5,7 @@
 //! coding), and finally the persisted assistant message. Frame format:
 //!
 //! ```text
-//! event: message | delta | tool_call | tool_result | done | error
+//! event: message | delta | tool_call | tool_result | done | cancelled | error
 //! data: {json}
 //!
 //! ```
@@ -47,6 +47,8 @@ pub enum SseEvent {
     },
     /// The persisted assistant message; the stream ends after this.
     Done(ChatMessage),
+    /// The user cancelled the run; the stream ends after this.
+    Cancelled,
     /// A failure; the stream ends after this.
     Error(String),
 }
@@ -72,6 +74,7 @@ fn frame(event: &SseEvent) -> Bytes {
                 .to_string(),
         ),
         SseEvent::Done(message) => ("done", serde_json::to_string(message).unwrap()),
+        SseEvent::Cancelled => ("cancelled", "{}".to_string()),
         SseEvent::Error(error) => ("error", json!({ "error": error }).to_string()),
     };
     Bytes::from(format!("event: {name}\ndata: {data}\n\n"))
@@ -115,20 +118,22 @@ impl http_body::Body for SseBody {
     }
 }
 
-/// Shared state between the delta mapping and the tail that persists the
-/// assistant message.
+/// Shared state between the delta mapping, the cancel gate, and the tail
+/// that persists the assistant message.
 struct StreamState {
     buffer: String,
     failed: bool,
+    cancelled: bool,
 }
 
 /// Build the SSE event stream for one sent message: the user message, the
 /// provider's deltas, and (on success) the persisted assistant message.
 ///
-/// The store is moved in: the assistant message is persisted from inside the
-/// stream, so the response body outlives the request handler.
+/// The store is shared: the cancel gate polls the database for a cancel
+/// request (arriving as a separate Spin request) and the tail persists the
+/// reply, so the response body outlives the request handler.
 pub fn message_stream(
-    store: Store<SpinDb>,
+    store: Arc<Store<SpinDb>>,
     session_id: i64,
     user_message: ChatMessage,
     request: ChatRequest,
@@ -137,6 +142,7 @@ pub fn message_stream(
     let state = Arc::new(Mutex::new(StreamState {
         buffer: String::new(),
         failed: false,
+        cancelled: false,
     }));
     let deltas = {
         let state = state.clone();
@@ -153,17 +159,44 @@ pub fn message_stream(
                 }
             })
     };
-    // Persist the accumulated reply. On failure the partial reply is not
-    // saved, so history never contains a truncated assistant message. The
-    // `Option` state makes this a one-shot: after emitting, `maybe?` ends
-    // the stream.
+    // Poll the cancel flag as each delta arrives; a cancel requested by a
+    // separate request ends the stream with `Cancelled`. `take_while`
+    // includes the first `Cancelled`/`Error` item, then stops.
+    let gated = {
+        let store = store.clone();
+        let state = state.clone();
+        deltas
+            .then(move |event| {
+                let store = store.clone();
+                let state = state.clone();
+                async move {
+                    if matches!(&event, SseEvent::Delta(_))
+                        && store.cancel_requested(session_id).await.unwrap_or(false)
+                    {
+                        state.lock().unwrap().cancelled = true;
+                        return SseEvent::Cancelled;
+                    }
+                    event
+                }
+            })
+            .take_while(|event| {
+                futures::future::ready(!matches!(event, SseEvent::Cancelled | SseEvent::Error(_)))
+            })
+    };
+    // Persist the accumulated reply. On failure or cancellation the partial
+    // reply is not saved, so history never contains a truncated assistant
+    // message. The `Option` state makes this a one-shot: after emitting,
+    // `maybe?` ends the stream.
     let tail = stream::unfold(Some((store, session_id, state)), |maybe| async move {
         let (store, session_id, state) = maybe?;
-        let (failed, content) = {
+        // The run is over: drop the flag so a late or stale cancel can't
+        // affect the next run.
+        let _ = store.clear_cancel(session_id).await;
+        let (failed, cancelled, content) = {
             let st = state.lock().unwrap();
-            (st.failed, st.buffer.clone())
+            (st.failed, st.cancelled, st.buffer.clone())
         };
-        if failed {
+        if failed || cancelled {
             return None;
         }
         match store
@@ -179,7 +212,7 @@ pub fn message_stream(
     });
     Box::pin(
         stream::iter([SseEvent::Message(user_message)])
-            .chain(deltas)
+            .chain(gated)
             .chain(tail),
     )
 }
