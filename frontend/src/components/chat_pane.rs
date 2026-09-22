@@ -17,6 +17,8 @@ pub enum ConversationItem {
         name: String,
         summary: String,
         result: Option<ToolStepResult>,
+        /// A gated call (e.g. a file write) waiting for the user's approval.
+        awaiting_permission: bool,
     },
     /// A marker that the user stopped the run. The nonce keeps the item key
     /// unique when a conversation has several stops.
@@ -45,9 +47,17 @@ pub struct ToolStepResult {
 fn item_key(item: &ConversationItem) -> String {
     match item {
         ConversationItem::Message(m) => format!("m-{}-{}", m.id, m.content.len()),
-        ConversationItem::ToolStep { id, result, .. } => {
-            format!("t-{}-{}", id, if result.is_some() { 1 } else { 0 })
-        }
+        ConversationItem::ToolStep {
+            id,
+            result,
+            awaiting_permission,
+            ..
+        } => format!(
+            "t-{}-{}-{}",
+            id,
+            if result.is_some() { 1 } else { 0 },
+            if *awaiting_permission { 1 } else { 0 }
+        ),
         ConversationItem::Stopped { nonce } => format!("s-{nonce}"),
     }
 }
@@ -123,14 +133,17 @@ fn render_diff_view(diff: FileDiff) -> impl IntoView {
 }
 
 /// Render an agent tool step as a card: which file, what action, and the
-/// result (a diff for edits, or a one-line summary otherwise). The three
-/// possible bodies (pending / diff / summary) are mutually exclusive, so each
-/// is a flat `Show` — `view!` blocks have content-dependent types and can't be
-/// branched with Rust `if`/`match`.
+/// result (a diff for edits, or a one-line summary otherwise). The possible
+/// bodies (pending / permission prompt / diff / summary) are mutually
+/// exclusive, so each is a flat `Show` — `view!` blocks have
+/// content-dependent types and can't be branched with Rust `if`/`match`.
 fn render_tool_step(
+    id: String,
     name: String,
     summary: String,
     result: Option<ToolStepResult>,
+    awaiting_permission: bool,
+    on_permission: Callback<(String, bool)>,
 ) -> impl IntoView {
     let status_class = match result.as_ref() {
         Some(r) if r.ok => "ok",
@@ -139,13 +152,39 @@ fn render_tool_step(
     };
     let header_class = format!("tool-step-header {status_class}");
     let (result_sig, _set_result) = signal(result);
+    // Hold the (fixed, per-key) id in a signal so the button closures below
+    // stay re-callable (`Fn`) inside the `view!` block.
+    let (id_sig, _set_id) = signal(id);
     view! {
         <div class="tool-step">
             <div class=move || header_class.clone()>
                 <span class="tool-step-name">{name}</span>
                 <span class="tool-step-summary">{summary}</span>
             </div>
-            <Show when=move || result_sig.get().is_none() fallback=|| ()>
+            <Show
+                when=move || awaiting_permission && result_sig.get().is_none()
+                fallback=|| ()
+            >
+                <div class="tool-permission">
+                    <span class="tool-pending">"waiting for approval…"</span>
+                    <button
+                        class="btn approve"
+                        on:click=move |_| on_permission.run((id_sig.get().clone(), true))
+                    >
+                        "Approve"
+                    </button>
+                    <button
+                        class="btn deny"
+                        on:click=move |_| on_permission.run((id_sig.get().clone(), false))
+                    >
+                        "Deny"
+                    </button>
+                </div>
+            </Show>
+            <Show
+                when=move || result_sig.get().is_none() && !awaiting_permission
+                fallback=|| ()
+            >
                 <div class="tool-pending">"running…"</div>
             </Show>
             <Show
@@ -185,6 +224,8 @@ pub fn ChatPane(
     on_select_model: Callback<Option<String>>,
     on_send: Callback<()>,
     on_stop: Callback<()>,
+    /// Approve or deny a gated tool call: `(tool_call_id, approved)`.
+    on_permission: Callback<(String, bool)>,
 ) -> impl IntoView {
     let scroll_ref = NodeRef::<leptos::html::Div>::new();
     let input_ref = NodeRef::<leptos::html::Textarea>::new();
@@ -266,17 +307,33 @@ pub fn ChatPane(
                                             <Show
                                                 when=move || is_msg.get()
                                                 fallback=move || {
-                                                    let (name, summary, result) =
+                                                    let (id, name, summary, result, awaiting) =
                                                         match item_sig.get() {
                                                             ConversationItem::ToolStep {
+                                                                id,
                                                                 name,
                                                                 summary,
                                                                 result,
-                                                                ..
-                                                            } => (name, summary, result),
+                                                                awaiting_permission,
+                                                            } => {
+                                                                (
+                                                                    id,
+                                                                    name,
+                                                                    summary,
+                                                                    result,
+                                                                    awaiting_permission,
+                                                                )
+                                                            }
                                                             _ => unreachable!("not a tool step"),
                                                         };
-                                                    render_tool_step(name, summary, result)
+                                                    render_tool_step(
+                                                        id,
+                                                        name,
+                                                        summary,
+                                                        result,
+                                                        awaiting,
+                                                        on_permission,
+                                                    )
                                                 }
                                             >
                                                 {move || {

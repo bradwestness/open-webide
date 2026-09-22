@@ -5,7 +5,7 @@
 //! coding), and finally the persisted assistant message. Frame format:
 //!
 //! ```text
-//! event: message | delta | tool_call | tool_result | done | cancelled | error
+//! event: message | delta | tool_call | permission_request | tool_result | done | cancelled | error
 //! data: {json}
 //!
 //! ```
@@ -37,6 +37,13 @@ pub enum SseEvent {
         name: String,
         summary: String,
     },
+    /// A gated tool call is waiting for the user's approval; a
+    /// `ToolResult` follows once the decision is in (either way).
+    PermissionRequest {
+        id: String,
+        name: String,
+        summary: String,
+    },
     /// A tool call finished.
     ToolResult {
         id: String,
@@ -60,6 +67,10 @@ fn frame(event: &SseEvent) -> Bytes {
         SseEvent::Delta(delta) => ("delta", json!({ "content": delta }).to_string()),
         SseEvent::ToolCall { id, name, summary } => (
             "tool_call",
+            json!({ "id": id, "name": name, "summary": summary }).to_string(),
+        ),
+        SseEvent::PermissionRequest { id, name, summary } => (
+            "permission_request",
             json!({ "id": id, "name": name, "summary": summary }).to_string(),
         ),
         SseEvent::ToolResult {

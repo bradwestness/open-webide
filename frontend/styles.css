@@ -399,6 +399,18 @@ body {
   font-size: 12px;
 }
 
+.tool-permission {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+}
+
+.tool-permission .btn {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
 .stopped-marker {
   max-width: 720px;
   padding: 6px 10px;
@@ -509,6 +521,16 @@ body {
   background: var(--offline);
   border-color: var(--offline);
   color: #1a1b1f;
+}
+
+.btn.approve {
+  background: var(--online);
+  border-color: var(--online);
+  color: #1a1b1f;
+}
+
+.btn.deny {
+  background: var(--bg-panel);
 }
 
 .empty-state {

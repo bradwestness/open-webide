@@ -1143,14 +1143,51 @@ pub fn App() -> impl IntoView {
                                         }
                                     });
                                 }
-                                SseEvent::ToolCall { id, name, summary } => {
+                                SseEvent::PermissionRequest { id, name, summary } => {
                                     messages.update(|m| {
                                         m.push(ConversationItem::ToolStep {
                                             id,
                                             name,
                                             summary,
                                             result: None,
+                                            awaiting_permission: true,
                                         })
+                                    });
+                                }
+                                SseEvent::ToolCall { id, name, summary } => {
+                                    messages.update(|m| {
+                                        // A gated tool already emitted a
+                                        // PermissionRequest step; update it
+                                        // rather than pushing a duplicate.
+                                        let idx = m.iter().rposition(|item| {
+                                            matches!(
+                                                item,
+                                                ConversationItem::ToolStep { id: tid, .. }
+                                                    if *tid == id
+                                            )
+                                        });
+                                        match idx {
+                                            Some(i) => {
+                                                if let ConversationItem::ToolStep {
+                                                    summary: s,
+                                                    awaiting_permission: a,
+                                                    ..
+                                                } = &mut m[i]
+                                                {
+                                                    *s = summary;
+                                                    *a = false;
+                                                }
+                                            }
+                                            None => {
+                                                m.push(ConversationItem::ToolStep {
+                                                    id,
+                                                    name,
+                                                    summary,
+                                                    result: None,
+                                                    awaiting_permission: false,
+                                                })
+                                            }
+                                        }
                                     });
                                 }
                                 SseEvent::ToolResult { id, name, ok, summary, diff } => {
@@ -1176,7 +1213,9 @@ pub fn App() -> impl IntoView {
                                         match idx {
                                             Some(i) => {
                                                 if let ConversationItem::ToolStep {
-                                                    result: r, ..
+                                                    result: r,
+                                                    awaiting_permission: a,
+                                                    ..
                                                 } = &mut m[i]
                                                 {
                                                     *r = Some(ToolStepResult {
@@ -1184,6 +1223,7 @@ pub fn App() -> impl IntoView {
                                                         summary: summary.clone(),
                                                         diff: diff.clone(),
                                                     });
+                                                    *a = false;
                                                 }
                                             }
                                             None => {
@@ -1192,6 +1232,7 @@ pub fn App() -> impl IntoView {
                                                     name,
                                                     summary: summary.clone(),
                                                     result: Some(ToolStepResult { ok, summary, diff }),
+                                                    awaiting_permission: false,
                                                 });
                                             }
                                         }
@@ -1199,10 +1240,28 @@ pub fn App() -> impl IntoView {
                                 }
                                 SseEvent::Done(msg) => {
                                     messages.update(|m| {
-                                        if let Some(ConversationItem::Message(last)) = m.last_mut()
-                                            && last.role == Role::Assistant
-                                        {
-                                            *last = msg;
+                                        // Plain chat: replace the streaming
+                                        // placeholder. Agent mode: the last
+                                        // item is a tool step (or the user
+                                        // message), so append the reply.
+                                        let is_last_assistant = m
+                                            .last()
+                                            .is_some_and(|last| {
+                                                matches!(
+                                                    last,
+                                                    ConversationItem::Message(m)
+                                                        if m.role == Role::Assistant
+                                                )
+                                            });
+                                        if is_last_assistant {
+                                            if let Some(ConversationItem::Message(
+                                                last,
+                                            )) = m.last_mut()
+                                            {
+                                                *last = msg;
+                                            }
+                                        } else {
+                                            m.push(ConversationItem::Message(msg));
                                         }
                                     });
                                 }
@@ -1244,6 +1303,34 @@ pub fn App() -> impl IntoView {
                     c.abort();
                 }
             });
+        })
+    };
+
+    let on_permission = {
+        let api = api.clone();
+        Callback::new(move |(tool_call_id, approved): (String, bool)| {
+            // Clear the prompt immediately; the ToolCall (approved) or
+            // ToolResult (denied) event that follows confirms it.
+            messages.update(|m| {
+                if let Some(awaiting) = m.iter_mut().find_map(|item| match item {
+                    ConversationItem::ToolStep {
+                        id,
+                        awaiting_permission,
+                        ..
+                    } if *id == tool_call_id => Some(awaiting_permission),
+                    _ => None,
+                }) {
+                    *awaiting = false;
+                }
+            });
+            if let Some(session_id) = streaming_session.get() {
+                let api = api.clone();
+                spawn_local(async move {
+                    let _ = api
+                        .set_permission(session_id, &tool_call_id, approved)
+                        .await;
+                });
+            }
         })
     };
 
@@ -1566,6 +1653,7 @@ pub fn App() -> impl IntoView {
                     on_select_model=on_select_model
                     on_send=on_send
                     on_stop=on_stop
+                    on_permission=on_permission
                 />
             </div>
             <StatusBar health=health.read_only() />

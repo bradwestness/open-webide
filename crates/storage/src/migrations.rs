@@ -56,6 +56,12 @@ pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS run_cancels (
         session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE
     )",
+    "CREATE TABLE IF NOT EXISTS tool_permissions (
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        tool_call_id TEXT NOT NULL,
+        decision INTEGER NOT NULL,
+        PRIMARY KEY (session_id, tool_call_id)
+    )",
 ];
 
 pub async fn apply<D: Db>(db: &D) -> Result<(), StorageError> {

@@ -45,6 +45,13 @@ pub enum SseEvent {
         name: String,
         summary: String,
     },
+    /// A gated tool call is waiting for the user's approval; a
+    /// `ToolResult` follows once the decision is in (either way).
+    PermissionRequest {
+        id: String,
+        name: String,
+        summary: String,
+    },
     /// A tool call finished.
     ToolResult {
         id: String,
@@ -393,6 +400,23 @@ impl BackendApi {
         Ok(())
     }
 
+    /// Record the user's decision on a gated tool call. The in-flight run
+    /// picks it up on its next poll (about half a second later).
+    pub async fn set_permission(
+        &self,
+        session_id: i64,
+        tool_call_id: &str,
+        approved: bool,
+    ) -> Result<(), String> {
+        let _value: serde_json::Value = self
+            .post(
+                &format!("/sessions/{session_id}/permissions/{tool_call_id}"),
+                &json!({ "approved": approved }),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn list_messages(&self, session_id: i64) -> Result<Vec<ChatMessage>, String> {
         self.get(&format!("/sessions/{session_id}/messages")).await
     }
@@ -540,6 +564,11 @@ fn parse_sse_frame(frame: &str) -> Option<SseEvent> {
         "message" => SseEvent::Message(serde_json::from_value(value).ok()?),
         "delta" => SseEvent::Delta(value.get("content")?.as_str()?.to_string()),
         "tool_call" => SseEvent::ToolCall {
+            id: value.get("id")?.as_str()?.to_string(),
+            name: value.get("name")?.as_str()?.to_string(),
+            summary: value.get("summary")?.as_str()?.to_string(),
+        },
+        "permission_request" => SseEvent::PermissionRequest {
             id: value.get("id")?.as_str()?.to_string(),
             name: value.get("name")?.as_str()?.to_string(),
             summary: value.get("summary")?.as_str()?.to_string(),

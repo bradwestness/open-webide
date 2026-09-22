@@ -713,6 +713,66 @@ impl<D: Db> Store<D> {
             .await?;
         Ok(())
     }
+
+    // -- tool permissions ----------------------------------------------------
+
+    /// Record the user's decision on a gated tool call. The in-flight run
+    /// polls [`Self::tool_permission`] until it arrives; Spin requests are
+    /// stateless, so the decision lives in the database.
+    pub async fn set_tool_permission(
+        &self,
+        session_id: i64,
+        tool_call_id: &str,
+        approved: bool,
+    ) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO tool_permissions \
+                 (session_id, tool_call_id, decision) VALUES (?, ?, ?)",
+                &[
+                    DbValue::Int(session_id),
+                    DbValue::Text(tool_call_id.to_string()),
+                    DbValue::Int(approved as i64),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// The user's decision on a gated tool call, if one has been recorded.
+    pub async fn tool_permission(
+        &self,
+        session_id: i64,
+        tool_call_id: &str,
+    ) -> Result<Option<bool>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT decision FROM tool_permissions \
+                 WHERE session_id = ? AND tool_call_id = ?",
+                &[
+                    DbValue::Int(session_id),
+                    DbValue::Text(tool_call_id.to_string()),
+                ],
+            )
+            .await?;
+        Ok(res
+            .rows
+            .first()
+            .map(|row| row.get_int(0).map(|d| d != 0).unwrap_or(false)))
+    }
+
+    /// Clear recorded decisions, called when a run finishes or a new one
+    /// starts.
+    pub async fn clear_tool_permissions(&self, session_id: i64) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "DELETE FROM tool_permissions WHERE session_id = ?",
+                &[DbValue::Int(session_id)],
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 fn connection_from_row(row: &QueryRow) -> Result<Connection, StorageError> {
@@ -1220,6 +1280,43 @@ mod tests {
 
             store.clear_cancel(session.id).await.unwrap();
             assert!(!store.cancel_requested(session.id).await.unwrap());
+        });
+    }
+
+    #[test]
+    fn tool_permission_lifecycle() {
+        let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            let session = store
+                .create_session("s", None, None, None, user_id, 1)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.tool_permission(session.id, "call-1").await.unwrap(),
+                None
+            );
+
+            store
+                .set_tool_permission(session.id, "call-1", true)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.tool_permission(session.id, "call-1").await.unwrap(),
+                Some(true)
+            );
+
+            // Other tool calls and sessions are unaffected.
+            assert_eq!(
+                store.tool_permission(session.id, "call-2").await.unwrap(),
+                None
+            );
+
+            store.clear_tool_permissions(session.id).await.unwrap();
+            assert_eq!(
+                store.tool_permission(session.id, "call-1").await.unwrap(),
+                None
+            );
         });
     }
 }

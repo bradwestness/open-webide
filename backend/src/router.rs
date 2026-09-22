@@ -79,6 +79,9 @@ pub async fn route(req: Request) -> JsonResp {
             ("DELETE", p) if p.starts_with("/api/sessions/") && !p.contains("/messages") => {
                 api::delete_session(&state, p).await
             }
+            ("POST", p) if p.starts_with("/api/sessions/") && p.contains("/permissions/") => {
+                api::set_tool_permission(req, &state, p).await
+            }
             ("GET", p) if p.starts_with("/api/sessions/") && p.ends_with("/messages") => {
                 api::list_messages(&state, p).await
             }

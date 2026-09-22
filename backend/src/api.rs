@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use spin_sdk::http::{FullBody, Request, Response, box_body};
 
-use crate::agent::{CancelFlag, agent_stream, workspace_tools};
+use crate::agent::{CancelFlag, PermissionPoller, agent_stream, workspace_tools};
 use crate::auth;
 use crate::error::{ApiError, JsonResp};
 use crate::http_client::SpinHttpClient;
@@ -592,6 +592,32 @@ pub async fn cancel_session(state: &AppState, path: &str) -> Result<JsonResp, Ap
     Ok(json_response(200, &json!({ "cancelled": id })))
 }
 
+#[derive(Deserialize)]
+struct PermissionBody {
+    approved: bool,
+}
+
+/// Record the user's decision on a gated tool call. The in-flight run picks
+/// it up on its next poll; a decision for a call that is no longer waiting
+/// is harmless (decisions are cleared when the run ends).
+pub async fn set_tool_permission(
+    req: Request,
+    state: &AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
+    let (id, tool_call_id) = permission_path(path)?;
+    // Verify ownership before recording the decision.
+    state.store.get_session(id, user_id).await?;
+    let body = read_body(req).await?;
+    let decision: PermissionBody = parse_json(body)?;
+    state
+        .store
+        .set_tool_permission(id, tool_call_id, decision.approved)
+        .await?;
+    Ok(json_response(200, &json!({ "ok": true })))
+}
+
 pub async fn list_messages(state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
     let id = session_id(path)?;
@@ -623,8 +649,10 @@ pub async fn send_session_message(
     let send: SendMessageBody = parse_json(body)?;
 
     let session = state.store.get_session(session_id, user_id).await?;
-    // A new run starts: clear any stale cancel flag from a previous run.
+    // A new run starts: clear any stale cancel flag and permission
+    // decisions from a previous run.
     let _ = state.store.clear_cancel(session_id).await;
+    let _ = state.store.clear_tool_permissions(session_id).await;
     let connection_id = session
         .connection_id
         .ok_or_else(|| ApiError::bad_request("session has no connection; pick one first"))?;
@@ -667,6 +695,7 @@ pub async fn send_session_message(
     let provider = Provider::for_connection(&connection, SpinHttpClient);
     let store = Arc::new(state.store);
     let cancel = CancelFlag::new(store.clone(), session_id);
+    let gate = PermissionPoller::new(store.clone(), session_id);
     let stream = if is_remote {
         agent_stream(
             store.clone(),
@@ -677,6 +706,7 @@ pub async fn send_session_message(
             base,
             AgentConfig::default(),
             cancel,
+            gate,
         )
     } else {
         message_stream(store, session_id, user_message, request, provider)
@@ -696,6 +726,20 @@ fn session_id(path: &str) -> Result<i64, ApiError> {
         .and_then(|rest| rest.split('/').next())
         .and_then(|id| id.parse::<i64>().ok())
         .ok_or_else(|| ApiError::bad_request("expected /api/sessions/<id>..."))
+}
+
+/// Parse `/api/sessions/<id>/permissions/<tool_call_id>`.
+fn permission_path(path: &str) -> Result<(i64, &str), ApiError> {
+    let id = session_id(path)?;
+    let tool_call_id = path
+        .strip_prefix("/api/sessions/")
+        .and_then(|rest| rest.split_once('/'))
+        .and_then(|(_, sub)| sub.strip_prefix("permissions/"))
+        .filter(|rest| !rest.is_empty() && !rest.contains('/'))
+        .ok_or_else(|| {
+            ApiError::bad_request("expected /api/sessions/<id>/permissions/<tool_call_id>")
+        })?;
+    Ok((id, tool_call_id))
 }
 
 // -- models & chat ----------------------------------------------------------------

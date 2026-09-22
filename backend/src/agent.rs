@@ -5,9 +5,12 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures::{Stream, StreamExt, stream};
-use openwebide_agent::{AgentConfig, AgentEvent, CancelCheck, ToolExecutor, ToolOutcome};
+use openwebide_agent::{
+    AgentConfig, AgentEvent, CancelCheck, PermissionGate, ToolExecutor, ToolOutcome,
+};
 use openwebide_core::{ChatMessage, ChatRequest, FileDiff, Role, ToolCall, ToolDefinition};
 use openwebide_llm::registry::Provider;
 use openwebide_storage::{Store, spin_db::SpinDb};
@@ -287,12 +290,65 @@ impl CancelCheck for CancelFlag {
     }
 }
 
+/// How long the gate waits for the user's decision before denying.
+const PERMISSION_TIMEOUT: Duration = Duration::from_secs(300);
+const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// A per-session permission gate backed by SQLite. Only file writes are
+/// gated; reads, listings, and searches run freely. The user's decision
+/// arrives as a separate Spin request (stateless, possibly another
+/// component instance), so the in-flight stream polls the database until
+/// the decision is recorded, the run is cancelled, or the wait times out.
+pub struct PermissionPoller {
+    store: Arc<Store<SpinDb>>,
+    session_id: i64,
+}
+
+impl PermissionPoller {
+    pub fn new(store: Arc<Store<SpinDb>>, session_id: i64) -> Self {
+        Self { store, session_id }
+    }
+}
+
+impl PermissionGate for PermissionPoller {
+    fn needs_approval(&self, call: &ToolCall) -> bool {
+        call.name == "write_file"
+    }
+
+    fn approve(&self, call: &ToolCall) -> impl Future<Output = bool> + Send {
+        let store = self.store.clone();
+        let session_id = self.session_id;
+        let tool_call_id = call.id.clone();
+        async move {
+            let started = Instant::now();
+            loop {
+                if let Some(decision) = store
+                    .tool_permission(session_id, &tool_call_id)
+                    .await
+                    .unwrap_or(None)
+                {
+                    return decision;
+                }
+                // A cancel landing while waiting also denies the call; the
+                // loop re-checks the cancel flag and reports `Cancelled`.
+                if store.cancel_requested(session_id).await.unwrap_or(false) {
+                    return false;
+                }
+                if started.elapsed() >= PERMISSION_TIMEOUT {
+                    return false;
+                }
+                std::thread::sleep(PERMISSION_POLL_INTERVAL);
+            }
+        }
+    }
+}
+
 /// Build the SSE event stream for one agentic message: the user message, the
 /// agent's tool steps, and (on success) the persisted assistant message.
 ///
-/// The store is shared: the agent loop polls the cancel flag from inside the
-/// stream and the tail persists the reply, so the response body outlives the
-/// request handler.
+/// The store is shared: the agent loop polls the cancel flag and permission
+/// decisions from inside the stream and the tail persists the reply, so the
+/// response body outlives the request handler.
 #[allow(clippy::too_many_arguments)]
 pub fn agent_stream(
     store: Arc<Store<SpinDb>>,
@@ -303,19 +359,25 @@ pub fn agent_stream(
     base: String,
     config: AgentConfig,
     cancel: CancelFlag,
+    gate: PermissionPoller,
 ) -> Pin<Box<dyn Stream<Item = SseEvent> + Send + 'static>> {
     let executor = WorkspaceExecutor { base };
-    let events = openwebide_agent::run(provider, executor, request, config, cancel);
+    let events = openwebide_agent::run(provider, executor, request, config, cancel, gate);
     let tail = stream::unfold((store, session_id, events), |state| async move {
         let (store, session_id, mut events) = state;
         let Some(event) = events.next().await else {
             // The run finished (completed, failed, or cancelled): drop the
-            // flag so a late or stale cancel can't affect the next run.
+            // flag and any recorded decisions so a late or stale cancel or
+            // permission can't affect the next run.
             let _ = store.clear_cancel(session_id).await;
+            let _ = store.clear_tool_permissions(session_id).await;
             return None;
         };
         let sse = match event {
             AgentEvent::ToolCall { id, name, summary } => SseEvent::ToolCall { id, name, summary },
+            AgentEvent::PermissionRequest { id, name, summary } => {
+                SseEvent::PermissionRequest { id, name, summary }
+            }
             AgentEvent::ToolResult {
                 id,
                 name,

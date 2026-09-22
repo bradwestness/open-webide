@@ -66,6 +66,14 @@ pub enum AgentEvent {
         summary: String,
         diff: Option<FileDiff>,
     },
+    /// A gated tool call is waiting for the user's approval; the call runs
+    /// only if the user approves (a `ToolResult` follows either way).
+    PermissionRequest {
+        id: String,
+        name: String,
+        /// What the call would do if approved (e.g. `write src/main.rs`).
+        summary: String,
+    },
     /// The model's final text answer.
     FinalText(String),
     /// The run stopped with an error (budget exhausted or provider failure).
@@ -112,28 +120,63 @@ impl CancelCheck for NoopCancel {
     }
 }
 
+/// Decides which tool calls need the user's approval before they run.
+///
+/// The loop asks [`Self::needs_approval`] before emitting a tool call; when
+/// it returns `true`, the loop emits [`AgentEvent::PermissionRequest`] and
+/// waits for [`Self::approve`] to resolve (the host polls for the user's
+/// decision) before running or denying the call.
+pub trait PermissionGate: Send {
+    /// Whether this tool call needs the user's approval before it runs.
+    fn needs_approval(&self, call: &ToolCall) -> bool;
+    /// Wait for the user's decision on a gated call; `true` = approved.
+    ///
+    /// `async fn` in a trait cannot express the `Send` bound the agent loop
+    /// needs (the future is awaited inside a `Send` stream), so this is an
+    /// explicit `impl Future` (and impls allow the lint that suggests the
+    /// `async fn` form).
+    fn approve(&self, call: &ToolCall) -> impl Future<Output = bool> + Send;
+}
+
+/// A permission gate that never asks; every tool call runs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopGate;
+
+impl PermissionGate for NoopGate {
+    fn needs_approval(&self, _call: &ToolCall) -> bool {
+        false
+    }
+    #[allow(clippy::manual_async_fn)]
+    fn approve(&self, _call: &ToolCall) -> impl Future<Output = bool> + Send {
+        async { true }
+    }
+}
+
 /// Run the agent loop, streaming one [`AgentEvent`] per step.
 ///
 /// The loop ends with a [`AgentEvent::FinalText`] (the model's answer), an
 /// [`AgentEvent::Error`] (a budget was exhausted or the provider failed), or
 /// an [`AgentEvent::Cancelled`] (the cancel check fired at a step boundary).
-pub fn run<P, T, C>(
+pub fn run<P, T, C, G>(
     provider: P,
     executor: T,
     request: ChatRequest,
     config: AgentConfig,
     cancel: C,
+    gate: G,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send + 'static>>
 where
     P: LlmProvider + 'static,
     T: ToolExecutor + 'static,
     C: CancelCheck + 'static,
+    G: PermissionGate + 'static,
 {
     Box::pin(stream::unfold(
         LoopState {
             provider,
             executor,
             cancel,
+            gate,
             connection_id: request.connection_id,
             system_prompt: request.system_prompt,
             model: request.model,
@@ -215,6 +258,71 @@ where
                         let call = state.pending.remove(0);
                         let summary = state.executor.describe(&call);
                         state.current = Some(call.clone());
+                        if state.gate.needs_approval(&call) {
+                            state.next = Next::AwaitPermission;
+                            return Some((
+                                AgentEvent::PermissionRequest {
+                                    id: call.id,
+                                    name: call.name,
+                                    summary,
+                                },
+                                state,
+                            ));
+                        }
+                        state.next = Next::RunTool;
+                        return Some((
+                            AgentEvent::ToolCall {
+                                id: call.id,
+                                name: call.name,
+                                summary,
+                            },
+                            state,
+                        ));
+                    }
+                    Next::AwaitPermission => {
+                        if state.cancel.check().await {
+                            state.next = Next::Stop;
+                            return Some((AgentEvent::Cancelled, state));
+                        }
+                        let call = state
+                            .current
+                            .as_ref()
+                            .expect("AwaitPermission without a current call")
+                            .clone();
+                        let approved = state.gate.approve(&call).await;
+                        // The gate also returns `false` when a cancel lands
+                        // while waiting, so re-check before treating a
+                        // `false` as a denial.
+                        if state.cancel.check().await {
+                            state.next = Next::Stop;
+                            return Some((AgentEvent::Cancelled, state));
+                        }
+                        if !approved {
+                            state.messages.push(ChatMessage {
+                                id: 0,
+                                session_id: 0,
+                                role: Role::Tool,
+                                content: format!(
+                                    "The user denied the {} tool call. Do not retry the same change.",
+                                    call.name
+                                ),
+                                created_at: 0,
+                                tool_calls: None,
+                                tool_call_id: Some(call.id.clone()),
+                            });
+                            state.next = Next::EmitToolCall;
+                            return Some((
+                                AgentEvent::ToolResult {
+                                    id: call.id,
+                                    name: call.name,
+                                    ok: false,
+                                    summary: "denied by user".to_string(),
+                                    diff: None,
+                                },
+                                state,
+                            ));
+                        }
+                        let summary = state.executor.describe(&call);
                         state.next = Next::RunTool;
                         return Some((
                             AgentEvent::ToolCall {
@@ -264,10 +372,11 @@ where
 }
 
 /// The agent loop's mutable state, threaded through `stream::unfold`.
-struct LoopState<P, T, C> {
+struct LoopState<P, T, C, G> {
     provider: P,
     executor: T,
     cancel: C,
+    gate: G,
     connection_id: i64,
     system_prompt: Option<String>,
     model: Option<String>,
@@ -288,6 +397,7 @@ struct LoopState<P, T, C> {
 enum Next {
     CallModel,
     EmitToolCall,
+    AwaitPermission,
     RunTool,
     Stop,
 }
@@ -439,6 +549,7 @@ mod tests {
             request(),
             AgentConfig::default(),
             NoopCancel,
+            NoopGate,
         ));
 
         assert_eq!(
@@ -490,6 +601,7 @@ mod tests {
             request(),
             AgentConfig::default(),
             NoopCancel,
+            NoopGate,
         ));
 
         assert_eq!(events, vec![AgentEvent::FinalText("just an answer".into())]);
@@ -514,6 +626,7 @@ mod tests {
                 max_tool_calls: 10,
             },
             NoopCancel,
+            NoopGate,
         ));
 
         assert_eq!(
@@ -566,6 +679,7 @@ mod tests {
                 max_tool_calls: 1,
             },
             NoopCancel,
+            NoopGate,
         ));
 
         assert_eq!(
@@ -600,6 +714,7 @@ mod tests {
             request(),
             AgentConfig::default(),
             NoopCancel,
+            NoopGate,
         ));
 
         assert_eq!(events, vec![AgentEvent::Error("HTTP error: boom".into())]);
@@ -640,6 +755,7 @@ mod tests {
             FlippingCancel {
                 calls: Arc::new(Mutex::new(0)),
             },
+            NoopGate,
         ));
 
         assert_eq!(
@@ -651,6 +767,124 @@ mod tests {
                     summary: "read_file {}".into(),
                 },
                 AgentEvent::Cancelled,
+            ]
+        );
+    }
+
+    /// A gate with fixed answers: gates every call (or none) and always
+    /// resolves with the same decision.
+    struct FixedGate {
+        gated: bool,
+        approve: bool,
+    }
+
+    impl PermissionGate for FixedGate {
+        fn needs_approval(&self, _call: &ToolCall) -> bool {
+            self.gated
+        }
+        #[allow(clippy::manual_async_fn)]
+        fn approve(&self, _call: &ToolCall) -> impl Future<Output = bool> + Send {
+            async move { self.approve }
+        }
+    }
+
+    #[test]
+    fn denies_gated_tool_when_user_denies() {
+        let (provider, requests) = FakeProvider::new(vec![
+            Ok(ChatResponse::ToolCalls(vec![call(
+                "c1",
+                "write_file",
+                "{}",
+            )])),
+            Ok(ChatResponse::Text("skipped it".into())),
+        ]);
+        let executor = FakeExecutor::new(Vec::new());
+
+        let events = collect(run(
+            provider,
+            executor,
+            request(),
+            AgentConfig::default(),
+            NoopCancel,
+            FixedGate {
+                gated: true,
+                approve: false,
+            },
+        ));
+
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::PermissionRequest {
+                    id: "c1".into(),
+                    name: "write_file".into(),
+                    summary: r#"write_file {}"#.into(),
+                },
+                AgentEvent::ToolResult {
+                    id: "c1".into(),
+                    name: "write_file".into(),
+                    ok: false,
+                    summary: "denied by user".into(),
+                    diff: None,
+                },
+                AgentEvent::FinalText("skipped it".into()),
+            ]
+        );
+
+        // The model was told the call was denied, so it can adapt.
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let last = requests[1].messages.last().unwrap();
+        assert_eq!(last.role, Role::Tool);
+        assert_eq!(last.tool_call_id.as_deref(), Some("c1"));
+        assert!(last.content.contains("denied"));
+    }
+
+    #[test]
+    fn runs_gated_tool_when_user_approves() {
+        let (provider, _requests) = FakeProvider::new(vec![
+            Ok(ChatResponse::ToolCalls(vec![call(
+                "c1",
+                "write_file",
+                "{}",
+            )])),
+            Ok(ChatResponse::Text("done".into())),
+        ]);
+        let executor = FakeExecutor::new(vec![outcome("wrote", "wrote src/main.rs")]);
+
+        let events = collect(run(
+            provider,
+            executor,
+            request(),
+            AgentConfig::default(),
+            NoopCancel,
+            FixedGate {
+                gated: true,
+                approve: true,
+            },
+        ));
+
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::PermissionRequest {
+                    id: "c1".into(),
+                    name: "write_file".into(),
+                    summary: r#"write_file {}"#.into(),
+                },
+                AgentEvent::ToolCall {
+                    id: "c1".into(),
+                    name: "write_file".into(),
+                    summary: r#"write_file {}"#.into(),
+                },
+                AgentEvent::ToolResult {
+                    id: "c1".into(),
+                    name: "write_file".into(),
+                    ok: true,
+                    summary: "wrote src/main.rs".into(),
+                    diff: None,
+                },
+                AgentEvent::FinalText("done".into()),
             ]
         );
     }
