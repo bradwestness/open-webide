@@ -13,19 +13,63 @@ A sequence of correctness and hardening passes across every crate, plus
 switching the agent loop from one-shot SSE requests to a single multiplexed
 bridge WebSocket connection:
 
+- **Toolchain & dependencies:** a pinned current-stable Rust toolchain and
+  every dependency on its current stable release before the rest lands.
 - **Security hardening:** default-deny tool approval policy, bridge
   Host/Origin/CORS checks, path-confinement and git argument-injection
-  fixes, auth correctness (secret rotation, clock skew), request/response
-  size bounds, and markdown/SVG XSS closure.
-- **Bridge robustness:** HTTP parsing resilience, process lifecycle
-  (kill/reap/shutdown), output delivery ordering, and a `hello`
-  auth handshake for the bridge connection.
+  fixes, markdown/SVG XSS closure (safe raw HTML still renders), sandboxed
+  raw-file responses, request/response size bounds, and auth correctness.
+- **Sign-in:** an HttpOnly cookie session instead of a token in
+  localStorage (with a CSRF header), failed-login throttling, and logout
+  that signs out every device.
+- **Bridge robustness & auth:** an HTTP server on `hyper`, process lifecycle
+  (kill/reap/shutdown), output delivery ordering, a shared secret between
+  the backend and the bridge, and a `hello` handshake with short-lived
+  bridge tokens — phone/LAN access keeps working with no extra setup.
 - **Agent streaming over the bridge WebSocket:** provider and agent-loop
   streaming of tool-call turns, a typed run protocol over one multiplexed
   bridge connection, and a frontend fallback to SSE when the bridge is
-  unavailable.
+  unavailable; afterwards one event type for SSE and WebSocket, resumable
+  local-mode runs, and the bridge bundled into the Docker image.
+- **Frontend structure & tests:** the `App` component split into
+  per-feature state stores, and a component-test harness running in
+  headless Chrome in CI.
+- **Agent quality:** typed tool arguments, approval cards that show the full
+  diff, Stop that interrupts a running command, search that can opt into
+  ignored folders, truncated or cut-off replies kept with a visible marker,
+  model reasoning surfaced, and diffs that show line-ending changes.
+- **Cleanup:** backend and bridge refactors (typed errors, module
+  structure), dead-code removal, and selected pedantic clippy lints enforced
+  in CI.
 
 ## Next
+
+### Frontend performance & polish
+
+Follow-ups that build on the per-feature state stores from the hardening
+sequence:
+
+- **Performance first:** stop re-rendering the whole conversation on every
+  streamed token (per-message signals / a keyed `reactive_stores` store) and
+  stop re-highlighting the whole file on every keystroke (highlight only the
+  visible window, or debounce to the next animation frame); a terminal line
+  buffer instead of re-rendering all output.
+- Design tokens and buttons: settle the canonical token names (rename the CSS
+  to match AGENTS.md or amend AGENTS.md), add the missing tokens, move to
+  `color-mix`, and merge `ui::Button` into `.btn`.
+- `data-wasm-opt="z"` for a smaller bundle (measure before/after).
+- A 250 ms debounce on search; parallel initial load and a model-refetch
+  memo; ANSI and scroll fixes in the terminal; CRLF and multi-line `data:`
+  handling in the SSE reader.
+- IndexedDB connection caching, and deleting a local project's directory
+  handle when the project is deleted.
+- Keyboard accessibility for modals; smaller duplications (recent-projects
+  filter, telemetry formatting on `SessionTelemetry`) and idiom cleanups
+  (`.with()` instead of cloning `.get()`, typed enums for stringly values,
+  one guarded `Send` wrapper).
+- Keep the terminal dock mounted so shells survive a toggle; default the
+  terminal's working directory to the project folder.
+- Persist accept/reject on agent edits so pending edits survive a reload.
 
 ### Secondary "fast model" per connection
 
@@ -54,7 +98,9 @@ Cycle modes with `Shift+Tab`; show the current mode in the TUI statusline's
 `[NORMAL]`/`[RUNNING]`/`[AWAITING]` segment, which is also clickable and
 opens a dropdown to pick a mode directly. Depends on the fast model
 (classifier mode) and on the default-deny approval-policy work in the
-hardening entry above.
+hardening entry above, which also replaces the on/off flag with an
+`ApprovalMode` enum (`openwebide_agent::policy`) so each mode here is a new
+variant.
 
 ### File tree: Explorer / Changes mode
 
@@ -147,6 +193,13 @@ Split today's single `Connection` (kind + name + URL + model) into
 This also reframes the secondary "fast model" above as a per-model setting
 rather than a bare per-connection one.
 
+The `core`/`llm` refactor happens together with this split, since it
+reshapes the same code: provider deduplication (`resolve_model`,
+`delta_stream`, `messages_wire`), a typed `ProviderError`, splitting the
+core god-file and deduplicating its diff helpers, storage row-mapping
+helpers, enums/`FromStr`/`thiserror` for `VfsError` and git status, and a
+`MaybeSend` alias so the frontend can drop its `unsafe impl Send/Sync`.
+
 ### Auto-discovery & configuration
 
 Discover and configure as much as possible so the first prompt works with no
@@ -181,7 +234,125 @@ setup. Builds on the server/model split and its context-limit detection.
   current probe, can be re-run at any time from the server, model or
   workspace settings, and caches its results.
 
+### Fully fleshed-out TUI
+
+The chat/TUI surface grows into a full agent workspace. In priority order:
+
+1. **Checkpoints & rewind** — snapshot the files a turn touches; "rewind to
+   here" restores both the files and the conversation to that point.
+2. **Per-run changes panel** — every file the run touched in one view, with
+   accept/reject per file or per hunk, and editor gutter markers for pending
+   agent edits.
+3. **Auto-compaction** — near the context limit, summarize older turns with
+   the fast model; `/context` shows a breakdown bar (system prompt, files,
+   tool output, history).
+4. **`@`-mentions** (`@file`, `@folder`, `@diff`, with autocomplete) and
+   drag/drop or paste of images for vision models.
+5. **Message queue & steering** — type while the agent runs; queue the next
+   prompt or interrupt with guidance. Also edit-and-resend and forking from
+   an earlier prompt.
+6. **Browser notifications** when a run finishes or needs approval (pairs
+   with the phone layout).
+7. **Todo/plan panel** — an agent-maintained checklist via a `todo_write`
+   tool, pinned above the composer.
+8. **Reasoning polish** — a live timer and token count while the model
+   thinks, and a collapsed "Thought for 3.2s · 1.4k tokens" summary
+   (extends the inline `<think>` blocks and the hardening sequence's
+   provider-reasoning step).
+9. **Tool-step polish** — a running spinner with elapsed time, durations,
+   show-more for long output, ANSI colors, a copy button, and a per-turn
+   summary line ("5 tools · 2 files changed · 12.3s").
+10. **Command palette** (`Ctrl+Shift+P`) and a keyboard-shortcut overlay.
+11. **Session management** — search, pin/archive, fast-model auto-titles,
+    and export to Markdown.
+12. **Sub-agents** — a `task` tool that spawns child agents with their own
+    context, shown as nested collapsible runs with status, elapsed time,
+    tokens and tool count, runnable in parallel.
+
+Dependencies: the fast model (auto-compaction, session auto-titles,
+sub-agents), WebSocket streaming (sub-agents), and the frontend state-store
+split from the hardening sequence for the UI-heavy items.
+
+### Mobile support & collapsible tool windows
+
+- **Tool windows:** every panel (file tree, editor, chat/TUI, terminal,
+  git/diff, search, …) becomes a collapsible tool window docked in a tabbed
+  side strip, like JetBrains Rider: click a tab to show or hide it, drag or
+  pin it to a side, with the layout persisted per user in the database
+  settings (per AGENTS.md — no localStorage).
+- **Phone layout:** the TUI chat is the whole app, like the Claude or Codex
+  mobile apps — a full-screen chat stream and composer, statusline,
+  approvals, and model/approval-mode dropdowns; the other panels open as
+  full-screen sheets (file viewer, diffs, terminal) instead of side by side.
+- Responsive breakpoints pick the layout automatically, with a manual
+  override; touch-friendly targets; works over the LAN through the bridge
+  (the phone/LAN access the hardening sequence keeps working).
+
+Best done after the frontend state-store split (per-feature stores make
+layouts swappable). It subsumes the sequence's viewport clamp for saved panel
+widths.
+
 ## Later
+
+### Multi-user
+
+Only needed once more than one account can exist (today registration closes
+after the first account):
+
+- **Admin-only writes** for connections and system prompts (they stay
+  shared, admin-owned), and admin-only `browse` and remote-project paths
+  (`require_admin`).
+- **Ownership columns** where rows are per user, and session-data store
+  methods that take the `user_id` (or an owned-session token) instead of
+  relying on every call site to check.
+- **Registration setup token** with a loopback-only default when none is
+  set (a Spin variable; verify Spin sets `spin-client-addr`).
+- **Per-user bridge terminals:** sessions owned by the `user_id` in the
+  bridge token, so one user can't list, attach to or kill another's shells;
+  and the bridge's acting-user header limited to the connection's own user.
+
+### Installable PWA & HTTPS
+
+- **PWA:** a web app manifest (name, icons, `display: standalone`, theme
+  colors from the design tokens) and a small JavaScript service worker
+  (copied in by Trunk) that caches only the app shell (wasm/js/css) for a
+  fast launch, never caches `/api` or bridge traffic, shows a "can't reach
+  the server" screen when offline, and busts its cache per build.
+- **HTTPS is required** — browsers only allow install and service workers
+  on secure origins (localhost excepted) — and then the bridge must be
+  `wss://` too, since an https page can't open `ws://`.
+- **Default design:** the bridge sits behind the same HTTPS proxy as the app
+  at the same-origin path `/bridge` (`wss://<host>/bridge`), with the bridge
+  bound to `127.0.0.1` only (no LAN exposure). The frontend defaults the
+  bridge URL to `wss://<same host>/bridge` when the page is served over
+  https. Spin can't proxy WebSockets, so this needs a proxy in front of it
+  rather than living in the Spin app.
+- **Tailscale path:** a one-time tailnet admin toggle (MagicDNS + HTTPS
+  Certificates — manual; the app detects the certificate failure and points
+  to the toggle), then `tailscale serve --bg --https=443
+  http://127.0.0.1:3000` and `--set-path /bridge http://127.0.0.1:3001`.
+  Automation: an opt-in bridge `--tailscale-serve` flag that sets up both
+  routes at startup and prints the URL; for Docker, an optional Tailscale
+  sidecar in `docker-compose.yml` with a checked-in serve config (the user
+  supplies only an auth key).
+- **Alternative:** Caddy with an internal CA. Built-in bridge TLS
+  (`--tls-cert`/`--tls-key` via tokio-rustls) only if a need appears.
+- **Optional:** Web Push for "run finished / needs approval" (installed
+  PWAs, including iOS 16.4+), tied to the TUI notifications item.
+
+### Sandboxed tool execution (optional)
+
+The VFS already confines the file tools (`read_file`, `write_file`,
+`list_dir`, `search`) to the working directory, but `run_command` and the
+git tools spawn real host processes as the user, which the VFS doesn't
+cover — today the user's approval is the sandbox (always-approve never
+covers `run_command`). Once commands can run without asking (YOLO or other
+auto-approve modes), offer an opt-in mode that runs the agent's tool
+executor in a container or as a restricted user with only the project folder
+mounted and optionally no network, while the user's own terminal keeps full
+access. Off by default; recommended alongside YOLO mode. Depends on the
+approval-modes item (and uses the tool-execution trait the bridge refactor
+introduces).
 
 ### Hardening, multi-arch distribution & releases
 
@@ -207,7 +378,6 @@ stack.
 Ideas without a phase yet:
 
 - Multi-model comparison for a single prompt (an Open WebUI classic).
-- Conversation export (markdown).
 
 ## Explicitly out of scope
 
