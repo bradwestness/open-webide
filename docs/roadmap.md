@@ -108,8 +108,27 @@ Split today's single `Connection` (kind + name + URL + model) into
   timeout. No name field — the label is derived from the host (e.g.
   `ollama @ 192.168.1.20`). Ollama servers also get a `keep_alive` setting.
 - Rename the llama.cpp connection kind to **OpenAI-compatible**, with
-  llama.cpp kept as a preset; the same kind covers vLLM, LM Studio, LocalAI,
-  SGLang, TabbyAPI, llama-swap, and LiteLLM.
+  llama.cpp kept as a preset; the same kind covers LM Studio, llama-swap,
+  vLLM, SGLang, MLX (`mlx_lm.server`), KoboldCpp, TabbyAPI, LocalAI, Jan,
+  llamafile, Docker Model Runner, Lemonade, text-generation-webui, and
+  LiteLLM. Ollama keeps its native provider (needed for `num_ctx`,
+  `keep_alive`, and capability detection).
+- **Context-limit and capability detection:** the OpenAI-compatible provider
+  runs a short chain of server-specific probes — llama.cpp `/props`
+  (`n_ctx`), vLLM `/v1/models` (`max_model_len`), LM Studio's model info
+  (loaded/max context), SGLang's model info, KoboldCpp's true-max-context
+  endpoint — then falls back to the configured value, then 4,096. The preset
+  only picks which probe runs first; the server type is auto-detected where
+  possible. If a server rejects tool calls, fall back to plain chat with a
+  notice.
+  - **Visible and re-runnable:** detection runs automatically when a server
+    is added, and a **Detect** button on the server (and each model) re-runs
+    it at any time. While it runs, the settings form shows a spinner with the
+    probe currently being tried (e.g. "Checking /props…"); when it finishes
+    it shows what was found and from where (e.g. "Context 32,768 · from
+    llama.cpp /props · tools ✓"), or which fallback was used. Detected values
+    are cached per server + model and never overwrite a value you set by
+    hand.
 - **Per-model settings** (optional overrides, keyed by server + model):
   context limit (moves here from the connection, see the per-connection
   context limit in the changelog), sampling (temperature, top_p, top_k,
@@ -127,6 +146,40 @@ Split today's single `Connection` (kind + name + URL + model) into
 
 This also reframes the secondary "fast model" above as a per-model setting
 rather than a bare per-connection one.
+
+### Auto-discovery & configuration
+
+Discover and configure as much as possible so the first prompt works with no
+setup. Builds on the server/model split and its context-limit detection.
+
+- **Server discovery:** on first run (and on demand), probe `localhost` and
+  the bridge host on default ports — Ollama 11434, llama.cpp/llama-swap 8080,
+  LM Studio 1234, vLLM 8000, KoboldCpp 5001, TabbyAPI 5000, Jan 1337.
+  Fingerprint the server type and version from its telltale endpoint
+  (Ollama `/api/version`, llama.cpp `/props`, vLLM `/version`, …). A 401
+  prompts for an API key instead of failing.
+- **Model details:** capabilities (chat, tools, vision, thinking, embedding,
+  fill-in-the-middle), size and quantization, the model's own default
+  sampling settings, loaded-vs-cold state (Ollama `/api/ps`, including the
+  context actually running and whether the model spilled to CPU), and exact
+  token counts where the server can tokenize (llama.cpp `/tokenize`).
+  Embedding-only models stay out of the chat picker.
+- **Automatic defaults:** pick a main model and a fast model (the smallest
+  tool-capable chat model) when none is configured.
+- **Active test:** an optional "Test model" request checks structured and
+  streamed tool calls and measures time to first token and tokens/sec.
+- **Workspace & host (via the bridge):** project type → default `/test`
+  command and linters; installed tools (`git`, `cargo`, `node`, `python`, …)
+  → what the agent's system prompt says is available.
+- **Review before apply:** discovery never changes settings silently. It
+  shows a list of detected values that differ from the current ones —
+  current → detected, with where each came from (e.g. "Context 4,096 →
+  32,768 · llama.cpp /props") — each with a checkbox, plus Apply selected /
+  Apply all / Dismiss. Values the user set by hand are unchecked by default.
+  First-run discovery with nothing configured applies directly.
+- **Visible and re-runnable:** every detection shows a spinner with the
+  current probe, can be re-run at any time from the server, model or
+  workspace settings, and caches its results.
 
 ## Later
 
