@@ -311,7 +311,7 @@ impl PermissionGate for LocalPermissionGate {
                 if cancel.load(Ordering::Relaxed) {
                     return false;
                 }
-                if let Some(&decision) = decisions.lock().unwrap().get(&id) {
+                if let Some(decision) = decisions.lock().unwrap().remove(&id) {
                     return decision;
                 }
                 sleep_ms(100).await;
@@ -379,6 +379,7 @@ pub async fn run_local_agent(
     };
 
     // 4. Drive agent stream
+    let anchor = user_message.id;
     let mut stream = openwebide_agent::run(
         provider,
         executor,
@@ -386,9 +387,9 @@ pub async fn run_local_agent(
         AgentConfig::default(),
         cancel,
         gate,
+        anchor,
     );
 
-    let anchor = user_message.id;
     let mut last_usage: Option<TurnTelemetry> = None;
     while let Some(event) = stream.next().await {
         match event {

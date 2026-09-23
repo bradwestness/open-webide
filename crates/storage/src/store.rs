@@ -925,8 +925,8 @@ impl<D: Db> Store<D> {
     // -- tool permissions ----------------------------------------------------
 
     /// Record the user's decision on a gated tool call. The in-flight run
-    /// polls [`Self::tool_permission`] until it arrives; Spin requests are
-    /// stateless, so the decision lives in the database.
+    /// polls [`Self::take_tool_permission`] until it arrives, consuming it;
+    /// Spin requests are stateless, so the decision lives in the database.
     pub async fn set_tool_permission(
         &self,
         session_id: i64,
@@ -947,27 +947,38 @@ impl<D: Db> Store<D> {
         Ok(())
     }
 
-    /// The user's decision on a gated tool call, if one has been recorded.
-    pub async fn tool_permission(
+    /// Take the user's decision on a gated tool call, if one has been
+    /// recorded, deleting it so it can answer only one call. Two statements
+    /// rather than `DELETE … RETURNING`: the session's single poller is the
+    /// only reader.
+    pub async fn take_tool_permission(
         &self,
         session_id: i64,
         tool_call_id: &str,
     ) -> Result<Option<bool>, StorageError> {
+        let params = [
+            DbValue::Int(session_id),
+            DbValue::Text(tool_call_id.to_string()),
+        ];
         let res = self
             .db
             .execute(
                 "SELECT decision FROM tool_permissions \
                  WHERE session_id = ? AND tool_call_id = ?",
-                &[
-                    DbValue::Int(session_id),
-                    DbValue::Text(tool_call_id.to_string()),
-                ],
+                &params,
             )
             .await?;
-        Ok(res
-            .rows
-            .first()
-            .map(|row| row.get_int(0).map(|d| d != 0).unwrap_or(false)))
+        let Some(row) = res.rows.first() else {
+            return Ok(None);
+        };
+        let decision = row.get_int(0).map(|d| d != 0).unwrap_or(false);
+        self.db
+            .execute(
+                "DELETE FROM tool_permissions WHERE session_id = ? AND tool_call_id = ?",
+                &params,
+            )
+            .await?;
+        Ok(Some(decision))
     }
 
     /// Clear recorded decisions, called when a run finishes or a new one
@@ -1872,28 +1883,65 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                store.tool_permission(session.id, "call-1").await.unwrap(),
+                store
+                    .take_tool_permission(session.id, "a1t1c0")
+                    .await
+                    .unwrap(),
                 None
             );
 
             store
-                .set_tool_permission(session.id, "call-1", true)
+                .set_tool_permission(session.id, "a1t1c0", true)
                 .await
                 .unwrap();
-            assert_eq!(
-                store.tool_permission(session.id, "call-1").await.unwrap(),
-                Some(true)
-            );
+            store
+                .set_tool_permission(session.id, "a1t1c1", false)
+                .await
+                .unwrap();
 
-            // Other tool calls and sessions are unaffected.
+            // Other tool calls are unaffected by a take.
             assert_eq!(
-                store.tool_permission(session.id, "call-2").await.unwrap(),
+                store
+                    .take_tool_permission(session.id, "a1t1c2")
+                    .await
+                    .unwrap(),
                 None
             );
 
+            // A decision answers exactly one wait: taking it consumes it.
+            assert_eq!(
+                store
+                    .take_tool_permission(session.id, "a1t1c0")
+                    .await
+                    .unwrap(),
+                Some(true)
+            );
+            assert_eq!(
+                store
+                    .take_tool_permission(session.id, "a1t1c0")
+                    .await
+                    .unwrap(),
+                None
+            );
+            // ...and leaves the other calls' decisions in place.
+            assert_eq!(
+                store
+                    .take_tool_permission(session.id, "a1t1c1")
+                    .await
+                    .unwrap(),
+                Some(false)
+            );
+
+            store
+                .set_tool_permission(session.id, "a1t1c1", true)
+                .await
+                .unwrap();
             store.clear_tool_permissions(session.id).await.unwrap();
             assert_eq!(
-                store.tool_permission(session.id, "call-1").await.unwrap(),
+                store
+                    .take_tool_permission(session.id, "a1t1c1")
+                    .await
+                    .unwrap(),
                 None
             );
         });

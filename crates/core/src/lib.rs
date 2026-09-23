@@ -255,7 +255,9 @@ pub struct WebSearchResult {
 /// right after the user message that started its turn ([`ToolStep::anchor_message_id`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolStep {
-    /// The agent's tool call id (matches the SSE `tool_call`/`tool_result` id).
+    /// The agent loop's step id for the call (matches the SSE
+    /// `tool_call`/`tool_result` id), not the provider's; unique within the
+    /// session. Rows from before step ids carry the provider's `call_N`.
     pub tool_call_id: String,
     /// The tool name (e.g. `write_file`).
     pub name: String,

@@ -761,9 +761,10 @@ struct PermissionBody {
     approved: bool,
 }
 
-/// Record the user's decision on a gated tool call. The in-flight run picks
-/// it up on its next poll; a decision for a call that is no longer waiting
-/// is harmless (decisions are cleared when the run ends).
+/// Record the user's decision on a gated tool call. The waiting call consumes
+/// it on its next poll, so it answers that call only; a decision for a call
+/// that is no longer waiting is harmless (decisions are cleared when the run
+/// ends).
 pub async fn set_tool_permission(
     req: Request,
     state: &AppState,

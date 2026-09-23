@@ -90,6 +90,10 @@ for what's still ahead.
 
 ### Fixed
 
+- Approving one tool call could silently approve a later, different call
+  (Ollama reuses `call_0` every turn), letting e.g. `run_command` run without a
+  prompt. Tool calls now get session-unique ids and each approval is used once.
+  This also stops later runs from overwriting earlier tool steps in history.
 - Agent-directed file writes on the streaming write path no longer produce
   0-byte files.
 - Remote file API path handling for nested and root-relative paths.

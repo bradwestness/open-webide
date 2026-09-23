@@ -82,7 +82,7 @@ impl PermissionGate for PermissionPoller {
             let started = Instant::now();
             loop {
                 if let Some(decision) = store
-                    .tool_permission(session_id, &tool_call_id)
+                    .take_tool_permission(session_id, &tool_call_id)
                     .await
                     .unwrap_or(None)
                 {
@@ -125,10 +125,11 @@ pub fn agent_stream(
         crate::web::SpinWebClient,
         crate::bridge_client::SpinBridgeClient::default(),
     );
-    let events = openwebide_agent::run(provider, executor, request, config, cancel, gate);
     // Tool steps anchor to the user message that started this turn, so a
-    // reloaded session renders them right after it.
+    // reloaded session renders them right after it; the same id namespaces
+    // the run's tool-call ids.
     let anchor = user_message.id;
+    let events = openwebide_agent::run(provider, executor, request, config, cancel, gate, anchor);
     let last_usage: Option<TurnTelemetry> = None;
     let tail = stream::unfold(
         (store, session_id, anchor, events, last_usage),
