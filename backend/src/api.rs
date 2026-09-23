@@ -545,21 +545,37 @@ pub async fn files_put(req: Request, state: &AppState, path: &str) -> Result<Jso
     Ok(json_response(200, &json!({ "path": rel })))
 }
 
+#[derive(Deserialize)]
+struct CopyBody {
+    from: String,
+    to: String,
+}
+
 pub async fn files_post(req: Request, state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
     let (id, sub) = project_files_path(path)?;
-    if sub != "files/create" {
-        return Err(ApiError::not_found(format!("no file route for {sub}")));
+    match sub {
+        "files/create" => {
+            let rel = files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
+            let kind = files_query(&req, "type").unwrap_or_else(|| "file".into());
+            let is_dir = kind == "dir";
+            let (full, _) = remote_project_path(state, user_id, id, &rel).await?;
+            crate::files::create(&full, is_dir).await?;
+            Ok(json_response(
+                201,
+                &json!({ "path": rel, "is_dir": is_dir }),
+            ))
+        }
+        "files/copy" => {
+            let body = read_body(req).await?;
+            let args: CopyBody = parse_json(body)?;
+            let (full_from, _) = remote_project_path(state, user_id, id, &args.from).await?;
+            let (full_to, _) = remote_project_path(state, user_id, id, &args.to).await?;
+            crate::files::copy(&full_from, &full_to).await?;
+            Ok(json_response(200, &json!({ "from": args.from, "to": args.to })))
+        }
+        _ => Err(ApiError::not_found(format!("no file route for {sub}"))),
     }
-    let rel = files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
-    let kind = files_query(&req, "type").unwrap_or_else(|| "file".into());
-    let is_dir = kind == "dir";
-    let (full, _) = remote_project_path(state, user_id, id, &rel).await?;
-    crate::files::create(&full, is_dir).await?;
-    Ok(json_response(
-        201,
-        &json!({ "path": rel, "is_dir": is_dir }),
-    ))
 }
 
 pub async fn files_delete(

@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+### Added
+- Agent can now edit unreadable (binary or large) files; refusing an unreadable file edit now safely restores it from a backup rather than deleting it.
+
+
 ### Fixed
 
 - **\"New file\" no longer truncates an existing file:** creating a file at a path that already exists now returns an error (HTTP 409 in remote mode, an error banner in local mode) and leaves the file's content untouched. Agent `write_file` to a new local-mode path now works correctly.

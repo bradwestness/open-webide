@@ -158,6 +158,10 @@ To prevent SSRF and unrestricted access:
 - **Approval gate:** The agent's `fetch_web_page` tool requires explicit human approval before any external page is fetched.
 - **Cloud metadata protection:** Outbound web fetching explicitly refuses requests to cloud metadata addresses (`169.254.169.254`, `fd00:ec2::254`, their IPv4-mapped representations, and `metadata.google.internal`). Everything else (LAN, loopback, public internet) remains accessible.
 
+## Agent
+
+When the agent edits files that cannot be read as text (binary or large files), it safely backs up the original contents to the `.openwebide/backups/` directory inside the project root before overwriting. This directory is automatically `git`-ignored and is safe to delete at any time to reclaim disk space.
+
 ## Execution bridge
 
 The native bridge daemon (`openwebide-bridge`) runs on the host to provide interactive PTY terminals, process execution (`POST /exec`), and host Git operations for the web frontend and coding agents.

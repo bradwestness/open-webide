@@ -428,6 +428,23 @@ pub fn Editor(
                     }
                 >
                     <div class="editor-diff-actions">
+                        <Show when=move || {
+                            if let Some(d) = pending_diff.get() {
+                                d.old.is_none() || d.old_unavailable
+                            } else { false }
+                        }>
+                            <span style="color: var(--warn); margin-right: 12px; font-size: 0.9em; flex: 1;">
+                                {move || {
+                                    if let Some(d) = pending_diff.get() {
+                                        if d.old_unavailable {
+                                            "Warning: Unreadable file was modified. The old contents were not sent to the agent and could not be included in this preview. Rejecting will restore the file from backup."
+                                        } else {
+                                            "New file created."
+                                        }
+                                    } else { "" }
+                                }}
+                            </span>
+                        </Show>
                         <SegmentedControl
                             options=vec![
                                 SegmentOption::new("Inline", ViewMode::InlineDiff),

@@ -7,6 +7,7 @@ pub mod highlight;
 pub mod html;
 pub mod tui;
 pub mod vfs;
+pub mod utf8;
 
 pub use bridge::*;
 pub use file_type::*;
@@ -238,6 +239,12 @@ pub struct FileDiff {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old: Option<String>,
     pub new: String,
+    /// Whether an existing file was overwritten but could not be read as text; `old` is `None`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub old_unavailable: bool,
+    /// Backup path of the original file, if overwritten while unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<String>,
 }
 
 /// A web search result.
@@ -895,6 +902,8 @@ mod tests {
     #[test]
     fn diff_inline_strips_common_prefix_suffix() {
         let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
             path: "a.txt".into(),
             old: Some("a\nb\nc\nd".into()),
             new: "a\nX\nc\nd".into(),
@@ -908,6 +917,8 @@ mod tests {
     #[test]
     fn diff_inline_new_file_is_all_additions() {
         let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
             path: "new.txt".into(),
             old: None,
             new: "a\nb".into(),
@@ -921,6 +932,8 @@ mod tests {
     #[test]
     fn diff_inline_full_replacement_lists_all() {
         let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
             path: "a.txt".into(),
             old: Some("a\nb".into()),
             new: "x\ny".into(),
@@ -939,6 +952,8 @@ mod tests {
     #[test]
     fn diff_side_by_side_aligns_changed_middle() {
         let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
             path: "a.txt".into(),
             old: Some("a\nb\nc".into()),
             new: "a\nx\nc".into(),
@@ -956,6 +971,8 @@ mod tests {
     #[test]
     fn diff_side_by_side_new_file_pads_left() {
         let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
             path: "new.txt".into(),
             old: None,
             new: "a\nb".into(),
@@ -969,6 +986,8 @@ mod tests {
     #[test]
     fn diff_side_by_side_deletion_pads_right() {
         let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
             path: "a.txt".into(),
             old: Some("a\nb\nc".into()),
             new: "a\nc".into(),
@@ -1063,6 +1082,8 @@ mod tests {
     #[test]
     fn test_diff_inline_detailed_with_word_chunks() {
         let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
             path: "test.rs".into(),
             old: Some("fn foo() -> i32 {\n    return 1;\n}\n".into()),
             new: "fn foo() -> i64 {\n    return 1;\n}\n".into(),

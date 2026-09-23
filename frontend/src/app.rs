@@ -722,6 +722,15 @@ pub fn App() -> impl IntoView {
         ws_pending_edits.update(|m| {
             m.remove(&path);
         });
+
+        if let Some(backup_path) = diff.backup_path {
+            spawn_local(async move {
+                if let Some(ws) = workspace_for.run(pid) {
+                    let _ = ws.delete(&backup_path).await;
+                }
+            });
+        }
+
         ws_content.set(diff.new);
         ws_dirty.set(false);
         load_dir.run((pid, parent_dir(&path)));
@@ -740,20 +749,27 @@ pub fn App() -> impl IntoView {
         let Some(diff) = ws_pending_edits.with(|m| m.get(&path).cloned()) else {
             return;
         };
-        let is_new = diff.old.is_none();
-        let prev = diff.old;
+        let action = openwebide_frontend::pending::reject_action(&diff);
+        let action_clone = action.clone();
         let ld = load_dir;
         confirm_req.set(Some(ConfirmRequest {
             title: "Reject edit".to_string(),
-            message: if is_new {
-                "Reject this edit? The newly created file will be deleted.".to_string()
-            } else {
-                "Reject this edit? The file will be restored to its previous contents.".to_string()
+            message: match &action {
+                openwebide_frontend::pending::RejectAction::Restore(_) => "Reject this edit? The file will be restored to its previous contents.".to_string(),
+                openwebide_frontend::pending::RejectAction::RestoreFromBackup(_) => "Reject this edit? The file will be restored from backup.".to_string(),
+                openwebide_frontend::pending::RejectAction::Delete => "Reject this edit? The newly created file will be deleted.".to_string(),
+                openwebide_frontend::pending::RejectAction::Unavailable => "Cannot reject this edit because the file's previous contents were too large to back up and no copy exists.".to_string(),
             },
-            confirm_label: "Reject".to_string(),
+            confirm_label: match &action {
+                openwebide_frontend::pending::RejectAction::Unavailable => "Ok".to_string(),
+                _ => "Reject".to_string(),
+            },
             action: Callback::new(move |_| {
+                let action = action_clone.clone();
+                if matches!(action, openwebide_frontend::pending::RejectAction::Unavailable) {
+                    return;
+                }
                 let path = path.clone();
-                let prev = prev.clone();
                 ws_pending_edits.update(|m| {
                     m.remove(&path);
                 });
@@ -762,20 +778,32 @@ pub fn App() -> impl IntoView {
                     let Some(ws) = workspace_for.run(pid) else {
                         return;
                     };
-                    let result = match prev {
-                        Some(prev) => {
-                            let r = ws.write(&path, &prev).await;
-                            r.map(|()| prev)
+                    let result = match &action {
+                        openwebide_frontend::pending::RejectAction::Restore(prev) => {
+                            let r = ws.write(&path, prev).await;
+                            r.map(|()| prev.clone())
                         }
-                        None => ws.delete(&path).await.map(|_| String::new()),
+                        openwebide_frontend::pending::RejectAction::RestoreFromBackup(backup) => {
+                            let r = ws.copy(backup, &path).await;
+                            if r.is_ok() {
+                                let _ = ws.delete(backup).await;
+                            }
+                            r.map(|()| String::new())
+                        }
+                        openwebide_frontend::pending::RejectAction::Delete => ws.delete(&path).await.map(|_| String::new()),
+                        openwebide_frontend::pending::RejectAction::Unavailable => unreachable!(),
                     };
                     match result {
                         Ok(content) => {
                             if active_project.get() == Some(pid) {
-                                if is_new {
+                                if matches!(action, openwebide_frontend::pending::RejectAction::Delete) {
                                     ws_open_file.set(None);
+                                } else if matches!(action, openwebide_frontend::pending::RejectAction::RestoreFromBackup(_)) {
+                                    ws_open_file.set(None);
+                                    ws_open_file.set(Some(path.clone()));
+                                } else {
+                                    ws_content.set(content);
                                 }
-                                ws_content.set(content);
                                 ws_dirty.set(false);
                                 ld.run((pid, parent_dir(&path)));
                                 refresh_git.run(());
@@ -1619,7 +1647,19 @@ pub fn App() -> impl IntoView {
                     .as_ref()
                     .and_then(|p| local_handles.get().get(&p.id).cloned());
 
+                let run_pid = active_project.get_untracked();
                 let on_event = move |event: SseEvent| {
+                    if let SseEvent::ToolResult { diff: Some(ref d), .. } = event {
+                        if active_project.get_untracked() == run_pid {
+                            ws_pending_edits.update(|map| openwebide_frontend::pending::merge_pending(map, d.clone()));
+                        } else if let Some(pid) = run_pid {
+                            saved.update(|map| {
+                                let entry = map.entry(pid).or_default();
+                                openwebide_frontend::pending::merge_pending(&mut entry.pending_edits, d.clone());
+                            });
+                        }
+                    }
+
                     if active_session.get() != Some(session_id) {
                         return;
                     }
@@ -1722,14 +1762,11 @@ pub fn App() -> impl IntoView {
                             // Record the agent's edit as a pending diff
                             // and open the file so the editor shows it
                             // in diff mode.
-                            if let Some(d) = &diff {
-                                ws_pending_edits.update(|m| {
-                                    m.insert(d.path.clone(), d.clone());
-                                });
-                                if ws_open_file.get().as_deref() != Some(d.path.as_str()) {
-                                    ws_open_file.set(Some(d.path.clone()));
-                                    ws_dirty.set(false);
-                                }
+                            if let Some(d) = &diff
+                                && ws_open_file.get().as_deref() != Some(d.path.as_str())
+                            {
+                                ws_open_file.set(Some(d.path.clone()));
+                                ws_dirty.set(false);
                             }
                             messages.update(|m| {
                                 let idx = m.iter().rposition(|item| {
@@ -2796,7 +2833,7 @@ pub fn App() -> impl IntoView {
         Some(FileDiff {
             path: open,
             old,
-            new,
+            new, old_unavailable: false, backup_path: None,
         })
     });
 

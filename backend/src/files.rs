@@ -382,6 +382,27 @@ pub async fn create(rel: &str, is_dir: bool) -> Result<()> {
     }
 }
 
+/// Copy `from` to `to`, overwriting `to` if it exists.
+/// Copy `from` to `to`, overwriting `to` if it exists.
+pub async fn copy(from: &str, to: &str) -> Result<()> {
+    let from_file = file_at_read(from).await?;
+    let to_file = file_at_write(to).await?;
+    
+    // Using `write_via_stream` with the stream from `read_via_stream`
+    // instructs the WASI runtime to pipe the data efficiently.
+    let (from_stream, read_fut) = from_file.read_via_stream(0);
+    let write_fut = to_file.write_via_stream(from_stream, 0);
+
+    match write_fut.await {
+        Ok(()) => {}
+        Err(code) => return Err(fs_error(code)),
+    }
+    match read_fut.await {
+        Ok(()) => Ok(()),
+        Err(code) => Err(fs_error(code)),
+    }
+}
+
 /// Delete the file (or symlink, or empty directory) at `rel`.
 ///
 /// Only the **parent directory** is resolved through the PathResolver, so all

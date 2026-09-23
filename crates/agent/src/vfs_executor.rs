@@ -298,7 +298,7 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn write_file(&self, args: &Value) -> ToolOutcome {
+    async fn write_file(&self, args: &Value, step_id: &str) -> ToolOutcome {
         let raw_path = arg_path(args);
         let path = match normalize_vfs_path(&raw_path) {
             Ok(p) => p,
@@ -322,18 +322,58 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             None => return fail("write_file", &path, "missing 'content' argument"),
         };
 
-        let old_content = self.vfs.read(&path).await.ok();
+        let mut old = None;
+        let mut old_unavailable = false;
+        let mut backup_path = None;
+
+        match self.vfs.read(&path).await {
+            Ok(c) => old = Some(c),
+            Err(VfsError::NotFound(_)) => old = None,
+            Err(e) => {
+                let file_name = path.rsplit_once('/').map(|(_, f)| f).unwrap_or(&path);
+                let backup = format!("{}/{step_id}/{file_name}", openwebide_core::vfs::AGENT_BACKUP_DIR);
+                let gitignore = format!("{}/.gitignore", openwebide_core::vfs::AGENT_BACKUP_DIR);
+                
+                // Write .gitignore if missing
+                if let Err(VfsError::NotFound(_)) = self.vfs.read(&gitignore).await {
+                    let _ = self.vfs.write(&gitignore, "*\n").await;
+                }
+
+                if let Err(c) = self.vfs.copy(&path, &backup).await {
+                    return fail(
+                        "write_file",
+                        &path,
+                        &format!("refusing to overwrite: the existing file could not be read ({e}) and could not be backed up ({c})"),
+                    );
+                }
+                old_unavailable = true;
+                backup_path = Some(backup);
+            }
+        }
+
         match self.vfs.write(&path, new_content).await {
             Ok(()) => {
                 let diff = FileDiff {
                     path: path.clone(),
-                    old: old_content,
+                    old,
                     new: new_content.to_string(),
+                    old_unavailable,
+                    backup_path,
+                };
+                let content = if old_unavailable {
+                    format!("wrote {path}; the previous version was not readable as text and was backed up")
+                } else {
+                    format!("wrote {path}")
+                };
+                let summary = if old_unavailable {
+                    format!("write {path} (diff unavailable: previous file backed up)")
+                } else {
+                    format!("wrote {path}")
                 };
                 ToolOutcome {
                     ok: true,
-                    content: format!("wrote {path}"),
-                    summary: format!("wrote {path}"),
+                    content,
+                    summary,
                     diff: Some(diff),
                 }
             }
@@ -769,7 +809,7 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, 
         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
         match call.name.as_str() {
             "read_file" => self.read_file(&args).await,
-            "write_file" => self.write_file(&args).await,
+            "write_file" => self.write_file(&args, &call.id).await,
             "list_dir" => self.list_dir(&args).await,
             "search" => self.search(&args).await,
             "grep_search" => self.grep_search(&args).await,

@@ -46,6 +46,17 @@ impl Workspace {
         }
     }
 
+    pub async fn copy(&self, from: &str, to: &str) -> Result<(), String> {
+        match self {
+            Workspace::Remote { api, project_id } => api.copy_file(*project_id, from, to).await,
+            Workspace::Local { handle } => {
+                use openwebide_core::Vfs;
+                let vfs = local_fs::BrowserFsaVfs::new(handle.clone());
+                vfs.copy(from, to).await.map_err(|e| format!("{e:?}"))
+            }
+        }
+    }
+
     pub async fn create(&self, path: &str, is_dir: bool) -> Result<(), String> {
         match self {
             Workspace::Remote { api, project_id } => {

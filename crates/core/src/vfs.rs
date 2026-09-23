@@ -119,6 +119,9 @@ pub fn format_utc_timestamp(secs: i64) -> String {
     format!("{weekday}, {month_name} {d}, {y} {hour:02}:{minute:02} UTC")
 }
 
+/// Agent backups of files it overwrote without being able to read them; one sub-directory per tool step.
+pub const AGENT_BACKUP_DIR: &str = ".openwebide/backups";
+
 /// The core asynchronous Virtual File System trait.
 pub trait Vfs: Send + Sync {
     /// Read the full UTF-8 contents of a workspace file.
@@ -140,6 +143,13 @@ pub trait Vfs: Send + Sync {
 
     /// Delete a file or recursively delete a directory.
     fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()>;
+
+    /// Copy a file.
+    fn copy<'a>(&'a self, from: &'a str, to: &'a str) -> VfsFuture<'a, ()> {
+        let _ = from;
+        let _ = to;
+        Box::pin(async { Err(VfsError::Io("copy is not supported by this workspace".into())) })
+    }
 
     /// Full-text search across file contents under the given directory (`""` for root).
     fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>>;
@@ -173,6 +183,10 @@ impl<V: Vfs + ?Sized> Vfs for &V {
         (**self).delete(path)
     }
 
+    fn copy<'a>(&'a self, from: &'a str, to: &'a str) -> VfsFuture<'a, ()> {
+        (**self).copy(from, to)
+    }
+
     fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
         (**self).search_content(query, dir)
     }
@@ -201,6 +215,10 @@ impl<V: Vfs + ?Sized> Vfs for Arc<V> {
 
     fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()> {
         (**self).delete(path)
+    }
+
+    fn copy<'a>(&'a self, from: &'a str, to: &'a str) -> VfsFuture<'a, ()> {
+        (**self).copy(from, to)
     }
 
     fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
@@ -329,6 +347,42 @@ impl Vfs for MemoryVfs {
                 .write()
                 .map_err(|e| VfsError::Io(e.to_string()))?;
             files.insert(norm, content.to_string());
+            Ok(())
+        })
+    }
+
+    fn copy<'a>(&'a self, from: &'a str, to: &'a str) -> VfsFuture<'a, ()> {
+        Box::pin(async move {
+            let from_norm = self.canonicalize(from).await?;
+            let to_norm = self.canonicalize(to).await?;
+            
+            let content = {
+                let files = self.files.read().map_err(|e| VfsError::Io(e.to_string()))?;
+                files.get(&from_norm).cloned().ok_or(VfsError::NotFound(from_norm))?
+            };
+
+            if to_norm.is_empty() {
+                return Err(VfsError::Io("cannot write to root".into()));
+            }
+
+            // Ensure parent directory components exist in dirs set
+            if let Some(parent) = to_norm.rsplit_once('/').map(|(p, _)| p) {
+                let mut dirs = self.dirs.write().map_err(|e| VfsError::Io(e.to_string()))?;
+                let mut current = String::new();
+                for part in parent.split('/') {
+                    if !current.is_empty() {
+                        current.push('/');
+                    }
+                    current.push_str(part);
+                    dirs.insert(current.clone());
+                }
+            }
+
+            let mut files = self
+                .files
+                .write()
+                .map_err(|e| VfsError::Io(e.to_string()))?;
+            files.insert(to_norm, content);
             Ok(())
         })
     }

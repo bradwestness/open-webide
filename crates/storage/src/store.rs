@@ -1485,7 +1485,7 @@ mod tests {
             let diff = FileDiff {
                 path: "a.txt".into(),
                 old: None,
-                new: "hi".into(),
+                new: "hi".into(), old_unavailable: false, backup_path: None,
             };
             store
                 .complete_tool_step(session.id, "call-1", true, "wrote a.txt", Some(&diff))

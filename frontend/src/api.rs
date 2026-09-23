@@ -2,6 +2,7 @@
 
 use gloo_net::http::{Method, Request, RequestBuilder};
 use leptos::prelude::*;
+pub use openwebide_frontend::sse::SseEvent;
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::wasm_bindgen::JsCast;
-use web_sys::{AbortSignal, ReadableStreamDefaultReader, ReadableStreamReadResult, TextDecoder};
+use web_sys::{AbortSignal, ReadableStreamDefaultReader, ReadableStreamReadResult};
 
 #[derive(Clone)]
 pub struct BackendApi {
@@ -33,46 +34,6 @@ struct AuthResponse {
 pub enum HealthState {
     Online { version: String },
     Offline,
-}
-
-/// A server-sent event from the message stream.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SseEvent {
-    /// A completed message, emitted immediately for the user message and
-    /// once at the end of a non-streaming run.
-    Message(ChatMessage),
-    /// A token delta appended to the in-progress assistant reply.
-    Delta(String),
-    /// The agent requested a tool call.
-    ToolCall {
-        id: String,
-        name: String,
-        summary: String,
-    },
-    /// A gated tool call is waiting for the user's approval; a
-    /// `ToolResult` follows once the decision is in (either way).
-    PermissionRequest {
-        id: String,
-        name: String,
-        summary: String,
-    },
-    /// A tool call finished.
-    ToolResult {
-        id: String,
-        #[allow(dead_code)]
-        name: String,
-        ok: bool,
-        summary: String,
-        diff: Option<FileDiff>,
-    },
-    /// The final, persisted assistant reply.
-    Done(ChatMessage),
-    /// Telemetry metrics for the turn.
-    Telemetry(TurnTelemetry),
-    /// The run was cancelled; the stream ends after this.
-    Cancelled,
-    /// A provider or persistence error; the stream ends after this.
-    Error(String),
 }
 
 impl BackendApi {
@@ -358,6 +319,20 @@ impl BackendApi {
         if !resp.ok() {
             return Err(self.error_from(resp).await);
         }
+        Ok(())
+    }
+
+    pub async fn copy_file(&self, project_id: i64, from: &str, to: &str) -> Result<(), String> {
+        let body = serde_json::json!({
+            "from": from,
+            "to": to,
+        });
+        self.request::<_, serde_json::Value>(
+            Method::POST,
+            &format!("/projects/{project_id}/files/copy"),
+            Some(&body),
+        )
+        .await?;
         Ok(())
     }
 
@@ -679,9 +654,9 @@ impl BackendApi {
             .get_reader()
             .dyn_into()
             .map_err(|e| format!("{e:?}"))?;
-        let decoder = TextDecoder::new().map_err(|e| format!("{e:?}"))?;
+        let mut decoder = openwebide_core::utf8::Utf8Decoder::new();
+        let mut frames = openwebide_frontend::sse::FrameBuffer::new();
 
-        let mut pending = String::new();
         loop {
             let read = reader.read();
             // `reader.read()` resolves to a plain `{done, value}` object — a
@@ -698,16 +673,16 @@ impl BackendApi {
             }
             let value: js_sys::Uint8Array =
                 chunk.get_value().dyn_into().map_err(|e| format!("{e:?}"))?;
-            let text = decoder
-                .decode_with_u8_array(&value.to_vec())
-                .map_err(|e| format!("{e:?}"))?;
-            pending.push_str(&text);
-            while let Some(pos) = pending.find("\n\n") {
-                let frame = pending[..pos].to_string();
-                pending.drain(..pos + 2);
-                if let Some(event) = parse_sse_frame(&frame) {
+            let bytes = value.to_vec();
+            for f in frames.push(&decoder.push(&bytes)) {
+                if let Some(event) = openwebide_frontend::sse::parse_frame(&f) {
                     on_event(event);
                 }
+            }
+        }
+        for f in frames.push(&decoder.finish()) {
+            if let Some(event) = openwebide_frontend::sse::parse_frame(&f) {
+                on_event(event);
             }
         }
         Ok(())
@@ -775,47 +750,6 @@ impl BackendApi {
     }
 }
 
-/// Parse one SSE frame (`event: <name>\ndata: <json>\n\n`) into an [`SseEvent`].
-fn parse_sse_frame(frame: &str) -> Option<SseEvent> {
-    let mut event = "message";
-    let mut data = String::new();
-    for line in frame.lines() {
-        if let Some(v) = line.strip_prefix("event: ") {
-            event = v.trim();
-        } else if let Some(v) = line.strip_prefix("data: ") {
-            data.push_str(v.trim());
-        }
-    }
-    let value: serde_json::Value = serde_json::from_str(&data).ok()?;
-    Some(match event {
-        "message" => SseEvent::Message(serde_json::from_value(value).ok()?),
-        "delta" => SseEvent::Delta(value.get("content")?.as_str()?.to_string()),
-        "tool_call" => SseEvent::ToolCall {
-            id: value.get("id")?.as_str()?.to_string(),
-            name: value.get("name")?.as_str()?.to_string(),
-            summary: value.get("summary")?.as_str()?.to_string(),
-        },
-        "permission_request" => SseEvent::PermissionRequest {
-            id: value.get("id")?.as_str()?.to_string(),
-            name: value.get("name")?.as_str()?.to_string(),
-            summary: value.get("summary")?.as_str()?.to_string(),
-        },
-        "tool_result" => SseEvent::ToolResult {
-            id: value.get("id")?.as_str()?.to_string(),
-            name: value.get("name")?.as_str()?.to_string(),
-            ok: value.get("ok")?.as_bool().unwrap_or(false),
-            summary: value.get("summary")?.as_str()?.to_string(),
-            diff: value
-                .get("diff")
-                .and_then(|d| serde_json::from_value(d.clone()).ok().flatten()),
-        },
-        "done" => SseEvent::Done(serde_json::from_value(value).ok()?),
-        "telemetry" => SseEvent::Telemetry(serde_json::from_value(value).ok()?),
-        "cancelled" => SseEvent::Cancelled,
-        "error" => SseEvent::Error(value.get("error")?.as_str()?.to_string()),
-        _ => return None,
-    })
-}
 
 fn query_param(query: &str, key: &str) -> Option<String> {
     query.trim_start_matches('?').split('&').find_map(|pair| {
