@@ -363,6 +363,57 @@ pub fn tokenize_diff_line(line: &str) -> Vec<&str> {
 }
 
 /// Compute intra-line word-level diff between two lines using LCS on tokens.
+/// Above this many DP cells, `compute_word_diff` falls back to a whole-middle
+/// delete/insert instead of the O(m·n) token alignment.
+pub const MAX_WORD_DIFF_CELLS: usize = 250_000;
+
+fn build_word_diff_chunks(
+    tokens: &[&str],
+    matched: &[bool],
+    changed: fn(String) -> DiffChunk,
+) -> Vec<DiffChunk> {
+    let mut chunks = Vec::new();
+    let mut current_text = String::new();
+    let mut current_is_match: Option<bool> = None;
+    for (idx, &tok) in tokens.iter().enumerate() {
+        let is_match = matched[idx];
+        match current_is_match {
+            Some(m) if m == is_match => current_text.push_str(tok),
+            Some(m) => {
+                chunks.push(if m {
+                    DiffChunk::Unchanged(current_text)
+                } else {
+                    changed(current_text)
+                });
+                current_text = tok.to_string();
+            }
+            None => current_text = tok.to_string(),
+        }
+        current_is_match = Some(is_match);
+    }
+    if let Some(m) = current_is_match {
+        chunks.push(if m {
+            DiffChunk::Unchanged(current_text)
+        } else {
+            changed(current_text)
+        });
+    }
+    chunks
+}
+
+/// Push `chunk` onto `chunks`, merging it into a trailing `Unchanged` chunk
+/// when both are `Unchanged`.
+fn push_merged_unchanged(chunks: &mut Vec<DiffChunk>, chunk: DiffChunk) {
+    if let DiffChunk::Unchanged(text) = &chunk
+        && let Some(DiffChunk::Unchanged(prev)) = chunks.last_mut()
+    {
+        prev.push_str(text);
+        return;
+    }
+    chunks.push(chunk);
+}
+
+/// Compute intra-line word-level diff between two lines using LCS on tokens.
 pub fn compute_word_diff(old_line: &str, new_line: &str) -> (Vec<DiffChunk>, Vec<DiffChunk>) {
     let old_tokens = tokenize_diff_line(old_line);
     let new_tokens = tokenize_diff_line(new_line);
@@ -380,100 +431,97 @@ pub fn compute_word_diff(old_line: &str, new_line: &str) -> (Vec<DiffChunk>, Vec
         return (vec![DiffChunk::Deleted(old_line.to_string())], Vec::new());
     }
 
-    // dp[i][j] stores length of LCS of old_tokens[..i] and new_tokens[..j]
-    let mut dp = vec![vec![0u16; n + 1]; m + 1];
-    for i in 1..=m {
-        for j in 1..=n {
-            if old_tokens[i - 1] == new_tokens[j - 1] {
-                dp[i][j] = dp[i - 1][j - 1] + 1;
+    let mut prefix = 0;
+    while prefix < m && prefix < n && old_tokens[prefix] == new_tokens[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < m - prefix
+        && suffix < n - prefix
+        && old_tokens[m - 1 - suffix] == new_tokens[n - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let mid_old = &old_tokens[prefix..m - suffix];
+    let mid_new = &new_tokens[prefix..n - suffix];
+    let mid_m = mid_old.len();
+    let mid_n = mid_new.len();
+
+    let prefix_text = old_tokens[..prefix].concat();
+    let suffix_text = old_tokens[m - suffix..].concat();
+
+    let (old_mid_chunks, new_mid_chunks) = if mid_m.saturating_mul(mid_n) > MAX_WORD_DIFF_CELLS {
+        let old_mid_text = mid_old.concat();
+        let new_mid_text = mid_new.concat();
+        let old_mid_chunks = if old_mid_text.is_empty() {
+            Vec::new()
+        } else {
+            vec![DiffChunk::Deleted(old_mid_text)]
+        };
+        let new_mid_chunks = if new_mid_text.is_empty() {
+            Vec::new()
+        } else {
+            vec![DiffChunk::Inserted(new_mid_text)]
+        };
+        (old_mid_chunks, new_mid_chunks)
+    } else {
+        // dp[i * stride + j] stores the LCS length of mid_old[..i] and mid_new[..j].
+        let stride = mid_n + 1;
+        let mut dp = vec![0u32; (mid_m + 1) * stride];
+        for i in 1..=mid_m {
+            for j in 1..=mid_n {
+                dp[i * stride + j] = if mid_old[i - 1] == mid_new[j - 1] {
+                    dp[(i - 1) * stride + (j - 1)] + 1
+                } else {
+                    dp[(i - 1) * stride + j].max(dp[i * stride + (j - 1)])
+                };
+            }
+        }
+
+        let mut old_matched = vec![false; mid_m];
+        let mut new_matched = vec![false; mid_n];
+        let mut i = mid_m;
+        let mut j = mid_n;
+        while i > 0 && j > 0 {
+            if mid_old[i - 1] == mid_new[j - 1] {
+                old_matched[i - 1] = true;
+                new_matched[j - 1] = true;
+                i -= 1;
+                j -= 1;
+            } else if dp[(i - 1) * stride + j] >= dp[i * stride + (j - 1)] {
+                i -= 1;
             } else {
-                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
+                j -= 1;
             }
         }
-    }
 
-    // Backtrack to find matching tokens
-    let mut old_matched = vec![false; m];
-    let mut new_matched = vec![false; n];
-    let mut i = m;
-    let mut j = n;
-    while i > 0 && j > 0 {
-        if old_tokens[i - 1] == new_tokens[j - 1] {
-            old_matched[i - 1] = true;
-            new_matched[j - 1] = true;
-            i -= 1;
-            j -= 1;
-        } else if dp[i - 1][j] >= dp[i][j - 1] {
-            i -= 1;
-        } else {
-            j -= 1;
-        }
-    }
+        (
+            build_word_diff_chunks(mid_old, &old_matched, DiffChunk::Deleted),
+            build_word_diff_chunks(mid_new, &new_matched, DiffChunk::Inserted),
+        )
+    };
 
-    // Build DiffChunks for old_line
     let mut old_chunks = Vec::new();
-    let mut current_text = String::new();
-    let mut current_is_match: Option<bool> = None;
-    for (idx, &tok) in old_tokens.iter().enumerate() {
-        let is_match = old_matched[idx];
-        match current_is_match {
-            Some(matched) if matched == is_match => {
-                current_text.push_str(tok);
-            }
-            Some(matched) => {
-                if matched {
-                    old_chunks.push(DiffChunk::Unchanged(current_text));
-                } else {
-                    old_chunks.push(DiffChunk::Deleted(current_text));
-                }
-                current_text = tok.to_string();
-                current_is_match = Some(is_match);
-            }
-            None => {
-                current_text = tok.to_string();
-                current_is_match = Some(is_match);
-            }
-        }
+    if !prefix_text.is_empty() {
+        push_merged_unchanged(&mut old_chunks, DiffChunk::Unchanged(prefix_text.clone()));
     }
-    if let Some(matched) = current_is_match {
-        if matched {
-            old_chunks.push(DiffChunk::Unchanged(current_text));
-        } else {
-            old_chunks.push(DiffChunk::Deleted(current_text));
-        }
+    for chunk in old_mid_chunks {
+        push_merged_unchanged(&mut old_chunks, chunk);
+    }
+    if !suffix_text.is_empty() {
+        push_merged_unchanged(&mut old_chunks, DiffChunk::Unchanged(suffix_text.clone()));
     }
 
-    // Build DiffChunks for new_line
     let mut new_chunks = Vec::new();
-    let mut current_text = String::new();
-    let mut current_is_match: Option<bool> = None;
-    for (idx, &tok) in new_tokens.iter().enumerate() {
-        let is_match = new_matched[idx];
-        match current_is_match {
-            Some(matched) if matched == is_match => {
-                current_text.push_str(tok);
-            }
-            Some(matched) => {
-                if matched {
-                    new_chunks.push(DiffChunk::Unchanged(current_text));
-                } else {
-                    new_chunks.push(DiffChunk::Inserted(current_text));
-                }
-                current_text = tok.to_string();
-                current_is_match = Some(is_match);
-            }
-            None => {
-                current_text = tok.to_string();
-                current_is_match = Some(is_match);
-            }
-        }
+    if !prefix_text.is_empty() {
+        push_merged_unchanged(&mut new_chunks, DiffChunk::Unchanged(prefix_text));
     }
-    if let Some(matched) = current_is_match {
-        if matched {
-            new_chunks.push(DiffChunk::Unchanged(current_text));
-        } else {
-            new_chunks.push(DiffChunk::Inserted(current_text));
-        }
+    for chunk in new_mid_chunks {
+        push_merged_unchanged(&mut new_chunks, chunk);
+    }
+    if !suffix_text.is_empty() {
+        push_merged_unchanged(&mut new_chunks, DiffChunk::Unchanged(suffix_text));
     }
 
     (old_chunks, new_chunks)
@@ -964,6 +1012,52 @@ mod tests {
         let reconstructed_new: String = new_chunks.iter().map(|c| c.text()).collect();
         assert_eq!(reconstructed_old, old);
         assert_eq!(reconstructed_new, new);
+    }
+
+    #[test]
+    fn word_diff_over_budget_falls_back() {
+        let old_mid: String = (0..20_000).map(|i| format!("o{i} ")).collect();
+        let new_mid: String = (0..20_000).map(|i| format!("n{i} ")).collect();
+        let old_line = format!("prefix {old_mid}suffix");
+        let new_line = format!("prefix {new_mid}suffix");
+
+        let (old_chunks, new_chunks) = compute_word_diff(&old_line, &new_line);
+
+        assert_eq!(old_chunks.len(), 3);
+        assert!(matches!(old_chunks[1], DiffChunk::Deleted(_)));
+        assert_eq!(new_chunks.len(), 3);
+        assert!(matches!(new_chunks[1], DiffChunk::Inserted(_)));
+
+        let reconstructed_old: String = old_chunks.iter().map(|c| c.text()).collect();
+        let reconstructed_new: String = new_chunks.iter().map(|c| c.text()).collect();
+        assert_eq!(reconstructed_old, old_line);
+        assert_eq!(reconstructed_new, new_line);
+    }
+
+    #[test]
+    fn word_diff_rejoins() {
+        let cases = [
+            ("let a = 1;", "let a = 1;"),
+            ("foo(1, 2)", "foo(1, 3)"),
+            ("hello world", "hello there"),
+            ("abc", "xyz"),
+            ("", "new text"),
+            ("old text", ""),
+            ("a b c", "a b c d"),
+        ];
+        for (old, new) in cases {
+            let (old_chunks, new_chunks) = compute_word_diff(old, new);
+            let reconstructed_old: String = old_chunks.iter().map(|c| c.text()).collect();
+            let reconstructed_new: String = new_chunks.iter().map(|c| c.text()).collect();
+            assert_eq!(
+                reconstructed_old, old,
+                "old mismatch for {old:?} vs {new:?}"
+            );
+            assert_eq!(
+                reconstructed_new, new,
+                "new mismatch for {old:?} vs {new:?}"
+            );
+        }
     }
 
     #[test]

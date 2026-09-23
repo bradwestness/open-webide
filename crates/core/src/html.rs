@@ -195,12 +195,10 @@ pub fn html_to_markdown(html: &str, max_bytes: usize) -> String {
 
     if truncated || cleaned.len() > max_bytes {
         if cleaned.len() > max_bytes {
-            cleaned.truncate(max_bytes);
-            while !cleaned.is_char_boundary(cleaned.len()) {
-                cleaned.pop();
-            }
+            let cut = cleaned.floor_char_boundary(max_bytes);
+            cleaned.truncate(cut);
         }
-        cleaned.push_str("\n\n[Content truncated to 16KB limit...]");
+        cleaned.push_str(&format!("\n\n[Content truncated to {max_bytes} bytes...]"));
         cleaned
     } else {
         cleaned
@@ -349,6 +347,14 @@ mod tests {
         let html = "<p>".to_string() + &"a".repeat(20000) + "</p>";
         let md = html_to_markdown(&html, 1000);
         assert!(md.len() <= 1100);
-        assert!(md.contains("[Content truncated to 16KB limit...]"));
+        assert!(md.contains("[Content truncated to 1000 bytes...]"));
+    }
+
+    #[test]
+    fn truncation_inside_multibyte_char() {
+        let html = "<p>".to_string() + &"a".repeat(999) + "€" + "</p>";
+        let md = html_to_markdown(&html, 1000);
+        assert!(md.len() <= 1100);
+        assert!(md.contains("1000 bytes"));
     }
 }

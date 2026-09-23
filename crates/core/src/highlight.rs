@@ -80,6 +80,11 @@ pub fn language_from_path(path: &str) -> Language {
     }
 }
 
+/// Lines longer than this are rendered as a single unhighlighted [`Token`]
+/// rather than tokenized, so minified files can't spend unbounded time in the
+/// per-character tokenizer loops.
+pub const MAX_HIGHLIGHT_LINE_BYTES: usize = 10_000;
+
 /// Tokenize `source` line by line into colored tokens.
 ///
 /// The returned lines line up with `source.split('\n')`, and concatenating a
@@ -88,6 +93,13 @@ pub fn highlight_lines(source: &str, language: Language) -> Vec<Vec<Token>> {
     let mut lines = Vec::new();
     let mut state = State::Normal;
     for line in source.split('\n') {
+        if line.len() > MAX_HIGHLIGHT_LINE_BYTES {
+            lines.push(vec![Token {
+                kind: TokenKind::Plain,
+                text: line.to_string(),
+            }]);
+            continue;
+        }
         let (tokens, next_state) = match language {
             Language::Rust => highlight_rust_line(line, state),
             _ => highlight_generic_line(line, language, state),
@@ -134,30 +146,25 @@ fn is_plain_char(c: char) -> bool {
 /// honoring backslash escapes. Returns the literal text and the byte length
 /// consumed. An unterminated string runs to the end of the line.
 fn read_string(rest: &str, quote: char) -> (String, usize) {
-    let chars: Vec<char> = rest.chars().collect();
-    let mut text = String::new();
-    let mut consumed = 0usize;
-    let mut i = 0usize;
-    if i < chars.len() {
-        text.push(chars[i]);
-        consumed += chars[i].len_utf8();
-        i += 1;
-    }
-    while i < chars.len() {
-        let c = chars[i];
-        text.push(c);
-        consumed += c.len_utf8();
-        i += 1;
-        if c == '\\' && i < chars.len() {
-            let esc = chars[i];
-            text.push(esc);
-            consumed += esc.len_utf8();
-            i += 1;
+    let mut indices = rest.char_indices();
+    let mut end = match indices.next() {
+        Some((_, c)) => c.len_utf8(),
+        None => 0,
+    };
+    let mut escaped = false;
+    for (idx, c) in indices {
+        end = idx + c.len_utf8();
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
         } else if c == quote {
             break;
         }
     }
-    (text, consumed)
+    (rest[..end].to_string(), end)
 }
 
 /// Read an identifier (letters, digits, underscores) starting at `rest`.
@@ -179,64 +186,45 @@ fn read_ident(rest: &str) -> (String, usize) {
 /// optional `0x`/`0o`/`0b` prefix, integer part, optional fraction, optional
 /// exponent. Returns the literal text and the byte length consumed.
 fn read_number(rest: &str) -> (String, usize) {
-    let chars: Vec<char> = rest.chars().collect();
+    let bytes = rest.as_bytes();
+    let len = bytes.len();
     let mut i = 0usize;
-    let mut consumed = 0usize;
-    let mut text = String::new();
 
     // `0x` / `0o` / `0b` prefix.
-    if i < chars.len() && chars[i] == '0' {
-        text.push(chars[i]);
-        consumed += chars[i].len_utf8();
+    if i < len && bytes[i] == b'0' {
         i += 1;
-        if i < chars.len() && "xXoObB".contains(chars[i]) {
-            text.push(chars[i]);
-            consumed += chars[i].len_utf8();
+        if i < len && matches!(bytes[i], b'x' | b'X' | b'o' | b'O' | b'b' | b'B') {
             i += 1;
-            while i < chars.len() && (chars[i].is_ascii_hexdigit() || chars[i] == '_') {
-                text.push(chars[i]);
-                consumed += chars[i].len_utf8();
+            while i < len && (bytes[i].is_ascii_hexdigit() || bytes[i] == b'_') {
                 i += 1;
             }
-            return (text, consumed);
+            return (rest[..i].to_string(), i);
         }
     }
 
     // Integer part.
-    while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
-        text.push(chars[i]);
-        consumed += chars[i].len_utf8();
+    while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
         i += 1;
     }
     // Fractional part (only if a digit follows the dot, so `1..2` stays a range).
-    if i + 1 < chars.len() && chars[i] == '.' && chars[i + 1].is_ascii_digit() {
-        text.push(chars[i]);
-        consumed += chars[i].len_utf8();
+    if i + 1 < len && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
         i += 1;
-        while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
-            text.push(chars[i]);
-            consumed += chars[i].len_utf8();
+        while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
             i += 1;
         }
     }
     // Exponent.
-    if i < chars.len() && (chars[i] == 'e' || chars[i] == 'E') {
-        text.push(chars[i]);
-        consumed += chars[i].len_utf8();
+    if i < len && (bytes[i] == b'e' || bytes[i] == b'E') {
         i += 1;
-        if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
-            text.push(chars[i]);
-            consumed += chars[i].len_utf8();
+        if i < len && (bytes[i] == b'+' || bytes[i] == b'-') {
             i += 1;
         }
-        while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
-            text.push(chars[i]);
-            consumed += chars[i].len_utf8();
+        while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
             i += 1;
         }
     }
 
-    (text, consumed)
+    (rest[..i].to_string(), i)
 }
 
 /// Classify a Rust identifier using the text that follows it.
@@ -263,29 +251,27 @@ fn classify_rust_ident(word: &str, after: &str) -> TokenKind {
 /// `rest` (which begins with `'`). Returns `None` when the quote does not begin
 /// either (a stray quote), in which case the caller treats it as plain text.
 fn read_char_or_lifetime(rest: &str) -> Option<(Token, usize)> {
-    let chars: Vec<char> = rest.chars().collect();
-    if chars.is_empty() || chars[0] != '\'' {
+    let first = rest.chars().next()?;
+    if first != '\'' {
         return None;
     }
-    let mut consumed = chars[0].len_utf8();
-    let mut text = String::new();
-    text.push(chars[0]);
 
-    if chars.len() < 2 {
+    let sample: Vec<char> = rest.chars().take(4).collect();
+    if sample.len() < 2 {
         return Some((
             Token {
                 kind: TokenKind::Lifetime,
-                text,
+                text: "'".to_string(),
             },
-            consumed,
+            first.len_utf8(),
         ));
     }
 
-    let second = chars[1];
+    let second = sample[1];
     if second == '\\' {
         // Escaped char literal, e.g. `'\n'` or `'\''`.
-        if chars.len() >= 4 && chars[3] == '\'' {
-            consumed += second.len_utf8() + chars[2].len_utf8() + chars[3].len_utf8();
+        if sample.len() >= 4 && sample[3] == '\'' {
+            let consumed: usize = sample.iter().take(4).map(|c| c.len_utf8()).sum();
             return Some((
                 Token {
                     kind: TokenKind::Char,
@@ -301,14 +287,14 @@ fn read_char_or_lifetime(rest: &str) -> Option<(Token, usize)> {
         return Some((
             Token {
                 kind: TokenKind::Lifetime,
-                text,
+                text: "'".to_string(),
             },
-            consumed,
+            first.len_utf8(),
         ));
     }
     // A char literal when the third char is a closing quote.
-    if chars.len() >= 3 && chars[2] == '\'' {
-        consumed += second.len_utf8() + chars[2].len_utf8();
+    if sample.len() >= 3 && sample[2] == '\'' {
+        let consumed: usize = sample.iter().take(3).map(|c| c.len_utf8()).sum();
         return Some((
             Token {
                 kind: TokenKind::Char,
@@ -317,8 +303,11 @@ fn read_char_or_lifetime(rest: &str) -> Option<(Token, usize)> {
             consumed,
         ));
     }
-    // Otherwise a lifetime: `'ident`.
-    for &c in &chars[1..] {
+    // Otherwise a lifetime: `'ident`. Iterate lazily; identifiers are short,
+    // so this never collects the rest of the line.
+    let mut text = String::from("'");
+    let mut consumed = first.len_utf8();
+    for c in rest[first.len_utf8()..].chars() {
         if c.is_alphanumeric() || c == '_' {
             text.push(c);
             consumed += c.len_utf8();
@@ -445,9 +434,12 @@ fn highlight_rust_line(line: &str, state: State) -> (Vec<Token>, State) {
         }
 
         if is_operator(c) {
-            let mut j = i + 1;
-            while j < len && is_operator(line[j..].chars().next().unwrap()) {
-                j += 1;
+            let mut j = i + c.len_utf8();
+            for ch in line[j..].chars() {
+                if !is_operator(ch) {
+                    break;
+                }
+                j += ch.len_utf8();
             }
             tokens.push(Token {
                 kind: TokenKind::Operator,
@@ -466,9 +458,12 @@ fn highlight_rust_line(line: &str, state: State) -> (Vec<Token>, State) {
             continue;
         }
 
-        let mut j = i + 1;
-        while j < len && is_plain_char(line[j..].chars().next().unwrap()) {
-            j += 1;
+        let mut j = i + c.len_utf8();
+        for ch in line[j..].chars() {
+            if !is_plain_char(ch) {
+                break;
+            }
+            j += ch.len_utf8();
         }
         tokens.push(Token {
             kind: TokenKind::Plain,
@@ -640,9 +635,12 @@ fn highlight_generic_line(line: &str, language: Language, state: State) -> (Vec<
         }
 
         if is_operator(c) {
-            let mut j = i + 1;
-            while j < len && is_operator(line[j..].chars().next().unwrap()) {
-                j += 1;
+            let mut j = i + c.len_utf8();
+            for ch in line[j..].chars() {
+                if !is_operator(ch) {
+                    break;
+                }
+                j += ch.len_utf8();
             }
             tokens.push(Token {
                 kind: TokenKind::Operator,
@@ -661,9 +659,12 @@ fn highlight_generic_line(line: &str, language: Language, state: State) -> (Vec<
             continue;
         }
 
-        let mut j = i + 1;
-        while j < len && is_plain_char(line[j..].chars().next().unwrap()) {
-            j += 1;
+        let mut j = i + c.len_utf8();
+        for ch in line[j..].chars() {
+            if !is_plain_char(ch) {
+                break;
+            }
+            j += ch.len_utf8();
         }
         tokens.push(Token {
             kind: TokenKind::Plain,
@@ -1177,6 +1178,8 @@ mod tests {
             ),
             ("{\n  \"key\": 1, \"ok\": true\n}\n", Language::Json),
             ("plain text, no rules\n", Language::Plain),
+            ("let s = \"café\"; // €\n", Language::Rust),
+            ("s = \"héllo\"  # ✓\n", Language::Python),
         ] {
             rejoins(src, lang);
         }
@@ -1196,5 +1199,66 @@ mod tests {
         assert!(k.contains(&TokenKind::String));
         assert!(k.contains(&TokenKind::Number));
         assert!(k.contains(&TokenKind::Boolean));
+    }
+
+    #[test]
+    fn non_ascii_symbols_never_panic_and_rejoin() {
+        let languages = [
+            Language::Rust,
+            Language::Python,
+            Language::JavaScript,
+            Language::TypeScript,
+            Language::Json,
+            Language::Html,
+            Language::Css,
+            Language::Markdown,
+            Language::Shell,
+            Language::Toml,
+            Language::Yaml,
+            Language::Sql,
+            Language::C,
+            Language::Cpp,
+            Language::Go,
+            Language::Plain,
+        ];
+        let samples = [
+            "a — b",
+            "let x = 1; €",
+            "→",
+            "°",
+            "٣",
+            "😀 x",
+            "#é",
+            "'é'",
+            "\"é\"",
+            "a→=b",
+        ];
+        let fixture = "fn main() { let x = 1; } // comment\n";
+        for &language in &languages {
+            for &sample in &samples {
+                rejoins(sample, language);
+                rejoins(&format!("{fixture}{sample}{fixture}"), language);
+            }
+        }
+    }
+
+    #[test]
+    fn overlong_line_is_single_plain_token() {
+        let long_line = "x".repeat(MAX_HIGHLIGHT_LINE_BYTES + 1);
+        let toks = highlight_lines(&long_line, Language::Rust);
+        assert_eq!(toks.len(), 1);
+        assert_eq!(toks[0].len(), 1);
+        assert_eq!(toks[0][0].kind, TokenKind::Plain);
+        assert_eq!(toks[0][0].text, long_line);
+
+        // A block comment spanning a capped line keeps its state across it.
+        let source = format!("/* start\n{long_line}\nstill comment */ let a = 1;");
+        let toks = highlight_lines(&source, Language::Rust);
+        assert_eq!(toks[1].len(), 1);
+        assert_eq!(toks[1][0].kind, TokenKind::Plain);
+        assert_eq!(toks[1][0].text, long_line);
+        assert_eq!(toks[2].first().unwrap().kind, TokenKind::Comment);
+        assert_eq!(toks[2].first().unwrap().text, "still comment */");
+        rejoins(&source, Language::Rust);
     }
 }
