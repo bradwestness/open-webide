@@ -351,24 +351,49 @@ access. Off by default; recommended alongside YOLO mode. Depends on the
 approval-modes item (and uses the tool-execution trait the bridge refactor
 introduces).
 
-### Hardening, multi-arch distribution & releases
+### Productionization & public release (1.0)
 
-Production distribution and resilient offline handling for the complete
-stack.
+The milestone that marks **1.0** — the first version tagged for public use. A hygiene and packaging pass once the hardening sequence, refactors and the main Next features have
+landed — before sharing the repo publicly.
 
-- **Automated multi-arch container releases:**
-  - GitHub Actions CI/CD building multi-arch images (`linux/amd64` and
-    `linux/arm64`) via QEMU/Buildx and publishing to GitHub Container
-    Registry (`GHCR`).
-  - SemVer release tagging and automated changelog generation.
-  - Podman quadlet `.image` + `.container` systemd service definitions.
-- **Offline & error state recovery:**
-  - Frontend heartbeat to `/api/health` with exponential backoff
-    reconnection.
-  - Preserving unsaved editor state and draft prompts across connection
-    dropouts.
-  - Graceful re-authorization flow for local File System Access API
-    directory handles.
+- **Repo hygiene:** remove cruft and unused artifacts (stray scratch files, dead code, stale specs
+  and docs, unused dependencies and features, leftover config), make sure `.gitignore` covers build
+  and tool output, and that CI enforces fmt/clippy/tests on every crate.
+- **Setup story:** a quick start that works in minutes — pull an image and point it at a model
+  server — plus bare-metal, Docker/Podman and Tailscale guides, a configuration reference (flags,
+  Spin variables, settings), upgrade/migration notes and troubleshooting.
+- **Documentation & architecture diagrams** (Mermaid in `docs/`, rendered on GitHub, updated in the
+  same PR as the code they describe):
+  - Architecture overview: the browser app (Leptos → wasm32-unknown-unknown), the Spin backend
+    (wasm32-wasip2) with SQLite, the native `openwebide-bridge` daemon, the model servers, and the
+    shared crates (`core`, `llm`, `agent`, `storage`, `auth`) — which binary each compiles into and
+    what runs where in Remote vs Local mode.
+  - Transport map: REST + SSE to the backend, the multiplexed bridge WebSocket (hello/auth,
+    terminal, agent runs), the SSE fallback, and the HTTPS proxy / same-origin `/bridge` path.
+  - Request-flow sequence diagrams: a prompt from the composer through the transport to the agent
+    loop, the provider call and streamed tokens back, a tool call through the approval gate
+    (`ApprovalMode`, single-use decisions) into the tool executor and the VFS (`HostFsVfs` /
+    `BrowserFsaVfs` / `MemoryVfs`, path confinement), and results/diffs back to the UI and SQLite.
+  - Data model and security model (trust boundaries — model output is untrusted — and what each
+    check protects).
+- **Install without cloning:**
+  - GitHub Actions building multi-arch images (`linux/amd64`, `linux/arm64`) and publishing to
+    GHCR only (`ghcr.io/<owner>/open-webide`, public package linked to the repo), tagged by SemVer
+    plus `latest`. Auth via the built-in `GITHUB_TOKEN` (`packages: write`) — no extra accounts or
+    secrets. Build each arch on a native runner (`ubuntu-24.04-arm` for arm64) instead of QEMU, then
+    merge into one multi-arch manifest.
+  - A published `docker-compose.yml` and Podman quadlet (`.image` + `.container`) that reference
+    the registry image, so users download one file and start it.
+  - The bridge shipped inside the image (sequence step 47) and as prebuilt release binaries for
+    macOS/Linux (amd64/arm64) for laptop-companion use.
+  - SemVer releases with release notes generated from `CHANGELOG.md`; this item ships as `v1.0.0`
+    (the workspace is `0.1.0` until then), and `[Unreleased]` in the changelog becomes `[1.0.0]`.
+
+### Offline & error-state recovery
+
+- Frontend heartbeat to `/api/health` with exponential backoff reconnection.
+- Preserving unsaved editor state and draft prompts across connection dropouts.
+- Graceful re-authorization flow for local File System Access API directory handles.
 
 ### Parking lot
 
