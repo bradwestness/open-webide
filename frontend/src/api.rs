@@ -517,9 +517,10 @@ impl BackendApi {
         tool_call_id: &str,
         approved: bool,
     ) -> Result<(), String> {
+        let enc_id = js_sys::encode_uri_component(tool_call_id).as_string().unwrap_or_else(|| tool_call_id.to_string());
         let _value: serde_json::Value = self
             .post(
-                &format!("/sessions/{session_id}/permissions/{tool_call_id}"),
+                &format!("/sessions/{session_id}/permissions/{enc_id}"),
                 &json!({ "approved": approved }),
             )
             .await?;

@@ -439,12 +439,16 @@ struct PendingCall {
     wire_id: String,
 }
 
+pub fn step_id_prefix(anchor_id: i64) -> String {
+    format!("a{anchor_id}t")
+}
+
 /// Assign step ids and wire ids to one response's tool calls.
 fn pending_calls(anchor_id: i64, turn: usize, calls: Vec<ToolCall>) -> Vec<PendingCall> {
     let mut pending: Vec<PendingCall> = Vec::with_capacity(calls.len());
     for (idx, call) in calls.into_iter().enumerate() {
         let used = |id: &str| pending.iter().any(|p| p.wire_id == id);
-        let step_id = format!("a{anchor_id}t{turn}c{idx}");
+        let step_id = format!("{}{turn}c{idx}", step_id_prefix(anchor_id));
         let wire_id = if call.id.is_empty() || used(&call.id) {
             let mut wire_id = step_id.clone();
             let mut n = 1;
@@ -1372,5 +1376,21 @@ mod tests {
         assert!(gate.needs_approval(&call("2", "fetch_web_page", "{}")));
         assert!(!gate.needs_approval(&call("3", "read_file", "{}")));
         assert!(!gate.needs_approval(&call("4", "search_web", "{}")));
+    }
+
+    #[test]
+    fn step_id_prefix_tests() {
+        let prefix = step_id_prefix(7);
+        let calls = pending_calls(7, 1, vec![
+            call("call_0", "read_file", "{}"),
+            call("call_1", "write_file", "{}"),
+        ]);
+        for p in calls {
+            assert!(p.call.id.starts_with(&prefix));
+        }
+        let calls_other = pending_calls(71, 1, vec![
+            call("call_0", "read_file", "{}"),
+        ]);
+        assert!(!calls_other[0].call.id.starts_with(&prefix));
     }
 }

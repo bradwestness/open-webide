@@ -82,23 +82,22 @@ providers today.
 ### Approval modes
 
 A real CLI/TUI-style approval mode selector instead of the current
-per-session single on/off flag (`always_approve_all` in `frontend/src/app.rs`,
-set from the permission prompt's "always" choice):
+`Alt+A` per-session "always" choice. This builds on the `ApprovalMode`
+enum in `openwebide_agent::policy` (which currently supports `Default`
+and `AlwaysForSession` — the latter explicitly never auto-approving
+`run_command`):
 
 - **Default** — prompt for every gated tool call (today's behavior).
 - **Auto-accept edits** — file edits are auto-approved; shell commands still
   prompt.
 - **Auto with a classifier** — the fast model (above) judges whether a given
   call is safe to auto-approve.
-- **YOLO** — approve everything, no prompts (like Qwen Code's YOLO mode).
+- **YOLO** — approve everything, including `run_command`, no prompts (like Qwen Code's YOLO mode).
 
-Cycle modes with `Shift+Tab`; show the current mode in the TUI statusline's
-`[NORMAL]`/`[RUNNING]`/`[AWAITING]` segment, which is also clickable and
+Cycle modes with `Shift+Tab`; show the current mode in the TUI statusline
+(replacing the current `[ALWAYS]` segment), which is also clickable and
 opens a dropdown to pick a mode directly. Depends on the fast model
-(classifier mode) and on the default-deny approval-policy work in the
-hardening entry above, which also replaces the on/off flag with an
-`ApprovalMode` enum (`openwebide_agent::policy`) so each mode here is a new
-variant.
+(classifier mode).
 
 ### File tree: Explorer / Changes mode
 

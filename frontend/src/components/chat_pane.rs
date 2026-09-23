@@ -209,12 +209,14 @@ fn render_user_message(content: String) -> AnyView {
 }
 
 /// Render an agent tool step as a terminal TUI box with box-drawing glyphs.
+#[allow(clippy::too_many_arguments)]
 fn render_tool_step(
     id: String,
     name: String,
     summary: String,
     result: Option<ToolStepResult>,
     awaiting_permission: bool,
+    is_current_awaiting: bool,
     on_permission: Callback<(String, bool)>,
     on_permission_always: Callback<String>,
 ) -> impl IntoView {
@@ -234,6 +236,7 @@ fn render_tool_step(
 
     let (result_sig, _set_result) = signal(result);
     let (id_sig, _set_id) = signal(id);
+    let (name_sig, _set_name) = signal(name.clone());
     let show_diff = RwSignal::new(true);
 
     view! {
@@ -249,7 +252,7 @@ fn render_tool_step(
 
             <div class="tui-tool-inner">
                 <Show
-                    when=move || awaiting_permission && result_sig.get().is_none()
+                    when=move || awaiting_permission && result_sig.get().is_none() && is_current_awaiting
                     fallback=|| ()
                 >
                     <div class="tui-permission-prompt">
@@ -259,33 +262,47 @@ fn render_tool_step(
                         <div class="tui-perm-buttons">
                             <button
                                 class="tui-perm-btn btn-y"
-                                title="Approve this call [y]"
+                                title="Approve this call [Alt+Y]"
                                 on:click=move |_| on_permission.run((id_sig.get(), true))
                             >
-                                "[y]es"
+                                "[Alt+Y]es"
                             </button>
                             <button
                                 class="tui-perm-btn btn-n"
-                                title="Deny this call [n]"
+                                title="Deny this call [Alt+N]"
                                 on:click=move |_| on_permission.run((id_sig.get(), false))
                             >
-                                "[n]o"
+                                "[Alt+N]o"
                             </button>
-                            <button
-                                class="tui-perm-btn btn-a"
-                                title="Always approve for this session [a]"
-                                on:click=move |_| on_permission_always.run(id_sig.get())
+                            <Show
+                                when=move || openwebide_agent::policy::always_approvable(&name_sig.get())
+                                fallback=|| ()
                             >
-                                "[a]lways"
-                            </button>
+                                <button
+                                    class="tui-perm-btn btn-a"
+                                    title="Always approve for this session [Alt+A]"
+                                    on:click=move |_| on_permission_always.run(id_sig.get())
+                                >
+                                    "[Alt+A]lways"
+                                </button>
+                            </Show>
                             <button
                                 class="tui-perm-btn btn-d"
-                                title="Toggle diff inspection [d]"
+                                title="Toggle diff inspection [Alt+D]"
                                 on:click=move |_| show_diff.update(|v| *v = !*v)
                             >
-                                "[d]iff"
+                                "[Alt+D]iff"
                             </button>
                         </div>
+                    </div>
+                </Show>
+
+                <Show
+                    when=move || awaiting_permission && result_sig.get().is_none() && !is_current_awaiting
+                    fallback=|| ()
+                >
+                    <div class="tui-tool-pending muted">
+                        "[canceled: no longer pending]"
                     </div>
                 </Show>
 
@@ -439,6 +456,7 @@ pub fn ChatPane(
     set_active_context: WriteSignal<Option<EditorContext>>,
     session_telemetry: ReadSignal<SessionTelemetry>,
     on_slash_command: Callback<SlashCommand>,
+    current_run_anchor: Signal<Option<i64>>,
     #[prop(into, optional)] width: Option<Signal<f64>>,
 ) -> impl IntoView {
     let scroll_ref = NodeRef::<leptos::html::Div>::new();
@@ -451,22 +469,25 @@ pub fn ChatPane(
     let draft_backup = RwSignal::new(String::new());
 
     // Check if any tool step is currently awaiting permission
-    let awaiting_step_id = Signal::derive(move || {
-        messages.get().into_iter().find_map(|item| {
+    let awaiting_step = Memo::new(move |_| {
+        let anchor = current_run_anchor.get()?;
+        let prefix = openwebide_agent::step_id_prefix(anchor);
+        messages.get().into_iter().rev().find_map(|item| {
             if let ConversationItem::ToolStep {
                 id,
+                name,
                 awaiting_permission: true,
                 result: None,
                 ..
             } = item
+                && id.starts_with(&prefix)
             {
-                Some(id)
-            } else {
-                None
+                return Some((id, name));
             }
+            None
         })
     });
-    let has_awaiting = Signal::derive(move || awaiting_step_id.get().is_some());
+    let has_awaiting = Signal::derive(move || awaiting_step.get().is_some());
 
     // Keep the model picker's value in sync with the chosen model.
     Effect::new(move || {
@@ -595,12 +616,14 @@ pub fn ChatPane(
                                                             }
                                                             _ => unreachable!("not a tool step"),
                                                         };
+                                                    let is_current_awaiting = awaiting_step.get().is_some_and(|(cur_id, _)| cur_id == id);
                                                     render_tool_step(
                                                         id,
                                                         name,
                                                         summary,
                                                         result,
                                                         awaiting,
+                                                        is_current_awaiting,
                                                         on_permission,
                                                         on_permission_always,
                                                     )
@@ -658,8 +681,12 @@ pub fn ChatPane(
                     class="composer-input tui-input"
                     node_ref=input_ref
                     placeholder=move || {
-                        if let Some(_id) = awaiting_step_id.get() {
-                            "? Tool awaiting approval: press [y]es, [n]o, or [a]lways..."
+                        if let Some((_, name)) = awaiting_step.get() {
+                            if openwebide_agent::policy::always_approvable(&name) {
+                                "? Tool awaiting approval: press [Alt+Y]es, [Alt+N]o, or [Alt+A]lways..."
+                            } else {
+                                "? Tool awaiting approval: press [Alt+Y]es, or [Alt+N]o..."
+                            }
                         } else if has_session.get() {
                             "Ask a question or /command (Enter to send, Shift+Enter for newline, Up/Down for history)"
                         } else {
@@ -678,21 +705,22 @@ pub fn ChatPane(
                         move |e: leptos::ev::KeyboardEvent| {
                             let key = e.key();
 
-                            // Intercept single keystroke permission handshake if waiting for approval and prompt is empty
-                            if let Some(id) = awaiting_step_id.get()
-                                && draft.get().trim().is_empty()
+                            // Intercept permission handshake if waiting for approval
+                            if let Some((id, name)) = awaiting_step.get()
+                                && e.alt_key() && !e.ctrl_key() && !e.meta_key()
                             {
-                                if key == "y" || key == "Y" {
+                                let code = e.code();
+                                if code == "KeyY" {
                                     e.prevent_default();
                                     on_permission.run((id, true));
                                     return;
                                 }
-                                if key == "n" || key == "N" {
+                                if code == "KeyN" {
                                     e.prevent_default();
                                     on_permission.run((id, false));
                                     return;
                                 }
-                                if key == "a" || key == "A" {
+                                if code == "KeyA" && openwebide_agent::policy::always_approvable(&name) {
                                     e.prevent_default();
                                     on_permission_always.run(id);
                                     return;

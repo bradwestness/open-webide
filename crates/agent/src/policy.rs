@@ -28,6 +28,28 @@ pub fn requires_approval(call: &ToolCall) -> bool {
     !AUTO_APPROVED.contains(&call.name.as_str())
 }
 
+pub const NEVER_ALWAYS_APPROVED: &[&str] = &["run_command"];
+
+pub fn always_approvable(name: &str) -> bool {
+    !NEVER_ALWAYS_APPROVED.contains(&name)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ApprovalMode {
+    #[default]
+    Default,
+    AlwaysForSession,
+}
+
+impl ApprovalMode {
+    pub fn auto_approves(self, tool: &str) -> bool {
+        match self {
+            ApprovalMode::Default => false,
+            ApprovalMode::AlwaysForSession => always_approvable(tool),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +116,19 @@ mod tests {
                 "expected {name} to require approval"
             );
         }
+    }
+
+    #[test]
+    fn test_always_approvable() {
+        assert!(always_approvable("write_file"));
+        assert!(!always_approvable("run_command"));
+    }
+
+    #[test]
+    fn test_auto_approves() {
+        assert!(!ApprovalMode::Default.auto_approves("write_file"));
+        assert!(!ApprovalMode::Default.auto_approves("run_command"));
+        assert!(ApprovalMode::AlwaysForSession.auto_approves("write_file"));
+        assert!(!ApprovalMode::AlwaysForSession.auto_approves("run_command"));
     }
 }

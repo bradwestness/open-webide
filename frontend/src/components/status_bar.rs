@@ -11,6 +11,7 @@ pub fn StatusBar(
     #[prop(default = Signal::derive(|| None))] git_status: Signal<Option<GitRepoStatus>>,
     #[prop(default = Callback::new(|_| ()))] on_branch_click: Callback<()>,
     #[prop(default = Callback::new(|_| ()))] on_sync_click: Callback<()>,
+    #[prop(default = Signal::derive(|| openwebide_agent::policy::ApprovalMode::Default))] approval_mode: Signal<openwebide_agent::policy::ApprovalMode>,
 ) -> impl IntoView {
     view! {
         <footer class="statusbar">
@@ -90,6 +91,11 @@ pub fn StatusBar(
             </Show>
 
             <span class="spacer" />
+            <Show when=move || approval_mode.get() == openwebide_agent::policy::ApprovalMode::AlwaysForSession>
+                <span class="status-mode" title="Always approve tools (except run_command) for this session">
+                    "[ALWAYS]"
+                </span>
+            </Show>
             <button
                 class=move || if show_terminal.get() { "status-btn active" } else { "status-btn" }
                 title="Toggle terminal dock (Ctrl+`)"

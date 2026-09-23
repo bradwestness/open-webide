@@ -137,6 +137,29 @@ fn capture_active_editor(open_file: Option<String>, content: &str) -> Option<Edi
     })
 }
 
+fn cancel_run_prompts(items: &mut [ConversationItem], anchor: i64) {
+    let prefix = openwebide_agent::step_id_prefix(anchor);
+    for item in items {
+        if let ConversationItem::ToolStep {
+            id,
+            awaiting_permission,
+            result,
+            ..
+        } = item
+            && id.starts_with(&prefix)
+            && *awaiting_permission
+            && result.is_none()
+        {
+            *awaiting_permission = false;
+            *result = Some(ToolStepResult {
+                ok: false,
+                summary: "cancelled".into(),
+                diff: None,
+            });
+        }
+    }
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let api = BackendApi::from_location();
@@ -207,7 +230,8 @@ pub fn App() -> impl IntoView {
 
     let active_editor_context = RwSignal::new(Option::<EditorContext>::None);
     let session_telemetry = RwSignal::new(SessionTelemetry::default());
-    let always_approve_all = RwSignal::new(false);
+    let approval_mode = RwSignal::new(HashMap::<i64, openwebide_agent::policy::ApprovalMode>::new());
+    let current_run_anchor = RwSignal::new(Option::<i64>::None);
 
     let _ = leptos::prelude::window_event_listener(
         leptos::ev::keydown,
@@ -556,6 +580,8 @@ pub fn App() -> impl IntoView {
                     }
                     saved.set(HashMap::new());
                     local_handles.set(HashMap::new());
+                    approval_mode.set(HashMap::new());
+                    current_run_anchor.set(None);
                     error.set(None);
                 }),
             }));
@@ -1151,6 +1177,7 @@ pub fn App() -> impl IntoView {
                             return;
                         }
                         sessions.update(|list| list.retain(|s| s.id != id));
+                        approval_mode.update(|m| { m.remove(&id); });
                         if active_session.get() == Some(id) {
                             active_session.set(None);
                         }
@@ -1486,7 +1513,15 @@ pub fn App() -> impl IntoView {
             }
             // The abort tears down the stream before the server's Cancelled
             // event can arrive, so mark the stop here.
-            messages.update(|m| m.push(stopped_marker()));
+            if let Some(anchor) = current_run_anchor.get_untracked() {
+                messages.update(|m| {
+                    cancel_run_prompts(m, anchor);
+                    m.push(stopped_marker());
+                });
+                current_run_anchor.set(None);
+            } else {
+                messages.update(|m| m.push(stopped_marker()));
+            }
             abort.with(|a| {
                 if let Some(c) = a.as_ref() {
                     c.abort();
@@ -1529,7 +1564,11 @@ pub fn App() -> impl IntoView {
 
     let on_permission_always = {
         Callback::new(move |tool_call_id: String| {
-            always_approve_all.set(true);
+            if let Some(session_id) = streaming_session.get_untracked() {
+                approval_mode.update(|m| { m.insert(session_id, openwebide_agent::policy::ApprovalMode::AlwaysForSession); });
+            } else {
+                return;
+            }
             on_permission.run((tool_call_id, true));
         })
     };
@@ -1618,6 +1657,9 @@ pub fn App() -> impl IntoView {
                     }
                     match event {
                         SseEvent::Message(msg) => {
+                            if msg.role == Role::User {
+                                current_run_anchor.set(Some(msg.id));
+                            }
                             messages.update(|m| m.push(ConversationItem::Message(msg)));
                         }
                         SseEvent::Delta(delta) => {
@@ -1648,7 +1690,8 @@ pub fn App() -> impl IntoView {
                             });
                         }
                         SseEvent::PermissionRequest { id, name, summary } => {
-                            if always_approve_all.get() {
+                            let mode = approval_mode.get_untracked().get(&session_id).copied().unwrap_or_default();
+                            if mode.auto_approves(&name) {
                                 on_permission.run((id.clone(), true));
                             } else {
                                 messages.update(|m| {
@@ -1777,9 +1820,21 @@ pub fn App() -> impl IntoView {
                             session_telemetry.update(|s| s.record_turn(&telem));
                         }
                         SseEvent::Cancelled => {
-                            messages.update(|m| m.push(stopped_marker()));
+                            if let Some(anchor) = current_run_anchor.get_untracked() {
+                                messages.update(|m| {
+                                    cancel_run_prompts(m, anchor);
+                                    m.push(stopped_marker());
+                                });
+                            } else {
+                                messages.update(|m| m.push(stopped_marker()));
+                            }
                         }
-                        SseEvent::Error(e) => error.set(Some(e)),
+                        SseEvent::Error(e) => {
+                            if let Some(anchor) = current_run_anchor.get_untracked() {
+                                messages.update(|m| cancel_run_prompts(m, anchor));
+                            }
+                            error.set(Some(e));
+                        }
                     }
                 };
 
@@ -1868,6 +1923,7 @@ pub fn App() -> impl IntoView {
                 streaming.set(false);
                 abort.set(None);
                 streaming_session.set(None);
+                current_run_anchor.set(None);
             });
         })
     };
@@ -1894,7 +1950,7 @@ pub fn App() -> impl IntoView {
                         * `Ctrl+` ` — Toggle bottom terminal dock\n\
                         * `Ctrl+K` — Cycle focus between chat, editor, file explorer, and terminal\n\
                         * `Up` / `Down` — Readline prompt history navigation\n\
-                        * `y` / `n` / `a` / `d` — Inline permission handshake (approve / deny / always / diff)\n\
+                        * `Alt+Y` / `Alt+N` / `Alt+A` — Inline permission handshake (approve / deny / always)\n\
                         * `Ctrl+C` / `Esc` — Cancel streaming generation or detach context pill";
                 messages.update(|m| {
                     m.push(ConversationItem::Message(ChatMessage {
@@ -3013,6 +3069,7 @@ pub fn App() -> impl IntoView {
                     on_permission_always=on_permission_always
                     active_context=active_editor_context.read_only()
                     set_active_context=active_editor_context.write_only()
+                    current_run_anchor=current_run_anchor.read_only().into()
                     session_telemetry=session_telemetry.read_only()
                     on_slash_command=on_slash_command
                 />
@@ -3024,6 +3081,7 @@ pub fn App() -> impl IntoView {
                 git_status=git_status.read_only().into()
                 on_branch_click=on_branch_click
                 on_sync_click=on_sync_click
+                approval_mode=Signal::derive(move || active_session.get().and_then(|id| approval_mode.get().get(&id).copied()).unwrap_or_default())
             />
             <Show when=move || show_settings.get() fallback=|| ()>
                 <Settings
