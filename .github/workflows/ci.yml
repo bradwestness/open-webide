@@ -34,8 +34,11 @@ jobs:
       - name: Clippy (frontend, wasm32-unknown-unknown)
         run: cargo clippy -p openwebide-frontend --target wasm32-unknown-unknown -- -D warnings
 
+      - name: Clippy (bridge)
+        run: cargo clippy -p openwebide-bridge --all-targets -- -D warnings
+
       - name: Tests (native)
-        run: cargo test -p openwebide-core -p openwebide-llm -p openwebide-storage -p openwebide-agent -p openwebide-auth
+        run: cargo test -p openwebide-core -p openwebide-llm -p openwebide-storage -p openwebide-agent -p openwebide-auth -p openwebide-bridge
 
       - name: Build backend component
         run: cargo build -p openwebide-backend --target wasm32-wasip2 --release
