@@ -99,7 +99,9 @@ impl From<openwebide_llm::ProviderError> for ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(err: anyhow::Error) -> Self {
         let msg = err.to_string();
-        if msg.contains("escapes the workspace root") || msg.contains("is reserved") {
+        if msg.contains("already exists in workspace") {
+            Self::conflict(msg)
+        } else if msg.contains("escapes the workspace root") || msg.contains("is reserved") {
             Self::bad_request(msg)
         } else if msg.contains("filesystem error: NoEntry")
             || msg.contains("not found in workspace")
@@ -110,5 +112,18 @@ impl From<anyhow::Error> for ApiError {
         } else {
             Self::internal(msg)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn already_exists_in_workspace_maps_to_409() {
+        let err: ApiError =
+            anyhow::anyhow!("already exists in workspace: src/main.rs").into();
+        let resp = err.into_response();
+        assert_eq!(resp.status().as_u16(), 409);
     }
 }

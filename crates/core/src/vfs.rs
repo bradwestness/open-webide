@@ -131,6 +131,11 @@ pub trait Vfs: Send + Sync {
     fn list<'a>(&'a self, dir: &'a str) -> VfsFuture<'a, Vec<FileEntry>>;
 
     /// Create an empty file or directory.
+    ///
+    /// For files (`is_dir = false`): exclusive — returns `VfsError::AlreadyExists` if
+    /// a file already exists at `path`; content is left untouched.
+    /// For directories (`is_dir = true`): idempotent — returns `Ok(())` if the
+    /// directory already exists.
     fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()>;
 
     /// Delete a file or recursively delete a directory.
@@ -424,7 +429,10 @@ impl Vfs for MemoryVfs {
                     .files
                     .write()
                     .map_err(|e| VfsError::Io(e.to_string()))?;
-                files.entry(norm).or_default();
+                if files.contains_key(&norm) {
+                    return Err(VfsError::AlreadyExists(norm));
+                }
+                files.insert(norm, String::new());
             }
             Ok(())
         })
@@ -614,6 +622,27 @@ mod tests {
                 vfs.canonicalize("escape/passwd").await,
                 Err(VfsError::PathEscape(_))
             ));
+        });
+    }
+
+    #[test]
+    fn test_memory_vfs_create_exclusive() {
+        futures::executor::block_on(async {
+            let vfs = MemoryVfs::new();
+
+            // create on a new path succeeds and leaves an empty file
+            vfs.create("src/new.rs", false).await.unwrap();
+            assert_eq!(vfs.read("src/new.rs").await.unwrap(), "");
+
+            // write some content, then create again → AlreadyExists, content unchanged
+            vfs.write("src/existing.rs", "hello").await.unwrap();
+            let err = vfs.create("src/existing.rs", false).await.unwrap_err();
+            assert!(matches!(err, VfsError::AlreadyExists(_)));
+            assert_eq!(vfs.read("src/existing.rs").await.unwrap(), "hello");
+
+            // create on an existing directory is idempotent
+            vfs.create("src", true).await.unwrap();
+            vfs.create("src", true).await.unwrap();
         });
     }
 }

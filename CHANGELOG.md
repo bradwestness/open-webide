@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+### Fixed
+
+- **\"New file\" no longer truncates an existing file:** creating a file at a path that already exists now returns an error (HTTP 409 in remote mode, an error banner in local mode) and leaves the file's content untouched. Agent `write_file` to a new local-mode path now works correctly.
+
 ### Changed
 
 - Database methods that update multiple interrelated tables (e.g. deleting a project, first-admin creation) now run within strict SQLite `BEGIN IMMEDIATE` ... `COMMIT` transactions on the backend. This guarantees complete rollback if an operation fails or if the WASM task cancels or panics midway, fixing race conditions and half-deleted states without relying on manual cascading deletion code or risking lock deadlocks.

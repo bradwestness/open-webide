@@ -362,7 +362,22 @@ pub async fn create(rel: &str, is_dir: bool) -> Result<()> {
             Err(code) => Err(fs_error_at(code, &rel)),
         }
     } else {
-        let file = file_at_write(&rel).await?;
+        ensure_parent_dirs(&rel).await?;
+        let root = root()?;
+        let file = root
+            .open_at(
+                PathFlags::empty(),
+                rel.clone(),
+                OpenFlags::CREATE | OpenFlags::EXCLUSIVE,
+                DescriptorFlags::WRITE,
+            )
+            .await
+            .map_err(|code| match code {
+                ErrorCode::Exist => {
+                    anyhow::anyhow!("already exists in workspace: {rel}")
+                }
+                other => fs_error_at(other, &rel),
+            })?;
         write_stream(&file, Vec::new()).await
     }
 }
@@ -509,7 +524,9 @@ impl HostFsVfs {
 
 fn map_vfs_err(e: anyhow::Error) -> VfsError {
     let msg = e.to_string();
-    if msg.contains("not found") {
+    if msg.contains("already exists") {
+        VfsError::AlreadyExists(msg)
+    } else if msg.contains("not found") {
         VfsError::NotFound(msg)
     } else if msg.contains("escapes") {
         VfsError::PathEscape(msg)

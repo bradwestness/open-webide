@@ -163,11 +163,14 @@ pub async fn write(
     ensure_permission(root).await?;
     let (parent, name) = split_path(path);
     let parent_dir = ensure_dir(root, &parent).await?;
-    let file_handle = file_handle(&parent_dir, &name).await?;
-    write_file_handle(&file_handle, content).await
+    let fh = file_handle_create(&parent_dir, &name).await?;
+    write_file_handle(&fh, content).await
 }
 
 /// Create an empty file or a directory, creating parent directories as needed.
+///
+/// For files: exclusive — fails with an "already exists" error if the file
+/// already exists, leaving it intact. For directories: idempotent.
 pub async fn create(
     root: &FileSystemDirectoryHandle,
     path: &str,
@@ -180,8 +183,17 @@ pub async fn create(
     }
     let (parent, name) = split_path(path);
     let parent_dir = ensure_dir(root, &parent).await?;
-    let file_handle = file_handle(&parent_dir, &name).await?;
-    write_file_handle(&file_handle, "").await
+    match file_handle(&parent_dir, &name).await {
+        Ok(_) => return Err(format!("already exists: {path}")),
+        Err(e) => {
+            let is_not_found = e.contains("NotFoundError") || e.contains("no such file");
+            if !is_not_found {
+                return Err(e);
+            }
+        }
+    }
+    let fh = file_handle_create(&parent_dir, &name).await?;
+    write_file_handle(&fh, "").await
 }
 
 /// Delete the file at `path`.
@@ -222,6 +234,21 @@ async fn file_handle(
     value
         .dyn_into::<FileSystemFileHandle>()
         .map_err(|_| format!("no such file: {name}"))
+}
+
+/// Get a file handle by name, creating it if it does not exist.
+async fn file_handle_create(
+    dir: &FileSystemDirectoryHandle,
+    name: &str,
+) -> Result<FileSystemFileHandle, String> {
+    let options = web_sys::FileSystemGetFileOptions::new();
+    options.set_create(true);
+    let value = JsFuture::from(dir.get_file_handle_with_options(name, &options))
+        .await
+        .map_err(|e| js_error(&e))?;
+    value
+        .dyn_into::<FileSystemFileHandle>()
+        .map_err(|_| format!("cannot create file: {name}"))
 }
 
 /// Get an existing directory handle by name, or fail if it does not exist.
@@ -440,7 +467,9 @@ impl BrowserFsaVfs {
 }
 
 fn map_vfs_err(msg: String) -> VfsError {
-    if msg.contains("no such file") || msg.contains("not found") {
+    if msg.contains("already exists") {
+        VfsError::AlreadyExists(msg)
+    } else if msg.contains("no such file") || msg.contains("not found") {
         VfsError::NotFound(msg)
     } else if msg.contains("permission") {
         VfsError::PermissionDenied(msg)
