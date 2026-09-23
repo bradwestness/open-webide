@@ -623,10 +623,26 @@ where
         None => workspace_root.to_path_buf(),
     };
 
-    let result: Result<String, String> = match (method, path) {
+    #[derive(Debug)]
+    enum HandlerError {
+        BadRequest(String),
+        Internal(String),
+    }
+
+    impl From<crate::git::GitError> for HandlerError {
+        fn from(err: crate::git::GitError) -> Self {
+            match err {
+                crate::git::GitError::Validation(e) => HandlerError::BadRequest(e),
+                crate::git::GitError::Execution(e) => HandlerError::Internal(e),
+            }
+        }
+    }
+
+    let result: Result<String, HandlerError> = match (method, path) {
         ("GET", "/git/status") | ("POST", "/git/status") => crate::git::get_repo_status(&repo_dir)
             .await
-            .map(|s| serde_json::to_string(&s).unwrap_or_default()),
+            .map(|s| serde_json::to_string(&s).unwrap_or_default())
+            .map_err(HandlerError::from),
         ("GET", "/git/diff") | ("POST", "/git/diff") => {
             #[derive(Deserialize, Default)]
             struct DiffReq {
@@ -636,6 +652,7 @@ where
             crate::git::get_repo_diff(&repo_dir, req.path.as_deref())
                 .await
                 .map(|d| serde_json::json!({ "diff": d }).to_string())
+                .map_err(HandlerError::from)
         }
         ("GET", "/git/show") | ("POST", "/git/show") => {
             #[derive(Deserialize, Default)]
@@ -646,48 +663,62 @@ where
             match req.path {
                 Some(p) => crate::git::get_file_at_head(&repo_dir, &p)
                     .await
-                    .map(|c| serde_json::json!({ "content": c }).to_string()),
-                None => Err("missing path parameter".into()),
+                    .map(|c| serde_json::json!({ "content": c }).to_string())
+                    .map_err(HandlerError::from),
+                None => Err(HandlerError::BadRequest("missing path parameter".into())),
             }
         }
         ("GET", "/git/branches") | ("POST", "/git/branches") => {
             crate::git::get_repo_branches(&repo_dir)
                 .await
                 .map(|b| serde_json::to_string(&b).unwrap_or_default())
+                .map_err(HandlerError::from)
         }
         ("POST", "/git/commit") => {
             match serde_json::from_str::<openwebide_core::GitCommitRequest>(body) {
                 Ok(req) => crate::git::commit_changes(&repo_dir, &req)
                     .await
-                    .map(|r| serde_json::to_string(&r).unwrap_or_default()),
-                Err(e) => Err(format!("invalid commit payload: {e}")),
+                    .map(|r| serde_json::to_string(&r).unwrap_or_default())
+                    .map_err(HandlerError::from),
+                Err(e) => Err(HandlerError::BadRequest(format!(
+                    "invalid commit payload: {e}"
+                ))),
             }
         }
         ("POST", "/git/checkout") => {
             match serde_json::from_str::<openwebide_core::GitCheckoutRequest>(body) {
                 Ok(req) => crate::git::checkout_branch(&repo_dir, &req)
                     .await
-                    .map(|r| serde_json::to_string(&r).unwrap_or_default()),
-                Err(e) => Err(format!("invalid checkout payload: {e}")),
+                    .map(|r| serde_json::to_string(&r).unwrap_or_default())
+                    .map_err(HandlerError::from),
+                Err(e) => Err(HandlerError::BadRequest(format!(
+                    "invalid checkout payload: {e}"
+                ))),
             }
         }
         ("POST", "/git/sync") => {
-            let req: openwebide_core::GitSyncRequest =
-                serde_json::from_str(body).unwrap_or(openwebide_core::GitSyncRequest {
-                    action: "sync".into(),
-                    remote: None,
-                    branch: None,
-                });
-            crate::git::sync_repo(&repo_dir, &req)
-                .await
-                .map(|r| serde_json::to_string(&r).unwrap_or_default())
+            match serde_json::from_str::<openwebide_core::GitSyncRequest>(body) {
+                Ok(req) => crate::git::sync_repo(&repo_dir, &req)
+                    .await
+                    .map(|r| serde_json::to_string(&r).unwrap_or_default())
+                    .map_err(HandlerError::from),
+                Err(e) => Err(HandlerError::BadRequest(format!(
+                    "invalid sync payload: {e}"
+                ))),
+            }
         }
-        _ => Err(format!("unrecognized git route: {method} {path}")),
+        _ => Err(HandlerError::BadRequest(format!(
+            "unrecognized git route: {method} {path}"
+        ))),
     };
 
     let (status, resp_body) = match result {
         Ok(json) => ("200 OK", json),
-        Err(err) => (
+        Err(HandlerError::BadRequest(err)) => (
+            "400 Bad Request",
+            serde_json::json!({ "error": err }).to_string(),
+        ),
+        Err(HandlerError::Internal(err)) => (
             "500 Internal Server Error",
             serde_json::json!({ "error": err }).to_string(),
         ),
