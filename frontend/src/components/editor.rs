@@ -288,6 +288,7 @@ pub fn Editor(
     #[prop(default = Signal::derive(|| None))] git_head_diff: Signal<Option<FileDiff>>,
     #[prop(optional)] on_load_git_diff: Option<Callback<()>>,
     #[prop(optional)] on_discard_git_diff: Option<Callback<()>>,
+    #[prop(into, default = Signal::derive(|| false))] can_revert: Signal<bool>,
     on_save: Callback<()>,
     on_accept: Callback<()>,
     on_reject: Callback<()>,
@@ -394,10 +395,7 @@ pub fn Editor(
                                             view_mode.set(mode);
                                         })
                                     />
-                                    <Show when={
-                                        let on_discard = on_discard;
-                                        move || on_discard.is_some()
-                                    } fallback=|| ()>
+                                    <Show when=move || can_revert.get() fallback=|| ()>
                                         <Button
                                             variant=ButtonVariant::Danger
                                             size=ButtonSize::Sm

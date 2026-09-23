@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Editor: Added confirmation dialogs before discarding unsaved edits and conditionally offered the Revert button only when HEAD is known.
+
 ### Added
 - Agent can now edit unreadable (binary or large) files; refusing an unreadable file edit now safely restores it from a backup rather than deleting it.
 

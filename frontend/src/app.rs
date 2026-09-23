@@ -403,7 +403,9 @@ pub fn App() -> impl IntoView {
             let api = api.clone();
             let pid = active_project.get();
             spawn_local(async move {
-                if let Ok(st) = api.git_status(pid).await {
+                if let Ok(st) = api.git_status(pid).await
+                    && active_project.get_untracked() == pid
+                {
                     git_status.set(Some(st));
                 }
             });
@@ -514,10 +516,14 @@ pub fn App() -> impl IntoView {
         let api = api.clone();
         Callback::new(move |_| {
             let action_api = api.clone();
+            let has_unsaved = ws_dirty.get_untracked() || saved.get_untracked().values().any(|ws| ws.dirty);
+            let mut message = "Log out of this account? Open tabs and projects will be closed.".to_string();
+            if has_unsaved {
+                message.push_str(" Unsaved changes will be lost.");
+            }
             confirm_req.set(Some(ConfirmRequest {
                 title: "Log out".to_string(),
-                message: "Log out of this account? Open tabs and projects will be closed."
-                    .to_string(),
+                message,
                 confirm_label: "Log out".to_string(),
                 action: Callback::new(move |_| {
                     action_api.set_token(None);
@@ -632,7 +638,7 @@ pub fn App() -> impl IntoView {
             if kind == FileKind::Image
                 && let Ok(url) = ws.read_blob_url(&path).await
             {
-                if ws_open_file.get().as_deref() == Some(&path) {
+                if active_project.get_untracked() == Some(pid) && ws_open_file.get_untracked().as_deref() == Some(path.as_str()) {
                     ws_media_url.set(Some(url));
                 } else {
                     revoke_object_url(Some(url));
@@ -646,12 +652,12 @@ pub fn App() -> impl IntoView {
 
             match ws.read(&path).await {
                 Ok(content) => {
-                    if ws_open_file.get().as_deref() == Some(&path) {
+                    if active_project.get_untracked() == Some(pid) && ws_open_file.get_untracked().as_deref() == Some(path.as_str()) {
                         ws_content.set(content);
                     }
                 }
                 Err(e) => {
-                    if ws_open_file.get().as_deref() == Some(&path)
+                    if active_project.get_untracked() == Some(pid) && ws_open_file.get_untracked().as_deref() == Some(path.as_str())
                         && !e.contains("not valid UTF-8")
                     {
                         error.set(Some(e));
@@ -659,6 +665,26 @@ pub fn App() -> impl IntoView {
                 }
             }
         });
+    });
+
+    let request_open = Callback::new({
+        move |path: String| {
+            let current = ws_open_file.get_untracked();
+            if ws_dirty.get_untracked() && current.as_deref() != Some(path.as_str()) {
+                let current_path = current.unwrap_or_default();
+                let path_clone = path.clone();
+                confirm_req.set(Some(ConfirmRequest {
+                    title: "Discard unsaved changes".to_string(),
+                    message: format!("`{}` has unsaved changes. Discard them and open `{}`?", current_path, path),
+                    confirm_label: "Discard".to_string(),
+                    action: Callback::new(move |_| {
+                        on_open.run(path_clone.clone());
+                    }),
+                }));
+            } else {
+                on_open.run(path);
+            }
+        }
     });
 
     // Toggle a directory's expansion, lazily loading its children on first open.
@@ -698,7 +724,18 @@ pub fn App() -> impl IntoView {
             };
             match ws.write(&path, &content).await {
                 Ok(()) => {
-                    ws_dirty.set(false);
+                    if active_project.get_untracked() == Some(pid) && ws_open_file.get_untracked().as_deref() == Some(path.as_str()) && ws_content.get_untracked() == content {
+                        ws_dirty.set(false);
+                    } else {
+                        saved.update(|map| {
+                            if let Some(ws) = map.get_mut(&pid)
+                                && ws.open_file.as_deref() == Some(path.as_str())
+                                && ws.content == content
+                            {
+                                ws.dirty = false;
+                            }
+                        });
+                    }
                     refresh_git.run(());
                 }
                 Err(e) => error.set(Some(e)),
@@ -840,7 +877,7 @@ pub fn App() -> impl IntoView {
                     return;
                 }
                 error.set(None);
-                let open = on_open;
+                let open = request_open;
                 let ld = load_dir;
                 spawn_local(async move {
                     let Some(ws) = workspace_for.run(pid) else {
@@ -1763,10 +1800,24 @@ pub fn App() -> impl IntoView {
                             // and open the file so the editor shows it
                             // in diff mode.
                             if let Some(d) = &diff
-                                && ws_open_file.get().as_deref() != Some(d.path.as_str())
+                                && active_project.get_untracked() == run_pid
                             {
-                                ws_open_file.set(Some(d.path.clone()));
-                                ws_dirty.set(false);
+                                if !ws_dirty.get_untracked() {
+                                    request_open.run(d.path.clone());
+                                } else {
+                                    messages.update(|m| {
+                                        m.push(ConversationItem::Message(ChatMessage {
+                                            id: 0,
+                                            session_id,
+                                            role: Role::Assistant,
+                                            content: format!("Agent edited `{}`; review it with `/diff {}`.", d.path, d.path),
+                                            created_at: 0,
+                                            tool_calls: None,
+                                            tool_call_id: None,
+                                            usage: None,
+                                        }));
+                                    });
+                                }
                             }
                             messages.update(|m| {
                                 let idx = m.iter().rposition(|item| {
@@ -2091,7 +2142,7 @@ pub fn App() -> impl IntoView {
                     });
                 } else if let Some(p) = path {
                     if let Some(diff) = edits.get(&p) {
-                        ws_open_file.set(Some(diff.path.clone()));
+                        request_open.run(diff.path.clone());
                         messages.update(|m| {
                             m.push(ConversationItem::Message(ChatMessage {
                                 id: 0,
@@ -2821,11 +2872,19 @@ pub fn App() -> impl IntoView {
         pending_diff.set(diff);
     });
 
-    let git_head_content = RwSignal::new(Option::<String>::None);
+    let git_head_content = RwSignal::new(Option::<(Option<i64>, String, Result<String, String>)>::None);
 
     let git_head_diff = Signal::derive(move || {
         let open = ws_open_file.get()?;
-        let old = git_head_content.get();
+        let pid = active_project.get();
+        let (head_pid, head_path, head_res) = git_head_content.get()?;
+        if head_pid != pid || head_path != open {
+            return None;
+        }
+        if head_res.is_err() {
+            return None;
+        }
+        let old = head_res.ok();
         let new = ws_content.get();
         if old.is_none() && new.is_empty() {
             return None;
@@ -2835,6 +2894,16 @@ pub fn App() -> impl IntoView {
             old,
             new, old_unavailable: false, backup_path: None,
         })
+    });
+
+    let can_revert = Signal::derive(move || {
+        if let Some(open) = ws_open_file.get() {
+            let pid = active_project.get();
+            if let Some((head_pid, head_path, head_res)) = git_head_content.get() {
+                return head_pid == pid && head_path == open && head_res.is_ok();
+            }
+        }
+        false
     });
 
     // Reset git_head_content when open file changes
@@ -2854,10 +2923,15 @@ pub fn App() -> impl IntoView {
             spawn_local(async move {
                 match api.git_file_head(pid, &file_path).await {
                     Ok(content) => {
-                        git_head_content.set(Some(content));
+                        if active_project.get_untracked() == pid && ws_open_file.get_untracked().as_deref() == Some(file_path.as_str()) {
+                            git_head_content.set(Some((pid, file_path.clone(), Ok(content))));
+                        }
                     }
-                    Err(_) => {
-                        git_head_content.set(Some(String::new()));
+                    Err(e) => {
+                        if active_project.get_untracked() == pid && ws_open_file.get_untracked().as_deref() == Some(file_path.as_str()) {
+                            git_head_content.set(Some((pid, file_path.clone(), Err(e.clone()))));
+                            error.set(Some(format!("Could not load HEAD: {e}")));
+                        }
                     }
                 }
             });
@@ -2866,11 +2940,35 @@ pub fn App() -> impl IntoView {
 
     let on_discard_git_diff = {
         Callback::new(move |_| {
-            if let Some(head) = git_head_content.get() {
-                ws_content.set(head);
-                ws_dirty.set(false);
-                on_save.run(());
-            }
+            let Some((Some(head_pid), head_path, Ok(head))) = git_head_content.get() else {
+                return;
+            };
+            confirm_req.set(Some(ConfirmRequest {
+                title: "Revert to HEAD".to_string(),
+                message: format!("Discard all changes to `{}` and restore the committed version?", head_path),
+                confirm_label: "Revert".to_string(),
+                action: Callback::new(move |_| {
+                    let head = head.clone();
+                    let head_path = head_path.clone();
+                    spawn_local(async move {
+                        let Some(ws) = workspace_for.run(head_pid) else {
+                            return;
+                        };
+                        match ws.write(&head_path, &head).await {
+                            Ok(()) => {
+                                if active_project.get_untracked() == Some(head_pid) && ws_open_file.get_untracked().as_deref() == Some(head_path.as_str()) {
+                                    ws_content.set(head);
+                                    ws_dirty.set(false);
+                                    refresh_git.run(());
+                                }
+                            }
+                            Err(e) => {
+                                error.set(Some(e));
+                            }
+                        }
+                    });
+                }),
+            }));
         })
     };
 
@@ -2994,7 +3092,7 @@ pub fn App() -> impl IntoView {
                     open_file=ws_open_file.read_only()
                     search_results=ws_search.read_only()
                     on_toggle=on_toggle
-                    on_open=on_open
+                    on_open=request_open
                     on_new_file=on_new_file
                     on_new_dir=on_new_dir
                     on_search=on_search
@@ -3033,6 +3131,7 @@ pub fn App() -> impl IntoView {
                         git_head_diff=git_head_diff
                         on_load_git_diff=on_load_git_diff
                         on_discard_git_diff=on_discard_git_diff
+                        can_revert=can_revert
                         on_save=on_save
                         on_accept=on_accept
                         on_reject=on_reject
