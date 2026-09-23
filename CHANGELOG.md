@@ -10,6 +10,7 @@ for what's still ahead.
 ## [Unreleased]
 
 ### Changed
+- Bridge exposure baseline: Enforced strict `Host` and `Origin` validation, rejecting foreign cross-origin browser requests and DNS rebinding. Removed wildcard `Access-Control-Allow-Origin: *` and restricted preflight responses. Enforced `application/json` Content-Type on browser POSTs (`POST /exec`, `/git/*`) to prevent CSRF, and added `--allowed-origin` and `--allowed-host` CLI/env configuration.
 - `files/raw` non-image requests are now forced to download instead of rendering inline.
 - Directly opened SVG/HTML files via `files/raw` are now sandboxed.
 - Dropped support for `?token=` query parameter authentication. Media preview URLs now use short-lived blob URLs instead of exposing the bearer token.

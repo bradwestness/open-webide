@@ -1379,6 +1379,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "futures",
+ "libc",
  "openwebide-core",
  "portable-pty",
  "serde",

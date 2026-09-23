@@ -208,6 +208,48 @@ HTTP error: outbound to http://10.0.0.99:9/v1/models is blocked by Spin's
 → Host egress) and restart Spin
 ```
 
+## Execution bridge
+
+The native bridge daemon (`openwebide-bridge`) runs on the host to provide interactive PTY terminals, process execution (`POST /exec`), and host Git operations for the web frontend and coding agents.
+
+### Running the bridge
+
+```sh
+cargo build -p openwebide-bridge
+./target/debug/openwebide-bridge --port 3001 --workspace /path/to/project
+```
+
+- `--workspace <DIR>` (or env `OPENWEBIDE_BRIDGE_WORKSPACE`): sets the workspace root directory for command execution and repository operations (defaults to the current working directory).
+- `-p, --port <PORT>` (or env `OPENWEBIDE_BRIDGE_PORT`): port to bind on (default: `3001`).
+- `--host <HOST>` (or env `OPENWEBIDE_BRIDGE_HOST`): host address to bind on (default: `127.0.0.1`). To expose the bridge to your local network (e.g. phone/tablet use over LAN or Tailscale), bind to `0.0.0.0` or a specific LAN IP:
+  ```sh
+  ./target/debug/openwebide-bridge --host 0.0.0.0 --port 3001
+  ```
+
+> [!WARNING]
+> Exposing the bridge on `0.0.0.0` allows Origin-less HTTP requests from the local network (used by the Spin backend and command-line tools). While cross-origin browser requests are strictly restricted, any device on the trusted LAN that can reach port 3001 can send Origin-less HTTP commands.
+
+### Host and Origin security baseline
+
+To protect against DNS rebinding and malicious websites opened in the user's browser, the bridge validates incoming HTTP and WebSocket requests:
+
+1. **Host Header Rules:**
+   - Allowed if the `Host` is an **IP literal** (IPv4 or IPv6, e.g. `127.0.0.1`, `[::1]`, `192.168.1.50`).
+   - Allowed if `localhost`, this machine's hostname (e.g. `mymachine`), or `<hostname>.local`.
+   - Allowed if explicitly added via `--allowed-host <HOSTNAME>` (or `OPENWEBIDE_BRIDGE_ALLOWED_HOSTS` comma-separated list).
+   - Any unrecognized or rebinding domain name is rejected with `403 Forbidden`.
+
+2. **Origin & CORS Rules:**
+   - Requests without an `Origin` header (such as Spin backend calls, `curl`, and local daemon tools) are permitted.
+   - Browser requests with an `Origin` header are permitted only if:
+     - The origin is in the allowed origins list (default: `http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:8080`, `http://127.0.0.1:8080`, plus any `--allowed-origin` entries); **or**
+     - The origin's hostname matches the request's `Host` hostname (allowing phone/LAN access when the frontend and bridge are accessed on the same host machine).
+   - `Origin: null` and untrusted cross-origin requests are rejected with `403 Forbidden`.
+   - Wildcard `Access-Control-Allow-Origin: *` is disabled; allowed origins receive their exact origin echoed with `Vary: Origin`.
+
+3. **JSON-Only Browser POSTs:**
+   - Browser POST requests carrying an `Origin` header require `Content-Type: application/json`; simple browser requests (e.g. `text/plain`, form-urlencoded) are rejected with `415 Unsupported Media Type` to prevent browser CSRF.
+
 ## Development
 
 ```sh

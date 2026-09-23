@@ -6,5 +6,5 @@ pub mod pty;
 pub mod server;
 pub mod session;
 
-pub use server::{ServerConfig, run_server};
+pub use server::{ServerConfig, check_request, header, run_server};
 pub use session::SessionManager;
