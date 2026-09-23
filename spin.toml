@@ -40,10 +40,9 @@ allowed_outbound_hosts = [
     "http://*:*",
 ]
 # Remote-mode workspace: the user's `~/source` directory, preopened into the
-# component. Spin copies `source` into a temp dir and preopens it at `/`.
-# Project `path` values are relative to `~/source`, so a project working in
-# `~/source/repos/myproject` uses `path = "repos/myproject"`.
-# To change the mounted root, edit `source` below (relative to this file).
+# component. Spin mounts `source` directly only with `--direct-mounts --allow-transient-write`,
+# otherwise edits go to a temp copy; Docker rewrites the source to `/workspace`;
+# the bridge's `--workspace` must equal this source.
 files = [{ source = "../..", destination = "/" }]
 
 [component.backend.build]

@@ -36,6 +36,7 @@ ContainerName=open-webide
 # container itself always listens on 3000.
 PublishPort=127.0.0.1:8080:3000
 Volume=%h/.local/state/open-webide/data:/app/.spin:Z
+Volume=%h/source:/workspace:Z
 Requires=open-webide.image
 
 [Service]
@@ -52,7 +53,9 @@ Notes:
   in front — the API has no authentication).
 - The volume maps the SQLite data directory (`/app/.spin` inside the
   container) to a host directory. `:Z` relabels it for SELinux; drop the
-  suffix on systems without SELinux.
+  suffix on systems without SELinux. The workspace volume maps your
+  projects directory. The image CMD carries the required mount flags
+  (`--direct-mounts --allow-transient-write`).
 - The first start downloads `spin_static_fs.wasm` (the static file server
   component) from GitHub; after that it is cached in the container image's
   Spin home.
@@ -61,6 +64,7 @@ Notes:
 
 ```sh
 mkdir -p ~/.config/containers/systemd
+mkdir -p ~/source
 # copy both unit files there, fixing BuildContextDirectory
 systemctl --user daemon-reload
 systemctl --user start open-webide.container

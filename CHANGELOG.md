@@ -14,6 +14,7 @@ for what's still ahead.
 - Database methods that update multiple interrelated tables (e.g. deleting a project, first-admin creation) now run within strict SQLite `BEGIN IMMEDIATE` ... `COMMIT` transactions on the backend. This guarantees complete rollback if an operation fails or if the WASM task cancels or panics midway, fixing race conditions and half-deleted states without relying on manual cascading deletion code or risking lock deadlocks.
 - The user registration API endpoint (`POST /api/register`) now correctly isolates creation by atomically using the transaction, preventing race conditions where multiple parallel signups could occur on first setup.
 - Constraint-violation errors are now reliably returned as HTTP 409 Conflict.
+- **Direct Workspace Mounts:** Spin development servers and Docker deployments now require the `--direct-mounts --allow-transient-write` flags. This ensures file modifications write to the native host directory instead of a temporary Spin sandbox. Project creation validates paths, and the `.spin/` configuration directory is explicitly forbidden from file API and agent access.
 
 ### Fixed
 

@@ -106,6 +106,9 @@ same-origin by default, overridable with `?api=<url>` for dev.
   server (prebuilt `spin_static_fs.wasm`) serving `frontend/dist`
 - Backend declares `sqlite_databases = ["default"]` and
   `allowed_outbound_hosts` for localhost (where Ollama/llama.cpp run)
+- Backend mounts the host workspace directory via the `files` array (requires
+  `--direct-mounts --allow-transient-write` so edits hit the real disk, otherwise
+  they go to a temporary copy)
 - Build commands: `cargo build -p openwebide-backend --target
   wasm32-wasip2 --release` and `cd frontend && trunk build --release`
   (Trunk 0.21 is run from the frontend directory; the `data-trunk` rust

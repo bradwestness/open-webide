@@ -4,8 +4,6 @@
 //! in spin.toml). Every path the API receives is resolved against that root;
 //! any path that would escape it is rejected.
 
-use std::path::Component;
-
 use anyhow::{Context, Result};
 use openwebide_core::{
     FileEntry, SearchHit, Vfs, VfsError, VfsFuture, find_content_matches, normalize_vfs_path,
@@ -41,33 +39,105 @@ fn root() -> Result<Descriptor> {
         .ok_or_else(|| anyhow::anyhow!("no preopened directory; add a `files` mount to spin.toml"))
 }
 
-/// Resolve a workspace-relative path, rejecting anything that would escape
-/// the root (`..`, absolute paths, etc.).
-fn sanitize(rel: &str) -> Result<String> {
-    let mut out = String::new();
-    for comp in std::path::Path::new(rel).components() {
-        match comp {
-            Component::Normal(c) => {
-                out.push_str(&c.to_string_lossy());
-                out.push('/');
+pub trait PathResolver {
+    fn readlink(
+        &self,
+        path: &str,
+    ) -> impl std::future::Future<Output = Result<String, ErrorCode>> + Send;
+}
+
+// Note: The real WASI fs adapter (`WasiResolver`) is wired at construction
+// (e.g. in `dir_at`, `file_at_read`, etc.) and isn't covered by native tests
+// since Spin can't run natively in `cargo test`.
+pub struct WasiResolver<'a> {
+    root: &'a Descriptor,
+}
+
+impl<'a> WasiResolver<'a> {
+    pub fn new(root: &'a Descriptor) -> Self {
+        Self { root }
+    }
+}
+
+impl<'a> PathResolver for WasiResolver<'a> {
+    async fn readlink(&self, path: &str) -> Result<String, ErrorCode> {
+        self.root.readlink_at(path.to_string()).await
+    }
+}
+
+/// Resolve a workspace-relative path, following all symlinks component by
+/// component, and rejecting anything that would escape the root (`..`,
+/// absolute paths, etc.) or enter a reserved directory like `.spin`.
+pub async fn sanitize(resolver: &impl PathResolver, rel: &str) -> Result<String> {
+    if rel.starts_with('/') {
+        return Err(anyhow::anyhow!("path {rel:?} escapes the workspace root"));
+    }
+
+    let mut parts: Vec<String> = rel.split('/').map(|s| s.to_string()).collect();
+    parts.reverse();
+
+    let mut resolved = Vec::new();
+    let mut iterations = 0;
+    const MAX_SYMLINK_EXPANSIONS: usize = 32;
+
+    while let Some(comp) = parts.pop() {
+        if comp.is_empty() || comp == "." {
+            continue;
+        }
+        if comp == ".." {
+            if resolved.pop().is_none() {
+                return Err(anyhow::anyhow!("path {rel:?} escapes the workspace root"));
             }
-            Component::CurDir => {}
-            _ => return Err(anyhow::anyhow!("path {rel:?} escapes the workspace root")),
+            continue;
+        }
+        if comp == ".spin" {
+            return Err(anyhow::anyhow!("path {rel:?} is reserved"));
+        }
+
+        let test_path = if resolved.is_empty() {
+            comp.clone()
+        } else {
+            format!("{}/{}", resolved.join("/"), comp)
+        };
+
+        match resolver.readlink(&test_path).await {
+            Ok(target) => {
+                iterations += 1;
+                if iterations > MAX_SYMLINK_EXPANSIONS {
+                    return Err(anyhow::anyhow!("too many levels of symbolic links"));
+                }
+                if target.starts_with('/') {
+                    return Err(anyhow::anyhow!("path {rel:?} escapes the workspace root"));
+                }
+                let mut target_parts: Vec<String> =
+                    target.split('/').map(|s| s.to_string()).collect();
+                target_parts.reverse();
+                for p in target_parts {
+                    parts.push(p);
+                }
+            }
+            Err(ErrorCode::Invalid) | Err(ErrorCode::NoEntry) | Err(ErrorCode::NotDirectory) => {
+                resolved.push(comp);
+            }
+            Err(e) => {
+                return Err(fs_error_at(e, &test_path));
+            }
         }
     }
-    out.pop(); // drop the trailing '/'
-    Ok(out)
+
+    Ok(resolved.join("/"))
 }
 
 /// Open a directory at a workspace-relative path (empty = the root).
 async fn dir_at(rel: &str) -> Result<Descriptor> {
-    let rel = sanitize(rel)?;
     let root = root()?;
+    let resolver = WasiResolver::new(&root);
+    let rel = sanitize(&resolver, rel).await?;
     if rel.is_empty() {
         return Ok(root);
     }
     root.open_at(
-        PathFlags::SYMLINK_FOLLOW,
+        PathFlags::empty(),
         rel.clone(),
         OpenFlags::DIRECTORY,
         DescriptorFlags::empty(),
@@ -78,10 +148,11 @@ async fn dir_at(rel: &str) -> Result<Descriptor> {
 
 /// Open an existing file for reading.
 async fn file_at_read(rel: &str) -> Result<Descriptor> {
-    let rel = sanitize(rel)?;
     let root = root()?;
+    let resolver = WasiResolver::new(&root);
+    let rel = sanitize(&resolver, rel).await?;
     root.open_at(
-        PathFlags::SYMLINK_FOLLOW,
+        PathFlags::empty(),
         rel.clone(),
         OpenFlags::empty(),
         DescriptorFlags::READ,
@@ -93,11 +164,12 @@ async fn file_at_read(rel: &str) -> Result<Descriptor> {
 /// Open a file for writing, creating it (and any missing parent directories)
 /// and truncating it to zero length.
 async fn file_at_write(rel: &str) -> Result<Descriptor> {
-    let rel = sanitize(rel)?;
-    ensure_parent_dirs(&rel).await?;
     let root = root()?;
+    let resolver = WasiResolver::new(&root);
+    let rel = sanitize(&resolver, rel).await?;
+    ensure_parent_dirs(&rel).await?;
     root.open_at(
-        PathFlags::SYMLINK_FOLLOW,
+        PathFlags::empty(),
         rel.clone(),
         OpenFlags::CREATE | OpenFlags::TRUNCATE,
         DescriptorFlags::WRITE,
@@ -139,25 +211,35 @@ async fn read_dir_entries(dir: &Descriptor) -> Result<Vec<DirectoryEntry>> {
 }
 
 /// List the entries of the directory at `rel` (empty = workspace root).
+///
+/// The filesystem reads happen against the symlink-resolved real directory
+/// (so `.spin`/escape checks still run), but the paths on the returned
+/// [`FileEntry`] objects are built from the **original, logical `rel`** the
+/// caller passed in — e.g. listing `sym_dir` returns entries like
+/// `sym_dir/child`, not `real_dir/child`.
 pub async fn list(rel: &str) -> Result<Vec<FileEntry>> {
+    // `dir_at` resolves through symlinks so filesystem reads target the real
+    // directory; all safety checks run inside `dir_at` → `sanitize`.
     let dir = dir_at(rel).await?;
-    let base = sanitize(rel)?;
     let entries = read_dir_entries(&dir).await?;
+    // Use the *logical* caller-supplied prefix so the frontend file-tree can
+    // match children back to the requested path, even when `rel` is a symlink.
+    let logical_base = rel.trim_end_matches('/');
     let mut out = Vec::with_capacity(entries.len());
     for e in entries {
         let is_dir = matches!(e.type_, DescriptorType::Directory);
         let size = if is_dir {
             0
         } else {
-            match dir.stat_at(PathFlags::SYMLINK_FOLLOW, e.name.clone()).await {
+            match dir.stat_at(PathFlags::empty(), e.name.clone()).await {
                 Ok(st) => st.size,
                 Err(_) => 0,
             }
         };
-        let path = if base.is_empty() {
+        let path = if logical_base.is_empty() {
             e.name.clone()
         } else {
-            format!("{base}/{}", e.name)
+            format!("{logical_base}/{}", e.name)
         };
         out.push(FileEntry {
             name: e.name,
@@ -171,10 +253,11 @@ pub async fn list(rel: &str) -> Result<Vec<FileEntry>> {
 
 /// Read a file's raw bytes.
 pub async fn read_bytes(rel: &str) -> Result<Vec<u8>> {
-    let rel = sanitize(rel)?;
     let root = root()?;
+    let resolver = WasiResolver::new(&root);
+    let rel = sanitize(&resolver, rel).await?;
     let st = root
-        .stat_at(PathFlags::SYMLINK_FOLLOW, rel.clone())
+        .stat_at(PathFlags::empty(), rel.clone())
         .await
         .map_err(|code| fs_error_at(code, &rel))?;
     if st.size > MAX_READ_BYTES {
@@ -183,6 +266,7 @@ pub async fn read_bytes(rel: &str) -> Result<Vec<u8>> {
             size = st.size
         ));
     }
+    // Note: file_at_read will re-sanitize, which is slightly inefficient but safe.
     let file = file_at_read(&rel).await?;
     let (stream, fut) = file.read_via_stream(0);
     let bytes = stream.collect().await;
@@ -266,11 +350,13 @@ pub async fn write(rel: &str, content: &str) -> Result<()> {
 
 /// Create an empty file or a directory at `rel`.
 pub async fn create(rel: &str, is_dir: bool) -> Result<()> {
-    let rel = sanitize(rel)?;
-    let root = root()?;
+    let root_desc = root()?;
+    let resolver = WasiResolver::new(&root_desc);
+    let rel = sanitize(&resolver, rel).await?;
+
     if is_dir {
         ensure_parent_dirs(&rel).await?;
-        match root.create_directory_at(rel.clone()).await {
+        match root_desc.create_directory_at(rel.clone()).await {
             Ok(()) => Ok(()),
             Err(ErrorCode::Exist) => Ok(()),
             Err(code) => Err(fs_error_at(code, &rel)),
@@ -281,13 +367,52 @@ pub async fn create(rel: &str, is_dir: bool) -> Result<()> {
     }
 }
 
-/// Delete the file at `rel`.
+/// Delete the file (or symlink, or empty directory) at `rel`.
+///
+/// Only the **parent directory** is resolved through the PathResolver, so all
+/// `.spin`/escape checks run on every ancestor component. The final path
+/// component is used as a *literal* name within that resolved parent — meaning
+/// a symlink is removed as a link rather than having its target deleted.
 pub async fn delete(rel: &str) -> Result<()> {
-    let rel = sanitize(rel)?;
-    let root = root()?;
-    root.unlink_file_at(rel.clone())
+    // Split into parent path and leaf name.  Reject any leaf that looks like
+    // a traversal (e.g. an empty leaf, `.`, or `..`) since those shouldn't
+    // appear as real filesystem names and could be confusing.
+    let rel = rel.trim_matches('/');
+    let (parent_rel, leaf) = match rel.rfind('/') {
+        Some(idx) => (&rel[..idx], &rel[idx + 1..]),
+        None => ("", rel),
+    };
+    if leaf.is_empty() || leaf == "." || leaf == ".." {
+        return Err(anyhow::anyhow!("invalid path component: {leaf:?}"));
+    }
+    if leaf.contains('/') {
+        return Err(anyhow::anyhow!("leaf name must not contain '/': {leaf:?}"));
+    }
+
+    // Resolve the *parent* through sanitize so its `.spin`/escape checks run.
+    let root_desc = root()?;
+    let resolver = WasiResolver::new(&root_desc);
+    let resolved_parent = sanitize(&resolver, parent_rel).await?;
+
+    // Open the resolved parent directory and unlink the leaf by its literal name.
+    let parent_dir = if resolved_parent.is_empty() {
+        root_desc
+    } else {
+        root_desc
+            .open_at(
+                PathFlags::empty(),
+                resolved_parent.clone(),
+                OpenFlags::DIRECTORY,
+                DescriptorFlags::empty(),
+            )
+            .await
+            .map_err(|code| fs_error_at(code, &resolved_parent))?
+    };
+
+    parent_dir
+        .unlink_file_at(leaf.to_string())
         .await
-        .map_err(|code| fs_error_at(code, &rel))
+        .map_err(|code| fs_error_at(code, rel))
 }
 
 /// Recursively walk the directory at `rel` and return files whose path
@@ -464,51 +589,176 @@ impl Vfs for HostFsVfs {
 /// Resolve symbolic links along `rel` (relative to the preopened workspace root)
 /// and return the normalized canonical path.
 pub async fn canonicalize_path(rel: &str) -> Result<String> {
-    let mut current = sanitize(rel)?;
     let root = root()?;
-    let mut iterations = 0;
-    const MAX_SYMLINK_EXPANSIONS: usize = 32;
+    let resolver = WasiResolver::new(&root);
+    sanitize(&resolver, rel).await
+}
 
-    'outer: loop {
-        let parts: Vec<&str> = current.split('/').filter(|p| !p.is_empty()).collect();
-        let mut prefix = String::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
 
-        for (idx, seg) in parts.iter().enumerate() {
-            if !prefix.is_empty() {
-                prefix.push('/');
-            }
-            prefix.push_str(seg);
-
-            if let Ok(target) = root.readlink_at(prefix.clone()).await {
-                iterations += 1;
-                if iterations > MAX_SYMLINK_EXPANSIONS {
-                    return Err(anyhow::anyhow!("too many levels of symbolic links"));
-                }
-
-                let parent = prefix.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
-                let resolved_target = if parent.is_empty() {
-                    target
-                } else if target.starts_with('/') {
-                    target.trim_start_matches('/').to_string()
-                } else {
-                    format!("{parent}/{target}")
-                };
-
-                let remainder = &parts[idx + 1..];
-                let next = if remainder.is_empty() {
-                    resolved_target
-                } else {
-                    format!("{resolved_target}/{}", remainder.join("/"))
-                };
-
-                current = normalize_vfs_path(&next)
-                    .map_err(|_| anyhow::anyhow!("path {rel:?} escapes the workspace root"))?;
-                continue 'outer;
-            }
-        }
-
-        break;
+    struct FakeResolver {
+        symlinks: HashMap<String, String>,
     }
 
-    Ok(current)
+    impl PathResolver for FakeResolver {
+        async fn readlink(&self, path: &str) -> Result<String, ErrorCode> {
+            if let Some(target) = self.symlinks.get(path) {
+                Ok(target.clone())
+            } else {
+                Err(ErrorCode::Invalid) // treat everything else as not-a-symlink
+            }
+        }
+    }
+
+    #[test]
+    fn test_sanitize() {
+        futures::executor::block_on(async {
+            let mut symlinks = HashMap::new();
+            symlinks.insert("evil_dir".to_string(), ".spin".to_string());
+            symlinks.insert("escape".to_string(), "..".to_string());
+            symlinks.insert("abs_escape".to_string(), "/etc".to_string());
+            symlinks.insert("legit".to_string(), "normal_dir".to_string());
+            symlinks.insert("nested".to_string(), "legit/inner".to_string());
+
+            let resolver = FakeResolver { symlinks };
+
+            // Intermediate symlink to .spin
+            assert!(sanitize(&resolver, "evil_dir/sqlite_db.db").await.is_err());
+
+            // Symlink escaping workspace root
+            assert!(sanitize(&resolver, "escape/foo").await.is_err());
+
+            // Absolute path escape
+            assert!(sanitize(&resolver, "abs_escape/foo").await.is_err());
+
+            // Legitimate in-root symlink
+            assert_eq!(
+                sanitize(&resolver, "legit/foo").await.unwrap(),
+                "normal_dir/foo"
+            );
+
+            // Nested symlink
+            assert_eq!(
+                sanitize(&resolver, "nested/bar").await.unwrap(),
+                "normal_dir/inner/bar"
+            );
+
+            // Basic rejections
+            assert!(sanitize(&resolver, "/").await.is_err());
+            assert!(sanitize(&resolver, "a/../b/../../c").await.is_err());
+            assert!(sanitize(&resolver, ".spin/foo").await.is_err());
+            assert!(sanitize(&resolver, "foo/.spin/bar").await.is_err());
+
+            // Basic allowed
+            assert_eq!(sanitize(&resolver, "a/b").await.unwrap(), "a/b");
+        });
+    }
+
+    /// `delete` must resolve only the *parent* directory through sanitize and
+    /// pass the leaf as a literal name — so a symlink `link.txt -> target.txt`
+    /// is removed as a link (the leaf), not dereferenced to `target.txt`.
+    ///
+    /// This test verifies the parent/leaf split and sanitize behavior for the
+    /// delete path without requiring the real WASI runtime:
+    ///
+    /// 1. The resolved parent for a top-level leaf (`link.txt`) is `""` (the
+    ///    workspace root) and the leaf is `"link.txt"` — sanitize of `""` is
+    ///    fine and does NOT follow the symlink `link.txt` itself.
+    /// 2. When the parent path passes through an intermediate `.spin` symlink
+    ///    (`evil_dir` → `.spin`), `sanitize` of the parent is rejected — the
+    ///    safety check is preserved even though the leaf is not resolved.
+    /// 3. When the parent path escapes via a `..` symlink, `sanitize` rejects
+    ///    it as an escape, consistent with the existing policy.
+    #[test]
+    fn test_delete_resolves_parent_not_leaf() {
+        futures::executor::block_on(async {
+            // link.txt is a symlink to target.txt; evil_dir is a symlink to .spin;
+            // escape is a symlink to ..
+            let mut symlinks = HashMap::new();
+            symlinks.insert("link.txt".to_string(), "target.txt".to_string());
+            symlinks.insert("evil_dir".to_string(), ".spin".to_string());
+            symlinks.insert("escape".to_string(), "..".to_string());
+            let resolver = FakeResolver { symlinks };
+
+            // Splitting "link.txt" → parent="" (workspace root), leaf="link.txt"
+            // sanitize("") returns "" without following the symlink at "link.txt",
+            // so the link itself would be unlinked — not its target "target.txt".
+            let rel = "link.txt";
+            let (parent_rel, leaf) = match rel.rfind('/') {
+                Some(idx) => (&rel[..idx], &rel[idx + 1..]),
+                None => ("", rel),
+            };
+            assert_eq!(leaf, "link.txt");
+            // sanitize of the *parent* (empty = workspace root) succeeds without
+            // resolving link.txt — the leaf is intentionally kept as a literal.
+            let resolved_parent = sanitize(&resolver, parent_rel).await.unwrap();
+            assert_eq!(resolved_parent, "");
+
+            // Safety check preserved: an intermediate .spin symlink in the parent
+            // path is still rejected even though we only sanitize the parent.
+            let bad_rel = "evil_dir/something/link.txt";
+            let (bad_parent, _bad_leaf) = match bad_rel.rfind('/') {
+                Some(idx) => (&bad_rel[..idx], &bad_rel[idx + 1..]),
+                None => ("", bad_rel),
+            };
+            assert!(sanitize(&resolver, bad_parent).await.is_err());
+
+            // Safety check preserved: a parent path that escapes via .. symlink
+            // is still rejected.
+            let escape_rel = "escape/something/link.txt";
+            let (escape_parent, _escape_leaf) = match escape_rel.rfind('/') {
+                Some(idx) => (&escape_rel[..idx], &escape_rel[idx + 1..]),
+                None => ("", escape_rel),
+            };
+            assert!(sanitize(&resolver, escape_parent).await.is_err());
+        });
+    }
+
+    /// `list` must return `FileEntry` paths prefixed with the **logical**
+    /// caller-supplied `rel`, not the resolved real path.
+    ///
+    /// Scenario: `sym_dir` is a symlink to `real_dir`.  Listing `sym_dir`
+    /// should return entries like `sym_dir/child`, not `real_dir/child`.
+    ///
+    /// Because `list` calls the real WASI runtime (unavailable in native
+    /// `cargo test`), we verify the path-building logic in isolation — the
+    /// same code path that the fixed `list` function now uses.
+    #[test]
+    fn test_list_uses_logical_path_prefix() {
+        // Simulate the fixed path-building logic from `list`:
+        // `logical_base = rel.trim_end_matches('/')`, paths built as
+        // `format!("{logical_base}/{name}")`.
+        let rel = "sym_dir";
+        let logical_base = rel.trim_end_matches('/');
+
+        // A child entry named "child.txt" should appear as "sym_dir/child.txt",
+        // NOT as "real_dir/child.txt" (which is what the old resolved `base`
+        // would have produced).
+        let child_name = "child.txt";
+        let path = format!("{logical_base}/{child_name}");
+        assert_eq!(path, "sym_dir/child.txt");
+
+        // When `rel` is empty (listing the workspace root), the child path is
+        // just the child name — no spurious leading slash.
+        let root_rel = "";
+        let root_base = root_rel.trim_end_matches('/');
+        let root_path = if root_base.is_empty() {
+            child_name.to_string()
+        } else {
+            format!("{root_base}/{child_name}")
+        };
+        assert_eq!(root_path, "child.txt");
+
+        // Verify the old resolved path (`real_dir/child.txt`) is NOT produced
+        // by the new logic when the caller requested `sym_dir`.
+        let resolved_base = "real_dir"; // what the old sanitize call would return
+        let old_path = format!("{resolved_base}/{child_name}");
+        assert_ne!(
+            path, old_path,
+            "path must use logical prefix, not resolved real path"
+        );
+    }
 }

@@ -99,7 +99,7 @@ impl From<openwebide_llm::ProviderError> for ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(err: anyhow::Error) -> Self {
         let msg = err.to_string();
-        if msg.contains("escapes the workspace root") {
+        if msg.contains("escapes the workspace root") || msg.contains("is reserved") {
             Self::bad_request(msg)
         } else if msg.contains("filesystem error: NoEntry")
             || msg.contains("not found in workspace")

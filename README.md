@@ -75,7 +75,7 @@ approval modes, and a secondary fast model next), and
 ## Run it
 
 ```sh
-spin build --up
+spin build --up --direct-mounts --allow-transient-write
 ```
 
 This builds the backend component (Rust → WASM) and the frontend (Trunk →
@@ -110,8 +110,11 @@ filesystem capability (see [docs/architecture.md](docs/architecture.md) →
 "Workspace: local and remote modes"):
 
 ```sh
-docker run -d -p 8080:3000 -v openwebide-data:/app/.spin -v ~/projects:/workspace open-webide
+docker run -d -p 8080:3000 -v openwebide-data:/app/.spin -v ~/source:/workspace open-webide
 ```
+
+> [!NOTE]
+> The workspace root (`/workspace`) is exposed to the file API and the agent — keep secrets out of it. The `.spin/` path is explicitly refused. If you override the Docker container's command (CMD), you must include both `--direct-mounts` and `--allow-transient-write`.
 
 On Linux with systemd, it can also run as a Podman quadlet service — see
 [docs/podman-quadlet.md](docs/podman-quadlet.md).

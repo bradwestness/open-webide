@@ -42,6 +42,9 @@ COPY --from=builder /src/frontend/dist ./frontend/dist
 EXPOSE 3000
 # SQLite data lives in .spin/ (mount a volume here to persist it).
 VOLUME /app/.spin
+VOLUME /workspace
+
+RUN sed -i 's#source = "../.."#source = "/workspace"#' spin.toml && grep -q 'source = "/workspace"' spin.toml && mkdir -p /workspace
 
 # The base image's entrypoint is already `spin`.
-CMD ["up", "--listen", "0.0.0.0:3000"]
+CMD ["up", "--listen", "0.0.0.0:3000", "--direct-mounts", "--allow-transient-write"]

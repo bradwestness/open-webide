@@ -95,7 +95,7 @@ pub async fn register(req: Request, state: &AppState) -> Result<JsonResp, ApiErr
         .store
         .insert_first_admin(username, &password_hash, now())
         .await?;
-    
+
     let user = match user_opt {
         Some(u) => u,
         None => {
@@ -285,10 +285,29 @@ pub async fn list_projects(state: &AppState) -> Result<JsonResp, ApiError> {
     Ok(json_response(200, &projects))
 }
 
+fn normalize_project_path(
+    mode: WorkspaceMode,
+    path: Option<String>,
+) -> Result<Option<String>, ApiError> {
+    match mode {
+        WorkspaceMode::Local => Ok(path),
+        WorkspaceMode::Remote => {
+            let Some(p) = path else { return Ok(None) };
+            if p.is_empty() {
+                return Ok(Some(String::new()));
+            }
+            openwebide_core::normalize_vfs_path(&p)
+                .map(Some)
+                .map_err(|_| ApiError::bad_request("project path escapes the workspace root"))
+        }
+    }
+}
+
 pub async fn create_project(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
     let body = read_body(req).await?;
-    let new: NewProject = parse_json(body)?;
+    let mut new: NewProject = parse_json(body)?;
+    new.path = normalize_project_path(new.mode, new.path)?;
     let project = state.store.create_project(&new, user_id, now()).await?;
     Ok(json_response(201, &project))
 }
@@ -358,6 +377,8 @@ async fn remote_project_path(
         ));
     }
     let base = project.path.unwrap_or_default();
+    let base = openwebide_core::normalize_vfs_path(&base)
+        .map_err(|_| ApiError::bad_request("project path escapes the workspace root"))?;
     let full = if base.is_empty() {
         rel.to_string()
     } else if rel.is_empty() {
@@ -372,6 +393,7 @@ async fn remote_project_path(
 /// returned paths are project-relative — matching what the read, write,
 /// create, and search endpoints expect in `?path=`.
 fn strip_base(base: &str, entries: Vec<FileEntry>) -> Vec<FileEntry> {
+    let base = base.trim_end_matches('/');
     if base.is_empty() {
         return entries;
     }
@@ -392,6 +414,7 @@ fn strip_base(base: &str, entries: Vec<FileEntry>) -> Vec<FileEntry> {
 /// Strip the project's base-path prefix from each search hit's path so the
 /// returned paths are project-relative.
 fn strip_base_hits(base: &str, hits: Vec<SearchHit>) -> Vec<SearchHit> {
+    let base = base.trim_end_matches('/');
     if base.is_empty() {
         return hits;
     }
@@ -1162,5 +1185,61 @@ mod tests {
         let headers = super::raw_headers("a.png");
         assert!(headers.contains(&("content-security-policy", "sandbox".to_string())));
         assert!(headers.contains(&("content-type", "image/png".to_string())));
+    }
+
+    #[test]
+    fn test_normalize_project_path() {
+        use openwebide_core::WorkspaceMode;
+        assert_eq!(
+            super::normalize_project_path(WorkspaceMode::Remote, Some("repos/x/".to_string()))
+                .map_err(|_| ())
+                .unwrap()
+                .unwrap(),
+            "repos/x"
+        );
+        assert_eq!(
+            super::normalize_project_path(WorkspaceMode::Remote, Some("./a//b".to_string()))
+                .map_err(|_| ())
+                .unwrap()
+                .unwrap(),
+            "a/b"
+        );
+        assert!(
+            super::normalize_project_path(WorkspaceMode::Remote, Some("../x".to_string())).is_err()
+        );
+        assert_eq!(
+            super::normalize_project_path(WorkspaceMode::Remote, Some("/".to_string()))
+                .map_err(|_| ())
+                .unwrap()
+                .unwrap(),
+            ""
+        );
+        assert_eq!(
+            super::normalize_project_path(WorkspaceMode::Remote, Some("///".to_string()))
+                .map_err(|_| ())
+                .unwrap()
+                .unwrap(),
+            ""
+        );
+        assert_eq!(
+            super::normalize_project_path(WorkspaceMode::Remote, Some("".to_string()))
+                .map_err(|_| ())
+                .unwrap()
+                .unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_strip_base() {
+        use openwebide_core::FileEntry;
+        let e = vec![FileEntry {
+            name: "main.rs".into(),
+            path: "repos/x/src/main.rs".into(),
+            is_dir: false,
+            size: 0,
+        }];
+        let stripped = super::strip_base("repos/x/", e);
+        assert_eq!(stripped[0].path, "src/main.rs");
     }
 }

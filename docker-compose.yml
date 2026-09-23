@@ -8,6 +8,7 @@ services:
       - "8080:3000"
     volumes:
       - openwebide-data:/app/.spin
+      - ${OPENWEBIDE_WORKSPACE:-${HOME}/source}:/workspace
     restart: unless-stopped
 
 volumes:

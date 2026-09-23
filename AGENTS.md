@@ -71,7 +71,7 @@ Instructions, conventions, and architectural principles for AI agents working on
   ```
 - **Spin Dev Server**:
   ```bash
-  spin up --allow-transient-write
+  spin up --direct-mounts --allow-transient-write
   ```
 
 ---
