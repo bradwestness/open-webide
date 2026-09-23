@@ -13,7 +13,9 @@ futures = { workspace = true }
 gloo-net = { workspace = true }
 js-sys = { workspace = true }
 leptos = { workspace = true }
+openwebide-agent = { workspace = true }
 openwebide-core = { workspace = true }
+openwebide-llm = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

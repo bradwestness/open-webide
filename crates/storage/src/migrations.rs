@@ -79,6 +79,12 @@ pub const MIGRATIONS: &[&str] = &[
         decision INTEGER NOT NULL,
         PRIMARY KEY (session_id, tool_call_id)
     )",
+    "CREATE TABLE IF NOT EXISTS user_settings (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (user_id, key)
+    )",
 ];
 
 pub async fn apply<D: Db>(db: &D) -> Result<(), StorageError> {
@@ -89,6 +95,116 @@ pub async fn apply<D: Db>(db: &D) -> Result<(), StorageError> {
     add_session_project_column(db).await?;
     add_project_user_column(db).await?;
     add_session_user_column(db).await?;
+    dedup_duplicate_projects(db).await?;
+    migrate_legacy_settings_to_user_settings(db).await?;
+    add_message_usage_columns(db).await?;
+    add_connection_context_limit_column(db).await?;
+    Ok(())
+}
+
+/// `ALTER TABLE ... ADD COLUMN` is not idempotent, so probe first.
+async fn add_message_usage_columns<D: Db>(db: &D) -> Result<(), StorageError> {
+    for column in [
+        "prompt_tokens",
+        "completion_tokens",
+        "eval_duration_ms",
+        "usage_estimated",
+    ] {
+        let res = db
+            .execute(
+                &format!("SELECT 1 FROM pragma_table_info('messages') WHERE name = '{column}'"),
+                &[],
+            )
+            .await?;
+        if res.rows.is_empty() {
+            db.execute(
+                &format!("ALTER TABLE messages ADD COLUMN {column} INTEGER"),
+                &[],
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// `ALTER TABLE ... ADD COLUMN` is not idempotent, so probe first.
+async fn add_connection_context_limit_column<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('connections') WHERE name = 'context_limit'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE connections ADD COLUMN context_limit INTEGER",
+            &[],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Migrate existing global preferences (theme, default_connection, default_prompt)
+/// into user_settings for existing users.
+async fn migrate_legacy_settings_to_user_settings<D: Db>(db: &D) -> Result<(), StorageError> {
+    db.execute(
+        "INSERT OR IGNORE INTO user_settings (user_id, key, value)
+         SELECT u.id, s.key, s.value
+         FROM users u
+         CROSS JOIN settings s
+         WHERE s.key != 'auth_secret'",
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Deduplicate any historical duplicate projects sharing (user_id, mode, path),
+/// reassigning their sessions to the preserved project before removing the duplicate.
+async fn dedup_duplicate_projects<D: Db>(db: &D) -> Result<(), StorageError> {
+    use crate::db::DbValue;
+    let res = db
+        .execute(
+            "SELECT COALESCE(user_id, 0), mode, path, MIN(id) as keep_id, COUNT(*) as cnt
+             FROM projects
+             WHERE path IS NOT NULL
+             GROUP BY COALESCE(user_id, 0), mode, path
+             HAVING cnt > 1",
+            &[],
+        )
+        .await?;
+
+    for row in res.rows {
+        let user_id = row.get_int(0)?;
+        let mode = row.get_text(1)?.to_string();
+        let path = row.get_text(2)?.to_string();
+        let keep_id = row.get_int(3)?;
+
+        let dups = db
+            .execute(
+                "SELECT id FROM projects
+                 WHERE COALESCE(user_id, 0) = ? AND mode = ? AND path = ? AND id != ?",
+                &[
+                    DbValue::Int(user_id),
+                    DbValue::Text(mode),
+                    DbValue::Text(path),
+                    DbValue::Int(keep_id),
+                ],
+            )
+            .await?;
+
+        for dup_row in dups.rows {
+            let dup_id = dup_row.get_int(0)?;
+            db.execute(
+                "UPDATE sessions SET project_id = ? WHERE project_id = ?",
+                &[DbValue::Int(keep_id), DbValue::Int(dup_id)],
+            )
+            .await?;
+            db.execute("DELETE FROM projects WHERE id = ?", &[DbValue::Int(dup_id)])
+                .await?;
+        }
+    }
     Ok(())
 }
 

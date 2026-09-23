@@ -4,12 +4,15 @@
 mod agent;
 mod api;
 mod auth;
+mod bridge_client;
 mod error;
 mod files;
+mod git;
 mod http_client;
 mod router;
 mod sse;
 mod state;
+mod web;
 
 use spin_sdk::http::{IntoResponse, Request};
 use spin_sdk::http_service;

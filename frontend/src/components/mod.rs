@@ -9,7 +9,9 @@ mod settings;
 mod sidebar;
 mod status_bar;
 mod tab_bar;
+mod terminal_pane;
 mod top_bar;
+pub mod ui;
 
 pub use auth_gate::AuthGate;
 pub use chat_pane::{ChatPane, ConversationItem, ToolStepResult, stopped_marker};
@@ -22,4 +24,7 @@ pub use settings::Settings;
 pub use sidebar::Sidebar;
 pub use status_bar::StatusBar;
 pub use tab_bar::TabBar;
+pub use terminal_pane::TerminalPane;
 pub use top_bar::TopBar;
+#[allow(unused_imports)]
+pub use ui::{Button, ButtonSize, ButtonVariant, SegmentOption, SegmentedControl};

@@ -7,7 +7,9 @@
 use std::path::Component;
 
 use anyhow::{Context, Result};
-use openwebide_core::{FileEntry, SearchHit, find_content_matches};
+use openwebide_core::{
+    FileEntry, SearchHit, Vfs, VfsError, VfsFuture, find_content_matches, normalize_vfs_path,
+};
 
 use crate::wasi::filesystem::preopens;
 use crate::wasi::filesystem::types::{
@@ -167,8 +169,8 @@ pub async fn list(rel: &str) -> Result<Vec<FileEntry>> {
     Ok(out)
 }
 
-/// Read a file's contents as UTF-8 text.
-pub async fn read(rel: &str) -> Result<String> {
+/// Read a file's raw bytes.
+pub async fn read_bytes(rel: &str) -> Result<Vec<u8>> {
     let rel = sanitize(rel)?;
     let root = root()?;
     let st = root
@@ -188,6 +190,35 @@ pub async fn read(rel: &str) -> Result<String> {
         Ok(()) => {}
         Err(code) => return Err(fs_error(code)),
     }
+    Ok(bytes)
+}
+
+/// Infer MIME content type from file path extension.
+pub fn mime_type_from_path(path: &str) -> &'static str {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "json" => "application/json",
+        "wasm" => "application/wasm",
+        "pdf" => "application/pdf",
+        "txt" | "md" | "rs" | "py" | "toml" | "yaml" | "yml" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Read a file's contents as UTF-8 text.
+pub async fn read(rel: &str) -> Result<String> {
+    let bytes = read_bytes(rel).await?;
     String::from_utf8(bytes).context("file is not valid UTF-8")
 }
 
@@ -313,4 +344,111 @@ async fn walk_content(dir_rel: &str, query: &str, out: &mut Vec<SearchHit>) -> R
         }
     }
     Ok(())
+}
+
+/// Remote-mode VFS implementation bound to a project's base directory
+/// (itself relative to the Spin preopen root).
+#[derive(Debug, Clone)]
+pub struct HostFsVfs {
+    base: String,
+}
+
+impl HostFsVfs {
+    pub fn new(base: impl Into<String>) -> Self {
+        Self { base: base.into() }
+    }
+
+    fn resolve(&self, rel: &str) -> Result<String, VfsError> {
+        let norm = normalize_vfs_path(rel)?;
+        if self.base.is_empty() {
+            Ok(norm)
+        } else if norm.is_empty() {
+            Ok(self.base.clone())
+        } else {
+            Ok(format!("{}/{}", self.base.trim_end_matches('/'), norm))
+        }
+    }
+
+    fn strip_base(&self, full_path: &str) -> String {
+        if self.base.is_empty() {
+            full_path.to_string()
+        } else {
+            let prefix = format!("{}/", self.base.trim_matches('/'));
+            full_path
+                .strip_prefix(&prefix)
+                .unwrap_or(full_path)
+                .to_string()
+        }
+    }
+}
+
+fn map_vfs_err(e: anyhow::Error) -> VfsError {
+    let msg = e.to_string();
+    if msg.contains("not found") {
+        VfsError::NotFound(msg)
+    } else if msg.contains("escapes") {
+        VfsError::PathEscape(msg)
+    } else {
+        VfsError::Io(msg)
+    }
+}
+
+impl Vfs for HostFsVfs {
+    fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
+        Box::pin(async move {
+            let full = self.resolve(path)?;
+            read(&full).await.map_err(map_vfs_err)
+        })
+    }
+
+    fn write<'a>(&'a self, path: &'a str, content: &'a str) -> VfsFuture<'a, ()> {
+        Box::pin(async move {
+            let full = self.resolve(path)?;
+            write(&full, content).await.map_err(map_vfs_err)
+        })
+    }
+
+    fn list<'a>(&'a self, dir: &'a str) -> VfsFuture<'a, Vec<FileEntry>> {
+        Box::pin(async move {
+            let full = self.resolve(dir)?;
+            let entries = list(&full).await.map_err(map_vfs_err)?;
+            let stripped = entries
+                .into_iter()
+                .map(|mut e| {
+                    e.path = self.strip_base(&e.path);
+                    e
+                })
+                .collect();
+            Ok(stripped)
+        })
+    }
+
+    fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
+        Box::pin(async move {
+            let full = self.resolve(path)?;
+            create(&full, is_dir).await.map_err(map_vfs_err)
+        })
+    }
+
+    fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()> {
+        Box::pin(async move {
+            let full = self.resolve(path)?;
+            delete(&full).await.map_err(map_vfs_err)
+        })
+    }
+
+    fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
+        Box::pin(async move {
+            let full = self.resolve(dir)?;
+            let hits = full_text_search(&full, query).await.map_err(map_vfs_err)?;
+            let stripped = hits
+                .into_iter()
+                .map(|mut h| {
+                    h.path = self.strip_base(&h.path);
+                    h
+                })
+                .collect();
+            Ok(stripped)
+        })
+    }
 }

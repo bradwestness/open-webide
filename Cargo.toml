@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "backend",
+    "bridge",
     "crates/agent",
     "crates/auth",
     "crates/core",
@@ -23,7 +24,7 @@ argon2 = "0.5"
 base64 = "0.22"
 bytes = "1"
 futures = "0.3"
-gloo-net = "0.7"
+gloo-net = { version = "0.7", features = ["websocket", "http"] }
 hmac = "0.12"
 http-body = "1"
 http-body-util = "0.1.3"
@@ -46,12 +47,15 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "Window",
+    "Navigator",
+    "Clipboard",
     "Location",
     "Element",
     "Document",
     "Storage",
     "HtmlTextAreaElement",
     "HtmlInputElement",
+    "HtmlElement",
     "AbortController",
     "AbortSignal",
     "ReadableStream",

@@ -5,7 +5,7 @@
 //! coding), and finally the persisted assistant message. Frame format:
 //!
 //! ```text
-//! event: message | delta | tool_call | permission_request | tool_result | done | cancelled | error
+//! event: message | delta | tool_call | permission_request | tool_result | done | telemetry | cancelled | error
 //! data: {json}
 //!
 //! ```
@@ -17,8 +17,8 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 use http_body::{Frame, SizeHint};
-use openwebide_core::{ChatMessage, ChatRequest, FileDiff, Role};
-use openwebide_llm::{LlmProvider, registry::Provider};
+use openwebide_core::{ChatMessage, ChatRequest, FileDiff, Role, TurnTelemetry};
+use openwebide_llm::{LlmProvider, StreamChunk, registry::Provider};
 use openwebide_storage::{Store, spin_db::SpinDb};
 use serde_json::json;
 
@@ -54,6 +54,8 @@ pub enum SseEvent {
     },
     /// The persisted assistant message; the stream ends after this.
     Done(ChatMessage),
+    /// Telemetry metrics for the turn.
+    Telemetry(TurnTelemetry),
     /// The user cancelled the run; the stream ends after this.
     Cancelled,
     /// A failure; the stream ends after this.
@@ -85,6 +87,10 @@ fn frame(event: &SseEvent) -> Bytes {
                 .to_string(),
         ),
         SseEvent::Done(message) => ("done", serde_json::to_string(message).unwrap()),
+        SseEvent::Telemetry(telem) => (
+            "telemetry",
+            serde_json::to_string(telem).unwrap_or_default(),
+        ),
         SseEvent::Cancelled => ("cancelled", "{}".to_string()),
         SseEvent::Error(error) => ("error", json!({ "error": error }).to_string()),
     };
@@ -135,6 +141,7 @@ struct StreamState {
     buffer: String,
     failed: bool,
     cancelled: bool,
+    usage: Option<TurnTelemetry>,
 }
 
 /// Build the SSE event stream for one sent message: the user message, the
@@ -154,15 +161,20 @@ pub fn message_stream(
         buffer: String::new(),
         failed: false,
         cancelled: false,
+        usage: None,
     }));
     let deltas = {
         let state = state.clone();
         provider
             .chat_stream(&request)
             .map(move |result| match result {
-                Ok(delta) => {
+                Ok(StreamChunk::Delta(delta)) => {
                     state.lock().unwrap().buffer.push_str(&delta);
                     SseEvent::Delta(delta)
+                }
+                Ok(StreamChunk::Usage(usage)) => {
+                    state.lock().unwrap().usage = Some(usage);
+                    SseEvent::Telemetry(usage)
                 }
                 Err(error) => {
                     state.lock().unwrap().failed = true;
@@ -203,15 +215,15 @@ pub fn message_stream(
         // The run is over: drop the flag so a late or stale cancel can't
         // affect the next run.
         let _ = store.clear_cancel(session_id).await;
-        let (failed, cancelled, content) = {
+        let (failed, cancelled, content, usage) = {
             let st = state.lock().unwrap();
-            (st.failed, st.cancelled, st.buffer.clone())
+            (st.failed, st.cancelled, st.buffer.clone(), st.usage)
         };
         if failed || cancelled {
             return None;
         }
         match store
-            .insert_message(session_id, Role::Assistant, &content, now())
+            .insert_message_with_usage(session_id, Role::Assistant, &content, now(), usage.as_ref())
             .await
         {
             Ok(message) => Some((SseEvent::Done(message), None)),

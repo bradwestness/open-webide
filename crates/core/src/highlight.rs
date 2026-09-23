@@ -44,6 +44,16 @@ pub enum Language {
     JavaScript,
     TypeScript,
     Json,
+    Html,
+    Css,
+    Markdown,
+    Shell,
+    Toml,
+    Yaml,
+    Sql,
+    C,
+    Cpp,
+    Go,
     Plain,
 }
 
@@ -56,6 +66,16 @@ pub fn language_from_path(path: &str) -> Language {
         "js" | "mjs" | "cjs" => Language::JavaScript,
         "ts" | "tsx" | "jsx" => Language::TypeScript,
         "json" => Language::Json,
+        "html" | "htm" | "xml" | "svg" => Language::Html,
+        "css" | "scss" => Language::Css,
+        "md" | "markdown" => Language::Markdown,
+        "sh" | "bash" | "zsh" => Language::Shell,
+        "toml" => Language::Toml,
+        "yaml" | "yml" => Language::Yaml,
+        "sql" => Language::Sql,
+        "c" | "h" => Language::C,
+        "cpp" | "cc" | "cxx" | "hpp" => Language::Cpp,
+        "go" => Language::Go,
         _ => Language::Plain,
     }
 }
@@ -475,6 +495,16 @@ fn lang_params(language: Language) -> LangParams {
         Language::TypeScript => (Some("//"), Some(("/*", "*/")), TS_KEYWORDS, TS_BOOLS),
         Language::Python => (Some("#"), None, PY_KEYWORDS, PY_BOOLS),
         Language::Json => (None, None, &[], JSON_BOOLS),
+        Language::C => (Some("//"), Some(("/*", "*/")), C_KEYWORDS, C_BOOLS),
+        Language::Cpp => (Some("//"), Some(("/*", "*/")), CPP_KEYWORDS, CPP_BOOLS),
+        Language::Go => (Some("//"), Some(("/*", "*/")), GO_KEYWORDS, GO_BOOLS),
+        Language::Shell => (Some("#"), None, SH_KEYWORDS, SH_BOOLS),
+        Language::Toml => (Some("#"), None, &[], TOML_BOOLS),
+        Language::Yaml => (Some("#"), None, &[], YAML_BOOLS),
+        Language::Sql => (Some("--"), Some(("/*", "*/")), SQL_KEYWORDS, SQL_BOOLS),
+        Language::Html => (None, Some(("<!--", "-->")), HTML_KEYWORDS, &[]),
+        Language::Css => (None, Some(("/*", "*/")), CSS_KEYWORDS, &[]),
+        Language::Markdown => (None, Some(("<!--", "-->")), &[], &[]),
         _ => (None, None, &[], &[]),
     }
 }
@@ -485,12 +515,22 @@ fn classify_generic_ident(
     after: &str,
     keywords: &[&str],
     booleans: &[&str],
+    language: Language,
 ) -> TokenKind {
     if booleans.contains(&word) {
         return TokenKind::Boolean;
     }
     if keywords.contains(&word) {
         return TokenKind::Keyword;
+    }
+    if language == Language::Sql {
+        let upper = word.to_ascii_uppercase();
+        if booleans.contains(&upper.as_str()) {
+            return TokenKind::Boolean;
+        }
+        if keywords.contains(&upper.as_str()) {
+            return TokenKind::Keyword;
+        }
     }
     if after.starts_with('(') {
         return TokenKind::Function;
@@ -593,7 +633,7 @@ fn highlight_generic_line(line: &str, language: Language, state: State) -> (Vec<
         if c.is_alphabetic() || c == '_' {
             let (word, consumed) = read_ident(rest);
             let after = &rest[consumed..];
-            let kind = classify_generic_ident(&word, after, keywords, booleans);
+            let kind = classify_generic_ident(&word, after, keywords, booleans, language);
             tokens.push(Token { kind, text: word });
             i += consumed;
             continue;
@@ -752,6 +792,242 @@ const PY_BOOLS: &[&str] = &["True", "False", "None"];
 
 const JSON_BOOLS: &[&str] = &["true", "false", "null"];
 
+const C_KEYWORDS: &[&str] = &[
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+    "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
+    "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
+    "union", "unsigned", "void", "volatile", "while",
+];
+const C_BOOLS: &[&str] = &["NULL", "true", "false", "bool"];
+
+const CPP_KEYWORDS: &[&str] = &[
+    "alignas",
+    "alignof",
+    "and",
+    "and_eq",
+    "asm",
+    "auto",
+    "bitand",
+    "bitor",
+    "bool",
+    "break",
+    "case",
+    "catch",
+    "char",
+    "class",
+    "concept",
+    "const",
+    "consteval",
+    "constexpr",
+    "constinit",
+    "const_cast",
+    "continue",
+    "co_await",
+    "co_return",
+    "co_yield",
+    "decltype",
+    "default",
+    "delete",
+    "do",
+    "double",
+    "dynamic_cast",
+    "else",
+    "enum",
+    "explicit",
+    "export",
+    "extern",
+    "float",
+    "for",
+    "friend",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "mutable",
+    "namespace",
+    "new",
+    "noexcept",
+    "not",
+    "not_eq",
+    "operator",
+    "or",
+    "or_eq",
+    "private",
+    "protected",
+    "public",
+    "register",
+    "reinterpret_cast",
+    "requires",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "static_assert",
+    "static_cast",
+    "struct",
+    "switch",
+    "template",
+    "this",
+    "thread_local",
+    "throw",
+    "try",
+    "typedef",
+    "typeid",
+    "typename",
+    "union",
+    "unsigned",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "while",
+];
+const CPP_BOOLS: &[&str] = &["nullptr", "true", "false", "NULL"];
+
+const GO_KEYWORDS: &[&str] = &[
+    "break",
+    "case",
+    "chan",
+    "const",
+    "continue",
+    "default",
+    "defer",
+    "else",
+    "fallthrough",
+    "for",
+    "func",
+    "go",
+    "goto",
+    "if",
+    "import",
+    "interface",
+    "map",
+    "package",
+    "range",
+    "return",
+    "select",
+    "struct",
+    "switch",
+    "type",
+    "var",
+];
+const GO_BOOLS: &[&str] = &["true", "false", "iota", "nil"];
+
+const SH_KEYWORDS: &[&str] = &[
+    "if", "then", "else", "elif", "fi", "case", "esac", "for", "select", "while", "until", "do",
+    "done", "in", "function", "time", "return", "exit", "export", "local", "readonly", "set",
+    "unset", "shift", "source",
+];
+const SH_BOOLS: &[&str] = &["true", "false"];
+
+const TOML_BOOLS: &[&str] = &["true", "false", "inf", "nan"];
+
+const YAML_BOOLS: &[&str] = &[
+    "true", "false", "yes", "no", "null", "on", "off", "True", "False", "None",
+];
+
+const SQL_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "INSERT",
+    "INTO",
+    "UPDATE",
+    "DELETE",
+    "JOIN",
+    "LEFT",
+    "RIGHT",
+    "INNER",
+    "OUTER",
+    "ON",
+    "GROUP",
+    "BY",
+    "ORDER",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "CREATE",
+    "TABLE",
+    "INDEX",
+    "DROP",
+    "ALTER",
+    "ADD",
+    "COLUMN",
+    "PRIMARY",
+    "KEY",
+    "FOREIGN",
+    "REFERENCES",
+    "NOT",
+    "NULL",
+    "AND",
+    "OR",
+    "IN",
+    "AS",
+    "DISTINCT",
+    "UNION",
+    "ALL",
+    "EXISTS",
+    "BETWEEN",
+    "LIKE",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "CAST",
+    "VALUES",
+    "SET",
+    "DEFAULT",
+    "CHECK",
+    "UNIQUE",
+];
+const SQL_BOOLS: &[&str] = &["TRUE", "FALSE", "NULL", "true", "false", "null"];
+
+const HTML_KEYWORDS: &[&str] = &[
+    "html", "head", "body", "title", "meta", "link", "script", "style", "div", "span", "p", "a",
+    "button", "input", "form", "textarea", "select", "option", "h1", "h2", "h3", "h4", "h5", "h6",
+    "ul", "ol", "li", "table", "tr", "th", "td", "img", "svg", "path", "header", "footer", "main",
+    "nav", "section", "article", "aside",
+];
+
+const CSS_KEYWORDS: &[&str] = &[
+    "display",
+    "flex",
+    "grid",
+    "position",
+    "absolute",
+    "relative",
+    "fixed",
+    "sticky",
+    "width",
+    "height",
+    "min-width",
+    "max-width",
+    "margin",
+    "padding",
+    "border",
+    "background",
+    "color",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "line-height",
+    "text-align",
+    "overflow",
+    "cursor",
+    "transition",
+    "transform",
+    "opacity",
+    "z-index",
+    "inherit",
+    "initial",
+    "none",
+    "auto",
+    "important",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,7 +1057,16 @@ mod tests {
         assert_eq!(language_from_path("index.js"), Language::JavaScript);
         assert_eq!(language_from_path("index.tsx"), Language::TypeScript);
         assert_eq!(language_from_path("package.json"), Language::Json);
-        assert_eq!(language_from_path("README.md"), Language::Plain);
+        assert_eq!(language_from_path("index.html"), Language::Html);
+        assert_eq!(language_from_path("styles.css"), Language::Css);
+        assert_eq!(language_from_path("README.md"), Language::Markdown);
+        assert_eq!(language_from_path("deploy.sh"), Language::Shell);
+        assert_eq!(language_from_path("Cargo.toml"), Language::Toml);
+        assert_eq!(language_from_path("docker-compose.yml"), Language::Yaml);
+        assert_eq!(language_from_path("query.sql"), Language::Sql);
+        assert_eq!(language_from_path("main.c"), Language::C);
+        assert_eq!(language_from_path("main.cpp"), Language::Cpp);
+        assert_eq!(language_from_path("server.go"), Language::Go);
         assert_eq!(language_from_path("Makefile"), Language::Plain);
         assert_eq!(language_from_path("src/lib.rs.bak"), Language::Plain);
     }

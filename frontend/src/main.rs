@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod components;
 mod idb;
+mod local_agent;
 mod local_fs;
 mod workspace;
 

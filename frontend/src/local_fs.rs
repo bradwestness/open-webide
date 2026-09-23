@@ -1,7 +1,11 @@
 //! File System Access API helpers for local-mode workspaces. Paths are
 //! project-relative (the picked directory is the project root, path "").
 
-use openwebide_core::{FileEntry, SearchHit, find_content_matches};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use openwebide_core::{FileEntry, SearchHit, Vfs, VfsError, VfsFuture, find_content_matches};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
@@ -133,6 +137,21 @@ pub async fn read(root: &FileSystemDirectoryHandle, path: &str) -> Result<String
         .await
         .map_err(|e| js_error(&e))?;
     Ok(text.as_string().unwrap_or_default())
+}
+
+/// Create an object URL (blob:...) for a local file to display media assets.
+pub async fn read_blob_url(root: &FileSystemDirectoryHandle, path: &str) -> Result<String, String> {
+    ensure_permission(root).await?;
+    let (parent, name) = split_path(path);
+    let parent_dir = resolve_dir(root, &parent).await?;
+    let file_handle = file_handle(&parent_dir, &name).await?;
+    let file_value = JsFuture::from(file_handle.get_file())
+        .await
+        .map_err(|e| js_error(&e))?;
+    let blob: Blob = file_value
+        .dyn_into()
+        .map_err(|_| format!("no such file: {path}"))?;
+    web_sys::Url::create_object_url_with_blob(&blob).map_err(|e| js_error(&e))
 }
 
 /// Write text to a file, creating parent directories as needed.
@@ -386,5 +405,102 @@ fn split_path(path: &str) -> (String, String) {
     match path.rfind('/') {
         Some(i) => (path[..i].to_string(), path[i + 1..].to_string()),
         None => (String::new(), path.to_string()),
+    }
+}
+
+/// Wrap a future so it implements Send and Sync in single-threaded WASM environments.
+pub struct ForceSend<F>(pub F);
+unsafe impl<F> Send for ForceSend<F> {}
+unsafe impl<F> Sync for ForceSend<F> {}
+
+impl<F: Future> Future for ForceSend<F> {
+    type Output = F::Output;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: Pinning projection is safe because inner future is pinned as long as ForceSend is pinned.
+        unsafe {
+            let inner = self.map_unchecked_mut(|s| &mut s.0);
+            inner.poll(cx)
+        }
+    }
+}
+
+/// A Vfs implementation backed by the browser File System Access API.
+#[derive(Clone)]
+pub struct BrowserFsaVfs {
+    root: FileSystemDirectoryHandle,
+}
+
+unsafe impl Send for BrowserFsaVfs {}
+unsafe impl Sync for BrowserFsaVfs {}
+
+impl BrowserFsaVfs {
+    pub fn new(root: FileSystemDirectoryHandle) -> Self {
+        Self { root }
+    }
+}
+
+fn map_vfs_err(msg: String) -> VfsError {
+    if msg.contains("no such file") || msg.contains("not found") {
+        VfsError::NotFound(msg)
+    } else if msg.contains("permission") {
+        VfsError::PermissionDenied(msg)
+    } else if msg.contains("escapes") {
+        VfsError::PathEscape(msg)
+    } else {
+        VfsError::Io(msg)
+    }
+}
+
+impl Vfs for BrowserFsaVfs {
+    fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
+        let root = self.root.clone();
+        let path = path.to_string();
+        Box::pin(ForceSend(async move {
+            read(&root, &path).await.map_err(map_vfs_err)
+        }))
+    }
+
+    fn write<'a>(&'a self, path: &'a str, content: &'a str) -> VfsFuture<'a, ()> {
+        let root = self.root.clone();
+        let path = path.to_string();
+        let content = content.to_string();
+        Box::pin(ForceSend(async move {
+            write(&root, &path, &content).await.map_err(map_vfs_err)
+        }))
+    }
+
+    fn list<'a>(&'a self, dir: &'a str) -> VfsFuture<'a, Vec<FileEntry>> {
+        let root = self.root.clone();
+        let dir = dir.to_string();
+        Box::pin(ForceSend(async move {
+            list(&root, &dir).await.map_err(map_vfs_err)
+        }))
+    }
+
+    fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
+        let root = self.root.clone();
+        let path = path.to_string();
+        Box::pin(ForceSend(async move {
+            create(&root, &path, is_dir).await.map_err(map_vfs_err)
+        }))
+    }
+
+    fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()> {
+        let root = self.root.clone();
+        let path = path.to_string();
+        Box::pin(ForceSend(async move {
+            delete(&root, &path).await.map_err(map_vfs_err)
+        }))
+    }
+
+    fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
+        let root = self.root.clone();
+        let query = query.to_string();
+        let dir = dir.to_string();
+        Box::pin(ForceSend(async move {
+            search_content(&root, &query, &dir)
+                .await
+                .map_err(map_vfs_err)
+        }))
     }
 }

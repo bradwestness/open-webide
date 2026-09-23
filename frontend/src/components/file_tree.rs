@@ -19,6 +19,10 @@ pub fn FileTree(
     on_new_dir: Callback<()>,
     on_search: Callback<String>,
     on_clear_search: Callback<()>,
+    #[prop(default = Signal::derive(|| None))] git_status: Signal<
+        Option<openwebide_core::GitRepoStatus>,
+    >,
+    #[prop(into, optional)] width: Option<Signal<f64>>,
 ) -> impl IntoView {
     let search_input = NodeRef::<leptos::html::Input>::new();
 
@@ -48,12 +52,14 @@ pub fn FileTree(
             }
         }
         traverse(&map, &exp, "", 0, &mut result);
-        let mut guard = flat.write();
-        *guard = result;
+        flat.set(result);
     });
 
     view! {
-        <div class="file-tree">
+        <div
+            class="file-tree"
+            style=move || width.map(|w| format!("width: {}px; flex: none;", w.get())).unwrap_or_default()
+        >
             <div class="file-tree-header">
                 <h2>"Explorer"</h2>
                 <span class="file-tree-actions">
@@ -98,7 +104,8 @@ pub fn FileTree(
                                     let name = entry.name.clone();
                                     let path_class = entry.path.clone();
                                     let path_click = entry.path.clone();
-                                    let path_icon = entry.path.clone();
+                                     let path_icon = entry.path.clone();
+                                    let path_badge = entry.path.clone();
                                     view! {
                                         <div
                                             class=move || {
@@ -133,6 +140,28 @@ pub fn FileTree(
                                                 }}
                                             </span>
                                             <span class="tree-name">{name}</span>
+                                            {
+                                                let path_badge = path_badge.clone();
+                                                move || {
+                                                    let status_opt = git_status.get();
+                                                    let status = status_opt.as_ref()?;
+                                                    if is_dir {
+                                                        let dir_prefix = format!("{path_badge}/");
+                                                        let has_modified = status.files.keys().any(|k| k.starts_with(&dir_prefix));
+                                                        if has_modified {
+                                                            Some(view! { <span class="git-badge git-badge-dir" title="Contains modified files">"•"</span> }.into_any())
+                                                        } else {
+                                                            None
+                                                        }
+                                                    } else {
+                                                        status.files.get(&path_badge).map(|s| {
+                                                            let badge = s.badge();
+                                                            let css_class = s.css_class();
+                                                            view! { <span class=format!("git-badge {css_class}") title=css_class>{badge}</span> }.into_any()
+                                                        })
+                                                    }
+                                                }
+                                            }
                                         </div>
                                     }
                                 }

@@ -17,10 +17,95 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use futures::Stream;
-use openwebide_core::{ChatRequest, ChatResponse, ModelInfo, ProviderKind, ToolDefinition};
+use openwebide_core::{
+    ChatCompletion, ChatRequest, ModelInfo, ProviderKind, ToolDefinition, TurnTelemetry,
+    estimate_chat_request_tokens, estimate_tokens,
+};
 use serde_json::json;
 
 pub use error::ProviderError;
+
+/// A chunk of a streamed chat completion.
+pub enum StreamChunk {
+    /// A content delta to append to the reply.
+    Delta(String),
+    /// The turn's usage, yielded exactly once, just before a successful end.
+    Usage(TurnTelemetry),
+}
+
+/// `Some(Instant::now())` normally; `None` on `wasm32-unknown-unknown`, where
+/// `Instant::now()` panics. Providers use this instead of calling
+/// `Instant::now()` directly, so the same code compiles for the browser and
+/// the timing there degrades to "unknown" (duration 0) rather than crashing.
+pub(crate) fn clock_now() -> Option<std::time::Instant> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        None
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        Some(std::time::Instant::now())
+    }
+}
+
+/// Round a nanosecond duration to whole milliseconds, treating any positive
+/// duration as at least 1ms (`eval_duration_ms == 0` means "unknown").
+pub(crate) fn round_ns_to_ms(ns: u64) -> u64 {
+    let ms = (ns + 500_000) / 1_000_000;
+    if ns > 0 { ms.max(1) } else { 0 }
+}
+
+/// Accumulates a turn's usage as a provider response (or stream) is parsed,
+/// applying the estimation fallback once the call finishes.
+pub(crate) struct UsageAcc {
+    pub prompt: Option<usize>,
+    pub completion: Option<usize>,
+    pub eval_ms: Option<u64>,
+    /// Computed eagerly from the request, in case the provider omits
+    /// `prompt_tokens`.
+    pub prompt_estimate: usize,
+    /// The reply text (or tool call name + arguments), for the completion
+    /// estimate.
+    pub text: String,
+    pub started: Option<std::time::Instant>,
+    pub ended: Option<std::time::Instant>,
+}
+
+impl UsageAcc {
+    pub(crate) fn new(request: &ChatRequest) -> Self {
+        Self {
+            prompt: None,
+            completion: None,
+            eval_ms: None,
+            prompt_estimate: estimate_chat_request_tokens(request),
+            text: String::new(),
+            started: None,
+            ended: None,
+        }
+    }
+
+    /// Apply the per-field fallbacks and produce the turn's telemetry.
+    pub(crate) fn finish(&self) -> TurnTelemetry {
+        let prompt_tokens = self.prompt.unwrap_or(self.prompt_estimate);
+        let completion_tokens = self
+            .completion
+            .unwrap_or_else(|| estimate_tokens(&self.text));
+        let eval_duration_ms = self
+            .eval_ms
+            .unwrap_or_else(|| match (self.started, self.ended) {
+                (Some(start), Some(end)) => {
+                    round_ns_to_ms(end.saturating_duration_since(start).as_nanos() as u64)
+                }
+                _ => 0,
+            });
+        TurnTelemetry {
+            prompt_tokens,
+            completion_tokens,
+            eval_duration_ms,
+            estimated: self.prompt.is_none() || self.completion.is_none(),
+        }
+    }
+}
 
 /// Join a connection base URL and an API path, tolerating a trailing slash
 /// on the base and a leading slash on the path.
@@ -98,17 +183,26 @@ pub trait LlmProvider: Send + Sync {
         &self,
         request: &ChatRequest,
     ) -> impl Future<Output = Result<String, ProviderError>> + Send;
-    /// Stream a chat completion, yielding content deltas as they arrive.
+    /// Stream a chat completion, yielding content deltas as they arrive, and
+    /// exactly one [`StreamChunk::Usage`] just before a successful end.
     fn chat_stream(
         &self,
         request: &ChatRequest,
-    ) -> Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + 'static>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>>;
     /// A tool-capable chat completion. Returns the model's text reply or the
-    /// tool calls it wants to run (see [`ChatRequest::tools`]).
+    /// tool calls it wants to run (see [`ChatRequest::tools`]), plus the
+    /// call's usage when the provider reported it.
     fn chat_tools(
         &self,
         request: &ChatRequest,
-    ) -> impl Future<Output = Result<ChatResponse, ProviderError>> + Send;
+    ) -> impl Future<Output = Result<ChatCompletion, ProviderError>> + Send;
+    /// The model's context window, in tokens, discovered from the runtime.
+    /// `Ok(None)` when the runtime doesn't report one (or `model` is
+    /// absent and the provider has no configured model either).
+    fn context_limit(
+        &self,
+        model: Option<&str>,
+    ) -> impl Future<Output = Result<Option<usize>, ProviderError>> + Send;
 }
 
 /// Extract a provider error from a stream line's `error` field, which may

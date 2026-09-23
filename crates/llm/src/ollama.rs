@@ -1,12 +1,14 @@
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt, stream};
-use openwebide_core::{ChatRequest, ChatResponse, ModelInfo, ProviderKind, Role, ToolCall};
+use openwebide_core::{
+    ChatCompletion, ChatRequest, ChatResponse, ModelInfo, ProviderKind, Role, ToolCall,
+};
 use serde_json::{Value, json};
 
 use crate::{
-    HttpClient, LineStream, LlmProvider, ProviderError, StreamLine, chat_messages, stream_error,
-    tools_wire, url_for,
+    HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, UsageAcc,
+    chat_messages, clock_now, round_ns_to_ms, stream_error, tools_wire, url_for,
 };
 
 /// Provider for [Ollama](https://ollama.com).
@@ -16,6 +18,7 @@ pub struct OllamaProvider<C: HttpClient> {
     base_url: String,
     model: Option<String>,
     http: C,
+    num_ctx: Option<usize>,
 }
 
 impl<C: HttpClient> OllamaProvider<C> {
@@ -24,7 +27,28 @@ impl<C: HttpClient> OllamaProvider<C> {
             base_url: base_url.into(),
             model,
             http,
+            num_ctx: None,
         }
+    }
+
+    /// Set the context window sent as `options.num_ctx` on every request.
+    /// `None` omits the `options` key entirely.
+    pub fn with_num_ctx(mut self, n: Option<usize>) -> Self {
+        self.num_ctx = n;
+        self
+    }
+}
+
+/// Read the usage fields Ollama reports and overwrite only the ones present.
+fn usage_fields(value: &Value, acc: &mut UsageAcc) {
+    if let Some(n) = value.get("prompt_eval_count").and_then(|v| v.as_u64()) {
+        acc.prompt = Some(n as usize);
+    }
+    if let Some(n) = value.get("eval_count").and_then(|v| v.as_u64()) {
+        acc.completion = Some(n as usize);
+    }
+    if let Some(ns) = value.get("eval_duration").and_then(|v| v.as_u64()) {
+        acc.eval_ms = Some(round_ns_to_ms(ns));
     }
 }
 
@@ -62,11 +86,14 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
             .clone()
             .or_else(|| self.model.clone())
             .ok_or(ProviderError::NoModel)?;
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": chat_messages(request),
             "stream": false,
         });
+        if let Some(n) = self.num_ctx {
+            body["options"] = json!({ "num_ctx": n });
+        }
         let value = self
             .http
             .post_json(&url_for(&self.base_url, "/api/chat"), &body)
@@ -84,54 +111,105 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
     fn chat_stream(
         &self,
         request: &ChatRequest,
-    ) -> Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + 'static>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
         let model = match request.model.clone().or_else(|| self.model.clone()) {
             Some(model) => model,
             None => return Box::pin(stream::once(async { Err(ProviderError::NoModel) })),
         };
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": chat_messages(request),
             "stream": true,
         });
+        if let Some(n) = self.num_ctx {
+            body["options"] = json!({ "num_ctx": n });
+        }
         let url = url_for(&self.base_url, "/api/chat");
         let lines = LineStream::new(self.http.post_stream(&url, &body));
-        Box::pin(stream::unfold((lines, false), |state| async move {
-            let (mut lines, done) = state;
-            if done {
-                return None;
-            }
-            loop {
-                let line = lines.next().await?;
-                match line {
-                    Err(e) => return Some((Err(e), (lines, true))),
-                    Ok(line) => match parse_stream_line(&line) {
-                        Ok(StreamLine::Delta(delta)) => return Some((Ok(delta), (lines, false))),
-                        Ok(StreamLine::Done) => return None,
-                        Ok(StreamLine::Skip) => continue,
-                        Err(e) => return Some((Err(e), (lines, true))),
-                    },
+        let acc = UsageAcc::new(request);
+        Box::pin(stream::unfold(
+            (lines, acc, false, false),
+            |state| async move {
+                let (mut lines, mut acc, emitted_usage, done) = state;
+                if done {
+                    return None;
                 }
-            }
-        }))
+                loop {
+                    let Some(line) = lines.next().await else {
+                        // EOF with no `done: true` line: still end the turn,
+                        // yielding an (estimated) usage if none was emitted.
+                        if acc.ended.is_none() {
+                            acc.ended = clock_now();
+                        }
+                        if !emitted_usage {
+                            return Some((
+                                Ok(StreamChunk::Usage(acc.finish())),
+                                (lines, acc, true, true),
+                            ));
+                        }
+                        return None;
+                    };
+                    match line {
+                        Err(e) => return Some((Err(e), (lines, acc, emitted_usage, true))),
+                        Ok(line) => {
+                            let parsed: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                            usage_fields(&parsed, &mut acc);
+                            match parse_stream_line(&line) {
+                                Ok(StreamLine::Delta(delta)) => {
+                                    if acc.started.is_none() {
+                                        acc.started = clock_now();
+                                    }
+                                    acc.text.push_str(&delta);
+                                    return Some((
+                                        Ok(StreamChunk::Delta(delta)),
+                                        (lines, acc, emitted_usage, false),
+                                    ));
+                                }
+                                Ok(StreamLine::Done) => {
+                                    acc.ended = clock_now();
+                                    if !emitted_usage {
+                                        return Some((
+                                            Ok(StreamChunk::Usage(acc.finish())),
+                                            (lines, acc, true, true),
+                                        ));
+                                    }
+                                    return None;
+                                }
+                                Ok(StreamLine::Skip) => continue,
+                                Err(e) => {
+                                    return Some((Err(e), (lines, acc, emitted_usage, true)));
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        ))
     }
 
-    async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatResponse, ProviderError> {
+    async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
         let model = request
             .model
             .clone()
             .or_else(|| self.model.clone())
             .ok_or(ProviderError::NoModel)?;
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": ollama_tool_messages(request),
             "stream": false,
             "tools": tools_wire(&request.tools),
         });
+        if let Some(n) = self.num_ctx {
+            body["options"] = json!({ "num_ctx": n });
+        }
+        let mut acc = UsageAcc::new(request);
+        acc.started = clock_now();
         let value = self
             .http
             .post_json(&url_for(&self.base_url, "/api/chat"), &body)
             .await?;
+        acc.ended = clock_now();
+        usage_fields(&value, &mut acc);
         let message = value
             .get("message")
             .ok_or_else(|| ProviderError::Parse("Ollama /api/chat: missing `message`".into()))?;
@@ -156,20 +234,57 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
                     Value::String(s) => s,
                     other => other.to_string(),
                 };
+                acc.text.push_str(&name);
+                acc.text.push_str(&arguments);
                 tool_calls.push(ToolCall {
                     id: format!("call_{i}"),
                     name,
                     arguments,
                 });
             }
-            return Ok(ChatResponse::ToolCalls(tool_calls));
+            return Ok(ChatCompletion {
+                response: ChatResponse::ToolCalls(tool_calls),
+                usage: Some(acc.finish()),
+            });
         }
         let content = message
             .get("content")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        Ok(ChatResponse::Text(content))
+        acc.text.push_str(&content);
+        Ok(ChatCompletion {
+            response: ChatResponse::Text(content),
+            usage: Some(acc.finish()),
+        })
+    }
+
+    async fn context_limit(&self, model: Option<&str>) -> Result<Option<usize>, ProviderError> {
+        let Some(model) = model.map(str::to_string).or_else(|| self.model.clone()) else {
+            return Ok(None);
+        };
+        let value = self
+            .http
+            .post_json(
+                &url_for(&self.base_url, "/api/show"),
+                &json!({ "model": model }),
+            )
+            .await?;
+        // A Modelfile `num_ctx` is the real runtime window Ollama loads the
+        // model with. `model_info.<arch>.context_length` is the model's
+        // trained maximum, not what Ollama actually runs at (its default
+        // window is far smaller unless `num_ctx` is set), so it is
+        // deliberately not used as a fallback here (user decision).
+        if let Some(params) = value.get("parameters").and_then(|v| v.as_str()) {
+            for line in params.lines() {
+                if let Some(rest) = line.trim().strip_prefix("num_ctx")
+                    && let Ok(n) = rest.trim().parse::<usize>()
+                {
+                    return Ok(Some(n));
+                }
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -245,7 +360,7 @@ mod tests {
     use super::*;
     use crate::fake::{FakeHttpClient, FakeState};
     use futures::executor::block_on;
-    use openwebide_core::{ChatMessage, Role, ToolDefinition};
+    use openwebide_core::{ChatMessage, Role, ToolDefinition, TurnTelemetry};
 
     const BASE: &str = "http://localhost:11434";
 
@@ -266,6 +381,7 @@ mod tests {
             created_at: 0,
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
         }
     }
 
@@ -394,6 +510,27 @@ mod tests {
         ));
     }
 
+    /// Run a stream to completion, splitting deltas from the (at most one)
+    /// usage chunk.
+    fn run_stream(
+        provider: &OllamaProvider<FakeHttpClient>,
+        req: &ChatRequest,
+    ) -> (Vec<String>, Vec<TurnTelemetry>, Vec<ProviderError>) {
+        let items: Vec<Result<StreamChunk, ProviderError>> =
+            block_on(provider.chat_stream(req).collect());
+        let mut deltas = Vec::new();
+        let mut usages = Vec::new();
+        let mut errors = Vec::new();
+        for item in items {
+            match item {
+                Ok(StreamChunk::Delta(d)) => deltas.push(d),
+                Ok(StreamChunk::Usage(u)) => usages.push(u),
+                Err(e) => errors.push(e),
+            }
+        }
+        (deltas, usages, errors)
+    }
+
     #[test]
     fn chat_stream_yields_deltas_until_done() {
         let (provider, state) = provider(FakeHttpClient::new());
@@ -404,21 +541,19 @@ mod tests {
 "#,
             r#"{"message":{"role":"assistant","content":""},"done":false}
 "#,
-            r#"{"message":{"role":"assistant","content":""},"done":true}
+            r#"{"message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":12,"eval_count":4,"eval_duration":2000000}
 "#,
         ]);
 
-        let deltas: Vec<String> = block_on(async {
-            provider
-                .chat_stream(&request(None, None))
-                .collect::<Vec<_>>()
-                .await
-        })
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+        let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
 
         assert_eq!(deltas, vec!["Hel", "lo"]);
+        assert!(errors.is_empty());
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].prompt_tokens, 12);
+        assert_eq!(usages[0].completion_tokens, 4);
+        assert_eq!(usages[0].eval_duration_ms, 2);
+        assert!(!usages[0].estimated);
         let calls = state.calls.lock().unwrap();
         let body = calls[0].body.as_ref().unwrap();
         assert_eq!(body["stream"], true);
@@ -426,26 +561,34 @@ mod tests {
 
     #[test]
     fn chat_stream_splits_lines_across_chunks() {
-        let (provider, state) = provider(FakeHttpClient::new());
+        let (provider, _state) = provider(FakeHttpClient::new());
         // One chunk holds a partial line, the next finishes it and adds more.
-        state.push_stream(vec![
+        _state.push_stream(vec![
             r#"{"message":{"role":"assistant","content":"a"},"done":fal"#,
             r#"se}
 {"message":{"role":"assistant","content":"b"},"done":true}
 "#,
         ]);
 
-        let deltas: Vec<String> = block_on(async {
-            provider
-                .chat_stream(&request(None, None))
-                .collect::<Vec<_>>()
-                .await
-        })
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+        let (deltas, _usages, _errors) = run_stream(&provider, &request(None, None));
 
         assert_eq!(deltas, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn chat_stream_with_no_done_line_still_yields_estimated_usage() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            r#"{"message":{"role":"assistant","content":"partial"}}
+"#,
+        ]);
+
+        let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
+
+        assert_eq!(deltas, vec!["partial"]);
+        assert!(errors.is_empty());
+        assert_eq!(usages.len(), 1);
+        assert!(usages[0].estimated);
     }
 
     #[test]
@@ -456,13 +599,11 @@ mod tests {
 "#,
         ]);
 
-        let result: Vec<Result<String, _>> =
-            block_on(provider.chat_stream(&request(None, None)).collect());
-
-        assert!(matches!(
-            result.into_iter().next().unwrap(),
-            Err(ProviderError::Http(ref msg)) if msg.contains("not found")
-        ));
+        let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
+        assert!(deltas.is_empty());
+        assert!(usages.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ProviderError::Http(msg) if msg.contains("not found")));
     }
 
     #[test]
@@ -470,13 +611,10 @@ mod tests {
         let (provider, state) = provider(FakeHttpClient::new());
         state.push_stream_error(ProviderError::Http("connection reset".into()));
 
-        let result: Vec<Result<String, _>> =
-            block_on(provider.chat_stream(&request(None, None)).collect());
-
-        assert!(matches!(
-            result.into_iter().next().unwrap(),
-            Err(ProviderError::Http(ref msg)) if msg.contains("connection reset")
-        ));
+        let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
+        assert!(deltas.is_empty());
+        assert!(usages.is_empty());
+        assert!(matches!(&errors[0], ProviderError::Http(msg) if msg.contains("connection reset")));
         assert_eq!(state.calls.lock().unwrap().len(), 1);
     }
 
@@ -486,13 +624,9 @@ mod tests {
         let state = http.state();
         let provider = OllamaProvider::new(BASE, None, http);
 
-        let result: Vec<Result<String, _>> =
-            block_on(provider.chat_stream(&request(None, None)).collect());
+        let (_deltas, _usages, errors) = run_stream(&provider, &request(None, None));
 
-        assert!(matches!(
-            result.into_iter().next().unwrap(),
-            Err(ProviderError::NoModel)
-        ));
+        assert!(matches!(errors[0], ProviderError::NoModel));
         assert!(state.calls.lock().unwrap().is_empty());
     }
 
@@ -507,21 +641,29 @@ mod tests {
                     { "function": { "name": "read_file", "arguments": { "path": "src/main.rs" } } }
                 ]
             },
-            "done": true
+            "done": true,
+            "prompt_eval_count": 20,
+            "eval_count": 5,
+            "eval_duration": 1_000_000
         })));
 
         let mut req = request(None, None);
         req.tools = vec![read_file_tool()];
-        let response = block_on(provider.chat_tools(&req)).unwrap();
+        let completion = block_on(provider.chat_tools(&req)).unwrap();
 
         assert_eq!(
-            response,
+            completion.response,
             ChatResponse::ToolCalls(vec![ToolCall {
                 id: "call_0".into(),
                 name: "read_file".into(),
                 arguments: r#"{"path":"src/main.rs"}"#.into(),
             }])
         );
+        let usage = completion.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 20);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.eval_duration_ms, 1);
+        assert!(!usage.estimated);
         // The request carries the tool definitions and stream is off.
         let calls = state.calls.lock().unwrap();
         let body = calls[0].body.as_ref().unwrap();
@@ -551,8 +693,10 @@ mod tests {
             "done": true
         })));
 
-        let response = block_on(provider.chat_tools(&request(None, None))).unwrap();
-        assert_eq!(response, ChatResponse::Text("all done".into()));
+        let completion = block_on(provider.chat_tools(&request(None, None))).unwrap();
+        assert_eq!(completion.response, ChatResponse::Text("all done".into()));
+        // No usage fields on the response: the estimator filled them in.
+        assert!(completion.usage.unwrap().estimated);
     }
 
     #[test]
@@ -575,6 +719,7 @@ mod tests {
                 arguments: r#"{"path":"src/main.rs"}"#.into(),
             }]),
             tool_call_id: None,
+            usage: None,
         };
         let tool_result = ChatMessage {
             id: 3,
@@ -584,6 +729,7 @@ mod tests {
             created_at: 0,
             tool_calls: None,
             tool_call_id: Some("call_0".into()),
+            usage: None,
         };
         let req = ChatRequest {
             connection_id: 1,
@@ -626,5 +772,111 @@ mod tests {
             Err(ProviderError::NoModel)
         ));
         assert!(state.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn with_num_ctx_adds_options_to_every_request_body() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        let provider = provider.with_num_ctx(Some(8192));
+
+        state.push(Ok(json!({ "message": { "content": "hi" } })));
+        block_on(provider.chat(&request(None, None))).unwrap();
+        assert_eq!(
+            state.calls.lock().unwrap()[0].body.as_ref().unwrap()["options"]["num_ctx"],
+            8192
+        );
+
+        state.push_stream(vec![
+            r#"{"message":{"content":"a"},"done":true}
+"#,
+        ]);
+        block_on(
+            provider
+                .chat_stream(&request(None, None))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            state.calls.lock().unwrap()[1].body.as_ref().unwrap()["options"]["num_ctx"],
+            8192
+        );
+
+        state.push(Ok(json!({ "message": { "content": "hi" } })));
+        block_on(provider.chat_tools(&request(None, None))).unwrap();
+        assert_eq!(
+            state.calls.lock().unwrap()[2].body.as_ref().unwrap()["options"]["num_ctx"],
+            8192
+        );
+    }
+
+    #[test]
+    fn without_num_ctx_the_body_has_no_options_key() {
+        let (provider, state) = provider(FakeHttpClient::new());
+
+        state.push(Ok(json!({ "message": { "content": "hi" } })));
+        block_on(provider.chat(&request(None, None))).unwrap();
+        assert!(
+            state.calls.lock().unwrap()[0]
+                .body
+                .as_ref()
+                .unwrap()
+                .get("options")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn context_limit_reads_num_ctx_from_parameters() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "parameters": "num_ctx 8192\nstop \"<|eot|>\"",
+        })));
+
+        let limit = block_on(provider.context_limit(None)).unwrap();
+        assert_eq!(limit, Some(8192));
+        let calls = state.calls.lock().unwrap();
+        assert_eq!(calls[0].url, format!("{BASE}/api/show"));
+        assert_eq!(calls[0].body.as_ref().unwrap()["model"], "qwen2.5-coder:7b");
+    }
+
+    #[test]
+    fn context_limit_ignores_model_info_trained_max() {
+        // `model_info.<arch>.context_length` is the trained maximum, not the
+        // runtime window Ollama actually loads without a configured
+        // `num_ctx`, so it must not be used as a fallback.
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "parameters": "stop \"<|eot|>\"",
+            "model_info": {
+                "general.architecture": "qwen2",
+                "qwen2.context_length": 32768,
+            }
+        })));
+
+        let limit = block_on(provider.context_limit(Some("qwen2.5-coder:7b"))).unwrap();
+        assert_eq!(limit, None);
+    }
+
+    #[test]
+    fn context_limit_with_no_model_returns_none_without_a_request() {
+        let http = FakeHttpClient::new();
+        let state = http.state();
+        let provider = OllamaProvider::new(BASE, None, http);
+
+        assert_eq!(block_on(provider.context_limit(None)).unwrap(), None);
+        assert!(state.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_prompt_eval_count_is_estimated() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "message": { "role": "assistant", "content": "hi there" },
+            "done": true,
+            "eval_count": 3,
+            "eval_duration": 1_000_000
+        })));
+
+        let completion = block_on(provider.chat_tools(&request(None, None))).unwrap();
+        assert!(completion.usage.unwrap().estimated);
     }
 }

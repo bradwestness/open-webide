@@ -6,8 +6,9 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use openwebide_agent::AgentConfig;
 use openwebide_core::{
-    ChatRequest, FileEntry, Health, NewConnection, NewProject, Role, SearchHit, SystemPrompt,
-    UserRole, WorkspaceMode,
+    ChatRequest, EditorContext, FileDiff, FileEntry, GitCheckoutRequest, GitCommitRequest,
+    GitSyncRequest, Health, NewConnection, NewProject, Role, SearchHit, SystemPrompt,
+    TurnTelemetry, UserRole, WorkspaceMode,
 };
 use openwebide_llm::{LlmProvider, registry::Provider};
 use serde::Deserialize;
@@ -161,9 +162,19 @@ pub async fn list_connections(state: &AppState) -> Result<JsonResp, ApiError> {
     Ok(json_response(200, &connections))
 }
 
+fn validate_context_limit(limit: Option<usize>) -> Result<(), ApiError> {
+    if limit == Some(0) {
+        return Err(ApiError::bad_request(
+            "context limit must be a positive number of tokens",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn create_connection(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let body = read_body(req).await?;
     let new: NewConnection = parse_json(body)?;
+    validate_context_limit(new.context_limit)?;
     let connection = state.store.insert_connection(&new).await?;
     Ok(json_response(201, &connection))
 }
@@ -176,6 +187,7 @@ pub async fn update_connection(
     let id = path_id(path, "/api/connections")?;
     let body = read_body(req).await?;
     let mut connection: openwebide_core::Connection = parse_json(body)?;
+    validate_context_limit(connection.context_limit)?;
     connection.id = id;
     state.store.update_connection(&connection).await?;
     Ok(json_response(200, &connection))
@@ -190,7 +202,8 @@ pub async fn delete_connection(state: &AppState, path: &str) -> Result<JsonResp,
 // -- settings ------------------------------------------------------------------
 
 pub async fn get_settings(state: &AppState) -> Result<JsonResp, ApiError> {
-    let settings = state.store.all_settings().await?;
+    let user_id = current_user_id(state)?;
+    let settings = state.store.all_user_settings(user_id).await?;
     Ok(json_response(200, &settings))
 }
 
@@ -201,11 +214,12 @@ struct SettingBody {
 }
 
 pub async fn set_setting(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
     let body = read_body(req).await?;
     let setting: SettingBody = parse_json(body)?;
     state
         .store
-        .set_setting(&setting.key, &setting.value)
+        .set_user_setting(user_id, &setting.key, &setting.value)
         .await?;
     Ok(json_response(200, &json!({ "key": setting.key })))
 }
@@ -438,6 +452,20 @@ pub async fn files_get(req: Request, state: &AppState, path: &str) -> Result<Jso
                 &json!({ "path": rel, "content": content }),
             ))
         }
+        "files/raw" => {
+            let rel =
+                files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
+            let (full, _) = remote_project_path(state, user_id, id, &rel).await?;
+            let bytes = crate::files::read_bytes(&full).await?;
+            let mime = crate::files::mime_type_from_path(&rel);
+            let resp = Response::builder()
+                .status(200)
+                .header("content-type", mime)
+                .header("cache-control", "private, max-age=300")
+                .body(box_body(FullBody::new(Bytes::from(bytes))))
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            Ok(resp)
+        }
         "files/search" => {
             let q = files_query(&req, "q").ok_or_else(|| ApiError::bad_request("missing ?q="))?;
             let rel = files_query(&req, "path").unwrap_or_default();
@@ -500,6 +528,142 @@ pub async fn files_delete(
     let (full, _) = remote_project_path(state, user_id, id, &rel).await?;
     crate::files::delete(&full).await?;
     Ok(json_response(200, &json!({ "path": rel })))
+}
+
+// -- git operations (Phase 13) -----------------------------------------------------
+
+fn project_git_path(path: &str) -> Result<(Option<i64>, &str), ApiError> {
+    if let Some(rest) = path.strip_prefix("/api/projects/") {
+        let (id_str, sub) = rest
+            .split_once('/')
+            .ok_or_else(|| ApiError::bad_request("expected /api/projects/<id>/git/..."))?;
+        let id = id_str
+            .parse::<i64>()
+            .map_err(|_| ApiError::bad_request("expected a numeric project id"))?;
+        let git_sub = sub
+            .strip_prefix("git/")
+            .ok_or_else(|| ApiError::bad_request("expected /git/ sub-path"))?;
+        Ok((Some(id), git_sub))
+    } else if let Some(git_sub) = path.strip_prefix("/api/git/") {
+        Ok((None, git_sub))
+    } else {
+        Err(ApiError::bad_request("unrecognized git path"))
+    }
+}
+
+pub async fn git_get(req: Request, state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
+    let (project_id, sub) = project_git_path(path)?;
+    let project_dir = if let Some(id) = project_id {
+        let (full, _) = remote_project_path(state, user_id, id, "").await?;
+        std::path::PathBuf::from(full)
+    } else {
+        std::path::PathBuf::new()
+    };
+
+    match sub {
+        "status" => {
+            let status = crate::git::repo_status(&project_dir)
+                .await
+                .map_err(ApiError::internal)?;
+            Ok(json_response(200, &status))
+        }
+        "diff" => {
+            let file_path = files_query(&req, "path");
+            let diff = crate::git::repo_diff(file_path.as_deref())
+                .await
+                .map_err(ApiError::internal)?;
+            Ok(json_response(200, &json!({ "diff": diff })))
+        }
+        "branches" => {
+            let branches = crate::git::repo_branches()
+                .await
+                .map_err(ApiError::internal)?;
+            Ok(json_response(200, &branches))
+        }
+        "show" => {
+            let file_path = files_query(&req, "path")
+                .ok_or_else(|| ApiError::bad_request("missing path query parameter"))?;
+            let content = crate::git::repo_file_head(&project_dir, &file_path)
+                .await
+                .map_err(ApiError::internal)?;
+            Ok(json_response(200, &json!({ "content": content })))
+        }
+        other => Err(ApiError::not_found(format!("unknown git action: {other}"))),
+    }
+}
+
+pub async fn git_post(req: Request, state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
+    let (project_id, sub) = project_git_path(path)?;
+    let project_dir = if let Some(id) = project_id {
+        let (full, _) = remote_project_path(state, user_id, id, "").await?;
+        std::path::PathBuf::from(full)
+    } else {
+        std::path::PathBuf::new()
+    };
+
+    let body = read_body(req).await?;
+
+    match sub {
+        "status" => {
+            let status = crate::git::repo_status(&project_dir)
+                .await
+                .map_err(ApiError::internal)?;
+            Ok(json_response(200, &status))
+        }
+        "diff" => {
+            #[derive(Deserialize, Default)]
+            struct DiffReq {
+                path: Option<String>,
+            }
+            let diff_req: DiffReq = if body.trim().is_empty() {
+                DiffReq::default()
+            } else {
+                parse_json(body)?
+            };
+            let diff = crate::git::repo_diff(diff_req.path.as_deref())
+                .await
+                .map_err(ApiError::internal)?;
+            Ok(json_response(200, &json!({ "diff": diff })))
+        }
+        "branches" => {
+            let branches = crate::git::repo_branches()
+                .await
+                .map_err(ApiError::internal)?;
+            Ok(json_response(200, &branches))
+        }
+        "commit" => {
+            let commit_req: GitCommitRequest = parse_json(body)?;
+            let result = crate::git::repo_commit(&commit_req)
+                .await
+                .map_err(ApiError::bad_request)?;
+            Ok(json_response(200, &result))
+        }
+        "checkout" => {
+            let checkout_req: GitCheckoutRequest = parse_json(body)?;
+            let result = crate::git::repo_checkout(&checkout_req)
+                .await
+                .map_err(ApiError::bad_request)?;
+            Ok(json_response(200, &result))
+        }
+        "sync" => {
+            let sync_req: GitSyncRequest = if body.trim().is_empty() {
+                GitSyncRequest {
+                    action: "sync".into(),
+                    remote: None,
+                    branch: None,
+                }
+            } else {
+                parse_json(body)?
+            };
+            let result = crate::git::repo_sync(&sync_req)
+                .await
+                .map_err(ApiError::bad_request)?;
+            Ok(json_response(200, &result))
+        }
+        other => Err(ApiError::not_found(format!("unknown git action: {other}"))),
+    }
 }
 
 // -- host file browser (Phase 10) --------------------------------------------------
@@ -634,6 +798,8 @@ struct SendMessageBody {
     content: String,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    editor_context: Option<EditorContext>,
 }
 
 /// Send a user message and stream the assistant reply back as SSE.
@@ -663,10 +829,15 @@ pub async fn send_session_message(
         Some(id) => Some(state.store.get_system_prompt(id).await?.content),
         None => None,
     };
+    let system_prompt = Some(with_temporal_context(system_prompt, now()));
     let history = state.store.list_messages(session_id).await?;
+    let full_content = match &send.editor_context {
+        Some(ctx) => format!("{}{}", ctx.format_prompt_injection(), send.content),
+        None => send.content,
+    };
     let user_message = state
         .store
-        .insert_message(session_id, Role::User, &send.content, now())
+        .insert_message(session_id, Role::User, &full_content, now())
         .await?;
 
     // Remote-mode projects run the agentic loop with workspace tools;
@@ -757,13 +928,178 @@ pub async fn list_models(req: Request, state: &AppState) -> Result<JsonResp, Api
     Ok(json_response(200, &models))
 }
 
+/// Append current UTC date and time to the system prompt for zero-turn temporal context.
+fn with_temporal_context(system_prompt: Option<String>, timestamp_secs: i64) -> String {
+    let temporal = format!(
+        "Current Date & Time: {}",
+        openwebide_core::format_utc_timestamp(timestamp_secs)
+    );
+    match system_prompt {
+        Some(base) if !base.trim().is_empty() => format!("{base}\n\n{temporal}"),
+        _ => temporal,
+    }
+}
+
 pub async fn chat(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let body = read_body(req).await?;
-    let request: ChatRequest = parse_json(body)?;
+    let mut request: ChatRequest = parse_json(body)?;
     let connection = state.store.get_connection(request.connection_id).await?;
     let provider = Provider::for_connection(&connection, SpinHttpClient);
+    request.system_prompt = Some(with_temporal_context(request.system_prompt, now()));
     let reply = provider.chat(&request).await?;
     Ok(json_response(200, &json!({ "reply": reply })))
+}
+
+pub async fn chat_tools(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    let _user_id = current_user_id(state)?;
+    let body = read_body(req).await?;
+    let mut request: ChatRequest = parse_json(body)?;
+    let connection = state.store.get_connection(request.connection_id).await?;
+    let provider = Provider::for_connection(&connection, SpinHttpClient);
+    request.system_prompt = Some(with_temporal_context(request.system_prompt, now()));
+    let response = provider.chat_tools(&request).await?;
+    Ok(json_response(200, &response))
+}
+
+#[derive(Deserialize)]
+struct PersistMessageBody {
+    role: Role,
+    content: String,
+    #[serde(default)]
+    usage: Option<TurnTelemetry>,
+}
+
+pub async fn persist_message(
+    req: Request,
+    state: &AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
+    let id = session_id(path)?;
+    state.store.get_session(id, user_id).await?;
+    let body = read_body(req).await?;
+    let msg: PersistMessageBody = parse_json(body)?;
+    let message = state
+        .store
+        .insert_message_with_usage(id, msg.role, &msg.content, now(), msg.usage.as_ref())
+        .await?;
+    Ok(json_response(201, &message))
+}
+
+/// Resolve a connection's context window: the connection's configured value,
+/// else provider discovery. A provider error surfaces as `null`, not a 5xx,
+/// so an unreachable runtime doesn't raise a banner.
+pub async fn model_context(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    let query = req.uri().query().unwrap_or_default();
+    let connection_id = query_param(query, "connection_id")
+        .and_then(|s| s.parse::<i64>().ok())
+        .ok_or_else(|| ApiError::bad_request("missing ?connection_id=<id>"))?;
+    let model = query_param(query, "model").map(urldecode);
+    let connection = state.store.get_connection(connection_id).await?;
+    let limit = if let Some(n) = connection.context_limit {
+        Some(n)
+    } else {
+        let provider = Provider::for_connection(&connection, SpinHttpClient);
+        provider
+            .context_limit(model.as_deref())
+            .await
+            .unwrap_or(None)
+    };
+    Ok(json_response(200, &json!({ "context_limit": limit })))
+}
+
+#[derive(Deserialize)]
+struct UpsertToolStepBody {
+    anchor_message_id: i64,
+    tool_call_id: String,
+    name: String,
+    summary: String,
+}
+
+pub async fn upsert_tool_step(
+    req: Request,
+    state: &AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
+    let id = session_id(path)?;
+    state.store.get_session(id, user_id).await?;
+    let body = read_body(req).await?;
+    let step: UpsertToolStepBody = parse_json(body)?;
+    state
+        .store
+        .upsert_tool_step(
+            id,
+            step.anchor_message_id,
+            &step.tool_call_id,
+            &step.name,
+            &step.summary,
+            now(),
+        )
+        .await?;
+    Ok(json_response(200, &json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct CompleteToolStepBody {
+    tool_call_id: String,
+    ok: bool,
+    result_summary: String,
+    #[serde(default)]
+    diff: Option<FileDiff>,
+}
+
+pub async fn complete_tool_step(
+    req: Request,
+    state: &AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
+    let id = session_id(path)?;
+    state.store.get_session(id, user_id).await?;
+    let body = read_body(req).await?;
+    let step: CompleteToolStepBody = parse_json(body)?;
+    state
+        .store
+        .complete_tool_step(
+            id,
+            &step.tool_call_id,
+            step.ok,
+            &step.result_summary,
+            step.diff.as_ref(),
+        )
+        .await?;
+    Ok(json_response(200, &json!({ "ok": true })))
+}
+
+pub async fn web_search(req: Request) -> Result<JsonResp, ApiError> {
+    let query = files_query(&req, "query")
+        .or_else(|| files_query(&req, "q"))
+        .ok_or_else(|| ApiError::bad_request("missing ?query= parameter"))?;
+    let limit = files_query(&req, "limit")
+        .and_then(|l| l.parse::<usize>().ok())
+        .unwrap_or(5);
+
+    match crate::web::search_web_internal(&query, limit).await {
+        Ok(results) => Ok(json_response(200, &results)),
+        Err(e) => Err(ApiError::internal(format!("web search failed: {e}"))),
+    }
+}
+
+pub async fn web_fetch(req: Request) -> Result<JsonResp, ApiError> {
+    let url =
+        files_query(&req, "url").ok_or_else(|| ApiError::bad_request("missing ?url= parameter"))?;
+
+    match crate::web::fetch_page_internal(&url).await {
+        Ok(content) => Ok(json_response(
+            200,
+            &serde_json::json!({
+                "url": url,
+                "content": content,
+            }),
+        )),
+        Err(e) => Err(ApiError::bad_request(format!("web fetch failed: {e}"))),
+    }
 }
 
 /// Minimal `key=value&...` query-string lookup (avoids a dependency).

@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, NewConnection, NewProject,
-    Project, ProviderKind, Role, SystemPrompt, ToolStep, User, UserRole, WorkspaceMode,
+    Project, ProviderKind, Role, SystemPrompt, ToolStep, TurnTelemetry, User, UserRole,
+    WorkspaceMode,
 };
 
 use crate::db::{Db, DbValue, QueryRow};
@@ -192,13 +193,71 @@ impl<D: Db> Store<D> {
         Ok(map)
     }
 
+    // -- user settings -----------------------------------------------------
+
+    pub async fn get_user_setting(
+        &self,
+        user_id: i64,
+        key: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT value FROM user_settings WHERE user_id = ? AND key = ?",
+                &[DbValue::Int(user_id), DbValue::Text(key.into())],
+            )
+            .await?;
+        Ok(res
+            .rows
+            .first()
+            .and_then(|r| r.get_text(0).ok().map(str::to_string)))
+    }
+
+    pub async fn set_user_setting(
+        &self,
+        user_id: i64,
+        key: &str,
+        value: &str,
+    ) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)
+                 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
+                &[
+                    DbValue::Int(user_id),
+                    DbValue::Text(key.into()),
+                    DbValue::Text(value.into()),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn all_user_settings(
+        &self,
+        user_id: i64,
+    ) -> Result<BTreeMap<String, String>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT key, value FROM user_settings WHERE user_id = ? ORDER BY key",
+                &[DbValue::Int(user_id)],
+            )
+            .await?;
+        let mut map = BTreeMap::new();
+        for row in &res.rows {
+            map.insert(row.get_text(0)?.to_string(), row.get_text(1)?.to_string());
+        }
+        Ok(map)
+    }
+
     // -- connections -------------------------------------------------------
 
     pub async fn list_connections(&self) -> Result<Vec<Connection>, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, kind, base_url, model, enabled
+                "SELECT id, name, kind, base_url, model, enabled, context_limit
                  FROM connections ORDER BY id",
                 &[],
             )
@@ -210,7 +269,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, kind, base_url, model, enabled
+                "SELECT id, name, kind, base_url, model, enabled, context_limit
                  FROM connections WHERE id = ?",
                 &[DbValue::Int(id)],
             )
@@ -226,7 +285,8 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "INSERT INTO connections (name, kind, base_url, model) VALUES (?, ?, ?, ?)",
+                "INSERT INTO connections (name, kind, base_url, model, context_limit)
+                 VALUES (?, ?, ?, ?, ?)",
                 &[
                     DbValue::Text(new.name.clone()),
                     DbValue::Text(new.kind.as_str().into()),
@@ -234,6 +294,9 @@ impl<D: Db> Store<D> {
                     new.model
                         .as_ref()
                         .map(|m| DbValue::Text(m.clone()))
+                        .unwrap_or(DbValue::Null),
+                    new.context_limit
+                        .map(|n| DbValue::Int(n as i64))
                         .unwrap_or(DbValue::Null),
                 ],
             )
@@ -246,7 +309,7 @@ impl<D: Db> Store<D> {
             .db
             .execute(
                 "UPDATE connections
-                 SET name = ?, kind = ?, base_url = ?, model = ?, enabled = ?
+                 SET name = ?, kind = ?, base_url = ?, model = ?, enabled = ?, context_limit = ?
                  WHERE id = ?",
                 &[
                     DbValue::Text(conn.name.clone()),
@@ -257,6 +320,9 @@ impl<D: Db> Store<D> {
                         .map(|m| DbValue::Text(m.clone()))
                         .unwrap_or(DbValue::Null),
                     DbValue::Int(conn.enabled as i64),
+                    conn.context_limit
+                        .map(|n| DbValue::Int(n as i64))
+                        .unwrap_or(DbValue::Null),
                     DbValue::Int(conn.id),
                 ],
             )
@@ -637,7 +703,8 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT id, session_id, role, content, created_at
+                "SELECT id, session_id, role, content, created_at,
+                        prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated
                  FROM messages WHERE session_id = ? ORDER BY id",
                 &[DbValue::Int(session_id)],
             )
@@ -652,16 +719,44 @@ impl<D: Db> Store<D> {
         content: &str,
         created_at: i64,
     ) -> Result<ChatMessage, StorageError> {
+        self.insert_message_with_usage(session_id, role, content, created_at, None)
+            .await
+    }
+
+    /// Insert a message, persisting the model call's usage alongside it (or
+    /// NULLs when `usage` is `None`).
+    pub async fn insert_message_with_usage(
+        &self,
+        session_id: i64,
+        role: Role,
+        content: &str,
+        created_at: i64,
+        usage: Option<&TurnTelemetry>,
+    ) -> Result<ChatMessage, StorageError> {
         let res = self
             .db
             .execute(
-                "INSERT INTO messages (session_id, role, content, created_at)
-                 VALUES (?, ?, ?, ?)",
+                "INSERT INTO messages
+                     (session_id, role, content, created_at,
+                      prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 &[
                     DbValue::Int(session_id),
                     DbValue::Text(role.as_str().into()),
                     DbValue::Text(content.into()),
                     DbValue::Int(created_at),
+                    usage
+                        .map(|u| DbValue::Int(u.prompt_tokens as i64))
+                        .unwrap_or(DbValue::Null),
+                    usage
+                        .map(|u| DbValue::Int(u.completion_tokens as i64))
+                        .unwrap_or(DbValue::Null),
+                    usage
+                        .map(|u| DbValue::Int(u.eval_duration_ms as i64))
+                        .unwrap_or(DbValue::Null),
+                    usage
+                        .map(|u| DbValue::Int(u.estimated as i64))
+                        .unwrap_or(DbValue::Null),
                 ],
             )
             .await?;
@@ -673,6 +768,7 @@ impl<D: Db> Store<D> {
             created_at,
             tool_calls: None,
             tool_call_id: None,
+            usage: usage.copied(),
         })
     }
 
@@ -897,6 +993,7 @@ fn connection_from_row(row: &QueryRow) -> Result<Connection, StorageError> {
         base_url: row.get_text(3)?.to_string(),
         model: row.get_text_opt(4).map(str::to_string),
         enabled: row.get_int(5)? != 0,
+        context_limit: row.get_int_opt(6).filter(|&n| n > 0).map(|n| n as usize),
     })
 }
 
@@ -957,6 +1054,18 @@ fn user_from_row(row: &QueryRow) -> Result<UserRecord, StorageError> {
 
 fn message_from_row(row: &QueryRow) -> Result<ChatMessage, StorageError> {
     let role = row.get_text(2)?;
+    let prompt_tokens = row.get_int_opt(5);
+    let completion_tokens = row.get_int_opt(6);
+    let usage = if prompt_tokens.is_some() || completion_tokens.is_some() {
+        Some(TurnTelemetry {
+            prompt_tokens: prompt_tokens.unwrap_or(0) as usize,
+            completion_tokens: completion_tokens.unwrap_or(0) as usize,
+            eval_duration_ms: row.get_int_opt(7).unwrap_or(0) as u64,
+            estimated: row.get_int_opt(8).map(|v| v != 0).unwrap_or(false),
+        })
+    } else {
+        None
+    };
     Ok(ChatMessage {
         id: row.get_int(0)?,
         session_id: row.get_int(1)?,
@@ -966,6 +1075,7 @@ fn message_from_row(row: &QueryRow) -> Result<ChatMessage, StorageError> {
         created_at: row.get_int(4)?,
         tool_calls: None,
         tool_call_id: None,
+        usage,
     })
 }
 
@@ -1043,6 +1153,63 @@ mod tests {
     }
 
     #[test]
+    fn user_settings_roundtrip_and_scoping() {
+        let store = test_store();
+        let alice = test_user(&store, "alice", UserRole::Admin);
+        let bob = test_user(&store, "bob", UserRole::User);
+        block_on(async {
+            store
+                .set_user_setting(alice, "open_tabs", "[1, 2]")
+                .await
+                .unwrap();
+            store
+                .set_user_setting(alice, "active_project", "2")
+                .await
+                .unwrap();
+            store
+                .set_user_setting(bob, "open_tabs", "[3]")
+                .await
+                .unwrap();
+
+            assert_eq!(
+                store
+                    .get_user_setting(alice, "open_tabs")
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some("[1, 2]")
+            );
+            assert_eq!(
+                store
+                    .get_user_setting(alice, "active_project")
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some("2")
+            );
+            assert_eq!(
+                store
+                    .get_user_setting(bob, "open_tabs")
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some("[3]")
+            );
+            assert_eq!(
+                store.get_user_setting(bob, "active_project").await.unwrap(),
+                None
+            );
+
+            let alice_all = store.all_user_settings(alice).await.unwrap();
+            assert_eq!(alice_all.len(), 2);
+            assert_eq!(
+                alice_all.get("open_tabs").map(String::as_str),
+                Some("[1, 2]")
+            );
+        });
+    }
+
+    #[test]
     fn connection_crud() {
         let store = test_store();
         block_on(async {
@@ -1052,25 +1219,47 @@ mod tests {
                     kind: ProviderKind::Ollama,
                     base_url: "http://localhost:11434".into(),
                     model: Some("qwen2.5-coder:7b".into()),
+                    context_limit: Some(8192),
                 })
                 .await
                 .unwrap();
             assert!(conn.id > 0);
             assert!(conn.enabled);
             assert_eq!(conn.model.as_deref(), Some("qwen2.5-coder:7b"));
+            assert_eq!(conn.context_limit, Some(8192));
 
             let mut conn = store.get_connection(conn.id).await.unwrap();
+            assert_eq!(conn.context_limit, Some(8192));
             conn.name = "renamed".into();
             conn.enabled = false;
+            conn.context_limit = Some(32_768);
             store.update_connection(&conn).await.unwrap();
             let reloaded = store.get_connection(conn.id).await.unwrap();
             assert_eq!(reloaded.name, "renamed");
             assert!(!reloaded.enabled);
+            assert_eq!(reloaded.context_limit, Some(32_768));
 
             assert_eq!(store.list_connections().await.unwrap().len(), 1);
+            assert_eq!(
+                store.list_connections().await.unwrap()[0].context_limit,
+                Some(32_768)
+            );
 
-            store.delete_connection(conn.id).await.unwrap();
-            assert!(store.get_connection(conn.id).await.is_err());
+            // Clearing the field writes NULL, which round-trips as `None`.
+            let mut cleared = reloaded;
+            cleared.context_limit = None;
+            store.update_connection(&cleared).await.unwrap();
+            assert_eq!(
+                store
+                    .get_connection(cleared.id)
+                    .await
+                    .unwrap()
+                    .context_limit,
+                None
+            );
+
+            store.delete_connection(cleared.id).await.unwrap();
+            assert!(store.get_connection(cleared.id).await.is_err());
             assert!(store.list_connections().await.unwrap().is_empty());
         });
     }
@@ -1135,10 +1324,84 @@ mod tests {
             assert_eq!(messages.len(), 1);
             assert_eq!(messages[0].role, Role::User);
             assert_eq!(messages[0].content, "hello");
+            assert_eq!(messages[0].usage, None);
 
             store.delete_session(session.id, user_id).await.unwrap();
             assert!(store.get_session(session.id, user_id).await.is_err());
             assert!(store.list_messages(session.id).await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn message_usage_roundtrips_through_list_messages_and_conversation() {
+        let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            let session = store
+                .create_session("s", None, None, None, user_id, 1)
+                .await
+                .unwrap();
+            let usage = TurnTelemetry {
+                prompt_tokens: 120,
+                completion_tokens: 30,
+                eval_duration_ms: 900,
+                estimated: true,
+            };
+            store
+                .insert_message_with_usage(session.id, Role::User, "hi", 2, None)
+                .await
+                .unwrap();
+            let assistant = store
+                .insert_message_with_usage(session.id, Role::Assistant, "hello", 3, Some(&usage))
+                .await
+                .unwrap();
+            assert_eq!(assistant.usage, Some(usage));
+
+            let messages = store.list_messages(session.id).await.unwrap();
+            assert_eq!(messages[0].usage, None);
+            assert_eq!(messages[1].usage, Some(usage));
+
+            let conversation = store.list_conversation(session.id).await.unwrap();
+            let ConversationEntry::Message(last) = conversation.last().unwrap() else {
+                panic!("expected a message");
+            };
+            assert_eq!(last.usage, Some(usage));
+        });
+    }
+
+    #[test]
+    fn migrate_is_idempotent_and_adds_usage_and_context_limit_columns() {
+        let store = test_store();
+        block_on(async {
+            store.migrate().await.unwrap();
+
+            for column in [
+                "prompt_tokens",
+                "completion_tokens",
+                "eval_duration_ms",
+                "usage_estimated",
+            ] {
+                let res = store
+                    .db
+                    .execute(
+                        &format!(
+                            "SELECT 1 FROM pragma_table_info('messages') WHERE name = '{column}'"
+                        ),
+                        &[],
+                    )
+                    .await
+                    .unwrap();
+                assert!(!res.rows.is_empty(), "missing messages.{column}");
+            }
+            let res = store
+                .db
+                .execute(
+                    "SELECT 1 FROM pragma_table_info('connections') WHERE name = 'context_limit'",
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(!res.rows.is_empty(), "missing connections.context_limit");
         });
     }
 
@@ -1279,6 +1542,7 @@ mod tests {
                     kind: ProviderKind::LlamaCpp,
                     base_url: "http://localhost:8080".into(),
                     model: None,
+                    context_limit: None,
                 })
                 .await
                 .unwrap();
@@ -1378,6 +1642,78 @@ mod tests {
                 .unwrap();
             assert_ne!(pathless.id, local.id);
             assert_eq!(store.list_projects(user_id).await.unwrap().len(), 3);
+        });
+    }
+
+    #[test]
+    fn test_migration_dedups_existing_projects() {
+        let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            // Directly insert two projects with the exact same path
+            store.db.execute(
+                "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    DbValue::Text("dup1".into()),
+                    DbValue::Text("remote".into()),
+                    DbValue::Text("repos/dup".into()),
+                    DbValue::Int(user_id),
+                    DbValue::Int(100),
+                ],
+            ).await.unwrap();
+            let p1_id = store
+                .db
+                .execute("SELECT last_insert_rowid()", &[])
+                .await
+                .unwrap()
+                .rows[0]
+                .get_int(0)
+                .unwrap();
+
+            store.db.execute(
+                "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    DbValue::Text("dup2".into()),
+                    DbValue::Text("remote".into()),
+                    DbValue::Text("repos/dup".into()),
+                    DbValue::Int(user_id),
+                    DbValue::Int(200),
+                ],
+            ).await.unwrap();
+            let p2_id = store
+                .db
+                .execute("SELECT last_insert_rowid()", &[])
+                .await
+                .unwrap()
+                .rows[0]
+                .get_int(0)
+                .unwrap();
+
+            // Insert a session on p2
+            store.db.execute(
+                "INSERT INTO sessions (name, project_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+                &[
+                    DbValue::Text("session-on-dup".into()),
+                    DbValue::Int(p2_id),
+                    DbValue::Int(user_id),
+                    DbValue::Int(250),
+                ],
+            ).await.unwrap();
+
+            assert_eq!(store.list_projects(user_id).await.unwrap().len(), 2);
+
+            // Run migration apply
+            crate::migrations::apply(&store.db).await.unwrap();
+
+            // Now there should be only 1 project
+            let projs = store.list_projects(user_id).await.unwrap();
+            assert_eq!(projs.len(), 1);
+            assert_eq!(projs[0].id, p1_id);
+
+            // And the session on p2 was reassigned to p1
+            let sessions = store.list_sessions(user_id).await.unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].project_id, Some(p1_id));
         });
     }
 

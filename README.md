@@ -1,34 +1,68 @@
 # Open WebIDE
 
 A WebAssembly-based IDE for working with local-LLM coding agents. Think
-Open WebUI, but for agentic coding — and the whole stack (frontend *and*
-backend) runs on WebAssembly.
+**Open WebUI, but for agentic coding** — and the whole stack (frontend *and*
+backend) runs on WebAssembly with zero client install.
 
 - **Frontend:** Rust + [Leptos](https://leptos.dev) compiled to WASM, built with [Trunk](https://trunkrs.dev)
-- **Backend:** a [Spin](https://spinframework.dev) component (Rust → `wasm32-wasip2`) exposing a small REST API
-- **Persistence:** SQLite via Spin's `sqlite` capability (file-backed, like Open WebUI)
-- **LLM providers:** Ollama and llama.cpp behind a common provider interface
+- **Backend:** a [Spin](https://spinframework.dev) component (Rust → `wasm32-wasip2`) exposing a REST & SSE API
+- **Persistence:** SQLite via Spin's `sqlite` capability (file-backed, single-volume)
+- **LLM providers:** Ollama and llama.cpp behind a common OpenAI-compatible provider interface
+
+## Vision & Workflow
+
+Open WebIDE turns your workstation into a self-hosted agentic dev engine and
+any phone, tablet, or laptop into a seamless remote control:
+
+1. **Workstation as Engine, Mobile as Remote Control:**
+   Run Open WebIDE on your workstation alongside your local LLM (e.g.
+   `qwen2.5-coder` via Ollama) and your git repositories. Use it at your desk on
+   `http://localhost:3000`, or connect from your phone or tablet on the couch
+   via LAN or Tailscale (`http://workstation:3000`). Because chat sessions,
+   projects, and messages live in backend SQLite, your phone and desktop stay
+   100% in sync. Kick off a task at your desk, walk away, and monitor streaming
+   tool steps, review diffs, and approve changes from your phone.
+2. **Zero Client Footprint:**
+   No binaries, Daemons, or toolchains to install on your client device. Just a
+   clean browser tab that feels fast and responsive even on mobile devices.
+3. **100% WebAssembly:**
+   Pure Rust across the entire codebase. No Node.js runtime, no Python daemon,
+   no heavy container orchestration. Instant startup and an image under 50MB.
+4. **Dual Workspace Modes:**
+   - **Remote mode (Primary):** The workspace lives on the host machine
+     (your workstation, home lab, or server). Dynamic access to any repository
+     under your home directory with multi-device shared sessions out of the box.
+   - **Local mode:** The workspace lives on the browser's machine, accessed
+     directly via the File System Access API (Chromium). Keep client repositories
+     strictly on your laptop's local SSD without mounting them to the host.
+5. **Agentic Coding with Safety First:**
+   The model inspects code, calls workspace-confined tools, and presents
+   syntax-highlighted diffs with human-in-the-loop permission gates and
+   accept/reject controls.
 
 ## Status
 
-Chat sessions and both workspace modes are in: multi-turn conversations
-stream token-by-token from the backend and persist across reloads, and you
-can open a folder — on the machine running Spin (remote) or in the browser
-via the File System Access API (local) — browse it, and create/edit/save
-files, with several projects open in tabs at once.
-
 Working:
-- Repo layout and workspace wiring
-- Domain types (`crates/core`)
-- Provider interface with Ollama / llama.cpp implementations (`crates/llm`), tested against a fake HTTP client
-- SQLite-backed storage with migrations and typed repositories (`crates/storage`), tested natively with rusqlite
-- Backend REST API: health, connections CRUD, settings, system prompts, models, chat, sessions, message streaming (SSE), projects, and remote-mode file access (list/read/write/create/search)
-- Frontend: top bar with live backend health, sidebar (projects with a remote/local mode picker, sessions: new/switch/rename/delete, connections), file tree explorer (browse, create file/folder, search), code editor with save, multi-project tabs (open/switch/close), chat pane with markdown rendering + streaming, input, send, stop, status bar
-- Local workspace mode: open a folder in the browser via the File System Access API, with the directory handle persisted in IndexedDB and permission re-requested on reload
-- CI: fmt, clippy, native tests, WASM builds, Trunk build
+- **Agentic coding loop (`crates/agent`):** Model → tool calls (`read_file`, `write_file`, `list_dir`, `search`, `run_command`, `git_status`/`git_diff`/`git_commit`/`git_branch`) → execute → review cycle with turn and tool call budgets
+- **Permission handshake & cancellation:** Gated tool approval before destructive file writes and shell commands, and server-side run cancellation
+- **Core IDE surface:**
+  - In-browser code editor with a pure-Rust syntax-highlighter overlay (16 languages; zero JS dependencies), cursor/selection tracking, and diff viewing against Git HEAD
+  - Diff-first file viewer with toggleable display modes: inline diff, side-by-side diff, updated content, and markdown/image preview
+  - Accept/reject controls for agent file modifications
+  - Multi-project tabs (Rider-style) with per-project state preservation
+- **TUI-driven chat surface:** a terminal-native stream layout, slash commands (`/model`, `/tokens`, `/clear`, `/test`, `/diff`, `/commit`, `/checkout`, `/branch`, `/sync`), active-editor-context injection, and a statusline with live token/speed telemetry and a context-window gauge, backed by real per-call provider usage and an optional per-connection **context limit** (sent to Ollama as `options.num_ctx`)
+- **Virtual File System (`Vfs`):** one shared abstraction over Remote (host filesystem) and Local (browser File System Access API) workspaces, including workspace-wide search, live web search, and a documentation-page reader
+- **WebSocket terminal bridge:** a native `openwebide-bridge` daemon giving the UI an interactive terminal and the agent a `run_command` tool, plus host Git operations against the real repository
+- **Git integration:** branch/ahead-behind status bar, file tree status badges, and diff/branch/commit/checkout/sync
+- **Both workspace modes:** Remote host mounts via Spin filesystem preopens, and Local browser mode via the File System Access API (persisted via IndexedDB)
+- **Local user accounts:** Self-hosted user registration and login with argon2id password hashing, session tokens, and user-scoped data
+- **Custom dialogs & remote file browser:** Themed confirmation, prompt, and remote host file browser modals replacing browser-native dialogs
+- **Single-container deployment:** Multi-stage Dockerfile and docker-compose packaging frontend, backend, and SQLite into one image
 
-Not yet:
-- Agentic coding (tool calls + agent loop)
+See [docs/roadmap.md](docs/roadmap.md) for what's in flight and queued up next
+(security/bridge hardening and agent streaming now; code intelligence,
+approval modes, and a secondary fast model next), and
+[CHANGELOG.md](CHANGELOG.md) for the full list of finished work.
 
 ## Prerequisites
 
@@ -194,11 +228,13 @@ crates/storage    Db abstraction, migrations, Store repositories
 backend           Spin HTTP component (REST API)
 frontend          Leptos WASM app (Trunk)
 docs/architecture.md   design notes
-docs/roadmap.md        phase-by-phase plan
+docs/roadmap.md        what's left (Now / Next / Later)
+CHANGELOG.md           what's already shipped
 ```
 
-See [docs/architecture.md](docs/architecture.md) for the architecture and
-[docs/roadmap.md](docs/roadmap.md) for the plan.
+See [docs/architecture.md](docs/architecture.md) for the architecture,
+[docs/roadmap.md](docs/roadmap.md) for what's left, and
+[CHANGELOG.md](CHANGELOG.md) for what's already shipped.
 
 ## License
 

@@ -55,15 +55,19 @@ pub fn TabBar(
                                         "tab".to_string()
                                     }
                                 }
+                                on:click=move |_| on_select.run(id)
                             >
-                                <span class="tab-name" on:click=move |_| on_select.run(id)>
+                                <span class="tab-name">
                                     {name}
                                 </span>
                                 <span class="tab-mode">{mode.as_str()}</span>
                                 <button
                                     class="icon-btn tab-close"
                                     title="Close project"
-                                    on:click=move |_| on_close.run(id)
+                                    on:click=move |e: web_sys::MouseEvent| {
+                                        e.stop_propagation();
+                                        on_close.run(id);
+                                    }
                                 >
                                     "✕"
                                 </button>
@@ -78,11 +82,23 @@ pub fn TabBar(
                     <For
                         each=move || {
                             let open = open_tabs.get();
-                            projects
-                                .get()
-                                .into_iter()
-                                .filter(|p| !open.iter().any(|t| t.id == p.id))
-                                .collect::<Vec<_>>()
+                            let open_keys: std::collections::HashSet<String> = open
+                                .iter()
+                                .map(project_workspace_key)
+                                .collect();
+                            let mut seen_keys = std::collections::HashSet::new();
+                            let mut recent = Vec::new();
+
+                            for p in projects.get().into_iter().rev() {
+                                let key = project_workspace_key(&p);
+                                if open.iter().any(|t| t.id == p.id) || open_keys.contains(&key) {
+                                    continue;
+                                }
+                                if seen_keys.insert(key) {
+                                    recent.push(p);
+                                }
+                            }
+                            recent
                         }
                         key=|p| p.id
                         children=move |p| {
@@ -116,10 +132,22 @@ pub fn TabBar(
                     <Show
                         when=move || {
                             let open = open_tabs.get();
-                            projects
-                                .get()
+                            let open_keys: std::collections::HashSet<String> = open
                                 .iter()
-                                .all(|p| open.iter().any(|t| t.id == p.id))
+                                .map(project_workspace_key)
+                                .collect();
+                            let mut seen_keys = std::collections::HashSet::new();
+                            let mut count = 0;
+                            for p in projects.get().into_iter().rev() {
+                                let key = project_workspace_key(&p);
+                                if open.iter().any(|t| t.id == p.id) || open_keys.contains(&key) {
+                                    continue;
+                                }
+                                if seen_keys.insert(key) {
+                                    count += 1;
+                                }
+                            }
+                            count == 0
                         }
                         fallback=|| ()
                     >
@@ -128,5 +156,14 @@ pub fn TabBar(
                 </div>
             </Show>
         </div>
+    }
+}
+
+fn project_workspace_key(p: &Project) -> String {
+    let mode_str = p.mode.as_str();
+    if let Some(path) = &p.path {
+        format!("{}:{}", mode_str, path.trim_matches('/'))
+    } else {
+        format!("{}:name:{}", mode_str, p.name.trim())
     }
 }

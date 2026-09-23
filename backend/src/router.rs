@@ -64,6 +64,10 @@ pub async fn route(req: Request) -> JsonResp {
             ("PUT", p) if is_project_files(p) => api::files_put(req, &state, p).await,
             ("POST", p) if is_project_files(p) => api::files_post(req, &state, p).await,
             ("DELETE", p) if is_project_files(p) => api::files_delete(req, &state, p).await,
+            ("GET", p) if is_project_git(p) => api::git_get(req, &state, p).await,
+            ("POST", p) if is_project_git(p) => api::git_post(req, &state, p).await,
+            ("GET", p) if p.starts_with("/api/git/") => api::git_get(req, &state, p).await,
+            ("POST", p) if p.starts_with("/api/git/") => api::git_post(req, &state, p).await,
             ("PUT", p) if p.starts_with("/api/projects/") => {
                 api::rename_project(req, &state, p).await
             }
@@ -92,8 +96,23 @@ pub async fn route(req: Request) -> JsonResp {
             ("POST", p) if p.starts_with("/api/sessions/") && p.ends_with("/cancel") => {
                 api::cancel_session(&state, p).await
             }
+            ("POST", p) if p.starts_with("/api/sessions/") && p.ends_with("/messages/persist") => {
+                api::persist_message(req, &state, p).await
+            }
+            ("POST", p) if p.starts_with("/api/sessions/") && p.ends_with("/tool-steps/upsert") => {
+                api::upsert_tool_step(req, &state, p).await
+            }
+            ("POST", p)
+                if p.starts_with("/api/sessions/") && p.ends_with("/tool-steps/complete") =>
+            {
+                api::complete_tool_step(req, &state, p).await
+            }
             ("GET", "/api/models") => api::list_models(req, &state).await,
+            ("GET", "/api/models/context") => api::model_context(req, &state).await,
             ("POST", "/api/chat") => api::chat(req, &state).await,
+            ("POST", "/api/chat-tools") => api::chat_tools(req, &state).await,
+            ("GET", "/api/web/search") => api::web_search(req).await,
+            ("GET", "/api/web/fetch") => api::web_fetch(req).await,
             _ => Err(ApiError::not_found(format!("no route for {method} {path}"))),
         };
 
@@ -111,6 +130,11 @@ fn is_project_files(p: &str) -> bool {
     p.starts_with("/api/projects/") && p.contains("/files")
 }
 
+/// Match the project git routes: `/api/projects/<id>/git/...`.
+fn is_project_git(p: &str) -> bool {
+    p.starts_with("/api/projects/") && p.contains("/git/")
+}
+
 /// Routes that run without a bearer token.
 fn is_public(path: &str) -> bool {
     matches!(
@@ -119,13 +143,27 @@ fn is_public(path: &str) -> bool {
     )
 }
 
-/// Extract the bearer token from the `Authorization` header, if present.
+/// Extract the bearer token from the `Authorization` header or `?token=` query param.
 fn bearer_token(req: &Request) -> Option<String> {
-    req.headers()
+    if let Some(token) = req
+        .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|v| v.trim().to_string())
+    {
+        return Some(token);
+    }
+    req.uri().query().and_then(|q| {
+        q.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            if k == "token" && !v.is_empty() {
+                Some(v.to_string())
+            } else {
+                None
+            }
+        })
+    })
 }
 
 fn preflight() -> JsonResp {

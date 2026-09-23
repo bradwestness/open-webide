@@ -1,12 +1,14 @@
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt, stream};
-use openwebide_core::{ChatRequest, ChatResponse, ModelInfo, ProviderKind, Role, ToolCall};
+use openwebide_core::{
+    ChatCompletion, ChatRequest, ChatResponse, ModelInfo, ProviderKind, Role, ToolCall,
+};
 use serde_json::{Value, json};
 
 use crate::{
-    HttpClient, LineStream, LlmProvider, ProviderError, StreamLine, chat_messages, stream_error,
-    tools_wire, url_for,
+    HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, UsageAcc,
+    chat_messages, clock_now, stream_error, tools_wire, url_for,
 };
 
 /// Provider for a [llama.cpp](https://github.com/ggml-org/llama.cpp) server
@@ -23,6 +25,35 @@ impl<C: HttpClient> LlamaCppProvider<C> {
             base_url: base_url.into(),
             model,
             http,
+        }
+    }
+}
+
+/// Read the usage/timing fields an OpenAI-compatible llama.cpp response
+/// reports and overwrite only the ones present.
+///
+/// `usage` is `null` on intermediate streamed chunks (ignored); the final
+/// chunk carries the real object. `timings.predicted_n` is used as the
+/// completion count only when `usage` is absent, since `usage.completion_tokens`
+/// is the authoritative count when both are present.
+fn usage_fields(value: &Value, acc: &mut UsageAcc) {
+    let usage = value.get("usage").filter(|u| !u.is_null());
+    if let Some(usage) = usage {
+        if let Some(n) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
+            acc.prompt = Some(n as usize);
+        }
+        if let Some(n) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
+            acc.completion = Some(n as usize);
+        }
+    }
+    if let Some(timings) = value.get("timings") {
+        if let Some(ms) = timings.get("predicted_ms").and_then(|v| v.as_f64()) {
+            acc.eval_ms = Some(ms.round() as u64);
+        }
+        if usage.is_none()
+            && let Some(n) = timings.get("predicted_n").and_then(|v| v.as_u64())
+        {
+            acc.completion = Some(n as usize);
         }
     }
 }
@@ -86,7 +117,7 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
     fn chat_stream(
         &self,
         request: &ChatRequest,
-    ) -> Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + 'static>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
         let model = match request.model.clone().or_else(|| self.model.clone()) {
             Some(model) => model,
             None => return Box::pin(stream::once(async { Err(ProviderError::NoModel) })),
@@ -95,30 +126,74 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
             "model": model,
             "messages": chat_messages(request),
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
         let url = url_for(&self.base_url, "/v1/chat/completions");
         let lines = LineStream::new(self.http.post_stream(&url, &body));
-        Box::pin(stream::unfold((lines, false), |state| async move {
-            let (mut lines, done) = state;
-            if done {
-                return None;
-            }
-            loop {
-                let line = lines.next().await?;
-                match line {
-                    Err(e) => return Some((Err(e), (lines, true))),
-                    Ok(line) => match parse_stream_line(&line) {
-                        Ok(StreamLine::Delta(delta)) => return Some((Ok(delta), (lines, false))),
-                        Ok(StreamLine::Done) => return None,
-                        Ok(StreamLine::Skip) => continue,
-                        Err(e) => return Some((Err(e), (lines, true))),
-                    },
+        let acc = UsageAcc::new(request);
+        Box::pin(stream::unfold(
+            (lines, acc, false, false),
+            |state| async move {
+                let (mut lines, mut acc, emitted_usage, done) = state;
+                if done {
+                    return None;
                 }
-            }
-        }))
+                loop {
+                    let Some(line) = lines.next().await else {
+                        if acc.ended.is_none() {
+                            acc.ended = clock_now();
+                        }
+                        if !emitted_usage {
+                            return Some((
+                                Ok(StreamChunk::Usage(acc.finish())),
+                                (lines, acc, true, true),
+                            ));
+                        }
+                        return None;
+                    };
+                    match line {
+                        Err(e) => return Some((Err(e), (lines, acc, emitted_usage, true))),
+                        Ok(line) => {
+                            let data = line.strip_prefix("data:").unwrap_or(&line).trim();
+                            if data != "[DONE]"
+                                && let Ok(parsed) = serde_json::from_str::<Value>(data)
+                            {
+                                usage_fields(&parsed, &mut acc);
+                            }
+                            match parse_stream_line(&line) {
+                                Ok(StreamLine::Delta(delta)) => {
+                                    if acc.started.is_none() {
+                                        acc.started = clock_now();
+                                    }
+                                    acc.text.push_str(&delta);
+                                    return Some((
+                                        Ok(StreamChunk::Delta(delta)),
+                                        (lines, acc, emitted_usage, false),
+                                    ));
+                                }
+                                Ok(StreamLine::Done) => {
+                                    acc.ended = clock_now();
+                                    if !emitted_usage {
+                                        return Some((
+                                            Ok(StreamChunk::Usage(acc.finish())),
+                                            (lines, acc, true, true),
+                                        ));
+                                    }
+                                    return None;
+                                }
+                                Ok(StreamLine::Skip) => continue,
+                                Err(e) => {
+                                    return Some((Err(e), (lines, acc, emitted_usage, true)));
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        ))
     }
 
-    async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatResponse, ProviderError> {
+    async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
         let model = request
             .model
             .clone()
@@ -130,10 +205,14 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
             "stream": false,
             "tools": tools_wire(&request.tools),
         });
+        let mut acc = UsageAcc::new(request);
+        acc.started = clock_now();
         let value = self
             .http
             .post_json(&url_for(&self.base_url, "/v1/chat/completions"), &body)
             .await?;
+        acc.ended = clock_now();
+        usage_fields(&value, &mut acc);
         let message = value
             .get("choices")
             .and_then(|c| c.as_array())
@@ -169,20 +248,45 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
+                acc.text.push_str(&name);
+                acc.text.push_str(&arguments);
                 tool_calls.push(ToolCall {
                     id,
                     name,
                     arguments,
                 });
             }
-            return Ok(ChatResponse::ToolCalls(tool_calls));
+            return Ok(ChatCompletion {
+                response: ChatResponse::ToolCalls(tool_calls),
+                usage: Some(acc.finish()),
+            });
         }
         let content = message
             .get("content")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        Ok(ChatResponse::Text(content))
+        acc.text.push_str(&content);
+        Ok(ChatCompletion {
+            response: ChatResponse::Text(content),
+            usage: Some(acc.finish()),
+        })
+    }
+
+    async fn context_limit(&self, _model: Option<&str>) -> Result<Option<usize>, ProviderError> {
+        // `llama-server`'s context size is fixed at startup (`-c`/`--ctx-size`)
+        // and not tied to a model name, so there is nothing to resolve here.
+        // Any error, including a 404 from a non-llama.cpp OpenAI-compatible
+        // server, is treated as "no limit reported" rather than a hard error,
+        // so the UI falls back quietly.
+        match self.http.get_json(&url_for(&self.base_url, "/props")).await {
+            Ok(value) => Ok(value
+                .get("default_generation_settings")
+                .and_then(|s| s.get("n_ctx"))
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)),
+            Err(_) => Ok(None),
+        }
     }
 }
 
@@ -271,7 +375,7 @@ mod tests {
     use super::*;
     use crate::fake::{FakeHttpClient, FakeState};
     use futures::executor::block_on;
-    use openwebide_core::{ChatMessage, Role, ToolDefinition};
+    use openwebide_core::{ChatMessage, Role, ToolDefinition, TurnTelemetry};
 
     const BASE: &str = "http://localhost:8080";
 
@@ -292,6 +396,7 @@ mod tests {
             created_at: 0,
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
         }
     }
 
@@ -405,6 +510,27 @@ mod tests {
         ));
     }
 
+    /// Run a stream to completion, splitting deltas from the (at most one)
+    /// usage chunk.
+    fn run_stream(
+        provider: &LlamaCppProvider<FakeHttpClient>,
+        req: &ChatRequest,
+    ) -> (Vec<String>, Vec<TurnTelemetry>, Vec<ProviderError>) {
+        let items: Vec<Result<StreamChunk, ProviderError>> =
+            block_on(provider.chat_stream(req).collect());
+        let mut deltas = Vec::new();
+        let mut usages = Vec::new();
+        let mut errors = Vec::new();
+        for item in items {
+            match item {
+                Ok(StreamChunk::Delta(d)) => deltas.push(d),
+                Ok(StreamChunk::Usage(u)) => usages.push(u),
+                Err(e) => errors.push(e),
+            }
+        }
+        (deltas, usages, errors)
+    }
+
     #[test]
     fn chat_stream_yields_deltas_until_done() {
         let (provider, state) = provider(FakeHttpClient::new());
@@ -415,20 +541,14 @@ mod tests {
             "data: [DONE]\n",
         ]);
 
-        let deltas: Vec<String> = block_on(async {
-            provider
-                .chat_stream(&request(None, None))
-                .collect::<Vec<_>>()
-                .await
-        })
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+        let (deltas, _usages, errors) = run_stream(&provider, &request(None, None));
 
         assert_eq!(deltas, vec!["Hel", "lo"]);
+        assert!(errors.is_empty());
         let calls = state.calls.lock().unwrap();
         let body = calls[0].body.as_ref().unwrap();
         assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"], json!({ "include_usage": true }));
     }
 
     #[test]
@@ -441,17 +561,28 @@ mod tests {
             "data: [DONE]\n",
         ]);
 
-        let deltas: Vec<String> = block_on(async {
-            provider
-                .chat_stream(&request(None, None))
-                .collect::<Vec<_>>()
-                .await
-        })
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+        let (deltas, _usages, _errors) = run_stream(&provider, &request(None, None));
 
         assert_eq!(deltas, vec!["a"]);
+    }
+
+    #[test]
+    fn chat_stream_intermediate_null_usage_is_ignored() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}],\"usage\":null}\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2},\"timings\":{\"predicted_ms\":150.4}}\n",
+            "data: [DONE]\n",
+        ]);
+
+        let (deltas, usages, _errors) = run_stream(&provider, &request(None, None));
+
+        assert_eq!(deltas, vec!["a"]);
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].prompt_tokens, 10);
+        assert_eq!(usages[0].completion_tokens, 2);
+        assert_eq!(usages[0].eval_duration_ms, 150);
+        assert!(!usages[0].estimated);
     }
 
     #[test]
@@ -462,16 +593,12 @@ mod tests {
             "data: {\"error\":{\"message\":\"context length exceeded\"}}\n",
         ]);
 
-        let result: Vec<Result<String, _>> =
-            block_on(provider.chat_stream(&request(None, None)).collect());
+        let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
 
-        let items: Vec<_> = result.into_iter().collect();
-        assert_eq!(items.len(), 2);
-        assert!(matches!(items[0], Ok(ref s) if s == "a"));
-        assert!(matches!(
-            items[1],
-            Err(ProviderError::Http(ref msg)) if msg.contains("context length")
-        ));
+        assert_eq!(deltas, vec!["a"]);
+        assert!(usages.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ProviderError::Http(msg) if msg.contains("context length")));
     }
 
     #[test]
@@ -480,13 +607,9 @@ mod tests {
         let state = http.state();
         let provider = LlamaCppProvider::new(BASE, None, http);
 
-        let result: Vec<Result<String, _>> =
-            block_on(provider.chat_stream(&request(None, None)).collect());
+        let (_deltas, _usages, errors) = run_stream(&provider, &request(None, None));
 
-        assert!(matches!(
-            result.into_iter().next().unwrap(),
-            Err(ProviderError::NoModel)
-        ));
+        assert!(matches!(errors[0], ProviderError::NoModel));
         assert!(state.calls.lock().unwrap().is_empty());
     }
 
@@ -506,22 +629,29 @@ mod tests {
                         }
                     ]
                 }
-            } ]
+            } ],
+            "usage": { "prompt_tokens": 40, "completion_tokens": 8 },
+            "timings": { "predicted_ms": 200.0 }
         })));
 
         let mut req = request(None, None);
         req.tools = vec![read_file_tool()];
-        let response = block_on(provider.chat_tools(&req)).unwrap();
+        let completion = block_on(provider.chat_tools(&req)).unwrap();
 
         // The provider-supplied id and string arguments are preserved as-is.
         assert_eq!(
-            response,
+            completion.response,
             ChatResponse::ToolCalls(vec![ToolCall {
                 id: "call_abc".into(),
                 name: "read_file".into(),
                 arguments: r#"{"path":"src/main.rs"}"#.into(),
             }])
         );
+        let usage = completion.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 40);
+        assert_eq!(usage.completion_tokens, 8);
+        assert_eq!(usage.eval_duration_ms, 200);
+        assert!(!usage.estimated);
         let calls = state.calls.lock().unwrap();
         let body = calls[0].body.as_ref().unwrap();
         assert_eq!(body["stream"], false);
@@ -535,8 +665,10 @@ mod tests {
             "choices": [ { "message": { "role": "assistant", "content": "all done" } } ]
         })));
 
-        let response = block_on(provider.chat_tools(&request(None, None))).unwrap();
-        assert_eq!(response, ChatResponse::Text("all done".into()));
+        let completion = block_on(provider.chat_tools(&request(None, None))).unwrap();
+        assert_eq!(completion.response, ChatResponse::Text("all done".into()));
+        // No `usage` on the response: the estimator filled the counts in.
+        assert!(completion.usage.unwrap().estimated);
     }
 
     #[test]
@@ -558,6 +690,7 @@ mod tests {
                 arguments: r#"{"path":"src/main.rs"}"#.into(),
             }]),
             tool_call_id: None,
+            usage: None,
         };
         let tool_result = ChatMessage {
             id: 3,
@@ -567,6 +700,7 @@ mod tests {
             created_at: 0,
             tool_calls: None,
             tool_call_id: Some("call_abc".into()),
+            usage: None,
         };
         let req = ChatRequest {
             connection_id: 1,
@@ -613,5 +747,39 @@ mod tests {
             Err(ProviderError::NoModel)
         ));
         assert!(state.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn chat_tools_with_no_usage_estimates_non_zero_counts() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "choices": [ { "message": { "role": "assistant", "content": "a fairly long answer here" } } ]
+        })));
+
+        let completion = block_on(provider.chat_tools(&request(None, None))).unwrap();
+        let usage = completion.usage.unwrap();
+        assert!(usage.estimated);
+        assert!(usage.prompt_tokens > 0);
+        assert!(usage.completion_tokens > 0);
+    }
+
+    #[test]
+    fn context_limit_reads_props() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "default_generation_settings": { "n_ctx": 4096 }
+        })));
+
+        let limit = block_on(provider.context_limit(None)).unwrap();
+        assert_eq!(limit, Some(4096));
+        assert_eq!(state.calls.lock().unwrap()[0].url, format!("{BASE}/props"));
+    }
+
+    #[test]
+    fn context_limit_maps_http_error_to_none() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Err(ProviderError::Http("404 Not Found".into())));
+
+        assert_eq!(block_on(provider.context_limit(None)).unwrap(), None);
     }
 }

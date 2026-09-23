@@ -1,10 +1,11 @@
 use std::pin::Pin;
 
 use futures::Stream;
-use openwebide_core::{ChatRequest, ChatResponse, Connection, ModelInfo, ProviderKind};
+use openwebide_core::{ChatCompletion, ChatRequest, Connection, ModelInfo, ProviderKind};
 
 use crate::{
-    HttpClient, LlmProvider, ProviderError, llamacpp::LlamaCppProvider, ollama::OllamaProvider,
+    HttpClient, LlmProvider, ProviderError, StreamChunk, llamacpp::LlamaCppProvider,
+    ollama::OllamaProvider,
 };
 
 /// The concrete provider set, selected by the connection's kind.
@@ -19,11 +20,13 @@ pub enum Provider<C: HttpClient> {
 impl<C: HttpClient> Provider<C> {
     pub fn for_connection(conn: &Connection, http: C) -> Self {
         match conn.kind {
-            ProviderKind::Ollama => Self::Ollama(OllamaProvider::new(
-                conn.base_url.clone(),
-                conn.model.clone(),
-                http,
-            )),
+            ProviderKind::Ollama => Self::Ollama(
+                OllamaProvider::new(conn.base_url.clone(), conn.model.clone(), http)
+                    .with_num_ctx(conn.context_limit),
+            ),
+            // llama.cpp has no per-request context size: `n_ctx` is fixed
+            // when `llama-server` starts, so a configured limit only drives
+            // the gauge, not the runtime window.
             ProviderKind::LlamaCpp => Self::LlamaCpp(LlamaCppProvider::new(
                 conn.base_url.clone(),
                 conn.model.clone(),
@@ -58,17 +61,24 @@ impl<C: HttpClient> LlmProvider for Provider<C> {
     fn chat_stream(
         &self,
         request: &ChatRequest,
-    ) -> Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + 'static>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
         match self {
             Self::Ollama(p) => p.chat_stream(request),
             Self::LlamaCpp(p) => p.chat_stream(request),
         }
     }
 
-    async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatResponse, ProviderError> {
+    async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
         match self {
             Self::Ollama(p) => p.chat_tools(request).await,
             Self::LlamaCpp(p) => p.chat_tools(request).await,
+        }
+    }
+
+    async fn context_limit(&self, model: Option<&str>) -> Result<Option<usize>, ProviderError> {
+        match self {
+            Self::Ollama(p) => p.context_limit(model).await,
+            Self::LlamaCpp(p) => p.context_limit(model).await,
         }
     }
 }

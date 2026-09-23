@@ -3,20 +3,33 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, FileEntry, ModelInfo,
-    Project, ProviderKind, Role, SearchHit, SystemPrompt, User, WorkspaceMode,
+    ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, FileEntry, FileKind,
+    GitCheckoutRequest, GitCommitRequest, GitRepoStatus, GitSyncRequest, ModelInfo, Project,
+    ProviderKind, Role, SearchHit, SystemPrompt, User, WorkspaceMode,
+    tui::{DEFAULT_CONTEXT_LIMIT, EditorContext, SelectionContext, SessionTelemetry, SlashCommand},
 };
+use web_sys::wasm_bindgen::JsCast;
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
 use crate::api::{BackendApi, HealthState, SseEvent};
 use crate::components::{
     AuthGate, ChatPane, ConfirmDialog, ConfirmRequest, ConversationItem, Editor, FileBrowser,
-    FileTree, PromptDialog, PromptRequest, Settings, Sidebar, StatusBar, TabBar, ToolStepResult,
-    TopBar, stopped_marker,
+    FileTree, PromptDialog, PromptRequest, Settings, Sidebar, StatusBar, TabBar, TerminalPane,
+    ToolStepResult, TopBar, stopped_marker,
 };
 use crate::idb;
+use crate::local_agent;
 use crate::local_fs;
 use crate::workspace::Workspace;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum ActiveResizer {
+    #[default]
+    None,
+    Sidebar,
+    Tree,
+    Chat,
+}
 
 /// Per-project workspace state, preserved across tab switches so each project
 /// keeps its own open file, tree expansion, and active chat session.
@@ -31,6 +44,10 @@ struct ProjectWorkspace {
     active_session: Option<i64>,
     /// Pending agent edits awaiting accept/reject, keyed by file path.
     pending_edits: HashMap<String, FileDiff>,
+    /// Git repository telemetry status for status bar and file badges.
+    git_status: Option<GitRepoStatus>,
+    /// Active media/preview URL for images/media.
+    media_url: Option<String>,
 }
 
 /// The directory containing `path` ("" for a top-level path).
@@ -58,6 +75,62 @@ fn write_theme_to_storage(theme: &str) {
     }
 }
 
+/// Capture the active editor file, cursor, and any selected line range.
+fn capture_active_editor(open_file: Option<String>, content: &str) -> Option<EditorContext> {
+    let file_path = open_file?;
+    let window = web_sys::window()?;
+    let doc = window.document()?;
+    let ta_el = doc.query_selector(".editor-textarea").ok()??;
+    let ta = ta_el.dyn_into::<web_sys::HtmlTextAreaElement>().ok()?;
+
+    let sel_start = ta.selection_start().ok().flatten().unwrap_or(0) as usize;
+    let sel_end = ta.selection_end().ok().flatten().unwrap_or(0) as usize;
+
+    let safe_start = sel_start.min(content.len());
+    let text_before_start = &content[..safe_start];
+    let start_line = text_before_start.matches('\n').count() + 1;
+    let last_newline = text_before_start.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let cursor_col = safe_start.saturating_sub(last_newline) + 1;
+
+    let selection = if sel_end > sel_start {
+        let safe_end = sel_end.min(content.len());
+        let text_before_end = &content[..safe_end];
+        let end_line = text_before_end.matches('\n').count() + 1;
+        let raw_selection = &content[safe_start..safe_end];
+        let line_count = raw_selection.lines().count();
+
+        let final_text = if line_count > 100 || raw_selection.len() > 8192 {
+            let mut truncated = raw_selection
+                .lines()
+                .take(100)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if truncated.len() > 8000 {
+                truncated.truncate(8000);
+            }
+            truncated.push_str("\n... [truncated: selection exceeds 100 lines / 8KB; use read_file with line offsets]");
+            truncated
+        } else {
+            raw_selection.to_string()
+        };
+
+        Some(SelectionContext {
+            start_line,
+            end_line,
+            text: final_text,
+        })
+    } else {
+        None
+    };
+
+    Some(EditorContext {
+        file_path,
+        cursor_line: start_line,
+        cursor_col,
+        selection,
+    })
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let api = BackendApi::from_location();
@@ -77,6 +150,13 @@ pub fn App() -> impl IntoView {
     let projects = RwSignal::new(Vec::<Project>::new());
     let open_tabs = RwSignal::new(Vec::<Project>::new());
     let active_project = RwSignal::new(Option::<i64>::None);
+    let projects_loaded = RwSignal::new(false);
+    let sidebar_width = RwSignal::new(240.0f64);
+    let tree_width = RwSignal::new(260.0f64);
+    let chat_width = RwSignal::new(420.0f64);
+    let active_resizer = RwSignal::new(ActiveResizer::None);
+    let resizer_start_x = RwSignal::new(0.0f64);
+    let resizer_start_w = RwSignal::new(0.0f64);
     let sessions = RwSignal::new(Vec::<ChatSession>::new());
     let active_session = RwSignal::new(Option::<i64>::None);
     let messages = RwSignal::new(Vec::<ConversationItem>::new());
@@ -90,6 +170,7 @@ pub fn App() -> impl IntoView {
     // session has chosen (None = the connection's default).
     let models = RwSignal::new(Vec::<ModelInfo>::new());
     let session_model = RwSignal::new(HashMap::<i64, Option<String>>::new());
+    let selected_model = RwSignal::new(Option::<String>::None);
 
     // -- active project's workspace state ----------------------------------
     let ws_entries = RwSignal::new(HashMap::<String, Vec<FileEntry>>::new());
@@ -97,16 +178,175 @@ pub fn App() -> impl IntoView {
     let ws_open_file = RwSignal::new(Option::<String>::None);
     let ws_content = RwSignal::new(String::new());
     let ws_dirty = RwSignal::new(false);
+    let ws_media_url = RwSignal::new(Option::<String>::None);
     let ws_search = RwSignal::new(Option::<Vec<SearchHit>>::None);
     let ws_pending_edits = RwSignal::new(HashMap::<String, FileDiff>::new());
     // The pending edit for the currently open file (drives the editor's diff
     // view), derived from the open file and the per-project pending edits.
     let pending_diff = RwSignal::new(Option::<FileDiff>::None);
+    // Git repository status for the active project.
+    let git_status = RwSignal::new(Option::<GitRepoStatus>::None);
     // Saved workspace state for every project that has (or had) a tab open.
     let saved = RwSignal::new(HashMap::<i64, ProjectWorkspace>::new());
     // Directory handles for local-mode projects, keyed by project id. Loaded
     // from IndexedDB on startup and when a local project is created.
     let local_handles = RwSignal::new(HashMap::<i64, FileSystemDirectoryHandle>::new());
+    let local_cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let local_permissions =
+        std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, bool>::new()));
+
+    // -- bottom dock terminal & TUI telemetry/context ----------------------
+    let show_terminal = RwSignal::new(false);
+    let on_toggle_terminal = move || show_terminal.update(|v| *v = !*v);
+
+    let active_editor_context = RwSignal::new(Option::<EditorContext>::None);
+    let session_telemetry = RwSignal::new(SessionTelemetry::default());
+    let always_approve_all = RwSignal::new(false);
+
+    let _ = leptos::prelude::window_event_listener(
+        leptos::ev::keydown,
+        move |ev: web_sys::KeyboardEvent| {
+            // Ctrl+` toggles terminal dock
+            if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "`" {
+                ev.prevent_default();
+                on_toggle_terminal();
+                return;
+            }
+
+            // Cmd+L / Ctrl+L: capture active editor context and focus prompt input
+            if (ev.ctrl_key() || ev.meta_key())
+                && (ev.key() == "l" || ev.key() == "L")
+                && let Some(ctx) = capture_active_editor(ws_open_file.get(), &ws_content.get())
+            {
+                ev.prevent_default();
+                active_editor_context.set(Some(ctx));
+                if let Some(doc) = web_sys::window().and_then(|w| w.document())
+                    && let Ok(Some(comp)) = doc.query_selector(".composer-input")
+                    && let Ok(el) = comp.dyn_into::<web_sys::HtmlElement>()
+                {
+                    let _ = el.focus();
+                }
+                return;
+            }
+
+            // Ctrl+K: cycle active focus between composer, editor, sidebar, and terminal
+            if (ev.ctrl_key() || ev.meta_key()) && (ev.key() == "k" || ev.key() == "K") {
+                ev.prevent_default();
+                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                    let active = doc.active_element();
+                    let is_in = |sel: &str| -> bool {
+                        if let (Some(a), Ok(Some(target))) =
+                            (active.as_ref(), doc.query_selector(sel))
+                        {
+                            a.is_same_node(Some(&target)) || target.contains(Some(a))
+                        } else {
+                            false
+                        }
+                    };
+
+                    if is_in(".composer-input") {
+                        if let Ok(Some(el)) = doc.query_selector(".editor-textarea")
+                            && let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>()
+                        {
+                            let _ = html_el.focus();
+                            return;
+                        }
+                    } else if is_in(".editor-textarea") {
+                        if let Ok(Some(el)) = doc.query_selector(".file-tree")
+                            && let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>()
+                        {
+                            let _ = html_el.focus();
+                            return;
+                        }
+                    } else if (is_in(".sidebar") || is_in(".file-tree"))
+                        && show_terminal.get()
+                        && let Ok(Some(el)) = doc.query_selector(".terminal-input, .terminal-pane")
+                        && let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>()
+                    {
+                        let _ = html_el.focus();
+                        return;
+                    }
+
+                    if let Ok(Some(el)) = doc.query_selector(".composer-input")
+                        && let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>()
+                    {
+                        let _ = html_el.focus();
+                    }
+                }
+            }
+        },
+    );
+
+    // Window-level pointer listeners for horizontal panel resizing
+    let _ = leptos::prelude::window_event_listener(
+        leptos::ev::pointermove,
+        move |ev: web_sys::PointerEvent| {
+            let active = active_resizer.get();
+            if active == ActiveResizer::None {
+                return;
+            }
+            let current_x = ev.client_x();
+            let start_x = resizer_start_x.get();
+            let start_w = resizer_start_w.get();
+
+            let total_w = web_sys::window()
+                .and_then(|w| w.inner_width().ok())
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1200.0);
+
+            match active {
+                ActiveResizer::Sidebar => {
+                    let dx = current_x - start_x;
+                    let mut new_w = (start_w + dx).clamp(140.0, 480.0);
+                    let max_allowed = total_w - tree_width.get() - chat_width.get() - 260.0;
+                    if new_w > max_allowed {
+                        new_w = max_allowed.max(140.0);
+                    }
+                    sidebar_width.set(new_w);
+                }
+                ActiveResizer::Tree => {
+                    let dx = current_x - start_x;
+                    let mut new_w = (start_w + dx).clamp(160.0, 650.0);
+                    let max_allowed = total_w - sidebar_width.get() - chat_width.get() - 260.0;
+                    if new_w > max_allowed {
+                        new_w = max_allowed.max(160.0);
+                    }
+                    tree_width.set(new_w);
+                }
+                ActiveResizer::Chat => {
+                    let dx = start_x - current_x;
+                    let mut new_w = (start_w + dx).clamp(260.0, 1000.0);
+                    let max_allowed = total_w - sidebar_width.get() - tree_width.get() - 260.0;
+                    if new_w > max_allowed {
+                        new_w = max_allowed.max(260.0);
+                    }
+                    chat_width.set(new_w);
+                }
+                ActiveResizer::None => {}
+            }
+        },
+    );
+
+    {
+        let api = api.clone();
+        let _ = leptos::prelude::window_event_listener(leptos::ev::pointerup, move |_| {
+            let active = active_resizer.get();
+            if active != ActiveResizer::None {
+                active_resizer.set(ActiveResizer::None);
+                let s_w = sidebar_width.get();
+                let t_w = tree_width.get();
+                let c_w = chat_width.get();
+                let api = api.clone();
+                spawn_local(async move {
+                    let _ = api
+                        .set_setting("panel_sidebar_width", &s_w.to_string())
+                        .await;
+                    let _ = api.set_setting("panel_tree_width", &t_w.to_string()).await;
+                    let _ = api.set_setting("panel_chat_width", &c_w.to_string()).await;
+                });
+            }
+        });
+    }
 
     // -- system prompts ----------------------------------------------------
     let system_prompts = RwSignal::new(Vec::<SystemPrompt>::new());
@@ -126,6 +366,7 @@ pub fn App() -> impl IntoView {
     let conn_kind = RwSignal::new(ProviderKind::Ollama);
     let conn_base_url = RwSignal::new(String::new());
     let conn_model = RwSignal::new(String::new());
+    let conn_context_limit = RwSignal::new(String::new());
 
     // -- settings ----------------------------------------------------------
     let show_settings = RwSignal::new(false);
@@ -162,6 +403,109 @@ pub fn App() -> impl IntoView {
     });
     let on_close_browser = Callback::new(move |_| {
         show_browser.set(false);
+    });
+
+    // -- git operations (Phase 13) -----------------------------------------
+    let refresh_git = Callback::new({
+        let api = api.clone();
+        move |()| {
+            let api = api.clone();
+            let pid = active_project.get();
+            spawn_local(async move {
+                if let Ok(st) = api.git_status(pid).await {
+                    git_status.set(Some(st));
+                }
+            });
+        }
+    });
+
+    let on_branch_click = Callback::new({
+        let api = api.clone();
+        move |()| {
+            let api = api.clone();
+            let pid = active_project.get();
+            prompt_req.set(Some(PromptRequest {
+                title: "Switch or Create Git Branch".to_string(),
+                value: String::new(),
+                placeholder: "Branch name (e.g. feat/my-feature)".to_string(),
+                submit_label: "Switch".to_string(),
+                on_submit: Callback::new(move |branch: String| {
+                    let branch = branch.trim().to_string();
+                    if branch.is_empty() {
+                        return;
+                    }
+                    let api = api.clone();
+                    spawn_local(async move {
+                        let req = GitCheckoutRequest {
+                            branch: branch.clone(),
+                            create_if_missing: true,
+                        };
+                        match api.git_checkout(pid, &req).await {
+                            Ok(res) => {
+                                refresh_git.run(());
+                                messages.update(|m| {
+                                    m.push(ConversationItem::Message(ChatMessage {
+                                        id: 0,
+                                        session_id: active_session.get().unwrap_or(0),
+                                        role: Role::Assistant,
+                                        content: format!(
+                                            "Switched to branch `{}` (previous: `{}`).",
+                                            res.branch,
+                                            res.previous_branch.as_deref().unwrap_or("none")
+                                        ),
+                                        created_at: 0,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        usage: None,
+                                    }));
+                                });
+                            }
+                            Err(e) => {
+                                error.set(Some(format!("Git checkout failed: {e}")));
+                            }
+                        }
+                    });
+                }),
+            }));
+        }
+    });
+
+    let on_sync_click = Callback::new({
+        let api = api.clone();
+        move |()| {
+            let api = api.clone();
+            let pid = active_project.get();
+            spawn_local(async move {
+                let req = GitSyncRequest {
+                    action: "sync".into(),
+                    remote: None,
+                    branch: None,
+                };
+                match api.git_sync(pid, &req).await {
+                    Ok(res) => {
+                        refresh_git.run(());
+                        messages.update(|m| {
+                            m.push(ConversationItem::Message(ChatMessage {
+                                id: 0,
+                                session_id: active_session.get().unwrap_or(0),
+                                role: Role::Assistant,
+                                content: format!(
+                                    "Git synchronized with `{}/{}`:\n* Pulled: {} commits\n* Pushed: {} commits",
+                                    res.remote, res.branch, res.pulled_commits, res.pushed_commits
+                                ),
+                                created_at: 0,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                usage: None,
+                            }));
+                        });
+                    }
+                    Err(e) => {
+                        error.set(Some(format!("Git sync failed: {e}")));
+                    }
+                }
+            });
+        }
     });
 
     // -- helpers -----------------------------------------------------------
@@ -279,11 +623,26 @@ pub fn App() -> impl IntoView {
         ws_dirty.set(false);
         ws_open_file.set(Some(path.clone()));
         ws_content.set(String::new());
+        ws_media_url.set(None);
         error.set(None);
+        let kind = FileKind::from_path(&path);
         spawn_local(async move {
             let Some(ws) = workspace_for.run(pid) else {
                 return;
             };
+
+            if kind == FileKind::Image
+                && let Ok(url) = ws.read_blob_url(&path).await
+                && ws_open_file.get().as_deref() == Some(&path)
+            {
+                ws_media_url.set(Some(url));
+            }
+
+            if kind.is_non_text() {
+                // Non-text file (image, binary, archive, etc.): Preview/Placeholder handles it.
+                return;
+            }
+
             match ws.read(&path).await {
                 Ok(content) => {
                     if ws_open_file.get().as_deref() == Some(&path) {
@@ -291,7 +650,9 @@ pub fn App() -> impl IntoView {
                     }
                 }
                 Err(e) => {
-                    if ws_open_file.get().as_deref() == Some(&path) {
+                    if ws_open_file.get().as_deref() == Some(&path)
+                        && !e.contains("not valid UTF-8")
+                    {
                         error.set(Some(e));
                     }
                 }
@@ -335,7 +696,10 @@ pub fn App() -> impl IntoView {
                 return;
             };
             match ws.write(&path, &content).await {
-                Ok(()) => ws_dirty.set(false),
+                Ok(()) => {
+                    ws_dirty.set(false);
+                    refresh_git.run(());
+                }
                 Err(e) => error.set(Some(e)),
             }
         });
@@ -360,6 +724,7 @@ pub fn App() -> impl IntoView {
         ws_content.set(diff.new);
         ws_dirty.set(false);
         load_dir.run((pid, parent_dir(&path)));
+        refresh_git.run(());
     });
 
     // Reject a pending agent edit: restore the previous contents (or delete a
@@ -412,6 +777,7 @@ pub fn App() -> impl IntoView {
                                 ws_content.set(content);
                                 ws_dirty.set(false);
                                 ld.run((pid, parent_dir(&path)));
+                                refresh_git.run(());
                             }
                         }
                         Err(e) => {
@@ -556,6 +922,8 @@ pub fn App() -> impl IntoView {
                 search: ws_search.get(),
                 active_session: active_session.get(),
                 pending_edits: ws_pending_edits.get(),
+                git_status: git_status.get(),
+                media_url: ws_media_url.get(),
             };
             saved.update(|m| {
                 m.insert(old, ws);
@@ -571,8 +939,11 @@ pub fn App() -> impl IntoView {
         ws_search.set(ws.search);
         ws_pending_edits.set(ws.pending_edits);
         active_session.set(ws.active_session);
+        git_status.set(ws.git_status);
+        ws_media_url.set(ws.media_url);
         error.set(None);
         ensure_root.run(id);
+        refresh_git.run(());
     });
 
     // Close a project tab: the project itself is kept (and stays in the
@@ -594,6 +965,8 @@ pub fn App() -> impl IntoView {
                     ws_dirty.set(false);
                     ws_search.set(None);
                     ws_pending_edits.set(HashMap::new());
+                    git_status.set(None);
+                    ws_media_url.set(None);
                 }
             }
         }
@@ -655,8 +1028,16 @@ pub fn App() -> impl IntoView {
                 local_handles.update(|m| {
                     m.insert(project.id, handle);
                 });
-                projects.update(|all| all.push(project.clone()));
-                open_tabs.update(|tabs| tabs.push(project.clone()));
+                projects.update(|all| {
+                    if !all.iter().any(|p| p.id == project.id) {
+                        all.push(project.clone());
+                    }
+                });
+                open_tabs.update(|tabs| {
+                    if !tabs.iter().any(|p| p.id == project.id) {
+                        tabs.push(project.clone());
+                    }
+                });
                 select_project.run(project.id);
             });
         })
@@ -682,8 +1063,16 @@ pub fn App() -> impl IntoView {
                         return;
                     }
                 };
-                projects.update(|all| all.push(project.clone()));
-                open_tabs.update(|tabs| tabs.push(project.clone()));
+                projects.update(|all| {
+                    if !all.iter().any(|p| p.id == project.id) {
+                        all.push(project.clone());
+                    }
+                });
+                open_tabs.update(|tabs| {
+                    if !tabs.iter().any(|p| p.id == project.id) {
+                        tabs.push(project.clone());
+                    }
+                });
                 select_project.run(project.id);
             });
         })
@@ -883,6 +1272,7 @@ pub fn App() -> impl IntoView {
         conn_kind.set(ProviderKind::Ollama);
         conn_base_url.set(String::new());
         conn_model.set(String::new());
+        conn_context_limit.set(String::new());
     });
 
     // Show the form to edit an existing connection, loading its values.
@@ -895,6 +1285,7 @@ pub fn App() -> impl IntoView {
         conn_kind.set(c.kind);
         conn_base_url.set(c.base_url);
         conn_model.set(c.model.unwrap_or_default());
+        conn_context_limit.set(c.context_limit.map(|n| n.to_string()).unwrap_or_default());
         show_conn_form.set(true);
     });
 
@@ -919,6 +1310,20 @@ pub fn App() -> impl IntoView {
             let kind = conn_kind.get();
             let model = conn_model.get().trim().to_string();
             let model = if model.is_empty() { None } else { Some(model) };
+            let context_limit_input = conn_context_limit.get().trim().to_string();
+            let context_limit = if context_limit_input.is_empty() {
+                None
+            } else {
+                match context_limit_input.parse::<usize>() {
+                    Ok(n) if n > 0 => Some(n),
+                    _ => {
+                        error.set(Some(
+                            "Context limit must be a positive whole number of tokens.".into(),
+                        ));
+                        return;
+                    }
+                }
+            };
             let edit_id = conn_edit_id.get();
             error.set(None);
             let api = api.clone();
@@ -939,12 +1344,19 @@ pub fn App() -> impl IntoView {
                             base_url: base_url.clone(),
                             model: model.clone(),
                             enabled,
+                            context_limit,
                         };
                         api.update_connection(&updated).await
                     }
                     None => {
-                        api.create_connection(&name, kind, &base_url, model.as_deref())
-                            .await
+                        api.create_connection(
+                            &name,
+                            kind,
+                            &base_url,
+                            model.as_deref(),
+                            context_limit,
+                        )
+                        .await
                     }
                 };
                 match result {
@@ -1041,14 +1453,82 @@ pub fn App() -> impl IntoView {
         })
     };
 
-    // -- send / stop -------------------------------------------------------
+    // -- send / stop / permissions ----------------------------------------
+
+    let on_stop = {
+        let api = api.clone();
+        let local_cancel = local_cancel_flag.clone();
+        Callback::new(move |_| {
+            local_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            // Ask the server to stop the run; the browser abort below can't do it.
+            if let Some(session_id) = streaming_session.get() {
+                let api = api.clone();
+                spawn_local(async move {
+                    let _ = api.cancel_session(session_id).await;
+                });
+            }
+            // The abort tears down the stream before the server's Cancelled
+            // event can arrive, so mark the stop here.
+            messages.update(|m| m.push(stopped_marker()));
+            abort.with(|a| {
+                if let Some(c) = a.as_ref() {
+                    c.abort();
+                }
+            });
+        })
+    };
+
+    let on_permission = {
+        let api = api.clone();
+        let local_perms = local_permissions.clone();
+        Callback::new(move |(tool_call_id, approved): (String, bool)| {
+            if let Ok(mut map) = local_perms.lock() {
+                map.insert(tool_call_id.clone(), approved);
+            }
+            // Clear the prompt immediately; the ToolCall (approved) or
+            // ToolResult (denied) event that follows confirms it.
+            messages.update(|m| {
+                if let Some(awaiting) = m.iter_mut().find_map(|item| match item {
+                    ConversationItem::ToolStep {
+                        id,
+                        awaiting_permission,
+                        ..
+                    } if *id == tool_call_id => Some(awaiting_permission),
+                    _ => None,
+                }) {
+                    *awaiting = false;
+                }
+            });
+            if let Some(session_id) = streaming_session.get() {
+                let api = api.clone();
+                spawn_local(async move {
+                    let _ = api
+                        .set_permission(session_id, &tool_call_id, approved)
+                        .await;
+                });
+            }
+        })
+    };
+
+    let on_permission_always = {
+        Callback::new(move |tool_call_id: String| {
+            always_approve_all.set(true);
+            on_permission.run((tool_call_id, true));
+        })
+    };
 
     let on_send = {
         let api = api.clone();
+        let local_cancel = local_cancel_flag.clone();
+        let local_perms = local_permissions.clone();
         Callback::new(move |_| {
             let content = draft.with(|d| d.trim().to_string());
             if content.is_empty() || streaming.get() {
                 return;
+            }
+            local_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+            if let Ok(mut map) = local_perms.lock() {
+                map.clear();
             }
             // Clear the draft and mark streaming synchronously so a second
             // send can't fire while the session is (possibly) created.
@@ -1056,6 +1536,8 @@ pub fn App() -> impl IntoView {
             streaming.set(true);
             error.set(None);
             let api = api.clone();
+            let local_cancel = local_cancel.clone();
+            let local_perms = local_perms.clone();
             spawn_local(async move {
                 // Resolve the session: use the active one, or — when starting a
                 // fresh chat with none selected — create one named from this
@@ -1100,184 +1582,272 @@ pub fn App() -> impl IntoView {
                 };
                 abort.set(Some(controller.clone()));
                 streaming_session.set(Some(session_id));
-                let api = api.clone();
-                let result = api
-                    .send_message(
-                        session_id,
-                        &content,
-                        model.as_deref(),
-                        Some(&controller.signal()),
-                        move |event| {
-                            if active_session.get() != Some(session_id) {
-                                return;
+
+                // Check if this project is local mode and has an active directory handle
+                let active_proj = active_project
+                    .get()
+                    .and_then(|pid| projects.get().into_iter().find(|p| p.id == pid));
+                let is_local = active_proj
+                    .as_ref()
+                    .map(|p| p.mode == WorkspaceMode::Local)
+                    .unwrap_or(false);
+                let local_handle = active_proj
+                    .as_ref()
+                    .and_then(|p| local_handles.get().get(&p.id).cloned());
+
+                let on_event = move |event: SseEvent| {
+                    if active_session.get() != Some(session_id) {
+                        return;
+                    }
+                    match event {
+                        SseEvent::Message(msg) => {
+                            messages.update(|m| m.push(ConversationItem::Message(msg)));
+                        }
+                        SseEvent::Delta(delta) => {
+                            messages.update(|m| {
+                                let extend_last = m.last().is_some_and(|last| {
+                                    matches!(
+                                        last,
+                                        ConversationItem::Message(msg)
+                                            if msg.role == Role::Assistant
+                                    )
+                                });
+                                if extend_last {
+                                    if let Some(ConversationItem::Message(msg)) = m.last_mut() {
+                                        msg.content.push_str(&delta);
+                                    }
+                                } else {
+                                    m.push(ConversationItem::Message(ChatMessage {
+                                        id: 0,
+                                        session_id,
+                                        role: Role::Assistant,
+                                        content: delta,
+                                        created_at: 0,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        usage: None,
+                                    }));
+                                }
+                            });
+                        }
+                        SseEvent::PermissionRequest { id, name, summary } => {
+                            if always_approve_all.get() {
+                                on_permission.run((id.clone(), true));
+                            } else {
+                                messages.update(|m| {
+                                    m.push(ConversationItem::ToolStep {
+                                        id,
+                                        name,
+                                        summary,
+                                        result: None,
+                                        awaiting_permission: true,
+                                    })
+                                });
                             }
-                            match event {
-                                SseEvent::Message(msg) => {
-                                    messages.update(|m| m.push(ConversationItem::Message(msg)));
-                                }
-                                SseEvent::Delta(delta) => {
-                                    messages.update(|m| {
-                                        let extend_last = m
-                                            .last()
-                                            .is_some_and(|last| {
-                                                matches!(
-                                                    last,
-                                                    ConversationItem::Message(msg)
-                                                        if msg.role == Role::Assistant
-                                                )
-                                            });
-                                        if extend_last {
-                                            if let Some(ConversationItem::Message(msg)) = m.last_mut() {
-                                                msg.content.push_str(&delta);
-                                            }
-                                        } else {
-                                            m.push(ConversationItem::Message(ChatMessage {
-                                                id: 0,
-                                                session_id,
-                                                role: Role::Assistant,
-                                                content: delta,
-                                                created_at: 0,
-                                                tool_calls: None,
-                                                tool_call_id: None,
-                                            }));
-                                        }
-                                    });
-                                }
-                                SseEvent::PermissionRequest { id, name, summary } => {
-                                    messages.update(|m| {
-                                        m.push(ConversationItem::ToolStep {
-                                            id,
-                                            name,
-                                            summary,
-                                            result: None,
-                                            awaiting_permission: true,
-                                        })
-                                    });
-                                }
-                                SseEvent::ToolCall { id, name, summary } => {
-                                    messages.update(|m| {
-                                        // A gated tool already emitted a
-                                        // PermissionRequest step; update it
-                                        // rather than pushing a duplicate.
-                                        let idx = m.iter().rposition(|item| {
-                                            matches!(
-                                                item,
-                                                ConversationItem::ToolStep { id: tid, .. }
-                                                    if *tid == id
-                                            )
-                                        });
-                                        match idx {
-                                            Some(i) => {
-                                                if let ConversationItem::ToolStep {
-                                                    summary: s,
-                                                    awaiting_permission: a,
-                                                    ..
-                                                } = &mut m[i]
-                                                {
-                                                    *s = summary;
-                                                    *a = false;
-                                                }
-                                            }
-                                            None => {
-                                                m.push(ConversationItem::ToolStep {
-                                                    id,
-                                                    name,
-                                                    summary,
-                                                    result: None,
-                                                    awaiting_permission: false,
-                                                })
-                                            }
-                                        }
-                                    });
-                                }
-                                SseEvent::ToolResult { id, name, ok, summary, diff } => {
-                                    // Record the agent's edit as a pending diff
-                                    // and open the file so the editor shows it
-                                    // in diff mode.
-                                    if let Some(d) = &diff {
-                                        ws_pending_edits.update(|m| {
-                                            m.insert(d.path.clone(), d.clone());
-                                        });
-                                        if ws_open_file.get().as_deref() != Some(d.path.as_str()) {
-                                            ws_open_file.set(Some(d.path.clone()));
-                                            ws_dirty.set(false);
+                        }
+                        SseEvent::ToolCall { id, name, summary } => {
+                            session_telemetry.update(|s| s.tool_calls_count += 1);
+                            messages.update(|m| {
+                                // A gated tool already emitted a
+                                // PermissionRequest step; update it
+                                // rather than pushing a duplicate.
+                                let idx = m.iter().rposition(|item| {
+                                    matches!(
+                                        item,
+                                        ConversationItem::ToolStep { id: tid, .. }
+                                            if *tid == id
+                                    )
+                                });
+                                match idx {
+                                    Some(i) => {
+                                        if let ConversationItem::ToolStep {
+                                            summary: s,
+                                            awaiting_permission: a,
+                                            ..
+                                        } = &mut m[i]
+                                        {
+                                            *s = summary;
+                                            *a = false;
                                         }
                                     }
-                                    messages.update(|m| {
-                                        let idx = m.iter().rposition(|item| {
-                                            matches!(
-                                                item,
-                                                ConversationItem::ToolStep { id: tid, .. } if *tid == id
-                                            )
-                                        });
-                                        match idx {
-                                            Some(i) => {
-                                                if let ConversationItem::ToolStep {
-                                                    result: r,
-                                                    awaiting_permission: a,
-                                                    ..
-                                                } = &mut m[i]
-                                                {
-                                                    *r = Some(ToolStepResult {
-                                                        ok,
-                                                        summary: summary.clone(),
-                                                        diff: diff.clone(),
-                                                    });
-                                                    *a = false;
-                                                }
-                                            }
-                                            None => {
-                                                m.push(ConversationItem::ToolStep {
-                                                    id,
-                                                    name,
-                                                    summary: summary.clone(),
-                                                    result: Some(ToolStepResult { ok, summary, diff }),
-                                                    awaiting_permission: false,
-                                                });
-                                            }
-                                        }
-                                    });
+                                    None => m.push(ConversationItem::ToolStep {
+                                        id,
+                                        name,
+                                        summary,
+                                        result: None,
+                                        awaiting_permission: false,
+                                    }),
                                 }
-                                SseEvent::Done(msg) => {
-                                    messages.update(|m| {
-                                        // Plain chat: replace the streaming
-                                        // placeholder. Agent mode: the last
-                                        // item is a tool step (or the user
-                                        // message), so append the reply.
-                                        let is_last_assistant = m
-                                            .last()
-                                            .is_some_and(|last| {
-                                                matches!(
-                                                    last,
-                                                    ConversationItem::Message(m)
-                                                        if m.role == Role::Assistant
-                                                )
-                                            });
-                                        if is_last_assistant {
-                                            if let Some(ConversationItem::Message(
-                                                last,
-                                            )) = m.last_mut()
-                                            {
-                                                *last = msg;
-                                            }
-                                        } else {
-                                            m.push(ConversationItem::Message(msg));
-                                        }
-                                    });
+                            });
+                        }
+                        SseEvent::ToolResult {
+                            id,
+                            name: _,
+                            ok,
+                            summary,
+                            diff,
+                        } => {
+                            // Record the agent's edit as a pending diff
+                            // and open the file so the editor shows it
+                            // in diff mode.
+                            if let Some(d) = &diff {
+                                ws_pending_edits.update(|m| {
+                                    m.insert(d.path.clone(), d.clone());
+                                });
+                                if ws_open_file.get().as_deref() != Some(d.path.as_str()) {
+                                    ws_open_file.set(Some(d.path.clone()));
+                                    ws_dirty.set(false);
                                 }
-                                SseEvent::Cancelled => {
-                                    messages.update(|m| m.push(stopped_marker()));
-                                }
-                                SseEvent::Error(e) => error.set(Some(e)),
                             }
-                        },
-                    )
-                    .await;
-                if let Err(e) = result
-                    && !controller.signal().aborted()
-                {
-                    error.set(Some(e));
+                            messages.update(|m| {
+                                let idx = m.iter().rposition(|item| {
+                                    matches!(
+                                        item,
+                                        ConversationItem::ToolStep { id: tid, .. } if *tid == id
+                                    )
+                                });
+                                match idx {
+                                    Some(i) => {
+                                        if let ConversationItem::ToolStep {
+                                            result: r,
+                                            awaiting_permission: a,
+                                            ..
+                                        } = &mut m[i]
+                                        {
+                                            *r = Some(ToolStepResult {
+                                                ok,
+                                                summary: summary.clone(),
+                                                diff: diff.clone(),
+                                            });
+                                            *a = false;
+                                        }
+                                    }
+                                    None => {
+                                        m.push(ConversationItem::ToolStep {
+                                            id,
+                                            name: String::new(),
+                                            summary: summary.clone(),
+                                            result: Some(ToolStepResult { ok, summary, diff }),
+                                            awaiting_permission: false,
+                                        });
+                                    }
+                                }
+                            });
+                        }
+                        SseEvent::Done(msg) => {
+                            messages.update(|m| {
+                                // Plain chat: replace the streaming
+                                // placeholder. Agent mode: the last
+                                // item is a tool step (or the user
+                                // message), so append the reply.
+                                let is_last_assistant = m.last().is_some_and(|last| {
+                                    matches!(
+                                        last,
+                                        ConversationItem::Message(msg)
+                                            if msg.role == Role::Assistant
+                                    )
+                                });
+                                if is_last_assistant {
+                                    if let Some(ConversationItem::Message(last)) = m.last_mut() {
+                                        *last = msg;
+                                    }
+                                } else {
+                                    m.push(ConversationItem::Message(msg));
+                                }
+                            });
+                        }
+                        SseEvent::Telemetry(telem) => {
+                            session_telemetry.update(|s| s.record_turn(&telem));
+                        }
+                        SseEvent::Cancelled => {
+                            messages.update(|m| m.push(stopped_marker()));
+                        }
+                        SseEvent::Error(e) => error.set(Some(e)),
+                    }
+                };
+
+                let ed_ctx = active_editor_context.get();
+                active_editor_context.set(None);
+
+                if is_local {
+                    if let Some(handle) = local_handle {
+                        let session_opt = sessions.get().into_iter().find(|s| s.id == session_id);
+                        let connection_id = session_opt
+                            .as_ref()
+                            .and_then(|s| s.connection_id)
+                            .or_else(|| {
+                                default_connection.get().or_else(|| {
+                                    connections
+                                        .get()
+                                        .into_iter()
+                                        .find(|c| c.enabled)
+                                        .map(|c| c.id)
+                                })
+                            });
+                        let Some(conn_id) = connection_id else {
+                            error.set(Some(
+                                "session has no connection; configure one in settings first".into(),
+                            ));
+                            streaming.set(false);
+                            abort.set(None);
+                            streaming_session.set(None);
+                            return;
+                        };
+                        let system_prompt_id = session_opt
+                            .as_ref()
+                            .and_then(|s| s.system_prompt_id)
+                            .or_else(|| default_prompt.get());
+                        let system_prompt = system_prompt_id.and_then(|sp_id| {
+                            system_prompts
+                                .get()
+                                .into_iter()
+                                .find(|p| p.id == sp_id)
+                                .map(|p| p.content)
+                        });
+
+                        let vfs = local_fs::BrowserFsaVfs::new(handle);
+                        let res = local_agent::run_local_agent(
+                            api.clone(),
+                            session_id,
+                            content,
+                            model,
+                            ed_ctx,
+                            conn_id,
+                            system_prompt,
+                            vfs,
+                            local_cancel,
+                            local_perms,
+                            on_event,
+                        )
+                        .await;
+                        if let Err(e) = res
+                            && !controller.signal().aborted()
+                        {
+                            error.set(Some(e));
+                        }
+                    } else {
+                        error.set(Some(
+                            "local directory handle not available; re-open the folder".into(),
+                        ));
+                    }
+                } else {
+                    let result = api
+                        .send_message(
+                            session_id,
+                            &content,
+                            model.as_deref(),
+                            ed_ctx.as_ref(),
+                            Some(&controller.signal()),
+                            on_event,
+                        )
+                        .await;
+                    if let Err(e) = result
+                        && !controller.signal().aborted()
+                    {
+                        error.set(Some(e));
+                    }
                 }
+
                 streaming.set(false);
                 abort.set(None);
                 streaming_session.set(None);
@@ -1285,54 +1855,572 @@ pub fn App() -> impl IntoView {
         })
     };
 
-    let on_stop = {
+    let on_slash_command = {
         let api = api.clone();
-        Callback::new(move |_| {
-            // Ask the server to stop the run; the browser abort below can't do it.
-            if let Some(session_id) = streaming_session.get() {
-                let api = api.clone();
-                spawn_local(async move {
-                    let _ = api.cancel_session(session_id).await;
+        Callback::new(move |cmd: SlashCommand| match cmd {
+            SlashCommand::Help => {
+                let help_text = "**Open WebIDE Terminal Execution & Slash Commands**\n\n\
+                        **Commands:**\n\
+                        * `/help` — Show this cheat sheet\n\
+                        * `/model [name]` — Switch model or list available models\n\
+                        * `/clear` — Clear the active chat stream\n\
+                        * `/diff [path]` — View uncommitted Git diff or pending edits\n\
+                        * `/commit <message>` — Stage and commit changes to host Git\n\
+                        * `/checkout <branch>` — Switch active Git branch\n\
+                        * `/branch <name>` — Create and switch to new Git branch\n\
+                        * `/sync` — Synchronize upstream commits (pull & push)\n\
+                        * `/test [filter]` — Run tests via execution bridge\n\
+                        * `/tokens` or `/context` — Show session token accounting\n\
+                        * `/stop` — Abort active execution\n\n\
+                        **Keybindings:**\n\
+                        * `Cmd+L` / `Ctrl+L` — Capture active editor file & selection into context pill\n\
+                        * `Ctrl+` ` — Toggle bottom terminal dock\n\
+                        * `Ctrl+K` — Cycle focus between chat, editor, file explorer, and terminal\n\
+                        * `Up` / `Down` — Readline prompt history navigation\n\
+                        * `y` / `n` / `a` / `d` — Inline permission handshake (approve / deny / always / diff)\n\
+                        * `Ctrl+C` / `Esc` — Cancel streaming generation or detach context pill";
+                messages.update(|m| {
+                    m.push(ConversationItem::Message(ChatMessage {
+                        id: 0,
+                        session_id: active_session.get().unwrap_or(0),
+                        role: Role::Assistant,
+                        content: help_text.into(),
+                        created_at: 0,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        usage: None,
+                    }));
                 });
             }
-            // The abort tears down the stream before the server's Cancelled
-            // event can arrive, so mark the stop here.
-            messages.update(|m| m.push(stopped_marker()));
-            abort.with(|a| {
-                if let Some(c) = a.as_ref() {
-                    c.abort();
+            SlashCommand::Model(arg) => {
+                let all_models = models.get();
+                if let Some(target) = arg {
+                    if let Some(found) = all_models
+                        .iter()
+                        .find(|m| m.name.eq_ignore_ascii_case(&target))
+                    {
+                        let name = found.name.clone();
+                        selected_model.set(Some(name.clone()));
+                        session_telemetry.update(|t| t.model = name.clone());
+                        messages.update(|m| {
+                            m.push(ConversationItem::Message(ChatMessage {
+                                id: 0,
+                                session_id: active_session.get().unwrap_or(0),
+                                role: Role::Assistant,
+                                content: format!("Switched model to `{name}`."),
+                                created_at: 0,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                usage: None,
+                            }));
+                        });
+                    } else {
+                        messages.update(|m| {
+                            m.push(ConversationItem::Message(ChatMessage {
+                                id: 0,
+                                session_id: active_session.get().unwrap_or(0),
+                                role: Role::Assistant,
+                                content: format!("Model `{target}` not found in available models."),
+                                created_at: 0,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                usage: None,
+                            }));
+                        });
+                    }
+                } else {
+                    let names = all_models
+                        .iter()
+                        .map(|m| format!("* `{}`", m.name))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let cur = selected_model.get().unwrap_or_else(|| "default".into());
+                    messages.update(|m| {
+                            m.push(ConversationItem::Message(ChatMessage {
+                                id: 0,
+                                session_id: active_session.get().unwrap_or(0),
+                                role: Role::Assistant,
+                                content: format!("Current model: `{cur}`\n\nAvailable models:\n{names}\n\nUse `/model <name>` to switch."),
+                                created_at: 0,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                usage: None,
+                            }));
+                        });
                 }
-            });
+            }
+            SlashCommand::Clear => {
+                messages.set(Vec::new());
+            }
+            SlashCommand::Diff(path) => {
+                let edits = ws_pending_edits.get();
+                if edits.is_empty() {
+                    let api = api.clone();
+                    let pid = active_project.get();
+                    let p_opt = path.clone();
+                    spawn_local(async move {
+                        match api.git_diff(pid, p_opt.as_deref()).await {
+                            Ok(diff) if !diff.trim().is_empty() => {
+                                messages.update(|m| {
+                                    m.push(ConversationItem::Message(ChatMessage {
+                                        id: 0,
+                                        session_id: active_session.get().unwrap_or(0),
+                                        role: Role::Assistant,
+                                        content: format!(
+                                            "**Git Repository Diff:**\n```diff\n{diff}\n```"
+                                        ),
+                                        created_at: 0,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        usage: None,
+                                    }));
+                                });
+                            }
+                            Ok(_) => {
+                                messages.update(|m| {
+                                    m.push(ConversationItem::Message(ChatMessage {
+                                        id: 0,
+                                        session_id: active_session.get().unwrap_or(0),
+                                        role: Role::Assistant,
+                                        content: "Working tree is clean (no uncommitted diffs)."
+                                            .into(),
+                                        created_at: 0,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        usage: None,
+                                    }));
+                                });
+                            }
+                            Err(e) => {
+                                messages.update(|m| {
+                                    m.push(ConversationItem::Message(ChatMessage {
+                                        id: 0,
+                                        session_id: active_session.get().unwrap_or(0),
+                                        role: Role::Assistant,
+                                        content: format!("Git diff failed: {e}"),
+                                        created_at: 0,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        usage: None,
+                                    }));
+                                });
+                            }
+                        }
+                    });
+                } else if let Some(p) = path {
+                    if let Some(diff) = edits.get(&p) {
+                        ws_open_file.set(Some(diff.path.clone()));
+                        messages.update(|m| {
+                            m.push(ConversationItem::Message(ChatMessage {
+                                id: 0,
+                                session_id: active_session.get().unwrap_or(0),
+                                role: Role::Assistant,
+                                content: format!(
+                                    "Opened pending diff for `{}` in editor.",
+                                    diff.path
+                                ),
+                                created_at: 0,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                usage: None,
+                            }));
+                        });
+                    } else {
+                        messages.update(|m| {
+                            m.push(ConversationItem::Message(ChatMessage {
+                                id: 0,
+                                session_id: active_session.get().unwrap_or(0),
+                                role: Role::Assistant,
+                                content: format!("No pending diff found for `{p}`."),
+                                created_at: 0,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                usage: None,
+                            }));
+                        });
+                    }
+                } else {
+                    let list = edits
+                        .keys()
+                        .map(|k| format!("* `{k}`"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    messages.update(|m| {
+                            m.push(ConversationItem::Message(ChatMessage {
+                                id: 0,
+                                session_id: active_session.get().unwrap_or(0),
+                                role: Role::Assistant,
+                                content: format!("Pending file edits ({count}):\n{list}\n\nUse `/diff <path>` to open in editor.", count = edits.len()),
+                                created_at: 0,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                usage: None,
+                            }));
+                        });
+                }
+            }
+            SlashCommand::Commit(msg) => {
+                let pid = active_project.get();
+                let Some(message) = msg.filter(|m| !m.trim().is_empty()) else {
+                    messages.update(|m| {
+                        m.push(ConversationItem::Message(ChatMessage {
+                            id: 0,
+                            session_id: active_session.get().unwrap_or(0),
+                            role: Role::Assistant,
+                            content: "Please provide a commit message: `/commit <message>`".into(),
+                            created_at: 0,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            usage: None,
+                        }));
+                    });
+                    return;
+                };
+                let api = api.clone();
+                let refresh_git = refresh_git;
+                spawn_local(async move {
+                    let req = GitCommitRequest {
+                        message: message.clone(),
+                        paths: None,
+                        include_untracked: false,
+                    };
+                    match api.git_commit(pid, &req).await {
+                        Ok(res) => {
+                            refresh_git.run(());
+                            messages.update(|m| {
+                                m.push(ConversationItem::Message(ChatMessage {
+                                    id: 0,
+                                    session_id: active_session.get().unwrap_or(0),
+                                    role: Role::Assistant,
+                                    content: format!(
+                                        "Committed `{}`: {}\nSigned: {}",
+                                        res.commit_hash, res.summary, res.is_signed
+                                    ),
+                                    created_at: 0,
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                    usage: None,
+                                }));
+                            });
+                        }
+                        Err(e) => {
+                            messages.update(|m| {
+                                m.push(ConversationItem::Message(ChatMessage {
+                                    id: 0,
+                                    session_id: active_session.get().unwrap_or(0),
+                                    role: Role::Assistant,
+                                    content: format!("Git commit failed: {e}"),
+                                    created_at: 0,
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                    usage: None,
+                                }));
+                            });
+                        }
+                    }
+                });
+            }
+            SlashCommand::Checkout(branch_arg) => {
+                let pid = active_project.get();
+                let Some(branch) = branch_arg.filter(|b| !b.trim().is_empty()) else {
+                    messages.update(|m| {
+                        m.push(ConversationItem::Message(ChatMessage {
+                            id: 0,
+                            session_id: active_session.get().unwrap_or(0),
+                            role: Role::Assistant,
+                            content: "Please specify a branch to checkout: `/checkout <branch>`"
+                                .into(),
+                            created_at: 0,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            usage: None,
+                        }));
+                    });
+                    return;
+                };
+                let api = api.clone();
+                let refresh_git = refresh_git;
+                spawn_local(async move {
+                    let req = GitCheckoutRequest {
+                        branch: branch.clone(),
+                        create_if_missing: false,
+                    };
+                    match api.git_checkout(pid, &req).await {
+                        Ok(res) => {
+                            refresh_git.run(());
+                            messages.update(|m| {
+                                m.push(ConversationItem::Message(ChatMessage {
+                                    id: 0,
+                                    session_id: active_session.get().unwrap_or(0),
+                                    role: Role::Assistant,
+                                    content: format!(
+                                        "Checked out branch `{}` (previous: `{}`).",
+                                        res.branch,
+                                        res.previous_branch.as_deref().unwrap_or("none")
+                                    ),
+                                    created_at: 0,
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                    usage: None,
+                                }));
+                            });
+                        }
+                        Err(e) => {
+                            messages.update(|m| {
+                                m.push(ConversationItem::Message(ChatMessage {
+                                    id: 0,
+                                    session_id: active_session.get().unwrap_or(0),
+                                    role: Role::Assistant,
+                                    content: format!("Git checkout failed: {e}"),
+                                    created_at: 0,
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                    usage: None,
+                                }));
+                            });
+                        }
+                    }
+                });
+            }
+            SlashCommand::Branch(branch_arg) => {
+                let pid = active_project.get();
+                let branch_opt = branch_arg.and_then(|b| {
+                    let t = b.trim().to_string();
+                    if t.is_empty() { None } else { Some(t) }
+                });
+                let api = api.clone();
+                let refresh_git = refresh_git;
+                if let Some(branch) = branch_opt {
+                    spawn_local(async move {
+                        let req = GitCheckoutRequest {
+                            branch: branch.clone(),
+                            create_if_missing: true,
+                        };
+                        match api.git_checkout(pid, &req).await {
+                            Ok(res) => {
+                                refresh_git.run(());
+                                messages.update(|m| {
+                                    m.push(ConversationItem::Message(ChatMessage {
+                                        id: 0,
+                                        session_id: active_session.get().unwrap_or(0),
+                                        role: Role::Assistant,
+                                        content: format!(
+                                            "Created and checked out branch `{}`.",
+                                            res.branch
+                                        ),
+                                        created_at: 0,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        usage: None,
+                                    }));
+                                });
+                            }
+                            Err(e) => {
+                                messages.update(|m| {
+                                    m.push(ConversationItem::Message(ChatMessage {
+                                        id: 0,
+                                        session_id: active_session.get().unwrap_or(0),
+                                        role: Role::Assistant,
+                                        content: format!("Git branch failed: {e}"),
+                                        created_at: 0,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        usage: None,
+                                    }));
+                                });
+                            }
+                        }
+                    });
+                } else {
+                    spawn_local(async move {
+                        match api.git_branches(pid).await {
+                            Ok(branches) => {
+                                let branch_list = if branches.is_empty() {
+                                    "No branches found.".to_string()
+                                } else {
+                                    branches
+                                        .into_iter()
+                                        .map(|b| {
+                                            if b.is_current {
+                                                format!("* **{}** (current)", b.name)
+                                            } else {
+                                                format!("  {}", b.name)
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                };
+                                messages.update(|m| {
+                                    m.push(ConversationItem::Message(ChatMessage {
+                                        id: 0,
+                                        session_id: active_session.get().unwrap_or(0),
+                                        role: Role::Assistant,
+                                        content: format!(
+                                            "**Repository Branches:**\n\n{}",
+                                            branch_list
+                                        ),
+                                        created_at: 0,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        usage: None,
+                                    }));
+                                });
+                            }
+                            Err(e) => {
+                                messages.update(|m| {
+                                    m.push(ConversationItem::Message(ChatMessage {
+                                        id: 0,
+                                        session_id: active_session.get().unwrap_or(0),
+                                        role: Role::Assistant,
+                                        content: format!("Failed to list branches: {e}"),
+                                        created_at: 0,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        usage: None,
+                                    }));
+                                });
+                            }
+                        }
+                    });
+                }
+            }
+            SlashCommand::Sync => {
+                on_sync_click.run(());
+            }
+            SlashCommand::Test(filter) => {
+                let arg = filter.unwrap_or_default();
+                messages.update(|m| {
+                        m.push(ConversationItem::Message(ChatMessage {
+                            id: 0,
+                            session_id: active_session.get().unwrap_or(0),
+                            role: Role::Assistant,
+                            content: format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck terminal dock below for full stream."),
+                            created_at: 0,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            usage: None,
+                        }));
+                    });
+                show_terminal.set(true);
+            }
+            SlashCommand::Tokens => {
+                let telem = session_telemetry.get();
+                let pct = telem.context_percent();
+                let bar = telem.gauge_bar();
+                let totals_approx = SessionTelemetry::approx(telem.totals_estimated);
+                let context_approx = SessionTelemetry::approx(telem.context_estimated);
+                let limit_approx = SessionTelemetry::approx(telem.context_limit_estimated);
+                let speed_approx = SessionTelemetry::approx(telem.speed_estimated);
+                let speed = telem
+                    .current_speed_tps
+                    .map(|s| format!("{speed_approx}{s:.1} t/s"))
+                    .unwrap_or_else(|| "-- t/s".into());
+                let input_tokens = format!("{totals_approx}{}", telem.total_prompt_tokens);
+                let output_tokens = format!("{totals_approx}{}", telem.total_completion_tokens);
+                let context_tokens = format!("{context_approx}{}", telem.context_tokens);
+                let context_limit = format!("{limit_approx}{}", telem.context_limit);
+                let text = format!(
+                    "```text\n\
+                         ┌─ Session Token Accounting ────────────────────────────────────┐\n\
+                         │ Model:             {:<42} │\n\
+                         │ Input Tokens:      {:<42} │\n\
+                         │ Output Tokens:     {:<42} │\n\
+                         │ Context:           {} / {} ({:.1}%) {} │\n\
+                         │ Current Speed:     {:<42} │\n\
+                         │ Tool Calls:        {:<42} │\n\
+                         └───────────────────────────────────────────────────────────────┘\n```",
+                    telem.model,
+                    input_tokens,
+                    output_tokens,
+                    context_tokens,
+                    context_limit,
+                    pct,
+                    bar,
+                    speed,
+                    telem.tool_calls_count,
+                );
+                messages.update(|m| {
+                    m.push(ConversationItem::Message(ChatMessage {
+                        id: 0,
+                        session_id: active_session.get().unwrap_or(0),
+                        role: Role::Assistant,
+                        content: text,
+                        created_at: 0,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        usage: None,
+                    }));
+                });
+            }
+            SlashCommand::Stop => {
+                on_stop.run(());
+            }
         })
     };
 
-    let on_permission = {
+    // Resolve the effective model (the override, else the active session's
+    // connection default, else "default"), publish it to the statusline, and
+    // fetch the model's context window for the gauge.
+    let ctx_request_gen = StoredValue::new(0u64);
+    {
         let api = api.clone();
-        Callback::new(move |(tool_call_id, approved): (String, bool)| {
-            // Clear the prompt immediately; the ToolCall (approved) or
-            // ToolResult (denied) event that follows confirms it.
-            messages.update(|m| {
-                if let Some(awaiting) = m.iter_mut().find_map(|item| match item {
-                    ConversationItem::ToolStep {
-                        id,
-                        awaiting_permission,
-                        ..
-                    } if *id == tool_call_id => Some(awaiting_permission),
-                    _ => None,
-                }) {
-                    *awaiting = false;
-                }
+        Effect::new(move || {
+            // Bump and capture the generation first, before any early
+            // return below: a run that returns early (no connection) must
+            // still invalidate an earlier in-flight request, or that
+            // request can land after this run's default and overwrite it.
+            let this_gen = {
+                ctx_request_gen.update_value(|g| *g += 1);
+                ctx_request_gen.get_value()
+            };
+            let sid = active_session.get();
+            let conn_id = sid.and_then(|id| {
+                sessions
+                    .get()
+                    .into_iter()
+                    .find(|s| s.id == id)
+                    .and_then(|s| s.connection_id)
             });
-            if let Some(session_id) = streaming_session.get() {
-                let api = api.clone();
-                spawn_local(async move {
-                    let _ = api
-                        .set_permission(session_id, &tool_call_id, approved)
-                        .await;
+            let conn_model = conn_id.and_then(|cid| {
+                connections
+                    .get()
+                    .into_iter()
+                    .find(|c| c.id == cid)
+                    .and_then(|c| c.model)
+            });
+            // `None` here means no real model resolved; only the display
+            // string falls back to "default" (sending it as the model
+            // would ask the provider to resolve a model literally named
+            // "default").
+            let effective_model = selected_model.get().or(conn_model);
+            let display_model = effective_model
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+            session_telemetry.update(|t| t.model = display_model);
+
+            let Some(cid) = conn_id else {
+                session_telemetry.update(|t| {
+                    t.context_limit = DEFAULT_CONTEXT_LIMIT;
+                    t.context_limit_estimated = true;
                 });
-            }
-        })
-    };
+                return;
+            };
+            let api = api.clone();
+            spawn_local(async move {
+                let result = api.model_context(cid, effective_model.as_deref()).await;
+                if ctx_request_gen.get_value() != this_gen {
+                    return;
+                }
+                let resolved = result.ok().flatten();
+                let limit = resolved.unwrap_or(DEFAULT_CONTEXT_LIMIT);
+                let estimated = resolved.is_none();
+                session_telemetry.update(|t| {
+                    t.context_limit = limit;
+                    t.context_limit_estimated = estimated;
+                });
+            });
+        });
+    }
 
     // -- effects -----------------------------------------------------------
 
@@ -1422,6 +2510,8 @@ pub fn App() -> impl IntoView {
                 if let Ok(prompts) = api.list_system_prompts().await {
                     system_prompts.set(prompts);
                 }
+                let mut db_open_ids: Vec<i64> = Vec::new();
+                let mut db_active_project: Option<i64> = None;
                 if let Ok(s) = api.get_settings().await {
                     if let Some(t) = s.get("theme").map(String::as_str)
                         && (t == "dark" || t == "light")
@@ -1437,15 +2527,92 @@ pub fn App() -> impl IntoView {
                     if let Some(v) = s.get("default_prompt").and_then(|v| v.parse::<i64>().ok()) {
                         default_prompt.set(Some(v));
                     }
+                    if let Some(json) = s.get("open_tabs")
+                        && let Ok(ids) = serde_json::from_str::<Vec<i64>>(json)
+                    {
+                        db_open_ids = ids;
+                    }
+                    if let Some(act) = s.get("active_project").and_then(|v| v.parse::<i64>().ok()) {
+                        db_active_project = Some(act);
+                    }
+                    if let Some(v) = s
+                        .get("panel_sidebar_width")
+                        .and_then(|v| v.parse::<f64>().ok())
+                    {
+                        sidebar_width.set(v.clamp(140.0, 480.0));
+                    }
+                    if let Some(v) = s
+                        .get("panel_tree_width")
+                        .and_then(|v| v.parse::<f64>().ok())
+                    {
+                        tree_width.set(v.clamp(160.0, 650.0));
+                    }
+                    if let Some(v) = s
+                        .get("panel_chat_width")
+                        .and_then(|v| v.parse::<f64>().ok())
+                    {
+                        chat_width.set(v.clamp(260.0, 1000.0));
+                    }
                 }
-                if let Some(first) = projects.get().into_iter().next() {
-                    open_tabs.update(|tabs| {
-                        if !tabs.iter().any(|t| t.id == first.id) {
-                            tabs.push(first.clone());
-                        }
-                    });
-                    sel.run(first.id);
+                let all_projects = projects.get();
+                let mut restored_tabs = Vec::new();
+                for tid in &db_open_ids {
+                    if let Some(proj) = all_projects.iter().find(|p| p.id == *tid)
+                        && !restored_tabs.iter().any(|r: &Project| r.id == proj.id)
+                    {
+                        restored_tabs.push(proj.clone());
+                    }
                 }
+                if restored_tabs.is_empty()
+                    && let Some(first) = all_projects.into_iter().next()
+                {
+                    restored_tabs.push(first);
+                }
+                open_tabs.set(restored_tabs.clone());
+
+                let target_active = db_active_project
+                    .filter(|act_id| restored_tabs.iter().any(|t| t.id == *act_id))
+                    .or_else(|| restored_tabs.first().map(|t| t.id));
+
+                if let Some(act_id) = target_active {
+                    sel.run(act_id);
+                }
+
+                projects_loaded.set(true);
+            });
+        });
+    }
+
+    // Keep open tabs persisted in the database so the user can pick up on any machine.
+    {
+        let api = api.clone();
+        Effect::new(move || {
+            if !projects_loaded.get() {
+                return;
+            }
+            let tabs = open_tabs.get();
+            let ids: Vec<i64> = tabs.iter().map(|p| p.id).collect();
+            if let Ok(json) = serde_json::to_string(&ids) {
+                let api = api.clone();
+                spawn_local(async move {
+                    let _ = api.set_setting("open_tabs", &json).await;
+                });
+            }
+        });
+    }
+
+    // Keep the active project persisted in the database so the user can pick up on any machine.
+    {
+        let api = api.clone();
+        Effect::new(move || {
+            if !projects_loaded.get() {
+                return;
+            }
+            let act = active_project.get();
+            let val = act.map(|id| id.to_string()).unwrap_or_default();
+            let api = api.clone();
+            spawn_local(async move {
+                let _ = api.set_setting("active_project", &val).await;
             });
         });
     }
@@ -1458,29 +2625,58 @@ pub fn App() -> impl IntoView {
             let api = api.clone();
             spawn_local(async move {
                 match id {
-                    Some(id) => match api.list_messages(id).await {
-                        Ok(entries) => messages.set(
-                            entries
-                                .into_iter()
-                                .map(|e| match e {
-                                    ConversationEntry::Message(m) => ConversationItem::Message(m),
-                                    ConversationEntry::ToolStep(ts) => ConversationItem::ToolStep {
-                                        id: ts.tool_call_id,
-                                        name: ts.name,
-                                        summary: ts.summary,
-                                        result: ts.ok.map(|ok| ToolStepResult {
-                                            ok,
-                                            summary: ts.result_summary.clone().unwrap_or_default(),
-                                            diff: ts.diff.clone(),
-                                        }),
-                                        awaiting_permission: false,
-                                    },
-                                })
-                                .collect(),
-                        ),
-                        Err(e) => error.set(Some(e)),
-                    },
-                    None => messages.set(Vec::new()),
+                    Some(id) => {
+                        let result = api.list_messages(id).await;
+                        // Drop a stale response, for either arm: the active
+                        // session may have changed again while this request
+                        // was in flight (e.g. a quick A -> B -> A switch, or
+                        // a stale error landing after B is already showing).
+                        if active_session.get_untracked() != Some(id) {
+                            return;
+                        }
+                        match result {
+                            Ok(entries) => {
+                                session_telemetry.update(|t| t.restore_from_conversation(&entries));
+                                messages.set(
+                                    entries
+                                        .into_iter()
+                                        .map(|e| match e {
+                                            ConversationEntry::Message(m) => {
+                                                ConversationItem::Message(m)
+                                            }
+                                            ConversationEntry::ToolStep(ts) => {
+                                                ConversationItem::ToolStep {
+                                                    id: ts.tool_call_id,
+                                                    name: ts.name,
+                                                    summary: ts.summary,
+                                                    result: ts.ok.map(|ok| ToolStepResult {
+                                                        ok,
+                                                        summary: ts
+                                                            .result_summary
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                        diff: ts.diff.clone(),
+                                                    }),
+                                                    awaiting_permission: false,
+                                                }
+                                            }
+                                        })
+                                        .collect(),
+                                );
+                            }
+                            Err(e) => {
+                                // Reset telemetry too, so the previous
+                                // session's context/totals/speed don't
+                                // linger on screen.
+                                session_telemetry.update(|t| t.restore_from_conversation(&[]));
+                                error.set(Some(e));
+                            }
+                        }
+                    }
+                    None => {
+                        session_telemetry.update(|t| t.restore_from_conversation(&[]));
+                        messages.set(Vec::new());
+                    }
                 }
             });
         });
@@ -1512,7 +2708,6 @@ pub fn App() -> impl IntoView {
     }
 
     // The model chosen for the active session (drives the picker's value).
-    let selected_model = RwSignal::new(Option::<String>::None);
     Effect::new(move || {
         let sel = active_session
             .get()
@@ -1543,6 +2738,59 @@ pub fn App() -> impl IntoView {
         let diff = open.as_ref().and_then(|p| pending.get(p).cloned());
         pending_diff.set(diff);
     });
+
+    let git_head_content = RwSignal::new(Option::<String>::None);
+
+    let git_head_diff = Signal::derive(move || {
+        let open = ws_open_file.get()?;
+        let old = git_head_content.get();
+        let new = ws_content.get();
+        if old.is_none() && new.is_empty() {
+            return None;
+        }
+        Some(FileDiff {
+            path: open,
+            old,
+            new,
+        })
+    });
+
+    // Reset git_head_content when open file changes
+    Effect::new(move || {
+        let _ = ws_open_file.get();
+        git_head_content.set(None);
+    });
+
+    let on_load_git_diff = {
+        let api = api_ref.get();
+        Callback::new(move |_| {
+            let Some(file_path) = ws_open_file.get() else {
+                return;
+            };
+            let pid = active_project.get();
+            let api = api.clone();
+            spawn_local(async move {
+                match api.git_file_head(pid, &file_path).await {
+                    Ok(content) => {
+                        git_head_content.set(Some(content));
+                    }
+                    Err(_) => {
+                        git_head_content.set(Some(String::new()));
+                    }
+                }
+            });
+        })
+    };
+
+    let on_discard_git_diff = {
+        Callback::new(move |_| {
+            if let Some(head) = git_head_content.get() {
+                ws_content.set(head);
+                ws_dirty.set(false);
+                on_save.run(());
+            }
+        })
+    };
 
     // Agentic file tools only run for remote (Spin-hosted) projects; the
     // backend can't reach a local-mode project's browser-side files.
@@ -1596,8 +2844,9 @@ pub fn App() -> impl IntoView {
                     on_open_project=on_open_project
                     on_delete_project=on_delete_project
                 />
-            <div class="app-body">
+            <div class=move || if active_resizer.get() != ActiveResizer::None { "app-body is-resizing" } else { "app-body" }>
                 <Sidebar
+                    width=Signal::from(sidebar_width.read_only())
                     connections=connections.read_only()
                     show_conn_form=show_conn_form.read_only()
                     conn_edit_id=conn_edit_id.read_only()
@@ -1609,6 +2858,8 @@ pub fn App() -> impl IntoView {
                     set_conn_base_url=conn_base_url.write_only()
                     conn_model=conn_model.read_only()
                     set_conn_model=conn_model.write_only()
+                    conn_context_limit=conn_context_limit.read_only()
+                    set_conn_context_limit=conn_context_limit.write_only()
                     on_new_connection=on_new_connection
                     on_edit_connection=on_edit_connection
                     on_save_connection=on_save_connection
@@ -1634,7 +2885,28 @@ pub fn App() -> impl IntoView {
                     on_cancel_prompt=on_cancel_prompt
                     on_delete_prompt=on_delete_prompt
                 />
+                <div
+                    class=move || if active_resizer.get() == ActiveResizer::Sidebar { "panel-resizer is-active" } else { "panel-resizer" }
+                    title="Drag to resize sidebar, double-click to reset"
+                    on:pointerdown=move |ev: web_sys::PointerEvent| {
+                        ev.prevent_default();
+                        resizer_start_x.set(ev.client_x());
+                        resizer_start_w.set(sidebar_width.get());
+                        active_resizer.set(ActiveResizer::Sidebar);
+                    }
+                    on:dblclick={
+                        let api = api_ref.get();
+                        move |_| {
+                            sidebar_width.set(240.0);
+                            let api = api.clone();
+                            spawn_local(async move {
+                                let _ = api.set_setting("panel_sidebar_width", "240").await;
+                            });
+                        }
+                    }
+                />
                 <FileTree
+                    width=Signal::from(tree_width.read_only())
                     entries=ws_entries.read_only()
                     expanded=ws_expanded.read_only()
                     open_file=ws_open_file.read_only()
@@ -1645,19 +2917,70 @@ pub fn App() -> impl IntoView {
                     on_new_dir=on_new_dir
                     on_search=on_search
                     on_clear_search=on_clear_search
+                    git_status=git_status.read_only().into()
                 />
-                <Editor
-                    open_file=ws_open_file.read_only()
-                    content=ws_content.read_only()
-                    set_content=ws_content.write_only()
-                    dirty=ws_dirty.read_only()
-                    set_dirty=ws_dirty.write_only()
-                    pending_diff=pending_diff.read_only()
-                    on_save=on_save
-                    on_accept=on_accept
-                    on_reject=on_reject
+                <div
+                    class=move || if active_resizer.get() == ActiveResizer::Tree { "panel-resizer is-active" } else { "panel-resizer" }
+                    title="Drag to resize file tree / diff viewer, double-click to reset"
+                    on:pointerdown=move |ev: web_sys::PointerEvent| {
+                        ev.prevent_default();
+                        resizer_start_x.set(ev.client_x());
+                        resizer_start_w.set(tree_width.get());
+                        active_resizer.set(ActiveResizer::Tree);
+                    }
+                    on:dblclick={
+                        let api = api_ref.get();
+                        move |_| {
+                            tree_width.set(260.0);
+                            let api = api.clone();
+                            spawn_local(async move {
+                                let _ = api.set_setting("panel_tree_width", "260").await;
+                            });
+                        }
+                    }
+                />
+                <div class="center-pane">
+                    <Editor
+                        open_file=ws_open_file.read_only()
+                        content=ws_content.read_only()
+                        set_content=ws_content.write_only()
+                        dirty=ws_dirty.read_only()
+                        set_dirty=ws_dirty.write_only()
+                        pending_diff=pending_diff.read_only()
+                        media_url=ws_media_url.read_only().into()
+                        git_head_diff=git_head_diff
+                        on_load_git_diff=on_load_git_diff
+                        on_discard_git_diff=on_discard_git_diff
+                        on_save=on_save
+                        on_accept=on_accept
+                        on_reject=on_reject
+                    />
+                    <Show when=move || show_terminal.get() fallback=|| ()>
+                        <TerminalPane on_close=move || show_terminal.set(false) />
+                    </Show>
+                </div>
+                <div
+                    class=move || if active_resizer.get() == ActiveResizer::Chat { "panel-resizer is-active" } else { "panel-resizer" }
+                    title="Drag to resize diff viewer / chat pane, double-click to reset"
+                    on:pointerdown=move |ev: web_sys::PointerEvent| {
+                        ev.prevent_default();
+                        resizer_start_x.set(ev.client_x());
+                        resizer_start_w.set(chat_width.get());
+                        active_resizer.set(ActiveResizer::Chat);
+                    }
+                    on:dblclick={
+                        let api = api_ref.get();
+                        move |_| {
+                            chat_width.set(420.0);
+                            let api = api.clone();
+                            spawn_local(async move {
+                                let _ = api.set_setting("panel_chat_width", "420").await;
+                            });
+                        }
+                    }
                 />
                 <ChatPane
+                    width=Signal::from(chat_width.read_only())
                     messages=messages.read_only()
                     streaming=streaming.read_only()
                     draft=draft.read_only()
@@ -1670,9 +2993,21 @@ pub fn App() -> impl IntoView {
                     on_send=on_send
                     on_stop=on_stop
                     on_permission=on_permission
+                    on_permission_always=on_permission_always
+                    active_context=active_editor_context.read_only()
+                    set_active_context=active_editor_context.write_only()
+                    session_telemetry=session_telemetry.read_only()
+                    on_slash_command=on_slash_command
                 />
             </div>
-            <StatusBar health=health.read_only() />
+            <StatusBar
+                health=health.read_only()
+                show_terminal=show_terminal.read_only()
+                on_toggle_terminal=on_toggle_terminal
+                git_status=git_status.read_only().into()
+                on_branch_click=on_branch_click
+                on_sync_click=on_sync_click
+            />
             <Show when=move || show_settings.get() fallback=|| ()>
                 <Settings
                     theme=theme.read_only()

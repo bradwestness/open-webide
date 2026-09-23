@@ -11,9 +11,14 @@ use std::pin::Pin;
 
 use futures::{Stream, stream};
 use openwebide_core::{
-    ChatMessage, ChatRequest, ChatResponse, FileDiff, Role, ToolCall, ToolDefinition,
+    ChatMessage, ChatRequest, ChatResponse, FileDiff, Role, ToolCall, ToolDefinition, TurnTelemetry,
 };
 use openwebide_llm::LlmProvider;
+
+pub mod vfs_executor;
+pub use vfs_executor::{
+    BridgeClient, NoopBridgeClient, NoopWebClient, VfsToolExecutor, WebClient, vfs_tools,
+};
 
 /// Budgets that bound a single agent run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +85,9 @@ pub enum AgentEvent {
     Error(String),
     /// The user cancelled the run; no final text will follow.
     Cancelled,
+    /// Usage for one model call; emitted after each `chat_tools` that
+    /// reports usage, before its tool calls or final text.
+    Telemetry(TurnTelemetry),
 }
 
 /// Executes the tool calls the model requests.
@@ -187,6 +195,7 @@ where
             tool_calls: 0,
             pending: Vec::new(),
             current: None,
+            response: None,
             next: Next::CallModel,
         },
         |mut state| async move {
@@ -221,11 +230,26 @@ where
                                 state.next = Next::Stop;
                                 return Some((AgentEvent::Error(e.to_string()), state));
                             }
-                            Ok(ChatResponse::Text(text)) => {
+                            Ok(completion) => {
+                                state.response = Some(completion.response);
+                                state.next = Next::HandleResponse;
+                                if let Some(usage) = completion.usage {
+                                    return Some((AgentEvent::Telemetry(usage), state));
+                                }
+                            }
+                        }
+                    }
+                    Next::HandleResponse => {
+                        match state
+                            .response
+                            .take()
+                            .expect("HandleResponse without a response")
+                        {
+                            ChatResponse::Text(text) => {
                                 state.next = Next::Stop;
                                 return Some((AgentEvent::FinalText(text), state));
                             }
-                            Ok(ChatResponse::ToolCalls(calls)) => {
+                            ChatResponse::ToolCalls(calls) => {
                                 state.messages.push(ChatMessage {
                                     id: 0,
                                     session_id: 0,
@@ -234,6 +258,7 @@ where
                                     created_at: 0,
                                     tool_calls: Some(calls.clone()),
                                     tool_call_id: None,
+                                    usage: None,
                                 });
                                 state.pending = calls;
                                 state.next = Next::EmitToolCall;
@@ -309,6 +334,7 @@ where
                                 created_at: 0,
                                 tool_calls: None,
                                 tool_call_id: Some(call.id.clone()),
+                                usage: None,
                             });
                             state.next = Next::EmitToolCall;
                             return Some((
@@ -352,6 +378,7 @@ where
                             created_at: 0,
                             tool_calls: None,
                             tool_call_id: Some(call.id.clone()),
+                            usage: None,
                         });
                         state.next = Next::EmitToolCall;
                         return Some((
@@ -389,6 +416,9 @@ struct LoopState<P, T, C, G> {
     pending: Vec<ToolCall>,
     /// The call currently being executed (set between Emit and Run).
     current: Option<ToolCall>,
+    /// The model's response, set by `CallModel` and consumed by
+    /// `HandleResponse`.
+    response: Option<ChatResponse>,
     next: Next,
 }
 
@@ -396,6 +426,7 @@ struct LoopState<P, T, C, G> {
 #[derive(Debug, Clone, Copy)]
 enum Next {
     CallModel,
+    HandleResponse,
     EmitToolCall,
     AwaitPermission,
     RunTool,
@@ -409,19 +440,28 @@ mod tests {
 
     use super::*;
     use futures::StreamExt;
-    use openwebide_core::{ModelInfo, ProviderKind};
-    use openwebide_llm::ProviderError;
+    use openwebide_core::{ChatCompletion, ModelInfo, ProviderKind};
+    use openwebide_llm::{ProviderError, StreamChunk};
+
+    /// Wrap a response with no usage, matching what a provider that reports
+    /// nothing (or an older backend) returns.
+    fn no_usage(response: ChatResponse) -> ChatCompletion {
+        ChatCompletion {
+            response,
+            usage: None,
+        }
+    }
 
     /// A scriptable provider: `chat_tools` pops the next queued response and
     /// records every request it is given.
     struct FakeProvider {
-        responses: Arc<Mutex<VecDeque<Result<ChatResponse, ProviderError>>>>,
+        responses: Arc<Mutex<VecDeque<Result<ChatCompletion, ProviderError>>>>,
         requests: Arc<Mutex<Vec<ChatRequest>>>,
     }
 
     impl FakeProvider {
         fn new(
-            responses: Vec<Result<ChatResponse, ProviderError>>,
+            responses: Vec<Result<ChatCompletion, ProviderError>>,
         ) -> (Self, Arc<Mutex<Vec<ChatRequest>>>) {
             let requests = Arc::new(Mutex::new(Vec::new()));
             (
@@ -447,16 +487,23 @@ mod tests {
         fn chat_stream(
             &self,
             _request: &ChatRequest,
-        ) -> Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>>
+        {
             Box::pin(stream::empty())
         }
-        async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatResponse, ProviderError> {
+        async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
             self.requests.lock().unwrap().push(request.clone());
             self.responses
                 .lock()
                 .unwrap()
                 .pop_front()
-                .unwrap_or(Ok(ChatResponse::Text(String::new())))
+                .unwrap_or_else(|| Ok(no_usage(ChatResponse::Text(String::new()))))
+        }
+        async fn context_limit(
+            &self,
+            _model: Option<&str>,
+        ) -> Result<Option<usize>, ProviderError> {
+            Ok(None)
         }
     }
 
@@ -521,6 +568,7 @@ mod tests {
                 created_at: 0,
                 tool_calls: None,
                 tool_call_id: None,
+                usage: None,
             }],
             tools: vec![ToolDefinition {
                 name: "read_file".into(),
@@ -538,8 +586,8 @@ mod tests {
     fn runs_tools_then_final_text() {
         let read = call("call_0", "read_file", r#"{"path":"src/main.rs"}"#);
         let (provider, requests) = FakeProvider::new(vec![
-            Ok(ChatResponse::ToolCalls(vec![read.clone()])),
-            Ok(ChatResponse::Text("fixed it".into())),
+            Ok(no_usage(ChatResponse::ToolCalls(vec![read.clone()]))),
+            Ok(no_usage(ChatResponse::Text("fixed it".into()))),
         ]);
         let executor = FakeExecutor::new(vec![outcome("fn main() {}", "read src/main.rs")]);
 
@@ -590,9 +638,68 @@ mod tests {
     }
 
     #[test]
+    fn emits_telemetry_before_each_response_with_usage() {
+        let read = call("call_0", "read_file", r#"{"path":"src/main.rs"}"#);
+        let usage_1 = TurnTelemetry {
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            eval_duration_ms: 500,
+            estimated: false,
+        };
+        let usage_2 = TurnTelemetry {
+            prompt_tokens: 150,
+            completion_tokens: 20,
+            eval_duration_ms: 400,
+            estimated: false,
+        };
+        let (provider, _requests) = FakeProvider::new(vec![
+            Ok(ChatCompletion {
+                response: ChatResponse::ToolCalls(vec![read]),
+                usage: Some(usage_1),
+            }),
+            Ok(ChatCompletion {
+                response: ChatResponse::Text("fixed it".into()),
+                usage: Some(usage_2),
+            }),
+        ]);
+        let executor = FakeExecutor::new(vec![outcome("fn main() {}", "read src/main.rs")]);
+
+        let events = collect(run(
+            provider,
+            executor,
+            request(),
+            AgentConfig::default(),
+            NoopCancel,
+            NoopGate,
+        ));
+
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::Telemetry(usage_1),
+                AgentEvent::ToolCall {
+                    id: "call_0".into(),
+                    name: "read_file".into(),
+                    summary: r#"read_file {"path":"src/main.rs"}"#.into(),
+                },
+                AgentEvent::ToolResult {
+                    id: "call_0".into(),
+                    name: "read_file".into(),
+                    ok: true,
+                    summary: "read src/main.rs".into(),
+                    diff: None,
+                },
+                AgentEvent::Telemetry(usage_2),
+                AgentEvent::FinalText("fixed it".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn final_text_only_when_no_tools() {
-        let (provider, requests) =
-            FakeProvider::new(vec![Ok(ChatResponse::Text("just an answer".into()))]);
+        let (provider, requests) = FakeProvider::new(vec![Ok(no_usage(ChatResponse::Text(
+            "just an answer".into(),
+        )))]);
         let executor = FakeExecutor::new(Vec::new());
 
         let events = collect(run(
@@ -612,8 +719,16 @@ mod tests {
     fn stops_on_turn_budget() {
         // Two turns of tool calls, then the budget (2) is hit before a third.
         let (provider, _requests) = FakeProvider::new(vec![
-            Ok(ChatResponse::ToolCalls(vec![call("a", "read_file", "{}")])),
-            Ok(ChatResponse::ToolCalls(vec![call("b", "read_file", "{}")])),
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "a",
+                "read_file",
+                "{}",
+            )]))),
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "b",
+                "read_file",
+                "{}",
+            )]))),
         ]);
         let executor = FakeExecutor::new(vec![outcome("1", "s1"), outcome("2", "s2")]);
 
@@ -664,10 +779,11 @@ mod tests {
     #[test]
     fn stops_on_tool_budget() {
         // One turn returns two tool calls, but only one is allowed.
-        let (provider, _requests) = FakeProvider::new(vec![Ok(ChatResponse::ToolCalls(vec![
-            call("a", "read_file", "{}"),
-            call("b", "read_file", "{}"),
-        ]))]);
+        let (provider, _requests) =
+            FakeProvider::new(vec![Ok(no_usage(ChatResponse::ToolCalls(vec![
+                call("a", "read_file", "{}"),
+                call("b", "read_file", "{}"),
+            ])))]);
         let executor = FakeExecutor::new(vec![outcome("1", "s1")]);
 
         let events = collect(run(
@@ -739,8 +855,12 @@ mod tests {
     #[test]
     fn stops_when_cancel_requested() {
         let (provider, _requests) = FakeProvider::new(vec![
-            Ok(ChatResponse::ToolCalls(vec![call("a", "read_file", "{}")])),
-            Ok(ChatResponse::Text("too late".into())),
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "a",
+                "read_file",
+                "{}",
+            )]))),
+            Ok(no_usage(ChatResponse::Text("too late".into()))),
         ]);
         let executor = FakeExecutor::new(vec![outcome("1", "s1")]);
 
@@ -791,12 +911,12 @@ mod tests {
     #[test]
     fn denies_gated_tool_when_user_denies() {
         let (provider, requests) = FakeProvider::new(vec![
-            Ok(ChatResponse::ToolCalls(vec![call(
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
                 "c1",
                 "write_file",
                 "{}",
-            )])),
-            Ok(ChatResponse::Text("skipped it".into())),
+            )]))),
+            Ok(no_usage(ChatResponse::Text("skipped it".into()))),
         ]);
         let executor = FakeExecutor::new(Vec::new());
 
@@ -843,12 +963,12 @@ mod tests {
     #[test]
     fn runs_gated_tool_when_user_approves() {
         let (provider, _requests) = FakeProvider::new(vec![
-            Ok(ChatResponse::ToolCalls(vec![call(
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
                 "c1",
                 "write_file",
                 "{}",
-            )])),
-            Ok(ChatResponse::Text("done".into())),
+            )]))),
+            Ok(no_usage(ChatResponse::Text("done".into()))),
         ]);
         let executor = FakeExecutor::new(vec![outcome("wrote", "wrote src/main.rs")]);
 

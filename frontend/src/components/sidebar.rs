@@ -15,6 +15,8 @@ pub fn Sidebar(
     set_conn_base_url: WriteSignal<String>,
     conn_model: ReadSignal<String>,
     set_conn_model: WriteSignal<String>,
+    conn_context_limit: ReadSignal<String>,
+    set_conn_context_limit: WriteSignal<String>,
     on_new_connection: Callback<()>,
     on_edit_connection: Callback<i64>,
     on_save_connection: Callback<()>,
@@ -39,6 +41,7 @@ pub fn Sidebar(
     on_save_prompt: Callback<()>,
     on_cancel_prompt: Callback<()>,
     on_delete_prompt: Callback<i64>,
+    #[prop(into, optional)] width: Option<Signal<f64>>,
 ) -> impl IntoView {
     // Leptos has no `value` attribute for <textarea>, so the form's content is
     // synced into the DOM node when the form appears.
@@ -52,7 +55,10 @@ pub fn Sidebar(
     });
 
     view! {
-        <aside class="sidebar">
+        <aside
+            class="sidebar"
+            style=move || width.map(|w| format!("width: {}px; flex: none;", w.get())).unwrap_or_default()
+        >
             // -- sessions (scoped to the active project) ---------------------
             <div class="sidebar-section">
                 <div class="section-header">
@@ -220,6 +226,30 @@ pub fn Sidebar(
                                 }
                             }
                         />
+                        <input
+                            type="text"
+                            class="form-input"
+                            inputmode="numeric"
+                            placeholder="Context limit in tokens (optional)"
+                            value=move || conn_context_limit.get()
+                            on:input=move |e: web_sys::Event| {
+                                if let Some(target) = e.target()
+                                    && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
+                                {
+                                    set_conn_context_limit.set(input.value());
+                                }
+                            }
+                        />
+                        <div class="form-hint">
+                            {move || match conn_kind.get() {
+                                ProviderKind::Ollama => {
+                                    "Sent to Ollama as num_ctx on every request. Leave blank to use the model's default."
+                                }
+                                ProviderKind::LlamaCpp => {
+                                    "Display only: llama.cpp's context size is fixed when llama-server starts (-c / --ctx-size). Set this to match it, or leave blank to read it from the server."
+                                }
+                            }}
+                        </div>
                         <div class="form-actions">
                             <button
                                 class="btn send"

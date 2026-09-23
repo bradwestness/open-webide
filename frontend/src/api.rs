@@ -3,9 +3,11 @@
 use gloo_net::http::{Method, Request, RequestBuilder};
 use leptos::prelude::*;
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, FileEntry, Health,
-    ModelInfo, NewConnection, NewProject, NewSession, Project, ProviderKind, SearchHit,
-    SystemPrompt, User, WorkspaceMode,
+    ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
+    EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
+    GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest, GitSyncResult, Health,
+    ModelInfo, NewConnection, NewProject, NewSession, Project, ProviderKind, Role, SearchHit,
+    SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -34,9 +36,10 @@ pub enum HealthState {
 }
 
 /// A server-sent event from the message stream.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SseEvent {
-    /// The user message that was persisted before the stream started.
+    /// A completed message, emitted immediately for the user message and
+    /// once at the end of a non-streaming run.
     Message(ChatMessage),
     /// A token delta appended to the in-progress assistant reply.
     Delta(String),
@@ -56,6 +59,7 @@ pub enum SseEvent {
     /// A tool call finished.
     ToolResult {
         id: String,
+        #[allow(dead_code)]
         name: String,
         ok: bool,
         summary: String,
@@ -63,6 +67,8 @@ pub enum SseEvent {
     },
     /// The final, persisted assistant reply.
     Done(ChatMessage),
+    /// Telemetry metrics for the turn.
+    Telemetry(TurnTelemetry),
     /// The run was cancelled; the stream ends after this.
     Cancelled,
     /// A provider or persistence error; the stream ends after this.
@@ -87,6 +93,11 @@ impl BackendApi {
             base,
             token: RwSignal::new(read_token_from_storage()),
         }
+    }
+
+    /// The base API URL (e.g. `http://localhost:3000/api`).
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     // -- auth --------------------------------------------------------------
@@ -150,12 +161,14 @@ impl BackendApi {
         kind: ProviderKind,
         base_url: &str,
         model: Option<&str>,
+        context_limit: Option<usize>,
     ) -> Result<Connection, String> {
         let body = NewConnection {
             name: name.to_string(),
             kind,
             base_url: base_url.to_string(),
             model: model.map(str::to_string),
+            context_limit,
         };
         self.post("/connections", &body).await
     }
@@ -378,6 +391,78 @@ impl BackendApi {
         .await
     }
 
+    // -- git operations (Phase 13) -----------------------------------------
+
+    fn git_endpoint(&self, project_id: Option<i64>, sub: &str) -> String {
+        if let Some(id) = project_id {
+            format!("/projects/{id}/git/{sub}")
+        } else {
+            format!("/git/{sub}")
+        }
+    }
+
+    pub async fn git_status(&self, project_id: Option<i64>) -> Result<GitRepoStatus, String> {
+        self.get(&self.git_endpoint(project_id, "status")).await
+    }
+
+    pub async fn git_diff(
+        &self,
+        project_id: Option<i64>,
+        path: Option<&str>,
+    ) -> Result<String, String> {
+        let ep = self.git_endpoint(project_id, "diff");
+        let query = match path {
+            Some(p) => format!("{ep}?path={}", urlenc(p)),
+            None => ep,
+        };
+        let res: serde_json::Value = self.get(&query).await?;
+        Ok(res["diff"].as_str().unwrap_or_default().to_string())
+    }
+
+    pub async fn git_file_head(
+        &self,
+        project_id: Option<i64>,
+        path: &str,
+    ) -> Result<String, String> {
+        let ep = self.git_endpoint(project_id, "show");
+        let query = format!("{ep}?path={}", urlenc(path));
+        let res: serde_json::Value = self.get(&query).await?;
+        Ok(res["content"].as_str().unwrap_or_default().to_string())
+    }
+
+    pub async fn git_branches(
+        &self,
+        project_id: Option<i64>,
+    ) -> Result<Vec<GitBranchInfo>, String> {
+        self.get(&self.git_endpoint(project_id, "branches")).await
+    }
+
+    pub async fn git_commit(
+        &self,
+        project_id: Option<i64>,
+        req: &GitCommitRequest,
+    ) -> Result<GitCommitResult, String> {
+        self.post(&self.git_endpoint(project_id, "commit"), req)
+            .await
+    }
+
+    pub async fn git_checkout(
+        &self,
+        project_id: Option<i64>,
+        req: &GitCheckoutRequest,
+    ) -> Result<GitCheckoutResult, String> {
+        self.post(&self.git_endpoint(project_id, "checkout"), req)
+            .await
+    }
+
+    pub async fn git_sync(
+        &self,
+        project_id: Option<i64>,
+        req: &GitSyncRequest,
+    ) -> Result<GitSyncResult, String> {
+        self.post(&self.git_endpoint(project_id, "sync"), req).await
+    }
+
     pub async fn rename_session(&self, id: i64, name: &str) -> Result<ChatSession, String> {
         self.put(&format!("/sessions/{id}"), &json!({ "name": name }))
             .await
@@ -424,6 +509,116 @@ impl BackendApi {
         self.get(&format!("/sessions/{session_id}/messages")).await
     }
 
+    /// Complete a tool-capable chat request via the backend provider.
+    pub async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, String> {
+        self.post("/chat-tools", request).await
+    }
+
+    /// Persist a user or assistant message to the session.
+    pub async fn persist_message(
+        &self,
+        session_id: i64,
+        role: Role,
+        content: &str,
+        usage: Option<&TurnTelemetry>,
+    ) -> Result<ChatMessage, String> {
+        self.post(
+            &format!("/sessions/{session_id}/messages/persist"),
+            &json!({ "role": role, "content": content, "usage": usage }),
+        )
+        .await
+    }
+
+    /// The model's context window, in tokens, as resolved by the backend
+    /// (the connection's configured value, else provider discovery).
+    /// `Ok(None)` when neither source reports one.
+    pub async fn model_context(
+        &self,
+        connection_id: i64,
+        model: Option<&str>,
+    ) -> Result<Option<usize>, String> {
+        let mut path = format!("/models/context?connection_id={connection_id}");
+        if let Some(m) = model {
+            path.push_str(&format!("&model={}", urlenc(m)));
+        }
+        let value: serde_json::Value = self.get(&path).await?;
+        Ok(value
+            .get("context_limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize))
+    }
+
+    /// Record (or refresh) an agent tool step.
+    pub async fn upsert_tool_step(
+        &self,
+        session_id: i64,
+        anchor_message_id: i64,
+        tool_call_id: &str,
+        name: &str,
+        summary: &str,
+    ) -> Result<(), String> {
+        let _value: serde_json::Value = self
+            .post(
+                &format!("/sessions/{session_id}/tool-steps/upsert"),
+                &json!({
+                    "anchor_message_id": anchor_message_id,
+                    "tool_call_id": tool_call_id,
+                    "name": name,
+                    "summary": summary,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Record the final outcome of an agent tool step.
+    pub async fn complete_tool_step(
+        &self,
+        session_id: i64,
+        tool_call_id: &str,
+        ok: bool,
+        result_summary: &str,
+        diff: Option<&FileDiff>,
+    ) -> Result<(), String> {
+        let _value: serde_json::Value = self
+            .post(
+                &format!("/sessions/{session_id}/tool-steps/complete"),
+                &json!({
+                    "tool_call_id": tool_call_id,
+                    "ok": ok,
+                    "result_summary": result_summary,
+                    "diff": diff,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Search the web for documentation, API references, or solutions.
+    pub async fn web_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<WebSearchResult>, String> {
+        self.get(&format!(
+            "/web/search?query={}&limit={}",
+            urlenc(query),
+            limit
+        ))
+        .await
+    }
+
+    /// Fetch a web page and return sanitized Markdown.
+    pub async fn fetch_web_page(&self, target_url: &str) -> Result<String, String> {
+        let resp: serde_json::Value = self
+            .get(&format!("/web/fetch?url={}", urlenc(target_url)))
+            .await?;
+        resp.get("content")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "missing content in web fetch response".to_string())
+    }
+
     /// Send a user message and stream the assistant reply back via SSE.
     ///
     /// `on_event` is invoked for every event as it arrives. Returns `Err` on
@@ -433,6 +628,7 @@ impl BackendApi {
         session_id: i64,
         content: &str,
         model: Option<&str>,
+        editor_context: Option<&EditorContext>,
         signal: Option<&AbortSignal>,
         mut on_event: impl FnMut(SseEvent),
     ) -> Result<(), String> {
@@ -442,7 +638,11 @@ impl BackendApi {
         }
         let req = builder
             .abort_signal(signal)
-            .json(&json!({ "content": content, "model": model }))
+            .json(&json!({
+                "content": content,
+                "model": model,
+                "editor_context": editor_context,
+            }))
             .map_err(|e| e.to_string())?;
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.ok() {
@@ -586,6 +786,7 @@ fn parse_sse_frame(frame: &str) -> Option<SseEvent> {
                 .and_then(|d| serde_json::from_value(d.clone()).ok().flatten()),
         },
         "done" => SseEvent::Done(serde_json::from_value(value).ok()?),
+        "telemetry" => SseEvent::Telemetry(serde_json::from_value(value).ok()?),
         "cancelled" => SseEvent::Cancelled,
         "error" => SseEvent::Error(value.get("error")?.as_str()?.to_string()),
         _ => return None,
@@ -600,7 +801,7 @@ fn query_param(query: &str, key: &str) -> Option<String> {
 }
 
 /// The bearer token cached in localStorage, if any.
-fn read_token_from_storage() -> Option<String> {
+pub fn read_token_from_storage() -> Option<String> {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
         .and_then(|ls| ls.get_item("owide_token").ok().flatten())
@@ -619,7 +820,7 @@ fn clear_token_from_storage() {
 }
 
 /// Percent-encode a path or query value, leaving unreserved characters intact.
-fn urlenc(s: &str) -> String {
+pub fn urlenc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {

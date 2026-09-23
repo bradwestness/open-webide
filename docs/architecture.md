@@ -9,6 +9,12 @@
    interface so the UI never cares which engine is serving.
 3. **File-based persistence.** SQLite, the same shape Open WebUI uses,
    storing preferences, LLM connections, settings, and system prompts.
+4. **Single shared core, thin boundary shims.** Avoid dual implementations.
+   Everything above the I/O boundary (the agent loop, VFS tool execution,
+   editor surface, diff computation, and in-memory WASM linting) is 100% shared
+   code. Local and Remote modes are strictly thin shims bridging the physical
+   I/O boundary (Spin REST vs. browser File System Access handles), ensuring
+   features never drift between modes.
 
 ## Components
 
@@ -27,9 +33,12 @@ browser
 
 ### `crates/core`
 
-Plain data types shared by every other crate: `Connection`, `ChatSession`,
-`ChatMessage`, `SystemPrompt`, `ModelInfo`, `ChatRequest`, `Health`, and
-the enums `ProviderKind` / `Role`. All `serde`-serializable; no I/O.
+Plain data types shared by every other crate: `Connection` (with an optional
+per-connection `context_limit` override for the model's context window),
+`ChatSession`, `ChatMessage`, `SystemPrompt`, `ModelInfo`, `ChatRequest`,
+`Health`, and the enums `ProviderKind` / `Role`. Also `tui::TurnTelemetry` /
+`SessionTelemetry`, the token/speed/context-window accounting behind the TUI
+statusline. All `serde`-serializable; no I/O.
 
 ### `crates/llm`
 
@@ -120,17 +129,18 @@ The IDE operates on a project folder. Where that folder lives defines two
 modes; the UI is mode-agnostic, sitting behind a `Workspace` trait in the
 frontend with one impl per mode.
 
-**Remote mode** — the folder is on the machine running Spin:
+**Remote mode** — the folder lives on the machine running Open WebIDE / the host:
 
-- Spin `filesystem` capability on the backend component:
-  `filesystem = [{ permissions = "readwrite", guest_path = "/workspace",
-  host_path = "/workspace" }]`
-- Container deployment mounts a host directory at `/workspace` (compose
-  volume); bare `spin up` uses a local directory
-- The backend exposes a file API (`/api/files`: list, read, write, search)
-  and the frontend calls it like any other REST endpoint
-- The agent edits the mounted folder on the host; the LLM also runs on the
-  host (outbound HTTP to localhost is already permitted)
+- Operates on repositories on the host machine, accessed either via Spin's mounted
+  filesystem or dynamically via the host bridge Unix socket (`~/.openwebide/bridge.sock`).
+- Dynamic `~/` Access: Instead of being confined to a single static folder, Remote mode
+  allows opening, browsing, and switching between any repository under the user's home
+  directory (`~/source/...`, `~/projects/...`) in multi-project tabs.
+- The backend exposes a file API (`/api/files`: list, read, write, search) and git API,
+  and the frontend calls it like any other REST/WebSocket endpoint.
+- The agent edits project files and executes commands directly in the native host
+  directory with full access to host Git identity and toolchains.
+- The LLM also runs on the host (outbound HTTP to localhost is already permitted).
 
 **Local mode** — the folder is on the machine running the browser:
 
@@ -143,15 +153,40 @@ frontend with one impl per mode.
   calls the provider directly via gloo-net (mirroring the backend's
   `HttpClient`); Ollama needs `OLLAMA_ORIGINS` set to the page's origin
 
-Constraints:
+Constraints & Device Roles:
 
-- The File System Access API is Chromium-only (Chrome/Edge). Firefox/Safari
-  get a read-only fallback (`<input webkitdirectory>`) or no local mode.
+- **Desktop + Mobile Workflow (Shared Sessions):** Remote mode is not just for
+  remote servers. When running Open WebIDE on a workstation alongside local LLMs,
+  using Remote mode on your desktop (`http://localhost:3000`) and on your phone or
+  tablet (`http://workstation:3000` via LAN/Tailscale) means both devices view the
+  exact same projects and chat sessions stored in backend SQLite. You can prompt
+  the agent at your desk, walk away, and monitor streaming tool steps and review
+  diffs on your mobile device without any session desynchronization.
+- **Local Mode Role:** Local mode is specifically designed for accessing an
+  Open WebIDE deployment from a laptop with private, on-disk repositories that you
+  do not want to mount or upload to the host.
+- The File System Access API is Chromium-only (Chrome/Edge). Mobile browsers
+  (iOS Safari, Android Chrome) do not support directory picking, making mobile
+  devices natural Remote-mode control clients.
 - Keep the modes coherent: remote = files + LLM on the host, local = files +
   LLM on the laptop. A mixed split (remote files, local LLM) is deferred.
 
+### Virtual File System (VFS) & process execution
+
+To keep the agent completely decoupled from the underlying storage mechanism, file
+tools operate against a unified `Vfs` abstraction (Phase 10). Whether backed by
+Spin's mounted filesystem on the host or browser directory handles in local mode,
+the agent interacts with standard POSIX paths without mode-specific branching.
+
+For process execution and terminal access (Phase 11), a thin native WebSocket
+bridge handles PTY sessions and command execution outside Spin's WASI sandbox,
+providing execution capabilities (`cargo test`, interactive shell) to both the
+agent and the user.
+
 ## Roadmap
 
-The phase-by-phase plan (scaffold → provider HTTP → chat sessions →
-container deployment → workspace modes → agentic coding → IDE surface →
-distribution) lives in [roadmap.md](roadmap.md).
+What's left — grouped as Now / Next / Later — lives in
+[roadmap.md](roadmap.md); finished work (scaffold through the TUI telemetry
+meters and per-connection context limit) is in
+[CHANGELOG.md](../CHANGELOG.md).
+

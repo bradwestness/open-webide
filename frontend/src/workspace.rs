@@ -28,6 +28,22 @@ impl Workspace {
         }
     }
 
+    pub async fn read_blob_url(&self, path: &str) -> Result<String, String> {
+        match self {
+            Workspace::Remote { api, project_id } => {
+                let token = crate::api::read_token_from_storage().unwrap_or_default();
+                let url = format!(
+                    "{}/projects/{project_id}/files/raw?path={}&token={}",
+                    api.base(),
+                    crate::api::urlenc(path),
+                    crate::api::urlenc(&token),
+                );
+                Ok(url)
+            }
+            Workspace::Local { handle } => local_fs::read_blob_url(handle, path).await,
+        }
+    }
+
     pub async fn write(&self, path: &str, content: &str) -> Result<(), String> {
         match self {
             Workspace::Remote { api, project_id } => {

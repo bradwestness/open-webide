@@ -35,6 +35,9 @@ allowed_outbound_hosts = [
     "*://*.nord:*",
     # Cloudflare Mesh.
     "*://*.cloudflaremesh.com:*",
+    # Outbound web search and documentation fetching
+    "https://*:*",
+    "http://*:*",
 ]
 # Remote-mode workspace: the user's `~/source` directory, preopened into the
 # component. Spin copies `source` into a temp dir and preopens it at `/`.

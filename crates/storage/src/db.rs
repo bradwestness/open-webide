@@ -48,6 +48,13 @@ impl QueryRow {
             ))),
         }
     }
+
+    pub fn get_int_opt(&self, index: usize) -> Option<i64> {
+        match self.values.get(index) {
+            Some(DbValue::Int(i)) => Some(*i),
+            _ => None,
+        }
+    }
 }
 
 /// The outcome of executing a statement.

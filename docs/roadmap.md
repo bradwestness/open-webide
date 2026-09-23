@@ -1,238 +1,166 @@
 # Roadmap
 
-Phase-by-phase plan. Phases 1–6 are the core arc (scaffold → a working
-agentic IDE in a container); 7+ are the IDE surface and distribution work
-that makes it feel like a product. Each phase ends in something runnable.
+What's left, grouped by how soon it's coming: **Now** (in flight), **Next**
+(queued up after it), **Later** (planned, not yet started). Finished work —
+phases 1 through 14, the TUI telemetry meters, and the per-connection context
+limit — moved to [CHANGELOG.md](../CHANGELOG.md).
 
-Status: ✅ done · 🔜 next · ⬜ planned
+## Now
 
-## 1. Scaffold ✅
+### Security hardening, bridge robustness & agent streaming
 
-Repo layout and a compiling, tested skeleton.
+A sequence of correctness and hardening passes across every crate, plus
+switching the agent loop from one-shot SSE requests to a single multiplexed
+bridge WebSocket connection:
 
-- Rust workspace: `core` (domain types), `llm` (provider interface +
-  stubs), `storage` (Db abstraction, migrations, repositories)
-- Spin backend: REST API (health, connections, settings, system prompts,
-  models/chat as 501 stubs), SQLite via Spin's `sqlite` capability
-- Leptos frontend shell (top bar, sidebar, chat pane, status bar)
-- CI: fmt, clippy (native + both WASM targets), native tests, WASM builds
-- Verified end-to-end with `spin build --up`
+- **Security hardening:** default-deny tool approval policy, bridge
+  Host/Origin/CORS checks, path-confinement and git argument-injection
+  fixes, auth correctness (secret rotation, clock skew), request/response
+  size bounds, and markdown/SVG XSS closure.
+- **Bridge robustness:** HTTP parsing resilience, process lifecycle
+  (kill/reap/shutdown), output delivery ordering, and a `hello`
+  auth handshake for the bridge connection.
+- **Agent streaming over the bridge WebSocket:** provider and agent-loop
+  streaming of tool-call turns, a typed run protocol over one multiplexed
+  bridge connection, and a frontend fallback to SSE when the bridge is
+  unavailable.
 
-## 2. Provider HTTP ✅
+## Next
 
-Make the LLM calls real. The UI never cares which engine serves.
+### Secondary "fast model" per connection
 
-- Implement `HttpClient` for the backend (Spin outbound HTTP) and a fake
-  for native tests
-- Ollama: `GET /api/tags` (models), `POST /api/chat` (completion)
-- llama.cpp: `GET /v1/models`, `POST /v1/chat/completions`
-  (OpenAI-compatible)
-- Wire `/api/models` and `/api/chat` through `registry::Provider`
-- Friendly errors for unreachable engines (connection refused, bad base
-  URL) instead of opaque 500s
+A second, smaller/faster model configurable per user or per connection
+(the same idea as Qwen Code's second model), used for background work that
+doesn't need the main model's quality: approval classification (see below),
+session naming, and autocomplete/suggestion-style tasks. Falls back to the
+main model when none is configured. Nothing here exists yet — there is no
+secondary-model setting anywhere in `Connection`, `user_settings`, or the
+providers today.
 
-**Done when:** with Ollama running locally, `/api/models` lists real
-models and `/api/chat` returns a completion for a stored connection.
+### Approval modes
 
-## 3. Chat sessions ✅
+A real CLI/TUI-style approval mode selector instead of the current
+per-session single on/off flag (`always_approve_all` in `frontend/src/app.rs`,
+set from the permission prompt's "always" choice):
 
-The Open WebUI-shaped core: conversations you can come back to.
+- **Default** — prompt for every gated tool call (today's behavior).
+- **Auto-accept edits** — file edits are auto-approved; shell commands still
+  prompt.
+- **Auto with a classifier** — the fast model (above) judges whether a given
+  call is safe to auto-approve.
+- **YOLO** — approve everything, no prompts (like Qwen Code's YOLO mode).
 
-- Sessions in the sidebar: new, switch, rename, delete
-- Message persistence (the `sessions`/`messages` tables already exist)
-- Chat pane: markdown rendering, input box, send, stop
-- Streaming responses (SSE from backend to frontend)
-- Per-session system prompt and connection selection
+Cycle modes with `Shift+Tab`; show the current mode in the TUI statusline's
+`[NORMAL]`/`[RUNNING]`/`[AWAITING]` segment, which is also clickable and
+opens a dropdown to pick a mode directly. Depends on the fast model
+(classifier mode) and on the default-deny approval-policy work in the
+hardening entry above.
 
-**Done when:** a multi-turn conversation streams token-by-token and
-survives a page reload, with history in the sidebar.
+### File tree: Explorer / Changes mode
 
-## 4. Container deployment ✅
+Today's file tree (`frontend/src/components/file_tree.rs`) is a single
+"Explorer" view — the full project tree with git status badges inline. Add a
+toggle between **Explorer** (unchanged) and **Changes** (only files with a
+git status, badges still shown), for jumping straight to what's dirty
+without scrolling a large tree.
 
-One image, one port, one volume — the whole stack in a single container.
+### Code intelligence: in-browser WASM linters & LSP
 
-- Multi-stage `Dockerfile` (builder runs `spin build`; runtime is Spin +
-  prebuilt components)
-- `docker-compose.yml`: host 8080 → container 3000, named volume for
-  SQLite
-- Podman quadlet units documented for Linux (`docs/podman-quadlet.md`)
-- Verified: all endpoints on 8080, data persists across container
-  recreation
+Run lightweight WebAssembly linters directly in the browser for instant diagnostics, with no
+language runtimes on the host, and optionally bridge to host language servers.
 
-## 5. Workspace modes ✅
+Bring real-time code intelligence (syntax errors, lint squiggles, tooltips,
+autocomplete) into the editor while keeping the core diagnostics engine
+100% shared between Remote and Local mode:
 
-The IDE operates on a project folder. Where it lives defines the mode;
-the UI sits behind a `Workspace` type with one variant per mode.
+- Universal in-browser WASM linters running in a Web Worker against the
+  active editor buffer: `ruff-wasm` (Python), `oxc-wasm`/`biome-wasm`
+  (JS/TS), `syn`/`rustc_lexer` (Rust), `serde_json`/`toml` (configs) — all
+  producing a shared `Diagnostic` struct for the editor's squiggle overlay.
+- Progressive-enhancement host LSP multiplexed over the Phase 11 bridge
+  (`rust-analyzer`, `pyright`, `vtsls`) for cross-file go-to-definition,
+  hover, and autocomplete when a host toolchain is available.
+- One diagnostics UI regardless of whether a diagnostic came from the
+  in-browser linter or a remote host LSP.
 
-**Progress:** Both modes are done. Remote mode (backend file API +
-frontend file tree, browse, create/edit/save) and multi-project tabs are
-verified end-to-end. Local mode (File System Access API) opens a folder
-in the browser, persists the directory handle in IndexedDB, and re-requests
-permission on reload; verified by compile/clippy/build (it needs a real
-browser, so it is not exercised headlessly).
+### Process execution: MCP client & headless browser
 
-- **Remote** (folder on the machine running Spin): Spin `filesystem`
-  capability, backend `/api/files` API (list, read, write, search), host
-  folder mounted in the container
-- **Local** (folder on the machine running the browser): File System
-  Access API via web-sys, directory handle in IndexedDB, frontend calls
-  the provider directly (Ollama needs `OLLAMA_ORIGINS`)
-- File tree in the UI for both modes
-- Mode picker in the sidebar; coherent modes only (remote = files + LLM
-  on host; local = files + LLM on laptop)
-- **Multi-project tabs (Rider-style):** multiple projects open at once,
-  each tab = one project (its workspace + chat sessions); tab bar with
-  new/switch/close. Project is a first-class entity in the data model —
-  sessions and settings belong to a project
+The rest of the Phase 11 bridge work that
+isn't built yet — the bridge's PTY sessions, `run_command` tool, and
+terminal pane are done and in the changelog, but:
 
-**Done when:** you can open a folder in either mode, browse it, and
-create/edit/save a file from the UI, with two projects open in tabs and
-switching between them.
+- **Model Context Protocol (MCP) client:** the bridge spawning configured
+  MCP servers (`~/.openwebide/mcp.json` / `.openwebide/mcp.json`) as host
+  child processes over `stdio`, translating `tools/list` into the agent's
+  `ToolDefinition` schema, and forwarding `tools/call`.
+- **Headless browser via Chrome DevTools Protocol (CDP):** the bridge
+  attaching to a host or sidecar Chrome/Chromium instance to give the agent
+  `browser_navigate`/`browser_screenshot`/`browser_click`/`browser_type`/
+  `browser_console_logs` tools, failing open to `fetch_web_page` when no CDP
+  browser is reachable.
 
-## 6. Agentic coding ✅
+### Server / model settings split
 
-The point of the project: the model edits your code.
+Split today's single `Connection` (kind + name + URL + model) into
+**servers** and **per-model settings**, and generalize the llama.cpp kind:
 
-- Tool-call protocol through both providers (Ollama `tools`, llama.cpp
-  OpenAI-compatible function calling)
-- Agent loop in the backend: model → tool call → execute → result →
-  model, until done or budget exhausted
-- Tools: read file, write file, list directory, search — all confined to
-  the workspace
-- UI: agent steps as cards (which file, what action), diffs for edits
-- Safety: path confinement to the workspace, turn/tool budget, visible
-  stop button
+- **Servers:** kind, URL, an optional API key/extra headers, and a request
+  timeout. No name field — the label is derived from the host (e.g.
+  `ollama @ 192.168.1.20`). Ollama servers also get a `keep_alive` setting.
+- Rename the llama.cpp connection kind to **OpenAI-compatible**, with
+  llama.cpp kept as a preset; the same kind covers vLLM, LM Studio, LocalAI,
+  SGLang, TabbyAPI, llama-swap, and LiteLLM.
+- **Per-model settings** (optional overrides, keyed by server + model):
+  context limit (moves here from the connection, see the per-connection
+  context limit in the changelog), sampling (temperature, top_p, top_k,
+  min_p, repeat penalty, seed), max output tokens, thinking on/off, and tool
+  calling on/off.
+- Auto-detect model capabilities where possible (Ollama's `POST /api/show`
+  `capabilities`: tools, vision, thinking) to hide irrelevant toggles and
+  fall back to plain chat for models that don't support tools.
+- The UI shows just the model name, adding `@ host` only when two servers
+  offer the same model name.
+- **Principle (stated explicitly, applies to all of the above):** works out
+  of the box with sensible defaults. Adding a server needs only a URL (kind
+  auto-detected where possible); every setting is optional with a
+  documented fallback; nothing blocks sending the first prompt.
 
-**Done when:** "fix the failing test in this folder" → the agent reads,
-edits, and reports, with every step visible in the conversation.
+This also reframes the secondary "fast model" above as a per-model setting
+rather than a bare per-connection one.
 
-## 7. IDE surface ✅
+## Later
 
-From "chat that can edit files" to "IDE".
+### Hardening, multi-arch distribution & releases
 
-**Progress:** The full IDE surface is done — the editor, the diff-first file
-viewer, full-text search, the per-session model picker, the system prompt
-manager, and the Settings UI (theme, default connection, default system
-prompt) are all verified end-to-end.
+Production distribution and resilient offline handling for the complete
+stack.
 
-- ✅ In-browser code editor with syntax highlighting — a pure-Rust,
-  dependency-free highlighter (Rust, Python, JS, TS, JSON) rendered as a
-  colored overlay behind a transparent textarea (chosen over CodeMirror 6 to
-  stay fully Rust/WASM with no JS dependencies)
-- ✅ File viewer **defaults to diff mode** for agent edits, with accept/reject;
-  toggle between display modes: **inline diff**, **side-by-side diff**,
-  **updated content** (plain file), **preview** (markdown rendered to HTML,
-  images viewable)
-- ✅ Full-text file search (backend, remote mode)
-- ✅ Model picker per session
-- ✅ Settings UI: theme (dark/light), default connection, default system
-  prompt — a dialog from the top bar; the theme applies via a `data-theme`
-  attribute with CSS variable overrides and is cached in localStorage
-- ✅ System prompt manager — list/create/edit/delete in the sidebar (added the
-  missing update endpoint end-to-end)
+- **Automated multi-arch container releases:**
+  - GitHub Actions CI/CD building multi-arch images (`linux/amd64` and
+    `linux/arm64`) via QEMU/Buildx and publishing to GitHub Container
+    Registry (`GHCR`).
+  - SemVer release tagging and automated changelog generation.
+  - Podman quadlet `.image` + `.container` systemd service definitions.
+- **Offline & error state recovery:**
+  - Frontend heartbeat to `/api/health` with exponential backoff
+    reconnection.
+  - Preserving unsaved editor state and draft prompts across connection
+    dropouts.
+  - Graceful re-authorization flow for local File System Access API
+    directory handles.
 
-## 8. Hardening & distribution
-
-- Auth: local user accounts (Phase 9) — what makes exposing beyond loopback safe
-- Releases: versioned multi-arch images to GHCR, CHANGELOG
-- Token/cost accounting per session (local models: just tokens)
-- Better offline/error states (engine down, workspace lost)
-
-## 9. Local user accounts
-
-Self-hosted on a private machine, so auth stays deliberately simple: users
-create an account and password locally. No external identity provider, no
-OAuth, no email verification — just a `users` table and a login screen.
-
-- `users` table: id, username (unique), password hash (argon2id), role,
-  created_at
-- First run with no users → registration screen; the first registered user
-  becomes admin (no default credentials), later signups are regular users
-- Minimal roles: `admin` (manages accounts) and `user`; no pending/approval
-- Register + login endpoints; passwords hashed locally, never stored in
-  plaintext
-- Session auth: a simple signed token (cookie or bearer) — no JWT ceremony
-- Data scoping: projects (and their sessions) owned by a user via `user_id`
-- Frontend: login/register gate before the app, auth state, logout
-- One shared container, multiple local accounts; each user sees only their
-  own projects and sessions
-
-**Done when:** you can register a local account, log out, log back in, and
-your projects/sessions are scoped to that account.
-
-## 10. Custom dialogs & remote file browser
-
-Themed in-app modals instead of browser-native `alert`/`confirm`/`prompt`
-(none are used today — this is the standard to keep as dialogs are added).
-
-- **Confirmation dialogs** — confirm destructive actions (delete
-  project/session/file, accept/reject a diff, logout) in a themed modal
-  rather than `confirm()`
-- **Remote file browser** — a modal that lists the host (remote) file system
-  so you can pick a folder to open as a project, instead of typing a path
-  blindly. Local mode keeps the system directory picker — the File System
-  Access API requires it and it cannot be replaced with a custom modal
-- **Message surface** — a non-blocking way to surface informational/error
-  messages (generalizes the current shared inline `error` signal)
-
-**Done when:** deleting a project asks for confirmation in a themed modal,
-and opening a remote project lets you browse the host folder tree instead of
-typing a path.
-
-## 11. Local agentic coding
-
-Agentic file tools for **local-mode** projects, where the folder lives on the
-machine running the browser. Today local mode is plain chat: the backend
-silently drops the tools and streams a plain completion, because the agent loop
-and tool execution run server-side in Spin and can't reach a browser-side
-folder (there is no bidirectional channel between the two).
-
-**Approach (browser-driven loop):** for local projects, run the agent loop in
-the browser. The browser executes the file tools against the local folder
-(File System Access API) and calls the backend for each LLM completion. Remote
-mode keeps its existing server-side loop. This is viable because
-`openwebide-agent` and `openwebide-llm` are dependency-clean for WASM (no Spin
-SDK, no std-only I/O) — the same compiled loop runs in both places.
-
-**Sharing via traits (minimize duplication):** the loop is *already* generic
-over two traits, so both modes reuse one loop instead of forking — the work is
-adding the browser-side impls, not new traits:
-- `ToolExecutor` (`crates/agent`) — read / write / list / search. Today one
-  impl: `WorkspaceExecutor` → `backend/src/files.rs` (host mount). Add a
-  browser impl over the existing `frontend/src/local_fs.rs` (near-identical
-  surface to the backend's `files.rs`).
-- `LlmProvider` (`crates/llm`) — `chat_tools` returns `Text` or `ToolCalls`.
-  Today one path: `Provider` + `SpinHttpClient`. Add a browser impl: an
-  `HttpClient` over gloo-net that posts to a backend tool-completion endpoint.
-
-The loop itself (model → tool call → execute → feed result back → repeat until
-`Text` or budget) lives once, not twice.
-
-**Gaps to close:**
-- **Tool-completion endpoint** — `POST /api/chat` calls `provider.chat` and
-  drops `ChatRequest.tools`; a new endpoint (e.g. `POST /api/chat-tools`) must
-  expose `provider.chat_tools` and return the `Text`/`ToolCalls` response so
-  the browser can drive the loop
-- **Browser `ToolExecutor` + `LlmProvider`** — implement both over
-  `local_fs` / gloo-net (add `openwebide-agent` + `openwebide-llm` to the
-  frontend)
-- **Persistence** — the `messages` table only allows roles
-  `system`/`user`/`assistant`, so `Role::Tool` steps can't be stored; the
-  backend needs an endpoint to persist the final assistant message for
-  browser-driven runs (today only the backend streams persist it)
-- **Surface agent steps** (cards + diffs) in the local chat pane the same way
-  remote does, and drop the "local mode is plain chat" hint
-
-**Done when:** with a local project open, "fix the failing test in this folder"
-→ the agent reads, edits, and reports against the browser's local folder, every
-step visible — running the same shared agent-loop code as remote mode.
-
-## Parking lot
+### Parking lot
 
 Ideas without a phase yet:
 
-- Terminal in the UI (needs a WebSocket/SSH bridge to the host — the one
-  thing that doesn't fit "full stack in WASM")
-- Model management (pull/delete models through the Ollama API)
-- Multi-model comparison for a single prompt (an Open WebUI classic)
-- Conversation export (markdown)
+- Multi-model comparison for a single prompt (an Open WebUI classic).
+- Conversation export (markdown).
+
+## Explicitly out of scope
+
+- **Model installation and lifecycle management:** Pulling, downloading, or
+  deleting model weights on disk (e.g. `ollama pull`, GGUF management). Open
+  WebIDE is an IDE and agentic client runtime, not a model engine manager.
+  Users deploy their own inference engines (Ollama, llama.cpp in Podman
+  quadlets, or OpenAI-compatible endpoints) and point Open WebIDE at them via
+  connections.
