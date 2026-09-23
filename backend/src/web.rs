@@ -10,11 +10,11 @@
 
 use std::future::Future;
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use http_body_util::BodyExt;
 use openwebide_agent::WebClient;
 use openwebide_core::{WebSearchResult, html_to_markdown};
-use spin_sdk::http::{self, FullBody, Request, Response, box_body};
+use spin_sdk::http::{self, FullBody, Request, Response, Uri, box_body};
 
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 OpenWebIDE/0.1 (https://github.com/bradwestness/open-webide)";
 
@@ -35,6 +35,287 @@ impl WebClient for SpinWebClient {
     fn fetch_page(&self, url: &str) -> impl Future<Output = Result<String, String>> + Send {
         let url = url.to_string();
         async move { fetch_page_internal(&url).await }
+    }
+}
+
+/// Validate that a URL target uses http/https scheme and is not a cloud metadata endpoint.
+///
+/// Strips trailing dots and IPv6 brackets from the lowercased host before checking.
+/// Refuses cloud metadata addresses (`169.254.169.254`, `fd00:ec2::254`, their IPv4-mapped forms,
+/// and `metadata.google.internal`), while allowing all other destinations (LAN, loopback, internet).
+pub fn check_fetch_target(url: &str) -> Result<Uri, String> {
+    let uri: Uri = url
+        .parse::<Uri>()
+        .map_err(|e| format!("invalid URL '{url}': {e}"))?;
+
+    let scheme = uri
+        .scheme_str()
+        .ok_or_else(|| format!("invalid URL '{url}': missing scheme"))?;
+
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return Err(format!(
+            "unsupported scheme '{scheme}': only http and https are allowed"
+        ));
+    }
+
+    let raw_host = uri
+        .host()
+        .ok_or_else(|| format!("invalid URL '{url}': missing host"))?;
+
+    let host = raw_host
+        .trim_end_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+
+    let is_metadata = if host == "metadata.google.internal" {
+        true
+    } else if let Some(ip) = normalize_host_to_ip(&host) {
+        match ip {
+            std::net::IpAddr::V4(v4) => v4 == std::net::Ipv4Addr::new(169, 254, 169, 254),
+            std::net::IpAddr::V6(v6) => {
+                v6 == std::net::Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254)
+                    || v6.to_ipv4_mapped() == Some(std::net::Ipv4Addr::new(169, 254, 169, 254))
+                    || v6.to_ipv4() == Some(std::net::Ipv4Addr::new(169, 254, 169, 254))
+            }
+        }
+    } else {
+        false
+    };
+
+    if is_metadata {
+        return Err(format!("refusing to fetch {host}: cloud metadata endpoint"));
+    }
+
+    Ok(uri)
+}
+
+/// Parse a single numbers-and-dots octet in decimal, `0x`-prefixed hex, or leading-zero octal.
+fn parse_inet_aton_part(part: &str) -> Option<u32> {
+    if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+        if hex.is_empty() {
+            return None;
+        }
+        return u32::from_str_radix(hex, 16).ok();
+    }
+    if part.len() > 1 && part.starts_with('0') {
+        return u32::from_str_radix(part, 8).ok();
+    }
+    part.parse::<u32>().ok()
+}
+
+/// Parse a numbers-and-dots host (1-4 dot-separated parts, each decimal/hex/octal) into an
+/// `Ipv4Addr` following the classic BSD `inet_aton` combination rules.
+fn parse_inet_aton(host: &str) -> Option<std::net::Ipv4Addr> {
+    if host.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+
+    let values: Vec<u32> = parts
+        .iter()
+        .map(|p| parse_inet_aton_part(p))
+        .collect::<Option<_>>()?;
+
+    let addr: u32 = match values.as_slice() {
+        [a] => *a,
+        [a, b] => {
+            if *a > 0xff || *b > 0x00ff_ffff {
+                return None;
+            }
+            (*a << 24) | *b
+        }
+        [a, b, c] => {
+            if *a > 0xff || *b > 0xff || *c > 0xffff {
+                return None;
+            }
+            (*a << 24) | (*b << 16) | *c
+        }
+        [a, b, c, d] => {
+            if *a > 0xff || *b > 0xff || *c > 0xff || *d > 0xff {
+                return None;
+            }
+            (*a << 24) | (*b << 16) | (*c << 8) | *d
+        }
+        _ => return None,
+    };
+
+    Some(std::net::Ipv4Addr::from(addr))
+}
+
+/// Normalize a host string to a canonical [`std::net::IpAddr`] if it represents a numeric IP,
+/// covering standard dotted-decimal/IPv6 forms as well as alternate numeric encodings
+/// (decimal dword, hex, octal, and short "numbers-and-dots" forms) that a resolver or the OS
+/// network stack would still resolve to the same address. Returns `None` for non-numeric
+/// hostnames.
+fn normalize_host_to_ip(host: &str) -> Option<std::net::IpAddr> {
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return Some(ip);
+    }
+    parse_inet_aton(host).map(std::net::IpAddr::V4)
+}
+
+/// Resolve a target redirect `Location` against a base `Uri` according to RFC 3986 §5.2.
+fn resolve_redirect(base: &Uri, location: &str) -> Result<String, String> {
+    let location = location.trim();
+    let base_scheme = base
+        .scheme_str()
+        .ok_or_else(|| "base URI missing scheme".to_string())?;
+    let base_authority = base.authority().map(|a| a.as_str());
+    let base_path = base.path();
+
+    let (loc_without_frag, frag) = match location.split_once('#') {
+        Some((head, tail)) => (head, Some(tail)),
+        None => (location, None),
+    };
+
+    let (loc_without_query, loc_query) = match loc_without_frag.split_once('?') {
+        Some((head, tail)) => (head, Some(tail)),
+        None => (loc_without_frag, None),
+    };
+
+    let target_scheme: &str;
+    let target_authority: Option<&str>;
+    let target_path: String;
+    let target_query: Option<&str>;
+
+    if let Some((scheme, rest)) = extract_scheme(loc_without_query) {
+        target_scheme = scheme;
+        if let Some(rest_after_slashes) = rest.strip_prefix("//") {
+            let (auth, path) = match rest_after_slashes.find('/') {
+                Some(idx) => (&rest_after_slashes[..idx], &rest_after_slashes[idx..]),
+                None => (rest_after_slashes, ""),
+            };
+            target_authority = Some(auth);
+            target_path = remove_dot_segments(path);
+        } else {
+            target_authority = None;
+            target_path = remove_dot_segments(rest);
+        }
+        target_query = loc_query;
+    } else {
+        target_scheme = base_scheme;
+        if let Some(rest) = loc_without_query.strip_prefix("//") {
+            let (auth, path) = match rest.find('/') {
+                Some(idx) => (&rest[..idx], &rest[idx..]),
+                None => (rest, ""),
+            };
+            target_authority = Some(auth);
+            target_path = remove_dot_segments(path);
+            target_query = loc_query;
+        } else {
+            target_authority = base_authority;
+            if loc_without_query.is_empty() {
+                target_path = base_path.to_string();
+                target_query = loc_query.or_else(|| base.query());
+            } else if loc_without_query.starts_with('/') {
+                target_path = remove_dot_segments(loc_without_query);
+                target_query = loc_query;
+            } else {
+                let merged = merge_paths(base_path, loc_without_query, base_authority.is_some());
+                target_path = remove_dot_segments(&merged);
+                target_query = loc_query;
+            }
+        }
+    }
+
+    let mut result = String::new();
+    result.push_str(target_scheme);
+    result.push(':');
+    if let Some(auth) = target_authority {
+        result.push_str("//");
+        result.push_str(auth);
+    }
+    if !target_path.is_empty() {
+        if target_authority.is_some() && !target_path.starts_with('/') {
+            result.push('/');
+        }
+        result.push_str(&target_path);
+    }
+    if let Some(q) = target_query {
+        result.push('?');
+        result.push_str(q);
+    }
+    if let Some(f) = frag {
+        result.push('#');
+        result.push_str(f);
+    }
+
+    Ok(result)
+}
+
+fn extract_scheme(s: &str) -> Option<(&str, &str)> {
+    let colon_idx = s.find(':')?;
+    if let Some(slash_idx) = s.find('/')
+        && slash_idx < colon_idx
+    {
+        return None;
+    }
+    let potential_scheme = &s[..colon_idx];
+    let mut chars = potential_scheme.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.') {
+        return None;
+    }
+    Some((potential_scheme, &s[colon_idx + 1..]))
+}
+
+fn merge_paths(base_path: &str, ref_path: &str, has_base_authority: bool) -> String {
+    if has_base_authority && base_path.is_empty() {
+        format!("/{ref_path}")
+    } else if let Some(pos) = base_path.rfind('/') {
+        format!("{}{ref_path}", &base_path[..=pos])
+    } else {
+        ref_path.to_string()
+    }
+}
+
+fn remove_dot_segments(path: &str) -> String {
+    let mut input = path;
+    let mut output = String::new();
+
+    while !input.is_empty() {
+        if let Some(rest) = input.strip_prefix("../") {
+            input = rest;
+        } else if let Some(rest) = input.strip_prefix("./") {
+            input = rest;
+        } else if input.starts_with("/./") {
+            input = &input[2..];
+        } else if input == "/." {
+            input = "/";
+        } else if input.starts_with("/../") {
+            input = &input[3..];
+            pop_last_segment(&mut output);
+        } else if input == "/.." {
+            input = "/";
+            pop_last_segment(&mut output);
+        } else if input == "." || input == ".." {
+            input = "";
+        } else {
+            let start = if input.starts_with('/') { 1 } else { 0 };
+            let seg_end = match input[start..].find('/') {
+                Some(pos) => start + pos,
+                None => input.len(),
+            };
+            output.push_str(&input[..seg_end]);
+            input = &input[seg_end..];
+        }
+    }
+
+    output
+}
+
+fn pop_last_segment(output: &mut String) {
+    if let Some(pos) = output.rfind('/') {
+        output.truncate(pos);
+    } else {
+        output.clear();
     }
 }
 
@@ -59,23 +340,16 @@ async fn http_get_follow_redirects(
     mut url: String,
     max_redirects: usize,
 ) -> Result<Response, String> {
+    let mut current_uri = check_fetch_target(&url)?;
     for _ in 0..=max_redirects {
         let res = http_get(&url).await?;
         let status = res.status().as_u16();
         if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308)
             && let Some(loc) = res.headers().get("location").and_then(|v| v.to_str().ok())
         {
-            if loc.starts_with("http://") || loc.starts_with("https://") {
-                url = loc.to_string();
-            } else if loc.starts_with('/') {
-                if let Ok(uri) = url.parse::<http::Uri>() {
-                    let scheme = uri.scheme_str().unwrap_or("https");
-                    let host = uri.host().unwrap_or("");
-                    url = format!("{scheme}://{host}{loc}");
-                } else {
-                    return Ok(res);
-                }
-            }
+            let next_url = resolve_redirect(&current_uri, loc)?;
+            current_uri = check_fetch_target(&next_url)?;
+            url = next_url;
             continue;
         }
         return Ok(res);
@@ -83,14 +357,30 @@ async fn http_get_follow_redirects(
     Err("too many redirects".to_string())
 }
 
-/// Read the complete response body as Bytes.
-async fn read_body_bytes(res: Response) -> Result<Bytes, String> {
-    let collected = res
-        .into_body()
-        .collect()
-        .await
-        .map_err(|e| format!("read response body: {e}"))?;
-    Ok(collected.to_bytes())
+/// Read body frames until `cap` bytes are collected, then drop the remaining body stream.
+async fn read_body_capped<B>(body: B, cap: usize) -> Result<Bytes, String>
+where
+    B: http_body::Body,
+    B::Error: std::fmt::Display,
+{
+    let mut body = std::pin::pin!(body);
+    let mut buf = Vec::with_capacity(cap.min(64 * 1024));
+
+    while buf.len() < cap {
+        match body.as_mut().frame().await {
+            Some(Ok(frame)) => {
+                if let Ok(mut data) = frame.into_data() {
+                    let to_take = (cap - buf.len()).min(data.remaining());
+                    let chunk = data.copy_to_bytes(to_take);
+                    buf.extend_from_slice(&chunk);
+                }
+            }
+            Some(Err(e)) => return Err(format!("read response body: {e}")),
+            None => break,
+        }
+    }
+
+    Ok(Bytes::from(buf))
 }
 
 /// Perform HTTP GET and parse the response body as JSON.
@@ -100,7 +390,7 @@ async fn fetch_json(url: &str) -> Result<serde_json::Value, String> {
     if !status.is_success() {
         return Err(format!("GET {url} returned HTTP {status}"));
     }
-    let bytes = read_body_bytes(res).await?;
+    let bytes = read_body_capped(res.into_body(), 2 * 1024 * 1024).await?;
     serde_json::from_slice(&bytes).map_err(|e| format!("parse JSON from {url}: {e}"))
 }
 
@@ -621,9 +911,7 @@ async fn search_wikipedia_fulltext(
 
 /// Fetch a web page URL and convert HTML to clean Markdown.
 pub async fn fetch_page_internal(url: &str) -> Result<String, String> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("URL must start with http:// or https://".into());
-    }
+    check_fetch_target(url)?;
 
     // StackOverflow blocks automated HTML scrapers via Cloudflare; use their official API instead
     if let Some(pos) = url.find("stackoverflow.com/questions/") {
@@ -642,15 +930,8 @@ pub async fn fetch_page_internal(url: &str) -> Result<String, String> {
         return Err(format!("fetch {url} returned HTTP {status}"));
     }
 
-    let raw_bytes = read_body_bytes(res).await?;
-
-    // Limit raw HTML processing to 512KB
-    let slice = if raw_bytes.len() > 524_288 {
-        &raw_bytes[..524_288]
-    } else {
-        &raw_bytes[..]
-    };
-    let html_content = String::from_utf8_lossy(slice);
+    let raw_bytes = read_body_capped(res.into_body(), 512 * 1024).await?;
+    let html_content = String::from_utf8_lossy(&raw_bytes);
 
     // Convert HTML to Markdown bounded to 16KB (~4,000 tokens)
     let markdown = html_to_markdown(&html_content, 16_384);
@@ -723,10 +1004,10 @@ fn decode_html_entities(s: &str) -> String {
     s.replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
-        .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
 }
 
 /// URL encode query parameter components.
@@ -744,4 +1025,137 @@ pub fn url_encode(input: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_check_fetch_target() {
+        assert!(check_fetch_target("https://docs.rs/serde").is_ok());
+        assert!(check_fetch_target("http://192.168.1.20:8080/").is_ok());
+        assert!(check_fetch_target("http://localhost:11434/").is_ok());
+
+        let err = check_fetch_target("http://169.254.169.254/latest/meta-data/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch 169.254.169.254: cloud metadata endpoint"
+        );
+
+        let err = check_fetch_target("http://[::ffff:169.254.169.254]/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch ::ffff:169.254.169.254: cloud metadata endpoint"
+        );
+
+        let err = check_fetch_target("http://metadata.google.internal/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch metadata.google.internal: cloud metadata endpoint"
+        );
+
+        let err = check_fetch_target("http://[fd00:ec2::254]/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch fd00:ec2::254: cloud metadata endpoint"
+        );
+
+        assert!(check_fetch_target("ftp://x.com/").is_err());
+        assert!(check_fetch_target("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_check_fetch_target_blocks_alternate_ip_encodings() {
+        // Dword decimal.
+        let err = check_fetch_target("http://2852039166/").unwrap_err();
+        assert_eq!(err, "refusing to fetch 2852039166: cloud metadata endpoint");
+        // Full hex.
+        let err = check_fetch_target("http://0xA9FEA9FE/").unwrap_err();
+        assert_eq!(err, "refusing to fetch 0xa9fea9fe: cloud metadata endpoint");
+        // Dotted hex per-octet.
+        let err = check_fetch_target("http://0xA9.0xFE.0xA9.0xFE/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch 0xa9.0xfe.0xa9.0xfe: cloud metadata endpoint"
+        );
+        // Dotted octal.
+        let err = check_fetch_target("http://0251.0376.0251.0376/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch 0251.0376.0251.0376: cloud metadata endpoint"
+        );
+        // 3-part short form.
+        let err = check_fetch_target("http://169.254.43518/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch 169.254.43518: cloud metadata endpoint"
+        );
+        // 2-part short form.
+        let err = check_fetch_target("http://169.16689662/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch 169.16689662: cloud metadata endpoint"
+        );
+        // IPv4-mapped IPv6, dotted-quad form.
+        let err = check_fetch_target("http://[::ffff:169.254.169.254]/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch ::ffff:169.254.169.254: cloud metadata endpoint"
+        );
+        // IPv4-mapped IPv6, pure-hex form.
+        let err = check_fetch_target("http://[::ffff:a9fe:a9fe]/").unwrap_err();
+        assert_eq!(
+            err,
+            "refusing to fetch ::ffff:a9fe:a9fe: cloud metadata endpoint"
+        );
+
+        // A legitimate hostname and a legitimate LAN IP still pass through unaffected.
+        assert!(check_fetch_target("https://docs.rs/serde").is_ok());
+        assert!(check_fetch_target("http://192.168.1.20:8080/").is_ok());
+    }
+
+    #[test]
+    fn test_resolve_redirect() {
+        let base = "https://a.com:8443/docs/x?q".parse::<Uri>().unwrap();
+
+        assert_eq!(
+            resolve_redirect(&base, "/y").unwrap(),
+            "https://a.com:8443/y"
+        );
+        assert_eq!(
+            resolve_redirect(&base, "y").unwrap(),
+            "https://a.com:8443/docs/y"
+        );
+        assert_eq!(
+            resolve_redirect(&base, "../z").unwrap(),
+            "https://a.com:8443/z"
+        );
+        assert_eq!(
+            resolve_redirect(&base, "//b.com/p").unwrap(),
+            "https://b.com/p"
+        );
+        assert_eq!(
+            resolve_redirect(&base, "https://c.com/").unwrap(),
+            "https://c.com/"
+        );
+        assert_eq!(
+            resolve_redirect(&base, "?r=1").unwrap(),
+            "https://a.com:8443/docs/x?r=1"
+        );
+    }
+
+    #[test]
+    fn test_read_body_capped() {
+        let cap = 512 * 1024;
+        let data = Bytes::from(vec![b'x'; 1024 * 1024]);
+        let body = http_body_util::Full::new(data);
+        let result = futures::executor::block_on(read_body_capped(body, cap)).unwrap();
+        assert_eq!(result.len(), cap);
+    }
+
+    #[test]
+    fn test_decode_html_entities() {
+        assert_eq!(decode_html_entities("&amp;lt;b&amp;gt;"), "&lt;b&gt;");
+    }
 }
