@@ -135,7 +135,7 @@ pub fn vfs_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "git_commit".into(),
-            description: "Create a Git commit on the host with a descriptive conventional commit message.".into(),
+            description: "Create a Git commit on the host with a descriptive conventional commit message. Omit `paths` to commit all tracked modifications.".into(),
             parameters: json!({
                 "type": "object",
                 "required": ["message"],
@@ -304,6 +304,19 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Ok(p) => p,
             Err(e) => return fail("write_file", &raw_path, &e.to_string()),
         };
+        if path.split('/').any(|seg| seg.eq_ignore_ascii_case(".git")) {
+            return fail("write_file", &path, "refusing to write inside .git");
+        }
+        let canonical_path = match self.vfs.canonicalize(&path).await {
+            Ok(p) => p,
+            Err(e) => return fail("write_file", &path, &e.to_string()),
+        };
+        if canonical_path
+            .split('/')
+            .any(|seg| seg.eq_ignore_ascii_case(".git"))
+        {
+            return fail("write_file", &path, "refusing to write inside .git");
+        }
         let new_content = match args.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return fail("write_file", &path, "missing 'content' argument"),
@@ -620,11 +633,15 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Some(m) if !m.trim().is_empty() => m.trim().to_string(),
             _ => return fail("git_commit", "", "missing or empty 'message' argument"),
         };
-        let paths = args.get("paths").and_then(|v| v.as_array()).map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        });
+        let paths = args
+            .get("paths")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|p| !p.is_empty());
 
         let req = GitCommitRequest {
             message: message.clone(),
@@ -693,7 +710,13 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, 
         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
         match call.name.as_str() {
             "read_file" => format!("read {}", arg_path(&args)),
-            "write_file" => format!("write {}", arg_path(&args)),
+            "write_file" => {
+                let path = arg_path(&args);
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let n = content.lines().count();
+                let bytes = content.len();
+                format!("write {path} ({n} lines, {bytes} B)")
+            }
             "list_dir" => format!("list {}", arg_path_or_root(&args)),
             "search" => format!(
                 "search '{}'",
@@ -720,10 +743,18 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, 
                 Some(p) => format!("inspect git diff for '{p}'"),
                 None => "inspect repository git diff".to_string(),
             },
-            "git_commit" => format!(
-                "commit changes: '{}'",
-                args.get("message").and_then(|v| v.as_str()).unwrap_or("")
-            ),
+            "git_commit" => {
+                let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                let paths: Option<Vec<&str>> = args
+                    .get("paths")
+                    .and_then(|p| p.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                    .filter(|p| !p.is_empty());
+                match paths {
+                    Some(ref p) => format!("commit {}: '{msg}'", p.join(", ")),
+                    None => format!("commit ALL tracked changes: '{msg}'"),
+                }
+            }
             "git_branch" => format!(
                 "switch to branch '{}'",
                 args.get("branch_name")
@@ -823,11 +854,84 @@ mod tests {
                 })
                 .to_string(),
             };
+            assert_eq!(
+                executor.describe(&write_call),
+                "write src/main.rs (1 lines, 33 B)"
+            );
             let outcome = executor.execute(&write_call).await;
             assert!(outcome.ok);
             assert_eq!(outcome.summary, "wrote src/main.rs");
             assert!(outcome.diff.is_some());
             assert_eq!(outcome.diff.unwrap().old, None);
+
+            // writing inside .git is refused; VFS remains unchanged
+            for git_path in &[".git/hooks/pre-commit", "sub/.git/config", ".GIT/config"] {
+                let call = ToolCall {
+                    id: "call-git-refuse".into(),
+                    name: "write_file".into(),
+                    arguments: json!({
+                        "path": git_path,
+                        "content": "#!/bin/sh\nexit 1\n"
+                    })
+                    .to_string(),
+                };
+                let outcome = executor.execute(&call).await;
+                assert!(!outcome.ok);
+                assert_eq!(outcome.content, "error: refusing to write inside .git");
+                assert!(outcome.summary.contains("refusing to write inside .git"));
+                assert!(executor.vfs().read(git_path).await.is_err());
+            }
+
+            // symlink traversal into .git is also refused; VFS remains unchanged
+            executor.vfs().add_symlink("foo", ".git").unwrap();
+            executor.vfs().add_symlink("sub/bar", "../.git").unwrap();
+            executor
+                .vfs()
+                .add_symlink("gitlink", ".git/config")
+                .unwrap();
+            for symlink_path in &[
+                "foo/config",
+                "foo/hooks/pre-commit",
+                "sub/bar/config",
+                "gitlink",
+            ] {
+                let call = ToolCall {
+                    id: "call-symlink-refuse".into(),
+                    name: "write_file".into(),
+                    arguments: json!({
+                        "path": symlink_path,
+                        "content": "#!/bin/sh\nexit 1\n"
+                    })
+                    .to_string(),
+                };
+                let outcome = executor.execute(&call).await;
+                assert!(!outcome.ok);
+                assert_eq!(outcome.content, "error: refusing to write inside .git");
+                assert!(outcome.summary.contains("refusing to write inside .git"));
+                assert!(executor.vfs().read(symlink_path).await.is_err());
+            }
+
+            // writing .gitignore is allowed
+            let gitignore_call = ToolCall {
+                id: "call-gitignore".into(),
+                name: "write_file".into(),
+                arguments: json!({
+                    "path": ".gitignore",
+                    "content": "target/\n"
+                })
+                .to_string(),
+            };
+            assert_eq!(
+                executor.describe(&gitignore_call),
+                "write .gitignore (1 lines, 8 B)"
+            );
+            let outcome = executor.execute(&gitignore_call).await;
+            assert!(outcome.ok);
+            assert_eq!(outcome.summary, "wrote .gitignore");
+            assert_eq!(
+                executor.vfs().read(".gitignore").await.unwrap(),
+                "target/\n"
+            );
 
             // read_file
             let read_call = ToolCall {
@@ -1001,6 +1105,9 @@ mod tests {
             if req.message.contains("fail") {
                 return Err("commit hook failed".into());
             }
+            if matches!(req.paths.as_deref(), Some([])) {
+                return Err("drift: paths is Some([]) instead of None".into());
+            }
             Ok(GitCommitResult {
                 commit_hash: "1234567890ab".into(),
                 summary: format!("[main 1234567] {}", req.message),
@@ -1118,8 +1225,42 @@ mod tests {
             };
             assert_eq!(
                 executor.describe(&commit_call),
-                "commit changes: 'feat: add feature'"
+                "commit ALL tracked changes: 'feat: add feature'"
             );
+            let commit_paths_call = ToolCall {
+                id: "call-git-4-paths".into(),
+                name: "git_commit".into(),
+                arguments: json!({
+                    "message": "feat: add feature",
+                    "paths": ["src/main.rs", "Cargo.toml"]
+                })
+                .to_string(),
+            };
+            assert_eq!(
+                executor.describe(&commit_paths_call),
+                "commit src/main.rs, Cargo.toml: 'feat: add feature'"
+            );
+            let outcome = executor.execute(&commit_paths_call).await;
+            assert!(outcome.ok);
+
+            // git_commit with empty paths array [] drifts neither in describe() nor execution
+            let commit_empty_paths_call = ToolCall {
+                id: "call-git-4-empty".into(),
+                name: "git_commit".into(),
+                arguments: json!({
+                    "message": "feat: add feature",
+                    "paths": []
+                })
+                .to_string(),
+            };
+            assert_eq!(
+                executor.describe(&commit_empty_paths_call),
+                "commit ALL tracked changes: 'feat: add feature'"
+            );
+            let outcome = executor.execute(&commit_empty_paths_call).await;
+            assert!(outcome.ok);
+            assert_eq!(outcome.summary, "committed 1234567: 'feat: add feature'");
+
             let outcome = executor.execute(&commit_call).await;
             assert!(outcome.ok);
             assert_eq!(outcome.summary, "committed 1234567: 'feat: add feature'");

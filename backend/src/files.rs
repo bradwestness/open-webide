@@ -451,4 +451,64 @@ impl Vfs for HostFsVfs {
             Ok(stripped)
         })
     }
+
+    fn canonicalize<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
+        Box::pin(async move {
+            let full = self.resolve(path)?;
+            let resolved = canonicalize_path(&full).await.map_err(map_vfs_err)?;
+            Ok(self.strip_base(&resolved))
+        })
+    }
+}
+
+/// Resolve symbolic links along `rel` (relative to the preopened workspace root)
+/// and return the normalized canonical path.
+pub async fn canonicalize_path(rel: &str) -> Result<String> {
+    let mut current = sanitize(rel)?;
+    let root = root()?;
+    let mut iterations = 0;
+    const MAX_SYMLINK_EXPANSIONS: usize = 32;
+
+    'outer: loop {
+        let parts: Vec<&str> = current.split('/').filter(|p| !p.is_empty()).collect();
+        let mut prefix = String::new();
+
+        for (idx, seg) in parts.iter().enumerate() {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(seg);
+
+            if let Ok(target) = root.readlink_at(prefix.clone()).await {
+                iterations += 1;
+                if iterations > MAX_SYMLINK_EXPANSIONS {
+                    return Err(anyhow::anyhow!("too many levels of symbolic links"));
+                }
+
+                let parent = prefix.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+                let resolved_target = if parent.is_empty() {
+                    target
+                } else if target.starts_with('/') {
+                    target.trim_start_matches('/').to_string()
+                } else {
+                    format!("{parent}/{target}")
+                };
+
+                let remainder = &parts[idx + 1..];
+                let next = if remainder.is_empty() {
+                    resolved_target
+                } else {
+                    format!("{resolved_target}/{}", remainder.join("/"))
+                };
+
+                current = normalize_vfs_path(&next)
+                    .map_err(|_| anyhow::anyhow!("path {rel:?} escapes the workspace root"))?;
+                continue 'outer;
+            }
+        }
+
+        break;
+    }
+
+    Ok(current)
 }

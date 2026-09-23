@@ -295,13 +295,6 @@ pub struct LocalPermissionGate {
 }
 
 impl PermissionGate for LocalPermissionGate {
-    fn needs_approval(&self, call: &ToolCall) -> bool {
-        call.name == "write_file"
-            || call.name == "run_command"
-            || call.name == "git_commit"
-            || call.name == "git_branch"
-    }
-
     fn approve(&self, call: &ToolCall) -> impl Future<Output = bool> + Send {
         let decisions = self.decisions.clone();
         let cancel = self.cancel.clone();

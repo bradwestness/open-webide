@@ -52,11 +52,10 @@ impl CancelCheck for CancelFlag {
 const PERMISSION_TIMEOUT: Duration = Duration::from_secs(300);
 const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// A per-session permission gate backed by SQLite. Only file writes are
-/// gated; reads, listings, and searches run freely. The user's decision
-/// arrives as a separate Spin request (stateless, possibly another
-/// component instance), so the in-flight stream polls the database until
-/// the decision is recorded, the run is cancelled, or the wait times out.
+/// A per-session permission gate backed by SQLite. The user's decision arrives
+/// as a separate Spin request (stateless, possibly another component
+/// instance), so the in-flight stream polls the database until the decision
+/// is recorded, the run is cancelled, or the wait times out.
 pub struct PermissionPoller {
     store: Arc<Store<AppDb>>,
     session_id: i64,
@@ -69,13 +68,6 @@ impl PermissionPoller {
 }
 
 impl PermissionGate for PermissionPoller {
-    fn needs_approval(&self, call: &ToolCall) -> bool {
-        call.name == "write_file"
-            || call.name == "run_command"
-            || call.name == "git_commit"
-            || call.name == "git_branch"
-    }
-
     fn approve(&self, call: &ToolCall) -> impl Future<Output = bool> + Send {
         let store = self.store.clone();
         let session_id = self.session_id;

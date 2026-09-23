@@ -15,7 +15,9 @@ use openwebide_core::{
 };
 use openwebide_llm::LlmProvider;
 
+pub mod policy;
 pub mod vfs_executor;
+pub use policy::requires_approval;
 pub use vfs_executor::{
     BridgeClient, NoopBridgeClient, NoopWebClient, VfsToolExecutor, WebClient, vfs_tools,
 };
@@ -139,7 +141,12 @@ impl CancelCheck for NoopCancel {
 /// decision) before running or denying the call.
 pub trait PermissionGate: Send {
     /// Whether this tool call needs the user's approval before it runs.
-    fn needs_approval(&self, call: &ToolCall) -> bool;
+    ///
+    /// The default implementation uses [`requires_approval`], enforcing a
+    /// default-deny allow-list policy.
+    fn needs_approval(&self, call: &ToolCall) -> bool {
+        requires_approval(call)
+    }
     /// Wait for the user's decision on a gated call; `true` = approved.
     ///
     /// `async fn` in a trait cannot express the `Send` bound the agent loop
@@ -149,7 +156,7 @@ pub trait PermissionGate: Send {
     fn approve(&self, call: &ToolCall) -> impl Future<Output = bool> + Send;
 }
 
-/// A permission gate that never asks; every tool call runs.
+/// A permission gate for tests and dev only: approves everything; every tool call runs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoopGate;
 
@@ -1347,5 +1354,23 @@ mod tests {
         assert_eq!(first.len(), 2);
         assert_eq!(second.len(), 2);
         assert!(first.is_disjoint(&second));
+    }
+
+    struct DefaultGate;
+
+    impl PermissionGate for DefaultGate {
+        #[allow(clippy::manual_async_fn)]
+        fn approve(&self, _call: &ToolCall) -> impl Future<Output = bool> + Send {
+            async { true }
+        }
+    }
+
+    #[test]
+    fn default_gate_gates_write_and_fetch_not_read() {
+        let gate = DefaultGate;
+        assert!(gate.needs_approval(&call("1", "write_file", "{}")));
+        assert!(gate.needs_approval(&call("2", "fetch_web_page", "{}")));
+        assert!(!gate.needs_approval(&call("3", "read_file", "{}")));
+        assert!(!gate.needs_approval(&call("4", "search_web", "{}")));
     }
 }

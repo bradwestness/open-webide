@@ -138,6 +138,13 @@ pub trait Vfs: Send + Sync {
 
     /// Full-text search across file contents under the given directory (`""` for root).
     fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>>;
+
+    /// Resolve symbolic links and return the canonical workspace-relative path.
+    ///
+    /// The default implementation falls back to lexical normalization via [`normalize_vfs_path`].
+    fn canonicalize<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
+        Box::pin(async move { normalize_vfs_path(path) })
+    }
 }
 
 impl<V: Vfs + ?Sized> Vfs for &V {
@@ -163,6 +170,10 @@ impl<V: Vfs + ?Sized> Vfs for &V {
 
     fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
         (**self).search_content(query, dir)
+    }
+
+    fn canonicalize<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
+        (**self).canonicalize(path)
     }
 }
 
@@ -190,6 +201,10 @@ impl<V: Vfs + ?Sized> Vfs for Arc<V> {
     fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
         (**self).search_content(query, dir)
     }
+
+    fn canonicalize<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
+        (**self).canonicalize(path)
+    }
 }
 
 /// An in-memory Vfs implementation for unit tests and local staging.
@@ -197,18 +212,88 @@ impl<V: Vfs + ?Sized> Vfs for Arc<V> {
 pub struct MemoryVfs {
     files: Arc<RwLock<BTreeMap<String, String>>>,
     dirs: Arc<RwLock<BTreeSet<String>>>,
+    symlinks: Arc<RwLock<BTreeMap<String, String>>>,
 }
 
 impl MemoryVfs {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Add a symbolic link pointing from `link` to `target`.
+    pub fn add_symlink(&self, link: &str, target: &str) -> Result<(), VfsError> {
+        let norm_link = normalize_vfs_path(link)?;
+        let mut symlinks = self
+            .symlinks
+            .write()
+            .map_err(|e| VfsError::Io(e.to_string()))?;
+        symlinks.insert(norm_link, target.replace('\\', "/"));
+        Ok(())
+    }
 }
 
 impl Vfs for MemoryVfs {
+    fn canonicalize<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
+        Box::pin(async move {
+            let mut current = normalize_vfs_path(path)?;
+            let symlinks = self
+                .symlinks
+                .read()
+                .map_err(|e| VfsError::Io(e.to_string()))?;
+            if symlinks.is_empty() {
+                return Ok(current);
+            }
+
+            let mut iterations = 0;
+            const MAX_SYMLINK_EXPANSIONS: usize = 32;
+
+            'outer: loop {
+                let parts: Vec<&str> = current.split('/').filter(|p| !p.is_empty()).collect();
+                let mut prefix = String::new();
+
+                for (idx, seg) in parts.iter().enumerate() {
+                    if !prefix.is_empty() {
+                        prefix.push('/');
+                    }
+                    prefix.push_str(seg);
+
+                    if let Some(target) = symlinks.get(&prefix) {
+                        iterations += 1;
+                        if iterations > MAX_SYMLINK_EXPANSIONS {
+                            return Err(VfsError::Io("too many levels of symbolic links".into()));
+                        }
+
+                        let parent = prefix.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+                        let resolved_target = if parent.is_empty() {
+                            target.clone()
+                        } else if target.starts_with('/') {
+                            target.trim_start_matches('/').to_string()
+                        } else {
+                            format!("{parent}/{target}")
+                        };
+
+                        let remainder = &parts[idx + 1..];
+                        let next = if remainder.is_empty() {
+                            resolved_target
+                        } else {
+                            format!("{resolved_target}/{}", remainder.join("/"))
+                        };
+
+                        current = normalize_vfs_path(&next)?;
+                        continue 'outer;
+                    }
+                }
+
+                break;
+            }
+
+            Ok(current)
+        })
+    }
+
     fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
         Box::pin(async move {
-            let norm = normalize_vfs_path(path)?;
+            let norm = self.canonicalize(path).await?;
             let files = self.files.read().map_err(|e| VfsError::Io(e.to_string()))?;
             files.get(&norm).cloned().ok_or(VfsError::NotFound(norm))
         })
@@ -216,7 +301,7 @@ impl Vfs for MemoryVfs {
 
     fn write<'a>(&'a self, path: &'a str, content: &'a str) -> VfsFuture<'a, ()> {
         Box::pin(async move {
-            let norm = normalize_vfs_path(path)?;
+            let norm = self.canonicalize(path).await?;
             if norm.is_empty() {
                 return Err(VfsError::Io("cannot write to root".into()));
             }
@@ -504,5 +589,31 @@ mod tests {
             format_utc_timestamp(1790100845),
             "Tuesday, September 22, 2026 18:14 UTC"
         );
+    }
+
+    #[test]
+    fn test_memory_vfs_symlink_canonicalization() {
+        futures::executor::block_on(async {
+            let vfs = MemoryVfs::new();
+            vfs.add_symlink("foo", ".git").unwrap();
+            assert_eq!(vfs.canonicalize("foo/config").await.unwrap(), ".git/config");
+
+            vfs.add_symlink("sub/bar", "../.git").unwrap();
+            assert_eq!(
+                vfs.canonicalize("sub/bar/hooks/pre-commit").await.unwrap(),
+                ".git/hooks/pre-commit"
+            );
+
+            vfs.add_symlink("link_src", "src").unwrap();
+            vfs.write("link_src/main.rs", "fn main() {}").await.unwrap();
+            assert_eq!(vfs.read("src/main.rs").await.unwrap(), "fn main() {}");
+
+            // Escaping symlink
+            vfs.add_symlink("escape", "../../etc").unwrap();
+            assert!(matches!(
+                vfs.canonicalize("escape/passwd").await,
+                Err(VfsError::PathEscape(_))
+            ));
+        });
     }
 }
