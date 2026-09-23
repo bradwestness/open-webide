@@ -1110,3 +1110,14 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
         (k == key).then_some(v)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_health() {
+        let resp = health();
+        assert_eq!(resp.status(), 200);
+    }
+}

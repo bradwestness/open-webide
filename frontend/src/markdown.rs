@@ -1,5 +1,5 @@
-use ammonia::UrlRelative;
 use crate::text::urlenc;
+use ammonia::UrlRelative;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UrlUse {
@@ -22,11 +22,11 @@ pub fn safe_url(u: &str, use_type: UrlUse) -> bool {
 
     let before_colon = &clean[..colon_idx];
 
-    let first_slash_q_hash = clean.find(|c| c == '/' || c == '?' || c == '#');
-    if let Some(idx) = first_slash_q_hash {
-        if idx < colon_idx {
-            return true;
-        }
+    let first_slash_q_hash = clean.find(['/', '?', '#']);
+    if let Some(idx) = first_slash_q_hash
+        && idx < colon_idx
+    {
+        return true;
     }
 
     let mut chars = before_colon.chars();
@@ -124,14 +124,17 @@ mod tests {
         assert!(render("<a href=\"mailto:a@b.com\">M</a>").contains("href=\"mailto:a@b.com\""));
         assert!(render("**bold**").contains("<strong>bold</strong>"));
         assert!(render("- A").contains("<li>A</li>"));
-        assert!(render("<details><summary>S</summary>body</details>").contains("<details><summary>S</summary>body</details>"));
+        assert!(
+            render("<details><summary>S</summary>body</details>")
+                .contains("<details><summary>S</summary>body</details>")
+        );
         assert!(render("<kbd>Ctrl</kbd>").contains("<kbd>Ctrl</kbd>"));
         assert!(render("H<sub>2</sub>O").contains("H<sub>2</sub>O"));
         assert!(render("a<br>b").contains("<br>"));
-        
+
         let code_html = render("```rust\nfn main() {}\n```");
         assert!(code_html.contains("class=\"language-rust\""));
-        
+
         // escaped script in code fence
         let script_code = render("```\n<script>\n```");
         assert!(script_code.contains("&lt;script&gt;"));
@@ -145,7 +148,7 @@ mod tests {
         assert!(!render("<iframe src=\"\"></iframe>").contains("<iframe"));
         assert!(!render("<img src=\"x\" onerror=\"alert(1)\">").contains("onerror"));
         assert!(!render("<body onload=\"alert(1)\">").contains("onload"));
-        
+
         assert!(!render("<a href=\"javascript:alert(1)\">x</a>").contains("href=\"javascript"));
         assert!(!render("<a href=\"JaVaScRiPt:alert(1)\">x</a>").contains("href="));
         assert!(!render("<a href=\"java\tscript:alert(1)\">x</a>").contains("href="));

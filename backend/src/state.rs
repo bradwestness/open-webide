@@ -2,13 +2,18 @@
 
 use anyhow::Context;
 use openwebide_core::User;
-use openwebide_storage::{Store, spin_db::SpinDb};
+use openwebide_storage::Store;
+
+#[cfg(target_family = "wasm")]
+pub type AppDb = openwebide_storage::spin_db::SpinDb;
+#[cfg(not(target_family = "wasm"))]
+pub type AppDb = openwebide_storage::rusqlite_db::RusqliteDb;
 
 /// Spin components are stateless: each request gets a fresh connection to
 /// the `sqlite` capability. The schema is created with idempotent DDL, so
 /// re-applying migrations per request is cheap.
 pub struct AppState {
-    pub store: Store<SpinDb>,
+    pub store: Store<AppDb>,
     /// The authenticated account for this request, set by the router after
     /// verifying the bearer token. `None` on public routes (health,
     /// register, login).
@@ -17,9 +22,12 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new() -> anyhow::Result<Self> {
-        let db = SpinDb::open_default()
+        #[cfg(target_family = "wasm")]
+        let db = AppDb::open_default()
             .await
             .context("open default sqlite database")?;
+        #[cfg(not(target_family = "wasm"))]
+        let db = AppDb::open_in_memory().context("open in-memory sqlite database")?;
         let store = Store::new(db);
         store.migrate().await.context("apply schema migrations")?;
         Ok(Self {

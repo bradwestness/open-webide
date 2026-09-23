@@ -38,7 +38,7 @@ jobs:
         run: cargo clippy -p openwebide-bridge --all-targets -- -D warnings
 
       - name: Tests (native)
-        run: cargo test -p openwebide-core -p openwebide-llm -p openwebide-storage -p openwebide-agent -p openwebide-auth -p openwebide-bridge
+        run: cargo test -p openwebide-core -p openwebide-llm -p openwebide-storage -p openwebide-agent -p openwebide-auth -p openwebide-bridge -p openwebide-backend
 
       - name: Tests (frontend native)
         run: cargo test -p openwebide-frontend --lib

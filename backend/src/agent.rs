@@ -16,7 +16,9 @@ use openwebide_agent::{AgentConfig, AgentEvent, CancelCheck, PermissionGate};
 use openwebide_agent::{VfsToolExecutor, vfs_tools};
 use openwebide_core::{ChatMessage, ChatRequest, Role, ToolCall, ToolDefinition, TurnTelemetry};
 use openwebide_llm::registry::Provider;
-use openwebide_storage::{Store, spin_db::SpinDb};
+use openwebide_storage::Store;
+
+use crate::state::AppDb;
 
 /// The workspace tools offered to the model.
 pub fn workspace_tools() -> Vec<ToolDefinition> {
@@ -28,12 +30,12 @@ pub fn workspace_tools() -> Vec<ToolDefinition> {
 /// so the flag lives in the database; the in-flight stream polls it at step
 /// boundaries.
 pub struct CancelFlag {
-    store: Arc<Store<SpinDb>>,
+    store: Arc<Store<AppDb>>,
     session_id: i64,
 }
 
 impl CancelFlag {
-    pub fn new(store: Arc<Store<SpinDb>>, session_id: i64) -> Self {
+    pub fn new(store: Arc<Store<AppDb>>, session_id: i64) -> Self {
         Self { store, session_id }
     }
 }
@@ -56,12 +58,12 @@ const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// component instance), so the in-flight stream polls the database until
 /// the decision is recorded, the run is cancelled, or the wait times out.
 pub struct PermissionPoller {
-    store: Arc<Store<SpinDb>>,
+    store: Arc<Store<AppDb>>,
     session_id: i64,
 }
 
 impl PermissionPoller {
-    pub fn new(store: Arc<Store<SpinDb>>, session_id: i64) -> Self {
+    pub fn new(store: Arc<Store<AppDb>>, session_id: i64) -> Self {
         Self { store, session_id }
     }
 }
@@ -110,7 +112,7 @@ impl PermissionGate for PermissionPoller {
 /// response body outlives the request handler.
 #[allow(clippy::too_many_arguments)]
 pub fn agent_stream(
-    store: Arc<Store<SpinDb>>,
+    store: Arc<Store<AppDb>>,
     session_id: i64,
     user_message: ChatMessage,
     request: ChatRequest,

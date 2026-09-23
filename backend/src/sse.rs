@@ -19,11 +19,11 @@ use futures::{Stream, StreamExt, stream};
 use http_body::{Frame, SizeHint};
 use openwebide_core::{ChatMessage, ChatRequest, FileDiff, Role, TurnTelemetry};
 use openwebide_llm::{LlmProvider, StreamChunk, registry::Provider};
-use openwebide_storage::{Store, spin_db::SpinDb};
+use openwebide_storage::Store;
 use serde_json::json;
 
 use crate::http_client::SpinHttpClient;
-use crate::state::now;
+use crate::state::{AppDb, now};
 
 /// One event on a chat SSE stream.
 pub enum SseEvent {
@@ -151,7 +151,7 @@ struct StreamState {
 /// request (arriving as a separate Spin request) and the tail persists the
 /// reply, so the response body outlives the request handler.
 pub fn message_stream(
-    store: Arc<Store<SpinDb>>,
+    store: Arc<Store<AppDb>>,
     session_id: i64,
     user_message: ChatMessage,
     request: ChatRequest,
