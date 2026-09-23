@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+### Changed
+- `files/raw` non-image requests are now forced to download instead of rendering inline.
+- Directly opened SVG/HTML files via `files/raw` are now sandboxed.
+- Dropped support for `?token=` query parameter authentication. Media preview URLs now use short-lived blob URLs instead of exposing the bearer token.
+
 ### Added
 
 - **Scaffold:** Rust workspace (`core`, `llm`, `storage`), a Spin (`wasm32-wasip2`)

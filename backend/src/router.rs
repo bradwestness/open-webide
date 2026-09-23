@@ -2,7 +2,7 @@
 //! dispatch on (method, path) ourselves.
 
 use bytes::Bytes;
-use spin_sdk::http::{FullBody, Request, Response, box_body};
+use spin_sdk::http::{FullBody, HeaderMap, Request, Response, box_body};
 
 use crate::api;
 use crate::error::{ApiError, JsonResp};
@@ -12,7 +12,7 @@ pub async fn route(req: Request) -> JsonResp {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
     // Read the token before the match below moves `req`.
-    let token = bearer_token(&req);
+    let token = token_from_headers(req.headers());
 
     let resp = if method.as_str() == "OPTIONS" {
         preflight()
@@ -143,27 +143,16 @@ fn is_public(path: &str) -> bool {
     )
 }
 
-/// Extract the bearer token from the `Authorization` header or `?token=` query param.
-fn bearer_token(req: &Request) -> Option<String> {
-    if let Some(token) = req
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
+/// Extract the bearer token from request headers.
+fn token_from_headers(headers: &HeaderMap) -> Option<String> {
+    bearer_token_from(headers.get("authorization").and_then(|v| v.to_str().ok()))
+}
+
+/// Extract the bearer token from the `Authorization` header.
+fn bearer_token_from(authorization: Option<&str>) -> Option<String> {
+    authorization
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|v| v.trim().to_string())
-    {
-        return Some(token);
-    }
-    req.uri().query().and_then(|q| {
-        q.split('&').find_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            if k == "token" && !v.is_empty() {
-                Some(v.to_string())
-            } else {
-                None
-            }
-        })
-    })
 }
 
 fn preflight() -> JsonResp {
@@ -187,4 +176,45 @@ fn with_cors(mut resp: JsonResp) -> JsonResp {
         "content-type, authorization".parse().unwrap(),
     );
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bearer_token_from() {
+        assert_eq!(
+            bearer_token_from(Some("Bearer foo")),
+            Some("foo".to_string())
+        );
+        assert_eq!(
+            bearer_token_from(Some("Bearer  foo  ")),
+            Some("foo".to_string())
+        );
+        assert_eq!(bearer_token_from(Some("foo")), None);
+        assert_eq!(bearer_token_from(None), None);
+    }
+
+    #[test]
+    fn test_url_token_unauthenticated() {
+        // Build a request with `?token=...` query string and no `Authorization` header
+        let req = spin_sdk::http::Request::builder()
+            .method("GET")
+            .uri("/api/sessions?token=fake")
+            .body(())
+            .unwrap();
+
+        // Run it through the actual auth-checking path used by routes:
+        // 1. extract the token
+        let token = token_from_headers(req.headers());
+
+        // 2. check authentication
+        let state = futures::executor::block_on(crate::state::AppState::new()).unwrap();
+        let auth_res =
+            futures::executor::block_on(crate::auth::authenticate(&state, token.as_deref()));
+
+        // Assert it is treated as unauthenticated
+        assert!(auth_res.is_err());
+    }
 }

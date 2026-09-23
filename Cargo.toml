@@ -74,6 +74,8 @@ web-sys = { version = "0.3", features = [
     "FileSystemWritableFileStream",
     "File",
     "Blob",
+    "Response",
+    "Url",
     "IdbFactory",
     "IdbDatabase",
     "IdbObjectStore",

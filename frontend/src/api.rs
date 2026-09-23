@@ -95,11 +95,6 @@ impl BackendApi {
         }
     }
 
-    /// The base API URL (e.g. `http://localhost:3000/api`).
-    pub fn base(&self) -> &str {
-        &self.base
-    }
-
     // -- auth --------------------------------------------------------------
 
     /// The current bearer token, if any.
@@ -297,6 +292,34 @@ impl BackendApi {
             urlenc(path)
         ))
         .await
+    }
+
+    pub async fn read_file_object_url(
+        &self,
+        project_id: i64,
+        path: &str,
+    ) -> Result<String, String> {
+        let url = format!(
+            "{}/projects/{project_id}/files/raw?path={}",
+            self.base,
+            urlenc(path)
+        );
+        let mut builder = RequestBuilder::new(&url).method(Method::GET);
+        if let Some(token) = self.token.get() {
+            builder = builder.header("authorization", &format!("Bearer {token}"));
+        }
+        let req = builder.build().map_err(|e| e.to_string())?;
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        if !resp.ok() {
+            return Err(self.error_from(resp).await);
+        }
+        let web_resp = web_sys::Response::from(resp);
+        let blob_promise = web_resp.blob().map_err(|e| format!("{e:?}"))?;
+        let blob_js = JsFuture::from(blob_promise)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let blob: web_sys::Blob = blob_js.unchecked_into();
+        web_sys::Url::create_object_url_with_blob(&blob).map_err(|e| format!("{e:?}"))
     }
 
     /// Read a file's contents as text.
@@ -801,7 +824,7 @@ fn query_param(query: &str, key: &str) -> Option<String> {
 }
 
 /// The bearer token cached in localStorage, if any.
-pub fn read_token_from_storage() -> Option<String> {
+fn read_token_from_storage() -> Option<String> {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
         .and_then(|ls| ls.get_item("owide_token").ok().flatten())

@@ -57,6 +57,12 @@ fn parent_dir(path: &str) -> String {
         .unwrap_or_default()
 }
 
+fn revoke_object_url(url: Option<String>) {
+    if let Some(u) = url {
+        let _ = web_sys::Url::revoke_object_url(&u);
+    }
+}
+
 /// The cached theme from localStorage, applied before the backend responds so
 /// the correct theme shows without a flash. Defaults to dark.
 fn read_theme_from_storage() -> String {
@@ -544,6 +550,10 @@ pub fn App() -> impl IntoView {
                     ws_dirty.set(false);
                     ws_search.set(None);
                     ws_pending_edits.set(HashMap::new());
+                    revoke_object_url(ws_media_url.get());
+                    for ws in saved.get().values() {
+                        revoke_object_url(ws.media_url.clone());
+                    }
                     saved.set(HashMap::new());
                     local_handles.set(HashMap::new());
                     error.set(None);
@@ -623,6 +633,7 @@ pub fn App() -> impl IntoView {
         ws_dirty.set(false);
         ws_open_file.set(Some(path.clone()));
         ws_content.set(String::new());
+        revoke_object_url(ws_media_url.get());
         ws_media_url.set(None);
         error.set(None);
         let kind = FileKind::from_path(&path);
@@ -633,9 +644,12 @@ pub fn App() -> impl IntoView {
 
             if kind == FileKind::Image
                 && let Ok(url) = ws.read_blob_url(&path).await
-                && ws_open_file.get().as_deref() == Some(&path)
             {
-                ws_media_url.set(Some(url));
+                if ws_open_file.get().as_deref() == Some(&path) {
+                    ws_media_url.set(Some(url));
+                } else {
+                    revoke_object_url(Some(url));
+                }
             }
 
             if kind.is_non_text() {
@@ -966,6 +980,7 @@ pub fn App() -> impl IntoView {
                     ws_search.set(None);
                     ws_pending_edits.set(HashMap::new());
                     git_status.set(None);
+                    revoke_object_url(ws_media_url.get());
                     ws_media_url.set(None);
                 }
             }
@@ -1165,7 +1180,9 @@ pub fn App() -> impl IntoView {
                             return;
                         }
                         saved.update(|m| {
-                            m.remove(&id);
+                            if let Some(ws) = m.remove(&id) {
+                                revoke_object_url(ws.media_url);
+                            }
                         });
                         local_handles.update(|m| {
                             m.remove(&id);

@@ -406,6 +406,20 @@ fn files_query(req: &Request, key: &str) -> Option<String> {
     })
 }
 
+fn raw_headers(rel: &str) -> Vec<(&'static str, String)> {
+    let mut headers = vec![
+        ("x-content-type-options", "nosniff".to_string()),
+        ("content-security-policy", "sandbox".to_string()),
+    ];
+    let mime = crate::files::mime_type_from_path(rel);
+    if mime.starts_with("image/") {
+        headers.push(("content-type", mime.to_string()));
+    } else {
+        headers.push(("content-type", "application/octet-stream".to_string()));
+        headers.push(("content-disposition", "attachment".to_string()));
+    }
+    headers
+}
 /// Percent-decode a query parameter value (e.g. `src%2Fhello.rs` ->
 /// `src/hello.rs`). The frontend percent-encodes every non-unreserved byte in
 /// a path, including `/`, so the backend must decode before using it.
@@ -457,10 +471,12 @@ pub async fn files_get(req: Request, state: &AppState, path: &str) -> Result<Jso
                 files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
             let (full, _) = remote_project_path(state, user_id, id, &rel).await?;
             let bytes = crate::files::read_bytes(&full).await?;
-            let mime = crate::files::mime_type_from_path(&rel);
-            let resp = Response::builder()
-                .status(200)
-                .header("content-type", mime)
+
+            let mut builder = Response::builder().status(200);
+            for (k, v) in raw_headers(&rel) {
+                builder = builder.header(k, v);
+            }
+            let resp = builder
                 .header("cache-control", "private, max-age=300")
                 .body(box_body(FullBody::new(Bytes::from(bytes))))
                 .map_err(|e| ApiError::internal(e.to_string()))?;
@@ -1119,5 +1135,23 @@ mod tests {
     fn test_health() {
         let resp = health();
         assert_eq!(resp.status(), 200);
+    }
+
+    #[test]
+    fn test_raw_headers() {
+        let headers = super::raw_headers("logo.svg");
+        assert!(headers.contains(&("x-content-type-options", "nosniff".to_string())));
+        assert!(headers.contains(&("content-security-policy", "sandbox".to_string())));
+        assert!(headers.contains(&("content-type", "image/svg+xml".to_string())));
+
+        let headers = super::raw_headers("x.html");
+        assert!(headers.contains(&("x-content-type-options", "nosniff".to_string())));
+        assert!(headers.contains(&("content-security-policy", "sandbox".to_string())));
+        assert!(headers.contains(&("content-type", "application/octet-stream".to_string())));
+        assert!(headers.contains(&("content-disposition", "attachment".to_string())));
+
+        let headers = super::raw_headers("a.png");
+        assert!(headers.contains(&("content-security-policy", "sandbox".to_string())));
+        assert!(headers.contains(&("content-type", "image/png".to_string())));
     }
 }

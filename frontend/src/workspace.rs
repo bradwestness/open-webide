@@ -31,14 +31,7 @@ impl Workspace {
     pub async fn read_blob_url(&self, path: &str) -> Result<String, String> {
         match self {
             Workspace::Remote { api, project_id } => {
-                let token = crate::api::read_token_from_storage().unwrap_or_default();
-                let url = format!(
-                    "{}/projects/{project_id}/files/raw?path={}&token={}",
-                    api.base(),
-                    crate::api::urlenc(path),
-                    crate::api::urlenc(&token),
-                );
-                Ok(url)
+                api.read_file_object_url(*project_id, path).await
             }
             Workspace::Local { handle } => local_fs::read_blob_url(handle, path).await,
         }
