@@ -40,6 +40,9 @@ jobs:
       - name: Tests (native)
         run: cargo test -p openwebide-core -p openwebide-llm -p openwebide-storage -p openwebide-agent -p openwebide-auth -p openwebide-bridge
 
+      - name: Tests (frontend native)
+        run: cargo test -p openwebide-frontend --lib
+
       - name: Build backend component
         run: cargo build -p openwebide-backend --target wasm32-wasip2 --release
 

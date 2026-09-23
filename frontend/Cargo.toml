@@ -9,6 +9,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+ammonia = "4.2.0"
 futures = { workspace = true }
 gloo-net = { workspace = true }
 js-sys = { workspace = true }

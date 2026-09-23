@@ -84,6 +84,11 @@ for what's still ahead.
 - Toolchain pinned to Rust 1.98.1; `argon2` 0.6, `rand` 0.10, `base64` 0.23,
   `hmac` 0.13, `sha2` 0.11, and `tokio-tungstenite` 0.30 (bridge only), with
   existing password hashes and bearer tokens verifying unchanged.
+- Markdown previews no longer execute raw HTML (e.g., `<script>`, `<style>`,
+  `<iframe>`, `onload`/`onerror`, `javascript:` links). Safe elements like
+  `<details>`, `<sub>`, and inline `<img>` remain. SVG previews display as
+  images and no longer execute scripts. Added `openwebide-frontend` as a lib
+  crate for a native test harness.
 - `/tokens` now shows the context-window gauge as the *latest* call's token
   count against the resolved context limit, instead of a running total
   summed across the whole session; the Input/Output rows stay cumulative.

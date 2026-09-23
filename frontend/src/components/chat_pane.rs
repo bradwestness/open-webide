@@ -90,13 +90,7 @@ fn item_key(item: &ConversationItem) -> String {
     }
 }
 
-/// Render markdown to HTML for display in an assistant message or the editor
-/// preview.
-pub(crate) fn render_markdown(md: &str) -> String {
-    let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(md));
-    html
-}
+pub(crate) use openwebide_frontend::markdown::render as render_markdown;
 
 /// Render the diff for a file edit: the changed path and the removed/added lines.
 fn render_diff_view(diff: FileDiff) -> impl IntoView {

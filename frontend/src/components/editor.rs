@@ -236,9 +236,10 @@ fn render_preview_view(
                 }
                 .into_any()
             } else if path.ends_with(".svg") && !content.is_empty() {
+                let src = openwebide_frontend::markdown::svg_data_url(content);
                 view! {
                     <div class="editor-media-preview">
-                        <div class="editor-image-frame" inner_html=content.to_string() />
+                        <div class="editor-image-frame"><img src=src alt=file_name.clone() class="editor-preview-image"/></div>
                         <div class="editor-media-info">
                             <span class="media-filename">{file_name}</span>
                             <span class="media-type-pill">"SVG Vector"</span>
