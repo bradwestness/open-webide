@@ -3,6 +3,7 @@
 //! Provides an interactive PTY terminal and command execution dock in the IDE.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::{SinkExt, StreamExt};
@@ -172,14 +173,18 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
     let (tx_outbound, mut rx_outbound) = futures::channel::mpsc::channel::<BridgeClientMessage>(32);
     let tx_outbound = Arc::new(std::sync::Mutex::new(tx_outbound));
 
+    // Ids of sessions this pane has spawned, so they can be killed on unmount.
+    let spawned_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
     // Connect to bridge daemon over WebSocket
     let ws_url = default_bridge_ws_url();
     let tx_clone = tx_outbound.clone();
 
     let url = ws_url.clone();
     let tx = tx_clone.clone();
+    let spawned_ids_for_conn = spawned_ids.clone();
 
-    spawn_local(async move {
+    let (connection_task, abort_handle) = futures::future::abortable(async move {
         status.set(ConnectionStatus::Connecting);
         raw_output.update(|s| s.push_str("\x1b[90mConnecting to bridge daemon...\x1b[0m\n"));
 
@@ -248,14 +253,19 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
                     raw_output.update(|s| s.push_str(&data));
 
                     // Auto-scroll output container
-                    if let Some(el) = output_ref.get() {
+                    if let Some(Some(el)) = output_ref.try_get_untracked() {
                         let div: &web_sys::HtmlElement = el.as_ref();
                         div.set_scroll_top(div.scroll_height() as f64);
                     }
                 }
                 BridgeServerMessage::Exited {
-                    exit_code, signal, ..
+                    id,
+                    exit_code,
+                    signal,
                 } => {
+                    if let Ok(mut ids) = spawned_ids_for_conn.lock() {
+                        ids.retain(|tracked| tracked != &id);
+                    }
                     let code_str = match (exit_code, signal) {
                         (Some(c), _) => format!("exit code {c}"),
                         (None, Some(sig)) => format!("signal {sig}"),
@@ -283,11 +293,33 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
             s.push_str("\x1b[33m[Bridge daemon disconnected]\x1b[0m\n");
         });
     });
+    spawn_local(async move {
+        let _ = connection_task.await;
+    });
+
+    let tx_for_cleanup = tx_outbound.clone();
+    let spawned_ids_for_cleanup = spawned_ids.clone();
+    on_cleanup(move || {
+        let ids: Vec<String> = spawned_ids_for_cleanup
+            .lock()
+            .map(|ids| ids.clone())
+            .unwrap_or_default();
+        if let Ok(mut sender) = tx_for_cleanup.lock() {
+            for id in ids {
+                let _ = sender.try_send(BridgeClientMessage::Kill { id, signal: None });
+            }
+        }
+        abort_handle.abort();
+    });
 
     let tx_for_shell = tx_outbound.clone();
+    let spawned_ids_for_shell = spawned_ids.clone();
     let spawn_shell = move || {
         let id = next_session_id();
         if let Ok(mut sender) = tx_for_shell.lock() {
+            if let Ok(mut ids) = spawned_ids_for_shell.lock() {
+                ids.push(id.clone());
+            }
             let _ = sender.try_send(BridgeClientMessage::Spawn {
                 id,
                 command: "sh".into(),
@@ -318,6 +350,7 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
     };
 
     let tx_for_submit = tx_outbound.clone();
+    let spawned_ids_for_submit = spawned_ids.clone();
     let on_submit_command = move || {
         let cmd = input_text.get().trim().to_string();
         if cmd.is_empty() {
@@ -331,6 +364,9 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
             } else {
                 let id = next_session_id();
                 if let Ok(mut sender) = tx_for_submit.lock() {
+                    if let Ok(mut ids) = spawned_ids_for_submit.lock() {
+                        ids.push(id.clone());
+                    }
                     let _ = sender.try_send(BridgeClientMessage::Spawn {
                         id,
                         command: "sh".into(),
@@ -364,10 +400,13 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
                     raw_output.update(|s| {
                         s.push_str(&format!("\x1b[36m❯ {cmd}\x1b[0m\n"));
                     });
+                    if let Ok(mut ids) = spawned_ids_for_submit.lock() {
+                        ids.push(id.clone());
+                    }
                     let _ = sender.try_send(BridgeClientMessage::Spawn {
                         id,
-                        command: cmd,
-                        args: Vec::new(),
+                        command: "sh".into(),
+                        args: vec!["-lc".into(), "--".into(), cmd],
                         cwd: None,
                         env: std::collections::HashMap::new(),
                         pty: true,

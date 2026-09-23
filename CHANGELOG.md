@@ -19,6 +19,7 @@ for what's still ahead.
 - Directly opened SVG/HTML files via `files/raw` are now sandboxed.
 - Dropped support for `?token=` query parameter authentication. Media preview URLs now use short-lived blob URLs instead of exposing the bearer token.
 
+- **Frontend panics and terminal cleanup:** Fixed a panic in editor context capture when truncating selections lands inside a multi-byte character by mapping UTF-16 selection offsets to byte offsets and truncating at a UTF-8 char boundary. The terminal dock's WebSocket connection task is now cancelled and its spawned sessions killed when the dock closes, and its output auto-scroll no longer panics on an already-disposed DOM node. The status bar no longer panics on a stale Git status signal. Added a browser panic hook that logs to the console instead of showing an opaque `unreachable` error. Typed shell commands with arguments are now run via `sh -lc` instead of failing.
 - **Highlighter and diff robustness:** Fixed panics in the syntax highlighter on non-ASCII source lines and in HTML-to-Markdown truncation on multi-byte character boundaries. Lines over 10,000 bytes now render as a single unhighlighted token instead of freezing. Word-level diffs fall back to a whole-line delete/insert past a size budget instead of using unbounded `O(m·n)` memory.
 
 ### Added

@@ -11,7 +11,8 @@ pub fn StatusBar(
     #[prop(default = Signal::derive(|| None))] git_status: Signal<Option<GitRepoStatus>>,
     #[prop(default = Callback::new(|_| ()))] on_branch_click: Callback<()>,
     #[prop(default = Callback::new(|_| ()))] on_sync_click: Callback<()>,
-    #[prop(default = Signal::derive(|| openwebide_agent::policy::ApprovalMode::Default))] approval_mode: Signal<openwebide_agent::policy::ApprovalMode>,
+    #[prop(default = Signal::derive(|| openwebide_agent::policy::ApprovalMode::Default))]
+    approval_mode: Signal<openwebide_agent::policy::ApprovalMode>,
 ) -> impl IntoView {
     view! {
         <footer class="statusbar">
@@ -36,9 +37,8 @@ pub fn StatusBar(
                 </Show>
             </Show>
 
-            <Show when=move || git_status.get().is_some()>
-                {move || {
-                    let status = git_status.get().unwrap();
+            {move || {
+                git_status.get().map(|status| {
                     let branch = status.branch.clone();
                     let ahead = status.ahead;
                     let behind = status.behind;
@@ -87,8 +87,8 @@ pub fn StatusBar(
                             }}
                         </span>
                     }
-                }}
-            </Show>
+                })
+            }}
 
             <span class="spacer" />
             <Show when=move || approval_mode.get() == openwebide_agent::policy::ApprovalMode::AlwaysForSession>

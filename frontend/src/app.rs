@@ -6,7 +6,7 @@ use openwebide_core::{
     ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, FileEntry, FileKind,
     GitCheckoutRequest, GitCommitRequest, GitRepoStatus, GitSyncRequest, ModelInfo, Project,
     ProviderKind, Role, SearchHit, SystemPrompt, User, WorkspaceMode,
-    tui::{DEFAULT_CONTEXT_LIMIT, EditorContext, SelectionContext, SessionTelemetry, SlashCommand},
+    tui::{DEFAULT_CONTEXT_LIMIT, EditorContext, SessionTelemetry, SlashCommand},
 };
 use web_sys::wasm_bindgen::JsCast;
 use web_sys::{AbortController, FileSystemDirectoryHandle};
@@ -92,49 +92,9 @@ fn capture_active_editor(open_file: Option<String>, content: &str) -> Option<Edi
     let sel_start = ta.selection_start().ok().flatten().unwrap_or(0) as usize;
     let sel_end = ta.selection_end().ok().flatten().unwrap_or(0) as usize;
 
-    let safe_start = sel_start.min(content.len());
-    let text_before_start = &content[..safe_start];
-    let start_line = text_before_start.matches('\n').count() + 1;
-    let last_newline = text_before_start.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let cursor_col = safe_start.saturating_sub(last_newline) + 1;
-
-    let selection = if sel_end > sel_start {
-        let safe_end = sel_end.min(content.len());
-        let text_before_end = &content[..safe_end];
-        let end_line = text_before_end.matches('\n').count() + 1;
-        let raw_selection = &content[safe_start..safe_end];
-        let line_count = raw_selection.lines().count();
-
-        let final_text = if line_count > 100 || raw_selection.len() > 8192 {
-            let mut truncated = raw_selection
-                .lines()
-                .take(100)
-                .collect::<Vec<_>>()
-                .join("\n");
-            if truncated.len() > 8000 {
-                truncated.truncate(8000);
-            }
-            truncated.push_str("\n... [truncated: selection exceeds 100 lines / 8KB; use read_file with line offsets]");
-            truncated
-        } else {
-            raw_selection.to_string()
-        };
-
-        Some(SelectionContext {
-            start_line,
-            end_line,
-            text: final_text,
-        })
-    } else {
-        None
-    };
-
-    Some(EditorContext {
-        file_path,
-        cursor_line: start_line,
-        cursor_col,
-        selection,
-    })
+    Some(openwebide_frontend::text::editor_context(
+        file_path, content, sel_start, sel_end,
+    ))
 }
 
 fn cancel_run_prompts(items: &mut [ConversationItem], anchor: i64) {
@@ -230,7 +190,8 @@ pub fn App() -> impl IntoView {
 
     let active_editor_context = RwSignal::new(Option::<EditorContext>::None);
     let session_telemetry = RwSignal::new(SessionTelemetry::default());
-    let approval_mode = RwSignal::new(HashMap::<i64, openwebide_agent::policy::ApprovalMode>::new());
+    let approval_mode =
+        RwSignal::new(HashMap::<i64, openwebide_agent::policy::ApprovalMode>::new());
     let current_run_anchor = RwSignal::new(Option::<i64>::None);
 
     let _ = leptos::prelude::window_event_listener(
@@ -1177,7 +1138,9 @@ pub fn App() -> impl IntoView {
                             return;
                         }
                         sessions.update(|list| list.retain(|s| s.id != id));
-                        approval_mode.update(|m| { m.remove(&id); });
+                        approval_mode.update(|m| {
+                            m.remove(&id);
+                        });
                         if active_session.get() == Some(id) {
                             active_session.set(None);
                         }
@@ -1565,7 +1528,12 @@ pub fn App() -> impl IntoView {
     let on_permission_always = {
         Callback::new(move |tool_call_id: String| {
             if let Some(session_id) = streaming_session.get_untracked() {
-                approval_mode.update(|m| { m.insert(session_id, openwebide_agent::policy::ApprovalMode::AlwaysForSession); });
+                approval_mode.update(|m| {
+                    m.insert(
+                        session_id,
+                        openwebide_agent::policy::ApprovalMode::AlwaysForSession,
+                    );
+                });
             } else {
                 return;
             }
@@ -1690,7 +1658,11 @@ pub fn App() -> impl IntoView {
                             });
                         }
                         SseEvent::PermissionRequest { id, name, summary } => {
-                            let mode = approval_mode.get_untracked().get(&session_id).copied().unwrap_or_default();
+                            let mode = approval_mode
+                                .get_untracked()
+                                .get(&session_id)
+                                .copied()
+                                .unwrap_or_default();
                             if mode.auto_approves(&name) {
                                 on_permission.run((id.clone(), true));
                             } else {
