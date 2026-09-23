@@ -33,16 +33,7 @@ pub fn spawn_pty(
         .map_err(|e| format!("openpty failed: {e}"))?;
 
     // Determine working directory: confined to workspace_root
-    let effective_cwd = match cwd {
-        Some(ref rel) if !rel.is_empty() => {
-            let candidate = workspace_root.join(rel);
-            if !candidate.starts_with(workspace_root) {
-                return Err(format!("cwd escapes workspace root: {rel}"));
-            }
-            candidate
-        }
-        _ => workspace_root.to_path_buf(),
-    };
+    let effective_cwd = crate::paths::resolve_in_root(workspace_root, cwd.as_deref())?;
 
     let mut cmd = CommandBuilder::new(&command);
     cmd.args(&args);

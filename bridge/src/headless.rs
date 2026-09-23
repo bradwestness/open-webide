@@ -23,16 +23,7 @@ pub fn spawn_headless(
     env: HashMap<String, String>,
     workspace_root: &Path,
 ) -> Result<Arc<Session>, String> {
-    let effective_cwd = match cwd {
-        Some(ref rel) if !rel.is_empty() => {
-            let candidate = workspace_root.join(rel);
-            if !candidate.starts_with(workspace_root) {
-                return Err(format!("cwd escapes workspace root: {rel}"));
-            }
-            candidate
-        }
-        _ => workspace_root.to_path_buf(),
-    };
+    let effective_cwd = crate::paths::resolve_in_root(workspace_root, cwd.as_deref())?;
 
     let mut cmd = Command::new(&command);
     cmd.args(&args);
@@ -128,7 +119,7 @@ pub fn spawn_headless(
 /// Execute a shell command directly with a timeout, capturing stdout and stderr into a [`CommandOutcome`].
 pub async fn execute_command_direct(
     command_str: &str,
-    workspace_root: &Path,
+    cwd: &Path,
     timeout_secs: u64,
 ) -> Result<CommandOutcome, String> {
     // Run command via default shell (sh -c on Unix, cmd /C on Windows)
@@ -146,7 +137,7 @@ pub async fn execute_command_direct(
         c
     };
 
-    cmd.current_dir(workspace_root);
+    cmd.current_dir(cwd);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 

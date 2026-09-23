@@ -115,7 +115,13 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let workspace_root = args.workspace.canonicalize().unwrap_or(args.workspace);
+    let workspace_root = match openwebide_bridge::paths::canonical_root(&args.workspace) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("Error: {err}");
+            std::process::exit(1);
+        }
+    };
     let mut config = ServerConfig::new(workspace_root);
     for orig in args.allowed_origins {
         if !config

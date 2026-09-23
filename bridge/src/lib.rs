@@ -2,6 +2,7 @@
 
 pub mod git;
 pub mod headless;
+pub mod paths;
 pub mod pty;
 pub mod server;
 pub mod session;

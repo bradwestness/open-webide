@@ -219,6 +219,8 @@ struct ExecPayload {
     command: String,
     #[serde(default = "default_timeout")]
     timeout_seconds: u64,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -521,12 +523,29 @@ where
         }
     };
 
-    let outcome = execute_command_direct(
-        &payload.command,
+    let effective_cwd = match crate::paths::resolve_in_root(
         &config.workspace_root,
-        payload.timeout_seconds,
-    )
-    .await;
+        payload.cwd.as_deref(),
+    ) {
+        Ok(p) => p,
+        Err(err) => {
+            let err_json = serde_json::json!({ "error": err }).to_string();
+            let mut cors_headers = String::new();
+            if let Some(ref orig) = echo_origin {
+                cors_headers = format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
+            }
+            let resp = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
+                err_json.len(),
+                err_json
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            return;
+        }
+    };
+
+    let outcome =
+        execute_command_direct(&payload.command, &effective_cwd, payload.timeout_seconds).await;
     let (status, resp_body) = match outcome {
         Ok(res) => ("200 OK", serde_json::to_string(&res).unwrap_or_default()),
         Err(err) => (
@@ -604,23 +623,71 @@ where
         }
     };
 
-    let workspace_root = &config.workspace_root;
-    let repo_dir = match serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| {
-            v.get("cwd")
-                .and_then(|c| c.as_str().map(std::path::PathBuf::from))
-        }) {
-        Some(d) => {
-            if d.is_absolute() && d.exists() {
-                d
-            } else if workspace_root.join(&d).exists() {
-                workspace_root.join(&d)
-            } else {
-                workspace_root.to_path_buf()
+    let repo_dir_opt = if method == "GET" && body.trim().is_empty() {
+        None
+    } else {
+        match serde_json::from_str::<serde_json::Value>(body) {
+            Ok(v) => v
+                .get("cwd")
+                .and_then(|c| c.as_str().filter(|s| !s.is_empty()).map(String::from)),
+            Err(e) => {
+                let err_json =
+                    serde_json::json!({ "error": format!("invalid JSON: {e}") }).to_string();
+                let mut cors_headers = String::new();
+                if let Some(ref orig) = echo_origin {
+                    cors_headers =
+                        format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
+                }
+                let resp = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
+                    err_json.len(),
+                    err_json
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                return;
             }
         }
-        None => workspace_root.to_path_buf(),
+    };
+
+    let repo_dir = match repo_dir_opt {
+        Some(d) => match crate::paths::resolve_in_root(&config.workspace_root, Some(&d)) {
+            Ok(p) => p,
+            Err(e) => {
+                let err_json = serde_json::json!({ "error": e }).to_string();
+                let mut cors_headers = String::new();
+                if let Some(ref orig) = echo_origin {
+                    cors_headers =
+                        format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
+                }
+                let resp = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
+                    err_json.len(),
+                    err_json
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                return;
+            }
+        },
+        None => {
+            if method == "GET" {
+                config.workspace_root.clone()
+            } else {
+                let err_json =
+                    serde_json::json!({ "error": "cwd is missing or empty" }).to_string();
+                let mut cors_headers = String::new();
+                if let Some(ref orig) = echo_origin {
+                    cors_headers =
+                        format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
+                }
+                let resp = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
+                    err_json.len(),
+                    err_json
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                return;
+            }
+        }
     };
 
     #[derive(Debug)]
