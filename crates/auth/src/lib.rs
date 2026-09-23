@@ -6,8 +6,8 @@
 //! backend is a wasm cdylib whose own tests never run in CI.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use hmac::{Hmac, Mac};
-use rand::RngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::Rng;
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -15,8 +15,6 @@ type HmacSha256 = Hmac<Sha256>;
 /// Error from password hashing.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
-    #[error("invalid salt")]
-    InvalidSalt,
     #[error("argon2 params: {0}")]
     Argon2Params(String),
     #[error("hash password: {0}")]
@@ -25,24 +23,22 @@ pub enum AuthError {
 
 /// Hash a password with argon2id.
 pub fn hash_password(password: &str) -> Result<String, AuthError> {
-    use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
-    use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
-    // 16 random bytes, base64-encoded (no padding — the PHC format) as the salt.
+    use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version};
+    // 16 random bytes as the salt; `hash_password_with_salt` base64-encodes them
+    // into the PHC salt field.
     let mut salt_bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut salt_bytes);
-    let salt = SaltString::from_b64(&STANDARD_NO_PAD.encode(salt_bytes))
-        .map_err(|_| AuthError::InvalidSalt)?;
     let params =
         Params::new(19_456, 2, 1, None).map_err(|e| AuthError::Argon2Params(e.to_string()))?;
     let hash = Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password_with_salt(password.as_bytes(), &salt_bytes)
         .map_err(|e| AuthError::HashPassword(e.to_string()))?;
     Ok(hash.to_string())
 }
 
 /// Verify a password against a stored argon2id hash.
 pub fn verify_password(password: &str, hash: &str) -> bool {
-    use argon2::{Argon2, PasswordVerifier, password_hash::PasswordHash};
+    use argon2::{Argon2, PasswordVerifier, password_hash::phc::PasswordHash};
     PasswordHash::new(hash)
         .ok()
         .and_then(|ph| {
@@ -139,5 +135,26 @@ mod tests {
         let hash = hash_password("hunter2").unwrap();
         assert!(verify_password("hunter2", &hash));
         assert!(!verify_password("wrong", &hash));
+    }
+
+    /// A PHC string produced by argon2 0.5 / password-hash 0.5 (recorded before the
+    /// 0.6 bump) must still verify.
+    #[test]
+    fn argon2_0_5_hash_still_verifies() {
+        let hash = "$argon2id$v=19$m=19456,t=2,p=1$cyxg2ERXZqGjDGOUqMYIVw$zCWESEqdxK7yti9KLn9p6x3vbNyHS40MdPgoX9iLtvA";
+        assert!(verify_password("correct horse", hash));
+        assert!(!verify_password("wrong", hash));
+    }
+
+    /// `sign_token_expires`'s output must be byte-identical across the
+    /// hmac/sha2/base64 bump; recorded with hmac 0.12 + sha2 0.10 + base64 0.22.
+    #[test]
+    fn token_bytes_unchanged_across_bump() {
+        let token = sign_token_expires("secret", 7, 1_900_000_000);
+        assert_eq!(
+            token,
+            "Ny4xOTAwMDAwMDAw.a34e2MIIGGUnCTFr4i3Nbyu4naXZRsyH1tgeVMuyRGA"
+        );
+        assert_eq!(verify_token_at("secret", &token, 0), Some(7));
     }
 }

@@ -48,6 +48,8 @@ Instructions, conventions, and architectural principles for AI agents working on
 
 ## 3. Build & Test Commands
 
+- **Toolchain**: pinned in `rust-toolchain.toml` (currently `1.98.1`). A toolchain bump moves
+  `rust-toolchain.toml`, `.github/workflows/ci.yml`, and the `Dockerfile` builder stage together.
 - **Backend WASM (Spin)**:
   ```bash
   cargo build -p openwebide-backend --target wasm32-wasip2 --release

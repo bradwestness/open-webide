@@ -13,8 +13,6 @@ A sequence of correctness and hardening passes across every crate, plus
 switching the agent loop from one-shot SSE requests to a single multiplexed
 bridge WebSocket connection:
 
-- **Toolchain & dependencies:** a pinned current-stable Rust toolchain and
-  every dependency on its current stable release before the rest lands.
 - **Security hardening:** default-deny tool approval policy, bridge
   Host/Origin/CORS checks, path-confinement and git argument-injection
   fixes, markdown/SVG XSS closure (safe raw HTML still renders), sandboxed

@@ -9,7 +9,7 @@ RUN apt-get update && \
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --profile minimal --default-toolchain stable
+        | sh -s -- -y --profile minimal --default-toolchain 1.98.1
 
 # Trunk (version must match .github/workflows/ci.yml)
 ARG TARGETARCH

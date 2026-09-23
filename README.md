@@ -66,8 +66,9 @@ approval modes, and a secondary fast model next), and
 
 ## Prerequisites
 
-- Rust (stable) with targets `wasm32-wasip2` and `wasm32-unknown-unknown`
-  (`rustup target add wasm32-wasip2 wasm32-unknown-unknown`)
+- Rust via [rustup](https://rustup.rs/). The toolchain (currently 1.98.1) and its
+  `wasm32-wasip2` / `wasm32-unknown-unknown` targets are pinned in
+  `rust-toolchain.toml`, so rustup installs them on the first build.
 - [Spin](https://spinframework.dev/docs/latest/installation/) (4.x)
 - [Trunk](https://trunkrs.dev/getting-started/install/)
 
