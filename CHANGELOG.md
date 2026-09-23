@@ -12,6 +12,8 @@ for what's still ahead.
 - Editor: Added confirmation dialogs before discarding unsaved edits and conditionally offered the Revert button only when HEAD is known.
 
 ### Added
+
+- **Local mode integrity:** Local filesystem reads strictly validate UTF-8 and surface errors in the editor, allowing fallback to an "Open as Text anyway" read-only mode for corrupt/binary files. Missing browser directory permissions now surface in the tree with a "Grant folder access" button instead of silently failing, and local runs now abort correctly without awaiting server round-trips.
 - Agent can now edit unreadable (binary or large) files; refusing an unreadable file edit now safely restores it from a backup rather than deleting it.
 
 
@@ -46,6 +48,8 @@ for what's still ahead.
 - **Highlighter and diff robustness:** Fixed panics in the syntax highlighter on non-ASCII source lines and in HTML-to-Markdown truncation on multi-byte character boundaries. Lines over 10,000 bytes now render as a single unhighlighted token instead of freezing. Word-level diffs fall back to a whole-line delete/insert past a size budget instead of using unbounded `O(m·n)` memory.
 
 ### Added
+
+- **Local mode integrity:** Local filesystem reads strictly validate UTF-8 and surface errors in the editor, allowing fallback to an "Open as Text anyway" read-only mode for corrupt/binary files. Missing browser directory permissions now surface in the tree with a "Grant folder access" button instead of silently failing, and local runs now abort correctly without awaiting server round-trips.
 
 - **Scaffold:** Rust workspace (`core`, `llm`, `storage`), a Spin (`wasm32-wasip2`)
   backend, a Leptos WASM frontend shell, and CI running fmt, clippy, native

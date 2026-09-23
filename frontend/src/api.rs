@@ -2,7 +2,6 @@
 
 use gloo_net::http::{Method, Request, RequestBuilder};
 use leptos::prelude::*;
-pub use openwebide_frontend::sse::SseEvent;
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
@@ -10,6 +9,7 @@ use openwebide_core::{
     ModelInfo, NewConnection, NewProject, NewSession, Project, ProviderKind, Role, SearchHit,
     SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode,
 };
+pub use openwebide_frontend::sse::SseEvent;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -294,6 +294,25 @@ impl BackendApi {
         Ok(value["content"].as_str().unwrap_or_default().to_string())
     }
 
+    pub async fn read_file_lossy(&self, project_id: i64, path: &str) -> Result<String, String> {
+        let url = format!(
+            "{}/projects/{project_id}/files/raw?path={}",
+            self.base,
+            urlenc(path)
+        );
+        let mut builder = RequestBuilder::new(&url).method(Method::GET);
+        if let Some(token) = self.token.get() {
+            builder = builder.header("authorization", &format!("Bearer {token}"));
+        }
+        let req = builder.build().map_err(|e| e.to_string())?;
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        if !resp.ok() {
+            return Err(self.error_from(resp).await);
+        }
+        let bytes = resp.binary().await.map_err(|e| e.to_string())?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     /// Write text to a file (raw text body, not JSON).
     pub async fn write_file(
         &self,
@@ -492,7 +511,9 @@ impl BackendApi {
         tool_call_id: &str,
         approved: bool,
     ) -> Result<(), String> {
-        let enc_id = js_sys::encode_uri_component(tool_call_id).as_string().unwrap_or_else(|| tool_call_id.to_string());
+        let enc_id = js_sys::encode_uri_component(tool_call_id)
+            .as_string()
+            .unwrap_or_else(|| tool_call_id.to_string());
         let _value: serde_json::Value = self
             .post(
                 &format!("/sessions/{session_id}/permissions/{enc_id}"),
@@ -749,7 +770,6 @@ impl BackendApi {
             })
     }
 }
-
 
 fn query_param(query: &str, key: &str) -> Option<String> {
     query.trim_start_matches('?').split('&').find_map(|pair| {

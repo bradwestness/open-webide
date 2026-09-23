@@ -19,6 +19,8 @@ pub fn FileTree(
     on_new_dir: Callback<()>,
     on_search: Callback<String>,
     on_clear_search: Callback<()>,
+    #[prop(default = Signal::derive(|| false))] needs_grant: Signal<bool>,
+    #[prop(optional)] on_grant_access: Option<Callback<()>>,
     #[prop(default = Signal::derive(|| None))] git_status: Signal<
         Option<openwebide_core::GitRepoStatus>,
     >,
@@ -91,6 +93,21 @@ pub fn FileTree(
                     }
                 />
             </div>
+            <Show when=move || needs_grant.get() fallback=|| ()>
+                <div style="padding: 12px; text-align: center;">
+                    <crate::components::Button
+                        variant=crate::components::ButtonVariant::Primary
+                        size=crate::components::ButtonSize::Sm
+                        on_click=Callback::new(move |_| {
+                            if let Some(cb) = &on_grant_access {
+                                cb.run(());
+                            }
+                        })
+                    >
+                        "Grant folder access"
+                    </crate::components::Button>
+                </div>
+            </Show>
             <Show
                 when=move || search_results.get().is_some()
                 fallback=move || {

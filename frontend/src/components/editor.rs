@@ -166,6 +166,7 @@ fn render_placeholder_view(
     path: &str,
     kind: FileKind,
     set_view_mode: WriteSignal<ViewMode>,
+    on_open_lossy: Callback<()>,
 ) -> impl IntoView {
     let file_name = path.rsplit('/').next().unwrap_or(path).to_string();
     let glyph = kind.glyph(path);
@@ -200,7 +201,10 @@ fn render_placeholder_view(
                 <Button
                     variant=ButtonVariant::Ghost
                     size=ButtonSize::Sm
-                    on_click=Callback::new(move |_| set_view_mode.set(ViewMode::Code))
+                    on_click=Callback::new(move |_| {
+                        set_view_mode.set(ViewMode::Code);
+                        on_open_lossy.run(());
+                    })
                 >
                     "Open as Text anyway"
                 </Button>
@@ -216,6 +220,7 @@ fn render_preview_view(
     content: &str,
     media_url: Option<String>,
     set_view_mode: WriteSignal<ViewMode>,
+    on_open_lossy: Callback<()>,
 ) -> impl IntoView {
     let kind = FileKind::from_path(path);
     let file_name = path.rsplit('/').next().unwrap_or(path).to_string();
@@ -248,7 +253,7 @@ fn render_preview_view(
                 }
                 .into_any()
             } else {
-                render_placeholder_view(path, kind, set_view_mode).into_any()
+                render_placeholder_view(path, kind, set_view_mode, on_open_lossy).into_any()
             }
         }
         FileKind::Markdown => {
@@ -259,7 +264,7 @@ fn render_preview_view(
             .into_any()
         }
         FileKind::Binary | FileKind::Media => {
-            render_placeholder_view(path, kind, set_view_mode).into_any()
+            render_placeholder_view(path, kind, set_view_mode, on_open_lossy).into_any()
         }
         FileKind::Text => {
             let html = render_markdown(content);
@@ -289,6 +294,8 @@ pub fn Editor(
     #[prop(optional)] on_load_git_diff: Option<Callback<()>>,
     #[prop(optional)] on_discard_git_diff: Option<Callback<()>>,
     #[prop(into, default = Signal::derive(|| false))] can_revert: Signal<bool>,
+    read_only: Signal<bool>,
+    on_open_lossy: Callback<()>,
     on_save: Callback<()>,
     on_accept: Callback<()>,
     on_reject: Callback<()>,
@@ -370,10 +377,15 @@ pub fn Editor(
                                                         view_mode.set(mode);
                                                     })
                                                 />
+                                                <Show when=move || read_only.get() fallback=|| ()>
+                                                    <span class="form-hint" style="margin-left: 12px; align-self: center;">
+                                                        "Not valid UTF-8 — shown read-only"
+                                                    </span>
+                                                </Show>
                                                 <Button
                                                     variant=if dirty.get() { ButtonVariant::Primary } else { ButtonVariant::Default }
                                                     size=ButtonSize::Sm
-                                                    disabled=Signal::derive(move || !dirty.get())
+                                                    disabled=Signal::derive(move || read_only.get() || !dirty.get())
                                                     on_click=Callback::new(move |_| on_save.run(()))
                                                 >
                                                     "Save"
@@ -487,7 +499,14 @@ pub fn Editor(
                             ViewMode::Content => render_content_view(diff.new).into_any(),
                             ViewMode::Preview => {
                                 let path = open_file.get().unwrap_or_default();
-                                render_preview_view(&path, &diff.new, media_url.get(), view_mode.write_only()).into_any()
+                                render_preview_view(
+                                    &path,
+                                    &diff.new,
+                                    media_url.get(),
+                                    view_mode.write_only(),
+                                    on_open_lossy,
+                                )
+                                .into_any()
                             }
                             ViewMode::Code => render_content_view(diff.new).into_any(),
                         }
@@ -504,7 +523,14 @@ pub fn Editor(
                             ViewMode::Preview => {
                                 let path = open_file.get().unwrap_or_default();
                                 let text = content.get();
-                                render_preview_view(&path, &text, media_url.get(), view_mode.write_only()).into_any()
+                                render_preview_view(
+                                    &path,
+                                    &text,
+                                    media_url.get(),
+                                    view_mode.write_only(),
+                                    on_open_lossy,
+                                )
+                                .into_any()
                             }
                             _ => {
                                 view! {
@@ -524,6 +550,7 @@ pub fn Editor(
                                         <textarea
                                             class="editor-textarea"
                                             spellcheck="false"
+                                            readonly=read_only
                                             node_ref=ta
                                             on:input=move |e: web_sys::Event| {
                                                 if let Some(target) = e.target()

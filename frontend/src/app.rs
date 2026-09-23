@@ -155,6 +155,7 @@ pub fn App() -> impl IntoView {
     let abort = RwSignal::new(Option::<AbortController>::None);
     // The session whose run is streaming, so Stop can cancel it server-side.
     let streaming_session = RwSignal::new(Option::<i64>::None);
+    let streaming_is_local = RwSignal::new(false);
     // Models reported by the active session's connection, and the model each
     // session has chosen (None = the connection's default).
     let models = RwSignal::new(Vec::<ModelInfo>::new());
@@ -167,6 +168,8 @@ pub fn App() -> impl IntoView {
     let ws_open_file = RwSignal::new(Option::<String>::None);
     let ws_content = RwSignal::new(String::new());
     let ws_dirty = RwSignal::new(false);
+    let ws_read_only = RwSignal::new(false);
+    let needs_grant = RwSignal::new(HashSet::<i64>::new());
     let ws_media_url = RwSignal::new(Option::<String>::None);
     let ws_search = RwSignal::new(Option::<Vec<SearchHit>>::None);
     let ws_pending_edits = RwSignal::new(HashMap::<String, FileDiff>::new());
@@ -516,8 +519,10 @@ pub fn App() -> impl IntoView {
         let api = api.clone();
         Callback::new(move |_| {
             let action_api = api.clone();
-            let has_unsaved = ws_dirty.get_untracked() || saved.get_untracked().values().any(|ws| ws.dirty);
-            let mut message = "Log out of this account? Open tabs and projects will be closed.".to_string();
+            let has_unsaved =
+                ws_dirty.get_untracked() || saved.get_untracked().values().any(|ws| ws.dirty);
+            let mut message =
+                "Log out of this account? Open tabs and projects will be closed.".to_string();
             if has_unsaved {
                 message.push_str(" Unsaved changes will be lost.");
             }
@@ -602,12 +607,34 @@ pub fn App() -> impl IntoView {
                     }
                 }
                 Err(e) => {
-                    if active_project.get() == Some(id) {
+                    if e == crate::local_fs::PERMISSION_NEEDED {
+                        needs_grant.update(|m| {
+                            m.insert(id);
+                        });
+                    } else if active_project.get() == Some(id) {
                         error.set(Some(e));
                     }
                 }
             }
         });
+    });
+
+    let on_grant_access = Callback::new(move |_| {
+        let Some(pid) = active_project.get() else {
+            return;
+        };
+        let handle = local_handles.with(|m| m.get(&pid).cloned());
+        if let Some(handle) = handle {
+            let ld = load_dir;
+            spawn_local(async move {
+                if let Ok(true) = crate::local_fs::request_access(&handle).await {
+                    needs_grant.update(|m| {
+                        m.remove(&pid);
+                    });
+                    ld.run((pid, String::new()));
+                }
+            });
+        }
     });
 
     // Make sure the active project's root directory is loaded.
@@ -619,10 +646,50 @@ pub fn App() -> impl IntoView {
     });
 
     // Open a file: clear the dirty flag and load its contents.
+    let on_open_lossy = Callback::new(move |_| {
+        let Some(pid) = active_project.get() else {
+            return;
+        };
+        let Some(path) = ws_open_file.get() else {
+            return;
+        };
+        ws_read_only.set(true);
+        ws_dirty.set(false);
+        spawn_local(async move {
+            let Some(ws) = workspace_for.run(pid) else {
+                return;
+            };
+            let content = match ws {
+                Workspace::Remote { api, project_id } => {
+                    api.read_file_lossy(project_id, &path).await
+                }
+                Workspace::Local { handle } => crate::local_fs::read_lossy(&handle, &path).await,
+            };
+            match content {
+                Ok(content) => {
+                    if active_project.get_untracked() == Some(pid)
+                        && ws_open_file.get_untracked().as_deref() == Some(path.as_str())
+                    {
+                        ws_content.set(content);
+                    }
+                }
+                Err(e) => {
+                    if active_project.get_untracked() == Some(pid)
+                        && ws_open_file.get_untracked().as_deref() == Some(path.as_str())
+                    {
+                        error.set(Some(e));
+                    }
+                }
+            }
+        });
+    });
+
+    // Open a file: clear the dirty flag and load its contents.
     let on_open = Callback::new(move |path: String| {
         let Some(pid) = active_project.get() else {
             return;
         };
+        ws_read_only.set(false);
         ws_dirty.set(false);
         ws_open_file.set(Some(path.clone()));
         ws_content.set(String::new());
@@ -638,7 +705,9 @@ pub fn App() -> impl IntoView {
             if kind == FileKind::Image
                 && let Ok(url) = ws.read_blob_url(&path).await
             {
-                if active_project.get_untracked() == Some(pid) && ws_open_file.get_untracked().as_deref() == Some(path.as_str()) {
+                if active_project.get_untracked() == Some(pid)
+                    && ws_open_file.get_untracked().as_deref() == Some(path.as_str())
+                {
                     ws_media_url.set(Some(url));
                 } else {
                     revoke_object_url(Some(url));
@@ -652,12 +721,15 @@ pub fn App() -> impl IntoView {
 
             match ws.read(&path).await {
                 Ok(content) => {
-                    if active_project.get_untracked() == Some(pid) && ws_open_file.get_untracked().as_deref() == Some(path.as_str()) {
+                    if active_project.get_untracked() == Some(pid)
+                        && ws_open_file.get_untracked().as_deref() == Some(path.as_str())
+                    {
                         ws_content.set(content);
                     }
                 }
                 Err(e) => {
-                    if active_project.get_untracked() == Some(pid) && ws_open_file.get_untracked().as_deref() == Some(path.as_str())
+                    if active_project.get_untracked() == Some(pid)
+                        && ws_open_file.get_untracked().as_deref() == Some(path.as_str())
                         && !e.contains("not valid UTF-8")
                     {
                         error.set(Some(e));
@@ -675,7 +747,10 @@ pub fn App() -> impl IntoView {
                 let path_clone = path.clone();
                 confirm_req.set(Some(ConfirmRequest {
                     title: "Discard unsaved changes".to_string(),
-                    message: format!("`{}` has unsaved changes. Discard them and open `{}`?", current_path, path),
+                    message: format!(
+                        "`{}` has unsaved changes. Discard them and open `{}`?",
+                        current_path, path
+                    ),
                     confirm_label: "Discard".to_string(),
                     action: Callback::new(move |_| {
                         on_open.run(path_clone.clone());
@@ -724,7 +799,10 @@ pub fn App() -> impl IntoView {
             };
             match ws.write(&path, &content).await {
                 Ok(()) => {
-                    if active_project.get_untracked() == Some(pid) && ws_open_file.get_untracked().as_deref() == Some(path.as_str()) && ws_content.get_untracked() == content {
+                    if active_project.get_untracked() == Some(pid)
+                        && ws_open_file.get_untracked().as_deref() == Some(path.as_str())
+                        && ws_content.get_untracked() == content
+                    {
                         ws_dirty.set(false);
                     } else {
                         saved.update(|map| {
@@ -1533,7 +1611,9 @@ pub fn App() -> impl IntoView {
         Callback::new(move |_| {
             local_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             // Ask the server to stop the run; the browser abort below can't do it.
-            if let Some(session_id) = streaming_session.get() {
+            if let Some(session_id) = streaming_session.get()
+                && !streaming_is_local.get_untracked()
+            {
                 let api = api.clone();
                 spawn_local(async move {
                     let _ = api.cancel_session(session_id).await;
@@ -1616,6 +1696,11 @@ pub fn App() -> impl IntoView {
                 return;
             }
             local_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+            if let Some(pid) = active_project.get_untracked()
+                && let Some(p) = projects.get_untracked().into_iter().find(|p| p.id == pid)
+            {
+                streaming_is_local.set(p.mode == WorkspaceMode::Local);
+            }
             if let Ok(mut map) = local_perms.lock() {
                 map.clear();
             }
@@ -1686,13 +1771,21 @@ pub fn App() -> impl IntoView {
 
                 let run_pid = active_project.get_untracked();
                 let on_event = move |event: SseEvent| {
-                    if let SseEvent::ToolResult { diff: Some(ref d), .. } = event {
+                    if let SseEvent::ToolResult {
+                        diff: Some(ref d), ..
+                    } = event
+                    {
                         if active_project.get_untracked() == run_pid {
-                            ws_pending_edits.update(|map| openwebide_frontend::pending::merge_pending(map, d.clone()));
+                            ws_pending_edits.update(|map| {
+                                openwebide_frontend::pending::merge_pending(map, d.clone())
+                            });
                         } else if let Some(pid) = run_pid {
                             saved.update(|map| {
                                 let entry = map.entry(pid).or_default();
-                                openwebide_frontend::pending::merge_pending(&mut entry.pending_edits, d.clone());
+                                openwebide_frontend::pending::merge_pending(
+                                    &mut entry.pending_edits,
+                                    d.clone(),
+                                );
                             });
                         }
                     }
@@ -1810,7 +1903,10 @@ pub fn App() -> impl IntoView {
                                             id: 0,
                                             session_id,
                                             role: Role::Assistant,
-                                            content: format!("Agent edited `{}`; review it with `/diff {}`.", d.path, d.path),
+                                            content: format!(
+                                                "Agent edited `{}`; review it with `/diff {}`.",
+                                                d.path, d.path
+                                            ),
                                             created_at: 0,
                                             tool_calls: None,
                                             tool_call_id: None,
@@ -1883,10 +1979,16 @@ pub fn App() -> impl IntoView {
                             if let Some(anchor) = current_run_anchor.get_untracked() {
                                 messages.update(|m| {
                                     cancel_run_prompts(m, anchor);
-                                    m.push(stopped_marker());
+                                    if !matches!(m.last(), Some(ConversationItem::Stopped { .. })) {
+                                        m.push(stopped_marker());
+                                    }
                                 });
                             } else {
-                                messages.update(|m| m.push(stopped_marker()));
+                                messages.update(|m| {
+                                    if !matches!(m.last(), Some(ConversationItem::Stopped { .. })) {
+                                        m.push(stopped_marker());
+                                    }
+                                });
                             }
                         }
                         SseEvent::Error(e) => {
@@ -2631,7 +2733,6 @@ pub fn App() -> impl IntoView {
                     .filter(|p| p.mode == WorkspaceMode::Local)
                 {
                     if let Ok(Some(handle)) = idb::load_handle(project.id).await {
-                        let _ = idb::request_permission(&handle).await;
                         local_handles.update(|m| {
                             m.insert(project.id, handle);
                         });
@@ -2872,7 +2973,8 @@ pub fn App() -> impl IntoView {
         pending_diff.set(diff);
     });
 
-    let git_head_content = RwSignal::new(Option::<(Option<i64>, String, Result<String, String>)>::None);
+    let git_head_content =
+        RwSignal::new(Option::<(Option<i64>, String, Result<String, String>)>::None);
 
     let git_head_diff = Signal::derive(move || {
         let open = ws_open_file.get()?;
@@ -2892,7 +2994,9 @@ pub fn App() -> impl IntoView {
         Some(FileDiff {
             path: open,
             old,
-            new, old_unavailable: false, backup_path: None,
+            new,
+            old_unavailable: false,
+            backup_path: None,
         })
     });
 
@@ -2923,12 +3027,16 @@ pub fn App() -> impl IntoView {
             spawn_local(async move {
                 match api.git_file_head(pid, &file_path).await {
                     Ok(content) => {
-                        if active_project.get_untracked() == pid && ws_open_file.get_untracked().as_deref() == Some(file_path.as_str()) {
+                        if active_project.get_untracked() == pid
+                            && ws_open_file.get_untracked().as_deref() == Some(file_path.as_str())
+                        {
                             git_head_content.set(Some((pid, file_path.clone(), Ok(content))));
                         }
                     }
                     Err(e) => {
-                        if active_project.get_untracked() == pid && ws_open_file.get_untracked().as_deref() == Some(file_path.as_str()) {
+                        if active_project.get_untracked() == pid
+                            && ws_open_file.get_untracked().as_deref() == Some(file_path.as_str())
+                        {
                             git_head_content.set(Some((pid, file_path.clone(), Err(e.clone()))));
                             error.set(Some(format!("Could not load HEAD: {e}")));
                         }
@@ -2945,7 +3053,10 @@ pub fn App() -> impl IntoView {
             };
             confirm_req.set(Some(ConfirmRequest {
                 title: "Revert to HEAD".to_string(),
-                message: format!("Discard all changes to `{}` and restore the committed version?", head_path),
+                message: format!(
+                    "Discard all changes to `{}` and restore the committed version?",
+                    head_path
+                ),
                 confirm_label: "Revert".to_string(),
                 action: Callback::new(move |_| {
                     let head = head.clone();
@@ -2956,7 +3067,10 @@ pub fn App() -> impl IntoView {
                         };
                         match ws.write(&head_path, &head).await {
                             Ok(()) => {
-                                if active_project.get_untracked() == Some(head_pid) && ws_open_file.get_untracked().as_deref() == Some(head_path.as_str()) {
+                                if active_project.get_untracked() == Some(head_pid)
+                                    && ws_open_file.get_untracked().as_deref()
+                                        == Some(head_path.as_str())
+                                {
                                     ws_content.set(head);
                                     ws_dirty.set(false);
                                     refresh_git.run(());
@@ -3091,6 +3205,8 @@ pub fn App() -> impl IntoView {
                     expanded=ws_expanded.read_only()
                     open_file=ws_open_file.read_only()
                     search_results=ws_search.read_only()
+                    needs_grant=Signal::derive(move || active_project.get().map(|id| needs_grant.with(|m| m.contains(&id))).unwrap_or(false))
+                    on_grant_access=on_grant_access
                     on_toggle=on_toggle
                     on_open=request_open
                     on_new_file=on_new_file
@@ -3127,6 +3243,8 @@ pub fn App() -> impl IntoView {
                         dirty=ws_dirty.read_only()
                         set_dirty=ws_dirty.write_only()
                         pending_diff=pending_diff.read_only()
+                        read_only=ws_read_only.read_only().into()
+                        on_open_lossy=on_open_lossy
                         media_url=ws_media_url.read_only().into()
                         git_head_diff=git_head_diff
                         on_load_git_diff=on_load_git_diff
