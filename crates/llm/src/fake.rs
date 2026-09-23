@@ -43,6 +43,13 @@ impl FakeState {
     pub fn push_stream_error(&self, error: ProviderError) {
         self.stream_chunks.lock().unwrap().push_back(Err(error));
     }
+
+    /// Queue a streaming response as raw byte chunks, so tests can split a
+    /// multi-byte UTF-8 character (or line) across chunk boundaries.
+    pub fn push_stream_bytes(&self, chunks: Vec<Vec<u8>>) {
+        let chunks = chunks.into_iter().map(Bytes::from).collect();
+        self.stream_chunks.lock().unwrap().push_back(Ok(chunks));
+    }
 }
 
 pub struct FakeHttpClient {

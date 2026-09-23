@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::{
     HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, UsageAcc,
-    chat_messages, clock_now, round_ns_to_ms, stream_error, tools_wire, url_for,
+    chat_messages, clock_now, round_ns_to_ms, stream_error, tool_call_values, tools_wire, url_for,
 };
 
 /// Provider for [Ollama](https://ollama.com).
@@ -213,7 +213,7 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         let message = value
             .get("message")
             .ok_or_else(|| ProviderError::Parse("Ollama /api/chat: missing `message`".into()))?;
-        if let Some(calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
+        if let Some(calls) = tool_call_values(message) {
             let mut tool_calls = Vec::new();
             for (i, call) in calls.iter().enumerate() {
                 let function = call.get("function").ok_or_else(|| {
@@ -573,6 +573,43 @@ mod tests {
         let (deltas, _usages, _errors) = run_stream(&provider, &request(None, None));
 
         assert_eq!(deltas, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn chat_stream_decodes_utf8_split_across_chunks() {
+        let (provider, _state) = provider(FakeHttpClient::new());
+        // "héllo" with the 'é' (0xC3 0xA9) split across chunk boundaries.
+        _state.push_stream_bytes(vec![
+            br#"{"message":{"role":"assistant","content":"h"#.to_vec(),
+            vec![0xC3],
+            vec![0xA9],
+            br#"llo"},"done":true}
+"#
+            .to_vec(),
+        ]);
+
+        let (deltas, _usages, _errors) = run_stream(&provider, &request(None, None));
+
+        assert_eq!(deltas, vec!["héllo"]);
+    }
+
+    #[test]
+    fn chat_tools_empty_tool_calls_is_text() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "message": {
+                "role": "assistant",
+                "content": "final answer",
+                "tool_calls": []
+            },
+            "done": true
+        })));
+
+        let completion = block_on(provider.chat_tools(&request(None, None))).unwrap();
+        assert_eq!(
+            completion.response,
+            ChatResponse::Text("final answer".into())
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //!
 //! Providers are constructed from a saved
 //! [`Connection`](openwebide_core::Connection) via
-//! [`registry::provider_for`].
+//! [`registry::Provider::for_connection`].
 
 pub mod error;
 pub mod llamacpp;
@@ -228,20 +228,37 @@ pub(crate) enum StreamLine {
     Skip,
 }
 
+/// The default cap on a single stream line's byte length. Ollama puts a
+/// whole tool call, including a full `write_file` body, on one NDJSON
+/// line, so this is generous.
+const MAX_LINE_BYTES: usize = 16 << 20;
+
 /// Splits a byte-chunk stream into newline-delimited lines.
 ///
-/// Handles chunks that split a line mid-way, `\r\n` line endings, and a
-/// final line without a trailing newline.
+/// Handles chunks that split a line (or a multi-byte UTF-8 character)
+/// mid-way, `\r\n` line endings, and a final line without a trailing
+/// newline. The buffer is bounded by `max_line`: a line longer than that
+/// yields an error and fuses the stream.
 pub(crate) struct LineStream<S> {
     inner: S,
-    buffer: String,
+    buffer: Vec<u8>,
+    scan_from: usize,
+    max_line: usize,
+    done: bool,
 }
 
 impl<S> LineStream<S> {
     pub(crate) fn new(inner: S) -> Self {
+        Self::with_max_line(inner, MAX_LINE_BYTES)
+    }
+
+    pub(crate) fn with_max_line(inner: S, max_line: usize) -> Self {
         Self {
             inner,
-            buffer: String::new(),
+            buffer: Vec::new(),
+            scan_from: 0,
+            max_line,
+            done: false,
         }
     }
 }
@@ -259,32 +276,162 @@ where
         use std::task::Poll;
 
         let this = self.get_mut();
+        if this.done {
+            return Poll::Ready(None);
+        }
         loop {
-            if let Some(pos) = this.buffer.find('\n') {
-                let line = this.buffer[..pos].trim_end_matches('\r').to_string();
-                this.buffer.drain(..=pos);
-                if !line.is_empty() {
-                    return Poll::Ready(Some(Ok(line)));
+            if let Some(pos) = this.buffer[this.scan_from..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|p| p + this.scan_from)
+            {
+                if pos + 1 > this.max_line {
+                    this.done = true;
+                    let max_line = this.max_line;
+                    return Poll::Ready(Some(Err(ProviderError::Parse(format!(
+                        "stream line exceeds {max_line} bytes"
+                    )))));
                 }
-                continue;
+                let mut end = pos;
+                if end > 0 && this.buffer[end - 1] == b'\r' {
+                    end -= 1;
+                }
+                let line_bytes: Vec<u8> = this.buffer[..end].to_vec();
+                this.buffer.drain(..=pos);
+                this.scan_from = 0;
+                if line_bytes.is_empty() {
+                    continue;
+                }
+                return match String::from_utf8(line_bytes) {
+                    Ok(line) => Poll::Ready(Some(Ok(line))),
+                    Err(_) => {
+                        this.done = true;
+                        Poll::Ready(Some(Err(ProviderError::Parse(
+                            "stream line is not valid UTF-8".into(),
+                        ))))
+                    }
+                };
+            }
+            this.scan_from = this.buffer.len();
+            if this.buffer.len() > this.max_line {
+                this.done = true;
+                let max_line = this.max_line;
+                return Poll::Ready(Some(Err(ProviderError::Parse(format!(
+                    "stream line exceeds {max_line} bytes"
+                )))));
             }
             match Stream::poll_next(std::pin::Pin::new(&mut this.inner), cx) {
                 Poll::Ready(Some(Ok(chunk))) => {
-                    let text = String::from_utf8_lossy(&chunk);
-                    this.buffer.push_str(&text);
+                    this.buffer.extend_from_slice(&chunk);
                 }
-                Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                Poll::Ready(Some(Err(e))) => {
+                    this.done = true;
+                    return Poll::Ready(Some(Err(e)));
+                }
                 Poll::Ready(None) => {
-                    let line = std::mem::take(&mut this.buffer)
-                        .trim_end_matches('\r')
-                        .to_string();
-                    if line.is_empty() {
+                    this.done = true;
+                    let line_bytes = std::mem::take(&mut this.buffer);
+                    if line_bytes.is_empty() {
                         return Poll::Ready(None);
                     }
-                    return Poll::Ready(Some(Ok(line)));
+                    return match String::from_utf8(line_bytes) {
+                        Ok(line) => Poll::Ready(Some(Ok(line))),
+                        Err(_) => Poll::Ready(Some(Err(ProviderError::Parse(
+                            "stream line is not valid UTF-8".into(),
+                        )))),
+                    };
                 }
                 Poll::Pending => return Poll::Pending,
             }
         }
+    }
+}
+
+/// The shared rule for tool-call responses: a `tool_calls` array is only
+/// meaningful when it's non-empty. `{"tool_calls": []}` means the model
+/// answered with a (possibly empty) text reply, not zero tool calls to run.
+pub(crate) fn tool_call_values(message: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    match message.get("tool_calls").and_then(|v| v.as_array()) {
+        Some(calls) if !calls.is_empty() => Some(calls),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::executor::block_on;
+    use futures::{StreamExt, stream};
+
+    use super::*;
+
+    fn byte_stream(chunks: Vec<&[u8]>) -> impl Stream<Item = Result<Bytes, ProviderError>> + Unpin {
+        stream::iter(chunks.into_iter().map(|c| Ok(Bytes::from(c.to_vec()))))
+    }
+
+    #[test]
+    fn line_split_inside_multi_byte_char() {
+        // "héllo\n" with the 'é' (0xC3 0xA9) split across two chunks.
+        let chunks: Vec<&[u8]> = vec![b"h\xc3", b"\xa9llo\n"];
+        let mut lines = LineStream::new(byte_stream(chunks));
+        assert_eq!(block_on(lines.next()).unwrap().unwrap(), "héllo");
+        assert!(block_on(lines.next()).is_none());
+    }
+
+    #[test]
+    fn crlf_is_stripped() {
+        let chunks: Vec<&[u8]> = vec![b"hello\r\n"];
+        let mut lines = LineStream::new(byte_stream(chunks));
+        assert_eq!(block_on(lines.next()).unwrap().unwrap(), "hello");
+        assert!(block_on(lines.next()).is_none());
+    }
+
+    #[test]
+    fn invalid_utf8_errors_then_ends() {
+        let chunks: Vec<&[u8]> = vec![b"\xff\xfe\n", b"more\n"];
+        let mut lines = LineStream::new(byte_stream(chunks));
+        assert!(matches!(
+            block_on(lines.next()),
+            Some(Err(ProviderError::Parse(_)))
+        ));
+        assert!(block_on(lines.next()).is_none());
+    }
+
+    #[test]
+    fn line_longer_than_max_errors_then_ends() {
+        let chunks: Vec<&[u8]> = vec![b"0123456789", b"more\n"];
+        let mut lines = LineStream::with_max_line(byte_stream(chunks), 8);
+        assert!(matches!(
+            block_on(lines.next()),
+            Some(Err(ProviderError::Parse(_)))
+        ));
+        assert!(block_on(lines.next()).is_none());
+    }
+
+    #[test]
+    fn final_line_without_trailing_newline() {
+        let chunks: Vec<&[u8]> = vec![b"first\n", b"last"];
+        let mut lines = LineStream::new(byte_stream(chunks));
+        assert_eq!(block_on(lines.next()).unwrap().unwrap(), "first");
+        assert_eq!(block_on(lines.next()).unwrap().unwrap(), "last");
+        assert!(block_on(lines.next()).is_none());
+    }
+
+    #[test]
+    fn line_crossing_max_in_same_chunk_as_newline_errors() {
+        let chunks: Vec<&[u8]> = vec![b"0123456789more\n"];
+        let mut lines = LineStream::with_max_line(byte_stream(chunks), 8);
+        assert!(matches!(
+            block_on(lines.next()),
+            Some(Err(ProviderError::Parse(_)))
+        ));
+        assert!(block_on(lines.next()).is_none());
+    }
+
+    #[test]
+    fn final_line_with_lone_trailing_cr_preserves_it() {
+        let chunks: Vec<&[u8]> = vec![b"result;\r"];
+        let mut lines = LineStream::new(byte_stream(chunks));
+        assert_eq!(block_on(lines.next()).unwrap().unwrap(), "result;\r");
+        assert!(block_on(lines.next()).is_none());
     }
 }

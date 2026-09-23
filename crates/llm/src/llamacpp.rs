@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::{
     HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, UsageAcc,
-    chat_messages, clock_now, stream_error, tools_wire, url_for,
+    chat_messages, clock_now, stream_error, tool_call_values, tools_wire, url_for,
 };
 
 /// Provider for a [llama.cpp](https://github.com/ggml-org/llama.cpp) server
@@ -223,7 +223,7 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
                     "llama.cpp /v1/chat/completions: missing `choices[0].message`".into(),
                 )
             })?;
-        if let Some(calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
+        if let Some(calls) = tool_call_values(message) {
             let mut tool_calls = Vec::new();
             for call in calls {
                 let function = call.get("function").ok_or_else(|| {
@@ -669,6 +669,26 @@ mod tests {
         assert_eq!(completion.response, ChatResponse::Text("all done".into()));
         // No `usage` on the response: the estimator filled the counts in.
         assert!(completion.usage.unwrap().estimated);
+    }
+
+    #[test]
+    fn chat_tools_empty_tool_calls_is_text() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({
+            "choices": [ {
+                "message": {
+                    "role": "assistant",
+                    "content": "final answer",
+                    "tool_calls": []
+                }
+            } ]
+        })));
+
+        let completion = block_on(provider.chat_tools(&request(None, None))).unwrap();
+        assert_eq!(
+            completion.response,
+            ChatResponse::Text("final answer".into())
+        );
     }
 
     #[test]
