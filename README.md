@@ -164,7 +164,7 @@ When the agent edits files that cannot be read as text (binary or large files), 
 
 ## Execution bridge
 
-The native bridge daemon (`openwebide-bridge`) runs on the host to provide interactive PTY terminals, process execution (`POST /exec`), and host Git operations for the web frontend and coding agents.
+The native bridge daemon (`openwebide-bridge`) runs on the host to provide interactive PTY terminals, process execution (`POST /exec`), and host Git operations for the web frontend and coding agents. The backend reaches the bridge at `127.0.0.1:3001` and sends project-relative `cwd`.
 
 > [!NOTE]
 > Git operations performed by the bridge require Git ≥ 2.23 on the host machine for branch switching via `git switch`.

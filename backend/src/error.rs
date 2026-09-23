@@ -63,6 +63,13 @@ impl ApiError {
         }
     }
 
+    pub fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: 502,
+            message: message.into(),
+        }
+    }
+
     /// Build the JSON error response. A plain method (not an `IntoResponse`
     /// impl) so that `Result<T, ApiError>` handlers can convert it
     /// explicitly.
@@ -115,15 +122,55 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+impl From<crate::git::BridgeError> for ApiError {
+    fn from(err: crate::git::BridgeError) -> Self {
+        match err {
+            crate::git::BridgeError::Unreachable(e) => Self::bad_gateway(format!(
+                "bridge daemon unreachable: {e} please start openwebide-bridge"
+            )),
+            crate::git::BridgeError::Status(status, msg) => {
+                if (400..500).contains(&status) {
+                    Self::bad_request(msg)
+                } else {
+                    Self::bad_gateway(msg)
+                }
+            }
+            crate::git::BridgeError::Parse(e) => {
+                Self::bad_gateway(format!("failed to parse bridge response: {e}"))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn already_exists_in_workspace_maps_to_409() {
-        let err: ApiError =
-            anyhow::anyhow!("already exists in workspace: src/main.rs").into();
+        let err: ApiError = anyhow::anyhow!("already exists in workspace: src/main.rs").into();
         let resp = err.into_response();
         assert_eq!(resp.status().as_u16(), 409);
+    }
+
+    #[test]
+    fn test_bridge_error_to_api_error() {
+        let err: ApiError = crate::git::BridgeError::Unreachable("timeout".into()).into();
+        assert_eq!(err.status, 502);
+        assert!(err.message.contains("unreachable"));
+
+        let err: ApiError = crate::git::BridgeError::Status(400, "bad args".into()).into();
+        assert_eq!(err.status, 400);
+        assert_eq!(err.message, "bad args");
+
+        let err: ApiError = crate::git::BridgeError::Status(404, "not found".into()).into();
+        assert_eq!(err.status, 400);
+
+        let err: ApiError = crate::git::BridgeError::Status(500, "boom".into()).into();
+        assert_eq!(err.status, 502);
+        assert_eq!(err.message, "boom");
+
+        let err: ApiError = crate::git::BridgeError::Parse("bad json".into()).into();
+        assert_eq!(err.status, 502);
     }
 }

@@ -15,22 +15,21 @@ use spin_sdk::http;
 #[derive(Debug, Clone)]
 pub struct SpinBridgeClient {
     endpoint: String,
+    project_dir: String,
 }
 
 impl SpinBridgeClient {
-    #[allow(dead_code)]
-    pub fn new(endpoint: impl Into<String>) -> Self {
+    pub fn for_project(dir: String) -> Self {
         Self {
-            endpoint: endpoint.into(),
+            endpoint: "http://127.0.0.1:3001".to_string(),
+            project_dir: dir,
         }
     }
 }
 
 impl Default for SpinBridgeClient {
     fn default() -> Self {
-        Self {
-            endpoint: "http://127.0.0.1:3001/exec".to_string(),
-        }
+        Self::for_project("".to_string())
     }
 }
 
@@ -40,10 +39,11 @@ impl BridgeClient for SpinBridgeClient {
         command: &str,
         timeout_seconds: u64,
     ) -> impl Future<Output = Result<CommandOutcome, String>> + Send {
-        let endpoint = self.endpoint.clone();
+        let endpoint = format!("{}/exec", self.endpoint);
         let payload = serde_json::json!({
             "command": command,
             "timeout_seconds": timeout_seconds,
+            "cwd": self.project_dir,
         })
         .to_string();
 
@@ -76,12 +76,22 @@ impl BridgeClient for SpinBridgeClient {
     fn git_status(
         &self,
     ) -> impl Future<Output = Result<openwebide_core::GitRepoStatus, String>> + Send {
-        async { crate::git::repo_status(std::path::Path::new("")).await }
+        let dir = self.project_dir.clone();
+        async move {
+            crate::git::repo_status(&dir)
+                .await
+                .map_err(|e| format!("{:?}", e))
+        }
     }
 
     fn git_diff(&self, path: Option<&str>) -> impl Future<Output = Result<String, String>> + Send {
         let path_owned = path.map(|s| s.to_string());
-        async move { crate::git::repo_diff(path_owned.as_deref()).await }
+        let dir = self.project_dir.clone();
+        async move {
+            crate::git::repo_diff(&dir, path_owned.as_deref())
+                .await
+                .map_err(|e| format!("{:?}", e))
+        }
     }
 
     fn git_commit(
@@ -89,7 +99,12 @@ impl BridgeClient for SpinBridgeClient {
         req: &openwebide_core::GitCommitRequest,
     ) -> impl Future<Output = Result<openwebide_core::GitCommitResult, String>> + Send {
         let req_clone = req.clone();
-        async move { crate::git::repo_commit(&req_clone).await }
+        let dir = self.project_dir.clone();
+        async move {
+            crate::git::repo_commit(&dir, &req_clone)
+                .await
+                .map_err(|e| format!("{:?}", e))
+        }
     }
 
     fn git_checkout(
@@ -97,6 +112,11 @@ impl BridgeClient for SpinBridgeClient {
         req: &openwebide_core::GitCheckoutRequest,
     ) -> impl Future<Output = Result<openwebide_core::GitCheckoutResult, String>> + Send {
         let req_clone = req.clone();
-        async move { crate::git::repo_checkout(&req_clone).await }
+        let dir = self.project_dir.clone();
+        async move {
+            crate::git::repo_checkout(&dir, &req_clone)
+                .await
+                .map_err(|e| format!("{:?}", e))
+        }
     }
 }

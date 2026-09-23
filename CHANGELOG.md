@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+### Changed
+- Backend git operations now run within the project context, and bridge failures cleanly propagate rather than showing false success.
+
+
 - Editor: Added confirmation dialogs before discarding unsaved edits and conditionally offered the Revert button only when HEAD is known.
 
 ### Added
