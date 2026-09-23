@@ -8,7 +8,7 @@ use openwebide_agent::AgentConfig;
 use openwebide_core::{
     ChatRequest, EditorContext, FileDiff, FileEntry, GitCheckoutRequest, GitCommitRequest,
     GitSyncRequest, Health, NewConnection, NewProject, Role, SearchHit, SystemPrompt,
-    TurnTelemetry, UserRole, WorkspaceMode,
+    TurnTelemetry, WorkspaceMode,
 };
 use openwebide_llm::{LlmProvider, registry::Provider};
 use serde::Deserialize;
@@ -91,10 +91,19 @@ pub async fn register(req: Request, state: &AppState) -> Result<JsonResp, ApiErr
         ));
     }
     let password_hash = auth::hash_password(&reg.password)?;
-    let user = state
+    let user_opt = state
         .store
-        .insert_user(username, &password_hash, UserRole::Admin, now())
+        .insert_first_admin(username, &password_hash, now())
         .await?;
+    
+    let user = match user_opt {
+        Some(u) => u,
+        None => {
+            return Err(ApiError::forbidden(
+                "registration is closed; an account already exists",
+            ));
+        }
+    };
     // Pre-auth projects and sessions (user_id NULL) belong to whoever signs
     // up first, so nothing created before accounts existed is lost to scoping.
     state.store.reassign_orphaned_projects(user.id).await?;

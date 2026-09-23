@@ -49,6 +49,13 @@ impl ApiError {
         }
     }
 
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: 409,
+            message: message.into(),
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status: 500,
@@ -73,6 +80,7 @@ impl From<openwebide_storage::StorageError> for ApiError {
     fn from(err: openwebide_storage::StorageError) -> Self {
         match err {
             openwebide_storage::StorageError::NotFound(msg) => Self::not_found(msg),
+            openwebide_storage::StorageError::Conflict(msg) => Self::conflict(msg),
             other => Self::internal(other.to_string()),
         }
     }

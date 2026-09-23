@@ -10,6 +10,17 @@ for what's still ahead.
 ## [Unreleased]
 
 ### Changed
+
+- Database methods that update multiple interrelated tables (e.g. deleting a project, first-admin creation) now run within strict SQLite `BEGIN IMMEDIATE` ... `COMMIT` transactions on the backend. This guarantees complete rollback if an operation fails or if the WASM task cancels or panics midway, fixing race conditions and half-deleted states without relying on manual cascading deletion code or risking lock deadlocks.
+- The user registration API endpoint (`POST /api/register`) now correctly isolates creation by atomically using the transaction, preventing race conditions where multiple parallel signups could occur on first setup.
+- Constraint-violation errors are now reliably returned as HTTP 409 Conflict.
+
+### Fixed
+
+- Database foreign keys (`PRAGMA foreign_keys = ON`) are now correctly enabled when opening the Spin WASM SQLite database connection.
+- Calling `delete_project` now relies natively on SQLite's cascading deletes, vastly simplifying the query footprint.
+
+### Changed
 - **Web fetch & redirect safety:** Hardened web fetching against SSRF by refusing requests to cloud metadata endpoints (`169.254.169.254`, `fd00:ec2::254`, their IPv4-mapped representations, and `metadata.google.internal`) on initial requests and redirect hops while keeping LAN and private access open. Hand-rolled RFC 3986 §5.2 redirect reference resolution to correctly handle absolute paths, network-path (`//`) references, relative paths, port preservation, and query-only redirects. Capped streaming HTTP response bodies directly at 512 KiB for web pages and 2 MiB for JSON to prevent memory exhaustion, and fixed HTML entity decoding to decode `&amp;` last.
 - **Bridge Git safety:** Protected native Git execution against command-line argument injection. Branch and remote names are validated (`git check-ref-format --branch`, remote membership) with option-like leading `-` and pathspecs like `.` rejected with 400 Bad Request. Branch switching now strictly uses `git switch` (requiring Git ≥ 2.23), commit operations with specified paths only stage and commit those paths, Git output is untrimmed, push/pull commit counts are calculated accurately via `rev-list`, and phantom `origin` branches from `origin/HEAD` symrefs are ignored.
 - **Approval UX:** "Always approve" is now scoped per-session (cleared on logout) instead of globally, and explicitly never covers `run_command`. Keyboard approval shortcuts moved from bare `y`/`n`/`a` to `Alt+Y / Alt+N / Alt+A` (typed responses no longer trigger approvals). Stopping a run now cancels any pending tool prompt instead of leaving it clickable, fixing an issue where later runs' shortcuts acted on dead prompts.

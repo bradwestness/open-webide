@@ -8,4 +8,6 @@ pub enum StorageError {
     NotFound(String),
     #[error("invalid value: {0}")]
     InvalidValue(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
 }

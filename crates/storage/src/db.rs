@@ -67,9 +67,24 @@ pub struct ExecResult {
 
 /// The database surface the repositories depend on.
 pub trait Db: Send + Sync {
+    /// The transaction handle type.
+    type Tx<'a>: Db + 'a
+    where
+        Self: 'a;
+
     fn execute(
         &self,
         sql: &str,
         params: &[DbValue],
     ) -> impl Future<Output = Result<ExecResult, StorageError>> + Send;
+
+    /// Execute a block of operations in a transaction.
+    /// The transaction is committed if the closure returns `Ok`, and rolled back on `Err`.
+    fn transaction<'a, F, Fut, T: 'a + Send>(
+        &'a self,
+        body: F,
+    ) -> impl Future<Output = Result<T, StorageError>> + Send + 'a
+    where
+        F: FnOnce(Self::Tx<'a>) -> Fut + Send + 'a,
+        Fut: Future<Output = Result<T, StorageError>> + Send + 'a;
 }
