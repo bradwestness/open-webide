@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use openwebide_core::{
-    DiffChunk, FileDiff, FileKind, diff_inline_detailed, diff_side_by_side_detailed,
+    DiffChunk, DiffLine, FileDiff, FileKind, diff_inline_detailed, diff_side_by_side_detailed,
     highlight::{Language, TokenKind, highlight_lines, language_from_path},
 };
 use web_sys::wasm_bindgen::JsCast;
@@ -95,30 +95,79 @@ fn render_diff_chunks(chunks: Vec<DiffChunk>) -> impl IntoView {
         .collect::<Vec<_>>()
 }
 
+/// If the whole diff is nothing but a uniform line-ending change — every line
+/// paired as a delete + add of identical text, all carrying the same ending
+/// note — return a one-line summary instead of the per-line noise. Otherwise
+/// `None`, so the normal per-line rendering is used.
+fn whole_file_ending_summary(lines: &[DiffLine]) -> Option<String> {
+    let n = lines.len();
+    if n == 0 || !n.is_multiple_of(2) {
+        return None;
+    }
+    let half = n / 2;
+    // First half all deletions, second half all additions.
+    if !lines[..half].iter().all(|l| l.marker == '-')
+        || !lines[half..].iter().all(|l| l.marker == '+')
+    {
+        return None;
+    }
+    // Every line carries the same non-None ending note.
+    let note = lines[0].ending_note?;
+    if !lines.iter().all(|l| l.ending_note == Some(note)) {
+        return None;
+    }
+    // Each removed line's text matches the corresponding added line's text.
+    if !lines[..half]
+        .iter()
+        .zip(&lines[half..])
+        .all(|(d, a)| d.content == a.content)
+    {
+        return None;
+    }
+    Some(format!("Line endings changed: {note} ({half} lines)"))
+}
+
 /// Render the changed middle of a file edit as inline removed/added lines with intra-line word diffs.
 fn render_inline_diff(diff: FileDiff) -> impl IntoView {
     let lines = diff_inline_detailed(&diff);
+    let body: Vec<AnyView> = if let Some(summary) = whole_file_ending_summary(&lines) {
+        vec![
+            view! {
+                <div class="diff-line">
+                    <span class="form-hint">{summary}</span>
+                </div>
+            }
+            .into_any(),
+        ]
+    } else {
+        lines
+            .into_iter()
+            .map(|dl| {
+                let mark = dl.marker;
+                let note = dl.ending_note;
+                let line_class = if mark == '+' {
+                    "diff-line add"
+                } else if mark == '-' {
+                    "diff-line del"
+                } else {
+                    "diff-line"
+                };
+                view! {
+                    <div class=line_class>
+                        <span class="diff-line-marker">{mark} " "</span>
+                        {render_diff_chunks(dl.chunks)}
+                        {note.map(|note| view! {
+                            <span class="form-hint">{note}</span>
+                        })}
+                    </div>
+                }
+                .into_any()
+            })
+            .collect()
+    };
     view! {
         <div class="editor-diff editor-diff-inline">
-            {lines
-                .into_iter()
-                .map(|dl| {
-                    let mark = dl.marker;
-                    let line_class = if mark == '+' {
-                        "diff-line add"
-                    } else if mark == '-' {
-                        "diff-line del"
-                    } else {
-                        "diff-line"
-                    };
-                    view! {
-                        <div class=line_class>
-                            <span class="diff-line-marker">{mark} " "</span>
-                            {render_diff_chunks(dl.chunks)}
-                        </div>
-                    }
-                })
-                .collect::<Vec<_>>()}
+            {body}
         </div>
     }
 }

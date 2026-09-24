@@ -1,6 +1,7 @@
 //! Shared domain types used across the Open WebIDE frontend, backend, and crates.
 
 pub mod bridge;
+pub mod diff;
 pub mod file_type;
 pub mod git;
 pub mod highlight;
@@ -10,6 +11,7 @@ pub mod utf8;
 pub mod vfs;
 
 pub use bridge::*;
+pub use diff::*;
 pub use file_type::*;
 pub use git::*;
 pub use html::html_to_markdown;
@@ -326,6 +328,10 @@ pub struct DiffLine {
     pub marker: char,
     pub content: String,
     pub chunks: Vec<DiffChunk>,
+    /// A note for a paired line whose ending differs between old and new
+    /// (e.g. `"⏎ CRLF → LF"`, `"no newline at end of file"`), or `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ending_note: Option<&'static str>,
 }
 
 impl DiffLine {
@@ -339,6 +345,7 @@ impl DiffLine {
             marker,
             content,
             chunks: vec![chunk],
+            ending_note: None,
         }
     }
 
@@ -347,7 +354,14 @@ impl DiffLine {
             marker,
             content,
             chunks,
+            ending_note: None,
         }
+    }
+
+    /// Return a copy of this line with `ending_note` set.
+    pub fn with_ending_note(mut self, note: Option<&'static str>) -> Self {
+        self.ending_note = note;
+        self
     }
 }
 
@@ -541,132 +555,162 @@ pub fn compute_word_diff(old_line: &str, new_line: &str) -> (Vec<DiffChunk>, Vec
 
 /// Compute the changed middle of a file edit as inline `(marker, line)` pairs.
 ///
-/// The common prefix and suffix lines are stripped; the result holds the
-/// removed middle lines (marker `-`, from `old`) followed by the added middle
-/// lines (marker `+`, from `new`). For a new file (`old` is `None`) every line
-/// is `+`. Pure and natively unit-testable.
+/// Built on [`line_lcs`], so a line is only unchanged when both its text and
+/// its ending match; an inserted line near the top no longer marks everything
+/// below as changed. The result holds the changed lines in order: for each
+/// edit region, the removed lines (marker `-`, from `old`) followed by the
+/// added lines (marker `+`, from `new`). For a new file (`old` is `None`)
+/// every line is `+`. Pure and natively unit-testable.
 pub fn diff_inline_lines(diff: &FileDiff) -> Vec<(char, String)> {
-    let old_lines: Vec<&str> = diff.old.as_deref().unwrap_or_default().lines().collect();
-    let new_lines: Vec<&str> = diff.new.lines().collect();
-
-    let mut i = 0;
-    let mut j = 0;
-    while i < old_lines.len() && j < new_lines.len() && old_lines[i] == new_lines[j] {
-        i += 1;
-        j += 1;
-    }
-    let mut old_end = old_lines.len();
-    let mut new_end = new_lines.len();
-    while old_end > i && new_end > j && old_lines[old_end - 1] == new_lines[new_end - 1] {
-        old_end -= 1;
-        new_end -= 1;
-    }
-
+    let old = diff.old.as_deref().unwrap_or_default();
     let mut out = Vec::new();
-    for line in &old_lines[i..old_end] {
-        out.push(('-', line.to_string()));
-    }
-    for line in &new_lines[j..new_end] {
-        out.push(('+', line.to_string()));
+    for op in line_lcs(old, &diff.new) {
+        match op {
+            LineOp::Equal(_) => {}
+            LineOp::Delete(l) => out.push(('-', l.text.to_string())),
+            LineOp::Insert(l) => out.push(('+', l.text.to_string())),
+        }
     }
     out
 }
 
-/// Compute the changed middle of a file edit as detailed `DiffLine`s with intra-line chunks.
-pub fn diff_inline_detailed(diff: &FileDiff) -> Vec<DiffLine> {
-    let old_lines: Vec<&str> = diff.old.as_deref().unwrap_or_default().lines().collect();
-    let new_lines: Vec<&str> = diff.new.lines().collect();
+/// One ordered piece of a `line_lcs` op list: an unchanged line, or one edit
+/// region (a run of removed lines followed by added lines).
+enum DiffSegment<'a> {
+    /// Present, unchanged, on both sides.
+    Equal(Line<'a>),
+    /// One edit region: removed lines followed by added lines.
+    Cluster {
+        dels: Vec<Line<'a>>,
+        inss: Vec<Line<'a>>,
+    },
+}
 
+/// Split a `line_lcs` op list into ordered [`DiffSegment`]s: each unchanged
+/// line as `Equal`, and each maximal run of non-`Equal` ops as a `Cluster` of
+/// removed lines followed by added lines.
+fn diff_segments<'a>(ops: &[LineOp<'a>]) -> Vec<DiffSegment<'a>> {
+    let mut segments = Vec::new();
     let mut i = 0;
-    let mut j = 0;
-    while i < old_lines.len() && j < new_lines.len() && old_lines[i] == new_lines[j] {
-        i += 1;
-        j += 1;
+    while i < ops.len() {
+        match &ops[i] {
+            LineOp::Equal(l) => {
+                segments.push(DiffSegment::Equal(*l));
+                i += 1;
+            }
+            LineOp::Delete(_) | LineOp::Insert(_) => {
+                // Collect the contiguous run of Deletes followed by the
+                // contiguous run of Inserts (one LCS edit region).
+                let start = i;
+                while i < ops.len() {
+                    if let LineOp::Delete(_) = &ops[i] {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let dels_end = i;
+                while i < ops.len() {
+                    if let LineOp::Insert(_) = &ops[i] {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let dels: Vec<Line> = ops[start..dels_end]
+                    .iter()
+                    .filter_map(|op| match op {
+                        LineOp::Delete(l) => Some(*l),
+                        _ => None,
+                    })
+                    .collect();
+                let inss: Vec<Line> = ops[dels_end..i]
+                    .iter()
+                    .filter_map(|op| match op {
+                        LineOp::Insert(l) => Some(*l),
+                        _ => None,
+                    })
+                    .collect();
+                segments.push(DiffSegment::Cluster { dels, inss });
+            }
+        }
     }
-    let mut old_end = old_lines.len();
-    let mut new_end = new_lines.len();
-    while old_end > i && new_end > j && old_lines[old_end - 1] == new_lines[new_end - 1] {
-        old_end -= 1;
-        new_end -= 1;
-    }
+    segments
+}
 
-    let old_mid = &old_lines[i..old_end];
-    let new_mid = &new_lines[j..new_end];
+/// Compute the changed middle of a file edit as detailed `DiffLine`s with
+/// intra-line chunks.
+///
+/// Built on [`line_lcs`]. Each edit region (a run of removed lines followed by
+/// added lines) is paired positionally for step 13's word-level highlighting;
+/// a paired line whose ending differs carries an `ending_note` on both sides.
+/// Unpaired lines in the longer run are plain. Per region the removed lines are
+/// emitted before the added lines, in the order the regions appear.
+pub fn diff_inline_detailed(diff: &FileDiff) -> Vec<DiffLine> {
+    let old = diff.old.as_deref().unwrap_or_default();
+    let ops = line_lcs(old, &diff.new);
 
-    let mut del_lines = Vec::new();
-    let mut add_lines = Vec::new();
+    let mut out = Vec::new();
+    for segment in diff_segments(&ops) {
+        let DiffSegment::Cluster { dels, inss } = segment else {
+            continue;
+        };
 
-    let min_len = old_mid.len().min(new_mid.len());
-    for k in 0..min_len {
-        let (old_chunks, new_chunks) = compute_word_diff(old_mid[k], new_mid[k]);
-        del_lines.push(DiffLine::new_with_chunks(
-            '-',
-            old_mid[k].to_string(),
-            old_chunks,
-        ));
-        add_lines.push(DiffLine::new_with_chunks(
-            '+',
-            new_mid[k].to_string(),
-            new_chunks,
-        ));
+        let min_len = dels.len().min(inss.len());
+        // Removed lines: paired (word chunks + ending note) then the
+        // unpaired remainder as plain lines.
+        let mut add_pairs: Vec<(String, Vec<DiffChunk>, Option<&'static str>)> =
+            Vec::with_capacity(min_len);
+        for k in 0..min_len {
+            let (old_chunks, new_chunks) = compute_word_diff(dels[k].text, inss[k].text);
+            let note = ending_note_for(dels[k].ending, inss[k].ending);
+            out.push(
+                DiffLine::new_with_chunks('-', dels[k].text.to_string(), old_chunks)
+                    .with_ending_note(note),
+            );
+            add_pairs.push((inss[k].text.to_string(), new_chunks, note));
+        }
+        for line in dels.iter().skip(min_len) {
+            out.push(DiffLine::new_plain('-', line.text.to_string()));
+        }
+        // Added lines: paired then the unpaired remainder.
+        for (content, new_chunks, note) in add_pairs {
+            out.push(DiffLine::new_with_chunks('+', content, new_chunks).with_ending_note(note));
+        }
+        for line in inss.iter().skip(min_len) {
+            out.push(DiffLine::new_plain('+', line.text.to_string()));
+        }
     }
-    for line in old_mid.iter().skip(min_len) {
-        del_lines.push(DiffLine::new_plain('-', line.to_string()));
-    }
-    for line in new_mid.iter().skip(min_len) {
-        add_lines.push(DiffLine::new_plain('+', line.to_string()));
-    }
-
-    let mut out = del_lines;
-    out.extend(add_lines);
     out
 }
 
 /// Compute the changed middle of a file edit as side-by-side `(old, new)` rows.
 ///
-/// The common prefix and suffix lines appear on both sides. The changed middle
-/// is aligned row-by-row, padding the shorter side with `None` (a pure
-/// addition or removal). For a new file (`old` is `None`) every left cell is
-/// `None`. Pure and natively unit-testable.
+/// Built on [`line_lcs`], so every row is returned — prefix context, the
+/// changed middle, and suffix context. Within each edit region the removed and
+/// added lines are paired side by side, padding the shorter side with `None`
+/// (a pure addition or removal); a real unchanged line found by the LCS stays
+/// aligned instead of shifting into a false pair. For a new file (`old` is
+/// `None`) every left cell is `None`. Pure and natively unit-testable.
 pub fn diff_side_by_side(diff: &FileDiff) -> Vec<(Option<String>, Option<String>)> {
-    let old_lines: Vec<&str> = diff.old.as_deref().unwrap_or_default().lines().collect();
-    let new_lines: Vec<&str> = diff.new.lines().collect();
-
-    let mut prefix = 0;
-    while prefix < old_lines.len()
-        && prefix < new_lines.len()
-        && old_lines[prefix] == new_lines[prefix]
-    {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < old_lines.len() - prefix
-        && suffix < new_lines.len() - prefix
-        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
+    let old = diff.old.as_deref().unwrap_or_default();
+    let ops = line_lcs(old, &diff.new);
 
     let mut rows = Vec::new();
-    for i in 0..prefix {
-        rows.push((
-            Some(old_lines[i].to_string()),
-            Some(new_lines[i].to_string()),
-        ));
-    }
-    let old_mid = &old_lines[prefix..old_lines.len() - suffix];
-    let new_mid = &new_lines[prefix..new_lines.len() - suffix];
-    for i in 0..old_mid.len().max(new_mid.len()) {
-        rows.push((
-            old_mid.get(i).map(|s| s.to_string()),
-            new_mid.get(i).map(|s| s.to_string()),
-        ));
-    }
-    for i in 0..suffix {
-        rows.push((
-            Some(old_lines[old_lines.len() - suffix + i].to_string()),
-            Some(new_lines[new_lines.len() - suffix + i].to_string()),
-        ));
+    for segment in diff_segments(&ops) {
+        match segment {
+            DiffSegment::Equal(l) => {
+                rows.push((Some(l.text.to_string()), Some(l.text.to_string())));
+            }
+            DiffSegment::Cluster { dels, inss } => {
+                for k in 0..dels.len().max(inss.len()) {
+                    rows.push((
+                        dels.get(k).map(|l| l.text.to_string()),
+                        inss.get(k).map(|l| l.text.to_string()),
+                    ));
+                }
+            }
+        }
     }
     rows
 }

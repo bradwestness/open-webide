@@ -13,4 +13,5 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }
+proptest = "1.11"
 

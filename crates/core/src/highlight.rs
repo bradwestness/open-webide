@@ -1261,4 +1261,40 @@ mod tests {
         assert_eq!(toks[2].first().unwrap().text, "still comment */");
         rejoins(&source, Language::Rust);
     }
+
+    use proptest::prelude::*;
+
+    /// A strategy over all 16 `Language` variants (`Language` has no
+    /// `Arbitrary` impl, so enumerate them explicitly).
+    fn any_language() -> impl Strategy<Value = Language> {
+        prop_oneof![
+            Just(Language::Rust),
+            Just(Language::Python),
+            Just(Language::JavaScript),
+            Just(Language::TypeScript),
+            Just(Language::Json),
+            Just(Language::Html),
+            Just(Language::Css),
+            Just(Language::Markdown),
+            Just(Language::Shell),
+            Just(Language::Toml),
+            Just(Language::Yaml),
+            Just(Language::Sql),
+            Just(Language::C),
+            Just(Language::Cpp),
+            Just(Language::Go),
+            Just(Language::Plain),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        // Generalises the fixed-table `all_languages_rejoin_to_source` to
+        // arbitrary Unicode input across every language: concatenating a
+        // line's token texts must reproduce that line exactly.
+        #[test]
+        fn highlight_rejoins_arbitrary(source in any::<String>(), language in any_language()) {
+            rejoins(&source, language);
+        }
+    }
 }
