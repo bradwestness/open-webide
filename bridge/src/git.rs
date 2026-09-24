@@ -131,8 +131,9 @@ pub async fn validate_remote(repo: &Path, name: &str) -> Result<(), GitError> {
 
 /// Retrieve full repository status (branch, upstream, ahead/behind, line stats, uncommitted files).
 pub async fn get_repo_status(repo_dir: &Path) -> Result<GitRepoStatus, GitError> {
-    // 1. Run git status --porcelain=v1 -b
-    let (status_out, err, ok) = exec_git(&["status", "--porcelain=v1", "-b"], repo_dir).await?;
+    // 1. Run git status --porcelain=v1 -b -z (NUL-separated, unquoted paths)
+    let (status_out, err, ok) =
+        exec_git(&["status", "--porcelain=v1", "-b", "-z"], repo_dir).await?;
     if !ok {
         return Err(GitError::Execution(format!("git status failed: {err}")));
     }

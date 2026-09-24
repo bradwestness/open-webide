@@ -59,7 +59,7 @@ pub enum Language {
 
 /// Pick a language from a file path's extension.
 pub fn language_from_path(path: &str) -> Language {
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = crate::file_type::extension(path).unwrap_or_default();
     match ext.as_str() {
         "rs" => Language::Rust,
         "py" => Language::Python,

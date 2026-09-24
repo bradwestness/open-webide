@@ -6,8 +6,8 @@
 
 use anyhow::{Context, Result};
 use openwebide_core::{
-    FileEntry, SearchHit, Vfs, VfsError, VfsFuture, find_content_matches, normalize_vfs_path,
-    vfs::SearchOptions,
+    FileEntry, SearchHit, Vfs, VfsError, VfsFuture, file_type::extension, find_content_matches,
+    normalize_vfs_path, vfs::SearchOptions,
 };
 
 use crate::wasi::filesystem::preopens;
@@ -295,7 +295,7 @@ pub async fn read_bytes(rel: &str) -> Result<Vec<u8>> {
 
 /// Infer MIME content type from file path extension.
 pub fn mime_type_from_path(path: &str) -> &'static str {
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = extension(path).unwrap_or_default();
     match ext.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",

@@ -20,6 +20,17 @@ pub struct SelectionContext {
     pub text: String,
 }
 
+/// Length of the longest run of consecutive backticks in `text`.
+fn longest_backtick_run(text: &str) -> usize {
+    let mut longest = 0;
+    let mut run = 0;
+    for c in text.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    longest
+}
+
 impl EditorContext {
     /// Format the active editor context into an XML turn prelude block for the LLM prompt.
     pub fn format_prompt_injection(&self) -> String {
@@ -31,13 +42,8 @@ impl EditorContext {
         ));
 
         if let Some(sel) = &self.selection {
-            let extension = self
-                .file_path
-                .rsplit('.')
-                .next()
-                .unwrap_or("")
-                .to_lowercase();
-            let lang = match extension.as_str() {
+            let ext = crate::file_type::extension(&self.file_path).unwrap_or_default();
+            let lang = match ext.as_str() {
                 "rs" => "rust",
                 "ts" => "typescript",
                 "js" => "javascript",
@@ -50,11 +56,13 @@ impl EditorContext {
                 _ => "",
             };
 
+            // Fence the block with one more backtick than the longest run in
+            // the selection, so the text can't close the fence early.
+            let fence = "`".repeat(longest_backtick_run(&sel.text).saturating_add(1).max(3));
             out.push_str(&format!(
-                "Selected code (lines {}-{}):\n```{}\n{}\n```\n",
+                "Selected code (lines {}-{}):\n{fence}{lang}\n{}\n{fence}\n",
                 sel.start_line,
                 sel.end_line,
-                lang,
                 sel.text.trim_end()
             ));
         }
@@ -470,6 +478,26 @@ mod tests {
         assert!(formatted.contains("```rust"));
         assert!(formatted.ends_with("</active_editor_context>\n\n"));
         assert_eq!(ctx.pill_label(), "tui.rs:10-12 (3 lines)");
+    }
+
+    #[test]
+    fn test_prompt_injection_fence_outlives_selection_backticks() {
+        let ctx = EditorContext {
+            file_path: "README.md".into(),
+            cursor_line: 1,
+            cursor_col: 1,
+            selection: Some(SelectionContext {
+                start_line: 1,
+                end_line: 3,
+                text: "intro\n```\ncode\n```".into(),
+            }),
+        };
+
+        let formatted = ctx.format_prompt_injection();
+        // The selection contains a triple-backtick run, so the fence must be
+        // four backticks to stay open.
+        assert!(formatted.contains("````markdown\n"));
+        assert!(formatted.contains("````\n</active_editor_context>"));
     }
 
     #[test]

@@ -2,6 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Extract the lowercase extension from a file path: the text after the last
+/// `.` in the final path segment. Returns `None` when the segment has no dot,
+/// the dot is first (`.bashrc`), or the extension is empty (`file.`).
+pub fn extension(path: &str) -> Option<String> {
+    let segment = path.rsplit('/').next()?;
+    let (stem, ext) = segment.rsplit_once('.')?;
+    if stem.is_empty() || ext.is_empty() {
+        return None;
+    }
+    Some(ext.to_ascii_lowercase())
+}
+
 /// The high-level kind of a file, determined from its extension or content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileKind {
@@ -20,7 +32,7 @@ pub enum FileKind {
 impl FileKind {
     /// Categorize a file by its path extension.
     pub fn from_path(path: &str) -> Self {
-        let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let ext = extension(path).unwrap_or_default();
         match ext.as_str() {
             "md" | "markdown" | "mdown" | "mkd" => FileKind::Markdown,
             "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" | "bmp" | "avif" | "tiff" => {
@@ -49,7 +61,7 @@ impl FileKind {
 
     /// A friendly descriptive label for the file type.
     pub fn description(&self, path: &str) -> &'static str {
-        let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let ext = extension(path).unwrap_or_default();
         match ext.as_str() {
             "wasm" => "WebAssembly Component / Binary",
             "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" => "Compressed Archive",
@@ -74,7 +86,7 @@ impl FileKind {
 
     /// Icon glyph for the file type.
     pub fn glyph(&self, path: &str) -> &'static str {
-        let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let ext = extension(path).unwrap_or_default();
         match ext.as_str() {
             "wasm" => "⚙️",
             "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" => "📦",
@@ -98,6 +110,21 @@ impl FileKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extension_table() {
+        // A bare word has no extension, so it stays text even when it
+        // matches a known binary extension name.
+        assert_eq!(FileKind::from_path("bin"), FileKind::Text);
+        assert_eq!(FileKind::from_path("db"), FileKind::Text);
+        assert_eq!(FileKind::from_path("a"), FileKind::Text);
+        // Dots in directory segments are not extensions.
+        assert_eq!(extension("v1.2/Makefile"), None);
+        // A leading dot (dotfile) is not an extension.
+        assert_eq!(extension(".bashrc"), None);
+        // The extension is the text after the last dot, lowercased.
+        assert_eq!(extension("x.TAR.GZ"), Some("gz".to_string()));
+    }
 
     #[test]
     fn test_file_kind_classification() {

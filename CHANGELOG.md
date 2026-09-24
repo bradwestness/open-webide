@@ -26,6 +26,7 @@ for what's still ahead.
 
 ### Fixed
 
+- **Git status for paths with spaces, unicode, and unborn branches:** the bridge now reads `git status` with `--porcelain=v1 -b -z` (NUL-separated, unquoted paths) and the parser consumes rename/copy source records and recognizes the `No commits yet on` / `Initial commit on` / `HEAD (no branch)` headers, so files with spaces or non-ASCII names report the correct status and new repositories show their branch instead of failing to parse.
 - **Stale search results no longer overwrite the view:** file-content searches are now guarded by a per-run generation, so a slow search for an older query can no longer land after a newer search for the same project and clobber its results, and clearing the search box can no longer be undone by a search that resolves after the clear.
 - **Stale chat history no longer overwrites the view:** loading a session's message history is now guarded by a per-run generation, so a slow history request can no longer land after a newer request — including one for the same session — and clobber the conversation on screen. The first send in a brand-new chat also no longer duplicates the user message, since the redundant history fetch that fired the instant the session was created is now skipped.
 - **Stale file-browser listings no longer overwrite the view:** the folder picker's directory listing is now guarded, so a slow browse response for an old directory can no longer land after a newer navigation and show the wrong listing.

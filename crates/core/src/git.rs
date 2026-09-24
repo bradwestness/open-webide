@@ -158,9 +158,10 @@ pub struct GitSyncResult {
     pub output: String,
 }
 
-/// Parse output of `git status --porcelain=v1 -b`.
+/// Parse output of `git status --porcelain=v1 -b -z`.
 ///
-/// Returns:
+/// Records are NUL-separated and paths are unquoted. A rename/copy record is
+/// followed by a second record holding the source path. Returns:
 /// `(files_map, branch_name, upstream_branch, ahead_count, behind_count)`
 pub fn parse_porcelain_v1(
     output: &str,
@@ -177,49 +178,75 @@ pub fn parse_porcelain_v1(
     let mut ahead = 0;
     let mut behind = 0;
 
-    for line in output.lines() {
-        if line.starts_with("##") {
+    let records: Vec<&str> = output.split('\0').collect();
+    let mut i = 0;
+    while i < records.len() {
+        let rec = records[i];
+        i += 1;
+
+        if rec.starts_with("## ") {
             // Branch header: e.g.
             // ## main...origin/main [ahead 1, behind 2]
             // ## feat/test
+            // ## No commits yet on main
             // ## HEAD (no branch)
-            let header = line.trim_start_matches('#').trim();
-            if let Some((b_part, tracker)) = header.split_once(" [") {
+            let header = rec.trim_start_matches('#').trim();
+            if let Some(name) = header
+                .strip_prefix("No commits yet on ")
+                .or_else(|| header.strip_prefix("Initial commit on "))
+            {
+                branch = name.trim().to_string();
+            } else if header == "HEAD (no branch)" {
+                branch = "HEAD".to_string();
+            } else if let Some((b_part, tracker)) = header.split_once(" [") {
                 parse_branch_part(b_part, &mut branch, &mut upstream);
                 let track_clean = tracker.trim_end_matches(']');
                 parse_ahead_behind(track_clean, &mut ahead, &mut behind);
             } else {
                 parse_branch_part(header, &mut branch, &mut upstream);
             }
-        } else if line.len() >= 3 {
-            let index_status = line.as_bytes()[0];
-            let work_status = line.as_bytes()[1];
-            let raw_path = &line[3..].trim();
+            continue;
+        }
 
-            let path = if let Some((_, dest)) = raw_path.split_once(" -> ") {
-                dest.trim().to_string()
-            } else {
-                raw_path.to_string()
-            };
+        let bytes = rec.as_bytes();
+        if rec.len() < 4 || bytes[2] != b' ' {
+            continue;
+        }
+        let index_status = bytes[0];
+        let work_status = bytes[1];
+        let path = rec.get(3..).unwrap_or("");
 
-            let status = if index_status == b'?' || work_status == b'?' {
-                GitFileStatus::Untracked
-            } else if index_status == b'U'
-                || work_status == b'U'
-                || (index_status == b'A' && work_status == b'A')
-            {
-                GitFileStatus::Conflict
-            } else if index_status == b'A' {
-                GitFileStatus::Added
-            } else if index_status == b'D' || work_status == b'D' {
-                GitFileStatus::Deleted
-            } else if index_status == b'R' {
-                GitFileStatus::Renamed
-            } else {
-                GitFileStatus::Modified
-            };
+        let status = if matches!(
+            (index_status, work_status),
+            (b'D', b'D')
+                | (b'A', b'U')
+                | (b'U', b'D')
+                | (b'U', b'A')
+                | (b'D', b'U')
+                | (b'U', b'U')
+                | (b'A', b'A')
+        ) {
+            GitFileStatus::Conflict
+        } else if index_status == b'?' || work_status == b'?' {
+            GitFileStatus::Untracked
+        } else if index_status == b'A' {
+            GitFileStatus::Added
+        } else if index_status == b'D' || work_status == b'D' {
+            GitFileStatus::Deleted
+        } else if index_status == b'R' {
+            GitFileStatus::Renamed
+        } else {
+            GitFileStatus::Modified
+        };
 
-            files.insert(path, status);
+        files.insert(path.to_string(), status);
+        if index_status == b'R'
+            || work_status == b'R'
+            || index_status == b'C'
+            || work_status == b'C'
+        {
+            // Rename/copy: the next record is the source path.
+            i += 1;
         }
     }
 
@@ -282,7 +309,9 @@ mod tests {
 
     #[test]
     fn test_parse_porcelain_v1_full() {
-        let output = "## main...origin/main [ahead 2, behind 1]\n M crates/core/src/lib.rs\n?? new_file.txt\n D old_file.rs\nA  staged.rs\nR  old.txt -> new.txt\nUU conflict.rs\n";
+        // -z output: NUL-separated records, unquoted paths; a rename record
+        // is followed by a record holding the source path.
+        let output = "## main...origin/main [ahead 2, behind 1]\0 M crates/core/src/lib.rs\0?? new file with space.txt\0A  файл.txt\0 D old_file.rs\0A  staged.rs\0R  new.txt\0old.txt\0DD both_deleted.rs\0Mbad\0";
         let (files, branch, upstream, ahead, behind) = parse_porcelain_v1(output);
 
         assert_eq!(branch, "main");
@@ -294,22 +323,48 @@ mod tests {
             files.get("crates/core/src/lib.rs"),
             Some(&GitFileStatus::Modified)
         );
-        assert_eq!(files.get("new_file.txt"), Some(&GitFileStatus::Untracked));
+        assert_eq!(
+            files.get("new file with space.txt"),
+            Some(&GitFileStatus::Untracked)
+        );
+        assert_eq!(files.get("файл.txt"), Some(&GitFileStatus::Added));
         assert_eq!(files.get("old_file.rs"), Some(&GitFileStatus::Deleted));
         assert_eq!(files.get("staged.rs"), Some(&GitFileStatus::Added));
         assert_eq!(files.get("new.txt"), Some(&GitFileStatus::Renamed));
-        assert_eq!(files.get("conflict.rs"), Some(&GitFileStatus::Conflict));
+        assert!(
+            !files.contains_key("old.txt"),
+            "rename source must be consumed"
+        );
+        assert_eq!(files.get("both_deleted.rs"), Some(&GitFileStatus::Conflict));
+        assert!(
+            !files.contains_key("Mbad"),
+            "malformed record must be skipped"
+        );
     }
 
     #[test]
     fn test_parse_porcelain_v1_clean() {
-        let output = "## feat/awesome\n";
+        let output = "## feat/awesome\0";
         let (files, branch, upstream, ahead, behind) = parse_porcelain_v1(output);
 
         assert_eq!(branch, "feat/awesome");
         assert_eq!(upstream, None);
         assert_eq!(ahead, 0);
         assert_eq!(behind, 0);
+        assert!(files.is_empty());
+
+        // Unborn-branch headers carry the branch name after a prefix.
+        let (files, branch, ..) = parse_porcelain_v1("## No commits yet on main\0");
+        assert_eq!(branch, "main");
+        assert!(files.is_empty());
+
+        let (files, branch, ..) = parse_porcelain_v1("## Initial commit on main\0");
+        assert_eq!(branch, "main");
+        assert!(files.is_empty());
+
+        // Detached HEAD reports the literal branch "HEAD".
+        let (files, branch, ..) = parse_porcelain_v1("## HEAD (no branch)\0");
+        assert_eq!(branch, "HEAD");
         assert!(files.is_empty());
     }
 
