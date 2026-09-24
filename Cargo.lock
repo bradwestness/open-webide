@@ -1496,6 +1496,7 @@ name = "openwebide-core"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "html5ever",
  "proptest",
  "serde",
  "serde_json",
