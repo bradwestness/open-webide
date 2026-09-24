@@ -8,7 +8,7 @@ use openwebide_agent::AgentConfig;
 use openwebide_core::{
     ChatRequest, EditorContext, FileDiff, FileEntry, GitCheckoutRequest, GitCommitRequest,
     GitSyncRequest, Health, NewConnection, NewProject, Role, SearchHit, SystemPrompt,
-    TurnTelemetry, WorkspaceMode,
+    TurnTelemetry, WorkspaceMode, vfs::SearchOptions,
 };
 use openwebide_llm::{LlmProvider, registry::Provider};
 use serde::Deserialize;
@@ -32,15 +32,52 @@ fn json_response(status: u16, value: &impl serde::Serialize) -> JsonResp {
         .expect("valid status and headers")
 }
 
-async fn read_body(req: Request) -> Result<String, ApiError> {
-    let body = req.into_body();
-    let collected = body
-        .collect()
-        .await
-        .map_err(|e| ApiError::bad_request(format!("read request body: {e}")))?;
+/// Per-route request-body size caps. Auth and JSON bodies stay small; chat
+/// endpoints carry whole transcripts (local-mode `chat-tools` resends the
+/// full history); file writes mirror the file-read cap.
+const AUTH_BODY_LIMIT: usize = 64 * 1024;
+const CHAT_BODY_LIMIT: usize = 16 * 1024 * 1024;
+const FILE_BODY_LIMIT: usize = crate::files::MAX_READ_BYTES as usize;
+const JSON_BODY_LIMIT: usize = 1024 * 1024;
+
+/// Collect a body already wrapped in [`http_body_util::Limited`], mapping a
+/// length-limit violation to 413 and any other body error to 400.
+async fn read_limited<B>(body: http_body_util::Limited<B>, limit: usize) -> Result<String, ApiError>
+where
+    B: http_body::Body + Send + 'static,
+    B::Data: AsRef<[u8]> + Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let collected = body.collect().await.map_err(|e| {
+        if e.downcast_ref::<http_body_util::LengthLimitError>()
+            .is_some()
+        {
+            ApiError::payload_too_large(format!("request body exceeds {limit} bytes"))
+        } else {
+            ApiError::bad_request(format!("read request body: {e}"))
+        }
+    })?;
     let bytes = collected.to_bytes();
     String::from_utf8(bytes.to_vec())
         .map_err(|_| ApiError::bad_request("request body is not valid UTF-8"))
+}
+
+/// Read the request body as UTF-8, refusing bodies over `limit` bytes with
+/// a 413 — first from a lying `content-length`, then from the actual byte
+/// count via the `Limited` wrapper.
+async fn read_body(req: Request, limit: usize) -> Result<String, ApiError> {
+    if let Some(len) = req
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+        && len > limit
+    {
+        return Err(ApiError::payload_too_large(format!(
+            "request body exceeds {limit} bytes"
+        )));
+    }
+    read_limited(http_body_util::Limited::new(req.into_body(), limit), limit).await
 }
 
 fn parse_json<T: DeserializeOwned>(body: String) -> Result<T, ApiError> {
@@ -74,7 +111,7 @@ struct RegisterBody {
 /// Create the first (admin) account. Registration closes once any account
 /// exists, so this returns 403 after the first user signs up.
 pub async fn register(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
-    let body = read_body(req).await?;
+    let body = read_body(req, AUTH_BODY_LIMIT).await?;
     let reg: RegisterBody = parse_json(body)?;
     let username = reg.username.trim();
     if username.is_empty() {
@@ -122,7 +159,7 @@ struct LoginBody {
 }
 
 pub async fn login(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
-    let body = read_body(req).await?;
+    let body = read_body(req, AUTH_BODY_LIMIT).await?;
     let creds: LoginBody = parse_json(body)?;
     let user = state
         .store
@@ -181,7 +218,7 @@ fn validate_context_limit(limit: Option<usize>) -> Result<(), ApiError> {
 }
 
 pub async fn create_connection(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let new: NewConnection = parse_json(body)?;
     validate_context_limit(new.context_limit)?;
     let connection = state.store.insert_connection(&new).await?;
@@ -194,7 +231,7 @@ pub async fn update_connection(
     path: &str,
 ) -> Result<JsonResp, ApiError> {
     let id = path_id(path, "/api/connections")?;
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let mut connection: openwebide_core::Connection = parse_json(body)?;
     validate_context_limit(connection.context_limit)?;
     connection.id = id;
@@ -224,7 +261,7 @@ struct SettingBody {
 
 pub async fn set_setting(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let setting: SettingBody = parse_json(body)?;
     state
         .store
@@ -247,7 +284,7 @@ struct PromptBody {
 }
 
 pub async fn create_system_prompt(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let prompt_body: PromptBody = parse_json(body)?;
     let prompt: SystemPrompt = state
         .store
@@ -262,7 +299,7 @@ pub async fn update_system_prompt(
     path: &str,
 ) -> Result<JsonResp, ApiError> {
     let id = path_id(path, "/api/system-prompts")?;
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let prompt_body: PromptBody = parse_json(body)?;
     let prompt: SystemPrompt = state
         .store
@@ -305,7 +342,7 @@ fn normalize_project_path(
 
 pub async fn create_project(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let mut new: NewProject = parse_json(body)?;
     new.path = normalize_project_path(new.mode, new.path)?;
     let project = state.store.create_project(&new, user_id, now()).await?;
@@ -324,7 +361,7 @@ pub async fn rename_project(
 ) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
     let id = path_id(path, "/api/projects")?;
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let rename: RenameProjectBody = parse_json(body)?;
     let project = state
         .store
@@ -438,6 +475,13 @@ fn files_query(req: &Request, key: &str) -> Option<String> {
     })
 }
 
+/// The per-query `include_ignored` flag: `1` or `true` opts a search into
+/// the normally-skipped directories (`.git`, `target`, ...); anything else —
+/// including an absent flag — leaves them out.
+fn is_include_ignored(value: Option<String>) -> bool {
+    matches!(value.as_deref(), Some("1") | Some("true"))
+}
+
 fn raw_headers(rel: &str) -> Vec<(&'static str, String)> {
     let mut headers = vec![
         ("x-content-type-options", "nosniff".to_string()),
@@ -516,16 +560,28 @@ pub async fn files_get(req: Request, state: &AppState, path: &str) -> Result<Jso
         }
         "files/search" => {
             let q = files_query(&req, "q").ok_or_else(|| ApiError::bad_request("missing ?q="))?;
+            if q.trim().is_empty() {
+                return Err(ApiError::bad_request("query must not be empty"));
+            }
             let rel = files_query(&req, "path").unwrap_or_default();
+            let opts = SearchOptions {
+                include_ignored: is_include_ignored(files_query(&req, "include_ignored")),
+            };
             let (full, base) = remote_project_path(state, user_id, id, &rel).await?;
-            let entries = crate::files::search(&full, &q).await?;
+            let entries = crate::files::search(&full, &q, opts).await?;
             Ok(json_response(200, &strip_base(&base, entries)))
         }
         "files/content-search" => {
             let q = files_query(&req, "q").ok_or_else(|| ApiError::bad_request("missing ?q="))?;
+            if q.trim().is_empty() {
+                return Err(ApiError::bad_request("query must not be empty"));
+            }
             let rel = files_query(&req, "path").unwrap_or_default();
+            let opts = SearchOptions {
+                include_ignored: is_include_ignored(files_query(&req, "include_ignored")),
+            };
             let (full, base) = remote_project_path(state, user_id, id, &rel).await?;
-            let hits = crate::files::full_text_search(&full, &q).await?;
+            let hits = crate::files::full_text_search(&full, &q, opts).await?;
             Ok(json_response(200, &strip_base_hits(&base, hits)))
         }
         other => Err(ApiError::not_found(format!("no file route for {other}"))),
@@ -540,7 +596,7 @@ pub async fn files_put(req: Request, state: &AppState, path: &str) -> Result<Jso
     }
     let rel = files_query(&req, "path").ok_or_else(|| ApiError::bad_request("missing ?path="))?;
     let (full, _) = remote_project_path(state, user_id, id, &rel).await?;
-    let content = read_body(req).await?;
+    let content = read_body(req, FILE_BODY_LIMIT).await?;
     crate::files::write(&full, &content).await?;
     Ok(json_response(200, &json!({ "path": rel })))
 }
@@ -568,7 +624,7 @@ pub async fn files_post(req: Request, state: &AppState, path: &str) -> Result<Js
             ))
         }
         "files/copy" => {
-            let body = read_body(req).await?;
+            let body = read_body(req, JSON_BODY_LIMIT).await?;
             let args: CopyBody = parse_json(body)?;
             let (full_from, _) = remote_project_path(state, user_id, id, &args.from).await?;
             let (full_to, _) = remote_project_path(state, user_id, id, &args.to).await?;
@@ -663,7 +719,7 @@ pub async fn git_post(req: Request, state: &AppState, path: &str) -> Result<Json
         String::new()
     };
 
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
 
     match sub {
         "status" => {
@@ -748,7 +804,7 @@ struct CreateSessionBody {
 
 pub async fn create_session(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let new: CreateSessionBody = parse_json(body)?;
     let session = state
         .store
@@ -776,7 +832,7 @@ pub async fn rename_session(
 ) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
     let id = session_id(path)?;
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let rename: RenameSessionBody = parse_json(body)?;
     let session = state
         .store
@@ -822,7 +878,7 @@ pub async fn set_tool_permission(
     let (id, tool_call_id) = permission_path(path)?;
     // Verify ownership before recording the decision.
     state.store.get_session(id, user_id).await?;
-    let body = read_body(req).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
     let decision: PermissionBody = parse_json(body)?;
     state
         .store
@@ -862,7 +918,7 @@ pub async fn send_session_message(
 ) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(&state)?;
     let session_id = session_id(path)?;
-    let body = read_body(req).await?;
+    let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let send: SendMessageBody = parse_json(body)?;
 
     let session = state.store.get_session(session_id, user_id).await?;
@@ -995,7 +1051,7 @@ fn with_temporal_context(system_prompt: Option<String>, timestamp_secs: i64) -> 
 }
 
 pub async fn chat(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
-    let body = read_body(req).await?;
+    let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let mut request: ChatRequest = parse_json(body)?;
     let connection = state.store.get_connection(request.connection_id).await?;
     let provider = Provider::for_connection(&connection, SpinHttpClient);
@@ -1006,7 +1062,7 @@ pub async fn chat(req: Request, state: &AppState) -> Result<JsonResp, ApiError> 
 
 pub async fn chat_tools(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let _user_id = current_user_id(state)?;
-    let body = read_body(req).await?;
+    let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let mut request: ChatRequest = parse_json(body)?;
     let connection = state.store.get_connection(request.connection_id).await?;
     let provider = Provider::for_connection(&connection, SpinHttpClient);
@@ -1031,7 +1087,7 @@ pub async fn persist_message(
     let user_id = current_user_id(state)?;
     let id = session_id(path)?;
     state.store.get_session(id, user_id).await?;
-    let body = read_body(req).await?;
+    let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let msg: PersistMessageBody = parse_json(body)?;
     let message = state
         .store
@@ -1078,7 +1134,7 @@ pub async fn upsert_tool_step(
     let user_id = current_user_id(state)?;
     let id = session_id(path)?;
     state.store.get_session(id, user_id).await?;
-    let body = read_body(req).await?;
+    let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let step: UpsertToolStepBody = parse_json(body)?;
     state
         .store
@@ -1111,7 +1167,7 @@ pub async fn complete_tool_step(
     let user_id = current_user_id(state)?;
     let id = session_id(path)?;
     state.store.get_session(id, user_id).await?;
-    let body = read_body(req).await?;
+    let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let step: CompleteToolStepBody = parse_json(body)?;
     state
         .store
@@ -1246,5 +1302,48 @@ mod tests {
         }];
         let stripped = super::strip_base("repos/x/", e);
         assert_eq!(stripped[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn read_limited_enforces_byte_limit() {
+        futures::executor::block_on(async {
+            let limit = 10;
+            // limit-1 and limit bytes are accepted.
+            for n in [limit - 1, limit] {
+                let body = http_body_util::Full::new(Bytes::from(vec![b'x'; n]));
+                let text = super::read_limited(http_body_util::Limited::new(body, limit), limit)
+                    .await
+                    .unwrap();
+                assert_eq!(text, "x".repeat(n));
+            }
+            // limit+1 bytes is refused with 413, not a generic 400.
+            let body = http_body_util::Full::new(Bytes::from(vec![b'x'; limit + 1]));
+            let err = super::read_limited(http_body_util::Limited::new(body, limit), limit)
+                .await
+                .unwrap_err();
+            assert_eq!(err.into_response().status().as_u16(), 413);
+        });
+    }
+
+    #[test]
+    fn read_limited_rejects_non_utf8() {
+        futures::executor::block_on(async {
+            let body = http_body_util::Full::new(Bytes::from(vec![0xff, 0xfe, 0xfd]));
+            let err = super::read_limited(http_body_util::Limited::new(body, 1024), 1024)
+                .await
+                .unwrap_err();
+            assert_eq!(err.into_response().status().as_u16(), 400);
+        });
+    }
+
+    #[test]
+    fn include_ignored_flag_parsing() {
+        assert!(super::is_include_ignored(Some("1".into())));
+        assert!(super::is_include_ignored(Some("true".into())));
+        assert!(!super::is_include_ignored(None));
+        assert!(!super::is_include_ignored(Some("0".into())));
+        assert!(!super::is_include_ignored(Some("yes".into())));
+        assert!(!super::is_include_ignored(Some("TRUE".into())));
+        assert!(!super::is_include_ignored(Some("".into())));
     }
 }

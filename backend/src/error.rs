@@ -8,6 +8,7 @@ use spin_sdk::http::{BoxBody, FullBody, Response, box_body};
 /// type-erased body, so JSON responses and SSE streams share one type.
 pub type JsonResp = Response<BoxBody>;
 
+#[derive(Debug)]
 pub struct ApiError {
     status: u16,
     message: String,
@@ -66,6 +67,13 @@ impl ApiError {
     pub fn bad_gateway(message: impl Into<String>) -> Self {
         Self {
             status: 502,
+            message: message.into(),
+        }
+    }
+
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: 413,
             message: message.into(),
         }
     }
@@ -151,6 +159,14 @@ mod tests {
         let err: ApiError = anyhow::anyhow!("already exists in workspace: src/main.rs").into();
         let resp = err.into_response();
         assert_eq!(resp.status().as_u16(), 409);
+    }
+
+    #[test]
+    fn payload_too_large_maps_to_413() {
+        let err = ApiError::payload_too_large("request body exceeds 65536 bytes");
+        assert_eq!(err.status, 413);
+        assert_eq!(err.message, "request body exceeds 65536 bytes");
+        assert_eq!(err.into_response().status().as_u16(), 413);
     }
 
     #[test]
