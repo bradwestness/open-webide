@@ -223,6 +223,25 @@ impl<D: Db> Store<D> {
         Ok(())
     }
 
+    /// Insert a setting only if the key is absent, so concurrent first
+    /// writers cannot clobber each other. Returns whether the row was
+    /// inserted.
+    pub async fn insert_setting_if_absent(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> Result<bool, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)
+                 ON CONFLICT(key) DO NOTHING",
+                &[DbValue::Text(key.into()), DbValue::Text(value.into())],
+            )
+            .await?;
+        Ok(res.changes > 0)
+    }
+
     pub async fn all_settings(&self) -> Result<BTreeMap<String, String>, StorageError> {
         let res = self
             .db
@@ -590,26 +609,27 @@ impl<D: Db> Store<D> {
     }
 
     pub async fn delete_project(&self, id: i64, user_id: i64) -> Result<(), StorageError> {
-        self.db.transaction(|tx| async move {
-            let check = tx
-                .execute(
-                    "SELECT 1 FROM projects WHERE id = ? AND user_id = ?",
+        self.db
+            .transaction(|tx| async move {
+                let check = tx
+                    .execute(
+                        "SELECT 1 FROM projects WHERE id = ? AND user_id = ?",
+                        &[DbValue::Int(id), DbValue::Int(user_id)],
+                    )
+                    .await?;
+                if check.rows.is_empty() {
+                    return Err(StorageError::NotFound(format!("project {id}")));
+                }
+
+                tx.execute(
+                    "DELETE FROM projects WHERE id = ? AND user_id = ?",
                     &[DbValue::Int(id), DbValue::Int(user_id)],
                 )
                 .await?;
-            if check.rows.is_empty() {
-                return Err(StorageError::NotFound(format!("project {id}")));
-            }
 
-            tx.execute(
-                "DELETE FROM projects WHERE id = ? AND user_id = ?",
-                &[DbValue::Int(id), DbValue::Int(user_id)],
-            )
-            .await?;
-
-            Ok(())
-        })
-        .await
+                Ok(())
+            })
+            .await
     }
 
     // -- sessions ------------------------------------------------------------
@@ -1204,6 +1224,35 @@ mod tests {
     }
 
     #[test]
+    fn insert_setting_if_absent_does_not_overwrite() {
+        let store = test_store();
+        block_on(async {
+            store.set_setting("auth_secret", "first").await.unwrap();
+            assert!(
+                !store
+                    .insert_setting_if_absent("auth_secret", "second")
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                store.get_setting("auth_secret").await.unwrap().as_deref(),
+                Some("first")
+            );
+
+            assert!(
+                store
+                    .insert_setting_if_absent("new_key", "value")
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                store.get_setting("new_key").await.unwrap().as_deref(),
+                Some("value")
+            );
+        });
+    }
+
+    #[test]
     fn user_settings_roundtrip_and_scoping() {
         let store = test_store();
         let alice = test_user(&store, "alice", UserRole::Admin);
@@ -1485,7 +1534,9 @@ mod tests {
             let diff = FileDiff {
                 path: "a.txt".into(),
                 old: None,
-                new: "hi".into(), old_unavailable: false, backup_path: None,
+                new: "hi".into(),
+                old_unavailable: false,
+                backup_path: None,
             };
             store
                 .complete_tool_step(session.id, "call-1", true, "wrote a.txt", Some(&diff))
@@ -1994,13 +2045,26 @@ mod tests {
         let bob = test_user(&store, "bob", UserRole::User);
 
         block_on(async {
-            let p1 = store.create_project(&openwebide_core::NewProject {
-                name: "p1".into(),
-                mode: openwebide_core::WorkspaceMode::Local,
-                path: None,
-            }, alice, 1).await.unwrap();
-            let s1 = store.create_session("s1", None, None, Some(p1.id), alice, 1).await.unwrap();
-            store.insert_message(s1.id, openwebide_core::Role::User, "hello", 1).await.unwrap();
+            let p1 = store
+                .create_project(
+                    &openwebide_core::NewProject {
+                        name: "p1".into(),
+                        mode: openwebide_core::WorkspaceMode::Local,
+                        path: None,
+                    },
+                    alice,
+                    1,
+                )
+                .await
+                .unwrap();
+            let s1 = store
+                .create_session("s1", None, None, Some(p1.id), alice, 1)
+                .await
+                .unwrap();
+            store
+                .insert_message(s1.id, openwebide_core::Role::User, "hello", 1)
+                .await
+                .unwrap();
 
             // Bob tries to delete Alice's project
             let err = store.delete_project(p1.id, bob).await.unwrap_err();
@@ -2013,8 +2077,14 @@ mod tests {
 
             // Alice deletes it
             store.delete_project(p1.id, alice).await.unwrap();
-            assert!(matches!(store.get_project(p1.id, alice).await.unwrap_err(), StorageError::NotFound(_)));
-            assert!(matches!(store.get_session(s1.id, alice).await.unwrap_err(), StorageError::NotFound(_)));
+            assert!(matches!(
+                store.get_project(p1.id, alice).await.unwrap_err(),
+                StorageError::NotFound(_)
+            ));
+            assert!(matches!(
+                store.get_session(s1.id, alice).await.unwrap_err(),
+                StorageError::NotFound(_)
+            ));
             assert_eq!(store.list_messages(s1.id).await.unwrap().len(), 0);
         });
     }
@@ -2026,14 +2096,24 @@ mod tests {
         let bob = test_user(&store, "bob", UserRole::User);
 
         block_on(async {
-            let p1 = store.create_project(&openwebide_core::NewProject {
-                name: "p1".into(),
-                mode: openwebide_core::WorkspaceMode::Local,
-                path: None,
-            }, alice, 1).await.unwrap();
-            
+            let p1 = store
+                .create_project(
+                    &openwebide_core::NewProject {
+                        name: "p1".into(),
+                        mode: openwebide_core::WorkspaceMode::Local,
+                        path: None,
+                    },
+                    alice,
+                    1,
+                )
+                .await
+                .unwrap();
+
             // Bob tries to create a session in Alice's project
-            let err = store.create_session("s1", None, None, Some(p1.id), bob, 1).await.unwrap_err();
+            let err = store
+                .create_session("s1", None, None, Some(p1.id), bob, 1)
+                .await
+                .unwrap_err();
             assert!(matches!(err, StorageError::NotFound(_)));
         });
     }
@@ -2043,7 +2123,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let db_path = std::env::temp_dir().join(format!("openwebide_test_{}_{}.db", std::process::id(), id));
+        let db_path =
+            std::env::temp_dir().join(format!("openwebide_test_{}_{}.db", std::process::id(), id));
 
         let db1 = crate::rusqlite_db::RusqliteDb::open(&db_path).unwrap();
         let store1 = Store::new(db1);
@@ -2051,18 +2132,22 @@ mod tests {
 
         let db2 = crate::rusqlite_db::RusqliteDb::open(&db_path).unwrap();
         let store2 = Store::new(db2);
-        
+
         block_on(async {
             let (res1, res2) = futures::future::join(
                 store1.insert_first_admin("alice", "hash", 1),
-                store2.insert_first_admin("bob", "hash2", 2)
-            ).await;
+                store2.insert_first_admin("bob", "hash2", 2),
+            )
+            .await;
 
             let success1 = matches!(res1, Ok(Some(_)));
             let success2 = matches!(res2, Ok(Some(_)));
 
             assert!(success1 || success2, "At least one should succeed");
-            assert!(!(success1 && success2), "Both should not succeed in creating the first admin");
+            assert!(
+                !(success1 && success2),
+                "Both should not succeed in creating the first admin"
+            );
 
             assert_eq!(store1.count_users().await.unwrap(), 1);
         });
@@ -2076,21 +2161,32 @@ mod tests {
         let alice = test_user(&store, "alice", UserRole::Admin);
 
         block_on(async {
-            let p1 = store.create_project(&openwebide_core::NewProject {
-                name: "p1".into(),
-                mode: openwebide_core::WorkspaceMode::Local,
-                path: None,
-            }, alice, 1).await.unwrap();
+            let p1 = store
+                .create_project(
+                    &openwebide_core::NewProject {
+                        name: "p1".into(),
+                        mode: openwebide_core::WorkspaceMode::Local,
+                        path: None,
+                    },
+                    alice,
+                    1,
+                )
+                .await
+                .unwrap();
 
             // A transaction that fails midway
-            let res: Result<(), _> = store.db.transaction(|tx| async move {
-                tx.execute(
-                    "UPDATE projects SET name = 'new' WHERE id = ?",
-                    &[DbValue::Int(p1.id)],
-                ).await?;
+            let res: Result<(), _> = store
+                .db
+                .transaction(|tx| async move {
+                    tx.execute(
+                        "UPDATE projects SET name = 'new' WHERE id = ?",
+                        &[DbValue::Int(p1.id)],
+                    )
+                    .await?;
 
-                Err(StorageError::InvalidValue("fake error".into()))
-            }).await;
+                    Err(StorageError::InvalidValue("fake error".into()))
+                })
+                .await;
 
             assert!(res.is_err());
 
@@ -2106,24 +2202,34 @@ mod tests {
         // let alice = test_user(&store, "alice", UserRole::Admin);
 
         block_on(async {
-            store.insert_connection(&openwebide_core::NewConnection {
-                name: "conn1".into(),
-                base_url: "http://test".into(),
-                kind: openwebide_core::ProviderKind::Ollama,
-                model: None,
-                context_limit: None,
-            }).await.unwrap();
-            
-            let err = store.insert_connection(&openwebide_core::NewConnection {
-                name: "conn1".into(),
-                base_url: "http://test2".into(),
-                kind: openwebide_core::ProviderKind::Ollama,
-                model: None,
-                context_limit: None,
-            }).await.unwrap_err();
-            
+            store
+                .insert_connection(&openwebide_core::NewConnection {
+                    name: "conn1".into(),
+                    base_url: "http://test".into(),
+                    kind: openwebide_core::ProviderKind::Ollama,
+                    model: None,
+                    context_limit: None,
+                })
+                .await
+                .unwrap();
+
+            let err = store
+                .insert_connection(&openwebide_core::NewConnection {
+                    name: "conn1".into(),
+                    base_url: "http://test2".into(),
+                    kind: openwebide_core::ProviderKind::Ollama,
+                    model: None,
+                    context_limit: None,
+                })
+                .await
+                .unwrap_err();
+
             match err {
-                StorageError::Conflict(msg) => assert!(msg.contains("connections.name"), "Expected connections.name in conflict msg, got: {}", msg),
+                StorageError::Conflict(msg) => assert!(
+                    msg.contains("connections.name"),
+                    "Expected connections.name in conflict msg, got: {}",
+                    msg
+                ),
                 _ => panic!("Expected Conflict error"),
             }
         });
@@ -2135,9 +2241,16 @@ mod tests {
 
         block_on(async {
             store.insert_system_prompt("prompt1", "sys").await.unwrap();
-            let err = store.insert_system_prompt("prompt1", "sys2").await.unwrap_err();
+            let err = store
+                .insert_system_prompt("prompt1", "sys2")
+                .await
+                .unwrap_err();
             match err {
-                StorageError::Conflict(msg) => assert!(msg.contains("system_prompts.name"), "Expected system_prompts.name in conflict msg, got: {}", msg),
+                StorageError::Conflict(msg) => assert!(
+                    msg.contains("system_prompts.name"),
+                    "Expected system_prompts.name in conflict msg, got: {}",
+                    msg
+                ),
                 _ => panic!("Expected Conflict error"),
             }
         });
@@ -2150,10 +2263,16 @@ mod tests {
 
         block_on(async {
             // connection_id 999 does not exist
-            let err = store.create_session("s1", Some(999), None, None, alice, 1).await.unwrap_err();
+            let err = store
+                .create_session("s1", Some(999), None, None, alice, 1)
+                .await
+                .unwrap_err();
             assert!(matches!(err, StorageError::Db(_)));
             if let StorageError::Db(msg) = err {
-                assert!(msg.contains("constraint"), "Expected constraint error, got {msg}");
+                assert!(
+                    msg.contains("constraint"),
+                    "Expected constraint error, got {msg}"
+                );
             }
         });
     }

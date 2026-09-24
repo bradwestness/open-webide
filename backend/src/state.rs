@@ -44,3 +44,12 @@ pub fn now() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+/// Current unix time in seconds, or `None` if the clock is unusable.
+/// Expiry checks must fail closed on `None`.
+pub fn unix_now_checked() -> Option<i64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+}
