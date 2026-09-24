@@ -331,9 +331,12 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Err(VfsError::NotFound(_)) => old = None,
             Err(e) => {
                 let file_name = path.rsplit_once('/').map(|(_, f)| f).unwrap_or(&path);
-                let backup = format!("{}/{step_id}/{file_name}", openwebide_core::vfs::AGENT_BACKUP_DIR);
+                let backup = format!(
+                    "{}/{step_id}/{file_name}",
+                    openwebide_core::vfs::AGENT_BACKUP_DIR
+                );
                 let gitignore = format!("{}/.gitignore", openwebide_core::vfs::AGENT_BACKUP_DIR);
-                
+
                 // Write .gitignore if missing
                 if let Err(VfsError::NotFound(_)) = self.vfs.read(&gitignore).await {
                     let _ = self.vfs.write(&gitignore, "*\n").await;
@@ -343,7 +346,9 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
                     return fail(
                         "write_file",
                         &path,
-                        &format!("refusing to overwrite: the existing file could not be read ({e}) and could not be backed up ({c})"),
+                        &format!(
+                            "refusing to overwrite: the existing file could not be read ({e}) and could not be backed up ({c})"
+                        ),
                     );
                 }
                 old_unavailable = true;
@@ -361,7 +366,9 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
                     backup_path,
                 };
                 let content = if old_unavailable {
-                    format!("wrote {path}; the previous version was not readable as text and was backed up")
+                    format!(
+                        "wrote {path}; the previous version was not readable as text and was backed up"
+                    )
                 } else {
                     format!("wrote {path}")
                 };

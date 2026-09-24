@@ -61,9 +61,9 @@ impl Db for RusqliteDb {
 
     async fn execute(&self, sql: &str, params: &[DbValue]) -> Result<ExecResult, StorageError> {
         let mut conn_guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = conn_guard.as_mut().ok_or_else(|| {
-            StorageError::Db("Connection in use by transaction".to_string())
-        })?;
+        let conn = conn_guard
+            .as_mut()
+            .ok_or_else(|| StorageError::Db("Connection in use by transaction".to_string()))?;
         let values: Vec<SqliteValue> = params.iter().map(to_sqlite_value).collect();
 
         let mut stmt = conn
@@ -84,7 +84,8 @@ impl Db for RusqliteDb {
                 rusqlite::Error::SqliteFailure(err, Some(msg))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation
                         && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                            || err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
+                            || err.extended_code
+                                == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
                 {
                     StorageError::Conflict(msg)
                 }
@@ -97,7 +98,8 @@ impl Db for RusqliteDb {
                 rusqlite::Error::SqliteFailure(err, Some(msg))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation
                         && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                            || err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
+                            || err.extended_code
+                                == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
                 {
                     StorageError::Conflict(msg)
                 }
@@ -119,7 +121,9 @@ impl Db for RusqliteDb {
     {
         let conn = {
             let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-            guard.take().ok_or_else(|| StorageError::Db("Concurrent transactions not supported".into()))?
+            guard
+                .take()
+                .ok_or_else(|| StorageError::Db("Concurrent transactions not supported".into()))?
         };
 
         if let Err(e) = conn.execute("BEGIN IMMEDIATE", []) {
@@ -140,7 +144,12 @@ impl Db for RusqliteDb {
 
         impl<'a> Drop for TxGuard<'a> {
             fn drop(&mut self) {
-                if let Some(c) = self.tx_conn.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                if let Some(c) = self
+                    .tx_conn
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
                     if self.commit_requested {
                         let _ = c.execute("COMMIT", []);
                     } else {
@@ -176,9 +185,9 @@ impl Db for RusqliteTx {
 
     async fn execute(&self, sql: &str, params: &[DbValue]) -> Result<ExecResult, StorageError> {
         let mut conn_guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = conn_guard.as_mut().ok_or_else(|| {
-            StorageError::Db("Connection in use by transaction".to_string())
-        })?;
+        let conn = conn_guard
+            .as_mut()
+            .ok_or_else(|| StorageError::Db("Connection in use by transaction".to_string()))?;
         let values: Vec<SqliteValue> = params.iter().map(to_sqlite_value).collect();
 
         let mut stmt = conn
@@ -199,7 +208,8 @@ impl Db for RusqliteTx {
                 rusqlite::Error::SqliteFailure(err, Some(msg))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation
                         && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                            || err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
+                            || err.extended_code
+                                == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
                 {
                     StorageError::Conflict(msg)
                 }
@@ -212,7 +222,8 @@ impl Db for RusqliteTx {
                 rusqlite::Error::SqliteFailure(err, Some(msg))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation
                         && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                            || err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
+                            || err.extended_code
+                                == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
                 {
                     StorageError::Conflict(msg)
                 }
@@ -232,7 +243,8 @@ impl Db for RusqliteTx {
         F: FnOnce(Self::Tx<'b>) -> Fut + Send + 'b,
         Fut: std::future::Future<Output = Result<T, StorageError>> + Send + 'b,
     {
-        Err(StorageError::Db("Nested transactions are not supported".into()))
+        Err(StorageError::Db(
+            "Nested transactions are not supported".into(),
+        ))
     }
 }
-

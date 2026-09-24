@@ -6,8 +6,8 @@ pub mod git;
 pub mod highlight;
 pub mod html;
 pub mod tui;
-pub mod vfs;
 pub mod utf8;
+pub mod vfs;
 
 pub use bridge::*;
 pub use file_type::*;

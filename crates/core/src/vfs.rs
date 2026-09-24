@@ -148,7 +148,11 @@ pub trait Vfs: Send + Sync {
     fn copy<'a>(&'a self, from: &'a str, to: &'a str) -> VfsFuture<'a, ()> {
         let _ = from;
         let _ = to;
-        Box::pin(async { Err(VfsError::Io("copy is not supported by this workspace".into())) })
+        Box::pin(async {
+            Err(VfsError::Io(
+                "copy is not supported by this workspace".into(),
+            ))
+        })
     }
 
     /// Full-text search across file contents under the given directory (`""` for root).
@@ -355,10 +359,13 @@ impl Vfs for MemoryVfs {
         Box::pin(async move {
             let from_norm = self.canonicalize(from).await?;
             let to_norm = self.canonicalize(to).await?;
-            
+
             let content = {
                 let files = self.files.read().map_err(|e| VfsError::Io(e.to_string()))?;
-                files.get(&from_norm).cloned().ok_or(VfsError::NotFound(from_norm))?
+                files
+                    .get(&from_norm)
+                    .cloned()
+                    .ok_or(VfsError::NotFound(from_norm))?
             };
 
             if to_norm.is_empty() {

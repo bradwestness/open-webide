@@ -36,7 +36,9 @@ impl SpinDb {
             .map_err(|e| StorageError::Db(e.to_string()))?;
         Ok(Self {
             target: std::sync::Arc::new(SpinTarget::Default),
-            state: std::sync::Arc::new(std::sync::Mutex::new(ConnectionState::Idle(std::sync::Arc::new(conn)))),
+            state: std::sync::Arc::new(std::sync::Mutex::new(ConnectionState::Idle(
+                std::sync::Arc::new(conn),
+            ))),
         })
     }
 
@@ -50,7 +52,9 @@ impl SpinDb {
             .map_err(|e| StorageError::Db(e.to_string()))?;
         Ok(Self {
             target: std::sync::Arc::new(SpinTarget::Named(name.as_ref().to_string())),
-            state: std::sync::Arc::new(std::sync::Mutex::new(ConnectionState::Idle(std::sync::Arc::new(conn)))),
+            state: std::sync::Arc::new(std::sync::Mutex::new(ConnectionState::Idle(
+                std::sync::Arc::new(conn),
+            ))),
         })
     }
 
@@ -84,11 +88,12 @@ impl SpinDb {
                     SpinTarget::Named(name) => Connection::open(name).await,
                 }
                 .map_err(|e| StorageError::Db(e.to_string()))?;
-                
-                new_conn.execute("PRAGMA foreign_keys = ON", vec![])
+
+                new_conn
+                    .execute("PRAGMA foreign_keys = ON", vec![])
                     .await
                     .map_err(|e| StorageError::Db(e.to_string()))?;
-                
+
                 let mut state = self.state.lock().unwrap();
                 if matches!(*state, ConnectionState::Poisoned) {
                     *state = ConnectionState::Idle(std::sync::Arc::new(new_conn));
@@ -137,10 +142,7 @@ impl Db for SpinDb {
         let values: Vec<Value> = params.iter().map(to_spin_value).collect();
         let conn = self.acquire_conn(false).await?;
 
-        let mut result = conn
-            .execute(sql, values)
-            .await
-            .map_err(map_spin_err)?;
+        let mut result = conn.execute(sql, values).await.map_err(map_spin_err)?;
 
         let mut rows = Vec::new();
         while let Some(row) = result.next().await {
@@ -148,10 +150,7 @@ impl Db for SpinDb {
                 values: row.values.iter().map(to_db_value).collect(),
             });
         }
-        result
-            .result()
-            .await
-            .map_err(map_spin_err)?;
+        result.result().await.map_err(map_spin_err)?;
 
         Ok(ExecResult {
             last_insert_rowid: conn.last_insert_rowid().await,
@@ -186,7 +185,9 @@ impl Db for SpinDb {
         impl Drop for TxGuard {
             fn drop(&mut self) {
                 let mut tx_s = self.tx_state.lock().unwrap();
-                if let ConnectionState::Idle(c) = std::mem::replace(&mut *tx_s, ConnectionState::Poisoned) {
+                if let ConnectionState::Idle(c) =
+                    std::mem::replace(&mut *tx_s, ConnectionState::Poisoned)
+                {
                     drop(c);
                     *self.db_state.lock().unwrap() = ConnectionState::Poisoned;
                 }
@@ -234,6 +235,8 @@ impl Db for SpinTx {
         F: FnOnce(Self::Tx<'b>) -> Fut + Send + 'b,
         Fut: std::future::Future<Output = Result<T, StorageError>> + Send + 'b,
     {
-        Err(StorageError::Db("Nested transactions are not supported".into()))
+        Err(StorageError::Db(
+            "Nested transactions are not supported".into(),
+        ))
     }
 }

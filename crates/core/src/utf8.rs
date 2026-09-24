@@ -25,7 +25,9 @@ impl Utf8Decoder {
                     let valid_len = e.valid_up_to();
                     if valid_len > 0 {
                         // We have some valid text before the error
-                        let valid_str = unsafe { std::str::from_utf8_unchecked(&self.pending[offset..offset + valid_len]) };
+                        let valid_str = unsafe {
+                            std::str::from_utf8_unchecked(&self.pending[offset..offset + valid_len])
+                        };
                         out.push_str(valid_str);
                         offset += valid_len;
                         continue;

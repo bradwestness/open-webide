@@ -1381,16 +1381,18 @@ mod tests {
     #[test]
     fn step_id_prefix_tests() {
         let prefix = step_id_prefix(7);
-        let calls = pending_calls(7, 1, vec![
-            call("call_0", "read_file", "{}"),
-            call("call_1", "write_file", "{}"),
-        ]);
+        let calls = pending_calls(
+            7,
+            1,
+            vec![
+                call("call_0", "read_file", "{}"),
+                call("call_1", "write_file", "{}"),
+            ],
+        );
         for p in calls {
             assert!(p.call.id.starts_with(&prefix));
         }
-        let calls_other = pending_calls(71, 1, vec![
-            call("call_0", "read_file", "{}"),
-        ]);
+        let calls_other = pending_calls(71, 1, vec![call("call_0", "read_file", "{}")]);
         assert!(!calls_other[0].call.id.starts_with(&prefix));
     }
 }

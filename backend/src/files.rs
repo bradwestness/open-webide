@@ -387,7 +387,7 @@ pub async fn create(rel: &str, is_dir: bool) -> Result<()> {
 pub async fn copy(from: &str, to: &str) -> Result<()> {
     let from_file = file_at_read(from).await?;
     let to_file = file_at_write(to).await?;
-    
+
     // Using `write_via_stream` with the stream from `read_via_stream`
     // instructs the WASI runtime to pipe the data efficiently.
     let (from_stream, read_fut) = from_file.read_via_stream(0);
