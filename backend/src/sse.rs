@@ -11,18 +11,17 @@
 //! ```
 
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 use http_body::{Frame, SizeHint};
-use openwebide_core::{ChatMessage, ChatRequest, FileDiff, Role, TurnTelemetry};
-use openwebide_llm::{LlmProvider, StreamChunk, registry::Provider};
+use openwebide_core::{ChatMessage, FileDiff, Role, TurnTelemetry};
+use openwebide_llm::{ProviderError, StreamChunk};
 use openwebide_storage::Store;
 use serde_json::json;
 
-use crate::http_client::SpinHttpClient;
 use crate::state::{AppDb, now};
 
 /// One event on a chat SSE stream.
@@ -135,17 +134,23 @@ impl http_body::Body for SseBody {
     }
 }
 
-/// Shared state between the delta mapping, the cancel gate, and the tail
-/// that persists the assistant message.
+/// Plain-chat stream state: accumulates the reply, remembers the turn's
+/// usage, and ends after the first terminal outcome (cancel, provider
+/// error, or provider end-of-stream).
 struct StreamState {
+    store: Arc<Store<AppDb>>,
+    session_id: i64,
+    chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
     buffer: String,
-    failed: bool,
-    cancelled: bool,
     usage: Option<TurnTelemetry>,
+    done: bool,
 }
 
 /// Build the SSE event stream for one sent message: the user message, the
-/// provider's deltas, and (on success) the persisted assistant message.
+/// provider's deltas, and a terminal event — the persisted assistant
+/// message on success, `Cancelled` if the user stops the run, or `Error`
+/// if the provider or persistence fails. The stream always ends with its
+/// terminal event, never a bare end-of-stream.
 ///
 /// The store is shared: the cancel gate polls the database for a cancel
 /// request (arriving as a separate Spin request) and the tail persists the
@@ -154,88 +159,244 @@ pub fn message_stream(
     store: Arc<Store<AppDb>>,
     session_id: i64,
     user_message: ChatMessage,
-    request: ChatRequest,
-    provider: Provider<SpinHttpClient>,
+    chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
 ) -> Pin<Box<dyn Stream<Item = SseEvent> + Send + 'static>> {
-    let state = Arc::new(Mutex::new(StreamState {
+    let state = StreamState {
+        store,
+        session_id,
+        chunks,
         buffer: String::new(),
-        failed: false,
-        cancelled: false,
         usage: None,
-    }));
-    let deltas = {
-        let state = state.clone();
-        provider
-            .chat_stream(&request)
-            .map(move |result| match result {
-                Ok(StreamChunk::Delta(delta)) => {
-                    state.lock().unwrap().buffer.push_str(&delta);
-                    SseEvent::Delta(delta)
-                }
-                Ok(StreamChunk::Usage(usage)) => {
-                    state.lock().unwrap().usage = Some(usage);
-                    SseEvent::Telemetry(usage)
-                }
-                Err(error) => {
-                    state.lock().unwrap().failed = true;
-                    SseEvent::Error(error.to_string())
-                }
-            })
+        done: false,
     };
-    // Poll the cancel flag as each delta arrives; a cancel requested by a
-    // separate request ends the stream with `Cancelled`. `take_while`
-    // includes the first `Cancelled`/`Error` item, then stops.
-    let gated = {
-        let store = store.clone();
-        let state = state.clone();
-        deltas
-            .then(move |event| {
-                let store = store.clone();
-                let state = state.clone();
-                async move {
-                    if matches!(&event, SseEvent::Delta(_))
-                        && store.cancel_requested(session_id).await.unwrap_or(false)
-                    {
-                        state.lock().unwrap().cancelled = true;
-                        return SseEvent::Cancelled;
-                    }
-                    event
-                }
-            })
-            .take_while(|event| {
-                futures::future::ready(!matches!(event, SseEvent::Cancelled | SseEvent::Error(_)))
-            })
-    };
-    // Persist the accumulated reply. On failure or cancellation the partial
-    // reply is not saved, so history never contains a truncated assistant
-    // message. The `Option` state makes this a one-shot: after emitting,
-    // `maybe?` ends the stream.
-    let tail = stream::unfold(Some((store, session_id, state)), |maybe| async move {
-        let (store, session_id, state) = maybe?;
-        // The run is over: drop the flag so a late or stale cancel can't
-        // affect the next run.
-        let _ = store.clear_cancel(session_id).await;
-        let (failed, cancelled, content, usage) = {
-            let st = state.lock().unwrap();
-            (st.failed, st.cancelled, st.buffer.clone(), st.usage)
-        };
-        if failed || cancelled {
+    let machine = stream::unfold(state, |mut state| async move {
+        if state.done {
             return None;
         }
-        match store
-            .insert_message_with_usage(session_id, Role::Assistant, &content, now(), usage.as_ref())
-            .await
-        {
-            Ok(message) => Some((SseEvent::Done(message), None)),
-            Err(error) => Some((
-                SseEvent::Error(format!("failed to save reply: {error}")),
-                None,
-            )),
+        match state.chunks.as_mut().next().await {
+            Some(Ok(StreamChunk::Delta(delta))) => {
+                // Poll the cancel flag as each delta arrives; a cancel
+                // requested by a separate request ends the stream with
+                // `Cancelled`, and the triggering delta is not sent.
+                if state
+                    .store
+                    .cancel_requested(state.session_id)
+                    .await
+                    .unwrap_or(false)
+                {
+                    state.done = true;
+                    let _ = state.store.clear_cancel(state.session_id).await;
+                    Some((SseEvent::Cancelled, state))
+                } else {
+                    state.buffer.push_str(&delta);
+                    Some((SseEvent::Delta(delta), state))
+                }
+            }
+            Some(Ok(StreamChunk::Usage(usage))) => {
+                state.usage = Some(usage);
+                Some((SseEvent::Telemetry(usage), state))
+            }
+            Some(Err(error)) => {
+                state.done = true;
+                let _ = state.store.clear_cancel(state.session_id).await;
+                Some((SseEvent::Error(error.to_string()), state))
+            }
+            None => {
+                // The run is over: drop the flag so a late or stale cancel
+                // can't affect the next run.
+                state.done = true;
+                let _ = state.store.clear_cancel(state.session_id).await;
+                // Persist the accumulated reply. On failure the partial
+                // reply is not saved, so history never contains a
+                // truncated assistant message.
+                match state
+                    .store
+                    .insert_message_with_usage(
+                        state.session_id,
+                        Role::Assistant,
+                        &state.buffer,
+                        now(),
+                        state.usage.as_ref(),
+                    )
+                    .await
+                {
+                    Ok(message) => Some((SseEvent::Done(message), state)),
+                    Err(error) => Some((
+                        SseEvent::Error(format!("failed to save reply: {error}")),
+                        state,
+                    )),
+                }
+            }
         }
     });
-    Box::pin(
-        stream::iter([SseEvent::Message(user_message)])
-            .chain(gated)
-            .chain(tail),
-    )
+    Box::pin(stream::iter([SseEvent::Message(user_message)]).chain(machine))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::executor::block_on;
+    use openwebide_core::UserRole;
+
+    /// An in-memory store with a user and a session, for stream tests.
+    async fn test_store() -> (Arc<Store<AppDb>>, i64) {
+        let db = AppDb::open_in_memory().unwrap();
+        let store = Arc::new(Store::new(db));
+        store.migrate().await.unwrap();
+        let user = store
+            .insert_user("tester", "hash", UserRole::User, 1)
+            .await
+            .unwrap();
+        let session = store
+            .create_session("test", None, None, None, user.id, 1)
+            .await
+            .unwrap();
+        (store, session.id)
+    }
+
+    /// A fake provider chunk stream.
+    fn fake_chunks(
+        items: Vec<Result<StreamChunk, ProviderError>>,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>> {
+        Box::pin(stream::iter(items))
+    }
+
+    fn delta(s: &str) -> Result<StreamChunk, ProviderError> {
+        Ok(StreamChunk::Delta(s.to_string()))
+    }
+
+    /// The event reduced to the fields the assertions care about.
+    #[derive(Debug, PartialEq)]
+    enum Kind {
+        Message,
+        Delta(String),
+        Telemetry(TurnTelemetry),
+        Done(String),
+        Cancelled,
+        Error(String),
+    }
+
+    fn kind(event: &SseEvent) -> Kind {
+        match event {
+            SseEvent::Message(_) => Kind::Message,
+            SseEvent::Delta(d) => Kind::Delta(d.clone()),
+            SseEvent::ToolCall { .. } => panic!("unexpected tool_call"),
+            SseEvent::PermissionRequest { .. } => panic!("unexpected permission_request"),
+            SseEvent::ToolResult { .. } => panic!("unexpected tool_result"),
+            SseEvent::Done(m) => Kind::Done(m.content.clone()),
+            SseEvent::Telemetry(t) => Kind::Telemetry(*t),
+            SseEvent::Cancelled => Kind::Cancelled,
+            SseEvent::Error(e) => Kind::Error(e.clone()),
+        }
+    }
+
+    /// Persist a user message, run the stream over the fake chunks, and
+    /// return the event sequence.
+    async fn run(
+        store: Arc<Store<AppDb>>,
+        session_id: i64,
+        items: Vec<Result<StreamChunk, ProviderError>>,
+    ) -> Vec<Kind> {
+        let user_message = store
+            .insert_message(session_id, Role::User, "hello", now())
+            .await
+            .unwrap();
+        let events = message_stream(store, session_id, user_message, fake_chunks(items))
+            .collect::<Vec<_>>()
+            .await;
+        events.iter().map(kind).collect()
+    }
+
+    #[test]
+    fn provider_error_yields_error_event_and_persists_nothing() {
+        block_on(async {
+            let (store, session_id) = test_store().await;
+            let events = run(
+                store.clone(),
+                session_id,
+                vec![
+                    delta("a"),
+                    Err(ProviderError::Http("401 Unauthorized".to_string())),
+                ],
+            )
+            .await;
+            assert_eq!(
+                events,
+                vec![
+                    Kind::Message,
+                    Kind::Delta("a".to_string()),
+                    Kind::Error("HTTP error: 401 Unauthorized".to_string()),
+                ]
+            );
+            // The partial reply is not saved: only the user message exists.
+            let messages = store.list_messages(session_id).await.unwrap();
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].role, Role::User);
+        });
+    }
+
+    #[test]
+    fn cancel_before_first_delta_yields_cancelled_and_persists_nothing() {
+        block_on(async {
+            let (store, session_id) = test_store().await;
+            store.request_cancel(session_id).await.unwrap();
+            let events = run(store.clone(), session_id, vec![delta("a"), delta("b")]).await;
+            assert_eq!(events, vec![Kind::Message, Kind::Cancelled]);
+            // The partial reply is not saved, and the flag is cleared so
+            // the next run starts clean.
+            let messages = store.list_messages(session_id).await.unwrap();
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].role, Role::User);
+            assert!(!store.cancel_requested(session_id).await.unwrap());
+        });
+    }
+
+    #[test]
+    fn usage_is_stored_with_the_persisted_reply() {
+        block_on(async {
+            let (store, session_id) = test_store().await;
+            let usage = TurnTelemetry {
+                prompt_tokens: 10,
+                completion_tokens: 20,
+                eval_duration_ms: 100,
+                estimated: false,
+            };
+            let events = run(
+                store.clone(),
+                session_id,
+                vec![delta("a"), Ok(StreamChunk::Usage(usage)), delta("b")],
+            )
+            .await;
+            assert_eq!(
+                events,
+                vec![
+                    Kind::Message,
+                    Kind::Delta("a".to_string()),
+                    Kind::Telemetry(usage),
+                    Kind::Delta("b".to_string()),
+                    Kind::Done("ab".to_string()),
+                ]
+            );
+            let messages = store.list_messages(session_id).await.unwrap();
+            assert_eq!(messages.len(), 2);
+            let assistant = &messages[1];
+            assert_eq!(assistant.role, Role::Assistant);
+            assert_eq!(assistant.content, "ab");
+            assert_eq!(assistant.usage, Some(usage));
+        });
+    }
+
+    #[test]
+    fn empty_successful_reply_persists_empty_content() {
+        block_on(async {
+            let (store, session_id) = test_store().await;
+            let events = run(store.clone(), session_id, Vec::new()).await;
+            assert_eq!(events, vec![Kind::Message, Kind::Done(String::new())]);
+            let messages = store.list_messages(session_id).await.unwrap();
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[1].role, Role::Assistant);
+            assert_eq!(messages[1].content, "");
+            assert_eq!(messages[1].usage, None);
+        });
+    }
 }

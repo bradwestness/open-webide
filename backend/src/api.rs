@@ -931,7 +931,12 @@ pub async fn send_session_message(
             gate,
         )
     } else {
-        message_stream(store, session_id, user_message, request, provider)
+        message_stream(
+            store,
+            session_id,
+            user_message,
+            provider.chat_stream(&request),
+        )
     };
 
     Ok(Response::builder()
