@@ -18,6 +18,11 @@ pub use vfs::{MemoryVfs, Vfs, VfsError, VfsFuture, format_utc_timestamp, normali
 
 use serde::{Deserialize, Serialize};
 
+/// Appended to a reply when its provider stream ends incomplete (the model
+/// was cut off before finishing). Every host that persists a reply appends
+/// this marker so the truncation is visible.
+pub const REPLY_TRUNCATED_MARKER: &str = "\n\n[reply truncated]";
+
 /// A local-LLM runtime the IDE can talk to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

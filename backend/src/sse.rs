@@ -17,7 +17,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 use http_body::{Frame, SizeHint};
-use openwebide_core::{ChatMessage, FileDiff, Role, TurnTelemetry};
+use openwebide_core::{ChatMessage, FileDiff, REPLY_TRUNCATED_MARKER, Role, TurnTelemetry};
 use openwebide_llm::{ProviderError, StreamChunk};
 use openwebide_storage::Store;
 use serde_json::json;
@@ -196,6 +196,31 @@ pub fn message_stream(
                 state.usage = Some(usage);
                 Some((SseEvent::Telemetry(usage), state))
             }
+            Some(Err(ProviderError::Incomplete)) if !state.buffer.is_empty() => {
+                // The provider cut the reply short: keep what arrived,
+                // marked, rather than dropping it or saving it as complete.
+                state.done = true;
+                let _ = state.store.clear_cancel(state.session_id).await;
+                let mut content = state.buffer.clone();
+                content.push_str(REPLY_TRUNCATED_MARKER);
+                match state
+                    .store
+                    .insert_message_with_usage(
+                        state.session_id,
+                        Role::Assistant,
+                        &content,
+                        now(),
+                        None,
+                    )
+                    .await
+                {
+                    Ok(message) => Some((SseEvent::Done(message), state)),
+                    Err(error) => Some((
+                        SseEvent::Error(format!("failed to save reply: {error}")),
+                        state,
+                    )),
+                }
+            }
             Some(Err(error)) => {
                 state.done = true;
                 let _ = state.store.clear_cancel(state.session_id).await;
@@ -329,6 +354,62 @@ mod tests {
                 ]
             );
             // The partial reply is not saved: only the user message exists.
+            let messages = store.list_messages(session_id).await.unwrap();
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].role, Role::User);
+        });
+    }
+
+    #[test]
+    fn incomplete_stream_with_partial_reply_persists_truncated_marker() {
+        block_on(async {
+            let (store, session_id) = test_store().await;
+            let events = run(
+                store.clone(),
+                session_id,
+                vec![delta("ab"), Err(ProviderError::Incomplete)],
+            )
+            .await;
+            assert_eq!(
+                events,
+                vec![
+                    Kind::Message,
+                    Kind::Delta("ab".to_string()),
+                    Kind::Done("ab\n\n[reply truncated]".to_string()),
+                ]
+            );
+            // The partial reply is saved with the truncation marker and no
+            // usage.
+            let messages = store.list_messages(session_id).await.unwrap();
+            assert_eq!(messages.len(), 2);
+            let assistant = &messages[1];
+            assert_eq!(assistant.role, Role::Assistant);
+            assert_eq!(assistant.content, "ab\n\n[reply truncated]");
+            assert_eq!(assistant.usage, None);
+        });
+    }
+
+    #[test]
+    fn incomplete_stream_with_empty_buffer_yields_error_and_persists_nothing() {
+        block_on(async {
+            let (store, session_id) = test_store().await;
+            let events = run(
+                store.clone(),
+                session_id,
+                vec![Err(ProviderError::Incomplete)],
+            )
+            .await;
+            assert_eq!(
+                events,
+                vec![
+                    Kind::Message,
+                    Kind::Error(
+                        "stream ended before the model finished; the reply may be truncated"
+                            .to_string()
+                    ),
+                ]
+            );
+            // Nothing is saved: only the user message exists.
             let messages = store.list_messages(session_id).await.unwrap();
             assert_eq!(messages.len(), 1);
             assert_eq!(messages[0].role, Role::User);

@@ -6,6 +6,7 @@ use openwebide_core::{
 };
 use serde_json::{Value, json};
 
+use crate::sse::{SseField, sse_field};
 use crate::{
     HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, UsageAcc,
     chat_messages, clock_now, stream_error, tool_call_values, tools_wire, url_for,
@@ -132,27 +133,37 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
         let lines = LineStream::new(self.http.post_stream(&url, &body));
         let acc = UsageAcc::new(request);
         Box::pin(stream::unfold(
-            (lines, acc, false, false),
+            (lines, acc, false, false, false),
             |state| async move {
-                let (mut lines, mut acc, emitted_usage, done) = state;
+                let (mut lines, mut acc, emitted_usage, done, mut complete) = state;
                 if done {
                     return None;
                 }
                 loop {
                     let Some(line) = lines.next().await else {
+                        // EOF: a stream that never signalled completion is
+                        // incomplete, not a success.
+                        if !complete {
+                            return Some((
+                                Err(ProviderError::Incomplete),
+                                (lines, acc, emitted_usage, true, complete),
+                            ));
+                        }
                         if acc.ended.is_none() {
                             acc.ended = clock_now();
                         }
                         if !emitted_usage {
                             return Some((
                                 Ok(StreamChunk::Usage(acc.finish())),
-                                (lines, acc, true, true),
+                                (lines, acc, true, true, complete),
                             ));
                         }
                         return None;
                     };
                     match line {
-                        Err(e) => return Some((Err(e), (lines, acc, emitted_usage, true))),
+                        Err(e) => {
+                            return Some((Err(e), (lines, acc, emitted_usage, true, complete)));
+                        }
                         Ok(line) => {
                             let data = line.strip_prefix("data:").unwrap_or(&line).trim();
                             if data != "[DONE]"
@@ -168,22 +179,39 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
                                     acc.text.push_str(&delta);
                                     return Some((
                                         Ok(StreamChunk::Delta(delta)),
-                                        (lines, acc, emitted_usage, false),
+                                        (lines, acc, emitted_usage, false, complete),
                                     ));
+                                }
+                                Ok(StreamLine::Finished(delta)) => {
+                                    complete = true;
+                                    if let Some(delta) = delta {
+                                        if acc.started.is_none() {
+                                            acc.started = clock_now();
+                                        }
+                                        acc.text.push_str(&delta);
+                                        return Some((
+                                            Ok(StreamChunk::Delta(delta)),
+                                            (lines, acc, emitted_usage, false, complete),
+                                        ));
+                                    }
+                                    continue;
                                 }
                                 Ok(StreamLine::Done) => {
                                     acc.ended = clock_now();
                                     if !emitted_usage {
                                         return Some((
                                             Ok(StreamChunk::Usage(acc.finish())),
-                                            (lines, acc, true, true),
+                                            (lines, acc, true, true, complete),
                                         ));
                                     }
                                     return None;
                                 }
                                 Ok(StreamLine::Skip) => continue,
                                 Err(e) => {
-                                    return Some((Err(e), (lines, acc, emitted_usage, true)));
+                                    return Some((
+                                        Err(e),
+                                        (lines, acc, emitted_usage, true, complete),
+                                    ));
                                 }
                             }
                         }
@@ -342,29 +370,47 @@ fn llamacpp_tool_messages(request: &ChatRequest) -> Vec<Value> {
 /// Parse one SSE line of llama.cpp's streaming `/v1/chat/completions`
 /// response.
 fn parse_stream_line(line: &str) -> Result<StreamLine, ProviderError> {
-    let data = line.strip_prefix("data:").unwrap_or(line);
-    let data = data.trim();
-    if data == "[DONE]" {
-        return Ok(StreamLine::Done);
-    }
-    if data.is_empty() || data.starts_with(':') {
-        return Ok(StreamLine::Skip);
-    }
-    let value: Value = serde_json::from_str(data)
-        .map_err(|e| ProviderError::Parse(format!("llama.cpp stream: invalid JSON: {e}")))?;
-    if let Some(error) = stream_error(&value) {
-        return Err(ProviderError::Http(error));
-    }
-    let content = value
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|c| c.first())
-        .and_then(|c| c.get("delta"))
-        .and_then(|d| d.get("content"))
-        .and_then(|c| c.as_str());
-    match content {
-        Some(content) if !content.is_empty() => Ok(StreamLine::Delta(content.to_string())),
-        _ => Ok(StreamLine::Skip),
+    match sse_field(line) {
+        SseField::Ignore => Ok(StreamLine::Skip),
+        SseField::Error(value) => {
+            let value = value.trim();
+            let parsed: Value = serde_json::from_str(value).unwrap_or(Value::Null);
+            let message = stream_error(&parsed).unwrap_or_else(|| value.to_string());
+            Err(ProviderError::Http(message))
+        }
+        SseField::Data(data) => {
+            let data = data.trim();
+            if data == "[DONE]" {
+                return Ok(StreamLine::Done);
+            }
+            if data.is_empty() {
+                return Ok(StreamLine::Skip);
+            }
+            let value: Value = serde_json::from_str(data).map_err(|e| {
+                ProviderError::Parse(format!("llama.cpp stream: invalid JSON: {e}"))
+            })?;
+            if let Some(error) = stream_error(&value) {
+                return Err(ProviderError::Http(error));
+            }
+            let choice = value
+                .get("choices")
+                .and_then(|c| c.as_array())
+                .and_then(|c| c.first());
+            let content = choice
+                .and_then(|c| c.get("delta"))
+                .and_then(|d| d.get("content"))
+                .and_then(|c| c.as_str())
+                .filter(|c| !c.is_empty());
+            let finished = choice
+                .and_then(|c| c.get("finish_reason"))
+                .is_some_and(|f| !f.is_null());
+            match (finished, content) {
+                (true, Some(content)) => Ok(StreamLine::Finished(Some(content.to_string()))),
+                (true, None) => Ok(StreamLine::Finished(None)),
+                (false, Some(content)) => Ok(StreamLine::Delta(content.to_string())),
+                (false, None) => Ok(StreamLine::Skip),
+            }
+        }
     }
 }
 
@@ -599,6 +645,100 @@ mod tests {
         assert!(usages.is_empty());
         assert_eq!(errors.len(), 1);
         assert!(matches!(&errors[0], ProviderError::Http(msg) if msg.contains("context length")));
+    }
+
+    #[test]
+    fn chat_stream_ignores_event_id_retry_fields() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            "event: message\n",
+            "id: 1\n",
+            "retry: 3000\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n",
+            "data: [DONE]\n",
+        ]);
+
+        let (deltas, _usages, errors) = run_stream(&provider, &request(None, None));
+
+        assert_eq!(deltas, vec!["a"]);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn chat_stream_data_field_without_space() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            "data:{\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n",
+            "data:[DONE]\n",
+        ]);
+
+        let (deltas, _usages, errors) = run_stream(&provider, &request(None, None));
+
+        assert_eq!(deltas, vec!["a"]);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn chat_stream_surfaces_error_field() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n",
+            "error: {\"code\":500,\"message\":\"boom\"}\n",
+        ]);
+
+        let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
+
+        assert_eq!(deltas, vec!["a"]);
+        assert!(usages.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ProviderError::Http(msg) if msg.contains("boom")));
+    }
+
+    #[test]
+    fn chat_stream_bare_json_error_line_is_an_error() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec!["{\"error\":{\"message\":\"bare json error\"}}\n"]);
+
+        let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
+
+        assert!(deltas.is_empty());
+        assert!(usages.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ProviderError::Http(msg) if msg.contains("bare json error")));
+    }
+
+    #[test]
+    fn chat_stream_without_done_is_incomplete() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n",
+        ]);
+
+        let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
+
+        assert_eq!(deltas, vec!["a"]);
+        assert!(usages.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ProviderError::Incomplete));
+    }
+
+    #[test]
+    fn finish_reason_then_eof_is_complete() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n",
+            "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n",
+        ]);
+
+        let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
+
+        assert_eq!(deltas, vec!["a"]);
+        assert!(errors.is_empty());
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].prompt_tokens, 10);
+        assert_eq!(usages[0].completion_tokens, 2);
+        assert!(!usages[0].estimated);
     }
 
     #[test]

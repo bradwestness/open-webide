@@ -6,6 +6,7 @@ use openwebide_core::{
 };
 use serde_json::{Value, json};
 
+use crate::sse::{SseField, sse_field};
 use crate::{
     HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, UsageAcc,
     chat_messages, clock_now, round_ns_to_ms, stream_error, tool_call_values, tools_wire, url_for,
@@ -128,29 +129,37 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         let lines = LineStream::new(self.http.post_stream(&url, &body));
         let acc = UsageAcc::new(request);
         Box::pin(stream::unfold(
-            (lines, acc, false, false),
+            (lines, acc, false, false, false),
             |state| async move {
-                let (mut lines, mut acc, emitted_usage, done) = state;
+                let (mut lines, mut acc, emitted_usage, done, mut complete) = state;
                 if done {
                     return None;
                 }
                 loop {
                     let Some(line) = lines.next().await else {
-                        // EOF with no `done: true` line: still end the turn,
-                        // yielding an (estimated) usage if none was emitted.
+                        // EOF: a stream that never signalled completion is
+                        // incomplete, not a success.
+                        if !complete {
+                            return Some((
+                                Err(ProviderError::Incomplete),
+                                (lines, acc, emitted_usage, true, complete),
+                            ));
+                        }
                         if acc.ended.is_none() {
                             acc.ended = clock_now();
                         }
                         if !emitted_usage {
                             return Some((
                                 Ok(StreamChunk::Usage(acc.finish())),
-                                (lines, acc, true, true),
+                                (lines, acc, true, true, complete),
                             ));
                         }
                         return None;
                     };
                     match line {
-                        Err(e) => return Some((Err(e), (lines, acc, emitted_usage, true))),
+                        Err(e) => {
+                            return Some((Err(e), (lines, acc, emitted_usage, true, complete)));
+                        }
                         Ok(line) => {
                             let parsed: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
                             usage_fields(&parsed, &mut acc);
@@ -162,22 +171,39 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
                                     acc.text.push_str(&delta);
                                     return Some((
                                         Ok(StreamChunk::Delta(delta)),
-                                        (lines, acc, emitted_usage, false),
+                                        (lines, acc, emitted_usage, false, complete),
                                     ));
+                                }
+                                Ok(StreamLine::Finished(delta)) => {
+                                    complete = true;
+                                    if let Some(delta) = delta {
+                                        if acc.started.is_none() {
+                                            acc.started = clock_now();
+                                        }
+                                        acc.text.push_str(&delta);
+                                        return Some((
+                                            Ok(StreamChunk::Delta(delta)),
+                                            (lines, acc, emitted_usage, false, complete),
+                                        ));
+                                    }
+                                    continue;
                                 }
                                 Ok(StreamLine::Done) => {
                                     acc.ended = clock_now();
                                     if !emitted_usage {
                                         return Some((
                                             Ok(StreamChunk::Usage(acc.finish())),
-                                            (lines, acc, true, true),
+                                            (lines, acc, true, true, complete),
                                         ));
                                     }
                                     return None;
                                 }
                                 Ok(StreamLine::Skip) => continue,
                                 Err(e) => {
-                                    return Some((Err(e), (lines, acc, emitted_usage, true)));
+                                    return Some((
+                                        Err(e),
+                                        (lines, acc, emitted_usage, true, complete),
+                                    ));
                                 }
                             }
                         }
@@ -335,21 +361,39 @@ fn ollama_tool_messages(request: &ChatRequest) -> Vec<Value> {
 
 /// Parse one NDJSON line of Ollama's streaming `/api/chat` response.
 fn parse_stream_line(line: &str) -> Result<StreamLine, ProviderError> {
-    let value: Value = serde_json::from_str(line)
-        .map_err(|e| ProviderError::Parse(format!("Ollama stream: invalid JSON: {e}")))?;
-    if let Some(error) = stream_error(&value) {
-        return Err(ProviderError::Http(error));
-    }
-    let content = value
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str());
-    let done = value.get("done").and_then(|d| d.as_bool()) == Some(true);
-    // A line may carry both a final delta and `done: true`; the delta wins.
-    match content {
-        Some(content) if !content.is_empty() => Ok(StreamLine::Delta(content.to_string())),
-        _ if done => Ok(StreamLine::Done),
-        _ => Ok(StreamLine::Skip),
+    match sse_field(line) {
+        SseField::Ignore => Ok(StreamLine::Skip),
+        SseField::Error(value) => {
+            let value = value.trim();
+            let parsed: Value = serde_json::from_str(value).unwrap_or(Value::Null);
+            let message = stream_error(&parsed).unwrap_or_else(|| value.to_string());
+            Err(ProviderError::Http(message))
+        }
+        SseField::Data(data) => {
+            let value: Value = serde_json::from_str(data)
+                .map_err(|e| ProviderError::Parse(format!("Ollama stream: invalid JSON: {e}")))?;
+            if let Some(error) = stream_error(&value) {
+                return Err(ProviderError::Http(error));
+            }
+            let content = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_str());
+            let done = value.get("done").and_then(|d| d.as_bool()) == Some(true);
+            if done {
+                // A final line may carry a last delta alongside `done: true`.
+                return match content {
+                    Some(content) if !content.is_empty() => {
+                        Ok(StreamLine::Finished(Some(content.to_string())))
+                    }
+                    _ => Ok(StreamLine::Done),
+                };
+            }
+            match content {
+                Some(content) if !content.is_empty() => Ok(StreamLine::Delta(content.to_string())),
+                _ => Ok(StreamLine::Skip),
+            }
+        }
     }
 }
 
@@ -613,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_stream_with_no_done_line_still_yields_estimated_usage() {
+    fn chat_stream_without_done_is_incomplete() {
         let (provider, state) = provider(FakeHttpClient::new());
         state.push_stream(vec![
             r#"{"message":{"role":"assistant","content":"partial"}}
@@ -623,9 +667,9 @@ mod tests {
         let (deltas, usages, errors) = run_stream(&provider, &request(None, None));
 
         assert_eq!(deltas, vec!["partial"]);
-        assert!(errors.is_empty());
-        assert_eq!(usages.len(), 1);
-        assert!(usages[0].estimated);
+        assert!(usages.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ProviderError::Incomplete));
     }
 
     #[test]

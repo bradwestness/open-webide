@@ -9,6 +9,8 @@ pub mod llamacpp;
 pub mod ollama;
 pub mod registry;
 
+pub(crate) mod sse;
+
 #[cfg(test)]
 mod fake;
 
@@ -219,9 +221,14 @@ pub(crate) fn stream_error(value: &serde_json::Value) -> Option<String> {
 }
 
 /// What one line of a provider stream means.
+///
+/// Step 39's `chat_tools_stream` uses the same parsers and terminal rule.
 pub(crate) enum StreamLine {
     /// A content delta to emit.
     Delta(String),
+    /// The model finished; may carry a last delta. More metadata lines may
+    /// follow; EOF is now acceptable.
+    Finished(Option<String>),
     /// The stream finished successfully.
     Done,
     /// A keep-alive or metadata line to ignore.

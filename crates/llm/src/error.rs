@@ -10,4 +10,6 @@ pub enum ProviderError {
     Http(String),
     #[error("failed to parse provider response: {0}")]
     Parse(String),
+    #[error("stream ended before the model finished; the reply may be truncated")]
+    Incomplete,
 }
