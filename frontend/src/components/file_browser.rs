@@ -25,7 +25,15 @@ pub fn FileBrowser(
         let api = api.clone();
         loading.set(true);
         spawn_local(async move {
-            match api.browse(&dir).await {
+            let result = api.browse(&dir).await;
+            // Drop a stale response: `current` may have changed again while
+            // this request was in flight (a quick navigation into one
+            // directory and out before the listing arrives). The newer
+            // request owns updating these signals.
+            if current.get_untracked() != dir {
+                return;
+            }
+            match result {
                 Ok(list) => {
                     entries.set(list);
                     error.set(None);
