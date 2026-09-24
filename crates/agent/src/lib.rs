@@ -16,6 +16,7 @@ use openwebide_core::{
 use openwebide_llm::LlmProvider;
 
 pub mod policy;
+pub mod tools;
 pub mod vfs_executor;
 pub use policy::requires_approval;
 pub use vfs_executor::{

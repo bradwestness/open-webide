@@ -1436,6 +1436,7 @@ dependencies = [
  "futures",
  "openwebide-core",
  "openwebide-llm",
+ "serde",
  "serde_json",
 ]
 

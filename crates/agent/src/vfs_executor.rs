@@ -10,153 +10,16 @@ use openwebide_core::{
     GitCommitResult, GitRepoStatus, ToolCall, ToolDefinition, Vfs, VfsError, WebSearchResult,
     normalize_vfs_path, vfs::SearchOptions,
 };
-use serde_json::{Value, json};
 
+use crate::tools::{
+    self, FetchWebPageArgs, GitBranchArgs, GitCommitArgs, GitDiffArgs, GrepSearchArgs, ListDirArgs,
+    ReadFileArgs, RunCommandArgs, SearchArgs, SearchWebArgs, Tool, ToolName, WriteFileArgs,
+};
 use crate::{ToolExecutor, ToolOutcome};
 
 /// The standard workspace tools offered to the agent model.
 pub fn vfs_tools() -> Vec<ToolDefinition> {
-    vec![
-        ToolDefinition {
-            name: "read_file".into(),
-            description: "Read the contents of a file in the workspace.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Workspace-relative file path" }
-                },
-                "required": ["path"]
-            }),
-        },
-        ToolDefinition {
-            name: "write_file".into(),
-            description: "Create or overwrite a file in the workspace with the given full contents.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Workspace-relative file path" },
-                    "content": { "type": "string", "description": "Full new contents of the file" }
-                },
-                "required": ["path", "content"]
-            }),
-        },
-        ToolDefinition {
-            name: "list_dir".into(),
-            description: "List the entries of a directory in the workspace.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Workspace-relative directory path (empty for root)" }
-                }
-            }),
-        },
-        ToolDefinition {
-            name: "search".into(),
-            description: "Search file names in the workspace for a substring.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Substring to match against file paths" },
-                    "path": { "type": "string", "description": "Workspace-relative directory to search in (empty for root)" }
-                },
-                "required": ["query"]
-            }),
-        },
-        ToolDefinition {
-            name: "grep_search".into(),
-            description: "Search workspace file contents for lines matching a substring.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search string to match across file lines" },
-                    "path": { "type": "string", "description": "Workspace-relative directory to restrict search (empty for root)" }
-                },
-                "required": ["query"]
-            }),
-        },
-        ToolDefinition {
-            name: "search_web".into(),
-            description: "Search the web for up-to-date documentation, API references, or error solutions.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "integer", "description": "Number of results to return (default: 5, max: 10)" }
-                },
-                "required": ["query"]
-            }),
-        },
-        ToolDefinition {
-            name: "fetch_web_page".into(),
-            description: "Fetch a web page URL and convert its content to clean Markdown.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string", "description": "Full HTTP or HTTPS URL to read" }
-                },
-                "required": ["url"]
-            }),
-        },
-        ToolDefinition {
-            name: "run_command".into(),
-            description: "Execute a shell command in the project directory. Use this to run builds, tests, linters, or inspect git status.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Shell command to execute (e.g. 'cargo test', 'git diff')"
-                    },
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "description": "Maximum execution time in seconds before terminating (default: 30, max: 300)"
-                    }
-                },
-                "required": ["command"]
-            }),
-        },
-        ToolDefinition {
-            name: "git_status".into(),
-            description: "Inspect uncommitted modifications, untracked files, and current branch status.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        },
-        ToolDefinition {
-            name: "git_diff".into(),
-            description: "View the unified diff of uncommitted changes in the repository or for a specific file.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Optional file path to inspect." }
-                }
-            }),
-        },
-        ToolDefinition {
-            name: "git_commit".into(),
-            description: "Create a Git commit on the host with a descriptive conventional commit message. Omit `paths` to commit all tracked modifications.".into(),
-            parameters: json!({
-                "type": "object",
-                "required": ["message"],
-                "properties": {
-                    "message": { "type": "string", "description": "Conventional commit message (e.g. 'feat(core): add diff parser')." },
-                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Optional subset of files to commit." }
-                }
-            }),
-        },
-        ToolDefinition {
-            name: "git_branch".into(),
-            description: "Create and checkout a new git feature branch before starting a task.".into(),
-            parameters: json!({
-                "type": "object",
-                "required": ["branch_name"],
-                "properties": {
-                    "branch_name": { "type": "string", "description": "Name of the new branch (e.g. 'feat/argon2-auth')." }
-                }
-            }),
-        },
-    ]
+    ToolName::ALL.iter().map(|t| t.definition()).collect()
 }
 
 /// Web search and documentation fetching capability for the agent.
@@ -277,11 +140,11 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         &self.bridge
     }
 
-    async fn read_file(&self, args: &Value) -> ToolOutcome {
-        let raw_path = arg_path(args);
-        let path = match normalize_vfs_path(&raw_path) {
+    async fn read_file(&self, args: &ReadFileArgs) -> ToolOutcome {
+        let raw_path = args.path.as_str();
+        let path = match normalize_vfs_path(raw_path) {
             Ok(p) => p,
-            Err(e) => return fail("read_file", &raw_path, &e.to_string()),
+            Err(e) => return fail("read_file", raw_path, &e.to_string()),
         };
 
         match self.vfs.read(&path).await {
@@ -298,11 +161,11 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn write_file(&self, args: &Value, step_id: &str) -> ToolOutcome {
-        let raw_path = arg_path(args);
-        let path = match normalize_vfs_path(&raw_path) {
+    async fn write_file(&self, args: &WriteFileArgs, step_id: &str) -> ToolOutcome {
+        let raw_path = args.path.as_str();
+        let path = match normalize_vfs_path(raw_path) {
             Ok(p) => p,
-            Err(e) => return fail("write_file", &raw_path, &e.to_string()),
+            Err(e) => return fail("write_file", raw_path, &e.to_string()),
         };
         if path.split('/').any(|seg| seg.eq_ignore_ascii_case(".git")) {
             return fail("write_file", &path, "refusing to write inside .git");
@@ -317,10 +180,7 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         {
             return fail("write_file", &path, "refusing to write inside .git");
         }
-        let new_content = match args.get("content").and_then(|v| v.as_str()) {
-            Some(c) => c,
-            None => return fail("write_file", &path, "missing 'content' argument"),
-        };
+        let new_content = args.content.as_str();
 
         let mut old = None;
         let mut old_unavailable = false;
@@ -388,11 +248,11 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn list_dir(&self, args: &Value) -> ToolOutcome {
-        let raw_dir = arg_path_or_root(args);
-        let dir = match normalize_vfs_path(&raw_dir) {
+    async fn list_dir(&self, args: &ListDirArgs) -> ToolOutcome {
+        let raw_dir = args.path.as_deref().unwrap_or("");
+        let dir = match normalize_vfs_path(raw_dir) {
             Ok(p) => p,
-            Err(e) => return fail("list_dir", &raw_dir, &e.to_string()),
+            Err(e) => return fail("list_dir", raw_dir, &e.to_string()),
         };
 
         match self.vfs.list(&dir).await {
@@ -426,15 +286,12 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn search(&self, args: &Value) -> ToolOutcome {
-        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        if query.is_empty() {
-            return fail("search", "", "missing 'query' argument");
-        }
-        let raw_path = arg_path_or_root(args);
-        let dir = match normalize_vfs_path(&raw_path) {
+    async fn search(&self, args: &SearchArgs) -> ToolOutcome {
+        let query = args.query.as_str();
+        let raw_path = args.path.as_deref().unwrap_or("");
+        let dir = match normalize_vfs_path(raw_path) {
             Ok(p) => p,
-            Err(e) => return fail("search", &raw_path, &e.to_string()),
+            Err(e) => return fail("search", raw_path, &e.to_string()),
         };
 
         match recursive_list(&self.vfs, &dir).await {
@@ -467,15 +324,12 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn grep_search(&self, args: &Value) -> ToolOutcome {
-        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        if query.is_empty() {
-            return fail("grep_search", "", "missing 'query' argument");
-        }
-        let raw_path = arg_path_or_root(args);
-        let dir = match normalize_vfs_path(&raw_path) {
+    async fn grep_search(&self, args: &GrepSearchArgs) -> ToolOutcome {
+        let query = args.query.as_str();
+        let raw_path = args.path.as_deref().unwrap_or("");
+        let dir = match normalize_vfs_path(raw_path) {
             Ok(p) => p,
-            Err(e) => return fail("grep_search", &raw_path, &e.to_string()),
+            Err(e) => return fail("grep_search", raw_path, &e.to_string()),
         };
 
         match self
@@ -505,21 +359,12 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn search_web(&self, args: &Value) -> ToolOutcome {
-        let query = args
-            .get("query")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
+    async fn search_web(&self, args: &SearchWebArgs) -> ToolOutcome {
+        let query = args.query.trim();
         if query.is_empty() {
             return fail("search_web", "", "missing 'query' argument");
         }
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or(5)
-            .clamp(1, 10);
+        let limit = args.limit.map(|v| v as usize).unwrap_or(5).clamp(1, 10);
 
         match self.web.search(query, limit).await {
             Ok(results) => {
@@ -550,12 +395,8 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn fetch_web_page(&self, args: &Value) -> ToolOutcome {
-        let url = args
-            .get("url")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
+    async fn fetch_web_page(&self, args: &FetchWebPageArgs) -> ToolOutcome {
+        let url = args.url.trim();
         if url.is_empty() {
             return fail("fetch_web_page", "", "missing 'url' argument");
         }
@@ -581,20 +422,12 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn run_command(&self, args: &Value) -> ToolOutcome {
-        let command = args
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
+    async fn run_command(&self, args: &RunCommandArgs) -> ToolOutcome {
+        let command = args.command.trim();
         if command.is_empty() {
             return fail("run_command", "", "missing 'command' argument");
         }
-        let timeout_seconds = args
-            .get("timeout_seconds")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(30)
-            .clamp(1, 300);
+        let timeout_seconds = args.timeout_seconds.unwrap_or(30).clamp(1, 300);
 
         match self.bridge.execute_command(command, timeout_seconds).await {
             Ok(outcome) => {
@@ -655,8 +488,8 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn git_diff(&self, args: &Value) -> ToolOutcome {
-        let path = args.get("path").and_then(|v| v.as_str());
+    async fn git_diff(&self, args: &GitDiffArgs) -> ToolOutcome {
+        let path = args.path.as_deref();
         match self.bridge.git_diff(path).await {
             Ok(diff) => {
                 let content = if diff.trim().is_empty() {
@@ -679,20 +512,12 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn git_commit(&self, args: &Value) -> ToolOutcome {
-        let message = match args.get("message").and_then(|v| v.as_str()) {
-            Some(m) if !m.trim().is_empty() => m.trim().to_string(),
-            _ => return fail("git_commit", "", "missing or empty 'message' argument"),
-        };
-        let paths = args
-            .get("paths")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            })
-            .filter(|p| !p.is_empty());
+    async fn git_commit(&self, args: &GitCommitArgs) -> ToolOutcome {
+        let message = args.message.trim().to_string();
+        if message.is_empty() {
+            return fail("git_commit", "", "missing or empty 'message' argument");
+        }
+        let paths = args.paths.clone().filter(|p| !p.is_empty());
 
         let req = GitCommitRequest {
             message: message.clone(),
@@ -726,11 +551,11 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         }
     }
 
-    async fn git_branch(&self, args: &Value) -> ToolOutcome {
-        let branch_name = match args.get("branch_name").and_then(|v| v.as_str()) {
-            Some(b) if !b.trim().is_empty() => b.trim().to_string(),
-            _ => return fail("git_branch", "", "missing or empty 'branch_name' argument"),
-        };
+    async fn git_branch(&self, args: &GitBranchArgs) -> ToolOutcome {
+        let branch_name = args.branch_name.trim().to_string();
+        if branch_name.is_empty() {
+            return fail("git_branch", "", "missing or empty 'branch_name' argument");
+        }
 
         let req = GitCheckoutRequest {
             branch: branch_name.clone(),
@@ -756,103 +581,45 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
     }
 }
 
+impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
+    /// Route a parsed [`Tool`] to its handler.
+    async fn dispatch(&self, tool: Tool, step_id: &str) -> ToolOutcome {
+        match tool {
+            Tool::ReadFile(args) => self.read_file(&args).await,
+            Tool::WriteFile(args) => self.write_file(&args, step_id).await,
+            Tool::ListDir(args) => self.list_dir(&args).await,
+            Tool::Search(args) => self.search(&args).await,
+            Tool::GrepSearch(args) => self.grep_search(&args).await,
+            Tool::SearchWeb(args) => self.search_web(&args).await,
+            Tool::FetchWebPage(args) => self.fetch_web_page(&args).await,
+            Tool::RunCommand(args) => self.run_command(&args).await,
+            Tool::GitStatus => self.git_status().await,
+            Tool::GitDiff(args) => self.git_diff(&args).await,
+            Tool::GitCommit(args) => self.git_commit(&args).await,
+            Tool::GitBranch(args) => self.git_branch(&args).await,
+        }
+    }
+}
+
 impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, W, B> {
     fn describe(&self, call: &ToolCall) -> String {
-        let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
-        match call.name.as_str() {
-            "read_file" => format!("read {}", arg_path(&args)),
-            "write_file" => {
-                let path = arg_path(&args);
-                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let n = content.lines().count();
-                let bytes = content.len();
-                format!("write {path} ({n} lines, {bytes} B)")
-            }
-            "list_dir" => format!("list {}", arg_path_or_root(&args)),
-            "search" => format!(
-                "search '{}'",
-                args.get("query").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            "grep_search" => format!(
-                "grep '{}'",
-                args.get("query").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            "search_web" => format!(
-                "search web for '{}'",
-                args.get("query").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            "fetch_web_page" => format!(
-                "fetch web page {}",
-                args.get("url").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            "run_command" => format!(
-                "run '{}'",
-                args.get("command").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            "git_status" => "inspect git status".to_string(),
-            "git_diff" => match args.get("path").and_then(|v| v.as_str()) {
-                Some(p) => format!("inspect git diff for '{p}'"),
-                None => "inspect repository git diff".to_string(),
-            },
-            "git_commit" => {
-                let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                let paths: Option<Vec<&str>> = args
-                    .get("paths")
-                    .and_then(|p| p.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-                    .filter(|p| !p.is_empty());
-                match paths {
-                    Some(ref p) => format!("commit {}: '{msg}'", p.join(", ")),
-                    None => format!("commit ALL tracked changes: '{msg}'"),
-                }
-            }
-            "git_branch" => format!(
-                "switch to branch '{}'",
-                args.get("branch_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-            ),
-            other => other.to_string(),
+        match tools::parse(call) {
+            Ok(tool) => tool.describe(),
+            Err(_) => format!("{} (invalid arguments)", call.name),
         }
     }
 
     async fn execute(&self, call: &ToolCall) -> ToolOutcome {
-        let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
-        match call.name.as_str() {
-            "read_file" => self.read_file(&args).await,
-            "write_file" => self.write_file(&args, &call.id).await,
-            "list_dir" => self.list_dir(&args).await,
-            "search" => self.search(&args).await,
-            "grep_search" => self.grep_search(&args).await,
-            "search_web" => self.search_web(&args).await,
-            "fetch_web_page" => self.fetch_web_page(&args).await,
-            "run_command" => self.run_command(&args).await,
-            "git_status" => self.git_status().await,
-            "git_diff" => self.git_diff(&args).await,
-            "git_commit" => self.git_commit(&args).await,
-            "git_branch" => self.git_branch(&args).await,
-            other => ToolOutcome {
+        match tools::parse(call) {
+            Ok(tool) => self.dispatch(tool, &call.id).await,
+            Err(e) => ToolOutcome {
                 ok: false,
-                content: format!("unknown tool: {other}"),
-                summary: format!("unknown tool: {other}"),
+                content: format!("error: {e}"),
+                summary: e.to_string(),
                 diff: None,
             },
         }
     }
-}
-
-fn arg_path(args: &Value) -> String {
-    args.get("path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
-}
-
-fn arg_path_or_root(args: &Value) -> String {
-    args.get("path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
 }
 
 fn fail(tool: &str, target: &str, error: &str) -> ToolOutcome {
@@ -888,6 +655,241 @@ async fn recursive_list<V: Vfs>(vfs: &V, dir: &str) -> Result<Vec<FileEntry>, Vf
 mod tests {
     use super::*;
     use openwebide_core::MemoryVfs;
+    use serde_json::json;
+
+    #[test]
+    fn vfs_tools_json_unchanged() {
+        // Snapshot of `vfs_tools()` captured before the schemas moved into
+        // `ToolName::definition()`; guards against the move silently changing
+        // the tool set advertised to the model.
+        let snapshot = json!([
+            {
+                "name": "read_file",
+                "description": "Read the contents of a file in the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Workspace-relative file path" }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "write_file",
+                "description": "Create or overwrite a file in the workspace with the given full contents.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Workspace-relative file path" },
+                        "content": { "type": "string", "description": "Full new contents of the file" }
+                    },
+                    "required": ["path", "content"]
+                }
+            },
+            {
+                "name": "list_dir",
+                "description": "List the entries of a directory in the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Workspace-relative directory path (empty for root)" }
+                    }
+                }
+            },
+            {
+                "name": "search",
+                "description": "Search file names in the workspace for a substring.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Substring to match against file paths" },
+                        "path": { "type": "string", "description": "Workspace-relative directory to search in (empty for root)" }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "grep_search",
+                "description": "Search workspace file contents for lines matching a substring.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Search string to match across file lines" },
+                        "path": { "type": "string", "description": "Workspace-relative directory to restrict search (empty for root)" }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "search_web",
+                "description": "Search the web for up-to-date documentation, API references, or error solutions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Search query" },
+                        "limit": { "type": "integer", "description": "Number of results to return (default: 5, max: 10)" }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "fetch_web_page",
+                "description": "Fetch a web page URL and convert its content to clean Markdown.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "Full HTTP or HTTPS URL to read" }
+                    },
+                    "required": ["url"]
+                }
+            },
+            {
+                "name": "run_command",
+                "description": "Execute a shell command in the project directory. Use this to run builds, tests, linters, or inspect git status.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Shell command to execute (e.g. 'cargo test', 'git diff')"
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "description": "Maximum execution time in seconds before terminating (default: 30, max: 300)"
+                        }
+                    },
+                    "required": ["command"]
+                }
+            },
+            {
+                "name": "git_status",
+                "description": "Inspect uncommitted modifications, untracked files, and current branch status.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "git_diff",
+                "description": "View the unified diff of uncommitted changes in the repository or for a specific file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Optional file path to inspect." }
+                    }
+                }
+            },
+            {
+                "name": "git_commit",
+                "description": "Create a Git commit on the host with a descriptive conventional commit message. Omit `paths` to commit all tracked modifications.",
+                "parameters": {
+                    "type": "object",
+                    "required": ["message"],
+                    "properties": {
+                        "message": { "type": "string", "description": "Conventional commit message (e.g. 'feat(core): add diff parser')." },
+                        "paths": { "type": "array", "items": { "type": "string" }, "description": "Optional subset of files to commit." }
+                    }
+                }
+            },
+            {
+                "name": "git_branch",
+                "description": "Create and checkout a new git feature branch before starting a task.",
+                "parameters": {
+                    "type": "object",
+                    "required": ["branch_name"],
+                    "properties": {
+                        "branch_name": { "type": "string", "description": "Name of the new branch (e.g. 'feat/argon2-auth')." }
+                    }
+                }
+            }
+        ]);
+        assert_eq!(serde_json::to_value(vfs_tools()).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn test_malformed_write_file_leaves_vfs_untouched() {
+        futures::executor::block_on(async {
+            let vfs = MemoryVfs::new();
+            let executor = VfsToolExecutor::new(vfs);
+
+            // `path` has the wrong type, so the call fails before any handler
+            // runs and the VFS must be left completely untouched.
+            let call = ToolCall {
+                id: "call-bad-write".into(),
+                name: "write_file".into(),
+                arguments: json!({ "path": 3 }).to_string(),
+            };
+            let outcome = executor.execute(&call).await;
+            assert!(!outcome.ok);
+            assert!(
+                outcome
+                    .content
+                    .starts_with("error: invalid arguments for write_file"),
+                "unexpected content: {}",
+                outcome.content
+            );
+            assert!(
+                executor.vfs().list("").await.unwrap().is_empty(),
+                "VFS must be untouched by a malformed write_file"
+            );
+        });
+    }
+
+    /// A bridge client that records whether `execute_command` was ever called.
+    struct RecordingBridgeClient {
+        executed: std::sync::atomic::AtomicBool,
+    }
+
+    impl BridgeClient for RecordingBridgeClient {
+        async fn execute_command(
+            &self,
+            _command: &str,
+            _timeout_seconds: u64,
+        ) -> Result<CommandOutcome, String> {
+            self.executed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(CommandOutcome {
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn test_malformed_run_command_never_reaches_bridge() {
+        futures::executor::block_on(async {
+            let vfs = MemoryVfs::new();
+            let bridge = RecordingBridgeClient {
+                executed: std::sync::atomic::AtomicBool::new(false),
+            };
+            let executor = VfsToolExecutor::with_web_and_bridge(vfs, MockWebClient, bridge);
+
+            // `command` has the wrong type, so the call must fail before the
+            // bridge client is ever consulted.
+            let call = ToolCall {
+                id: "call-bad-cmd".into(),
+                name: "run_command".into(),
+                arguments: json!({ "command": 42 }).to_string(),
+            };
+            let outcome = executor.execute(&call).await;
+            assert!(!outcome.ok);
+            assert!(
+                outcome
+                    .content
+                    .starts_with("error: invalid arguments for run_command"),
+                "unexpected content: {}",
+                outcome.content
+            );
+            assert!(
+                !executor
+                    .bridge()
+                    .executed
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                "malformed run_command must not reach the bridge client"
+            );
+        });
+    }
 
     #[test]
     fn test_vfs_tool_executor_read_and_write() {
