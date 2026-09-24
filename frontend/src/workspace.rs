@@ -66,14 +66,17 @@ impl Workspace {
         }
     }
 
-    pub async fn search_content(&self, query: &str, dir: &str) -> Result<Vec<SearchHit>, String> {
+    pub async fn search_content(
+        &self,
+        query: &str,
+        dir: &str,
+        opts: SearchOptions,
+    ) -> Result<Vec<SearchHit>, String> {
         match self {
             Workspace::Remote { api, project_id } => {
-                api.search_content(*project_id, query, dir).await
+                api.search_content(*project_id, query, dir, opts).await
             }
-            Workspace::Local { handle } => {
-                local_fs::search_content(handle, query, dir, SearchOptions::default()).await
-            }
+            Workspace::Local { handle } => local_fs::search_content(handle, query, dir, opts).await,
         }
     }
 

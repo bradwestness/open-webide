@@ -18,6 +18,7 @@ for what's still ahead.
 
 ### Added
 
+- **Search "include ignored folders" toggle:** the file tree's search box now has a toggle button that also searches the ignored folders (`.git`, `target`, `node_modules`, `dist`, `.spin`); the hit and byte caps still apply, and toggling re-runs the current query. The flag is per query — not persisted, off on reload.
 - **Bridge Confinement:** The execution bridge now enforces a strict lexical `cwd` contract and canonical root path isolation, safely evaluating path escapes while permitting directory symlinks.
 - **Local mode integrity:** Local filesystem reads strictly validate UTF-8 and surface errors in the editor, allowing fallback to an "Open as Text anyway" read-only mode for corrupt/binary files. Missing browser directory permissions now surface in the tree with a "Grant folder access" button instead of silently failing, and local runs now abort correctly without awaiting server round-trips.
 - Agent can now edit unreadable (binary or large) files; refusing an unreadable file edit now safely restores it from a backup rather than deleting it.

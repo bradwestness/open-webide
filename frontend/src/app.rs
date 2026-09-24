@@ -7,6 +7,7 @@ use openwebide_core::{
     GitCommitRequest, GitRepoStatus, GitSyncRequest, ModelInfo, Project, ProviderKind, Role,
     SearchHit, SystemPrompt, User, WorkspaceMode,
     tui::{DEFAULT_CONTEXT_LIMIT, EditorContext, SessionTelemetry, SlashCommand},
+    vfs::SearchOptions,
 };
 use openwebide_frontend::conversation::{local_message, next_item_nonce};
 use web_sys::wasm_bindgen::JsCast;
@@ -182,6 +183,9 @@ pub fn App() -> impl IntoView {
     let needs_grant = RwSignal::new(HashSet::<i64>::new());
     let ws_media_url = RwSignal::new(Option::<String>::None);
     let ws_search = RwSignal::new(Option::<Vec<SearchHit>>::None);
+    // "Include ignored folders" search toggle: per query, not persisted,
+    // resets to off on reload.
+    let include_ignored_search = RwSignal::new(false);
     let ws_pending_edits = RwSignal::new(HashMap::<String, FileDiff>::new());
     // The pending edit for the currently open file (drives the editor's diff
     // view), derived from the open file and the per-project pending edits.
@@ -1026,7 +1030,7 @@ format!(
     // race), and a search that resolves after the box is cleared must not
     // resurrect stale results.
     let search_gen = StoredValue::new(0u64);
-    let on_search = Callback::new(move |q: String| {
+    let on_search = Callback::new(move |(q, opts): (String, SearchOptions)| {
         // Bump and capture the generation first, before any early return
         // below: a run that returns early must still invalidate an earlier
         // in-flight search.
@@ -1041,7 +1045,7 @@ format!(
             let Some(ws) = workspace_for.run(pid) else {
                 return;
             };
-            match ws.search_content(&q, "").await {
+            match ws.search_content(&q, "", opts).await {
                 Ok(results) => {
                     if active_project.get() == Some(pid) && search_gen.get_value() == this_gen {
                         ws_search.set(Some(results));
@@ -3087,6 +3091,8 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
                     on_new_dir=on_new_dir
                     on_search=on_search
                     on_clear_search=on_clear_search
+                    include_ignored=include_ignored_search.read_only()
+                    on_toggle_include_ignored=Callback::new(move |_| include_ignored_search.update(|v| *v = !*v))
                     git_status=git_status.read_only().into()
                 />
                 <div

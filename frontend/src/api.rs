@@ -7,7 +7,7 @@ use openwebide_core::{
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
     GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest, GitSyncResult, Health,
     ModelInfo, NewConnection, NewProject, NewSession, Project, ProviderKind, Role, SearchHit,
-    SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode,
+    SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode, vfs::SearchOptions,
 };
 pub use openwebide_frontend::sse::SseEvent;
 use serde::de::DeserializeOwned;
@@ -399,13 +399,17 @@ impl BackendApi {
         project_id: i64,
         query: &str,
         path: &str,
+        opts: SearchOptions,
     ) -> Result<Vec<SearchHit>, String> {
-        self.get(&format!(
+        let mut url = format!(
             "/projects/{project_id}/files/content-search?q={}&path={}",
             urlenc(query),
             urlenc(path)
-        ))
-        .await
+        );
+        if opts.include_ignored {
+            url.push_str("&include_ignored=1");
+        }
+        self.get(&url).await
     }
 
     // -- git operations (Phase 13) -----------------------------------------
