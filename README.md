@@ -212,6 +212,16 @@ To protect against DNS rebinding and malicious websites opened in the user's bro
 3. **JSON-Only Browser POSTs:**
    - Browser POST requests carrying an `Origin` header require `Content-Type: application/json`; simple browser requests (e.g. `text/plain`, form-urlencoded) are rejected with `415 Unsupported Media Type` to prevent browser CSRF.
 
+### Process lifecycle
+
+Every command the bridge spawns (`/exec`, `run_command`, PTY shells, Git subprocesses) runs as its own process group, so killing it also kills anything it forked or backgrounded:
+
+- **Kill semantics:** sending `Kill` with no signal (or `KILL`/`SIGKILL`) terminates the whole process group immediately. `TERM`/`SIGTERM` and `HUP`/`SIGHUP` signal the group directly. `INT`/`SIGINT` on a PTY session instead writes `^C` to the terminal, matching a real Ctrl+C — it interrupts whatever's in the foreground rather than killing the shell itself.
+- **Timeouts:** a `run_command`/`/exec` timeout, or the client disconnecting mid-request, terminates the command's process group (SIGTERM, then SIGKILL after a 2 s grace period) instead of leaving it (and any children) running.
+- **Output capping:** `/exec` keeps the first 256 KiB and last 768 KiB of each of stdout/stderr per stream, with an omission marker in between, so a runaway command can't exhaust memory.
+- **Session reaping:** exited terminal/process sessions are removed 30 minutes after they exit, freeing their output buffers; running sessions are never reaped, however long they've been open.
+- **Graceful shutdown:** on Ctrl+C or `SIGTERM`, the bridge stops accepting new connections and terminates every session's process group (with the same grace period) before exiting.
+
 ## Development
 
 ```sh

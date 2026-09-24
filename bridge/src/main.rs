@@ -1,8 +1,28 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use openwebide_bridge::{ServerConfig, run_server};
+use openwebide_bridge::{ServerConfig, run_server_until};
 use tokio::net::TcpListener;
+
+/// Resolves once the process receives Ctrl+C or, on Unix, SIGTERM.
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = ctrl_c.await;
+    }
+}
 
 struct Args {
     host: String,
@@ -153,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Allowed origins: {}", config.allowed_origins.join(", "));
     println!("Allowed hosts: {}", config.allowed_hosts.join(", "));
 
-    run_server(listener, config).await;
+    run_server_until(listener, config, shutdown_signal()).await;
 
     Ok(())
 }

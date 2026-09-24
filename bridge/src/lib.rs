@@ -4,9 +4,10 @@ pub mod git;
 pub mod headless;
 pub mod http;
 pub mod paths;
+pub mod proc;
 pub mod pty;
 pub mod server;
 pub mod session;
 
-pub use server::{ServerConfig, check_request, run_server};
+pub use server::{ServerConfig, check_request, run_server, run_server_until};
 pub use session::SessionManager;

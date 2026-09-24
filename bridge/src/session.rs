@@ -3,10 +3,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use openwebide_core::{BridgeServerMessage, BridgeSessionInfo};
 use tokio::sync::{broadcast, mpsc};
+
+use crate::proc::Signal;
 
 /// Maximum size of the output ring buffer in bytes (2MB default per session).
 const MAX_RING_BUFFER_BYTES: usize = 2 * 1024 * 1024;
@@ -80,23 +82,30 @@ pub struct Session {
     pub command: String,
     pub pty: bool,
     pub started_at: u64,
+    /// The OS pid of the spawned child, which is also its process group id: every session is
+    /// spawned as its own group leader (`process_group(0)`, or a PTY session leader via
+    /// `setsid`). `None` on platforms without process groups (Windows).
+    pub pid: Option<i32>,
     pub running: Arc<AtomicBool>,
     pub exit_code: Arc<Mutex<Option<i32>>>,
+    pub exited_at: Mutex<Option<Instant>>,
     pub ring: Mutex<OutputRingBuffer>,
     pub broadcast_tx: broadcast::Sender<BridgeServerMessage>,
-    pub stdin_tx: mpsc::Sender<String>,
-    pub resize_tx: mpsc::Sender<(u16, u16)>,
-    pub kill_tx: mpsc::Sender<Option<String>>,
+    stdin_tx: Mutex<Option<mpsc::Sender<String>>>,
+    resize_tx: Mutex<Option<mpsc::Sender<(u16, u16)>>>,
+    kill_tx: Mutex<Option<mpsc::Sender<Signal>>>,
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         command: String,
         pty: bool,
+        pid: Option<i32>,
         stdin_tx: mpsc::Sender<String>,
         resize_tx: mpsc::Sender<(u16, u16)>,
-        kill_tx: mpsc::Sender<Option<String>>,
+        kill_tx: mpsc::Sender<Signal>,
     ) -> Self {
         let (broadcast_tx, _) = broadcast::channel(1024);
         let started_at = SystemTime::now()
@@ -109,13 +118,39 @@ impl Session {
             command,
             pty,
             started_at,
+            pid,
             running: Arc::new(AtomicBool::new(true)),
             exit_code: Arc::new(Mutex::new(None)),
+            exited_at: Mutex::new(None),
             ring: Mutex::new(OutputRingBuffer::new()),
             broadcast_tx,
-            stdin_tx,
-            resize_tx,
-            kill_tx,
+            stdin_tx: Mutex::new(Some(stdin_tx)),
+            resize_tx: Mutex::new(Some(resize_tx)),
+            kill_tx: Mutex::new(Some(kill_tx)),
+        }
+    }
+
+    /// Send input data to the process's stdin or PTY. A no-op once the session has exited.
+    pub async fn send_input(&self, data: String) {
+        let tx = self.stdin_tx.lock().unwrap().clone();
+        if let Some(tx) = tx {
+            let _ = tx.send(data).await;
+        }
+    }
+
+    /// Resize the PTY. A no-op for headless sessions or once the session has exited.
+    pub async fn resize(&self, cols: u16, rows: u16) {
+        let tx = self.resize_tx.lock().unwrap().clone();
+        if let Some(tx) = tx {
+            let _ = tx.send((cols, rows)).await;
+        }
+    }
+
+    /// Request the process be sent `signal`. A no-op once the session has exited.
+    pub async fn kill(&self, signal: Signal) {
+        let tx = self.kill_tx.lock().unwrap().clone();
+        if let Some(tx) = tx {
+            let _ = tx.send(signal).await;
         }
     }
 
@@ -125,10 +160,16 @@ impl Session {
         let _ = self.broadcast_tx.send(msg);
     }
 
-    /// Mark the session as terminated with the final exit code.
+    /// Mark the session as terminated with the final exit code, and drop the input/resize/kill
+    /// senders so their receiving tasks end and the underlying fds (PTY master, child stdin)
+    /// close.
     pub fn emit_exit(&self, code: Option<i32>, signal: Option<String>) {
         self.running.store(false, Ordering::SeqCst);
         *self.exit_code.lock().unwrap() = code;
+        *self.exited_at.lock().unwrap() = Some(Instant::now());
+        self.stdin_tx.lock().unwrap().take();
+        self.resize_tx.lock().unwrap().take();
+        self.kill_tx.lock().unwrap().take();
         let msg = BridgeServerMessage::Exited {
             id: self.id.clone(),
             exit_code: code,
@@ -206,6 +247,44 @@ impl SessionManager {
     pub fn remove(&self, id: &str) {
         self.sessions.write().unwrap().remove(id);
     }
+
+    /// Remove every exited session whose `exited_at` is at least `ttl` old. Running sessions are
+    /// never reaped, however long they've been alive. Returns how many were removed.
+    pub fn reap(&self, ttl: Duration) -> usize {
+        let mut sessions = self.sessions.write().unwrap();
+        let expired: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| {
+                !s.running.load(Ordering::SeqCst)
+                    && s.exited_at
+                        .lock()
+                        .unwrap()
+                        .is_some_and(|t| t.elapsed() >= ttl)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let count = expired.len();
+        for id in expired {
+            sessions.remove(&id);
+        }
+        count
+    }
+
+    /// Terminate every running session's process group concurrently, for graceful daemon
+    /// shutdown.
+    pub async fn kill_all(&self) {
+        #[cfg(unix)]
+        {
+            let sessions: Vec<Arc<Session>> =
+                self.sessions.read().unwrap().values().cloned().collect();
+            let kills = sessions
+                .iter()
+                .filter(|s| s.running.load(Ordering::SeqCst))
+                .filter_map(|s| s.pid)
+                .map(|pgid| crate::proc::terminate_group(pgid, Duration::from_secs(2)));
+            futures::future::join_all(kills).await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -266,21 +345,25 @@ mod tests {
         assert!(up_to_date.is_empty());
     }
 
-    #[test]
-    fn test_session_manager() {
-        let mgr = SessionManager::new();
+    fn test_session(id: &str) -> Arc<Session> {
         let (stdin_tx, _) = mpsc::channel(1);
         let (resize_tx, _) = mpsc::channel(1);
         let (kill_tx, _) = mpsc::channel(1);
-
-        let sess = Arc::new(Session::new(
-            "sess-1".into(),
+        Arc::new(Session::new(
+            id.into(),
             "echo test".into(),
             false,
+            Some(1234),
             stdin_tx,
             resize_tx,
             kill_tx,
-        ));
+        ))
+    }
+
+    #[test]
+    fn test_session_manager() {
+        let mgr = SessionManager::new();
+        let sess = test_session("sess-1");
 
         mgr.insert(sess);
         assert!(mgr.get("sess-1").is_some());
@@ -290,5 +373,45 @@ mod tests {
         mgr.remove("sess-1");
         assert!(mgr.get("sess-1").is_none());
         assert_eq!(mgr.list().len(), 0);
+    }
+
+    #[test]
+    fn emit_exit_drops_senders() {
+        let sess = test_session("sess-1");
+        assert!(sess.stdin_tx.lock().unwrap().is_some());
+        assert!(sess.resize_tx.lock().unwrap().is_some());
+        assert!(sess.kill_tx.lock().unwrap().is_some());
+
+        sess.emit_exit(Some(0), None);
+
+        assert!(!sess.running.load(Ordering::SeqCst));
+        assert!(sess.exited_at.lock().unwrap().is_some());
+        assert!(sess.stdin_tx.lock().unwrap().is_none());
+        assert!(sess.resize_tx.lock().unwrap().is_none());
+        assert!(sess.kill_tx.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn reap_removes_only_expired_exited() {
+        let mgr = SessionManager::new();
+
+        let still_running = test_session("running");
+        mgr.insert(still_running);
+
+        let freshly_exited = test_session("fresh");
+        freshly_exited.emit_exit(Some(0), None);
+        mgr.insert(freshly_exited);
+
+        let long_exited = test_session("stale");
+        long_exited.emit_exit(Some(0), None);
+        *long_exited.exited_at.lock().unwrap() = Some(Instant::now() - Duration::from_secs(3600));
+        mgr.insert(long_exited);
+
+        let removed = mgr.reap(Duration::from_secs(60));
+
+        assert_eq!(removed, 1);
+        assert!(mgr.get("running").is_some());
+        assert!(mgr.get("fresh").is_some());
+        assert!(mgr.get("stale").is_none());
     }
 }

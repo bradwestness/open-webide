@@ -37,6 +37,8 @@ async fn exec_git(args: &[&str], cwd: &Path) -> Result<(String, String, bool), G
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
         cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
@@ -45,6 +47,8 @@ async fn exec_git(args: &[&str], cwd: &Path) -> Result<(String, String, bool), G
     let child = cmd
         .spawn()
         .map_err(|e| GitError::Execution(format!("failed to spawn git {}: {e}", args.join(" "))))?;
+    #[cfg(unix)]
+    let pid = child.id().map(|id| id as i32);
 
     match timeout(Duration::from_secs(30), child.wait_with_output()).await {
         Ok(Ok(output)) => {
@@ -57,9 +61,15 @@ async fn exec_git(args: &[&str], cwd: &Path) -> Result<(String, String, bool), G
             Ok((stdout, stderr, success))
         }
         Ok(Err(e)) => Err(GitError::Execution(format!("git execution error: {e}"))),
-        Err(_) => Err(GitError::Execution(
-            "git command timed out after 30s".into(),
-        )),
+        Err(_) => {
+            #[cfg(unix)]
+            if let Some(pgid) = pid {
+                crate::proc::terminate_group(pgid, Duration::from_secs(2)).await;
+            }
+            Err(GitError::Execution(
+                "git command timed out after 30s".into(),
+            ))
+        }
     }
 }
 

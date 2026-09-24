@@ -44,6 +44,9 @@ pub struct ServerConfig {
     pub allowed_origins: Vec<String>,
     pub allowed_hosts: Vec<String>,
     pub limits: Limits,
+    /// How long an exited session is kept around (for output replay/inspection) before the
+    /// reaper removes it. Running sessions are never reaped.
+    pub session_ttl: Duration,
 }
 
 impl ServerConfig {
@@ -53,9 +56,13 @@ impl ServerConfig {
             allowed_origins: default_origins(),
             allowed_hosts: default_hosts(),
             limits: Limits::default(),
+            session_ttl: DEFAULT_SESSION_TTL,
         }
     }
 }
+
+const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+const SESSION_REAP_INTERVAL: Duration = Duration::from_secs(60);
 
 pub fn default_origins() -> Vec<String> {
     vec![
@@ -209,9 +216,38 @@ pub fn check_request(
     Ok(echo_origin)
 }
 
-/// Run the bridge server on the specified TCP listener.
+/// Run the bridge server on the specified TCP listener until the process is killed.
 pub async fn run_server(listener: TcpListener, config: ServerConfig) {
-    run_accept_loop(listener, config).await;
+    run_server_until(listener, config, std::future::pending()).await;
+}
+
+/// Run the bridge server until `shutdown` resolves, then terminate every session's process
+/// group (with a grace period) before returning.
+pub async fn run_server_until(
+    listener: TcpListener,
+    config: ServerConfig,
+    shutdown: impl std::future::Future<Output = ()>,
+) {
+    let session_manager = SessionManager::new();
+
+    let reap_sessions = session_manager.clone();
+    let session_ttl = config.session_ttl;
+    let reaper = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(SESSION_REAP_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            reap_sessions.reap(session_ttl);
+        }
+    });
+
+    let accept = tokio::spawn(run_accept_loop(listener, config, session_manager.clone()));
+
+    shutdown.await;
+
+    reaper.abort();
+    accept.abort();
+    session_manager.kill_all().await;
 }
 
 /// Anything that can accept incoming connections like a `TcpListener`. Exists so the accept
@@ -228,8 +264,11 @@ impl Accept for TcpListener {
     }
 }
 
-async fn run_accept_loop<A: Accept>(acceptor: A, config: ServerConfig) {
-    let session_manager = SessionManager::new();
+async fn run_accept_loop<A: Accept>(
+    acceptor: A,
+    config: ServerConfig,
+    session_manager: SessionManager,
+) {
     let semaphore = Arc::new(Semaphore::new(config.limits.max_connections));
     let mut backoff = Duration::from_millis(10);
     const MAX_BACKOFF: Duration = Duration::from_secs(1);
@@ -522,8 +561,13 @@ async fn handle_exec(
             }
         };
 
-    let outcome =
-        execute_command_direct(&payload.command, &effective_cwd, payload.timeout_seconds).await;
+    let outcome = execute_command_direct(
+        &payload.command,
+        &effective_cwd,
+        payload.timeout_seconds,
+        std::future::pending(),
+    )
+    .await;
     match outcome {
         Ok(res) => respond(
             StatusCode::OK,
@@ -825,19 +869,27 @@ async fn handle_websocket<S>(
 
                     BridgeClientMessage::Input { id, data } => {
                         if let Some(sess) = sessions.get(&id) {
-                            let _ = sess.stdin_tx.send(data).await;
+                            sess.send_input(data).await;
                         }
                     }
 
                     BridgeClientMessage::Resize { id, cols, rows } => {
                         if let Some(sess) = sessions.get(&id) {
-                            let _ = sess.resize_tx.send((cols, rows)).await;
+                            sess.resize(cols, rows).await;
                         }
                     }
 
                     BridgeClientMessage::Kill { id, signal } => {
-                        if let Some(sess) = sessions.get(&id) {
-                            let _ = sess.kill_tx.send(signal).await;
+                        match crate::proc::parse_signal(signal.as_deref()) {
+                            Ok(sig) => {
+                                if let Some(sess) = sessions.get(&id) {
+                                    sess.kill(sig).await;
+                                }
+                            }
+                            Err(message) => {
+                                let err = BridgeServerMessage::Error { id, message };
+                                let _ = send_server_msg(&mut ws_stream, &err).await;
+                            }
                         }
                     }
 
@@ -1133,7 +1185,7 @@ mod tests {
             failed_once: std::sync::atomic::AtomicBool::new(false),
         };
         let config = ServerConfig::new(std::env::temp_dir());
-        tokio::spawn(run_accept_loop(flaky, config));
+        tokio::spawn(run_accept_loop(flaky, config, SessionManager::new()));
 
         // Give the loop time to hit its fake error and back off before retrying.
         tokio::time::sleep(Duration::from_millis(50)).await;
