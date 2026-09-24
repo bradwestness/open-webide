@@ -25,6 +25,7 @@ for what's still ahead.
 
 ### Fixed
 
+- **Stale search results no longer overwrite the view:** file-content searches are now guarded by a per-run generation, so a slow search for an older query can no longer land after a newer search for the same project and clobber its results, and clearing the search box can no longer be undone by a search that resolves after the clear.
 - **Stale chat history no longer overwrites the view:** loading a session's message history is now guarded by a per-run generation, so a slow history request can no longer land after a newer request — including one for the same session — and clobber the conversation on screen. The first send in a brand-new chat also no longer duplicates the user message, since the redundant history fetch that fired the instant the session was created is now skipped.
 - **\"New file\" no longer truncates an existing file:** creating a file at a path that already exists now returns an error (HTTP 409 in remote mode, an error banner in local mode) and leaves the file's content untouched. Agent `write_file` to a new local-mode path now works correctly.
 - **Auth correctness:** the token-signing secret is now created with an atomic insert-if-absent, so concurrent first requests can no longer write different secrets and invalidate issued tokens, and token expiry checks fail closed with a 500 instead of accepting every token when the system clock is unavailable.

@@ -1020,7 +1020,20 @@ format!(
     });
 
     // Full-text search the project's file contents.
+    // A per-run generation for the search callbacks: a slow search for an
+    // older query must not land after a newer search for the same project,
+    // which the active-project check alone can't catch (a same-project
+    // race), and a search that resolves after the box is cleared must not
+    // resurrect stale results.
+    let search_gen = StoredValue::new(0u64);
     let on_search = Callback::new(move |q: String| {
+        // Bump and capture the generation first, before any early return
+        // below: a run that returns early must still invalidate an earlier
+        // in-flight search.
+        let this_gen = {
+            search_gen.update_value(|g| *g += 1);
+            search_gen.get_value()
+        };
         let Some(pid) = active_project.get() else {
             return;
         };
@@ -1030,12 +1043,12 @@ format!(
             };
             match ws.search_content(&q, "").await {
                 Ok(results) => {
-                    if active_project.get() == Some(pid) {
+                    if active_project.get() == Some(pid) && search_gen.get_value() == this_gen {
                         ws_search.set(Some(results));
                     }
                 }
                 Err(e) => {
-                    if active_project.get() == Some(pid) {
+                    if active_project.get() == Some(pid) && search_gen.get_value() == this_gen {
                         error.set(Some(e));
                     }
                 }
@@ -1044,6 +1057,9 @@ format!(
     });
 
     let on_clear_search = Callback::new(move |_| {
+        // Invalidate any in-flight search so its result can't land after
+        // the clear and overwrite the just-cleared empty state.
+        search_gen.update_value(|g| *g += 1);
         ws_search.set(None);
     });
 
