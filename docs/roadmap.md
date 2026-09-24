@@ -136,6 +136,15 @@ terminal pane are done and in the changelog, but:
   MCP servers (`~/.openwebide/mcp.json` / `.openwebide/mcp.json`) as host
   child processes over `stdio`, translating `tools/list` into the agent's
   `ToolDefinition` schema, and forwarding `tools/call`.
+- **Deferred tool loading (`tool_search`):** once MCP servers push the tool count up, keep the core
+  file/search/shell tools always loaded and, when the remaining schemas would exceed a share of the
+  connection's context limit, send only their names plus a `tool_search` tool (keyword or `select:`
+  lookup) that loads the matching full definitions for the next turn. Off below the threshold, so
+  small tool sets and small-context local models pay nothing extra.
+- **Tool budget for small-context models:** measure the token cost of the tool schemas, tighten their
+  descriptions, and let each connection pick which tools it sends (or none, for chat-only use) — on
+  4k-context local models a dozen schemas can eat a large share of the window, and those models are
+  the least likely to use `tool_search` well.
 - **Headless browser via Chrome DevTools Protocol (CDP):** the bridge
   attaching to a host or sidecar Chrome/Chromium instance to give the agent
   `browser_navigate`/`browser_screenshot`/`browser_click`/`browser_type`/
