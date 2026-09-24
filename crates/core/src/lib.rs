@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 pub const REPLY_TRUNCATED_MARKER: &str = "\n\n[reply truncated]";
 
 /// A local-LLM runtime the IDE can talk to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Ollama,

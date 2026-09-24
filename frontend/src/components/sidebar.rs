@@ -87,7 +87,7 @@ pub fn Sidebar(
                                 .filter(|s| s.project_id == active)
                                 .collect::<Vec<_>>()
                         }
-                        key=|s| s.id
+                        key=|s| (s.id, s.name.clone())
                         children=move |s| {
                             view! {
                                 <div
@@ -274,7 +274,7 @@ pub fn Sidebar(
                 </Show>
                 <For
                     each=move || connections.get()
-                    key=|c| c.id
+                    key=|c| (c.id, c.name.clone(), c.kind)
                     children=move |c| {
                         let id = c.id;
                         let name = c.name.clone();
@@ -372,7 +372,7 @@ pub fn Sidebar(
                 </Show>
                 <For
                     each=move || system_prompts.get()
-                    key=|p| p.id
+                    key=|p| (p.id, p.name.clone())
                     children=move |p| {
                         let id = p.id;
                         let name = p.name.clone();
