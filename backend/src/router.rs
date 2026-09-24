@@ -19,7 +19,7 @@ pub async fn route(req: Request) -> JsonResp {
     } else {
         let mut state = match AppState::new().await {
             Ok(state) => state,
-            Err(e) => return ApiError::internal(e.to_string()).into_response(),
+            Err(e) => return with_cors(ApiError::internal(format!("{e:#}")).into_response()),
         };
 
         // Every non-public route requires a valid bearer token. Public routes
@@ -77,12 +77,8 @@ pub async fn route(req: Request) -> JsonResp {
             ("GET", "/api/browse") => api::browse(req, &state).await,
             ("GET", "/api/sessions") => api::list_sessions(&state).await,
             ("POST", "/api/sessions") => api::create_session(req, &state).await,
-            ("PUT", p) if p.starts_with("/api/sessions/") && !p.contains("/messages") => {
-                api::rename_session(req, &state, p).await
-            }
-            ("DELETE", p) if p.starts_with("/api/sessions/") && !p.contains("/messages") => {
-                api::delete_session(&state, p).await
-            }
+            ("PUT", p) if is_session_root(p) => api::rename_session(req, &state, p).await,
+            ("DELETE", p) if is_session_root(p) => api::delete_session(&state, p).await,
             ("POST", p) if p.starts_with("/api/sessions/") && p.contains("/permissions/") => {
                 api::set_tool_permission(req, &state, p).await
             }
@@ -133,6 +129,12 @@ fn is_project_files(p: &str) -> bool {
 /// Match the project git routes: `/api/projects/<id>/git/...`.
 fn is_project_git(p: &str) -> bool {
     p.starts_with("/api/projects/") && p.contains("/git/")
+}
+
+/// Match a session root: `/api/sessions/<id>` where `<id>` is all ASCII digits.
+fn is_session_root(p: &str) -> bool {
+    p.strip_prefix("/api/sessions/")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Routes that run without a bearer token.
@@ -194,6 +196,15 @@ mod tests {
         );
         assert_eq!(bearer_token_from(Some("foo")), None);
         assert_eq!(bearer_token_from(None), None);
+    }
+
+    #[test]
+    fn test_is_session_root() {
+        assert!(is_session_root("/api/sessions/5"));
+        assert!(!is_session_root("/api/sessions/5/messages"));
+        assert!(!is_session_root("/api/sessions/5/tool-steps/x"));
+        assert!(!is_session_root("/api/sessions/"));
+        assert!(!is_session_root("/api/sessions/abc"));
     }
 
     #[test]
