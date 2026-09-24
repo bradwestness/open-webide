@@ -122,6 +122,25 @@ pub fn format_utc_timestamp(secs: i64) -> String {
 /// Agent backups of files it overwrote without being able to read them; one sub-directory per tool step.
 pub const AGENT_BACKUP_DIR: &str = ".openwebide/backups";
 
+/// Directory names that content search skips by default.
+///
+/// Every walker (backend, agent, local mode) uses this list unless
+/// `SearchOptions::include_ignored` is set.
+pub const SEARCH_SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", ".spin"];
+
+/// Per-query options for content search.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchOptions {
+    /// Also search the directories in `SEARCH_SKIP_DIRS`.
+    pub include_ignored: bool,
+}
+
+/// Whether a directory named `name` should be skipped by content search
+/// under `opts`.
+pub fn skip_dir(name: &str, opts: SearchOptions) -> bool {
+    !opts.include_ignored && SEARCH_SKIP_DIRS.contains(&name)
+}
+
 /// The core asynchronous Virtual File System trait.
 pub trait Vfs: Send + Sync {
     /// Read the full UTF-8 contents of a workspace file.
@@ -156,7 +175,12 @@ pub trait Vfs: Send + Sync {
     }
 
     /// Full-text search across file contents under the given directory (`""` for root).
-    fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>>;
+    fn search_content<'a>(
+        &'a self,
+        query: &'a str,
+        dir: &'a str,
+        opts: SearchOptions,
+    ) -> VfsFuture<'a, Vec<SearchHit>>;
 
     /// Resolve symbolic links and return the canonical workspace-relative path.
     ///
@@ -191,8 +215,13 @@ impl<V: Vfs + ?Sized> Vfs for &V {
         (**self).copy(from, to)
     }
 
-    fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
-        (**self).search_content(query, dir)
+    fn search_content<'a>(
+        &'a self,
+        query: &'a str,
+        dir: &'a str,
+        opts: SearchOptions,
+    ) -> VfsFuture<'a, Vec<SearchHit>> {
+        (**self).search_content(query, dir, opts)
     }
 
     fn canonicalize<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
@@ -225,8 +254,13 @@ impl<V: Vfs + ?Sized> Vfs for Arc<V> {
         (**self).copy(from, to)
     }
 
-    fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
-        (**self).search_content(query, dir)
+    fn search_content<'a>(
+        &'a self,
+        query: &'a str,
+        dir: &'a str,
+        opts: SearchOptions,
+    ) -> VfsFuture<'a, Vec<SearchHit>> {
+        (**self).search_content(query, dir, opts)
     }
 
     fn canonicalize<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
@@ -519,7 +553,13 @@ impl Vfs for MemoryVfs {
         })
     }
 
-    fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
+    fn search_content<'a>(
+        &'a self,
+        query: &'a str,
+        dir: &'a str,
+        opts: SearchOptions,
+    ) -> VfsFuture<'a, Vec<SearchHit>> {
+        let _ = opts;
         Box::pin(async move {
             let norm = normalize_vfs_path(dir)?;
             let files = self.files.read().map_err(|e| VfsError::Io(e.to_string()))?;
@@ -599,6 +639,28 @@ mod tests {
     }
 
     #[test]
+    fn test_skip_dir() {
+        let default = SearchOptions::default();
+        let include = SearchOptions {
+            include_ignored: true,
+        };
+
+        for name in SEARCH_SKIP_DIRS {
+            assert!(
+                skip_dir(name, default),
+                "{name} should be skipped by default"
+            );
+            assert!(
+                !skip_dir(name, include),
+                "{name} should not be skipped with include_ignored"
+            );
+        }
+
+        assert!(!skip_dir("src", default));
+        assert!(!skip_dir("src", include));
+    }
+
+    #[test]
     fn test_memory_vfs_crud() {
         futures::executor::block_on(async {
             let vfs = MemoryVfs::new();
@@ -630,7 +692,10 @@ mod tests {
             assert!(!src_entries[0].is_dir);
 
             // Search
-            let hits = vfs.search_content("hello", "").await.unwrap();
+            let hits = vfs
+                .search_content("hello", "", SearchOptions::default())
+                .await
+                .unwrap();
             assert_eq!(hits.len(), 1);
             assert_eq!(hits[0].path, "src/lib.rs");
             assert_eq!(hits[0].line, 1);

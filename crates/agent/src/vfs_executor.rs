@@ -8,7 +8,7 @@ use std::future::Future;
 use openwebide_core::{
     CommandOutcome, FileDiff, FileEntry, GitCheckoutRequest, GitCheckoutResult, GitCommitRequest,
     GitCommitResult, GitRepoStatus, ToolCall, ToolDefinition, Vfs, VfsError, WebSearchResult,
-    normalize_vfs_path,
+    normalize_vfs_path, vfs::SearchOptions,
 };
 use serde_json::{Value, json};
 
@@ -478,7 +478,11 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Err(e) => return fail("grep_search", &raw_path, &e.to_string()),
         };
 
-        match self.vfs.search_content(query, &dir).await {
+        match self
+            .vfs
+            .search_content(query, &dir, SearchOptions::default())
+            .await
+        {
             Ok(hits) => {
                 let count = hits.len();
                 let content = if hits.is_empty() {

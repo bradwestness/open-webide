@@ -5,7 +5,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use openwebide_core::{FileEntry, SearchHit, Vfs, VfsFuture, find_content_matches};
+use openwebide_core::{
+    FileEntry, SearchHit, Vfs, VfsFuture, find_content_matches, vfs::SearchOptions,
+};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
@@ -224,7 +226,9 @@ pub async fn search_content(
     root: &FileSystemDirectoryHandle,
     query: &str,
     dir: &str,
+    opts: SearchOptions,
 ) -> Result<Vec<SearchHit>, String> {
+    let _ = opts;
     ensure_permission(root).await?;
     let start = resolve_dir(root, dir).await?;
     let mut results = Vec::new();
@@ -594,12 +598,17 @@ impl Vfs for BrowserFsaVfs {
         }))
     }
 
-    fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
+    fn search_content<'a>(
+        &'a self,
+        query: &'a str,
+        dir: &'a str,
+        opts: SearchOptions,
+    ) -> VfsFuture<'a, Vec<SearchHit>> {
         let root = self.root.clone();
         let query = query.to_string();
         let dir = dir.to_string();
         Box::pin(ForceSend(async move {
-            search_content(&root, &query, &dir)
+            search_content(&root, &query, &dir, opts)
                 .await
                 .map_err(openwebide_frontend::vfs_err::map_vfs_err)
         }))

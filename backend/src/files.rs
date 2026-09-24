@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use openwebide_core::{
     FileEntry, SearchHit, Vfs, VfsError, VfsFuture, find_content_matches, normalize_vfs_path,
+    vfs::SearchOptions,
 };
 
 use crate::wasi::filesystem::preopens;
@@ -615,7 +616,13 @@ impl Vfs for HostFsVfs {
         })
     }
 
-    fn search_content<'a>(&'a self, query: &'a str, dir: &'a str) -> VfsFuture<'a, Vec<SearchHit>> {
+    fn search_content<'a>(
+        &'a self,
+        query: &'a str,
+        dir: &'a str,
+        opts: SearchOptions,
+    ) -> VfsFuture<'a, Vec<SearchHit>> {
+        let _ = opts;
         Box::pin(async move {
             let full = self.resolve(dir)?;
             let hits = full_text_search(&full, query).await.map_err(map_vfs_err)?;

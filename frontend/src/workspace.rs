@@ -2,7 +2,7 @@
 //! the backend file API; local mode uses the File System Access API directly.
 //! All paths are project-relative (the project root is "").
 
-use openwebide_core::{FileEntry, SearchHit};
+use openwebide_core::{FileEntry, SearchHit, vfs::SearchOptions};
 use web_sys::FileSystemDirectoryHandle;
 
 use crate::api::BackendApi;
@@ -71,7 +71,9 @@ impl Workspace {
             Workspace::Remote { api, project_id } => {
                 api.search_content(*project_id, query, dir).await
             }
-            Workspace::Local { handle } => local_fs::search_content(handle, query, dir).await,
+            Workspace::Local { handle } => {
+                local_fs::search_content(handle, query, dir, SearchOptions::default()).await
+            }
         }
     }
 
