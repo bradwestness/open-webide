@@ -1,3 +1,4 @@
+pub mod conversation;
 pub mod markdown;
 pub mod pending;
 pub mod sse;

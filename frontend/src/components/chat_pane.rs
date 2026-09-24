@@ -1,8 +1,6 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use leptos::prelude::*;
 use openwebide_core::{
-    ChatMessage, FileDiff, ModelInfo, Role, diff_inline_lines,
+    FileDiff, ModelInfo, Role, diff_inline_lines,
     tui::{
         EditorContext, SessionTelemetry, SlashCommand, extract_editor_context_prelude,
         parse_thinking,
@@ -32,63 +30,9 @@ fn save_prompt_history(history: &[String]) {
     }
 }
 
-/// One item in the conversation: a chat message, an agent tool step, or a
-/// stop marker.
-#[derive(Debug, Clone)]
-pub enum ConversationItem {
-    /// A user or assistant chat message.
-    Message(ChatMessage),
-    /// An agent tool step: the call (always known) and, once it finishes, its
-    /// result (which may carry a file diff for edits).
-    ToolStep {
-        id: String,
-        name: String,
-        summary: String,
-        result: Option<ToolStepResult>,
-        /// A gated call (e.g. a file write) waiting for the user's approval.
-        awaiting_permission: bool,
-    },
-    /// A marker that the user stopped the run. The nonce keeps the item key
-    /// unique when a conversation has several stops.
-    Stopped { nonce: u64 },
-}
-
-/// A fresh "stopped" marker for the conversation list.
-static STOP_NONCE: AtomicU64 = AtomicU64::new(0);
-
-pub fn stopped_marker() -> ConversationItem {
-    ConversationItem::Stopped {
-        nonce: STOP_NONCE.fetch_add(1, Ordering::Relaxed),
-    }
-}
-
-/// The outcome of a finished tool step.
-#[derive(Debug, Clone)]
-pub struct ToolStepResult {
-    pub ok: bool,
-    pub summary: String,
-    pub diff: Option<FileDiff>,
-}
-
-/// A key for a conversation item that changes when the item's content changes
-/// (a streamed delta, a tool result arriving) so Leptos' `For` re-renders it.
-fn item_key(item: &ConversationItem) -> String {
-    match item {
-        ConversationItem::Message(m) => format!("m-{}-{}", m.id, m.content.len()),
-        ConversationItem::ToolStep {
-            id,
-            result,
-            awaiting_permission,
-            ..
-        } => format!(
-            "t-{}-{}-{}",
-            id,
-            if result.is_some() { 1 } else { 0 },
-            if *awaiting_permission { 1 } else { 0 }
-        ),
-        ConversationItem::Stopped { nonce } => format!("s-{nonce}"),
-    }
-}
+pub use openwebide_frontend::conversation::{
+    ConversationItem, ToolStepResult, item_key, stopped_marker,
+};
 
 pub(crate) use openwebide_frontend::markdown::render as render_markdown;
 
@@ -605,6 +549,7 @@ pub fn ChatPane(
                                                                 summary,
                                                                 result,
                                                                 awaiting_permission,
+                                                                key: _,
                                                             } => {
                                                                 (
                                                                     id,

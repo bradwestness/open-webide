@@ -8,6 +8,7 @@ use openwebide_core::{
     ProviderKind, Role, SearchHit, SystemPrompt, User, WorkspaceMode,
     tui::{DEFAULT_CONTEXT_LIMIT, EditorContext, SessionTelemetry, SlashCommand},
 };
+use openwebide_frontend::conversation::next_item_nonce;
 use web_sys::wasm_bindgen::JsCast;
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
@@ -1838,6 +1839,7 @@ pub fn App() -> impl IntoView {
                             } else {
                                 messages.update(|m| {
                                     m.push(ConversationItem::ToolStep {
+                                        key: next_item_nonce(),
                                         id,
                                         name,
                                         summary,
@@ -1873,6 +1875,7 @@ pub fn App() -> impl IntoView {
                                         }
                                     }
                                     None => m.push(ConversationItem::ToolStep {
+                                        key: next_item_nonce(),
                                         id,
                                         name,
                                         summary,
@@ -1940,6 +1943,7 @@ pub fn App() -> impl IntoView {
                                     }
                                     None => {
                                         m.push(ConversationItem::ToolStep {
+                                            key: next_item_nonce(),
                                             id,
                                             name: String::new(),
                                             summary: summary.clone(),
@@ -2880,6 +2884,7 @@ pub fn App() -> impl IntoView {
                                             }
                                             ConversationEntry::ToolStep(ts) => {
                                                 ConversationItem::ToolStep {
+                                                    key: next_item_nonce(),
                                                     id: ts.tool_call_id,
                                                     name: ts.name,
                                                     summary: ts.summary,
