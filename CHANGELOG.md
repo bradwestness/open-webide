@@ -10,6 +10,7 @@ for what's still ahead.
 ## [Unreleased]
 
 ### Changed
+- **Bridge HTTP resilience:** The execution bridge's HTTP and WebSocket server is now built on `hyper` instead of a hand-written parser, fixing header/body misreads under fragmented or chunked writes and case-sensitive `Upgrade` header matching. Requests are capped (16 KiB head, 1 MiB `/exec`/Git body, 16 MiB WebSocket message), idle sockets close after 10 s without a request head, WebSocket connections are pinged every 30 s and closed after 90 s without a reply, and the accept loop now backs off and keeps serving instead of exiting on the first accept error (e.g. EMFILE), bounded by 256 concurrent connections.
 - Backend git operations now run within the project context, and bridge failures cleanly propagate rather than showing false success.
 
 

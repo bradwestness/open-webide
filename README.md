@@ -169,6 +169,11 @@ The native bridge daemon (`openwebide-bridge`) runs on the host to provide inter
 > [!NOTE]
 > Git operations performed by the bridge require Git ≥ 2.23 on the host machine for branch switching via `git switch`.
 
+The bridge's HTTP/1 and WebSocket server (built on `hyper`) enforces request limits: a 16 KiB
+HTTP request head, a 1 MiB `/exec`/Git request body, a 16 MiB WebSocket message/frame, and 256
+concurrent connections. Idle sockets are closed after 10 s without a request head; WebSocket
+connections are pinged every 30 s and closed after 90 s without an inbound frame.
+
 ### Running the bridge
 
 ```sh

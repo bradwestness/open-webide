@@ -31,14 +31,13 @@ async fn spawn_cwd_escape_is_rejected() {
     ws.send(Message::Text(payload.into())).await.unwrap();
 
     let mut found_error = false;
-    if let Some(Ok(Message::Text(resp))) = ws.next().await {
-        if let Ok(BridgeServerMessage::Error { id, message }) =
+    if let Some(Ok(Message::Text(resp))) = ws.next().await
+        && let Ok(BridgeServerMessage::Error { id, message }) =
             serde_json::from_str::<BridgeServerMessage>(&resp)
-        {
-            assert_eq!(id, "test1");
-            assert!(message.contains("escapes workspace root"));
-            found_error = true;
-        }
+    {
+        assert_eq!(id, "test1");
+        assert!(message.contains("escapes workspace root"));
+        found_error = true;
     }
     assert!(found_error, "expected Error response for cwd escape");
 }

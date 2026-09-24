@@ -305,8 +305,8 @@ async fn head_exceeding_buffer_431() {
     let test_dir = TestDir::new();
     let port = start(test_dir.path.clone()).await;
 
-    // Send a header exceeding MAX_HEAD_SIZE (8192 bytes)
-    let huge_header = "X-Large: ".to_string() + &"a".repeat(9000);
+    // Send a header exceeding the bridge's 16 KiB head limit.
+    let huge_header = "X-Large: ".to_string() + &"a".repeat(17_000);
     let req = format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{huge_header}\r\n\r\n");
     let raw = http(port, &req).await;
     let resp = HttpResponse::parse(&raw);

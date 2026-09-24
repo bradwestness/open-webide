@@ -15,6 +15,9 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
 openwebide-core = { workspace = true }
 portable-pty = "0.9"

@@ -1,22 +1,41 @@
 //! WebSocket and HTTP server for the process execution bridge daemon.
+//!
+//! HTTP/1 parsing and connection lifecycle are handled by `hyper` (see `crate::http`); this
+//! module owns request routing, the Host/Origin/CORS security baseline, the WebSocket upgrade,
+//! and the session-multiplexed WebSocket protocol.
 
-use std::io::Cursor;
+use std::convert::Infallible;
 use std::path::PathBuf;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::header::{CONNECTION, CONTENT_TYPE, HOST, ORIGIN, UPGRADE};
+use hyper::service::service_fn;
+use hyper::{HeaderMap, Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use openwebide_core::{BridgeClientMessage, BridgeServerMessage};
 use serde::Deserialize;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::Instant;
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 
 use crate::headless::{execute_command_direct, spawn_headless};
+use crate::http::{HttpError, Limits, builder, read_body, read_json, respond};
 use crate::pty::spawn_pty;
 use crate::session::SessionManager;
 
-const MAX_HEAD_SIZE: usize = 8192;
+const MAX_WS_MESSAGE: usize = 16 * 1024 * 1024;
+const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
+const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Bridge server configuration.
 #[derive(Clone, Debug)]
@@ -24,6 +43,7 @@ pub struct ServerConfig {
     pub workspace_root: PathBuf,
     pub allowed_origins: Vec<String>,
     pub allowed_hosts: Vec<String>,
+    pub limits: Limits,
 }
 
 impl ServerConfig {
@@ -32,6 +52,7 @@ impl ServerConfig {
             workspace_root,
             allowed_origins: default_origins(),
             allowed_hosts: default_hosts(),
+            limits: Limits::default(),
         }
     }
 }
@@ -72,18 +93,6 @@ pub fn get_system_hostname() -> Option<String> {
             if !trimmed.is_empty() {
                 return Some(trimmed.to_ascii_lowercase());
             }
-        }
-    }
-    None
-}
-
-/// Extract a header value from raw HTTP request head by name (case-insensitive).
-pub fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
-    for line in head.lines() {
-        if let Some((k, v)) = line.split_once(':')
-            && k.trim().eq_ignore_ascii_case(name)
-        {
-            return Some(v.trim());
         }
     }
     None
@@ -202,16 +211,81 @@ pub fn check_request(
 
 /// Run the bridge server on the specified TCP listener.
 pub async fn run_server(listener: TcpListener, config: ServerConfig) {
-    let session_manager = SessionManager::new();
+    run_accept_loop(listener, config).await;
+}
 
-    while let Ok((stream, _)) = listener.accept().await {
-        let mgr = session_manager.clone();
-        let cfg = config.clone();
+/// Anything that can accept incoming connections like a `TcpListener`. Exists so the accept
+/// loop's error/backoff handling can be unit-tested against a fake that fails on demand.
+trait Accept {
+    fn accept(
+        &self,
+    ) -> impl std::future::Future<Output = std::io::Result<(TcpStream, std::net::SocketAddr)>> + Send;
+}
 
-        tokio::spawn(async move {
-            handle_connection(stream, mgr, cfg).await;
-        });
+impl Accept for TcpListener {
+    async fn accept(&self) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+        TcpListener::accept(self).await
     }
+}
+
+async fn run_accept_loop<A: Accept>(acceptor: A, config: ServerConfig) {
+    let session_manager = SessionManager::new();
+    let semaphore = Arc::new(Semaphore::new(config.limits.max_connections));
+    let mut backoff = Duration::from_millis(10);
+    const MAX_BACKOFF: Duration = Duration::from_secs(1);
+
+    loop {
+        let permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore is never closed");
+
+        match acceptor.accept().await {
+            Ok((stream, _)) => {
+                backoff = Duration::from_millis(10);
+                let mgr = session_manager.clone();
+                let cfg = config.clone();
+                tokio::spawn(async move {
+                    handle_connection(stream, mgr, cfg, permit).await;
+                });
+            }
+            Err(err) => {
+                eprintln!("bridge: accept error: {err}");
+                drop(permit);
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+        }
+    }
+}
+
+/// Holds the accept-loop's connection permit until either this HTTP exchange finishes or, for
+/// an upgraded connection, the WebSocket session it hands off to finishes. `take()` lets the
+/// WebSocket branch claim the permit for its own (much longer) lifetime instead of releasing it
+/// when the HTTP dispatch for the upgrade request completes.
+type PermitCell = Arc<Mutex<Option<OwnedSemaphorePermit>>>;
+
+async fn handle_connection(
+    stream: TcpStream,
+    sessions: SessionManager,
+    config: ServerConfig,
+    permit: OwnedSemaphorePermit,
+) {
+    let io = TokioIo::new(stream);
+    let limits = config.limits;
+    let permit_cell: PermitCell = Arc::new(Mutex::new(Some(permit)));
+    let service = service_fn(move |req| {
+        let sessions = sessions.clone();
+        let config = config.clone();
+        let permit_cell = permit_cell.clone();
+        async move { route(req, sessions, config, permit_cell).await }
+    });
+
+    let _ = builder(&limits)
+        .serve_connection(io, service)
+        .with_upgrades()
+        .await;
 }
 
 #[derive(Deserialize)]
@@ -227,424 +301,283 @@ fn default_timeout() -> u64 {
     30
 }
 
-/// A stream wrapper that yields bytes from an in-memory prefix buffer before delegating to an underlying stream.
-struct PrefixedStream<S> {
-    prefix: Cursor<Vec<u8>>,
-    inner: S,
-}
+/// Route a single request. `check_request` runs first for every method and path, before any
+/// side effect; only requests that pass it reach a handler.
+async fn route(
+    req: Request<Incoming>,
+    sessions: SessionManager,
+    config: ServerConfig,
+    permit_cell: PermitCell,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let host = req.headers().get(HOST).and_then(|v| v.to_str().ok());
+    let origin = req.headers().get(ORIGIN).and_then(|v| v.to_str().ok());
+    let content_type = req
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+    let method = req.method().as_str().to_string();
 
-impl<S> PrefixedStream<S> {
-    fn new(prefix: Vec<u8>, inner: S) -> Self {
-        Self {
-            prefix: Cursor::new(prefix),
-            inner,
-        }
-    }
-}
-
-impl<S: AsyncRead + Unpin> AsyncRead for PrefixedStream<S> {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        let prefix_len = this.prefix.get_ref().len();
-        let pos = this.prefix.position() as usize;
-        if pos < prefix_len {
-            let available = &this.prefix.get_ref()[pos..];
-            let amt = available.len().min(buf.remaining());
-            buf.put_slice(&available[..amt]);
-            this.prefix.set_position((pos + amt) as u64);
-            Poll::Ready(Ok(()))
-        } else {
-            Pin::new(&mut this.inner).poll_read(cx, buf)
-        }
-    }
-}
-
-impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
-    }
-
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[std::io::IoSlice<'_>],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
-    }
-}
-
-async fn handle_connection(mut stream: TcpStream, sessions: SessionManager, config: ServerConfig) {
-    // Read incoming bytes into a buffer until the full HTTP header is received (\r\n\r\n)
-    let mut head_buf = Vec::new();
-    let mut temp = [0u8; 1024];
-    loop {
-        match stream.read(&mut temp).await {
-            Ok(0) => {
-                if head_buf.is_empty() {
-                    return;
-                }
-                break;
-            }
-            Ok(k) => {
-                head_buf.extend_from_slice(&temp[..k]);
-                if let Some(pos) = head_buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                    if pos + 4 > MAX_HEAD_SIZE {
-                        let resp = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                        let _ = stream.write_all(resp.as_bytes()).await;
-                        return;
-                    }
-                    break;
-                }
-                if head_buf.len() >= MAX_HEAD_SIZE {
-                    let resp = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                    let _ = stream.write_all(resp.as_bytes()).await;
-                    return;
-                }
-            }
-            Err(_) => return,
-        }
-    }
-
-    let header_str = String::from_utf8_lossy(&head_buf).into_owned();
-    let mut stream = PrefixedStream::new(head_buf, stream);
-
-    if header_str.contains("Upgrade: websocket") || header_str.contains("upgrade: websocket") {
-        let cfg = config.clone();
-        #[allow(clippy::result_large_err)]
-        let callback =
-            move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                  mut resp: tokio_tungstenite::tungstenite::handshake::server::Response|
-                  -> Result<
-                tokio_tungstenite::tungstenite::handshake::server::Response,
-                tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
-            > {
-                let host = req.headers().get("host").and_then(|v| v.to_str().ok());
-                let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
-                match check_request(host, origin, "GET", None, &cfg) {
-                    Ok(echo_origin) => {
-                        if let Some(orig) = echo_origin
-                            && let Ok(val) = orig.parse()
-                        {
-                            resp.headers_mut()
-                                .insert("access-control-allow-origin", val);
-                            if let Ok(vary) = "Origin".parse() {
-                                resp.headers_mut().insert("vary", vary);
-                            }
-                        }
-                        Ok(resp)
-                    }
-                    Err(code) => {
-                        let status =
-                            tokio_tungstenite::tungstenite::http::StatusCode::from_u16(code)
-                                .unwrap_or(
-                                    tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN,
-                                );
-                        let err =
-                            tokio_tungstenite::tungstenite::handshake::server::Response::builder()
-                                .status(status)
-                                .body(Some("Forbidden".to_string()))
-                                .unwrap();
-                        Err(err)
-                    }
-                }
-            };
-
-        if let Ok(ws_stream) = tokio_tungstenite::accept_hdr_async(stream, callback).await {
-            handle_websocket(ws_stream, sessions, config.workspace_root).await;
-        }
-    } else if header_str.starts_with("OPTIONS ") {
-        let head = match header_str.split_once("\r\n\r\n") {
-            Some((h, _)) => h,
-            None => &header_str,
-        };
-        let host = header(head, "Host");
-        let origin = header(head, "Origin");
-        let req_pna = header(head, "Access-Control-Request-Private-Network")
-            .map(|v| v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        match check_request(host, origin, "OPTIONS", None, &config) {
-            Ok(echo_origin) => {
-                let mut resp = String::from("HTTP/1.1 204 No Content\r\n");
-                if let Some(ref orig) = echo_origin {
-                    resp.push_str(&format!(
-                        "Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n"
-                    ));
-                }
-                resp.push_str("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
-                resp.push_str("Access-Control-Allow-Headers: Content-Type, Authorization\r\n");
-                resp.push_str("Access-Control-Max-Age: 600\r\n");
-                if req_pna {
-                    resp.push_str("Access-Control-Allow-Private-Network: true\r\n");
-                }
-                resp.push_str("Content-Length: 0\r\n\r\n");
-                let _ = stream.write_all(resp.as_bytes()).await;
-            }
-            Err(status_code) => {
-                let resp = format!("HTTP/1.1 {status_code} Forbidden\r\nContent-Length: 0\r\n\r\n");
-                let _ = stream.write_all(resp.as_bytes()).await;
-            }
-        }
-    } else if header_str.starts_with("POST /exec") {
-        handle_http_exec(stream, &config).await;
-    } else if header_str.starts_with("GET /git/") || header_str.starts_with("POST /git/") {
-        let (method, path) = if let Some(rest) = header_str.strip_prefix("GET ") {
-            let path = rest.split_whitespace().next().unwrap_or("/git/status");
-            ("GET", path)
-        } else {
-            let rest = header_str.strip_prefix("POST ").unwrap_or(&header_str);
-            let path = rest.split_whitespace().next().unwrap_or("/git/status");
-            ("POST", path)
-        };
-        handle_http_git(stream, &config, method, path).await;
-    } else if header_str.starts_with("GET /health") {
-        let head = match header_str.split_once("\r\n\r\n") {
-            Some((h, _)) => h,
-            None => &header_str,
-        };
-        let host = header(head, "Host");
-        let origin = header(head, "Origin");
-        match check_request(host, origin, "GET", None, &config) {
-            Ok(echo_origin) => {
-                let mut resp =
-                    String::from("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n");
-                if let Some(ref orig) = echo_origin {
-                    resp.push_str(&format!(
-                        "Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n"
-                    ));
-                }
-                let body = "{\"status\":\"ok\"}";
-                resp.push_str(&format!("Content-Length: {}\r\n\r\n{}", body.len(), body));
-                let _ = stream.write_all(resp.as_bytes()).await;
-            }
-            Err(status_code) => {
-                let resp = format!("HTTP/1.1 {status_code} Forbidden\r\nContent-Length: 0\r\n\r\n");
-                let _ = stream.write_all(resp.as_bytes()).await;
-            }
-        }
-    } else {
-        let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-        let _ = stream.write_all(resp.as_bytes()).await;
-    }
-}
-
-async fn handle_http_exec<S>(mut stream: S, config: &ServerConfig)
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let mut buf = Vec::with_capacity(4096);
-    let mut temp = [0u8; 1024];
-
-    // Read full HTTP request
-    loop {
-        match stream.read(&mut temp).await {
-            Ok(0) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&temp[..n]);
-                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-                if buf.len() > MAX_HEAD_SIZE {
-                    let resp = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                    let _ = stream.write_all(resp.as_bytes()).await;
-                    return;
-                }
-            }
-            Err(_) => return,
-        }
-    }
-
-    let req_str = String::from_utf8_lossy(&buf);
-    let (head, body) = match req_str.split_once("\r\n\r\n") {
-        Some((h, b)) => (h, b),
-        None => ("", ""),
-    };
-
-    let host = header(head, "Host");
-    let origin = header(head, "Origin");
-    let content_type = header(head, "Content-Type");
-
-    let echo_origin = match check_request(host, origin, "POST", content_type, config) {
+    let echo_origin = match check_request(host, origin, &method, content_type, &config) {
         Ok(o) => o,
-        Err(status_code) => {
-            let (status_text, err_body) = match status_code {
-                403 => ("403 Forbidden", "{\"error\":\"forbidden\"}"),
-                415 => (
-                    "415 Unsupported Media Type",
-                    "{\"error\":\"unsupported media type: application/json required\"}",
-                ),
-                _ => ("400 Bad Request", "{\"error\":\"bad request\"}"),
-            };
-            let resp = format!(
-                "HTTP/1.1 {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                err_body.len(),
-                err_body
+        Err(code) => return Ok(rejection_response(code)),
+    };
+    let allowed_origin = echo_origin.as_deref();
+
+    if is_websocket_upgrade(req.headers()) {
+        return Ok(handle_ws_upgrade(
+            req,
+            allowed_origin,
+            sessions,
+            config,
+            permit_cell,
+        ));
+    }
+
+    let path = req.uri().path().to_string();
+    match (method.as_str(), path.as_str()) {
+        ("OPTIONS", _) => Ok(preflight_response(req.headers(), allowed_origin)),
+        ("GET", "/health") => Ok(respond(
+            StatusCode::OK,
+            r#"{"status":"ok"}"#,
+            allowed_origin,
+        )),
+        ("POST", "/exec") => Ok(handle_exec(req, allowed_origin, &config).await),
+        (m, p) if (m == "GET" || m == "POST") && p.starts_with("/git/") => {
+            Ok(handle_git(req, allowed_origin, &config).await)
+        }
+        _ => Ok(respond(
+            StatusCode::NOT_FOUND,
+            r#"{"error":"not found"}"#,
+            allowed_origin,
+        )),
+    }
+}
+
+/// Map a `check_request` rejection to a response. These never carry CORS headers: the request
+/// failed the Host/Origin baseline, so there is no origin to trust.
+fn rejection_response(code: u16) -> Response<Full<Bytes>> {
+    let (status, body) = match code {
+        403 => (StatusCode::FORBIDDEN, r#"{"error":"forbidden"}"#),
+        415 => (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            r#"{"error":"unsupported media type: application/json required"}"#,
+        ),
+        _ => (StatusCode::BAD_REQUEST, r#"{"error":"bad request"}"#),
+    };
+    respond(status, body, None)
+}
+
+fn preflight_response(headers: &HeaderMap, allowed_origin: Option<&str>) -> Response<Full<Bytes>> {
+    let private_network = headers
+        .get("access-control-request-private-network")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+
+    let mut builder = Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("connection", "close")
+        .header("access-control-allow-methods", "GET, POST, OPTIONS")
+        .header(
+            "access-control-allow-headers",
+            "Content-Type, Authorization",
+        )
+        .header("access-control-max-age", "600");
+    if let Some(origin) = allowed_origin {
+        builder = builder
+            .header("access-control-allow-origin", origin)
+            .header("vary", "Origin");
+    }
+    if private_network {
+        builder = builder.header("access-control-allow-private-network", "true");
+    }
+    builder
+        .body(Full::new(Bytes::new()))
+        .expect("static headers always produce a valid response")
+}
+
+fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    let is_upgrade = headers
+        .get(UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    let has_connection_upgrade = headers
+        .get(CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
+    is_upgrade && has_connection_upgrade
+}
+
+/// A `Sec-WebSocket-Key` is always the base64 encoding of a 16-byte nonce: 24 characters, the
+/// last two of which are the `==` padding forced by 16 not being a multiple of 3.
+fn is_valid_ws_key(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    bytes.len() == 24
+        && bytes.ends_with(b"==")
+        && bytes[..22]
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+}
+
+fn handle_ws_upgrade(
+    req: Request<Incoming>,
+    allowed_origin: Option<&str>,
+    sessions: SessionManager,
+    config: ServerConfig,
+    permit_cell: PermitCell,
+) -> Response<Full<Bytes>> {
+    let version_ok = req
+        .headers()
+        .get("sec-websocket-version")
+        .and_then(|v| v.to_str().ok())
+        == Some("13");
+    let key = req
+        .headers()
+        .get("sec-websocket-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|k| version_ok && is_valid_ws_key(k))
+        .map(str::to_string);
+
+    let Some(key) = key else {
+        return respond(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":"invalid websocket upgrade"}"#,
+            allowed_origin,
+        );
+    };
+    let accept_key = derive_accept_key(key.as_bytes());
+
+    let workspace_root = config.workspace_root.clone();
+    tokio::spawn(async move {
+        // Claim the connection's accept permit for the life of the WebSocket session, instead
+        // of letting it release when the HTTP dispatch for this upgrade request completes: an
+        // open WebSocket must keep counting against `max_connections`.
+        let _permit = permit_cell
+            .lock()
+            .expect("permit cell mutex poisoned")
+            .take();
+        match hyper::upgrade::on(req).await {
+            Ok(upgraded) => {
+                let ws_config = WebSocketConfig::default()
+                    .max_message_size(Some(MAX_WS_MESSAGE))
+                    .max_frame_size(Some(MAX_WS_MESSAGE));
+                let ws_stream = WebSocketStream::from_raw_socket(
+                    TokioIo::new(upgraded),
+                    Role::Server,
+                    Some(ws_config),
+                )
+                .await;
+                handle_websocket(ws_stream, sessions, workspace_root).await;
+            }
+            Err(err) => eprintln!("bridge: websocket upgrade failed: {err}"),
+        }
+    });
+
+    let mut builder = Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("upgrade", "websocket")
+        .header("connection", "upgrade")
+        .header("sec-websocket-accept", accept_key);
+    if let Some(origin) = allowed_origin {
+        builder = builder
+            .header("access-control-allow-origin", origin)
+            .header("vary", "Origin");
+    }
+    builder
+        .body(Full::new(Bytes::new()))
+        .expect("static headers always produce a valid response")
+}
+
+async fn handle_exec(
+    req: Request<Incoming>,
+    allowed_origin: Option<&str>,
+    config: &ServerConfig,
+) -> Response<Full<Bytes>> {
+    let payload: ExecPayload = match read_json(req.into_body(), config.limits.max_body).await {
+        Ok(p) => p,
+        Err(HttpError::TooLarge) => {
+            return respond(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                r#"{"error":"payload too large"}"#,
+                allowed_origin,
             );
-            let _ = stream.write_all(resp.as_bytes()).await;
-            return;
+        }
+        Err(HttpError::BadRequest(msg)) => {
+            return respond(
+                StatusCode::BAD_REQUEST,
+                &serde_json::json!({ "error": msg }).to_string(),
+                allowed_origin,
+            );
         }
     };
 
-    let payload: ExecPayload = match serde_json::from_str(body) {
-        Ok(p) => p,
-        Err(e) => {
-            let mut cors_headers = String::new();
-            if let Some(ref orig) = echo_origin {
-                cors_headers = format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
+    let effective_cwd =
+        match crate::paths::resolve_in_root(&config.workspace_root, payload.cwd.as_deref()) {
+            Ok(p) => p,
+            Err(err) => {
+                return respond(
+                    StatusCode::BAD_REQUEST,
+                    &serde_json::json!({ "error": err }).to_string(),
+                    allowed_origin,
+                );
             }
-            let err_json = serde_json::json!({ "error": format!("invalid JSON: {e}") }).to_string();
-            let resp = format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
-                err_json.len(),
-                err_json
-            );
-            let _ = stream.write_all(resp.as_bytes()).await;
-            return;
-        }
-    };
-
-    let effective_cwd = match crate::paths::resolve_in_root(
-        &config.workspace_root,
-        payload.cwd.as_deref(),
-    ) {
-        Ok(p) => p,
-        Err(err) => {
-            let err_json = serde_json::json!({ "error": err }).to_string();
-            let mut cors_headers = String::new();
-            if let Some(ref orig) = echo_origin {
-                cors_headers = format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
-            }
-            let resp = format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
-                err_json.len(),
-                err_json
-            );
-            let _ = stream.write_all(resp.as_bytes()).await;
-            return;
-        }
-    };
+        };
 
     let outcome =
         execute_command_direct(&payload.command, &effective_cwd, payload.timeout_seconds).await;
-    let (status, resp_body) = match outcome {
-        Ok(res) => ("200 OK", serde_json::to_string(&res).unwrap_or_default()),
-        Err(err) => (
-            "500 Internal Server Error",
-            serde_json::json!({ "error": err }).to_string(),
+    match outcome {
+        Ok(res) => respond(
+            StatusCode::OK,
+            &serde_json::to_string(&res).unwrap_or_default(),
+            allowed_origin,
         ),
-    };
-
-    let mut cors_headers = String::new();
-    if let Some(ref orig) = echo_origin {
-        cors_headers = format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
+        Err(err) => respond(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &serde_json::json!({ "error": err }).to_string(),
+            allowed_origin,
+        ),
     }
-
-    let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
-        resp_body.len(),
-        resp_body
-    );
-    let _ = stream.write_all(resp.as_bytes()).await;
 }
 
-async fn handle_http_git<S>(mut stream: S, config: &ServerConfig, method: &str, path: &str)
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let mut buf = Vec::with_capacity(4096);
-    let mut temp = [0u8; 1024];
+async fn handle_git(
+    req: Request<Incoming>,
+    allowed_origin: Option<&str>,
+    config: &ServerConfig,
+) -> Response<Full<Bytes>> {
+    let method = req.method().as_str().to_string();
+    let path = req.uri().path().to_string();
+    let is_get = method == "GET";
 
-    loop {
-        match stream.read(&mut temp).await {
-            Ok(0) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&temp[..n]);
-                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-                if buf.len() > MAX_HEAD_SIZE {
-                    let resp = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                    let _ = stream.write_all(resp.as_bytes()).await;
-                    return;
-                }
-            }
-            Err(_) => return,
-        }
-    }
-
-    let req_str = String::from_utf8_lossy(&buf);
-    let (head, body) = match req_str.split_once("\r\n\r\n") {
-        Some((h, b)) => (h, b),
-        None => ("", ""),
-    };
-
-    let host = header(head, "Host");
-    let origin = header(head, "Origin");
-    let content_type = header(head, "Content-Type");
-
-    let echo_origin = match check_request(host, origin, method, content_type, config) {
-        Ok(o) => o,
-        Err(status_code) => {
-            let (status_text, err_body) = match status_code {
-                403 => ("403 Forbidden", "{\"error\":\"forbidden\"}"),
-                415 => (
-                    "415 Unsupported Media Type",
-                    "{\"error\":\"unsupported media type: application/json required\"}",
-                ),
-                _ => ("400 Bad Request", "{\"error\":\"bad request\"}"),
-            };
-            let resp = format!(
-                "HTTP/1.1 {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                err_body.len(),
-                err_body
+    let body_bytes = match read_body(req.into_body(), config.limits.max_body).await {
+        Ok(b) => b,
+        Err(HttpError::TooLarge) => {
+            return respond(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                r#"{"error":"payload too large"}"#,
+                allowed_origin,
             );
-            let _ = stream.write_all(resp.as_bytes()).await;
-            return;
+        }
+        Err(HttpError::BadRequest(msg)) => {
+            return respond(
+                StatusCode::BAD_REQUEST,
+                &serde_json::json!({ "error": msg }).to_string(),
+                allowed_origin,
+            );
         }
     };
 
-    let repo_dir_opt = if method == "GET" && body.trim().is_empty() {
+    let repo_dir_opt = if is_get && body_bytes.is_empty() {
         None
     } else {
-        match serde_json::from_str::<serde_json::Value>(body) {
+        match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
             Ok(v) => v
                 .get("cwd")
                 .and_then(|c| c.as_str().filter(|s| !s.is_empty()).map(String::from)),
-            Err(e) => {
-                let err_json =
-                    serde_json::json!({ "error": format!("invalid JSON: {e}") }).to_string();
-                let mut cors_headers = String::new();
-                if let Some(ref orig) = echo_origin {
-                    cors_headers =
-                        format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
-                }
-                let resp = format!(
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
-                    err_json.len(),
-                    err_json
+            Err(err) => {
+                return respond(
+                    StatusCode::BAD_REQUEST,
+                    &serde_json::json!({ "error": format!("invalid JSON: {err}") }).to_string(),
+                    allowed_origin,
                 );
-                let _ = stream.write_all(resp.as_bytes()).await;
-                return;
             }
         }
     };
@@ -652,40 +585,23 @@ where
     let repo_dir = match repo_dir_opt {
         Some(d) => match crate::paths::resolve_in_root(&config.workspace_root, Some(&d)) {
             Ok(p) => p,
-            Err(e) => {
-                let err_json = serde_json::json!({ "error": e }).to_string();
-                let mut cors_headers = String::new();
-                if let Some(ref orig) = echo_origin {
-                    cors_headers =
-                        format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
-                }
-                let resp = format!(
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
-                    err_json.len(),
-                    err_json
+            Err(err) => {
+                return respond(
+                    StatusCode::BAD_REQUEST,
+                    &serde_json::json!({ "error": err }).to_string(),
+                    allowed_origin,
                 );
-                let _ = stream.write_all(resp.as_bytes()).await;
-                return;
             }
         },
         None => {
-            if method == "GET" {
+            if is_get {
                 config.workspace_root.clone()
             } else {
-                let err_json =
-                    serde_json::json!({ "error": "cwd is missing or empty" }).to_string();
-                let mut cors_headers = String::new();
-                if let Some(ref orig) = echo_origin {
-                    cors_headers =
-                        format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
-                }
-                let resp = format!(
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n{cors_headers}Content-Length: {}\r\n\r\n{}",
-                    err_json.len(),
-                    err_json
+                return respond(
+                    StatusCode::BAD_REQUEST,
+                    r#"{"error":"cwd is missing or empty"}"#,
+                    allowed_origin,
                 );
-                let _ = stream.write_all(resp.as_bytes()).await;
-                return;
             }
         }
     };
@@ -705,7 +621,7 @@ where
         }
     }
 
-    let result: Result<String, HandlerError> = match (method, path) {
+    let result: Result<String, HandlerError> = match (method.as_str(), path.as_str()) {
         ("GET", "/git/status") | ("POST", "/git/status") => crate::git::get_repo_status(&repo_dir)
             .await
             .map(|s| serde_json::to_string(&s).unwrap_or_default())
@@ -715,7 +631,7 @@ where
             struct DiffReq {
                 path: Option<String>,
             }
-            let req: DiffReq = serde_json::from_str(body).unwrap_or_default();
+            let req: DiffReq = serde_json::from_slice(&body_bytes).unwrap_or_default();
             crate::git::get_repo_diff(&repo_dir, req.path.as_deref())
                 .await
                 .map(|d| serde_json::json!({ "diff": d }).to_string())
@@ -726,7 +642,7 @@ where
             struct ShowReq {
                 path: Option<String>,
             }
-            let req: ShowReq = serde_json::from_str(body).unwrap_or_default();
+            let req: ShowReq = serde_json::from_slice(&body_bytes).unwrap_or_default();
             match req.path {
                 Some(p) => crate::git::get_file_at_head(&repo_dir, &p)
                     .await
@@ -742,7 +658,7 @@ where
                 .map_err(HandlerError::from)
         }
         ("POST", "/git/commit") => {
-            match serde_json::from_str::<openwebide_core::GitCommitRequest>(body) {
+            match serde_json::from_slice::<openwebide_core::GitCommitRequest>(&body_bytes) {
                 Ok(req) => crate::git::commit_changes(&repo_dir, &req)
                     .await
                     .map(|r| serde_json::to_string(&r).unwrap_or_default())
@@ -753,7 +669,7 @@ where
             }
         }
         ("POST", "/git/checkout") => {
-            match serde_json::from_str::<openwebide_core::GitCheckoutRequest>(body) {
+            match serde_json::from_slice::<openwebide_core::GitCheckoutRequest>(&body_bytes) {
                 Ok(req) => crate::git::checkout_branch(&repo_dir, &req)
                     .await
                     .map(|r| serde_json::to_string(&r).unwrap_or_default())
@@ -764,7 +680,7 @@ where
             }
         }
         ("POST", "/git/sync") => {
-            match serde_json::from_str::<openwebide_core::GitSyncRequest>(body) {
+            match serde_json::from_slice::<openwebide_core::GitSyncRequest>(&body_bytes) {
                 Ok(req) => crate::git::sync_repo(&repo_dir, &req)
                     .await
                     .map(|r| serde_json::to_string(&r).unwrap_or_default())
@@ -779,29 +695,19 @@ where
         ))),
     };
 
-    let (status, resp_body) = match result {
-        Ok(json) => ("200 OK", json),
-        Err(HandlerError::BadRequest(err)) => (
-            "400 Bad Request",
-            serde_json::json!({ "error": err }).to_string(),
+    match result {
+        Ok(json) => respond(StatusCode::OK, &json, allowed_origin),
+        Err(HandlerError::BadRequest(err)) => respond(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": err }).to_string(),
+            allowed_origin,
         ),
-        Err(HandlerError::Internal(err)) => (
-            "500 Internal Server Error",
-            serde_json::json!({ "error": err }).to_string(),
+        Err(HandlerError::Internal(err)) => respond(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &serde_json::json!({ "error": err }).to_string(),
+            allowed_origin,
         ),
-    };
-
-    let mut cors_headers = String::new();
-    if let Some(ref orig) = echo_origin {
-        cors_headers = format!("Access-Control-Allow-Origin: {orig}\r\nVary: Origin\r\n");
     }
-
-    let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{cors_headers}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: {}\r\n\r\n{}",
-        resp_body.len(),
-        resp_body
-    );
-    let _ = stream.write_all(resp.as_bytes()).await;
 }
 
 async fn handle_websocket<S>(
@@ -815,8 +721,23 @@ async fn handle_websocket<S>(
     let mut attached_rx: Option<tokio::sync::broadcast::Receiver<BridgeServerMessage>> = None;
     let mut attached_id: Option<String> = None;
 
+    let mut ping_interval =
+        tokio::time::interval_at(Instant::now() + WS_PING_INTERVAL, WS_PING_INTERVAL);
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut idle_deadline = Instant::now() + WS_IDLE_TIMEOUT;
+
     loop {
         tokio::select! {
+            _ = ping_interval.tick() => {
+                if ws_stream.send(Message::Ping(Bytes::new())).await.is_err() {
+                    break;
+                }
+            }
+
+            () = tokio::time::sleep_until(idle_deadline) => {
+                break;
+            }
+
             // Outbound message from attached session broadcast
             msg_opt = async {
                 if let Some(rx) = attached_rx.as_mut() {
@@ -835,6 +756,7 @@ async fn handle_websocket<S>(
             // Inbound WebSocket message from client
             inbound = ws_stream.next() => {
                 let Some(msg_res) = inbound else { break };
+                idle_deadline = Instant::now() + WS_IDLE_TIMEOUT;
                 let msg = match msg_res {
                     Ok(m) => m,
                     Err(_) => break,
@@ -1181,6 +1103,49 @@ mod tests {
                 &cfg,
             ),
             Ok(None)
+        );
+    }
+
+    /// A listener that fails its first `accept` and delegates every later call to a real one.
+    struct FlakyListener {
+        inner: TcpListener,
+        failed_once: std::sync::atomic::AtomicBool,
+    }
+
+    impl Accept for FlakyListener {
+        async fn accept(&self) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+            if !self
+                .failed_once
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(std::io::Error::other("simulated accept failure"));
+            }
+            self.inner.accept().await
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_loop_survives_errors() {
+        let inner = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = inner.local_addr().unwrap().port();
+        let flaky = FlakyListener {
+            inner,
+            failed_once: std::sync::atomic::AtomicBool::new(false),
+        };
+        let config = ServerConfig::new(std::env::temp_dir());
+        tokio::spawn(run_accept_loop(flaky, config));
+
+        // Give the loop time to hit its fake error and back off before retrying.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let connected = tokio::time::timeout(
+            Duration::from_secs(1),
+            TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await;
+        assert!(
+            matches!(connected, Ok(Ok(_))),
+            "accept loop should still be serving after a transient accept error"
         );
     }
 }
