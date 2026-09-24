@@ -6,13 +6,14 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use openwebide_core::{
-    FileEntry, SearchHit, Vfs, VfsFuture, find_content_matches, vfs::SearchOptions,
+    FileEntry, SearchHit, Vfs, VfsFuture, find_content_matches,
+    vfs::{SearchOptions, skip_dir},
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    Blob, DirectoryPickerOptions, FileSystemDirectoryHandle, FileSystemFileHandle,
+    Blob, DirectoryPickerOptions, File, FileSystemDirectoryHandle, FileSystemFileHandle,
     FileSystemGetDirectoryOptions, FileSystemHandle, FileSystemHandleKind,
     FileSystemPermissionMode, FileSystemWritableFileStream,
 };
@@ -228,11 +229,10 @@ pub async fn search_content(
     dir: &str,
     opts: SearchOptions,
 ) -> Result<Vec<SearchHit>, String> {
-    let _ = opts;
     ensure_permission(root).await?;
     let start = resolve_dir(root, dir).await?;
     let mut results = Vec::new();
-    content_search_recursive(&start, dir, query, &mut results).await?;
+    content_search_recursive(&start, dir, query, opts, &mut results).await?;
     Ok(results)
 }
 
@@ -401,47 +401,86 @@ async fn dir_entries(
         .map(|pairs| pairs.into_iter().map(|(entry, _)| entry).collect())
 }
 
+/// Cap on total hits a local content search returns, across the whole walk.
+const MAX_SEARCH_HITS: usize = 500;
+/// Files larger than this are skipped by local content search without being read.
+const MAX_SEARCH_FILE_BYTES: u64 = 1_048_576;
+
 async fn content_search_recursive(
     dir_handle: &FileSystemDirectoryHandle,
     prefix: &str,
     query: &str,
+    opts: SearchOptions,
     results: &mut Vec<SearchHit>,
 ) -> Result<(), String> {
+    if results.len() >= MAX_SEARCH_HITS {
+        return Ok(());
+    }
     let pairs = dir_entries_with_handles(dir_handle, prefix).await?;
     for (entry, handle) in pairs {
+        if results.len() >= MAX_SEARCH_HITS {
+            break;
+        }
         if entry.is_dir {
-            if let Some(sub) = handle.dyn_ref::<FileSystemDirectoryHandle>() {
-                Box::pin(content_search_recursive(sub, &entry.path, query, results)).await?;
+            if skip_dir(&entry.name, opts) {
+                continue;
             }
-        } else if let Some(file) = handle.dyn_ref::<FileSystemFileHandle>()
-            && let Ok(content) = file_handle_text(file).await
-        {
-            for (line, text) in find_content_matches(&content, query) {
-                results.push(SearchHit {
-                    path: entry.path.clone(),
-                    line,
-                    text,
-                });
+            if let Some(sub) = handle.dyn_ref::<FileSystemDirectoryHandle>() {
+                Box::pin(content_search_recursive(
+                    sub,
+                    &entry.path,
+                    query,
+                    opts,
+                    results,
+                ))
+                .await?;
+            }
+        } else if let Some(file) = handle.dyn_ref::<FileSystemFileHandle>() {
+            let Ok(file) = file_handle_file(file).await else {
+                continue;
+            };
+            if file.size() > MAX_SEARCH_FILE_BYTES as f64 {
+                continue;
+            }
+            if let Ok(content) = file_to_text(&file).await {
+                for (line, text) in find_content_matches(&content, query) {
+                    if results.len() >= MAX_SEARCH_HITS {
+                        break;
+                    }
+                    results.push(SearchHit {
+                        path: entry.path.clone(),
+                        line,
+                        text,
+                    });
+                }
             }
         }
     }
     Ok(())
 }
 
-/// Read a file handle's contents as text.
-async fn file_handle_text(file: &FileSystemFileHandle) -> Result<String, String> {
+/// Fetch a file handle's `File`, so its size can be checked before reading.
+async fn file_handle_file(file: &FileSystemFileHandle) -> Result<File, String> {
     let file_value = JsFuture::from(file.get_file())
         .await
         .map_err(|e| js_error(&e))?;
-    let blob: Blob = file_value
-        .dyn_into()
-        .map_err(|_| "not a file".to_string())?;
-    let buffer = JsFuture::from(blob.array_buffer())
+    file_value.dyn_into().map_err(|_| "not a file".to_string())
+}
+
+/// Read a `File`'s contents as text.
+async fn file_to_text(file: &File) -> Result<String, String> {
+    let buffer = JsFuture::from(file.array_buffer())
         .await
         .map_err(|e| js_error(&e))?;
     let u8_array = js_sys::Uint8Array::new(&buffer);
     let vec = u8_array.to_vec();
     String::from_utf8(vec).map_err(|_| "file is not valid UTF-8".to_string())
+}
+
+/// Read a file handle's contents as text.
+async fn file_handle_text(file: &FileSystemFileHandle) -> Result<String, String> {
+    let file = file_handle_file(file).await?;
+    file_to_text(&file).await
 }
 
 /// Split `path` into its parent directory and file name.
