@@ -128,6 +128,21 @@ pub async fn sanitize(resolver: &impl PathResolver, rel: &str) -> Result<String>
     Ok(resolved.join("/"))
 }
 
+/// Whether a directory exists at the mount-relative path `rel`, for the
+/// migration probe. The path is checked lexically first (the same escape
+/// rules [`sanitize`] enforces: no absolute paths, `..`, or `.spin`), then
+/// probed with a sync `std::fs::metadata` on the preopened mount (the same
+/// path form `git.rs` already uses with `std::fs`); `false` on any error.
+pub fn dir_exists(rel: &str) -> bool {
+    if rel.starts_with('/') {
+        return false;
+    }
+    if rel.split('/').any(|c| c == ".." || c == ".spin") {
+        return false;
+    }
+    std::fs::metadata(rel).is_ok_and(|m| m.is_dir())
+}
+
 /// Open a directory at a workspace-relative path (empty = the root).
 async fn dir_at(rel: &str) -> Result<Descriptor> {
     let root = root()?;

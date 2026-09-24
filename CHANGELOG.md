@@ -27,6 +27,7 @@ for what's still ahead.
 
 - **\"New file\" no longer truncates an existing file:** creating a file at a path that already exists now returns an error (HTTP 409 in remote mode, an error banner in local mode) and leaves the file's content untouched. Agent `write_file` to a new local-mode path now works correctly.
 - **Auth correctness:** the token-signing secret is now created with an atomic insert-if-absent, so concurrent first requests can no longer write different secrets and invalidate issued tokens, and token expiry checks fail closed with a 500 instead of accepting every token when the system clock is unavailable.
+- **Docker project-path migration:** Remote project paths created before the `/workspace` mount (stored relative to the container root, e.g. `workspace/foo`) are rewritten automatically on first start, so projects from older Docker installs no longer appear missing after an upgrade.
 
 ### Changed
 

@@ -10,8 +10,8 @@ pub type AppDb = openwebide_storage::spin_db::SpinDb;
 pub type AppDb = openwebide_storage::rusqlite_db::RusqliteDb;
 
 /// Spin components are stateless: each request gets a fresh connection to
-/// the `sqlite` capability. The schema is created with idempotent DDL, so
-/// re-applying migrations per request is cheap.
+/// the `sqlite` capability. Migrations are version-gated by `PRAGMA
+/// user_version`, so an up-to-date schema costs a single read per request.
 pub struct AppState {
     pub store: Store<AppDb>,
     /// The authenticated account for this request, set by the router after
@@ -29,7 +29,10 @@ impl AppState {
         #[cfg(not(target_family = "wasm"))]
         let db = AppDb::open_in_memory().context("open in-memory sqlite database")?;
         let store = Store::new(db);
-        store.migrate().await.context("apply schema migrations")?;
+        store
+            .migrate_with(&crate::files::dir_exists)
+            .await
+            .context("apply schema migrations")?;
         Ok(Self {
             store,
             current_user: None,

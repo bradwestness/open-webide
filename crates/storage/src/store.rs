@@ -45,7 +45,17 @@ impl<D: Db> Store<D> {
 
     /// Apply idempotent schema migrations.
     pub async fn migrate(&self) -> Result<(), StorageError> {
-        migrations::apply(&self.db).await
+        self.migrate_with(&|_| false).await
+    }
+
+    /// Apply schema migrations, letting `probe` ("does this mount-relative
+    /// directory exist?") answer the filesystem questions the steps ask
+    /// (the Docker path rewrite).
+    pub async fn migrate_with(
+        &self,
+        probe: &(dyn Fn(&str) -> bool + Send + Sync),
+    ) -> Result<(), StorageError> {
+        migrations::apply(&self.db, probe).await
     }
 
     // -- users -------------------------------------------------------------
@@ -547,8 +557,23 @@ impl<D: Db> Store<D> {
     ) -> Result<Project, StorageError> {
         // Re-opening a folder that already has a project returns that
         // project instead of creating a duplicate: closing a tab only hides
-        // it, so the same folder can be opened again later.
+        // it, so the same folder can be opened again later. The unique
+        // index on (user_id, mode, path) makes the insert race-free.
         if let Some(path) = &new.path {
+            self.db
+                .execute(
+                    "INSERT INTO projects (name, mode, path, user_id, created_at)
+                     VALUES (?, ?, ?, ?, ?)
+                     ON CONFLICT DO NOTHING",
+                    &[
+                        DbValue::Text(new.name.clone()),
+                        DbValue::Text(new.mode.as_str().into()),
+                        DbValue::Text(path.clone()),
+                        DbValue::Int(user_id),
+                        DbValue::Int(created_at),
+                    ],
+                )
+                .await?;
             let res = self
                 .db
                 .execute(
@@ -561,9 +586,12 @@ impl<D: Db> Store<D> {
                     ],
                 )
                 .await?;
-            if let Some(row) = res.rows.first() {
-                return self.get_project(row.get_int(0)?, user_id).await;
-            }
+            let id = res
+                .rows
+                .first()
+                .ok_or_else(|| StorageError::NotFound("project not found after insert".into()))?
+                .get_int(0)?;
+            return self.get_project(id, user_id).await;
         }
         let res = self
             .db
@@ -573,10 +601,7 @@ impl<D: Db> Store<D> {
                 &[
                     DbValue::Text(new.name.clone()),
                     DbValue::Text(new.mode.as_str().into()),
-                    new.path
-                        .as_ref()
-                        .map(|p| DbValue::Text(p.clone()))
-                        .unwrap_or(DbValue::Null),
+                    DbValue::Null,
                     DbValue::Int(user_id),
                     DbValue::Int(created_at),
                 ],
@@ -1747,11 +1772,109 @@ mod tests {
         });
     }
 
+    /// The database's current schema version (`PRAGMA user_version`).
+    async fn schema_version(db: &RusqliteDb) -> i64 {
+        db.execute("PRAGMA user_version", &[]).await.unwrap().rows[0]
+            .get_int(0)
+            .unwrap()
+    }
+
+    #[test]
+    fn migrate_sets_version_and_is_idempotent() {
+        let db = RusqliteDb::open_in_memory().unwrap();
+        block_on(async {
+            let store = Store::new(db);
+            store.migrate().await.unwrap();
+            assert_eq!(schema_version(&store.db).await, migrations::SCHEMA_VERSION);
+            // A second migrate is a no-op that keeps the version.
+            store.migrate().await.unwrap();
+            assert_eq!(schema_version(&store.db).await, migrations::SCHEMA_VERSION);
+        });
+    }
+
+    #[test]
+    fn migrate_when_current_does_no_work() {
+        let db = RusqliteDb::open_in_memory().unwrap();
+        block_on(async {
+            // A global setting set before the upgrade...
+            migrations::apply_through(&db, 1).await.unwrap();
+            let store = Store::new(db);
+            store.set_setting("theme", "dark").await.unwrap();
+            store.migrate().await.unwrap();
+            // ...is copied for users that exist at upgrade time. A user
+            // created later, even with migrate re-run, inherits nothing.
+            let user = store
+                .insert_user("late", "hash", UserRole::User, 2)
+                .await
+                .unwrap();
+            store.migrate().await.unwrap();
+            assert!(store.all_user_settings(user.id).await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn legacy_settings_copy_is_allow_listed() {
+        let db = RusqliteDb::open_in_memory().unwrap();
+        block_on(async {
+            // Stop before the legacy-settings copy step.
+            migrations::apply_through(&db, 6).await.unwrap();
+            let store = Store::new(db);
+            let user = store
+                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            store.set_setting("theme", "dark").await.unwrap();
+            store
+                .set_setting("web_search_api_key", "secret")
+                .await
+                .unwrap();
+            store.migrate().await.unwrap();
+            let settings = store.all_user_settings(user.id).await.unwrap();
+            assert_eq!(settings.len(), 1);
+            assert_eq!(settings.get("theme").map(String::as_str), Some("dark"));
+        });
+    }
+
+    #[test]
+    fn unversioned_database_replays_cleanly() {
+        let db = RusqliteDb::open_in_memory().unwrap();
+        block_on(async {
+            // A pre-versioning database: every object the old
+            // re-apply-at-startup created, but user_version still 0.
+            migrations::apply_through(&db, 9).await.unwrap();
+            let store = Store::new(db);
+            store.migrate().await.unwrap();
+            assert_eq!(schema_version(&store.db).await, migrations::SCHEMA_VERSION);
+        });
+    }
+
+    #[test]
+    fn newer_schema_is_rejected() {
+        let db = RusqliteDb::open_in_memory().unwrap();
+        block_on(async {
+            db.execute("PRAGMA user_version = 999", &[]).await.unwrap();
+            let store = Store::new(db);
+            let err = store.migrate().await.unwrap_err();
+            assert!(
+                err.to_string().contains("newer than this build"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
     #[test]
     fn test_migration_dedups_existing_projects() {
-        let store = test_store();
-        let user_id = test_user(&store, "alice", UserRole::Admin);
+        let db = RusqliteDb::open_in_memory().unwrap();
         block_on(async {
+            // Stop before the dedup step: a fully migrated schema would
+            // reject the duplicate insert below via the unique index.
+            migrations::apply_through(&db, 5).await.unwrap();
+            let store = Store::new(db);
+            let user = store
+                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+
             // Directly insert two projects with the exact same path
             store.db.execute(
                 "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -1759,7 +1882,7 @@ mod tests {
                     DbValue::Text("dup1".into()),
                     DbValue::Text("remote".into()),
                     DbValue::Text("repos/dup".into()),
-                    DbValue::Int(user_id),
+                    DbValue::Int(user.id),
                     DbValue::Int(100),
                 ],
             ).await.unwrap();
@@ -1778,7 +1901,7 @@ mod tests {
                     DbValue::Text("dup2".into()),
                     DbValue::Text("remote".into()),
                     DbValue::Text("repos/dup".into()),
-                    DbValue::Int(user_id),
+                    DbValue::Int(user.id),
                     DbValue::Int(200),
                 ],
             ).await.unwrap();
@@ -1797,25 +1920,132 @@ mod tests {
                 &[
                     DbValue::Text("session-on-dup".into()),
                     DbValue::Int(p2_id),
-                    DbValue::Int(user_id),
+                    DbValue::Int(user.id),
                     DbValue::Int(250),
                 ],
             ).await.unwrap();
 
-            assert_eq!(store.list_projects(user_id).await.unwrap().len(), 2);
+            assert_eq!(store.list_projects(user.id).await.unwrap().len(), 2);
 
-            // Run migration apply
-            crate::migrations::apply(&store.db).await.unwrap();
+            // Run the rest of the migration
+            store.migrate().await.unwrap();
 
             // Now there should be only 1 project
-            let projs = store.list_projects(user_id).await.unwrap();
+            let projs = store.list_projects(user.id).await.unwrap();
             assert_eq!(projs.len(), 1);
             assert_eq!(projs[0].id, p1_id);
 
             // And the session on p2 was reassigned to p1
-            let sessions = store.list_sessions(user_id).await.unwrap();
+            let sessions = store.list_sessions(user.id).await.unwrap();
             assert_eq!(sessions.len(), 1);
             assert_eq!(sessions[0].project_id, Some(p1_id));
+        });
+    }
+
+    #[test]
+    fn docker_workspace_paths_rewritten() {
+        let db = RusqliteDb::open_in_memory().unwrap();
+        block_on(async {
+            // Stop before the rewrite step.
+            migrations::apply_through(&db, 10).await.unwrap();
+            let store = Store::new(db);
+            let user = store
+                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            // A Docker install from before the /workspace mount.
+            store.db.execute(
+                "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    DbValue::Text("app".into()),
+                    DbValue::Text("remote".into()),
+                    DbValue::Text("workspace/foo".into()),
+                    DbValue::Int(user.id),
+                    DbValue::Int(100),
+                ],
+            ).await.unwrap();
+
+            // The mount has `foo` but not the stale `workspace/foo`.
+            let probe = |rel: &str| rel == "foo";
+            store.migrate_with(&probe).await.unwrap();
+            let projs = store.list_projects(user.id).await.unwrap();
+            assert_eq!(projs[0].path.as_deref(), Some("foo"));
+
+            // A second migrate is a no-op.
+            store.migrate_with(&probe).await.unwrap();
+            let projs = store.list_projects(user.id).await.unwrap();
+            assert_eq!(projs.len(), 1);
+            assert_eq!(projs[0].path.as_deref(), Some("foo"));
+        });
+    }
+
+    #[test]
+    fn local_workspace_folder_untouched() {
+        let db = RusqliteDb::open_in_memory().unwrap();
+        block_on(async {
+            migrations::apply_through(&db, 10).await.unwrap();
+            let store = Store::new(db);
+            let user = store
+                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            store.db.execute(
+                "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    DbValue::Text("app".into()),
+                    DbValue::Text("remote".into()),
+                    DbValue::Text("workspace/foo".into()),
+                    DbValue::Int(user.id),
+                    DbValue::Int(100),
+                ],
+            ).await.unwrap();
+
+            // A local install where `workspace/foo` really exists.
+            let probe = |rel: &str| rel == "workspace/foo";
+            store.migrate_with(&probe).await.unwrap();
+            let projs = store.list_projects(user.id).await.unwrap();
+            assert_eq!(projs[0].path.as_deref(), Some("workspace/foo"));
+        });
+    }
+
+    #[test]
+    fn docker_rewrite_skips_conflict() {
+        let db = RusqliteDb::open_in_memory().unwrap();
+        block_on(async {
+            migrations::apply_through(&db, 10).await.unwrap();
+            let store = Store::new(db);
+            let user = store
+                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            // The owner already has a project at the stripped path.
+            store.db.execute(
+                "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    DbValue::Text("app".into()),
+                    DbValue::Text("remote".into()),
+                    DbValue::Text("foo".into()),
+                    DbValue::Int(user.id),
+                    DbValue::Int(100),
+                ],
+            ).await.unwrap();
+            store.db.execute(
+                "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    DbValue::Text("app-old".into()),
+                    DbValue::Text("remote".into()),
+                    DbValue::Text("workspace/foo".into()),
+                    DbValue::Int(user.id),
+                    DbValue::Int(200),
+                ],
+            ).await.unwrap();
+
+            let probe = |rel: &str| rel == "foo";
+            store.migrate_with(&probe).await.unwrap();
+            let projs = store.list_projects(user.id).await.unwrap();
+            assert_eq!(projs.len(), 2);
+            assert_eq!(projs[0].path.as_deref(), Some("foo"));
+            assert_eq!(projs[1].path.as_deref(), Some("workspace/foo"));
         });
     }
 

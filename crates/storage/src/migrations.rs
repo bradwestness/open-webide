@@ -1,11 +1,23 @@
 //! Schema migrations.
 //!
-//! Spin has no automatic migration runner, so the app re-applies this
-//! idempotent DDL at startup; every statement is a no-op once its object
-//! exists.
+//! Spin has no automatic migration runner, so the app applies migrations
+//! on every request. Migrations are version-gated with `PRAGMA
+//! user_version`: each numbered step runs exactly once, and a database
+//! whose version is newer than this build's [`SCHEMA_VERSION`] refuses to
+//! start (a rollback deploy fails loudly).
+//!
+//! Rules for changing the schema:
+//! - Append a new numbered step at the end of [`apply_step`] and bump
+//!   [`SCHEMA_VERSION`].
+//! - Every step must stay idempotent: pre-versioning databases start at
+//!   version 0 and replay every step.
+//! - Never edit or reorder a shipped step.
 
 use crate::StorageError;
 use crate::db::Db;
+
+/// The highest schema version this build knows how to apply.
+pub const SCHEMA_VERSION: i64 = 11;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -87,18 +99,91 @@ pub const MIGRATIONS: &[&str] = &[
     )",
 ];
 
-pub async fn apply<D: Db>(db: &D) -> Result<(), StorageError> {
-    for stmt in MIGRATIONS {
-        db.execute(stmt, &[]).await?;
+/// Run one numbered migration step (1-based, in landing order). `probe`
+/// answers "does this mount-relative directory exist?" and is only
+/// consulted by step 11.
+async fn apply_step<D: Db>(
+    db: &D,
+    step: i64,
+    probe: &(dyn Fn(&str) -> bool + Send + Sync),
+) -> Result<(), StorageError> {
+    match step {
+        1 => {
+            for stmt in MIGRATIONS {
+                db.execute(stmt, &[]).await?;
+            }
+            Ok(())
+        }
+        2 => add_session_system_prompt_column(db).await,
+        3 => add_session_project_column(db).await,
+        4 => add_project_user_column(db).await,
+        5 => add_session_user_column(db).await,
+        6 => dedup_duplicate_projects(db).await,
+        7 => migrate_legacy_settings_to_user_settings(db).await,
+        8 => add_message_usage_columns(db).await,
+        9 => add_connection_context_limit_column(db).await,
+        10 => create_project_path_index(db).await,
+        11 => rewrite_docker_workspace_paths(db, probe).await,
+        other => Err(StorageError::Db(format!("unknown migration step {other}"))),
     }
-    add_session_system_prompt_column(db).await?;
-    add_session_project_column(db).await?;
-    add_project_user_column(db).await?;
-    add_session_user_column(db).await?;
-    dedup_duplicate_projects(db).await?;
-    migrate_legacy_settings_to_user_settings(db).await?;
-    add_message_usage_columns(db).await?;
-    add_connection_context_limit_column(db).await?;
+}
+
+/// Read the database's current schema version.
+async fn read_user_version<D: Db>(db: &D) -> Result<i64, StorageError> {
+    let res = db.execute("PRAGMA user_version", &[]).await?;
+    Ok(res
+        .rows
+        .first()
+        .map(|row| row.get_int(0))
+        .transpose()?
+        .unwrap_or(0))
+}
+
+/// Apply all pending migration steps up to [`SCHEMA_VERSION`].
+///
+/// `probe` answers "does this mount-relative directory exist?" for the
+/// steps that need the filesystem (step 11); pass `&|_| false` when there
+/// is no filesystem.
+pub async fn apply<D: Db>(
+    db: &D,
+    probe: &(dyn Fn(&str) -> bool + Send + Sync),
+) -> Result<(), StorageError> {
+    let version = read_user_version(db).await?;
+    if version == SCHEMA_VERSION {
+        return Ok(());
+    }
+    if version > SCHEMA_VERSION {
+        return Err(StorageError::Db(format!(
+            "database schema version {version} is newer than this build ({SCHEMA_VERSION})"
+        )));
+    }
+    db.transaction(|tx| async move {
+        // Re-read inside the transaction: a concurrent first request may
+        // have already migrated while we waited for the write lock.
+        let version = read_user_version(&tx).await?;
+        if version > SCHEMA_VERSION {
+            return Err(StorageError::Db(format!(
+                "database schema version {version} is newer than this build ({SCHEMA_VERSION})"
+            )));
+        }
+        for step in (version + 1)..=SCHEMA_VERSION {
+            apply_step(&tx, step, probe).await?;
+        }
+        // PRAGMA takes no bound parameters, so the version is formatted in.
+        tx.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), &[])
+            .await?;
+        Ok(())
+    })
+    .await
+}
+
+/// Run steps `1..=target` without touching `user_version`, simulating a
+/// pre-versioning database that an old build already migrated.
+#[cfg(test)]
+pub(crate) async fn apply_through<D: Db>(db: &D, target: i64) -> Result<(), StorageError> {
+    for step in 1..=target {
+        apply_step(db, step, &|_| false).await?;
+    }
     Ok(())
 }
 
@@ -153,10 +238,69 @@ async fn migrate_legacy_settings_to_user_settings<D: Db>(db: &D) -> Result<(), S
          SELECT u.id, s.key, s.value
          FROM users u
          CROSS JOIN settings s
-         WHERE s.key != 'auth_secret'",
+         WHERE s.key IN ('theme', 'default_connection', 'default_prompt')",
         &[],
     )
     .await?;
+    Ok(())
+}
+
+/// Unique index backing `create_project`'s dedup: one project per
+/// (owner, mode, path). Pathless projects are excluded, and SQLite treats
+/// NULL `user_id` values as distinct in unique indexes.
+async fn create_project_path_index<D: Db>(db: &D) -> Result<(), StorageError> {
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_owner_path
+         ON projects (user_id, mode, path) WHERE path IS NOT NULL",
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Rewrite pre-`/workspace`-mount Docker project paths. Before the mount,
+/// remote paths were stored relative to the container root
+/// (`workspace/foo`); now the mount root *is* `/workspace`, so those rows
+/// point at `/workspace/workspace/foo`. A row is rewritten to its
+/// `workspace/`-stripped form only when the stale directory is gone and
+/// the stripped one exists on the mount (so a local install that really
+/// has a `workspace/` folder is left alone). Rows whose owner already has
+/// a project at the stripped path are skipped (the unique index).
+async fn rewrite_docker_workspace_paths<D: Db>(
+    db: &D,
+    probe: &(dyn Fn(&str) -> bool + Send + Sync),
+) -> Result<(), StorageError> {
+    use crate::db::DbValue;
+    let res = db
+        .execute(
+            "SELECT id, path FROM projects WHERE mode = 'remote' AND path LIKE 'workspace/%'",
+            &[],
+        )
+        .await?;
+
+    for row in res.rows {
+        let id = row.get_int(0)?;
+        let path = row.get_text(1)?.to_string();
+        let Some(stripped) = path.strip_prefix("workspace/") else {
+            continue;
+        };
+        if probe(&path) || !probe(stripped) {
+            continue;
+        }
+        match db
+            .execute(
+                "UPDATE projects SET path = ? WHERE id = ?",
+                &[DbValue::Text(stripped.to_string()), DbValue::Int(id)],
+            )
+            .await
+        {
+            Ok(_) => {}
+            // Another project of the same owner already has the stripped
+            // path (unique index); leave this row as is.
+            Err(StorageError::Conflict(_)) => {}
+            Err(e) => return Err(e),
+        }
+    }
     Ok(())
 }
 

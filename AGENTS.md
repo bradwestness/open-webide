@@ -34,7 +34,7 @@ Instructions, conventions, and architectural principles for AI agents working on
   - WebAssembly microservices running on the **Fermyon Spin** runtime (`wasm32-wasip2`).
   - Implements REST and SSE endpoints for auth, workspace management, file I/O, LLM streaming, sessions, and settings.
 - **Storage (`crates/storage/`)**:
-  - SQLite storage layer. Spin has no migration runner, so `crates/storage/src/migrations.rs` re-applies a list of idempotent DDL statements at startup (`CREATE TABLE IF NOT EXISTS`, plus probe-`pragma_table_info`-then-`ALTER TABLE ADD COLUMN` for new columns); there is no schema-version table.
+  - SQLite storage layer. Spin has no migration runner, so `crates/storage/src/migrations.rs` applies version-gated migrations: `PRAGMA user_version` tracks the schema version against `SCHEMA_VERSION`, and each numbered step in `apply_step` runs once (every step stays idempotent, since pre-versioning databases start at 0 and replay). A database whose version is newer than the build refuses to start.
   - Supports user isolation, session histories, project metadata, and key-value user settings.
 - **Execution Bridge (`bridge/`)**:
   - Native daemon (`openwebide-bridge`) providing PTY terminal emulation, process execution, and host Git operations over WebSockets.
@@ -80,5 +80,5 @@ Instructions, conventions, and architectural principles for AI agents working on
 
 1. **Reactive State**: In Leptos components, prefer `RwSignal`, `Signal::derive`, and `Callback` with clear ownership. Avoid cloning heavy state needlessly inside reactive closures.
 2. **Error Handling**: Use structured error responses and bubble errors with `Result<T, ApiError>` in the backend and user-friendly error banners or notifications in the frontend.
-3. **Database Migrations**: Add new database changes as idempotent migrations in `crates/storage/src/migrations.rs` and update `Store` methods with corresponding unit tests in `crates/storage/src/store.rs`.
+3. **Database Migrations**: Append a numbered step in `apply_step` (`crates/storage/src/migrations.rs`), bump `SCHEMA_VERSION`, keep every step idempotent, and never edit a shipped step; update `Store` methods with corresponding unit tests in `crates/storage/src/store.rs`.
 4. **Resilience & Safe Layouts**: When implementing layout resizing, enforce sane minimum and maximum bounds to ensure critical panels (like the code editor or diff viewer) are never crushed.

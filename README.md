@@ -114,7 +114,7 @@ docker run -d -p 8080:3000 -v openwebide-data:/app/.spin -v ~/source:/workspace 
 ```
 
 > [!NOTE]
-> The workspace root (`/workspace`) is exposed to the file API and the agent — keep secrets out of it. The `.spin/` path is explicitly refused. If you override the Docker container's command (CMD), you must include both `--direct-mounts` and `--allow-transient-write`.
+> The workspace root (`/workspace`) is exposed to the file API and the agent — keep secrets out of it. The `.spin/` path is explicitly refused. If you override the Docker container's command (CMD), you must include both `--direct-mounts` and `--allow-transient-write`. Remote project paths created before the `/workspace` mount (stored relative to the container root, e.g. `workspace/foo`) are migrated automatically on first start — no manual SQL needed.
 
 On Linux with systemd, it can also run as a Podman quadlet service — see
 [docs/podman-quadlet.md](docs/podman-quadlet.md).

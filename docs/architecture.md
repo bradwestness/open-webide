@@ -66,8 +66,11 @@ changes) with two backends:
 - `SpinDb` — Spin's `sqlite` capability (wasm builds)
 - `RusqliteDb` — rusqlite (native builds and tests)
 
-`migrations` is a list of idempotent DDL statements re-applied at startup
-(Spin has no migration runner). `Store<D: Db>` holds the typed
+`migrations` applies version-gated steps (Spin has no migration runner):
+`PRAGMA user_version` is compared against `SCHEMA_VERSION`, and each numbered
+step in `apply_step` runs once while staying idempotent, so a pre-versioning
+database (version 0) replays every step. A database newer than the build
+refuses to start. `Store<D: Db>` holds the typed
 repositories: settings, connections, system prompts, sessions, messages.
 All repository logic is tested natively against an in-memory rusqlite DB.
 
@@ -75,7 +78,8 @@ All repository logic is tested natively against an in-memory rusqlite DB.
 
 A single `#[http_service]` entry point; routing is manual on
 `(method, path)`. Each request opens a fresh DB connection (Spin components
-are stateless) and re-applies the idempotent schema. Handlers:
+are stateless) and checks the schema version (migrations are version-gated,
+so an up-to-date schema costs one read). Handlers:
 
 | Method & path            | Purpose                          |
 | ------------------------ | -------------------------------- |
