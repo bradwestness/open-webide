@@ -17,8 +17,9 @@ use serde_json::json;
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReadFileArgs {
     pub path: String,
-    /// Forward-compatible fields: deserialized now, wired up in a later step.
+    /// 1-based line to start reading from (default: 1).
     pub offset: Option<u64>,
+    /// Maximum number of lines to return (default: 2000).
     pub limit: Option<u64>,
 }
 
@@ -40,7 +41,7 @@ pub struct ListDirArgs {
 pub struct SearchArgs {
     pub query: String,
     pub path: Option<String>,
-    /// Forward-compatible field: deserialized now, wired up in a later step.
+    /// Also search .git, target, node_modules, dist (default: false).
     pub include_ignored: Option<bool>,
 }
 
@@ -49,7 +50,7 @@ pub struct SearchArgs {
 pub struct GrepSearchArgs {
     pub query: String,
     pub path: Option<String>,
-    /// Forward-compatible field: deserialized now, wired up in a later step.
+    /// Also search .git, target, node_modules, dist (default: false).
     pub include_ignored: Option<bool>,
 }
 
@@ -207,7 +208,9 @@ impl ToolName {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Workspace-relative file path" }
+                        "path": { "type": "string", "description": "Workspace-relative file path" },
+                        "offset": { "type": "integer", "description": "1-based line to start reading from (default: 1)" },
+                        "limit": { "type": "integer", "description": "Maximum number of lines to return (default: 2000)" }
                     },
                     "required": ["path"]
                 }),
@@ -241,7 +244,8 @@ impl ToolName {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Substring to match against file paths" },
-                        "path": { "type": "string", "description": "Workspace-relative directory to search in (empty for root)" }
+                        "path": { "type": "string", "description": "Workspace-relative directory to search in (empty for root)" },
+                        "include_ignored": { "type": "boolean", "description": "Also search .git, target, node_modules, dist (default: false)" }
                     },
                     "required": ["query"]
                 }),
@@ -253,7 +257,8 @@ impl ToolName {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Search string to match across file lines" },
-                        "path": { "type": "string", "description": "Workspace-relative directory to restrict search (empty for root)" }
+                        "path": { "type": "string", "description": "Workspace-relative directory to restrict search (empty for root)" },
+                        "include_ignored": { "type": "boolean", "description": "Also search .git, target, node_modules, dist (default: false)" }
                     },
                     "required": ["query"]
                 }),

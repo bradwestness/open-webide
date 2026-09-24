@@ -8,7 +8,8 @@ use std::future::Future;
 use openwebide_core::{
     CommandOutcome, FileDiff, FileEntry, GitCheckoutRequest, GitCheckoutResult, GitCommitRequest,
     GitCommitResult, GitRepoStatus, ToolCall, ToolDefinition, Vfs, VfsError, WebSearchResult,
-    normalize_vfs_path, vfs::SearchOptions,
+    normalize_vfs_path,
+    vfs::{SearchOptions, skip_dir},
 };
 
 use crate::tools::{
@@ -16,6 +17,48 @@ use crate::tools::{
     ReadFileArgs, RunCommandArgs, SearchArgs, SearchWebArgs, Tool, ToolName, WriteFileArgs,
 };
 use crate::{ToolExecutor, ToolOutcome};
+
+/// Hard cap on a single tool's returned content, so one huge file/command
+/// output can't blow the model's context or the persisted transcript.
+pub const MAX_TOOL_CONTENT: usize = 64 * 1024;
+
+/// Hard cap on the number of matches `search`/`grep_search` return.
+const MAX_SEARCH_MATCHES: usize = 200;
+
+/// Truncate `s` to at most `max` bytes from the head, char-boundary safe,
+/// appending a marker noting how much was shown.
+fn cap_head(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let total = s.len();
+    let cut = s.floor_char_boundary(max);
+    let head = &s[..cut];
+    format!(
+        "{head}\n…[truncated: showing {} of {total} bytes]…",
+        head.len()
+    )
+}
+
+/// Truncate `s` keeping roughly its first quarter and last three quarters of
+/// `max` bytes (errors/results tend to land at the end of command/diff
+/// output), char-boundary safe, with a marker in between.
+fn cap_head_tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let total = s.len();
+    let head_budget = max / 4;
+    let tail_budget = max - head_budget;
+    let head_cut = s.floor_char_boundary(head_budget);
+    let head = &s[..head_cut];
+    let tail_start = s.ceil_char_boundary(total.saturating_sub(tail_budget));
+    let tail = &s[tail_start..];
+    format!(
+        "{head}\n…[truncated: showing {} of {total} bytes]…\n{tail}",
+        head.len() + tail.len()
+    )
+}
 
 /// The standard workspace tools offered to the agent model.
 pub fn vfs_tools() -> Vec<ToolDefinition> {
@@ -149,11 +192,26 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
 
         match self.vfs.read(&path).await {
             Ok(content) => {
-                let lines = content.lines().count();
+                let all_lines: Vec<&str> = content.lines().collect();
+                let total_lines = all_lines.len();
+                let offset = args.offset.unwrap_or(1).max(1) as usize;
+                let limit = args.limit.unwrap_or(2000).max(1) as usize;
+                let start = (offset - 1).min(total_lines);
+                let end = start.saturating_add(limit).min(total_lines);
+                let shown = &all_lines[start..end];
+                let mut windowed = shown.join("\n");
+                if end < total_lines {
+                    windowed.push_str(&format!(
+                        "\n…[truncated: showing lines {}-{} of {total_lines}; use offset={} to continue]…",
+                        offset,
+                        end,
+                        end + 1
+                    ));
+                }
                 ToolOutcome {
                     ok: true,
-                    content,
-                    summary: format!("read {path} ({lines} lines)"),
+                    content: windowed,
+                    summary: format!("read {path} ({} lines)", shown.len()),
                     diff: None,
                 }
             }
@@ -294,7 +352,11 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Err(e) => return fail("search", raw_path, &e.to_string()),
         };
 
-        match recursive_list(&self.vfs, &dir).await {
+        let opts = SearchOptions {
+            include_ignored: args.include_ignored.unwrap_or(false),
+        };
+
+        match recursive_list(&self.vfs, &dir, opts).await {
             Ok(entries) => {
                 let query_lower = query.to_lowercase();
                 let matches: Vec<_> = entries
@@ -306,11 +368,17 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
                 let content = if matches.is_empty() {
                     format!("no files matching '{query}'")
                 } else {
-                    matches
+                    let mut content = matches
                         .into_iter()
+                        .take(MAX_SEARCH_MATCHES)
                         .map(|e| e.path)
                         .collect::<Vec<_>>()
-                        .join("\n")
+                        .join("\n");
+                    let extra = count.saturating_sub(MAX_SEARCH_MATCHES);
+                    if extra > 0 {
+                        content.push_str(&format!("\n…and {extra} more"));
+                    }
+                    content
                 };
 
                 ToolOutcome {
@@ -332,20 +400,27 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Err(e) => return fail("grep_search", raw_path, &e.to_string()),
         };
 
-        match self
-            .vfs
-            .search_content(query, &dir, SearchOptions::default())
-            .await
-        {
+        let opts = SearchOptions {
+            include_ignored: args.include_ignored.unwrap_or(false),
+        };
+
+        match self.vfs.search_content(query, &dir, opts).await {
             Ok(hits) => {
                 let count = hits.len();
                 let content = if hits.is_empty() {
                     format!("no matches found for '{query}'")
                 } else {
-                    hits.into_iter()
+                    let mut content = hits
+                        .into_iter()
+                        .take(MAX_SEARCH_MATCHES)
                         .map(|h| format!("{}:{}: {}", h.path, h.line, h.text))
                         .collect::<Vec<_>>()
-                        .join("\n")
+                        .join("\n");
+                    let extra = count.saturating_sub(MAX_SEARCH_MATCHES);
+                    if extra > 0 {
+                        content.push_str(&format!("\n…and {extra} more"));
+                    }
+                    content
                 };
 
                 ToolOutcome {
@@ -611,7 +686,16 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, 
 
     async fn execute(&self, call: &ToolCall) -> ToolOutcome {
         match tools::parse(call) {
-            Ok(tool) => self.dispatch(tool, &call.id).await,
+            Ok(tool) => {
+                let cap_tail = matches!(tool, Tool::RunCommand(_) | Tool::GitDiff(_));
+                let mut outcome = self.dispatch(tool, &call.id).await;
+                outcome.content = if cap_tail {
+                    cap_head_tail(&outcome.content, MAX_TOOL_CONTENT)
+                } else {
+                    cap_head(&outcome.content, MAX_TOOL_CONTENT)
+                };
+                outcome
+            }
             Err(e) => ToolOutcome {
                 ok: false,
                 content: format!("error: {e}"),
@@ -636,13 +720,17 @@ fn fail(tool: &str, target: &str, error: &str) -> ToolOutcome {
     }
 }
 
-async fn recursive_list<V: Vfs>(vfs: &V, dir: &str) -> Result<Vec<FileEntry>, VfsError> {
+async fn recursive_list<V: Vfs>(
+    vfs: &V,
+    dir: &str,
+    opts: SearchOptions,
+) -> Result<Vec<FileEntry>, VfsError> {
     let mut all = Vec::new();
     let mut stack = vec![dir.to_string()];
     while let Some(current) = stack.pop() {
         let entries = vfs.list(&current).await?;
         for entry in entries {
-            if entry.is_dir {
+            if entry.is_dir && !skip_dir(&entry.name, opts) {
                 stack.push(entry.path.clone());
             }
             all.push(entry);
@@ -654,14 +742,16 @@ async fn recursive_list<V: Vfs>(vfs: &V, dir: &str) -> Result<Vec<FileEntry>, Vf
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openwebide_core::MemoryVfs;
+    use openwebide_core::{MemoryVfs, SearchHit, vfs::VfsFuture};
     use serde_json::json;
 
     #[test]
     fn vfs_tools_json_unchanged() {
         // Snapshot of `vfs_tools()` captured before the schemas moved into
         // `ToolName::definition()`; guards against the move silently changing
-        // the tool set advertised to the model.
+        // the tool set advertised to the model. Step 51 intentionally added
+        // `offset`/`limit` to read_file and `include_ignored` to
+        // search/grep_search; the snapshot was updated to match.
         let snapshot = json!([
             {
                 "name": "read_file",
@@ -669,7 +759,9 @@ mod tests {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Workspace-relative file path" }
+                        "path": { "type": "string", "description": "Workspace-relative file path" },
+                        "offset": { "type": "integer", "description": "1-based line to start reading from (default: 1)" },
+                        "limit": { "type": "integer", "description": "Maximum number of lines to return (default: 2000)" }
                     },
                     "required": ["path"]
                 }
@@ -703,7 +795,8 @@ mod tests {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Substring to match against file paths" },
-                        "path": { "type": "string", "description": "Workspace-relative directory to search in (empty for root)" }
+                        "path": { "type": "string", "description": "Workspace-relative directory to search in (empty for root)" },
+                        "include_ignored": { "type": "boolean", "description": "Also search .git, target, node_modules, dist (default: false)" }
                     },
                     "required": ["query"]
                 }
@@ -715,7 +808,8 @@ mod tests {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Search string to match across file lines" },
-                        "path": { "type": "string", "description": "Workspace-relative directory to restrict search (empty for root)" }
+                        "path": { "type": "string", "description": "Workspace-relative directory to restrict search (empty for root)" },
+                        "include_ignored": { "type": "boolean", "description": "Also search .git, target, node_modules, dist (default: false)" }
                     },
                     "required": ["query"]
                 }
@@ -995,7 +1089,8 @@ mod tests {
             let outcome = executor.execute(&read_call).await;
             assert!(outcome.ok);
             assert_eq!(outcome.summary, "read src/main.rs (1 lines)");
-            assert_eq!(outcome.content, "fn main() { println!(\"hello\"); }\n");
+            // read_file returns a line window, so no trailing newline.
+            assert_eq!(outcome.content, "fn main() { println!(\"hello\"); }");
 
             // list_dir
             let list_call = ToolCall {
@@ -1344,5 +1439,312 @@ mod tests {
             assert_eq!(outcome.summary, "switched to branch 'feat/my-feature'");
             assert!(outcome.content.contains("Previous branch: main"));
         });
+    }
+
+    #[test]
+    fn read_file_large_is_truncated_with_offset_hint() {
+        futures::executor::block_on(async {
+            // 3000 lines x 26 bytes = 78 KB file: bigger than
+            // MAX_TOOL_CONTENT, but the default 2000-line window (52 KB)
+            // still fits under the byte cap, so the offset hint survives.
+            let content: String = (0..3000)
+                .map(|i| format!("line {i:04} padding padding\n"))
+                .collect();
+            assert!(content.len() > MAX_TOOL_CONTENT);
+
+            let vfs = MemoryVfs::new();
+            vfs.write("big.txt", &content).await.unwrap();
+            let executor = VfsToolExecutor::new(vfs);
+
+            let call = ToolCall {
+                id: "call-big-read".into(),
+                name: "read_file".into(),
+                arguments: json!({ "path": "big.txt" }).to_string(),
+            };
+            let outcome = executor.execute(&call).await;
+            assert!(outcome.ok);
+            assert!(
+                outcome.content.len() <= MAX_TOOL_CONTENT,
+                "content grew to {} bytes",
+                outcome.content.len()
+            );
+            assert!(
+                outcome.content.contains(
+                    "…[truncated: showing lines 1-2000 of 3000; use offset=2001 to continue]…"
+                ),
+                "missing offset hint"
+            );
+            assert_eq!(outcome.summary, "read big.txt (2000 lines)");
+        });
+    }
+
+    #[test]
+    fn read_file_offset_limit() {
+        futures::executor::block_on(async {
+            let content = (1..=10)
+                .map(|i| format!("line-{i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let vfs = MemoryVfs::new();
+            vfs.write("small.txt", &content).await.unwrap();
+            let executor = VfsToolExecutor::new(vfs);
+
+            let call = ToolCall {
+                id: "call-window".into(),
+                name: "read_file".into(),
+                arguments: json!({ "path": "small.txt", "offset": 3, "limit": 4 }).to_string(),
+            };
+            let outcome = executor.execute(&call).await;
+            assert!(outcome.ok);
+            assert_eq!(
+                outcome.content,
+                "line-3\nline-4\nline-5\nline-6\n…[truncated: showing lines 3-6 of 10; use offset=7 to continue]…"
+            );
+            assert_eq!(outcome.summary, "read small.txt (4 lines)");
+
+            // A window that reaches the end of the file carries no marker.
+            let call = ToolCall {
+                id: "call-tail".into(),
+                name: "read_file".into(),
+                arguments: json!({ "path": "small.txt", "offset": 7, "limit": 4 }).to_string(),
+            };
+            let outcome = executor.execute(&call).await;
+            assert!(outcome.ok);
+            assert_eq!(outcome.content, "line-7\nline-8\nline-9\nline-10");
+            assert_eq!(outcome.summary, "read small.txt (4 lines)");
+        });
+    }
+
+    /// A bridge client whose command output is ~200 KB and ends with a
+    /// marker line, to prove tail-preserving capping.
+    struct BigOutputBridgeClient;
+
+    impl BridgeClient for BigOutputBridgeClient {
+        async fn execute_command(
+            &self,
+            _command: &str,
+            _timeout_seconds: u64,
+        ) -> Result<CommandOutcome, String> {
+            let mut stdout = String::new();
+            for i in 0..3500 {
+                stdout.push_str(&format!(
+                    "progress step {i:05} of 3500 - padding padding padding padding\n"
+                ));
+            }
+            stdout.push_str("ERROR: boom\n");
+            Ok(CommandOutcome {
+                exit_code: Some(1),
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn run_command_keeps_tail() {
+        futures::executor::block_on(async {
+            let vfs = MemoryVfs::new();
+            let executor =
+                VfsToolExecutor::with_web_and_bridge(vfs, MockWebClient, BigOutputBridgeClient);
+
+            let call = ToolCall {
+                id: "call-big-cmd".into(),
+                name: "run_command".into(),
+                arguments: json!({ "command": "make" }).to_string(),
+            };
+            let outcome = executor.execute(&call).await;
+            assert!(!outcome.ok);
+            assert!(
+                outcome.content.len() <= MAX_TOOL_CONTENT + 128,
+                "capped content grew to {} bytes",
+                outcome.content.len()
+            );
+            assert!(
+                outcome.content.contains("…[truncated: showing"),
+                "expected a truncation marker"
+            );
+            assert!(
+                outcome.content.ends_with("ERROR: boom\n"),
+                "the tail of the output must survive capping"
+            );
+        });
+    }
+
+    /// 250 matching files under `src/`, plus one each under `target/` and
+    /// `node_modules/` that only `include_ignored` searches can reach.
+    async fn search_fixture() -> MemoryVfs {
+        let vfs = MemoryVfs::new();
+        for i in 0..250 {
+            vfs.write(&format!("src/file-{i:03}.rs"), &format!("// file {i}\n"))
+                .await
+                .unwrap();
+        }
+        vfs.write("target/file-900.rs", "// ignored\n")
+            .await
+            .unwrap();
+        vfs.write("node_modules/file-901.js", "// ignored\n")
+            .await
+            .unwrap();
+        vfs
+    }
+
+    #[test]
+    fn search_skips_ignored_dirs_and_caps() {
+        futures::executor::block_on(async {
+            let vfs = search_fixture().await;
+            let executor = VfsToolExecutor::new(vfs);
+
+            let call = ToolCall {
+                id: "call-search".into(),
+                name: "search".into(),
+                arguments: json!({ "query": "file" }).to_string(),
+            };
+            let outcome = executor.execute(&call).await;
+            assert!(outcome.ok);
+            // 250 src files match; target/ and node_modules/ are skipped.
+            assert_eq!(outcome.summary, "search 'file' (250 matches)");
+            let lines: Vec<&str> = outcome.content.lines().collect();
+            assert_eq!(lines.len(), 201, "200 paths + the cap suffix line");
+            assert!(
+                lines
+                    .iter()
+                    .all(|l| !l.starts_with("target/") && !l.starts_with("node_modules/")),
+                "ignored dirs must not be searched by default"
+            );
+            assert_eq!(lines.last().copied().unwrap(), "…and 50 more");
+        });
+    }
+
+    #[test]
+    fn search_include_ignored_finds_node_modules_and_still_caps() {
+        futures::executor::block_on(async {
+            let vfs = search_fixture().await;
+            let executor = VfsToolExecutor::new(vfs);
+
+            // A query that only matches inside node_modules: invisible by
+            // default, found with include_ignored.
+            let hidden_call = ToolCall {
+                id: "call-nm-hidden".into(),
+                name: "search".into(),
+                arguments: json!({ "query": "file-901" }).to_string(),
+            };
+            let outcome = executor.execute(&hidden_call).await;
+            assert!(outcome.ok);
+            assert_eq!(outcome.content, "no files matching 'file-901'");
+
+            let visible_call = ToolCall {
+                id: "call-nm-visible".into(),
+                name: "search".into(),
+                arguments: json!({ "query": "file-901", "include_ignored": true }).to_string(),
+            };
+            let outcome = executor.execute(&visible_call).await;
+            assert!(outcome.ok);
+            assert_eq!(outcome.content, "node_modules/file-901.js");
+            assert_eq!(outcome.summary, "search 'file-901' (1 matches)");
+
+            // The broad query still hits the 200-entry cap, now with the
+            // ignored-dir matches counted in the total.
+            let broad_call = ToolCall {
+                id: "call-nm-broad".into(),
+                name: "search".into(),
+                arguments: json!({ "query": "file", "include_ignored": true }).to_string(),
+            };
+            let outcome = executor.execute(&broad_call).await;
+            assert!(outcome.ok);
+            assert_eq!(outcome.summary, "search 'file' (252 matches)");
+            assert_eq!(
+                outcome.content.lines().last().unwrap(),
+                "…and 52 more",
+                "the cap must still apply with include_ignored"
+            );
+        });
+    }
+
+    /// A Vfs that records the `SearchOptions` handed to `search_content`.
+    struct RecordingVfs {
+        last_opts: std::sync::Mutex<SearchOptions>,
+    }
+
+    impl Vfs for RecordingVfs {
+        fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
+            Box::pin(async move { Err(VfsError::NotFound(path.to_string())) })
+        }
+
+        fn write<'a>(&'a self, _path: &'a str, _content: &'a str) -> VfsFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn list<'a>(&'a self, _dir: &'a str) -> VfsFuture<'a, Vec<FileEntry>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn create<'a>(&'a self, _path: &'a str, _is_dir: bool) -> VfsFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete<'a>(&'a self, _path: &'a str) -> VfsFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn search_content<'a>(
+            &'a self,
+            _query: &'a str,
+            _dir: &'a str,
+            opts: SearchOptions,
+        ) -> VfsFuture<'a, Vec<SearchHit>> {
+            *self.last_opts.lock().unwrap() = opts;
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    #[test]
+    fn grep_include_ignored_passes_options() {
+        futures::executor::block_on(async {
+            // Arc so the test keeps a handle after the executor takes ownership.
+            let vfs = std::sync::Arc::new(RecordingVfs {
+                last_opts: std::sync::Mutex::new(SearchOptions::default()),
+            });
+            let executor = VfsToolExecutor::new(vfs.clone());
+
+            let default_call = ToolCall {
+                id: "call-grep-default".into(),
+                name: "grep_search".into(),
+                arguments: json!({ "query": "needle" }).to_string(),
+            };
+            executor.execute(&default_call).await;
+            assert!(
+                !vfs.last_opts.lock().unwrap().include_ignored,
+                "default grep_search must not include ignored dirs"
+            );
+
+            let ignored_call = ToolCall {
+                id: "call-grep-ignored".into(),
+                name: "grep_search".into(),
+                arguments: json!({ "query": "needle", "include_ignored": true }).to_string(),
+            };
+            executor.execute(&ignored_call).await;
+            assert!(
+                vfs.last_opts.lock().unwrap().include_ignored,
+                "include_ignored must be forwarded to search_content"
+            );
+        });
+    }
+
+    #[test]
+    fn truncation_is_char_boundary_safe() {
+        // A multi-byte character straddling the cut point.
+        let s = "a".repeat(10) + "é" + "b"; // 13 bytes; the cut at 11 lands inside "é"
+        let capped = cap_head(&s, 11);
+        assert!(capped.starts_with("aaaaaaaaaa"));
+        assert!(capped.contains("…[truncated: showing 10 of 13 bytes]…"));
+
+        let s = "é".repeat(100); // 200 bytes; every boundary is even
+        let capped = cap_head(&s, 5); // the cut at 5 lands inside the second "é"
+        assert!(capped.starts_with("éé"));
+        assert!(capped.contains("…[truncated: showing 4 of 200 bytes]…"));
+
+        // Head/tail capping with a 2-byte character at both cut points.
+        let capped = cap_head_tail(&s, 10); // head budget 2, tail budget 8
+        assert!(capped.starts_with("é\n…[truncated: showing 10 of 200 bytes]…\néééé"));
     }
 }
