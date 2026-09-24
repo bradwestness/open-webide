@@ -3,12 +3,12 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, FileEntry, FileKind,
-    GitCheckoutRequest, GitCommitRequest, GitRepoStatus, GitSyncRequest, ModelInfo, Project,
-    ProviderKind, Role, SearchHit, SystemPrompt, User, WorkspaceMode,
+    ChatSession, Connection, ConversationEntry, FileDiff, FileEntry, FileKind, GitCheckoutRequest,
+    GitCommitRequest, GitRepoStatus, GitSyncRequest, ModelInfo, Project, ProviderKind, Role,
+    SearchHit, SystemPrompt, User, WorkspaceMode,
     tui::{DEFAULT_CONTEXT_LIMIT, EditorContext, SessionTelemetry, SlashCommand},
 };
-use openwebide_frontend::conversation::next_item_nonce;
+use openwebide_frontend::conversation::{local_message, next_item_nonce};
 use web_sys::wasm_bindgen::JsCast;
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
@@ -150,6 +150,15 @@ pub fn App() -> impl IntoView {
     let sessions = RwSignal::new(Vec::<ChatSession>::new());
     let active_session = RwSignal::new(Option::<i64>::None);
     let messages = RwSignal::new(Vec::<ConversationItem>::new());
+    // A per-run generation for the history-load effect: a slow
+    // list_messages for session A must not land after a newer request for
+    // the same session A, which the active-session check alone can't catch
+    // (a same-id race).
+    let history_gen = StoredValue::new(0u64);
+    // on_send sets this to a freshly created session's id so the
+    // history-load effect's first run for that session skips the fetch,
+    // which would wipe the optimistic first message already in `messages`.
+    let skip_history_load: StoredValue<Option<i64>> = StoredValue::new(None);
     let streaming = RwSignal::new(false);
     let error = RwSignal::new(Option::<String>::None);
     let draft = RwSignal::new(String::new());
@@ -441,20 +450,14 @@ pub fn App() -> impl IntoView {
                             Ok(res) => {
                                 refresh_git.run(());
                                 messages.update(|m| {
-                                    m.push(ConversationItem::Message(ChatMessage {
-                                        id: 0,
-                                        session_id: active_session.get().unwrap_or(0),
-                                        role: Role::Assistant,
-                                        content: format!(
+                                    m.push(local_message(
+                                        active_session.get().unwrap_or(0),
+                                        format!(
                                             "Switched to branch `{}` (previous: `{}`).",
                                             res.branch,
                                             res.previous_branch.as_deref().unwrap_or("none")
                                         ),
-                                        created_at: 0,
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        usage: None,
-                                    }));
+                                    ));
                                 });
                             }
                             Err(e) => {
@@ -482,19 +485,13 @@ pub fn App() -> impl IntoView {
                     Ok(res) => {
                         refresh_git.run(());
                         messages.update(|m| {
-                            m.push(ConversationItem::Message(ChatMessage {
-                                id: 0,
-                                session_id: active_session.get().unwrap_or(0),
-                                role: Role::Assistant,
-                                content: format!(
+                            m.push(local_message(
+                                active_session.get().unwrap_or(0),
+format!(
                                     "Git synchronized with `{}/{}`:\n* Pulled: {} commits\n* Pushed: {} commits",
                                     res.remote, res.branch, res.pulled_commits, res.pushed_commits
                                 ),
-                                created_at: 0,
-                                tool_calls: None,
-                                tool_call_id: None,
-                                usage: None,
-                            }));
+                            ));
                         });
                     }
                     Err(e) => {
@@ -1739,6 +1736,7 @@ pub fn App() -> impl IntoView {
                         match api.create_session(&name, conn, prompt, Some(pid)).await {
                             Ok(s) => {
                                 sessions.update(|all| all.push(s.clone()));
+                                skip_history_load.set_value(Some(s.id));
                                 active_session.set(Some(s.id));
                                 s.id
                             }
@@ -1815,16 +1813,7 @@ pub fn App() -> impl IntoView {
                                         msg.content.push_str(&delta);
                                     }
                                 } else {
-                                    m.push(ConversationItem::Message(ChatMessage {
-                                        id: 0,
-                                        session_id,
-                                        role: Role::Assistant,
-                                        content: delta,
-                                        created_at: 0,
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        usage: None,
-                                    }));
+                                    m.push(local_message(session_id, delta));
                                 }
                             });
                         }
@@ -1902,19 +1891,13 @@ pub fn App() -> impl IntoView {
                                     request_open.run(d.path.clone());
                                 } else {
                                     messages.update(|m| {
-                                        m.push(ConversationItem::Message(ChatMessage {
-                                            id: 0,
+                                        m.push(local_message(
                                             session_id,
-                                            role: Role::Assistant,
-                                            content: format!(
+                                            format!(
                                                 "Agent edited `{}`; review it with `/diff {}`.",
                                                 d.path, d.path
                                             ),
-                                            created_at: 0,
-                                            tool_calls: None,
-                                            tool_call_id: None,
-                                            usage: None,
-                                        }));
+                                        ));
                                     });
                                 }
                             }
@@ -2119,16 +2102,7 @@ pub fn App() -> impl IntoView {
                         * `Alt+Y` / `Alt+N` / `Alt+A` — Inline permission handshake (approve / deny / always)\n\
                         * `Ctrl+C` / `Esc` — Cancel streaming generation or detach context pill";
                 messages.update(|m| {
-                    m.push(ConversationItem::Message(ChatMessage {
-                        id: 0,
-                        session_id: active_session.get().unwrap_or(0),
-                        role: Role::Assistant,
-                        content: help_text.into(),
-                        created_at: 0,
-                        tool_calls: None,
-                        tool_call_id: None,
-                        usage: None,
-                    }));
+                    m.push(local_message(active_session.get().unwrap_or(0), help_text));
                 });
             }
             SlashCommand::Model(arg) => {
@@ -2142,29 +2116,17 @@ pub fn App() -> impl IntoView {
                         selected_model.set(Some(name.clone()));
                         session_telemetry.update(|t| t.model = name.clone());
                         messages.update(|m| {
-                            m.push(ConversationItem::Message(ChatMessage {
-                                id: 0,
-                                session_id: active_session.get().unwrap_or(0),
-                                role: Role::Assistant,
-                                content: format!("Switched model to `{name}`."),
-                                created_at: 0,
-                                tool_calls: None,
-                                tool_call_id: None,
-                                usage: None,
-                            }));
+                            m.push(local_message(
+                                active_session.get().unwrap_or(0),
+                                format!("Switched model to `{name}`."),
+                            ));
                         });
                     } else {
                         messages.update(|m| {
-                            m.push(ConversationItem::Message(ChatMessage {
-                                id: 0,
-                                session_id: active_session.get().unwrap_or(0),
-                                role: Role::Assistant,
-                                content: format!("Model `{target}` not found in available models."),
-                                created_at: 0,
-                                tool_calls: None,
-                                tool_call_id: None,
-                                usage: None,
-                            }));
+                            m.push(local_message(
+                                active_session.get().unwrap_or(0),
+                                format!("Model `{target}` not found in available models."),
+                            ));
                         });
                     }
                 } else {
@@ -2175,17 +2137,11 @@ pub fn App() -> impl IntoView {
                         .join("\n");
                     let cur = selected_model.get().unwrap_or_else(|| "default".into());
                     messages.update(|m| {
-                            m.push(ConversationItem::Message(ChatMessage {
-                                id: 0,
-                                session_id: active_session.get().unwrap_or(0),
-                                role: Role::Assistant,
-                                content: format!("Current model: `{cur}`\n\nAvailable models:\n{names}\n\nUse `/model <name>` to switch."),
-                                created_at: 0,
-                                tool_calls: None,
-                                tool_call_id: None,
-                                usage: None,
-                            }));
-                        });
+                        m.push(local_message(
+                                active_session.get().unwrap_or(0),
+format!("Current model: `{cur}`\n\nAvailable models:\n{names}\n\nUse `/model <name>` to switch."),
+                            ));
+                    });
                 }
             }
             SlashCommand::Clear => {
@@ -2201,47 +2157,26 @@ pub fn App() -> impl IntoView {
                         match api.git_diff(pid, p_opt.as_deref()).await {
                             Ok(diff) if !diff.trim().is_empty() => {
                                 messages.update(|m| {
-                                    m.push(ConversationItem::Message(ChatMessage {
-                                        id: 0,
-                                        session_id: active_session.get().unwrap_or(0),
-                                        role: Role::Assistant,
-                                        content: format!(
-                                            "**Git Repository Diff:**\n```diff\n{diff}\n```"
-                                        ),
-                                        created_at: 0,
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        usage: None,
-                                    }));
+                                    m.push(local_message(
+                                        active_session.get().unwrap_or(0),
+                                        format!("**Git Repository Diff:**\n```diff\n{diff}\n```"),
+                                    ));
                                 });
                             }
                             Ok(_) => {
                                 messages.update(|m| {
-                                    m.push(ConversationItem::Message(ChatMessage {
-                                        id: 0,
-                                        session_id: active_session.get().unwrap_or(0),
-                                        role: Role::Assistant,
-                                        content: "Working tree is clean (no uncommitted diffs)."
-                                            .into(),
-                                        created_at: 0,
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        usage: None,
-                                    }));
+                                    m.push(local_message(
+                                        active_session.get().unwrap_or(0),
+                                        "Working tree is clean (no uncommitted diffs).",
+                                    ));
                                 });
                             }
                             Err(e) => {
                                 messages.update(|m| {
-                                    m.push(ConversationItem::Message(ChatMessage {
-                                        id: 0,
-                                        session_id: active_session.get().unwrap_or(0),
-                                        role: Role::Assistant,
-                                        content: format!("Git diff failed: {e}"),
-                                        created_at: 0,
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        usage: None,
-                                    }));
+                                    m.push(local_message(
+                                        active_session.get().unwrap_or(0),
+                                        format!("Git diff failed: {e}"),
+                                    ));
                                 });
                             }
                         }
@@ -2250,32 +2185,17 @@ pub fn App() -> impl IntoView {
                     if let Some(diff) = edits.get(&p) {
                         request_open.run(diff.path.clone());
                         messages.update(|m| {
-                            m.push(ConversationItem::Message(ChatMessage {
-                                id: 0,
-                                session_id: active_session.get().unwrap_or(0),
-                                role: Role::Assistant,
-                                content: format!(
-                                    "Opened pending diff for `{}` in editor.",
-                                    diff.path
-                                ),
-                                created_at: 0,
-                                tool_calls: None,
-                                tool_call_id: None,
-                                usage: None,
-                            }));
+                            m.push(local_message(
+                                active_session.get().unwrap_or(0),
+                                format!("Opened pending diff for `{}` in editor.", diff.path),
+                            ));
                         });
                     } else {
                         messages.update(|m| {
-                            m.push(ConversationItem::Message(ChatMessage {
-                                id: 0,
-                                session_id: active_session.get().unwrap_or(0),
-                                role: Role::Assistant,
-                                content: format!("No pending diff found for `{p}`."),
-                                created_at: 0,
-                                tool_calls: None,
-                                tool_call_id: None,
-                                usage: None,
-                            }));
+                            m.push(local_message(
+                                active_session.get().unwrap_or(0),
+                                format!("No pending diff found for `{p}`."),
+                            ));
                         });
                     }
                 } else {
@@ -2285,16 +2205,10 @@ pub fn App() -> impl IntoView {
                         .collect::<Vec<_>>()
                         .join("\n");
                     messages.update(|m| {
-                            m.push(ConversationItem::Message(ChatMessage {
-                                id: 0,
-                                session_id: active_session.get().unwrap_or(0),
-                                role: Role::Assistant,
-                                content: format!("Pending file edits ({count}):\n{list}\n\nUse `/diff <path>` to open in editor.", count = edits.len()),
-                                created_at: 0,
-                                tool_calls: None,
-                                tool_call_id: None,
-                                usage: None,
-                            }));
+                            m.push(local_message(
+                                active_session.get().unwrap_or(0),
+format!("Pending file edits ({count}):\n{list}\n\nUse `/diff <path>` to open in editor.", count = edits.len()),
+                            ));
                         });
                 }
             }
@@ -2302,16 +2216,10 @@ pub fn App() -> impl IntoView {
                 let pid = active_project.get();
                 let Some(message) = msg.filter(|m| !m.trim().is_empty()) else {
                     messages.update(|m| {
-                        m.push(ConversationItem::Message(ChatMessage {
-                            id: 0,
-                            session_id: active_session.get().unwrap_or(0),
-                            role: Role::Assistant,
-                            content: "Please provide a commit message: `/commit <message>`".into(),
-                            created_at: 0,
-                            tool_calls: None,
-                            tool_call_id: None,
-                            usage: None,
-                        }));
+                        m.push(local_message(
+                            active_session.get().unwrap_or(0),
+                            "Please provide a commit message: `/commit <message>`",
+                        ));
                     });
                     return;
                 };
@@ -2327,33 +2235,21 @@ pub fn App() -> impl IntoView {
                         Ok(res) => {
                             refresh_git.run(());
                             messages.update(|m| {
-                                m.push(ConversationItem::Message(ChatMessage {
-                                    id: 0,
-                                    session_id: active_session.get().unwrap_or(0),
-                                    role: Role::Assistant,
-                                    content: format!(
+                                m.push(local_message(
+                                    active_session.get().unwrap_or(0),
+                                    format!(
                                         "Committed `{}`: {}\nSigned: {}",
                                         res.commit_hash, res.summary, res.is_signed
                                     ),
-                                    created_at: 0,
-                                    tool_calls: None,
-                                    tool_call_id: None,
-                                    usage: None,
-                                }));
+                                ));
                             });
                         }
                         Err(e) => {
                             messages.update(|m| {
-                                m.push(ConversationItem::Message(ChatMessage {
-                                    id: 0,
-                                    session_id: active_session.get().unwrap_or(0),
-                                    role: Role::Assistant,
-                                    content: format!("Git commit failed: {e}"),
-                                    created_at: 0,
-                                    tool_calls: None,
-                                    tool_call_id: None,
-                                    usage: None,
-                                }));
+                                m.push(local_message(
+                                    active_session.get().unwrap_or(0),
+                                    format!("Git commit failed: {e}"),
+                                ));
                             });
                         }
                     }
@@ -2363,17 +2259,10 @@ pub fn App() -> impl IntoView {
                 let pid = active_project.get();
                 let Some(branch) = branch_arg.filter(|b| !b.trim().is_empty()) else {
                     messages.update(|m| {
-                        m.push(ConversationItem::Message(ChatMessage {
-                            id: 0,
-                            session_id: active_session.get().unwrap_or(0),
-                            role: Role::Assistant,
-                            content: "Please specify a branch to checkout: `/checkout <branch>`"
-                                .into(),
-                            created_at: 0,
-                            tool_calls: None,
-                            tool_call_id: None,
-                            usage: None,
-                        }));
+                        m.push(local_message(
+                            active_session.get().unwrap_or(0),
+                            "Please specify a branch to checkout: `/checkout <branch>`",
+                        ));
                     });
                     return;
                 };
@@ -2388,34 +2277,22 @@ pub fn App() -> impl IntoView {
                         Ok(res) => {
                             refresh_git.run(());
                             messages.update(|m| {
-                                m.push(ConversationItem::Message(ChatMessage {
-                                    id: 0,
-                                    session_id: active_session.get().unwrap_or(0),
-                                    role: Role::Assistant,
-                                    content: format!(
+                                m.push(local_message(
+                                    active_session.get().unwrap_or(0),
+                                    format!(
                                         "Checked out branch `{}` (previous: `{}`).",
                                         res.branch,
                                         res.previous_branch.as_deref().unwrap_or("none")
                                     ),
-                                    created_at: 0,
-                                    tool_calls: None,
-                                    tool_call_id: None,
-                                    usage: None,
-                                }));
+                                ));
                             });
                         }
                         Err(e) => {
                             messages.update(|m| {
-                                m.push(ConversationItem::Message(ChatMessage {
-                                    id: 0,
-                                    session_id: active_session.get().unwrap_or(0),
-                                    role: Role::Assistant,
-                                    content: format!("Git checkout failed: {e}"),
-                                    created_at: 0,
-                                    tool_calls: None,
-                                    tool_call_id: None,
-                                    usage: None,
-                                }));
+                                m.push(local_message(
+                                    active_session.get().unwrap_or(0),
+                                    format!("Git checkout failed: {e}"),
+                                ));
                             });
                         }
                     }
@@ -2439,33 +2316,18 @@ pub fn App() -> impl IntoView {
                             Ok(res) => {
                                 refresh_git.run(());
                                 messages.update(|m| {
-                                    m.push(ConversationItem::Message(ChatMessage {
-                                        id: 0,
-                                        session_id: active_session.get().unwrap_or(0),
-                                        role: Role::Assistant,
-                                        content: format!(
-                                            "Created and checked out branch `{}`.",
-                                            res.branch
-                                        ),
-                                        created_at: 0,
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        usage: None,
-                                    }));
+                                    m.push(local_message(
+                                        active_session.get().unwrap_or(0),
+                                        format!("Created and checked out branch `{}`.", res.branch),
+                                    ));
                                 });
                             }
                             Err(e) => {
                                 messages.update(|m| {
-                                    m.push(ConversationItem::Message(ChatMessage {
-                                        id: 0,
-                                        session_id: active_session.get().unwrap_or(0),
-                                        role: Role::Assistant,
-                                        content: format!("Git branch failed: {e}"),
-                                        created_at: 0,
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        usage: None,
-                                    }));
+                                    m.push(local_message(
+                                        active_session.get().unwrap_or(0),
+                                        format!("Git branch failed: {e}"),
+                                    ));
                                 });
                             }
                         }
@@ -2490,33 +2352,18 @@ pub fn App() -> impl IntoView {
                                         .join("\n")
                                 };
                                 messages.update(|m| {
-                                    m.push(ConversationItem::Message(ChatMessage {
-                                        id: 0,
-                                        session_id: active_session.get().unwrap_or(0),
-                                        role: Role::Assistant,
-                                        content: format!(
-                                            "**Repository Branches:**\n\n{}",
-                                            branch_list
-                                        ),
-                                        created_at: 0,
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        usage: None,
-                                    }));
+                                    m.push(local_message(
+                                        active_session.get().unwrap_or(0),
+                                        format!("**Repository Branches:**\n\n{}", branch_list),
+                                    ));
                                 });
                             }
                             Err(e) => {
                                 messages.update(|m| {
-                                    m.push(ConversationItem::Message(ChatMessage {
-                                        id: 0,
-                                        session_id: active_session.get().unwrap_or(0),
-                                        role: Role::Assistant,
-                                        content: format!("Failed to list branches: {e}"),
-                                        created_at: 0,
-                                        tool_calls: None,
-                                        tool_call_id: None,
-                                        usage: None,
-                                    }));
+                                    m.push(local_message(
+                                        active_session.get().unwrap_or(0),
+                                        format!("Failed to list branches: {e}"),
+                                    ));
                                 });
                             }
                         }
@@ -2529,16 +2376,10 @@ pub fn App() -> impl IntoView {
             SlashCommand::Test(filter) => {
                 let arg = filter.unwrap_or_default();
                 messages.update(|m| {
-                        m.push(ConversationItem::Message(ChatMessage {
-                            id: 0,
-                            session_id: active_session.get().unwrap_or(0),
-                            role: Role::Assistant,
-                            content: format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck terminal dock below for full stream."),
-                            created_at: 0,
-                            tool_calls: None,
-                            tool_call_id: None,
-                            usage: None,
-                        }));
+                        m.push(local_message(
+                            active_session.get().unwrap_or(0),
+format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck terminal dock below for full stream."),
+                        ));
                     });
                 show_terminal.set(true);
             }
@@ -2579,16 +2420,7 @@ pub fn App() -> impl IntoView {
                     telem.tool_calls_count,
                 );
                 messages.update(|m| {
-                    m.push(ConversationItem::Message(ChatMessage {
-                        id: 0,
-                        session_id: active_session.get().unwrap_or(0),
-                        role: Role::Assistant,
-                        content: text,
-                        created_at: 0,
-                        tool_calls: None,
-                        tool_call_id: None,
-                        usage: None,
-                    }));
+                    m.push(local_message(active_session.get().unwrap_or(0), text));
                 });
             }
             SlashCommand::Stop => {
@@ -2860,6 +2692,22 @@ pub fn App() -> impl IntoView {
         let api = api.clone();
         Effect::new(move || {
             let id = active_session.get();
+            // A brand-new session (just created by on_send) has no server
+            // history yet; skip the fetch so its optimistic first message
+            // is not wiped the instant the session becomes active.
+            if let Some(sid) = id
+                && skip_history_load.get_value() == Some(sid)
+            {
+                skip_history_load.set_value(None);
+                return;
+            }
+            // Bump and capture the generation: a slow list_messages for
+            // session A must not land after a newer request for the same
+            // session A, which the active-session check below can't catch.
+            let this_gen = {
+                history_gen.update_value(|g| *g += 1);
+                history_gen.get_value()
+            };
             let api = api.clone();
             spawn_local(async move {
                 match id {
@@ -2869,7 +2717,12 @@ pub fn App() -> impl IntoView {
                         // session may have changed again while this request
                         // was in flight (e.g. a quick A -> B -> A switch, or
                         // a stale error landing after B is already showing).
-                        if active_session.get_untracked() != Some(id) {
+                        // The generation additionally catches a same-id race
+                        // the session check can't: a newer request for the
+                        // same session supersedes this one.
+                        if history_gen.get_value() != this_gen
+                            || active_session.get_untracked() != Some(id)
+                        {
                             return;
                         }
                         match result {
