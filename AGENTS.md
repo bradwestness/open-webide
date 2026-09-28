@@ -82,3 +82,10 @@ Instructions, conventions, and architectural principles for AI agents working on
 2. **Error Handling**: Use structured error responses and bubble errors with `Result<T, ApiError>` in the backend and user-friendly error banners or notifications in the frontend.
 3. **Database Migrations**: Append a numbered step in `apply_step` (`crates/storage/src/migrations.rs`), bump `SCHEMA_VERSION`, keep every step idempotent, and never edit a shipped step; update `Store` methods with corresponding unit tests in `crates/storage/src/store.rs`.
 4. **Resilience & Safe Layouts**: When implementing layout resizing, enforce sane minimum and maximum bounds to ensure critical panels (like the code editor or diff viewer) are never crushed.
+
+## 5. In-flight work
+
+A numbered implementation sequence lives in `ai_docs/sequence/` (git-excluded). Read
+`ai_docs/sequence/RESUME.md` first: it has status, the batch-launch prompt, and the step driver.
+Threat model is a single-user home lab on a trusted LAN, so security fixes must not remove
+features.
