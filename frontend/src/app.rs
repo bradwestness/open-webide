@@ -10,6 +10,7 @@ use openwebide_core::{
     vfs::SearchOptions,
 };
 use openwebide_frontend::conversation::{local_message, next_item_nonce};
+use wasm_bindgen::closure::Closure;
 use web_sys::wasm_bindgen::JsCast;
 use web_sys::{AbortController, FileSystemDirectoryHandle};
 
@@ -65,15 +66,15 @@ fn revoke_object_url(url: Option<String>) {
     }
 }
 
-/// The cached theme from localStorage, applied before the backend responds so
-/// the correct theme shows without a flash. Defaults to dark.
+/// The cached theme preference from localStorage, applied before the backend
+/// responds so the correct theme shows without a flash. Defaults to system.
 fn read_theme_from_storage() -> String {
     let theme = web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
         .and_then(|ls| ls.get_item("owide-theme").ok().flatten());
     match theme.as_deref() {
-        Some("light") => "light".to_string(),
-        _ => "dark".to_string(),
+        Some("light") | Some("dark") | Some("system") => theme.unwrap(),
+        _ => "system".to_string(),
     }
 }
 
@@ -81,6 +82,28 @@ fn write_theme_to_storage(theme: &str) {
     if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
         let _ = ls.set_item("owide-theme", theme);
     }
+}
+
+/// Whether the OS currently prefers light mode.
+fn os_prefers_light() -> bool {
+    web_sys::window()
+        .and_then(|w| w.match_media("(prefers-color-scheme: light)").ok().flatten())
+        .is_some_and(|mql| mql.matches())
+}
+
+/// Resolve a stored preference ("dark", "light", "system") to the concrete
+/// theme applied via `data-theme`.
+fn effective_theme(pref: &str) -> String {
+    let resolved = if pref == "system" {
+        if os_prefers_light() {
+            "light"
+        } else {
+            "dark"
+        }
+    } else {
+        pref
+    };
+    resolved.to_string()
 }
 
 /// Capture the active editor file, cursor, and any selected line range.
@@ -379,6 +402,26 @@ pub fn App() -> impl IntoView {
     // -- settings ----------------------------------------------------------
     let show_settings = RwSignal::new(false);
     let theme = RwSignal::new(read_theme_from_storage());
+    // Follow OS light/dark changes while the preference is "system". The
+    // closure is kept alive for the app's lifetime via a StoredValue.
+    {
+        if let Some(mql) = web_sys::window()
+            .and_then(|w| w.match_media("(prefers-color-scheme: light)").ok().flatten())
+        {
+            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+                if theme.get() != "system" {
+                    return;
+                }
+                if let Some(doc) = web_sys::window().and_then(|w| w.document())
+                    && let Some(root) = doc.document_element()
+                {
+                    let _ = root.set_attribute("data-theme", &effective_theme("system"));
+                }
+            });
+            let _ = mql.add_event_listener_with_callback("change", cb.as_ref().unchecked_ref());
+            StoredValue::new_local(cb);
+        }
+    }
     // Defaults applied to new sessions (None = the connection's own default).
     let default_connection = RwSignal::new(Option::<i64>::None);
     let default_prompt = RwSignal::new(Option::<i64>::None);
@@ -2515,13 +2558,16 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
 
     // -- effects -----------------------------------------------------------
 
-    // Apply the theme to the document root so the CSS variables switch.
+    // Apply the theme to the document root so the CSS variables switch. In
+    // system mode the concrete theme follows the OS preference (kept in sync
+    // by the media query listener registered at startup).
     Effect::new(move || {
         let t = theme.get();
+        let effective = effective_theme(&t);
         if let Some(doc) = web_sys::window().and_then(|w| w.document())
             && let Some(root) = doc.document_element()
         {
-            let _ = root.set_attribute("data-theme", &t);
+            let _ = root.set_attribute("data-theme", &effective);
         }
     });
 
@@ -2604,7 +2650,7 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
                 let mut db_active_project: Option<i64> = None;
                 if let Ok(s) = api.get_settings().await {
                     if let Some(t) = s.get("theme").map(String::as_str)
-                        && (t == "dark" || t == "light")
+                        && (t == "dark" || t == "light" || t == "system")
                     {
                         theme.set(t.to_string());
                     }

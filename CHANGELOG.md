@@ -19,6 +19,7 @@ for what's still ahead.
 
 ### Added
 
+- **System theme option:** the theme setting now has a "System" option (the new default) that follows the OS light/dark preference. It reacts live to OS theme changes while active, and a pre-paint script in `index.html` applies the cached preference before first load so there is no theme flash.
 - **Search "include ignored folders" toggle:** the file tree's search box now has a toggle button that also searches the ignored folders (`.git`, `target`, `node_modules`, `dist`, `.spin`); the hit and byte caps still apply, and toggling re-runs the current query. The flag is per query — not persisted, off on reload.
 - **Bridge Confinement:** The execution bridge now enforces a strict lexical `cwd` contract and canonical root path isolation, safely evaluating path escapes while permitting directory symlinks.
 - **Local mode integrity:** Local filesystem reads strictly validate UTF-8 and surface errors in the editor, allowing fallback to an "Open as Text anyway" read-only mode for corrupt/binary files. Missing browser directory permissions now surface in the tree with a "Grant folder access" button instead of silently failing, and local runs now abort correctly without awaiting server round-trips.

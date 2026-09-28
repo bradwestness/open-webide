@@ -61,6 +61,23 @@ pub fn Settings(
                         <div class="mode-picker">
                             <label
                                 class=move || {
+                                    if theme.get() == "system" {
+                                        "mode-opt active".to_string()
+                                    } else {
+                                        "mode-opt".to_string()
+                                    }
+                                }
+                            >
+                                <input
+                                    type="radio"
+                                    name="theme"
+                                    checked=move || theme.get() == "system"
+                                    on:click=move |_| on_set_theme.run("system".to_string())
+                                />
+                                "System"
+                            </label>
+                            <label
+                                class=move || {
                                     if theme.get() == "dark" {
                                         "mode-opt active".to_string()
                                     } else {
