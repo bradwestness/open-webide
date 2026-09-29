@@ -222,6 +222,11 @@ Every command the bridge spawns (`/exec`, `run_command`, PTY shells, Git subproc
 - **Session reaping:** exited terminal/process sessions are removed 30 minutes after they exit, freeing their output buffers; running sessions are never reaped, however long they've been open.
 - **Graceful shutdown:** on Ctrl+C or `SIGTERM`, the bridge stops accepting new connections and terminates every session's process group (with the same grace period) before exiting.
 
+## Authentication
+
+Open WebIDE uses local accounts (with argon2id password hashing) and secure HttpOnly cookie sessions.
+There is no reliance on localStorage for tokens. Note that logging out clears the session globally across all devices by rolling the user's token epoch. Rate-limiting is enforced against failed logins to prevent brute force attacks.
+
 ## Development
 
 ```sh
@@ -232,7 +237,7 @@ cd frontend && trunk serve   # frontend dev server on :8080
 ```
 
 When developing the frontend against a running `spin up` instance, point it
-at the API with `?api=http://localhost:3000/api`.
+at the API with `?api=http://localhost:3000/api`. Note: because sessions use `SameSite=Lax` cookies, cross-origin requests from Trunk (`localhost:8080`) to the backend (`127.0.0.1:3000`) might fail to attach cookies in some browsers; use `localhost` for both to avoid cross-site issues.
 
 ## Layout
 

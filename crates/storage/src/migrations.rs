@@ -17,7 +17,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 13;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -124,6 +124,8 @@ async fn apply_step<D: Db>(
         9 => add_connection_context_limit_column(db).await,
         10 => create_project_path_index(db).await,
         11 => rewrite_docker_workspace_paths(db, probe).await,
+        12 => create_login_failures(db).await,
+        13 => add_user_token_epoch(db).await,
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),
     }
 }
@@ -422,6 +424,37 @@ async fn add_session_project_column<D: Db>(db: &D) -> Result<(), StorageError> {
         db.execute(
             "ALTER TABLE sessions ADD COLUMN project_id INTEGER
              REFERENCES projects(id) ON DELETE CASCADE",
+            &[],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn create_login_failures<D: Db>(db: &D) -> Result<(), StorageError> {
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS login_failures (
+            username TEXT PRIMARY KEY,
+            failures INTEGER NOT NULL,
+            last_failed_at INTEGER NOT NULL
+        )",
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+/// `ALTER TABLE ... ADD COLUMN` is not idempotent, so probe first.
+async fn add_user_token_epoch<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('users') WHERE name = 'token_epoch'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE users ADD COLUMN token_epoch INTEGER NOT NULL DEFAULT 0",
             &[],
         )
         .await?;

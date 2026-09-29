@@ -2,7 +2,7 @@
 //! dispatch on (method, path) ourselves.
 
 use bytes::Bytes;
-use spin_sdk::http::{FullBody, HeaderMap, Request, Response, box_body};
+use spin_sdk::http::{FullBody, Request, Response, box_body};
 
 use crate::api;
 use crate::error::{ApiError, JsonResp};
@@ -11,24 +11,30 @@ use crate::state::AppState;
 pub async fn route(req: Request) -> JsonResp {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
-    // Read the token before the match below moves `req`.
-    let token = token_from_headers(req.headers());
+    let origin_header = req
+        .headers()
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let origin = origin_header.as_deref();
 
     let resp = if method.as_str() == "OPTIONS" {
-        preflight()
+        preflight(origin)
     } else {
         let mut state = match AppState::new().await {
             Ok(state) => state,
-            Err(e) => return with_cors(ApiError::internal(format!("{e:#}")).into_response()),
+            Err(e) => {
+                return with_cors(ApiError::internal(format!("{e:#}")).into_response(), origin);
+            }
         };
 
         // Every non-public route requires a valid bearer token. Public routes
         // (health, register, login, logout) run without one; a valid token on
         // any other route sets `state.current_user` for the handlers.
         if !is_public(&path) {
-            match crate::auth::authenticate(&state, token.as_deref()).await {
+            match crate::auth::authenticate(&state, req.headers()).await {
                 Ok(user) => state.current_user = Some(user),
-                Err(e) => return with_cors(e.into_response()),
+                Err(e) => return with_cors(e.into_response(), origin),
             }
         }
 
@@ -37,7 +43,7 @@ pub async fn route(req: Request) -> JsonResp {
             ("POST", "/api/auth/register") => api::register(req, &state).await,
             ("POST", "/api/auth/login") => api::login(req, &state).await,
             ("GET", "/api/auth/me") => api::me(&state).await,
-            ("POST", "/api/auth/logout") => Ok(api::logout()),
+            ("POST", "/api/auth/logout") => api::logout(req, &state).await,
             ("GET", "/api/connections") => api::list_connections(&state).await,
             ("POST", "/api/connections") => api::create_connection(req, &state).await,
             ("PUT", p) if p.starts_with("/api/connections/") => {
@@ -118,7 +124,7 @@ pub async fn route(req: Request) -> JsonResp {
         }
     };
 
-    with_cors(resp)
+    with_cors(resp, origin)
 }
 
 /// Match the project file routes: `/api/projects/<id>/files...`.
@@ -145,19 +151,7 @@ fn is_public(path: &str) -> bool {
     )
 }
 
-/// Extract the bearer token from request headers.
-fn token_from_headers(headers: &HeaderMap) -> Option<String> {
-    bearer_token_from(headers.get("authorization").and_then(|v| v.to_str().ok()))
-}
-
-/// Extract the bearer token from the `Authorization` header.
-fn bearer_token_from(authorization: Option<&str>) -> Option<String> {
-    authorization
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|v| v.trim().to_string())
-}
-
-fn preflight() -> JsonResp {
+fn preflight(_origin: Option<&str>) -> JsonResp {
     Response::builder()
         .status(204)
         .body(box_body(FullBody::new(Bytes::new())))
@@ -166,17 +160,24 @@ fn preflight() -> JsonResp {
 
 /// Add permissive CORS headers so the frontend can be served from another
 /// origin during development (e.g. `trunk serve` on port 8080).
-fn with_cors(mut resp: JsonResp) -> JsonResp {
-    let headers = resp.headers_mut();
-    headers.insert("access-control-allow-origin", "*".parse().unwrap());
-    headers.insert(
-        "access-control-allow-methods",
-        "GET, POST, PUT, DELETE, OPTIONS".parse().unwrap(),
-    );
-    headers.insert(
-        "access-control-allow-headers",
-        "content-type, authorization".parse().unwrap(),
-    );
+fn with_cors(mut resp: JsonResp, origin: Option<&str>) -> JsonResp {
+    let dev_origins = ["http://localhost:8080", "http://127.0.0.1:8080"];
+    if let Some(o) = origin
+        && dev_origins.contains(&o)
+    {
+        let headers = resp.headers_mut();
+        headers.insert("access-control-allow-origin", o.parse().unwrap());
+        headers.insert("access-control-allow-credentials", "true".parse().unwrap());
+        headers.insert("vary", "origin".parse().unwrap());
+        headers.insert(
+            "access-control-allow-methods",
+            "GET, POST, PUT, DELETE, OPTIONS".parse().unwrap(),
+        );
+        headers.insert(
+            "access-control-allow-headers",
+            "content-type, x-openwebide".parse().unwrap(),
+        );
+    }
     resp
 }
 
@@ -185,47 +186,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_bearer_token_from() {
-        assert_eq!(
-            bearer_token_from(Some("Bearer foo")),
-            Some("foo".to_string())
-        );
-        assert_eq!(
-            bearer_token_from(Some("Bearer  foo  ")),
-            Some("foo".to_string())
-        );
-        assert_eq!(bearer_token_from(Some("foo")), None);
-        assert_eq!(bearer_token_from(None), None);
-    }
-
-    #[test]
     fn test_is_session_root() {
         assert!(is_session_root("/api/sessions/5"));
         assert!(!is_session_root("/api/sessions/5/messages"));
         assert!(!is_session_root("/api/sessions/5/tool-steps/x"));
         assert!(!is_session_root("/api/sessions/"));
         assert!(!is_session_root("/api/sessions/abc"));
-    }
-
-    #[test]
-    fn test_url_token_unauthenticated() {
-        // Build a request with `?token=...` query string and no `Authorization` header
-        let req = spin_sdk::http::Request::builder()
-            .method("GET")
-            .uri("/api/sessions?token=fake")
-            .body(())
-            .unwrap();
-
-        // Run it through the actual auth-checking path used by routes:
-        // 1. extract the token
-        let token = token_from_headers(req.headers());
-
-        // 2. check authentication
-        let state = futures::executor::block_on(crate::state::AppState::new()).unwrap();
-        let auth_res =
-            futures::executor::block_on(crate::auth::authenticate(&state, token.as_deref()));
-
-        // Assert it is treated as unauthenticated
-        assert!(auth_res.is_err());
     }
 }

@@ -17,11 +17,11 @@ Instructions, conventions, and architectural principles for AI agents working on
 
 ### Always Use the Database for Persistence (No LocalStorage)
 - **Seamless Multi-Device Continuity**: The core product philosophy is that a user must be able to switch machines, devices, or browsers and immediately pick up right where they left off without losing state.
-- **Never rely on `localStorage`** for user preferences, workspaces, layout configurations, or session state.
+- **Never rely on `localStorage`** for user preferences, workspaces, layout configurations, or session state. The session is an HttpOnly cookie.
 - **User-Scoped Database Settings**:
   - Persist all user layout preferences, panel dimensions (`panel_sidebar_width`, `panel_tree_width`, `panel_chat_width`), active tabs (`open_tabs`), active project (`active_project`), theme, and default configurations in the SQLite database via the `/api/settings` endpoints (`crates/storage/src/store.rs` -> `user_settings` table).
   - All settings queries and mutations must be scoped to the authenticated `user_id`.
-  - The only browser-specific storage permitted is IndexedDB for local file system directory handles (`FileSystemDirectoryHandle`) when running in browser local-mode, where native browser permissions require origin-bound handles.
+  - The only browser-specific storage permitted is IndexedDB for local file system directory handles (`FileSystemDirectoryHandle`) when running in browser local-mode, where native browser permissions require origin-bound handles. (There are no exceptions to this rule.)
 
 ---
 
@@ -40,7 +40,7 @@ Instructions, conventions, and architectural principles for AI agents working on
   - Native daemon (`openwebide-bridge`) providing PTY terminal emulation, process execution, and host Git operations over WebSockets.
 - **Shared Crates (`crates/`)**:
   - `openwebide-core`: Shared domain types, diff algorithms, syntax highlighting, TUI telemetry, and VFS abstractions.
-  - `openwebide-auth`: Password hashing and JWT/token verification.
+  - `openwebide-auth`: argon2id hashing and HMAC session tokens (not JWT).
   - `openwebide-agent`: Tool-calling agent loop, tool execution, and permission gating.
   - `openwebide-llm`: Provider integrations (Ollama, and llama.cpp via its OpenAI-compatible API). There are no OpenAI or Anthropic providers.
 

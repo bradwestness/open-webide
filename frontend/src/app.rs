@@ -87,7 +87,11 @@ fn write_theme_to_storage(theme: &str) {
 /// Whether the OS currently prefers light mode.
 fn os_prefers_light() -> bool {
     web_sys::window()
-        .and_then(|w| w.match_media("(prefers-color-scheme: light)").ok().flatten())
+        .and_then(|w| {
+            w.match_media("(prefers-color-scheme: light)")
+                .ok()
+                .flatten()
+        })
         .is_some_and(|mql| mql.matches())
 }
 
@@ -95,11 +99,7 @@ fn os_prefers_light() -> bool {
 /// theme applied via `data-theme`.
 fn effective_theme(pref: &str) -> String {
     let resolved = if pref == "system" {
-        if os_prefers_light() {
-            "light"
-        } else {
-            "dark"
-        }
+        if os_prefers_light() { "light" } else { "dark" }
     } else {
         pref
     };
@@ -405,9 +405,11 @@ pub fn App() -> impl IntoView {
     // Follow OS light/dark changes while the preference is "system". The
     // closure is kept alive for the app's lifetime via a StoredValue.
     {
-        if let Some(mql) = web_sys::window()
-            .and_then(|w| w.match_media("(prefers-color-scheme: light)").ok().flatten())
-        {
+        if let Some(mql) = web_sys::window().and_then(|w| {
+            w.match_media("(prefers-color-scheme: light)")
+                .ok()
+                .flatten()
+        }) {
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
                 if theme.get() != "system" {
                     return;
@@ -576,7 +578,13 @@ format!(
                 message,
                 confirm_label: "Log out".to_string(),
                 action: Callback::new(move |_| {
-                    action_api.set_token(None);
+                    let api = action_api.clone();
+                    spawn_local(async move {
+                        let _ = api.logout().await;
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.location().reload();
+                        }
+                    });
                     current_user.set(None);
                     open_tabs.set(Vec::new());
                     active_project.set(None);
@@ -2571,8 +2579,7 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
         }
     });
 
-    // One-shot auth check: if a token is cached, verify it with /me. A
-    // failure (or no token) leaves us unauthenticated, so the gate shows.
+    // One-shot auth check
     {
         let api = api.clone();
         Effect::new(move || {
@@ -2581,11 +2588,7 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
             }
             let api = api.clone();
             spawn_local(async move {
-                let user = if api.token().is_some() {
-                    api.me().await.ok()
-                } else {
-                    None
-                };
+                let user = api.me().await.ok();
                 current_user.set(user);
                 auth_checked.set(true);
             });

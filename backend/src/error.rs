@@ -78,6 +78,13 @@ impl ApiError {
         }
     }
 
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self {
+            status: 429,
+            message: message.into(),
+        }
+    }
+
     /// Build the JSON error response. A plain method (not an `IntoResponse`
     /// impl) so that `Result<T, ApiError>` handlers can convert it
     /// explicitly.

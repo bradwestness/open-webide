@@ -1,7 +1,8 @@
 //! Thin client for the backend REST API, including SSE streaming.
 
 use gloo_net::http::{Method, Request, RequestBuilder};
-use leptos::prelude::*;
+
+use leptos::prelude::Set;
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
@@ -20,14 +21,14 @@ use web_sys::{AbortSignal, ReadableStreamDefaultReader, ReadableStreamReadResult
 #[derive(Clone)]
 pub struct BackendApi {
     base: String,
-    token: RwSignal<Option<String>>,
+    pub signed_in: leptos::prelude::RwSignal<bool>,
+    cross_origin: bool,
 }
 
 /// The `{user, token}` payload returned by register and login.
 #[derive(Deserialize)]
 struct AuthResponse {
     user: User,
-    token: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,31 +47,28 @@ impl BackendApi {
             .and_then(|l| l.origin().ok())
             .unwrap_or_else(|| "http://localhost:3000".to_string());
         let base = location
+            .clone()
             .and_then(|l| l.search().ok())
             .and_then(|search| query_param(&search, "api"))
             .map(|v| v.trim_end_matches('/').to_string())
             .unwrap_or_else(|| format!("{origin}/api"));
+
+        let cross_origin = !base.starts_with(&origin);
+
+        if let Some(window) = web_sys::window() {
+            if let Ok(Some(storage)) = window.local_storage() {
+                let _ = storage.remove_item("owide_token");
+            }
+        }
+
         Self {
             base,
-            token: RwSignal::new(read_token_from_storage()),
+            signed_in: leptos::prelude::RwSignal::new(false),
+            cross_origin,
         }
     }
 
     // -- auth --------------------------------------------------------------
-
-    /// The current bearer token, if any.
-    pub fn token(&self) -> Option<String> {
-        self.token.get()
-    }
-
-    /// Set (or clear) the bearer token, persisting it to localStorage.
-    pub fn set_token(&self, token: Option<String>) {
-        self.token.set(token.clone());
-        match &token {
-            Some(t) => write_token_to_storage(t),
-            None => clear_token_from_storage(),
-        }
-    }
 
     /// Register a new local account (only the first account may register).
     /// On success the returned token is stored for subsequent requests.
@@ -81,7 +79,6 @@ impl BackendApi {
                 &json!({ "username": username, "password": password }),
             )
             .await?;
-        self.set_token(Some(resp.token));
         Ok(resp.user)
     }
 
@@ -93,7 +90,6 @@ impl BackendApi {
                 &json!({ "username": username, "password": password }),
             )
             .await?;
-        self.set_token(Some(resp.token));
         Ok(resp.user)
     }
 
@@ -101,6 +97,14 @@ impl BackendApi {
     pub async fn me(&self) -> Result<User, String> {
         let resp: serde_json::Value = self.get("/auth/me").await?;
         serde_json::from_value(resp["user"].clone()).map_err(|e| e.to_string())
+    }
+
+    pub async fn logout(&self) -> Result<(), String> {
+        let _ = self
+            .post::<_, serde_json::Value>("/auth/logout", &json!({}))
+            .await;
+        self.signed_in.set(false);
+        Ok(())
     }
 
     pub async fn health(&self) -> Result<Health, String> {
@@ -265,10 +269,7 @@ impl BackendApi {
             self.base,
             urlenc(path)
         );
-        let mut builder = RequestBuilder::new(&url).method(Method::GET);
-        if let Some(token) = self.token.get() {
-            builder = builder.header("authorization", &format!("Bearer {token}"));
-        }
+        let builder = self.builder(&url, Method::GET);
         let req = builder.build().map_err(|e| e.to_string())?;
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.ok() {
@@ -300,10 +301,7 @@ impl BackendApi {
             self.base,
             urlenc(path)
         );
-        let mut builder = RequestBuilder::new(&url).method(Method::GET);
-        if let Some(token) = self.token.get() {
-            builder = builder.header("authorization", &format!("Bearer {token}"));
-        }
+        let builder = self.builder(&url, Method::GET);
         let req = builder.build().map_err(|e| e.to_string())?;
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.ok() {
@@ -325,12 +323,9 @@ impl BackendApi {
             self.base,
             urlenc(path)
         );
-        let mut builder = RequestBuilder::new(&url)
-            .method(Method::PUT)
+        let builder = self
+            .builder(&url, Method::PUT)
             .header("content-type", "text/plain");
-        if let Some(token) = self.token.get() {
-            builder = builder.header("authorization", &format!("Bearer {token}"));
-        }
         let req = builder
             .body(content.to_string())
             .map_err(|e| e.to_string())?;
@@ -656,10 +651,8 @@ impl BackendApi {
         signal: Option<&AbortSignal>,
         mut on_event: impl FnMut(SseEvent),
     ) -> Result<(), String> {
-        let mut builder = Request::post(&format!("{}/sessions/{session_id}/messages", self.base));
-        if let Some(token) = self.token.get() {
-            builder = builder.header("authorization", &format!("Bearer {token}"));
-        }
+        let url = format!("{}/sessions/{session_id}/messages", self.base);
+        let builder = self.builder(&url, Method::POST);
         let req = builder
             .abort_signal(signal)
             .json(&json!({
@@ -733,6 +726,16 @@ impl BackendApi {
         self.request(Method::PUT, path, Some(body)).await
     }
 
+    fn builder(&self, url: &str, method: Method) -> RequestBuilder {
+        let mut builder = RequestBuilder::new(url)
+            .method(method)
+            .header("x-openwebide", "1");
+        if self.cross_origin {
+            builder = builder.credentials(web_sys::RequestCredentials::Include);
+        }
+        builder
+    }
+
     async fn request<T, R>(&self, method: Method, path: &str, body: Option<&T>) -> Result<R, String>
     where
         T: Serialize,
@@ -740,10 +743,7 @@ impl BackendApi {
     {
         let url = format!("{}{path}", self.base);
         let is_delete = method == Method::DELETE;
-        let mut builder = RequestBuilder::new(&url).method(method);
-        if let Some(token) = self.token.get() {
-            builder = builder.header("authorization", &format!("Bearer {token}"));
-        }
+        let builder = self.builder(&url, method);
         let req = match body {
             Some(body) => builder.json(body),
             None => builder.build(),
@@ -780,25 +780,6 @@ fn query_param(query: &str, key: &str) -> Option<String> {
         let (k, v) = pair.split_once('=')?;
         (k == key).then(|| v.to_string())
     })
-}
-
-/// The bearer token cached in localStorage, if any.
-fn read_token_from_storage() -> Option<String> {
-    web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|ls| ls.get_item("owide_token").ok().flatten())
-}
-
-fn write_token_to_storage(token: &str) {
-    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = ls.set_item("owide_token", token);
-    }
-}
-
-fn clear_token_from_storage() {
-    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = ls.remove_item("owide_token");
-    }
 }
 
 pub use openwebide_frontend::text::urlenc;

@@ -111,6 +111,10 @@ struct RegisterBody {
 /// Create the first (admin) account. Registration closes once any account
 /// exists, so this returns 403 after the first user signs up.
 pub async fn register(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    if !auth::csrf_header_ok(req.headers()) {
+        return Err(ApiError::unauthorized("not signed in"));
+    }
+    let is_https = auth::is_https(req.headers());
     let body = read_body(req, AUTH_BODY_LIMIT).await?;
     let reg: RegisterBody = parse_json(body)?;
     let username = reg.username.trim();
@@ -145,11 +149,12 @@ pub async fn register(req: Request, state: &AppState) -> Result<JsonResp, ApiErr
     // up first, so nothing created before accounts existed is lost to scoping.
     state.store.reassign_orphaned_projects(user.id).await?;
     state.store.reassign_orphaned_sessions(user.id).await?;
-    let token = auth::issue_token(state, user.id).await?;
-    Ok(json_response(
-        201,
-        &json!({ "user": user.public(), "token": token }),
-    ))
+    let token = auth::issue_token(state, &user).await?;
+    let cookie = auth::set_cookie(&token, is_https);
+    let mut resp = json_response(201, &json!({ "user": user.public() }));
+    resp.headers_mut()
+        .insert("set-cookie", cookie.parse().unwrap());
+    Ok(resp)
 }
 
 #[derive(Deserialize)]
@@ -159,21 +164,45 @@ struct LoginBody {
 }
 
 pub async fn login(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    if !auth::csrf_header_ok(req.headers()) {
+        return Err(ApiError::unauthorized("not signed in"));
+    }
+    let is_https = auth::is_https(req.headers());
     let body = read_body(req, AUTH_BODY_LIMIT).await?;
     let creds: LoginBody = parse_json(body)?;
-    let user = state
-        .store
-        .get_user_by_username(creds.username.trim())
-        .await?
-        .ok_or_else(|| ApiError::unauthorized("invalid username or password"))?;
-    if !auth::verify_password(&creds.password, &user.password_hash) {
+    let username = creds.username.trim();
+
+    if let Some((failures, last_failed)) = state.store.login_failures(username).await? {
+        let lockout = openwebide_auth::lockout_secs(failures);
+        if lockout > 0 {
+            let elapsed = now() - last_failed;
+            if elapsed < lockout {
+                return Err(ApiError::too_many_requests(format!(
+                    "too many failed login attempts; try again in {}s",
+                    lockout - elapsed
+                )));
+            }
+        }
+    }
+
+    let user_opt = state.store.get_user_by_username(username).await?;
+    let hash = user_opt.as_ref().map(|u| u.password_hash.as_str());
+
+    if !auth::verify_password_or_dummy(&creds.password, hash) {
+        state.store.record_login_failure(username, now()).await?;
         return Err(ApiError::unauthorized("invalid username or password"));
     }
-    let token = auth::issue_token(state, user.id).await?;
-    Ok(json_response(
-        200,
-        &json!({ "user": user.public(), "token": token }),
-    ))
+
+    let user = user_opt.unwrap();
+    state.store.clear_login_failures(username).await?;
+
+    let token = auth::issue_token(state, &user).await?;
+    let cookie = auth::set_cookie(&token, is_https);
+
+    let mut resp = json_response(200, &json!({ "user": user.public() }));
+    resp.headers_mut()
+        .insert("set-cookie", cookie.parse().unwrap());
+    Ok(resp)
 }
 
 /// The authenticated account (set by the router from the bearer token).
@@ -185,8 +214,19 @@ pub async fn me(state: &AppState) -> Result<JsonResp, ApiError> {
 
 /// Stateless logout: the token is bearer-based, so the client simply discards
 /// its copy. This endpoint exists for symmetry and future revocation.
-pub fn logout() -> JsonResp {
-    json_response(200, &json!({ "ok": true }))
+pub async fn logout(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    if !auth::csrf_header_ok(req.headers()) {
+        return Err(ApiError::unauthorized("not signed in"));
+    }
+    if let Ok(user) = auth::authenticate(state, req.headers()).await {
+        let _ = state.store.bump_token_epoch(user.id).await;
+    }
+    let is_https = auth::is_https(req.headers());
+    let cookie = auth::clear_cookie(is_https);
+    let mut resp = json_response(200, &json!({ "ok": true }));
+    resp.headers_mut()
+        .insert("set-cookie", cookie.parse().unwrap());
+    Ok(resp)
 }
 
 // -- health ------------------------------------------------------------------

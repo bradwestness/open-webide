@@ -10,6 +10,9 @@ to date lives under [Unreleased](#unreleased). See [docs/roadmap.md](docs/roadma
 for what's still ahead.
 
 ## [Unreleased]
+
+### Changed
+- Hardened login system: transitioned to HttpOnly cookie sessions, added brute-force lockout, and implemented global logout (invalidates sessions on all devices). Added CSRF protection via custom header.
 - Replaced WebSockets broadcast delivery with robust cursor-based SeqRing buffers
 
 

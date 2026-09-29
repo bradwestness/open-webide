@@ -24,6 +24,7 @@ pub struct UserRecord {
     pub password_hash: String,
     pub role: UserRole,
     pub created_at: i64,
+    pub token_epoch: i64,
 }
 
 impl UserRecord {
@@ -60,7 +61,7 @@ impl<D: Db> Store<D> {
 
     // -- users -------------------------------------------------------------
 
-    const USER_COLUMNS: &'static str = "id, username, password_hash, role, created_at";
+    const USER_COLUMNS: &'static str = "id, username, password_hash, role, created_at, token_epoch";
 
     pub async fn insert_first_admin(
         &self,
@@ -85,7 +86,7 @@ impl<D: Db> Store<D> {
             }
 
             let rows = tx.execute(
-                "SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?",
+                "SELECT id, username, password_hash, role, created_at, token_epoch FROM users WHERE username = ?",
                 &[DbValue::Text(username.into())]
             ).await?;
 
@@ -96,6 +97,7 @@ impl<D: Db> Store<D> {
                     password_hash: row.get_text(2)?.into(),
                     role: UserRole::parse(row.get_text(3)?).unwrap_or(UserRole::User),
                     created_at: row.get_int(4)?,
+                    token_epoch: row.get_int(5).unwrap_or(0),
                 }))
             } else {
                 Err(StorageError::NotFound("User not found after insert".into()))
@@ -1077,6 +1079,65 @@ impl<D: Db> Store<D> {
             .await?;
         Ok(())
     }
+    // -- auth security -----------------------------------------------------
+
+    pub async fn login_failures(&self, username: &str) -> Result<Option<(i64, i64)>, StorageError> {
+        let res = self
+            .db
+            .execute(
+                "SELECT failures, last_failed_at FROM login_failures WHERE username = ?",
+                &[DbValue::Text(username.into())],
+            )
+            .await?;
+        if let Some(row) = res.rows.first() {
+            Ok(Some((row.get_int(0)?, row.get_int(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn record_login_failure(&self, username: &str, now: i64) -> Result<(), StorageError> {
+        self.db
+            .transaction(|tx| async move {
+                tx.execute(
+                    "DELETE FROM login_failures WHERE last_failed_at < ?",
+                    &[DbValue::Int(now - 86400)],
+                )
+                .await?;
+
+                tx.execute(
+                    "INSERT INTO login_failures (username, failures, last_failed_at)
+                 VALUES (?, 1, ?)
+                 ON CONFLICT(username) DO UPDATE SET
+                 failures = login_failures.failures + 1,
+                 last_failed_at = excluded.last_failed_at",
+                    &[DbValue::Text(username.into()), DbValue::Int(now)],
+                )
+                .await?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn clear_login_failures(&self, username: &str) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "DELETE FROM login_failures WHERE username = ?",
+                &[DbValue::Text(username.into())],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn bump_token_epoch(&self, user_id: i64) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "UPDATE users SET token_epoch = token_epoch + 1 WHERE id = ?",
+                &[DbValue::Int(user_id)],
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 fn connection_from_row(row: &QueryRow) -> Result<Connection, StorageError> {
@@ -1145,6 +1206,7 @@ fn user_from_row(row: &QueryRow) -> Result<UserRecord, StorageError> {
         role: UserRole::parse(role)
             .ok_or_else(|| StorageError::InvalidValue(format!("unknown role: {role}")))?,
         created_at: row.get_int(4)?,
+        token_epoch: row.get_int(5).unwrap_or(0),
     })
 }
 
@@ -1819,10 +1881,34 @@ mod tests {
             // Stop before the legacy-settings copy step.
             migrations::apply_through(&db, 6).await.unwrap();
             let store = Store::new(db);
+            store.db.execute(
+
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, 'hash', 'admin', 1)",
+
+                &[DbValue::Text("alice".into())]
+
+            ).await.unwrap();
+
             let user = store
-                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .db
+                .execute(
+                    "SELECT id FROM users WHERE username = ?",
+                    &[DbValue::Text("alice".into())],
+                )
                 .await
+                .unwrap()
+                .rows[0]
+                .get_int(0)
                 .unwrap();
+
+            let user = UserRecord {
+                id: user,
+                username: "alice".into(),
+                password_hash: "hash".into(),
+                role: UserRole::Admin,
+                created_at: 1,
+                token_epoch: 0,
+            };
             store.set_setting("theme", "dark").await.unwrap();
             store
                 .set_setting("web_search_api_key", "secret")
@@ -1870,10 +1956,34 @@ mod tests {
             // reject the duplicate insert below via the unique index.
             migrations::apply_through(&db, 5).await.unwrap();
             let store = Store::new(db);
+            store.db.execute(
+
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, 'hash', 'admin', 1)",
+
+                &[DbValue::Text("alice".into())]
+
+            ).await.unwrap();
+
             let user = store
-                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .db
+                .execute(
+                    "SELECT id FROM users WHERE username = ?",
+                    &[DbValue::Text("alice".into())],
+                )
                 .await
+                .unwrap()
+                .rows[0]
+                .get_int(0)
                 .unwrap();
+
+            let user = UserRecord {
+                id: user,
+                username: "alice".into(),
+                password_hash: "hash".into(),
+                role: UserRole::Admin,
+                created_at: 1,
+                token_epoch: 0,
+            };
 
             // Directly insert two projects with the exact same path
             store.db.execute(
@@ -1949,10 +2059,34 @@ mod tests {
             // Stop before the rewrite step.
             migrations::apply_through(&db, 10).await.unwrap();
             let store = Store::new(db);
+            store.db.execute(
+
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, 'hash', 'admin', 1)",
+
+                &[DbValue::Text("alice".into())]
+
+            ).await.unwrap();
+
             let user = store
-                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .db
+                .execute(
+                    "SELECT id FROM users WHERE username = ?",
+                    &[DbValue::Text("alice".into())],
+                )
                 .await
+                .unwrap()
+                .rows[0]
+                .get_int(0)
                 .unwrap();
+
+            let user = UserRecord {
+                id: user,
+                username: "alice".into(),
+                password_hash: "hash".into(),
+                role: UserRole::Admin,
+                created_at: 1,
+                token_epoch: 0,
+            };
             // A Docker install from before the /workspace mount.
             store.db.execute(
                 "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -1985,10 +2119,34 @@ mod tests {
         block_on(async {
             migrations::apply_through(&db, 10).await.unwrap();
             let store = Store::new(db);
+            store.db.execute(
+
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, 'hash', 'admin', 1)",
+
+                &[DbValue::Text("alice".into())]
+
+            ).await.unwrap();
+
             let user = store
-                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .db
+                .execute(
+                    "SELECT id FROM users WHERE username = ?",
+                    &[DbValue::Text("alice".into())],
+                )
                 .await
+                .unwrap()
+                .rows[0]
+                .get_int(0)
                 .unwrap();
+
+            let user = UserRecord {
+                id: user,
+                username: "alice".into(),
+                password_hash: "hash".into(),
+                role: UserRole::Admin,
+                created_at: 1,
+                token_epoch: 0,
+            };
             store.db.execute(
                 "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
                 &[
@@ -2014,10 +2172,34 @@ mod tests {
         block_on(async {
             migrations::apply_through(&db, 10).await.unwrap();
             let store = Store::new(db);
+            store.db.execute(
+
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, 'hash', 'admin', 1)",
+
+                &[DbValue::Text("alice".into())]
+
+            ).await.unwrap();
+
             let user = store
-                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .db
+                .execute(
+                    "SELECT id FROM users WHERE username = ?",
+                    &[DbValue::Text("alice".into())],
+                )
                 .await
+                .unwrap()
+                .rows[0]
+                .get_int(0)
                 .unwrap();
+
+            let user = UserRecord {
+                id: user,
+                username: "alice".into(),
+                password_hash: "hash".into(),
+                role: UserRole::Admin,
+                created_at: 1,
+                token_epoch: 0,
+            };
             // The owner already has a project at the stripped path.
             store.db.execute(
                 "INSERT INTO projects (name, mode, path, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -2504,6 +2686,58 @@ mod tests {
                     "Expected constraint error, got {msg}"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn login_failures_tracking() {
+        let store = test_store();
+        block_on(async {
+            let user = "test_user";
+            assert_eq!(store.login_failures(user).await.unwrap(), None);
+
+            store.record_login_failure(user, 100).await.unwrap();
+            let (f, t) = store.login_failures(user).await.unwrap().unwrap();
+            assert_eq!(f, 1);
+            assert_eq!(t, 100);
+
+            store.record_login_failure(user, 101).await.unwrap();
+            let (f, t) = store.login_failures(user).await.unwrap().unwrap();
+            assert_eq!(f, 2);
+            assert_eq!(t, 101);
+
+            // 25 hours later -> purged
+            store.record_login_failure(user, 101 + 90000).await.unwrap();
+            let (f, t) = store.login_failures(user).await.unwrap().unwrap();
+            assert_eq!(f, 1);
+            assert_eq!(t, 90101);
+
+            store.clear_login_failures(user).await.unwrap();
+            assert_eq!(store.login_failures(user).await.unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn test_bump_token_epoch() {
+        let store = test_store();
+        let alice = test_user(&store, "alice", UserRole::User);
+        block_on(async {
+            let u1 = store.get_user(alice).await.unwrap().unwrap();
+            assert_eq!(u1.token_epoch, 0);
+
+            store.bump_token_epoch(alice).await.unwrap();
+
+            let u2 = store.get_user(alice).await.unwrap().unwrap();
+            assert_eq!(u2.token_epoch, 1);
+        });
+    }
+
+    #[test]
+    fn migrate_12_13_idempotent() {
+        let store = test_store();
+        block_on(async {
+            store.migrate().await.unwrap();
+            store.migrate().await.unwrap();
         });
     }
 }
