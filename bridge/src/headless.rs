@@ -256,23 +256,20 @@ pub fn spawn_headless(
             }
         };
 
-        if tokio::time::timeout(
-            Duration::from_secs(1),
-            async {
-                tokio::join!(
-                    async {
-                        if let Some(ref mut t) = out_task {
-                            let _ = t.await;
-                        }
-                    },
-                    async {
-                        if let Some(ref mut t) = err_task {
-                            let _ = t.await;
-                        }
+        if tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                async {
+                    if let Some(ref mut t) = out_task {
+                        let _ = t.await;
                     }
-                )
-            },
-        )
+                },
+                async {
+                    if let Some(ref mut t) = err_task {
+                        let _ = t.await;
+                    }
+                }
+            )
+        })
         .await
         .is_err()
         {
