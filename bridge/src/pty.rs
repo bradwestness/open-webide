@@ -82,24 +82,39 @@ pub fn spawn_pty(
         .map_err(|e| format!("clone PTY reader failed: {e}"))?;
     let sess_clone = session.clone();
 
+    let (reader_exit_tx, reader_exit_rx) = std::sync::mpsc::channel::<()>();
     std::thread::Builder::new()
         .name(format!("pty-read-{id}"))
         .spawn(move || {
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; 8192];
+            let mut decoder = openwebide_core::utf8::Utf8Decoder::new();
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        let text = decoder.finish();
+                        if !text.is_empty() {
+                            sess_clone.push_output("pty", &text);
+                        }
+                        break;
+                    }
                     Ok(n) => {
-                        let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                        sess_clone.emit_output("pty", &text);
+                        let text = decoder.push(&buf[..n]);
+                        if !text.is_empty() {
+                            sess_clone.push_output("pty", &text);
+                        }
                     }
                     Err(e) => {
                         if e.kind() != std::io::ErrorKind::Interrupted {
+                            let text = decoder.finish();
+                            if !text.is_empty() {
+                                sess_clone.push_output("pty", &text);
+                            }
                             break;
                         }
                     }
                 }
             }
+            let _ = reader_exit_tx.send(());
         })
         .map_err(|e| format!("spawn read thread failed: {e}"))?;
 
@@ -174,15 +189,14 @@ pub fn spawn_pty(
             // Wait for child process exit
             match child.wait() {
                 Ok(status) => {
-                    let code = if status.success() {
-                        Some(0)
-                    } else {
-                        // ExitCode in portable-pty
-                        Some(1)
-                    };
-                    sess_exit.emit_exit(code, None);
+                    let _ = reader_exit_rx.recv_timeout(std::time::Duration::from_millis(500));
+                    sess_exit.emit_exit(
+                        Some(status.exit_code() as i32),
+                        status.signal().map(|s| s.to_string()),
+                    );
                 }
                 Err(e) => {
+                    let _ = reader_exit_rx.recv_timeout(std::time::Duration::from_millis(500));
                     sess_exit.emit_error(&format!("wait failed: {e}"));
                     sess_exit.emit_exit(Some(1), None);
                 }
@@ -217,29 +231,32 @@ mod tests {
         )
         .unwrap();
 
-        let mut rx = session.broadcast_tx.subscribe();
+        let mut rx = session.ring.lock().unwrap().subscribe();
         tokio::time::sleep(Duration::from_millis(200)).await;
         // Job control would put `sleep` in its own process group, so the tty's ^C would reach
         // only that group and never the shell's own trap; disable it so the whole foreground
         // pipeline stays in the shell's pgid, matching a non-interactive job-less script.
-        session.send_input("set +m\n".to_string()).await;
+        let _ = session.try_send_input("set +m\n".to_string());
         tokio::time::sleep(Duration::from_millis(200)).await;
-        session
-            .send_input("trap 'echo got-int' INT\n".to_string())
-            .await;
+        let _ = session.try_send_input("trap 'echo got-int' INT\n".to_string());
         tokio::time::sleep(Duration::from_millis(200)).await;
-        session.send_input("sleep 5\n".to_string()).await;
+        let _ = session.try_send_input("sleep 5\n".to_string());
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        session.kill(Signal::Int).await;
+        session.try_kill(Signal::Int);
 
         let saw_got_int = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut cursor = 0;
             loop {
-                if let Ok(openwebide_core::BridgeServerMessage::Output { data, .. }) =
-                    rx.recv().await
-                    && data.contains("got-int")
-                {
-                    return;
+                let _ = rx.changed().await;
+                let (batch, _) = session.ring.lock().unwrap().read_after(cursor, 100);
+                for (seq, msg) in batch {
+                    cursor = seq;
+                    if let openwebide_core::BridgeServerMessage::Output { data, .. } = msg {
+                        if data.contains("got-int") {
+                            return;
+                        }
+                    }
                 }
             }
         })

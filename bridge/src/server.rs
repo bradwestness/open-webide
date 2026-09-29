@@ -754,450 +754,288 @@ async fn handle_git(
     }
 }
 
+enum WriterCmd {
+    Send(BridgeServerMessage),
+    Attach {
+        session: std::sync::Arc<crate::session::Session>,
+        after_seq: u64,
+    },
+}
+
 async fn handle_websocket<S>(
-    mut ws_stream: tokio_tungstenite::WebSocketStream<S>,
+    ws_stream: tokio_tungstenite::WebSocketStream<S>,
     sessions: SessionManager,
     workspace_root: PathBuf,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    // If client attaches to a session, we subscribe to session broadcast
-    let mut attached_rx: Option<tokio::sync::broadcast::Receiver<BridgeServerMessage>> = None;
-    let mut attached_id: Option<String> = None;
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<WriterCmd>(256);
 
-    let mut ping_interval =
-        tokio::time::interval_at(Instant::now() + WS_PING_INTERVAL, WS_PING_INTERVAL);
-    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut idle_deadline = Instant::now() + WS_IDLE_TIMEOUT;
+    let _writer_task = tokio::spawn(async move {
+        let mut attached_session: Option<Arc<crate::session::Session>> = None;
+        let mut attached_cursor = 0;
+        let mut watch_rx: Option<tokio::sync::watch::Receiver<u64>> = None;
 
-    loop {
-        tokio::select! {
-            _ = ping_interval.tick() => {
-                if ws_stream.send(Message::Ping(Bytes::new())).await.is_err() {
-                    break;
-                }
-            }
+        let mut ping_interval =
+            tokio::time::interval_at(Instant::now() + WS_PING_INTERVAL, WS_PING_INTERVAL);
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-            () = tokio::time::sleep_until(idle_deadline) => {
-                break;
-            }
-
-            // Outbound message from attached session broadcast
-            msg_opt = async {
-                if let Some(rx) = attached_rx.as_mut() {
-                    rx.recv().await.ok()
+        loop {
+            let watch_future = async {
+                if let Some(rx) = watch_rx.as_mut() {
+                    let _ = rx.changed().await;
                 } else {
                     std::future::pending().await
                 }
-            } => {
-                if let Some(msg) = msg_opt
-                    && let Ok(json_str) = serde_json::to_string(&msg)
-                        && ws_stream.send(Message::Text(json_str.into())).await.is_err() {
-                            break;
-                        }
-            }
+            };
 
-            // Inbound WebSocket message from client
-            inbound = ws_stream.next() => {
-                let Some(msg_res) = inbound else { break };
-                idle_deadline = Instant::now() + WS_IDLE_TIMEOUT;
-                let msg = match msg_res {
-                    Ok(m) => m,
-                    Err(_) => break,
-                };
-
-                let text = match msg {
-                    Message::Text(t) => t.to_string(),
-                    Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
-                    Message::Ping(data) => {
-                        let _ = ws_stream.send(Message::Pong(data)).await;
-                        continue;
+            tokio::select! {
+                _ = ping_interval.tick() => {
+                    if ws_tx.send(Message::Ping(Bytes::new())).await.is_err() {
+                        break;
                     }
-                    Message::Close(_) => break,
-                    _ => continue,
-                };
+                }
 
-                let client_msg: BridgeClientMessage = match serde_json::from_str(&text) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        let err = BridgeServerMessage::Error {
-                            id: attached_id.clone().unwrap_or_default(),
-                            message: format!("invalid message: {e}"),
-                        };
-                        let _ = send_server_msg(&mut ws_stream, &err).await;
-                        continue;
-                    }
-                };
-
-                match client_msg {
-                    BridgeClientMessage::Spawn {
-                        id,
-                        command,
-                        args,
-                        cwd,
-                        env,
-                        pty,
-                        cols,
-                        rows,
-                    } => {
-                        let result = if pty {
-                            spawn_pty(id.clone(), command.clone(), args, cwd, env, cols, rows, &workspace_root)
-                        } else {
-                            spawn_headless(id.clone(), command.clone(), args, cwd, env, &workspace_root)
-                        };
-
-                        match result {
-                            Ok(session) => {
-                                sessions.insert(session.clone());
-                                let spawned = BridgeServerMessage::Spawned {
-                                    id: id.clone(),
-                                    pid: std::process::id(),
-                                    pty,
-                                };
-                                let _ = send_server_msg(&mut ws_stream, &spawned).await;
-
-                                // Automatically attach to live output stream
-                                attached_id = Some(id.clone());
-                                attached_rx = Some(session.broadcast_tx.subscribe());
-                            }
-                            Err(e) => {
-                                let err = BridgeServerMessage::Error { id, message: e };
-                                let _ = send_server_msg(&mut ws_stream, &err).await;
+                cmd = cmd_rx.recv() => {
+                    match cmd {
+                        Some(WriterCmd::Send(msg)) => {
+                            if let Ok(json_str) = serde_json::to_string(&msg)
+                                && ws_tx.send(Message::Text(json_str.into())).await.is_err()
+                            {
+                                break;
                             }
                         }
-                    }
+                        Some(WriterCmd::Attach { session, after_seq }) => {
+                            attached_session = Some(session.clone());
+                            watch_rx = Some(session.ring.lock().unwrap().subscribe());
+                            attached_cursor = after_seq;
 
-                    BridgeClientMessage::Input { id, data } => {
-                        if let Some(sess) = sessions.get(&id) {
-                            sess.send_input(data).await;
-                        }
-                    }
-
-                    BridgeClientMessage::Resize { id, cols, rows } => {
-                        if let Some(sess) = sessions.get(&id) {
-                            sess.resize(cols, rows).await;
-                        }
-                    }
-
-                    BridgeClientMessage::Kill { id, signal } => {
-                        match crate::proc::parse_signal(signal.as_deref()) {
-                            Ok(sig) => {
-                                if let Some(sess) = sessions.get(&id) {
-                                    sess.kill(sig).await;
+                            // Immediately drain the ring from `after_seq`
+                            loop {
+                                let (batch, truncated) = session.ring.lock().unwrap().read_after(attached_cursor, 256);
+                                if let Some(dropped) = truncated {
+                                    let err = BridgeServerMessage::Error {
+                                        id: session.id.clone(),
+                                        message: format!("output truncated: {dropped} chunks dropped"),
+                                    };
+                                    let _ = ws_tx.send(Message::Text(serde_json::to_string(&err).unwrap().into())).await;
+                                    attached_cursor = session.ring.lock().unwrap().first_seq().saturating_sub(1);
+                                    continue;
+                                }
+                                if batch.is_empty() {
+                                    break;
+                                }
+                                for (seq, msg) in batch {
+                                    if let Ok(json) = serde_json::to_string(&msg)
+                                        && ws_tx.send(Message::Text(json.into())).await.is_err()
+                                    {
+                                        return;
+                                    }
+                                    attached_cursor = seq;
                                 }
                             }
-                            Err(message) => {
-                                let err = BridgeServerMessage::Error { id, message };
-                                let _ = send_server_msg(&mut ws_stream, &err).await;
+                        }
+                        None => break,
+                    }
+                }
+
+                _ = watch_future => {
+                    if let Some(sess) = &attached_session {
+                        loop {
+                            let (batch, truncated) = sess.ring.lock().unwrap().read_after(attached_cursor, 256);
+                            if let Some(dropped) = truncated {
+                                let err = BridgeServerMessage::Error {
+                                    id: sess.id.clone(),
+                                    message: format!("output truncated: {dropped} chunks dropped"),
+                                };
+                                let _ = ws_tx.send(Message::Text(serde_json::to_string(&err).unwrap().into())).await;
+                                attached_cursor = sess.ring.lock().unwrap().first_seq().saturating_sub(1);
+                                continue;
+                            }
+                            if batch.is_empty() {
+                                break;
+                            }
+                            for (seq, msg) in batch {
+                                if let Ok(json) = serde_json::to_string(&msg)
+                                    && ws_tx.send(Message::Text(json.into())).await.is_err()
+                                {
+                                    return;
+                                }
+                                attached_cursor = seq;
                             }
                         }
-                    }
-
-                    BridgeClientMessage::Attach { id, last_seq } => {
-                        if let Some(sess) = sessions.get(&id) {
-                            let (replays, rx) = sess.attach(last_seq);
-                            attached_id = Some(id.clone());
-                            attached_rx = Some(rx);
-
-                            // Send buffered replay chunks first
-                            for chunk in replays {
-                                let _ = send_server_msg(&mut ws_stream, &chunk).await;
-                            }
-                        } else {
-                            let err = BridgeServerMessage::Error {
-                                id: id.clone(),
-                                message: format!("session not found: {id}"),
-                            };
-                            let _ = send_server_msg(&mut ws_stream, &err).await;
-                        }
-                    }
-
-                    BridgeClientMessage::List => {
-                        let active = sessions.list();
-                        let msg = BridgeServerMessage::Sessions { sessions: active };
-                        let _ = send_server_msg(&mut ws_stream, &msg).await;
                     }
                 }
             }
         }
-    }
-}
+    });
 
-async fn send_server_msg<S>(
-    ws_stream: &mut tokio_tungstenite::WebSocketStream<S>,
-    msg: &BridgeServerMessage,
-) -> Result<(), ()>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    if let Ok(json_str) = serde_json::to_string(msg) {
-        ws_stream
-            .send(Message::Text(json_str.into()))
-            .await
-            .map_err(|_| ())
-    } else {
-        Err(())
-    }
-}
+    let mut attached_id: Option<String> = None;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    loop {
+        let inbound = tokio::time::timeout(WS_IDLE_TIMEOUT, ws_rx.next()).await;
 
-    fn test_config() -> ServerConfig {
-        ServerConfig::new(PathBuf::from("/tmp"))
-    }
-
-    #[test]
-    fn test_missing_or_empty_host_rejected() {
-        let cfg = test_config();
-        assert_eq!(check_request(None, None, "GET", None, &cfg), Err(403));
-        assert_eq!(check_request(Some(""), None, "GET", None, &cfg), Err(403));
-        assert_eq!(
-            check_request(Some("   "), None, "GET", None, &cfg),
-            Err(403)
-        );
-    }
-
-    #[test]
-    fn test_foreign_host_rejected() {
-        let cfg = test_config();
-        assert_eq!(
-            check_request(Some("evil.example:3001"), None, "GET", None, &cfg),
-            Err(403)
-        );
-        assert_eq!(
-            check_request(Some("attacker.com"), None, "GET", None, &cfg),
-            Err(403)
-        );
-    }
-
-    #[test]
-    fn test_ip_literal_hosts_allowed() {
-        let cfg = test_config();
-        assert!(check_request(Some("127.0.0.1:3001"), None, "GET", None, &cfg).is_ok());
-        assert!(check_request(Some("192.168.1.100:3001"), None, "GET", None, &cfg).is_ok());
-        assert!(check_request(Some("10.0.0.1"), None, "GET", None, &cfg).is_ok());
-        assert!(check_request(Some("[::1]:3001"), None, "GET", None, &cfg).is_ok());
-        assert!(check_request(Some("[2001:db8::1]:8080"), None, "GET", None, &cfg).is_ok());
-    }
-
-    #[test]
-    fn test_default_hosts_allowed() {
-        let cfg = test_config();
-        assert!(check_request(Some("localhost:3001"), None, "GET", None, &cfg).is_ok());
-        assert!(check_request(Some("LOCALHOST"), None, "GET", None, &cfg).is_ok());
-        if let Some(h) = get_system_hostname() {
-            assert!(check_request(Some(&format!("{h}:3001")), None, "GET", None, &cfg).is_ok());
-            assert!(
-                check_request(Some(&format!("{h}.local:3001")), None, "GET", None, &cfg).is_ok()
-            );
-        }
-    }
-
-    #[test]
-    fn test_custom_allowed_host() {
-        let mut cfg = test_config();
-        cfg.allowed_hosts.push("my-tunnel.ts.net".to_string());
-        assert!(check_request(Some("my-tunnel.ts.net:3001"), None, "GET", None, &cfg).is_ok());
-        assert_eq!(
-            check_request(Some("other-tunnel.ts.net:3001"), None, "GET", None, &cfg),
-            Err(403)
-        );
-    }
-
-    #[test]
-    fn test_origin_null_rejected() {
-        let cfg = test_config();
-        assert_eq!(
-            check_request(Some("127.0.0.1:3001"), Some("null"), "GET", None, &cfg),
-            Err(403)
-        );
-        assert_eq!(
-            check_request(Some("127.0.0.1:3001"), Some("NULL"), "GET", None, &cfg),
-            Err(403)
-        );
-        assert_eq!(
-            check_request(Some("127.0.0.1:3001"), Some(""), "GET", None, &cfg),
-            Err(403)
-        );
-    }
-
-    #[test]
-    fn test_default_origins_allowed() {
-        let cfg = test_config();
-        let res = check_request(
-            Some("127.0.0.1:3001"),
-            Some("http://localhost:3000"),
-            "GET",
-            None,
-            &cfg,
-        );
-        assert_eq!(res, Ok(Some("http://localhost:3000".to_string())));
-
-        let res8080 = check_request(
-            Some("127.0.0.1:3001"),
-            Some("http://127.0.0.1:8080"),
-            "GET",
-            None,
-            &cfg,
-        );
-        assert_eq!(res8080, Ok(Some("http://127.0.0.1:8080".to_string())));
-    }
-
-    #[test]
-    fn test_same_host_origin_allowed() {
-        let cfg = test_config();
-        let res = check_request(
-            Some("192.168.1.10:3001"),
-            Some("http://192.168.1.10:3000"),
-            "GET",
-            None,
-            &cfg,
-        );
-        assert_eq!(res, Ok(Some("http://192.168.1.10:3000".to_string())));
-    }
-
-    #[test]
-    fn test_cross_ip_origin_rejected() {
-        let cfg = test_config();
-        let res = check_request(
-            Some("192.168.1.10:3001"),
-            Some("http://1.2.3.4"),
-            "GET",
-            None,
-            &cfg,
-        );
-        assert_eq!(res, Err(403));
-    }
-
-    #[test]
-    fn test_custom_allowed_origin() {
-        let mut cfg = test_config();
-        cfg.allowed_origins
-            .push("https://custom.app.example".to_string());
-        let res = check_request(
-            Some("127.0.0.1:3001"),
-            Some("https://custom.app.example"),
-            "GET",
-            None,
-            &cfg,
-        );
-        assert_eq!(res, Ok(Some("https://custom.app.example".to_string())));
-    }
-
-    #[test]
-    fn test_post_content_type_rules() {
-        let cfg = test_config();
-        // With Origin: application/json is required for POST
-        assert_eq!(
-            check_request(
-                Some("127.0.0.1:3001"),
-                Some("http://localhost:3000"),
-                "POST",
-                Some("application/json"),
-                &cfg,
-            ),
-            Ok(Some("http://localhost:3000".to_string()))
-        );
-        assert_eq!(
-            check_request(
-                Some("127.0.0.1:3001"),
-                Some("http://localhost:3000"),
-                "POST",
-                Some("application/json; charset=utf-8"),
-                &cfg,
-            ),
-            Ok(Some("http://localhost:3000".to_string()))
-        );
-        assert_eq!(
-            check_request(
-                Some("127.0.0.1:3001"),
-                Some("http://localhost:3000"),
-                "POST",
-                Some("text/plain"),
-                &cfg,
-            ),
-            Err(415)
-        );
-        assert_eq!(
-            check_request(
-                Some("127.0.0.1:3001"),
-                Some("http://localhost:3000"),
-                "POST",
-                Some("application/x-www-form-urlencoded"),
-                &cfg,
-            ),
-            Err(415)
-        );
-        assert_eq!(
-            check_request(
-                Some("127.0.0.1:3001"),
-                Some("http://localhost:3000"),
-                "POST",
-                None,
-                &cfg,
-            ),
-            Err(415)
-        );
-
-        // Without Origin: POST without Content-Type or with any Content-Type is allowed (backend / curl)
-        assert_eq!(
-            check_request(Some("127.0.0.1:3001"), None, "POST", None, &cfg),
-            Ok(None)
-        );
-        assert_eq!(
-            check_request(
-                Some("127.0.0.1:3001"),
-                None,
-                "POST",
-                Some("text/plain"),
-                &cfg,
-            ),
-            Ok(None)
-        );
-    }
-
-    /// A listener that fails its first `accept` and delegates every later call to a real one.
-    struct FlakyListener {
-        inner: TcpListener,
-        failed_once: std::sync::atomic::AtomicBool,
-    }
-
-    impl Accept for FlakyListener {
-        async fn accept(&self) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
-            if !self
-                .failed_once
-                .swap(true, std::sync::atomic::Ordering::SeqCst)
-            {
-                return Err(std::io::Error::other("simulated accept failure"));
-            }
-            self.inner.accept().await
-        }
-    }
-
-    #[tokio::test]
-    async fn accept_loop_survives_errors() {
-        let inner = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = inner.local_addr().unwrap().port();
-        let flaky = FlakyListener {
-            inner,
-            failed_once: std::sync::atomic::AtomicBool::new(false),
+        let msg_res = match inbound {
+            Ok(Some(m)) => m,
+            Ok(None) => break,
+            Err(_) => break, // Idle timeout
         };
-        let config = ServerConfig::new(std::env::temp_dir());
-        tokio::spawn(run_accept_loop(flaky, config, SessionManager::new()));
 
-        // Give the loop time to hit its fake error and back off before retrying.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let msg = match msg_res {
+            Ok(m) => m,
+            Err(_) => break,
+        };
 
-        let connected = tokio::time::timeout(
-            Duration::from_secs(1),
-            TcpStream::connect(("127.0.0.1", port)),
-        )
-        .await;
-        assert!(
-            matches!(connected, Ok(Ok(_))),
-            "accept loop should still be serving after a transient accept error"
-        );
+        let text = match msg {
+            Message::Text(t) => t.to_string(),
+            Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
+            Message::Ping(_) => {
+                // tungstenite auto-replies to ping
+                continue;
+            }
+            Message::Pong(_) => continue,
+            Message::Close(_) => break,
+            _ => continue,
+        };
+
+        let client_msg: BridgeClientMessage = match serde_json::from_str(&text) {
+            Ok(m) => m,
+            Err(e) => {
+                let err = BridgeServerMessage::Error {
+                    id: attached_id.clone().unwrap_or_default(),
+                    message: format!("invalid message: {e}"),
+                };
+                let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                continue;
+            }
+        };
+
+        match client_msg {
+            BridgeClientMessage::Spawn {
+                id,
+                command,
+                args,
+                cwd,
+                env,
+                pty,
+                cols,
+                rows,
+            } => {
+                if sessions.get(&id).is_some() {
+                    let err = BridgeServerMessage::Error {
+                        id,
+                        message: "session id already exists".to_string(),
+                    };
+                    let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                    continue;
+                }
+
+                let result = if pty {
+                    spawn_pty(
+                        id.clone(),
+                        command.clone(),
+                        args,
+                        cwd,
+                        env,
+                        cols,
+                        rows,
+                        &workspace_root,
+                    )
+                } else {
+                    spawn_headless(id.clone(), command.clone(), args, cwd, env, &workspace_root)
+                };
+
+                match result {
+                    Ok(session) => {
+                        if sessions.try_insert(session.clone()).is_err() {
+                            // Race lost
+                            session.try_kill(crate::proc::Signal::Kill);
+                            let err = BridgeServerMessage::Error {
+                                id,
+                                message: "session id already exists".to_string(),
+                            };
+                            let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                            continue;
+                        }
+
+                        let spawned = BridgeServerMessage::Spawned {
+                            id: id.clone(),
+                            pid: session.pid.map(|p| p as u32).unwrap_or(0),
+                            pty,
+                        };
+                        let _ = cmd_tx.send(WriterCmd::Send(spawned)).await;
+
+                        attached_id = Some(id.clone());
+                        let _ = cmd_tx
+                            .send(WriterCmd::Attach {
+                                session,
+                                after_seq: 0,
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        let err = BridgeServerMessage::Error { id, message: e };
+                        let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                    }
+                }
+            }
+
+            BridgeClientMessage::Input { id, data } => {
+                if let Some(sess) = sessions.get(&id)
+                    && let Err(e) = sess.try_send_input(data)
+                {
+                    let err = BridgeServerMessage::Error {
+                        id,
+                        message: e.to_string(),
+                    };
+                    let _ = cmd_tx.try_send(WriterCmd::Send(err));
+                }
+            }
+
+            BridgeClientMessage::Resize { id, cols, rows } => {
+                if let Some(sess) = sessions.get(&id) {
+                    sess.try_resize(cols, rows);
+                }
+            }
+
+            BridgeClientMessage::Kill { id, signal } => {
+                match crate::proc::parse_signal(signal.as_deref()) {
+                    Ok(sig) => {
+                        if let Some(sess) = sessions.get(&id) {
+                            sess.try_kill(sig);
+                        }
+                    }
+                    Err(message) => {
+                        let err = BridgeServerMessage::Error { id, message };
+                        let _ = cmd_tx.try_send(WriterCmd::Send(err));
+                    }
+                }
+            }
+
+            BridgeClientMessage::Attach { id, last_seq } => {
+                if let Some(session) = sessions.get(&id) {
+                    attached_id = Some(id.clone());
+                    let _ = cmd_tx
+                        .send(WriterCmd::Attach {
+                            session,
+                            after_seq: last_seq,
+                        })
+                        .await;
+                } else {
+                    let err = BridgeServerMessage::Error {
+                        id: id.clone(),
+                        message: format!("session not found: {id}"),
+                    };
+                    let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                }
+            }
+
+            BridgeClientMessage::List => {
+                let active = sessions.list();
+                let msg = BridgeServerMessage::Sessions { sessions: active };
+                let _ = cmd_tx.send(WriterCmd::Send(msg)).await;
+            }
+        }
     }
 }

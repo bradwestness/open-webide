@@ -5,9 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The workspace is at `0.1.0` with no tags and no releases yet, so everything
 to date lives under [Unreleased](#unreleased). See [docs/roadmap.md](docs/roadmap.md)
+- Replaced WebSockets broadcast delivery with robust cursor-based SeqRing buffers
+
 for what's still ahead.
 
 ## [Unreleased]
+- Replaced WebSockets broadcast delivery with robust cursor-based SeqRing buffers
+
 
 ### Changed
 - **Bridge process lifecycle:** every command the bridge spawns now runs in its own process group, so a timeout, a disconnected `/exec` client, or a `Kill` message terminates it and everything it forked or backgrounded, instead of leaving them running. `Kill` sends the requested signal (`TERM`/`HUP`/`KILL`, default `KILL`) to the whole group; on a PTY, `INT` instead writes `^C` to the terminal like a real Ctrl+C. `/exec` output over ~1 MiB per stream now keeps the first 256 KiB and last 768 KiB with an omission marker instead of buffering unbounded output. Exited terminal/process sessions are now removed 30 minutes after they exit; running sessions are never reaped. The daemon now shuts down gracefully on Ctrl+C or `SIGTERM`, terminating every session's process group first.

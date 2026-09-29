@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use openwebide_core::CommandOutcome;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -138,26 +138,78 @@ pub fn spawn_headless(
     ));
 
     // 1. Stdout reader task
-    if let Some(stdout) = stdout {
+    let mut out_task = if let Some(mut stdout) = stdout {
         let sess = session.clone();
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                sess.emit_output("stdout", &format!("{line}\n"));
+        Some(tokio::spawn(async move {
+            let mut buf = [0u8; 8192];
+            let mut decoder = openwebide_core::utf8::Utf8Decoder::new();
+            loop {
+                match stdout.read(&mut buf).await {
+                    Ok(0) => {
+                        let text = decoder.finish();
+                        if !text.is_empty() {
+                            sess.push_output("stdout", &text);
+                        }
+                        break;
+                    }
+                    Ok(n) => {
+                        let text = decoder.push(&buf[..n]);
+                        if !text.is_empty() {
+                            sess.push_output("stdout", &text);
+                        }
+                    }
+                    Err(e) => {
+                        if e.kind() != std::io::ErrorKind::Interrupted {
+                            let text = decoder.finish();
+                            if !text.is_empty() {
+                                sess.push_output("stdout", &text);
+                            }
+                            break;
+                        }
+                    }
+                }
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     // 2. Stderr reader task
-    if let Some(stderr) = stderr {
+    let mut err_task = if let Some(mut stderr) = stderr {
         let sess = session.clone();
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                sess.emit_output("stderr", &format!("{line}\n"));
+        Some(tokio::spawn(async move {
+            let mut buf = [0u8; 8192];
+            let mut decoder = openwebide_core::utf8::Utf8Decoder::new();
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) => {
+                        let text = decoder.finish();
+                        if !text.is_empty() {
+                            sess.push_output("stderr", &text);
+                        }
+                        break;
+                    }
+                    Ok(n) => {
+                        let text = decoder.push(&buf[..n]);
+                        if !text.is_empty() {
+                            sess.push_output("stderr", &text);
+                        }
+                    }
+                    Err(e) => {
+                        if e.kind() != std::io::ErrorKind::Interrupted {
+                            let text = decoder.finish();
+                            if !text.is_empty() {
+                                sess.push_output("stderr", &text);
+                            }
+                            break;
+                        }
+                    }
+                }
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     // 3. Stdin writer task
     if let Some(mut stdin) = stdin {
@@ -180,7 +232,7 @@ pub fn spawn_headless(
         // `child.wait()` is cancel-safe, so a fresh one each iteration (rather than a single
         // pinned future reused across iterations) is fine, and it keeps `child` free between
         // iterations for the Windows kill branch to call `start_kill()` on.
-        loop {
+        let status = loop {
             tokio::select! {
                 sig = kill_rx.recv(), if kill_channel_open => {
                     match sig {
@@ -199,24 +251,53 @@ pub fn spawn_headless(
                     }
                 }
                 status = child.wait() => {
-                    match status {
-                        Ok(s) => {
-                            #[cfg(unix)]
-                            let signal = {
-                                use std::os::unix::process::ExitStatusExt;
-                                s.signal().map(crate::proc::signal_name)
-                            };
-                            #[cfg(windows)]
-                            let signal = None;
-                            sess_exit.emit_exit(s.code(), signal);
+                    break status;
+                }
+            }
+        };
+
+        if tokio::time::timeout(
+            Duration::from_secs(1),
+            async {
+                tokio::join!(
+                    async {
+                        if let Some(ref mut t) = out_task {
+                            let _ = t.await;
                         }
-                        Err(e) => {
-                            sess_exit.emit_error(&format!("wait failed: {e}"));
-                            sess_exit.emit_exit(Some(1), None);
+                    },
+                    async {
+                        if let Some(ref mut t) = err_task {
+                            let _ = t.await;
                         }
                     }
-                    break;
-                }
+                )
+            },
+        )
+        .await
+        .is_err()
+        {
+            if let Some(t) = out_task {
+                t.abort();
+            }
+            if let Some(t) = err_task {
+                t.abort();
+            }
+        }
+
+        match status {
+            Ok(s) => {
+                #[cfg(unix)]
+                let signal = {
+                    use std::os::unix::process::ExitStatusExt;
+                    s.signal().map(crate::proc::signal_name)
+                };
+                #[cfg(windows)]
+                let signal = None;
+                sess_exit.emit_exit(s.code(), signal);
+            }
+            Err(e) => {
+                sess_exit.emit_error(&format!("wait failed: {e}"));
+                sess_exit.emit_exit(Some(1), None);
             }
         }
     });
@@ -530,16 +611,22 @@ mod tests {
         )
         .unwrap();
 
-        let mut rx = session.broadcast_tx.subscribe();
-        session.kill(Signal::Int).await;
+        let mut rx = session.ring.lock().unwrap().subscribe();
+        session.try_kill(Signal::Int);
 
         let exited = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut cursor = 0;
             loop {
-                if let Ok(openwebide_core::BridgeServerMessage::Exited {
-                    exit_code, signal, ..
-                }) = rx.recv().await
-                {
-                    return (exit_code, signal);
+                let _ = rx.changed().await;
+                let (batch, _) = session.ring.lock().unwrap().read_after(cursor, 100);
+                for (seq, msg) in batch {
+                    cursor = seq;
+                    if let openwebide_core::BridgeServerMessage::Exited {
+                        exit_code, signal, ..
+                    } = msg
+                    {
+                        return (exit_code, signal);
+                    }
                 }
             }
         })
@@ -568,7 +655,7 @@ mod tests {
         )
         .unwrap();
 
-        session.kill(Signal::Kill).await;
+        session.try_kill(Signal::Kill);
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert!(!session.running.load(std::sync::atomic::Ordering::SeqCst));
 
@@ -594,7 +681,7 @@ mod tests {
             &dir,
         )
         .unwrap();
-        mgr.insert(session.clone());
+        let _ = mgr.try_insert(session.clone());
 
         mgr.kill_all().await;
         tokio::time::sleep(Duration::from_millis(200)).await;
