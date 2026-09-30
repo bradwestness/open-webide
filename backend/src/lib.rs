@@ -4,6 +4,7 @@
 mod agent;
 mod api;
 mod auth;
+mod bridge;
 mod bridge_client;
 mod error;
 mod files;

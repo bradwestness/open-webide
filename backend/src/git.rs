@@ -2,22 +2,20 @@
 
 use std::path::Path;
 
-use http_body_util::BodyExt;
 use openwebide_core::{
     GitBranchInfo, GitCheckoutRequest, GitCheckoutResult, GitCommitRequest, GitCommitResult,
     GitLineStats, GitRepoStatus, GitSyncRequest, GitSyncResult,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use spin_sdk::http;
-
-const DEFAULT_BRIDGE_URL: &str = "http://127.0.0.1:3001";
 
 #[derive(Debug)]
 pub enum BridgeError {
     Unreachable(String),
     Status(u16, String),
     Parse(String),
+    Unauthorized,
+    NoSecret,
 }
 
 fn parse_bridge_response<T: DeserializeOwned>(status: u16, body: &[u8]) -> Result<T, BridgeError> {
@@ -46,28 +44,19 @@ fn with_cwd(mut req: serde_json::Value, cwd: &str) -> serde_json::Value {
 }
 
 async fn bridge_post<Req: Serialize, Resp: DeserializeOwned>(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
     path: &str,
     cwd: &str,
     req: &Req,
 ) -> Result<Resp, BridgeError> {
-    let endpoint = format!("{DEFAULT_BRIDGE_URL}{path}");
     let val = serde_json::to_value(req).map_err(|e| BridgeError::Parse(e.to_string()))?;
     let val_with_cwd = with_cwd(val, cwd);
     let payload =
         serde_json::to_string(&val_with_cwd).map_err(|e| BridgeError::Parse(e.to_string()))?;
 
-    let resp = http::post(&endpoint, payload)
-        .await
-        .map_err(|e| BridgeError::Unreachable(e.to_string()))?;
+    let (status, body) = crate::bridge::send(store, path, payload).await?;
 
-    let status = resp.status().as_u16();
-    let collected = resp
-        .into_body()
-        .collect()
-        .await
-        .map_err(|e| BridgeError::Unreachable(e.to_string()))?;
-
-    parse_bridge_response(status, &collected.to_bytes())
+    parse_bridge_response(status, &body)
 }
 
 /// Fetch Git repository status.
@@ -75,8 +64,12 @@ async fn bridge_post<Req: Serialize, Resp: DeserializeOwned>(
 /// Tries the bridge daemon first for active/rich porcelain status and line stats.
 /// If the bridge is unreachable, falls back to passive telemetry: reading `.git/HEAD`
 /// directly inside the mounted project dir.
-pub async fn repo_status(project_dir: &str) -> Result<GitRepoStatus, BridgeError> {
-    match bridge_post::<_, GitRepoStatus>("/git/status", project_dir, &serde_json::json!({})).await
+pub async fn repo_status(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+) -> Result<GitRepoStatus, BridgeError> {
+    match bridge_post::<_, GitRepoStatus>(store, "/git/status", project_dir, &serde_json::json!({}))
+        .await
     {
         Ok(status) => Ok(status),
         Err(BridgeError::Unreachable(_)) => {
@@ -148,12 +141,18 @@ pub fn passive_repo_status(project_full_path: &Path) -> Result<GitRepoStatus, St
 }
 
 /// Fetch diff from bridge.
-pub async fn repo_diff(project_dir: &str, file_path: Option<&str>) -> Result<String, BridgeError> {
+pub async fn repo_diff(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+    file_path: Option<&str>,
+) -> Result<String, BridgeError> {
     #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
     struct DiffOut {
         diff: String,
     }
     let res: DiffOut = bridge_post(
+        store,
         "/git/diff",
         project_dir,
         &serde_json::json!({ "path": file_path }),
@@ -163,12 +162,17 @@ pub async fn repo_diff(project_dir: &str, file_path: Option<&str>) -> Result<Str
 }
 
 /// Fetch file content at Git HEAD from bridge.
-pub async fn repo_file_head(project_dir: &str, file_path: &str) -> Result<String, BridgeError> {
+pub async fn repo_file_head(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+    file_path: &str,
+) -> Result<String, BridgeError> {
     #[derive(serde::Deserialize)]
     struct ShowOut {
         content: String,
     }
     let res: ShowOut = bridge_post(
+        store,
         "/git/show",
         project_dir,
         &serde_json::json!({ "path": file_path }),
@@ -178,32 +182,38 @@ pub async fn repo_file_head(project_dir: &str, file_path: &str) -> Result<String
 }
 
 /// List branches from bridge.
-pub async fn repo_branches(project_dir: &str) -> Result<Vec<GitBranchInfo>, BridgeError> {
-    bridge_post("/git/branches", project_dir, &serde_json::json!({})).await
+pub async fn repo_branches(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+) -> Result<Vec<GitBranchInfo>, BridgeError> {
+    bridge_post(store, "/git/branches", project_dir, &serde_json::json!({})).await
 }
 
 /// Commit changes via bridge.
 pub async fn repo_commit(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
     project_dir: &str,
     req: &GitCommitRequest,
 ) -> Result<GitCommitResult, BridgeError> {
-    bridge_post("/git/commit", project_dir, req).await
+    bridge_post(store, "/git/commit", project_dir, req).await
 }
 
 /// Checkout branch via bridge.
 pub async fn repo_checkout(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
     project_dir: &str,
     req: &GitCheckoutRequest,
 ) -> Result<GitCheckoutResult, BridgeError> {
-    bridge_post("/git/checkout", project_dir, req).await
+    bridge_post(store, "/git/checkout", project_dir, req).await
 }
 
 /// Sync repo via bridge.
 pub async fn repo_sync(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
     project_dir: &str,
     req: &GitSyncRequest,
 ) -> Result<GitSyncResult, BridgeError> {
-    bridge_post("/git/sync", project_dir, req).await
+    bridge_post(store, "/git/sync", project_dir, req).await
 }
 
 #[cfg(test)]
@@ -231,6 +241,7 @@ mod tests {
     fn test_parse_bridge_response_parse_error() {
         let json = b"{\"error\": \"not the expected schema\"}";
         #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
         struct DiffOut {
             diff: String,
         }

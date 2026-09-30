@@ -252,10 +252,10 @@ mod tests {
                 let (batch, _) = session.ring.lock().unwrap().read_after(cursor, 100);
                 for (seq, msg) in batch {
                     cursor = seq;
-                    if let openwebide_core::BridgeServerMessage::Output { data, .. } = msg {
-                        if data.contains("got-int") {
-                            return;
-                        }
+                    if let openwebide_core::BridgeServerMessage::Output { data, .. } = msg
+                        && data.contains("got-int")
+                    {
+                        return;
                     }
                 }
             }

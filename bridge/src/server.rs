@@ -47,16 +47,18 @@ pub struct ServerConfig {
     /// How long an exited session is kept around (for output replay/inspection) before the
     /// reaper removes it. Running sessions are never reaped.
     pub session_ttl: Duration,
+    pub secret: Arc<str>,
 }
 
 impl ServerConfig {
-    pub fn new(workspace_root: PathBuf) -> Self {
+    pub fn new(workspace_root: PathBuf, secret: Arc<str>) -> Self {
         Self {
             workspace_root,
             allowed_origins: default_origins(),
             allowed_hosts: default_hosts(),
             limits: Limits::default(),
             session_ttl: DEFAULT_SESSION_TTL,
+            secret,
         }
     }
 }
@@ -281,12 +283,12 @@ async fn run_accept_loop<A: Accept>(
             .expect("semaphore is never closed");
 
         match acceptor.accept().await {
-            Ok((stream, _)) => {
+            Ok((stream, addr)) => {
                 backoff = Duration::from_millis(10);
                 let mgr = session_manager.clone();
                 let cfg = config.clone();
                 tokio::spawn(async move {
-                    handle_connection(stream, mgr, cfg, permit).await;
+                    handle_connection(stream, addr, mgr, cfg, permit).await;
                 });
             }
             Err(err) => {
@@ -307,6 +309,7 @@ type PermitCell = Arc<Mutex<Option<OwnedSemaphorePermit>>>;
 
 async fn handle_connection(
     stream: TcpStream,
+    addr: std::net::SocketAddr,
     sessions: SessionManager,
     config: ServerConfig,
     permit: OwnedSemaphorePermit,
@@ -318,7 +321,7 @@ async fn handle_connection(
         let sessions = sessions.clone();
         let config = config.clone();
         let permit_cell = permit_cell.clone();
-        async move { route(req, sessions, config, permit_cell).await }
+        async move { route(req, addr, sessions, config, permit_cell).await }
     });
 
     let _ = builder(&limits)
@@ -344,6 +347,7 @@ fn default_timeout() -> u64 {
 /// side effect; only requests that pass it reach a handler.
 async fn route(
     req: Request<Incoming>,
+    addr: std::net::SocketAddr,
     sessions: SessionManager,
     config: ServerConfig,
     permit_cell: PermitCell,
@@ -373,11 +377,47 @@ async fn route(
     }
 
     let path = req.uri().path().to_string();
+
+    // Check authorization for Origin-less API requests
+    let is_api_req = path == "/exec" || path.starts_with("/git/");
+    if is_api_req && origin.is_none() {
+        let auth_header = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
+        let authorized = if let Some(h) = auth_header {
+            if let Some(token) = h.strip_prefix("Bearer ") {
+                crate::secret::constant_time_eq(token.as_bytes(), config.secret.as_bytes())
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !authorized {
+            return Ok(respond(
+                StatusCode::UNAUTHORIZED,
+                r#"{"error":"bridge secret required"}"#,
+                allowed_origin,
+            ));
+        }
+    }
+
     match (method.as_str(), path.as_str()) {
         ("OPTIONS", _) => Ok(preflight_response(req.headers(), allowed_origin)),
         ("GET", "/health") => Ok(respond(
             StatusCode::OK,
             r#"{"status":"ok"}"#,
+            allowed_origin,
+        )),
+        ("POST", "/secret") if origin.is_none() && addr.ip().is_loopback() => Ok(respond(
+            StatusCode::OK,
+            &serde_json::json!({ "secret": config.secret.as_ref() }).to_string(),
+            allowed_origin,
+        )),
+        ("POST", "/secret") => Ok(respond(
+            StatusCode::FORBIDDEN,
+            r#"{"error":"forbidden"}"#,
             allowed_origin,
         )),
         ("POST", "/exec") => Ok(handle_exec(req, allowed_origin, &config).await),

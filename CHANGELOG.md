@@ -11,6 +11,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+### Added
+- **Bridge Security**: Added `Authorization: Bearer <SECRET>` for Origin-less `/exec` and `/git/*` routes. The bridge generates a 32-byte secret at startup and the backend auto-fetches it over loopback via `POST /secret`, with caching in SQLite.
+
 ### Changed
 - Hardened login system: transitioned to HttpOnly cookie sessions, added brute-force lockout, and implemented global logout (invalidates sessions on all devices). Added CSRF protection via custom header.
 - Replaced WebSockets broadcast delivery with robust cursor-based SeqRing buffers

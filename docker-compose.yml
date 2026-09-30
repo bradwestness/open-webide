@@ -9,6 +9,8 @@ services:
     volumes:
       - openwebide-data:/app/.spin
       - ${OPENWEBIDE_WORKSPACE:-${HOME}/source}:/workspace
+    environment:
+      - SPIN_VARIABLE_BRIDGE_SECRET=${SPIN_VARIABLE_BRIDGE_SECRET:-}
     restart: unless-stopped
 
 volumes:

@@ -153,6 +153,11 @@ impl From<crate::git::BridgeError> for ApiError {
             crate::git::BridgeError::Parse(e) => {
                 Self::bad_gateway(format!("failed to parse bridge response: {e}"))
             }
+            crate::git::BridgeError::Unauthorized | crate::git::BridgeError::NoSecret => {
+                Self::bad_gateway(
+                    "the bridge rejected this server (set SPIN_VARIABLE_BRIDGE_SECRET to the bridge's secret; see the bridge's startup output)",
+                )
+            }
         }
     }
 }
@@ -195,5 +200,13 @@ mod tests {
 
         let err: ApiError = crate::git::BridgeError::Parse("bad json".into()).into();
         assert_eq!(err.status, 502);
+
+        let err: ApiError = crate::git::BridgeError::Unauthorized.into();
+        assert_eq!(err.status, 502);
+        assert!(err.message.contains("rejected this server"));
+
+        let err: ApiError = crate::git::BridgeError::NoSecret.into();
+        assert_eq!(err.status, 502);
+        assert!(err.message.contains("rejected this server"));
     }
 }

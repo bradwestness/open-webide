@@ -117,7 +117,7 @@ pub fn agent_stream(
     let executor = VfsToolExecutor::with_web_and_bridge(
         HostFsVfs::new(base.clone()),
         crate::web::SpinWebClient,
-        crate::bridge_client::SpinBridgeClient::for_project(base),
+        crate::bridge_client::SpinBridgeClient::for_project(store.clone(), base),
     );
     // Tool steps anchor to the user message that started this turn, so a
     // reloaded session renders them right after it; the same id namespaces

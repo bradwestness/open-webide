@@ -6,6 +6,7 @@ pub mod http;
 pub mod paths;
 pub mod proc;
 pub mod pty;
+pub mod secret;
 pub mod server;
 pub mod session;
 

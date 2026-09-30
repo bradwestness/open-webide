@@ -187,9 +187,10 @@ cargo build -p openwebide-bridge
   ```sh
   ./target/debug/openwebide-bridge --host 0.0.0.0 --port 3001
   ```
+- `--secret-file <FILE>` (or env `OPENWEBIDE_BRIDGE_SECRET_FILE`, `OPENWEBIDE_BRIDGE_SECRET`): The secret bearer token required to authorize non-browser API commands. If omitted, a persistent random 32-byte secret is generated and stored in `~/.config/openwebide/bridge_secret` (or `~/.openwebide/bridge_secret`). The backend fetches this secret securely over loopback via `POST /secret` at startup.
 
 > [!WARNING]
-> Exposing the bridge on `0.0.0.0` allows Origin-less HTTP requests from the local network (used by the Spin backend and command-line tools). While cross-origin browser requests are strictly restricted, any device on the trusted LAN that can reach port 3001 can send Origin-less HTTP commands.
+> Exposing the bridge on a non-loopback interface (like `0.0.0.0`) requires manual configuration for the backend: you must set the `SPIN_VARIABLE_BRIDGE_SECRET` environment variable to the bridge's secret (which it will print at startup), since the backend can only auto-fetch the secret when the bridge is on a loopback address.
 
 ### Host and Origin security baseline
 
@@ -202,7 +203,13 @@ To protect against DNS rebinding and malicious websites opened in the user's bro
    - Any unrecognized or rebinding domain name is rejected with `403 Forbidden`.
 
 2. **Origin & CORS Rules:**
-   - Requests without an `Origin` header (such as Spin backend calls, `curl`, and local daemon tools) are permitted.
+   - Requests without an `Origin` header (such as Spin backend calls, `curl`, and local daemon tools) are permitted, but API routes require authorization via `Authorization: Bearer <SECRET>`. For example:
+     ```sh
+     curl -X POST http://127.0.0.1:3001/exec \
+       -H "Authorization: Bearer <your-secret>" \
+       -H "Content-Type: application/json" \
+       -d '{"command": "echo test"}'
+     ```
    - Browser requests with an `Origin` header are permitted only if:
      - The origin is in the allowed origins list (default: `http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:8080`, `http://127.0.0.1:8080`, plus any `--allowed-origin` entries); **or**
      - The origin's hostname matches the request's `Host` hostname (allowing phone/LAN access when the frontend and bridge are accessed on the same host machine).

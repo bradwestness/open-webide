@@ -8,6 +8,10 @@ version = "0.1.0"
 authors = ["Brad Westness"]
 description = "WebAssembly-based IDE for local-LLM coding agents"
 
+[variables]
+bridge_url = { default = "http://127.0.0.1:3001" }
+bridge_secret = { default = "", secret = true }
+
 [[trigger.http]]
 route = "/api/..."
 component = "backend"
@@ -44,6 +48,10 @@ allowed_outbound_hosts = [
 # otherwise edits go to a temp copy; Docker rewrites the source to `/workspace`;
 # the bridge's `--workspace` must equal this source.
 files = [{ source = "../..", destination = "/" }]
+
+[component.backend.variables]
+bridge_url = "{{ bridge_url }}"
+bridge_secret = "{{ bridge_secret }}"
 
 [component.backend.build]
 command = "cargo build -p openwebide-backend --target wasm32-wasip2 --release"

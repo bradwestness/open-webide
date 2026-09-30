@@ -7,7 +7,8 @@ use tokio_tungstenite::tungstenite::Message;
 async fn spawn_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let mut config = openwebide_bridge::ServerConfig::new(std::env::temp_dir());
+    let mut config =
+        openwebide_bridge::ServerConfig::new(std::env::temp_dir(), std::sync::Arc::from("dummy"));
     config.allowed_origins.push("http://test.local".to_string());
     tokio::spawn(openwebide_bridge::run_server(listener, config));
     port

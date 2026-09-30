@@ -51,7 +51,7 @@ pub async fn start(workspace_root: PathBuf) -> u16 {
         .await
         .expect("failed to bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr failed").port();
-    let config = ServerConfig::new(workspace_root);
+    let config = ServerConfig::new(workspace_root, std::sync::Arc::from("dummy_secret"));
     tokio::spawn(async move {
         run_server(listener, config).await;
     });
@@ -134,6 +134,7 @@ pub async fn post(
     if !has_host {
         req.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
     }
+    req.push_str("Authorization: Bearer dummy_secret\r\n");
     if !has_cl {
         req.push_str(&format!("Content-Length: {}\r\n", body.len()));
     }

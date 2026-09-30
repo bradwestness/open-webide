@@ -30,6 +30,7 @@ struct Args {
     workspace: PathBuf,
     allowed_origins: Vec<String>,
     allowed_hosts: Vec<String>,
+    secret_file: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -41,6 +42,7 @@ fn parse_args() -> Result<Args, String> {
     let mut workspace = std::env::var("OPENWEBIDE_BRIDGE_WORKSPACE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let mut secret_file = None;
 
     let mut allowed_origins = Vec::new();
     if let Ok(env_origins) = std::env::var("OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS") {
@@ -75,6 +77,7 @@ fn parse_args() -> Result<Args, String> {
                        -w, --workspace <DIR>     Workspace root directory (default: current dir, env: OPENWEBIDE_BRIDGE_WORKSPACE)\n\
                        --allowed-origin <ORIGIN> Allowed CORS Origin (repeatable, env: OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS)\n\
                        --allowed-host <HOSTNAME> Allowed Host header (repeatable, env: OPENWEBIDE_BRIDGE_ALLOWED_HOSTS)\n\
+                       --secret-file <PATH>      Path to secret file (default: $XDG_CONFIG_HOME/openwebide/bridge-secret)\n\
                        --help                    Show this help message\n"
                 );
                 std::process::exit(0);
@@ -97,6 +100,12 @@ fn parse_args() -> Result<Args, String> {
                     .next()
                     .ok_or_else(|| "missing value for --workspace".to_string())?;
                 workspace = PathBuf::from(w_str);
+            }
+            "--secret-file" => {
+                let w_str = args
+                    .next()
+                    .ok_or_else(|| "missing value for --secret-file".to_string())?;
+                secret_file = Some(PathBuf::from(w_str));
             }
             "--allowed-origin" => {
                 let orig = args
@@ -122,6 +131,7 @@ fn parse_args() -> Result<Args, String> {
         workspace,
         allowed_origins,
         allowed_hosts,
+        secret_file,
     })
 }
 
@@ -142,7 +152,22 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
-    let mut config = ServerConfig::new(workspace_root);
+
+    let env_secret = std::env::var("OPENWEBIDE_BRIDGE_SECRET").ok();
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    #[allow(deprecated)] // home_dir is deprecated but standard practice here
+    let home = std::env::home_dir();
+    let (secret, secret_source) =
+        match openwebide_bridge::secret::load_or_create(env_secret, args.secret_file, home, xdg) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        };
+    let secret: std::sync::Arc<str> = std::sync::Arc::from(secret.as_str());
+
+    let mut config = ServerConfig::new(workspace_root, secret.clone());
     for orig in args.allowed_origins {
         if !config
             .allowed_origins
@@ -172,6 +197,20 @@ async fn main() -> anyhow::Result<()> {
     println!("Workspace root: {}", config.workspace_root.display());
     println!("Allowed origins: {}", config.allowed_origins.join(", "));
     println!("Allowed hosts: {}", config.allowed_hosts.join(", "));
+    match secret_source {
+        openwebide_bridge::secret::SecretSource::Env => {
+            println!("Secret source: OPENWEBIDE_BRIDGE_SECRET environment variable");
+        }
+        openwebide_bridge::secret::SecretSource::File(p) => {
+            println!("Secret source: {}", p.display());
+            if !addr.ip().is_loopback() {
+                println!(
+                    "Hint: backends on other hosts need SPIN_VARIABLE_BRIDGE_SECRET=<contents of {}>",
+                    p.display()
+                );
+            }
+        }
+    }
 
     run_server_until(listener, config, shutdown_signal()).await;
 

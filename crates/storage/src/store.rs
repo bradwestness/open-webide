@@ -235,6 +235,16 @@ impl<D: Db> Store<D> {
         Ok(())
     }
 
+    pub async fn delete_setting(&self, key: &str) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "DELETE FROM settings WHERE key = ?",
+                &[DbValue::Text(key.into())],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Insert a setting only if the key is absent, so concurrent first
     /// writers cannot clobber each other. Returns whether the row was
     /// inserted.

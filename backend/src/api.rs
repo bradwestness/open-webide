@@ -727,22 +727,24 @@ pub async fn git_get(req: Request, state: &AppState, path: &str) -> Result<JsonR
 
     match sub {
         "status" => {
-            let status = crate::git::repo_status(&project_dir).await?;
+            let status = crate::git::repo_status(&state.store, &project_dir).await?;
             Ok(json_response(200, &status))
         }
         "diff" => {
             let file_path = files_query(&req, "path");
-            let diff = crate::git::repo_diff(&project_dir, file_path.as_deref()).await?;
+            let diff =
+                crate::git::repo_diff(&state.store, &project_dir, file_path.as_deref()).await?;
             Ok(json_response(200, &json!({ "diff": diff })))
         }
         "branches" => {
-            let branches = crate::git::repo_branches(&project_dir).await?;
+            let branches = crate::git::repo_branches(&state.store, &project_dir).await?;
             Ok(json_response(200, &branches))
         }
         "show" => {
             let file_path = files_query(&req, "path")
                 .ok_or_else(|| ApiError::bad_request("missing path query parameter"))?;
-            let content = crate::git::repo_file_head(&project_dir, &file_path).await?;
+            let content =
+                crate::git::repo_file_head(&state.store, &project_dir, &file_path).await?;
             Ok(json_response(200, &json!({ "content": content })))
         }
         other => Err(ApiError::not_found(format!("unknown git action: {other}"))),
@@ -763,7 +765,7 @@ pub async fn git_post(req: Request, state: &AppState, path: &str) -> Result<Json
 
     match sub {
         "status" => {
-            let status = crate::git::repo_status(&project_dir).await?;
+            let status = crate::git::repo_status(&state.store, &project_dir).await?;
             Ok(json_response(200, &status))
         }
         "diff" => {
@@ -776,21 +778,23 @@ pub async fn git_post(req: Request, state: &AppState, path: &str) -> Result<Json
             } else {
                 parse_json(body)?
             };
-            let diff = crate::git::repo_diff(&project_dir, diff_req.path.as_deref()).await?;
+            let diff =
+                crate::git::repo_diff(&state.store, &project_dir, diff_req.path.as_deref()).await?;
             Ok(json_response(200, &json!({ "diff": diff })))
         }
         "branches" => {
-            let branches = crate::git::repo_branches(&project_dir).await?;
+            let branches = crate::git::repo_branches(&state.store, &project_dir).await?;
             Ok(json_response(200, &branches))
         }
         "commit" => {
             let commit_req: GitCommitRequest = parse_json(body)?;
-            let result = crate::git::repo_commit(&project_dir, &commit_req).await?;
+            let result = crate::git::repo_commit(&state.store, &project_dir, &commit_req).await?;
             Ok(json_response(200, &result))
         }
         "checkout" => {
             let checkout_req: GitCheckoutRequest = parse_json(body)?;
-            let result = crate::git::repo_checkout(&project_dir, &checkout_req).await?;
+            let result =
+                crate::git::repo_checkout(&state.store, &project_dir, &checkout_req).await?;
             Ok(json_response(200, &result))
         }
         "sync" => {
@@ -803,7 +807,7 @@ pub async fn git_post(req: Request, state: &AppState, path: &str) -> Result<Json
             } else {
                 parse_json(body)?
             };
-            let result = crate::git::repo_sync(&project_dir, &sync_req).await?;
+            let result = crate::git::repo_sync(&state.store, &project_dir, &sync_req).await?;
             Ok(json_response(200, &result))
         }
         other => Err(ApiError::not_found(format!("unknown git action: {other}"))),

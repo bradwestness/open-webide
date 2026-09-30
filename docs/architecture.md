@@ -188,7 +188,7 @@ the agent interacts with standard POSIX paths without mode-specific branching.
 For process execution and terminal access (Phase 11), a thin native WebSocket
 bridge handles PTY sessions and command execution outside Spin's WASI sandbox,
 providing execution capabilities (`cargo test`, interactive shell) to both the
-agent and the user.
+agent and the user. The bridge requires a Bearer token (generated at startup and passed via HTTP `POST /secret` on loopback) for Origin-less requests to ensure local network security.
 
 ## Roadmap
 

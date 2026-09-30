@@ -35,7 +35,7 @@ async fn start_with_limits(workspace_root: std::path::PathBuf, limits: Limits) -
         .await
         .expect("failed to bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr failed").port();
-    let mut config = ServerConfig::new(workspace_root);
+    let mut config = ServerConfig::new(workspace_root, std::sync::Arc::from("dummy_secret"));
     config.limits = limits;
     tokio::spawn(async move {
         run_server(listener, config).await;
@@ -93,7 +93,7 @@ async fn exec_headers_and_body_split_writes() {
         .expect("failed to connect to bridge");
 
     let head = format!(
-        "POST /exec HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        "POST /exec HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer dummy_secret\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         payload.len()
     );
     stream
@@ -159,7 +159,7 @@ async fn chunked_body_accepted() {
     );
 
     let req = format!(
-        "POST /exec HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{chunked_body}"
+        "POST /exec HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer dummy_secret\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{chunked_body}"
     );
     let raw = http(port, &req).await;
     let resp = HttpResponse::parse(&raw);
@@ -179,7 +179,7 @@ async fn expect_100_continue() {
     .to_string();
 
     let req = format!(
-        "POST /exec HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nExpect: 100-continue\r\nContent-Length: {}\r\n\r\n{payload}",
+        "POST /exec HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer dummy_secret\r\nContent-Type: application/json\r\nExpect: 100-continue\r\nContent-Length: {}\r\n\r\n{payload}",
         payload.len()
     );
     let raw = http(port, &req).await;
@@ -194,7 +194,9 @@ async fn head_over_16k_is_431_fast() {
     let port = start(test_dir.path.clone()).await;
 
     let huge_header = "X-Large: ".to_string() + &"a".repeat(17_000);
-    let req = format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{huge_header}\r\n\r\n");
+    let req = format!(
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer dummy_secret\r\n{huge_header}\r\n\r\n"
+    );
 
     let started = Instant::now();
     let raw = http(port, &req).await;
@@ -251,7 +253,7 @@ async fn upgrade_header_case_insensitive() {
     let port = start(test_dir.path.clone()).await;
 
     let req = format!(
-        "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUPGRADE: WebSocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer dummy_secret\r\nUPGRADE: WebSocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
     );
     // A successful upgrade leaves the connection open for the WebSocket session, so read a
     // bounded response rather than waiting for EOF (unlike a plain HTTP request/response).
@@ -281,7 +283,7 @@ async fn upgrade_bad_key_is_400() {
     let port = start(test_dir.path.clone()).await;
 
     let req = format!(
-        "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: short\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer dummy_secret\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: short\r\nSec-WebSocket-Version: 13\r\n\r\n"
     );
     let raw = http(port, &req).await;
     let resp = HttpResponse::parse(&raw);
@@ -353,7 +355,7 @@ async fn ws_connection_holds_accept_permit() {
         .await
         .expect("tcp connect should still succeed");
     second
-        .write_all(format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
+        .write_all(format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer dummy_secret\r\n\r\n").as_bytes())
         .await
         .expect("failed to write request");
 
