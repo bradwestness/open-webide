@@ -299,6 +299,8 @@ fn TuiStatusLine(
     has_awaiting: Signal<bool>,
     session_telemetry: ReadSignal<SessionTelemetry>,
     local_mode: ReadSignal<bool>,
+    models: ReadSignal<Vec<ModelInfo>>,
+    on_select_model: Callback<Option<String>>,
 ) -> impl IntoView {
     let mode_state = move || {
         if has_awaiting.get() {
@@ -321,14 +323,49 @@ fn TuiStatusLine(
         }
     };
 
+    let show_model_menu = RwSignal::new(false);
+
     view! {
         <div class="tui-statusline">
             <span class=move || format!("tui-mode-badge {}", mode_state().1)>
                 "[" {move || mode_state().0} "]"
             </span>
             <span class="tui-sep">"│"</span>
-            <span class="tui-model-name" title="Active Model">
+            <span class="tui-model-name" title="Active Model" style="cursor: pointer; position: relative;" on:click=move |_| show_model_menu.set(!show_model_menu.get())>
                 {move || session_telemetry.get().model}
+                <Show when=move || show_model_menu.get() fallback=|| ()>
+                    <div class="recent-backdrop" on:click=move |e| { e.stop_propagation(); show_model_menu.set(false); } />
+                    <div class="recent-menu" style="bottom: 100%; top: auto; min-width: 200px;" on:click=move |e| e.stop_propagation()>
+                        <div
+                            class="recent-item"
+                            on:click=move |_| {
+                                on_select_model.run(None);
+                                show_model_menu.set(false);
+                            }
+                        >
+                            "Default model"
+                        </div>
+                        <For
+                            each=move || models.get()
+                            key=|m| m.name.clone()
+                            children=move |m| {
+                                let name = m.name.clone();
+                                let sel_name = name.clone();
+                                view! {
+                                    <div
+                                        class="recent-item"
+                                        on:click=move |_| {
+                                            on_select_model.run(Some(sel_name.clone()));
+                                            show_model_menu.set(false);
+                                        }
+                                    >
+                                        {name}
+                                    </div>
+                                }
+                            }
+                        />
+                    </div>
+                </Show>
             </span>
             <span class="tui-sep">"│"</span>
             <span class=move || format!("tui-ctx-gauge {}", gauge_color_class()) title="Context Window Utilization">
@@ -602,6 +639,8 @@ pub fn ChatPane(
                 has_awaiting=has_awaiting
                 session_telemetry=session_telemetry
                 local_mode=local_mode
+                models=models
+                on_select_model=on_select_model
             />
 
             <Show when=move || active_context.get().is_some() fallback=|| ()>
@@ -754,35 +793,6 @@ pub fn ChatPane(
                         }
                     }
                 />
-
-                <Show when=move || has_session.get() && !models.get().is_empty() fallback=|| ()>
-                    <select
-                        class="model-select tui-model-select"
-                        node_ref=model_ref
-                        on:change=move |e: web_sys::Event| {
-                            if let Some(target) = e.target()
-                                && let Some(sel) = target.dyn_ref::<web_sys::HtmlSelectElement>()
-                            {
-                                let value = sel.value();
-                                on_select_model.run(if value.is_empty() {
-                                    None
-                                } else {
-                                    Some(value)
-                                });
-                            }
-                        }
-                    >
-                        <option value="">Default model</option>
-                        {models
-                            .get()
-                            .into_iter()
-                            .map(|m| {
-                                let name = m.name.clone();
-                                view! { <option value=name>{name.clone()}</option> }
-                            })
-                            .collect::<Vec<_>>()}
-                    </select>
-                </Show>
 
                 <Show
                     when=move || streaming.get()

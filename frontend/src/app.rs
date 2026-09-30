@@ -564,6 +564,57 @@ format!(
 
     // Log out: discard the token and reset all per-user state so the gate
     // reappears with a clean slate.
+    let reset_user_state = {
+        let local_cancel = local_cancel_flag.clone();
+        Callback::new(move |()| {
+            projects_loaded.set(false);
+            if let Some(ctrl) = abort.get() {
+                ctrl.abort();
+            }
+            local_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            streaming.set(false);
+            streaming_session.set(None);
+
+            current_user.set(None);
+            open_tabs.set(Vec::new());
+            active_project.set(None);
+            active_session.set(None);
+            projects.set(Vec::new());
+            sessions.set(Vec::new());
+            messages.set(Vec::new());
+            ws_entries.set(HashMap::new());
+            ws_expanded.set(HashSet::new());
+            ws_open_file.set(None);
+            ws_content.set(String::new());
+            ws_dirty.set(false);
+            ws_search.set(None);
+            ws_pending_edits.set(HashMap::new());
+            revoke_object_url(ws_media_url.get());
+            for ws in saved.get().values() {
+                revoke_object_url(ws.media_url.clone());
+            }
+            saved.set(HashMap::new());
+            local_handles.set(HashMap::new());
+            approval_mode.set(HashMap::new());
+            current_run_anchor.set(None);
+
+            session_telemetry.set(SessionTelemetry::default());
+            connections.set(Vec::new());
+            system_prompts.set(Vec::new());
+            git_status.set(None);
+            models.set(Vec::new());
+            session_model.set(HashMap::new());
+            selected_model.set(None);
+            default_connection.set(None);
+            default_prompt.set(None);
+            show_terminal.set(false);
+            active_editor_context.set(None);
+            needs_grant.set(HashSet::new());
+
+            error.set(None);
+        })
+    };
+
     let on_logout = {
         let api = api.clone();
         Callback::new(move |_| {
@@ -583,37 +634,23 @@ format!(
                     let api = action_api.clone();
                     spawn_local(async move {
                         let _ = api.logout().await;
-                        if let Some(window) = web_sys::window() {
-                            let _ = window.location().reload();
-                        }
                     });
-                    current_user.set(None);
-                    open_tabs.set(Vec::new());
-                    active_project.set(None);
-                    active_session.set(None);
-                    projects.set(Vec::new());
-                    sessions.set(Vec::new());
-                    messages.set(Vec::new());
-                    ws_entries.set(HashMap::new());
-                    ws_expanded.set(HashSet::new());
-                    ws_open_file.set(None);
-                    ws_content.set(String::new());
-                    ws_dirty.set(false);
-                    ws_search.set(None);
-                    ws_pending_edits.set(HashMap::new());
-                    revoke_object_url(ws_media_url.get());
-                    for ws in saved.get().values() {
-                        revoke_object_url(ws.media_url.clone());
-                    }
-                    saved.set(HashMap::new());
-                    local_handles.set(HashMap::new());
-                    approval_mode.set(HashMap::new());
-                    current_run_anchor.set(None);
-                    error.set(None);
+                    reset_user_state.run(());
                 }),
             }));
         })
     };
+
+    let session_api = api.clone();
+    Effect::new(move |_| {
+        if session_api.session_expired().get() {
+            reset_user_state.run(());
+            error.set(Some(
+                "Your session expired. Please sign in again.".to_string(),
+            ));
+            session_api.session_expired.set(false);
+        }
+    });
 
     // `Copy` handles so the auth-gate fallback (a `view!` inside a closure) can
     // hand the API and the auth callback to the gate without moving them out of
@@ -1811,6 +1848,11 @@ format!(
                                 sessions.update(|all| all.push(s.clone()));
                                 skip_history_load.set_value(Some(s.id));
                                 active_session.set(Some(s.id));
+                                if let Some(m) = selected_model.get() {
+                                    session_model.update(|hm| {
+                                        hm.insert(s.id, Some(m));
+                                    });
+                                }
                                 s.id
                             }
                             Err(e) => {
@@ -1821,7 +1863,12 @@ format!(
                         }
                     }
                 };
-                let model = session_model.get().get(&session_id).cloned().flatten();
+                let model = session_model
+                    .get()
+                    .get(&session_id)
+                    .cloned()
+                    .flatten()
+                    .or_else(|| selected_model.get());
                 let Ok(controller) = AbortController::new() else {
                     streaming.set(false);
                     return;
@@ -2152,6 +2199,15 @@ format!(
         })
     };
 
+    let on_select_model = Callback::new(move |model: Option<String>| {
+        selected_model.set(model.clone());
+        if let Some(sid) = active_session.get() {
+            session_model.update(|m| {
+                m.insert(sid, model);
+            });
+        }
+    });
+
     let on_slash_command = {
         let api = api.clone();
         Callback::new(move |cmd: SlashCommand| match cmd {
@@ -2188,8 +2244,7 @@ format!(
                         .find(|m| m.name.eq_ignore_ascii_case(&target))
                     {
                         let name = found.name.clone();
-                        selected_model.set(Some(name.clone()));
-                        session_telemetry.update(|t| t.model = name.clone());
+                        on_select_model.run(Some(name.clone()));
                         messages.update(|m| {
                             m.push(local_message(
                                 active_session.get().unwrap_or(0),
@@ -2210,7 +2265,7 @@ format!(
                         .map(|m| format!("* `{}`", m.name))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    let cur = selected_model.get().unwrap_or_else(|| "default".into());
+                    let cur = session_telemetry.get().model;
                     messages.update(|m| {
                         m.push(local_message(
                                 active_session.get().unwrap_or(0),
@@ -2520,28 +2575,34 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
                 ctx_request_gen.get_value()
             };
             let sid = active_session.get();
-            let conn_id = sid.and_then(|id| {
-                sessions
-                    .get()
-                    .into_iter()
-                    .find(|s| s.id == id)
-                    .and_then(|s| s.connection_id)
-            });
-            let conn_model = conn_id.and_then(|cid| {
-                connections
-                    .get()
-                    .into_iter()
-                    .find(|c| c.id == cid)
-                    .and_then(|c| c.model)
-            });
-            // `None` here means no real model resolved; only the display
-            // string falls back to "default" (sending it as the model
-            // would ask the provider to resolve a model literally named
-            // "default").
+            let conn_id = sid
+                .and_then(|id| {
+                    sessions
+                        .get()
+                        .into_iter()
+                        .find(|s| s.id == id)
+                        .and_then(|s| s.connection_id)
+                })
+                .or_else(|| {
+                    default_connection.get().or_else(|| {
+                        connections
+                            .get()
+                            .into_iter()
+                            .find(|c| c.enabled)
+                            .map(|c| c.id)
+                    })
+                });
+            let conn = conn_id.and_then(|cid| connections.get().into_iter().find(|c| c.id == cid));
+            let conn_model = conn.as_ref().and_then(|c| c.model.clone());
+            let conn_name = conn
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+
             let effective_model = selected_model.get().or(conn_model);
             let display_model = effective_model
                 .clone()
-                .unwrap_or_else(|| "default".to_string());
+                .unwrap_or_else(|| format!("Default ({conn_name})"));
             session_telemetry.update(|t| t.model = display_model);
 
             let Some(cid) = conn_id else {
@@ -2855,13 +2916,23 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
         let api = api.clone();
         Effect::new(move || {
             let sid = active_session.get();
-            let conn = sid.and_then(|id| {
-                sessions
-                    .get()
-                    .into_iter()
-                    .find(|s| s.id == id)
-                    .and_then(|s| s.connection_id)
-            });
+            let conn = sid
+                .and_then(|id| {
+                    sessions
+                        .get()
+                        .into_iter()
+                        .find(|s| s.id == id)
+                        .and_then(|s| s.connection_id)
+                })
+                .or_else(|| {
+                    default_connection.get().or_else(|| {
+                        connections
+                            .get()
+                            .into_iter()
+                            .find(|c| c.enabled)
+                            .map(|c| c.id)
+                    })
+                });
             let api = api.clone();
             spawn_local(async move {
                 let list = match conn {
@@ -2876,21 +2947,12 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
     }
 
     // The model chosen for the active session (drives the picker's value).
+    // If there is no active session, leave selected_model alone so it can hold a pending choice.
     Effect::new(move || {
-        let sel = active_session
-            .get()
-            .and_then(|id| session_model.get().get(&id).cloned())
-            .flatten();
-        selected_model.set(sel);
-    });
-
-    let on_select_model = Callback::new(move |model: Option<String>| {
-        let Some(sid) = active_session.get() else {
-            return;
-        };
-        session_model.update(|m| {
-            m.insert(sid, model);
-        });
+        if let Some(id) = active_session.get() {
+            let sel = session_model.get().get(&id).cloned().flatten();
+            selected_model.set(sel);
+        }
     });
 
     // Derived values for the view.
@@ -3035,6 +3097,7 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
     });
 
     view! {
+        <>
         <Show
             when=move || auth_checked.get() && current_user.get().is_some()
             fallback=move || {
@@ -3270,14 +3333,6 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
                     })
                 />
             </Show>
-            <Show when=move || error.get().is_some() fallback=|| ()>
-                <div class="toast" role="alert">
-                    <span class="toast-message">{move || error.get().unwrap_or_default()}</span>
-                    <button class="icon-btn toast-close" title="Dismiss" on:click=move |_| error.set(None)>
-                        "✕"
-                    </button>
-                </div>
-            </Show>
             <ConfirmDialog req=confirm_req.read_only() on_close=on_close_confirm />
             <PromptDialog req=prompt_req.read_only() on_close=on_close_prompt />
             <Show when=move || show_browser.get() fallback=|| ()>
@@ -3289,6 +3344,15 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
             </Show>
         </div>
         </Show>
+        <Show when=move || error.get().is_some() fallback=|| ()>
+            <div class="toast" role="alert">
+                <span class="toast-message">{move || error.get().unwrap_or_default()}</span>
+                <button class="icon-btn toast-close" title="Dismiss" on:click=move |_| error.set(None)>
+                    "✕"
+                </button>
+            </div>
+        </Show>
+        </>
     }
 }
 

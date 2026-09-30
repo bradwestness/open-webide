@@ -2,7 +2,7 @@
 
 use gloo_net::http::{Method, RequestBuilder};
 
-use leptos::prelude::Set;
+use leptos::prelude::{GetUntracked, Set};
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
@@ -22,6 +22,7 @@ use web_sys::{AbortSignal, ReadableStreamDefaultReader, ReadableStreamReadResult
 pub struct BackendApi {
     base: String,
     pub signed_in: leptos::prelude::RwSignal<bool>,
+    pub session_expired: leptos::prelude::RwSignal<bool>,
     cross_origin: bool,
 }
 
@@ -38,6 +39,10 @@ pub enum HealthState {
 }
 
 impl BackendApi {
+    pub fn session_expired(&self) -> leptos::prelude::ReadSignal<bool> {
+        self.session_expired.read_only()
+    }
+
     /// Same-origin by default; `?api=http://host:port/api` overrides the
     /// base for development against a separately served backend.
     pub fn from_location() -> Self {
@@ -64,6 +69,7 @@ impl BackendApi {
         Self {
             base,
             signed_in: leptos::prelude::RwSignal::new(false),
+            session_expired: leptos::prelude::RwSignal::new(false),
             cross_origin,
         }
     }
@@ -79,6 +85,7 @@ impl BackendApi {
                 &json!({ "username": username, "password": password }),
             )
             .await?;
+        self.signed_in.set(true);
         Ok(resp.user)
     }
 
@@ -90,13 +97,16 @@ impl BackendApi {
                 &json!({ "username": username, "password": password }),
             )
             .await?;
+        self.signed_in.set(true);
         Ok(resp.user)
     }
 
     /// The account for the current token.
     pub async fn me(&self) -> Result<User, String> {
         let resp: serde_json::Value = self.get("/auth/me").await?;
-        serde_json::from_value(resp["user"].clone()).map_err(|e| e.to_string())
+        let user: User = serde_json::from_value(resp["user"].clone()).map_err(|e| e.to_string())?;
+        self.signed_in.set(true);
+        Ok(user)
     }
 
     pub async fn logout(&self) -> Result<(), String> {
@@ -281,8 +291,14 @@ impl BackendApi {
         );
         let builder = self.builder(&url, Method::GET);
         let req = builder.build().map_err(|e| e.to_string())?;
+
+        let is_signed_in = self.signed_in.get_untracked();
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.ok() {
+            if resp.status() == 401 && is_signed_in {
+                self.signed_in.set(false);
+                self.session_expired.set(true);
+            }
             return Err(self.error_from(resp).await);
         }
         let web_resp = web_sys::Response::from(resp);
@@ -313,8 +329,14 @@ impl BackendApi {
         );
         let builder = self.builder(&url, Method::GET);
         let req = builder.build().map_err(|e| e.to_string())?;
+
+        let is_signed_in = self.signed_in.get_untracked();
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.ok() {
+            if resp.status() == 401 && is_signed_in {
+                self.signed_in.set(false);
+                self.session_expired.set(true);
+            }
             return Err(self.error_from(resp).await);
         }
         let bytes = resp.binary().await.map_err(|e| e.to_string())?;
@@ -339,8 +361,14 @@ impl BackendApi {
         let req = builder
             .body(content.to_string())
             .map_err(|e| e.to_string())?;
+
+        let is_signed_in = self.signed_in.get_untracked();
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.ok() {
+            if resp.status() == 401 && is_signed_in {
+                self.signed_in.set(false);
+                self.session_expired.set(true);
+            }
             return Err(self.error_from(resp).await);
         }
         Ok(())
@@ -671,8 +699,14 @@ impl BackendApi {
                 "editor_context": editor_context,
             }))
             .map_err(|e| e.to_string())?;
+
+        let is_signed_in = self.signed_in.get_untracked();
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.ok() {
+            if resp.status() == 401 && is_signed_in {
+                self.signed_in.set(false);
+                self.session_expired.set(true);
+            }
             return Err(self.error_from(resp).await);
         }
         let stream = resp
@@ -759,8 +793,14 @@ impl BackendApi {
             None => builder.build(),
         }
         .map_err(|e| e.to_string())?;
+
+        let is_signed_in = self.signed_in.get_untracked();
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.ok() {
+            if resp.status() == 401 && is_signed_in && !path.starts_with("/auth/") {
+                self.signed_in.set(false);
+                self.session_expired.set(true);
+            }
             return Err(self.error_from(resp).await);
         }
         if is_delete {
