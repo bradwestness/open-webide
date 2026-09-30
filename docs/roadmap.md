@@ -151,13 +151,53 @@ terminal pane are done and in the changelog, but:
   `browser_console_logs` tools, failing open to `fetch_web_page` when no CDP
   browser is reachable.
 
+### OpenAI-compatible proxies (LiteLLM, OpenRouter)
+
+Let a connection point at an OpenAI-compatible proxy — LiteLLM, OpenRouter,
+a vLLM or LM Studio server behind a key — so hosted models (Claude, GPT,
+Gemini) are reachable through the proxy without adding native OpenAI or
+Anthropic providers. Queued after the hardening sequence above, since it
+touches the provider transport, the backend API, and the bridge-hosted runs
+that sequence is still reshaping.
+
+The llama.cpp provider already speaks plain OpenAI chat completions
+(`/v1/models`, `/v1/chat/completions`, OpenAI `tools`/`tool_calls`, SSE with
+`[DONE]`), and the backend's outbound allowlist already permits any HTTPS
+host, so an unauthenticated proxy works today. What's missing is auth:
+
+- **Headers on the provider transport:** `HttpClient` gains per-request
+  headers; the backend client builds requests itself instead of the
+  header-less `spin_sdk` `get`/`post` helpers, and the bridge's completion
+  client does the same. Providers send `Authorization: Bearer <key>` when a
+  key is set.
+- **API key and extra headers on the connection:** an optional `api_key` and
+  optional extra headers (e.g. OpenRouter's `HTTP-Referer`/`X-Title`) in a
+  new migration step. Stored in SQLite like the other server-side secrets.
+- **Keys never leave the backend:** connection responses return
+  `has_api_key` instead of the key; saving without a key keeps the stored
+  one, with an explicit clear. Keys are never logged. Bridge-hosted runs get
+  the key from the backend over the shared-secret channel, never via the
+  browser.
+- **Relabel the kind:** the llama.cpp kind shows as "OpenAI-compatible
+  (llama.cpp, LiteLLM, vLLM, LM Studio…)"; the stored `llamacpp` value stays
+  (renaming it would mean rebuilding the table for its `CHECK` constraint).
+- **Proxy-aware context limit:** after llama.cpp `/props`, try LiteLLM
+  `/model/info` (`max_input_tokens`) and OpenRouter `/models`
+  (`context_length`), then the configured value.
+- **Clear failures:** a 401/403 says the key is missing or wrong instead of a
+  generic provider error; a model that rejects `tools` falls back to plain
+  chat with a notice, remembered per connection + model.
+
+The server / model settings split below absorbs this: the key and headers
+move to the server, and the probes join its detection chain.
+
 ### Server / model settings split
 
 Split today's single `Connection` (kind + name + URL + model) into
 **servers** and **per-model settings**, and generalize the llama.cpp kind:
 
-- **Servers:** kind, URL, an optional API key/extra headers, and a request
-  timeout. No name field — the label is derived from the host (e.g.
+- **Servers:** kind, URL, an optional API key/extra headers (moved from the
+  connection, see OpenAI-compatible proxies above), and a request timeout. No name field — the label is derived from the host (e.g.
   `ollama @ 192.168.1.20`). Ollama servers also get a `keep_alive` setting.
 - Rename the llama.cpp connection kind to **OpenAI-compatible**, with
   llama.cpp kept as a preset; the same kind covers LM Studio, llama-swap,
