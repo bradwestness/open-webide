@@ -9,6 +9,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BridgeClientMessage {
+    /// Hello handshake with token
+    Hello { token: String },
     /// Spawn an interactive PTY session or non-interactive process.
     Spawn {
         id: String,
@@ -58,6 +60,14 @@ fn default_rows() -> u16 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BridgeServerMessage {
+    /// Hello handshake success.
+    HelloOk {
+        user_id: Option<i64>,
+        protocol: u32,
+        runs: bool,
+    },
+    /// Hello handshake error.
+    HelloError { message: String },
     /// Process was successfully spawned.
     Spawned { id: String, pid: u32, pty: bool },
     /// Incremental output chunk from process stdout/stderr or PTY.
@@ -136,6 +146,32 @@ mod tests {
 
     #[test]
     fn test_bridge_messages_json_roundtrip() {
+        let hello = BridgeClientMessage::Hello {
+            token: "xyz123".into(),
+        };
+        let json_str = serde_json::to_string(&hello).unwrap();
+        assert!(json_str.contains("\"type\":\"hello\""));
+        let parsed: BridgeClientMessage = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(hello, parsed);
+
+        let hello_ok = BridgeServerMessage::HelloOk {
+            user_id: Some(42),
+            protocol: 1,
+            runs: true,
+        };
+        let json_str = serde_json::to_string(&hello_ok).unwrap();
+        assert!(json_str.contains("\"type\":\"hello_ok\""));
+        let parsed: BridgeServerMessage = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(hello_ok, parsed);
+
+        let hello_err = BridgeServerMessage::HelloError {
+            message: "token expired".into(),
+        };
+        let json_str = serde_json::to_string(&hello_err).unwrap();
+        assert!(json_str.contains("\"type\":\"hello_error\""));
+        let parsed: BridgeServerMessage = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(hello_err, parsed);
+
         let spawn = BridgeClientMessage::Spawn {
             id: "s-1".into(),
             command: "cargo".into(),

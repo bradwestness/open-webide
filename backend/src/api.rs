@@ -212,6 +212,22 @@ pub async fn me(state: &AppState) -> Result<JsonResp, ApiError> {
     Ok(json_response(200, &json!({ "user": user })))
 }
 
+pub async fn bridge_token(state: &AppState) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
+    let secret_opt = crate::bridge::bridge_secret(&state.store).await?;
+    let secret =
+        secret_opt.ok_or_else(|| ApiError::new(503, "bridge secret not configured".to_string()))?;
+
+    let now_ts = crate::state::now();
+    let expires_at = now_ts + crate::bridge::BRIDGE_TOKEN_TTL_SECS;
+    // Epoch is unused for bridge tokens.
+    let token = openwebide_auth::sign_token_expires(&secret, user_id, expires_at, 0);
+
+    Ok(json_response(
+        200,
+        &json!({ "token": token, "expires_at": expires_at }),
+    ))
+}
 /// Stateless logout: the token is bearer-based, so the client simply discards
 /// its copy. This endpoint exists for symmetry and future revocation.
 pub async fn logout(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
@@ -1389,5 +1405,56 @@ mod tests {
         assert!(!super::is_include_ignored(Some("yes".into())));
         assert!(!super::is_include_ignored(Some("TRUE".into())));
         assert!(!super::is_include_ignored(Some("".into())));
+    }
+
+    #[test]
+    fn test_bridge_token() {
+        use crate::state::{AppDb, AppState};
+        use openwebide_core::UserRole;
+        use openwebide_storage::Store;
+
+        futures::executor::block_on(async {
+            let db = AppDb::open_in_memory().unwrap();
+            let store = Store::new(db);
+            store.migrate().await.unwrap();
+            let user_record = store
+                .insert_user("u", "hash", UserRole::User, 1)
+                .await
+                .unwrap();
+            let user = user_record.public();
+
+            let state = AppState {
+                store,
+                current_user: Some(user.clone()),
+            };
+
+            // Without secret
+            let err = super::bridge_token(&state).await.unwrap_err();
+            assert_eq!(err.into_response().status().as_u16(), 503);
+
+            // With secret
+            let test_secret = "test-secret-12345678901234567890";
+            state
+                .store
+                .set_setting("bridge_secret_cache", test_secret)
+                .await
+                .unwrap();
+
+            let resp = super::bridge_token(&state).await.unwrap();
+            assert_eq!(resp.status().as_u16(), 200);
+
+            let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+            let token = json["token"].as_str().unwrap();
+            let expires_at = json["expires_at"].as_i64().unwrap();
+
+            let now = crate::state::now();
+            assert!(expires_at > now);
+            assert!(expires_at <= now + 120);
+
+            let claims = openwebide_auth::verify_token_at(test_secret, token, now).unwrap();
+            assert_eq!(claims.user_id, user.id);
+        });
     }
 }

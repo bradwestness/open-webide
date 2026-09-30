@@ -35,7 +35,7 @@ async fn start_with_limits(workspace_root: std::path::PathBuf, limits: Limits) -
         .await
         .expect("failed to bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr failed").port();
-    let mut config = ServerConfig::new(workspace_root, std::sync::Arc::from("dummy_secret"));
+    let mut config = ServerConfig::new(workspace_root, std::sync::Arc::from("dummy_secret"), None);
     config.limits = limits;
     tokio::spawn(async move {
         run_server(listener, config).await;

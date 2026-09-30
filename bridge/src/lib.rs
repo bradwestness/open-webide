@@ -1,5 +1,6 @@
 //! Native WebSocket terminal and process execution bridge daemon library.
 
+pub mod auth;
 pub mod git;
 pub mod headless;
 pub mod http;

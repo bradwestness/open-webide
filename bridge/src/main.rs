@@ -31,6 +31,7 @@ struct Args {
     allowed_origins: Vec<String>,
     allowed_hosts: Vec<String>,
     secret_file: Option<PathBuf>,
+    pairing_token: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -43,6 +44,16 @@ fn parse_args() -> Result<Args, String> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let mut secret_file = None;
+
+    let mut pairing_token = None;
+    if let Ok(pt) = std::env::var("OPENWEBIDE_BRIDGE_TOKEN") {
+        if pt.len() < 16 {
+            return Err(
+                "OPENWEBIDE_BRIDGE_TOKEN must be at least 16 characters if set".to_string(),
+            );
+        }
+        pairing_token = Some(pt);
+    }
 
     let mut allowed_origins = Vec::new();
     if let Ok(env_origins) = std::env::var("OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS") {
@@ -78,6 +89,7 @@ fn parse_args() -> Result<Args, String> {
                        --allowed-origin <ORIGIN> Allowed CORS Origin (repeatable, env: OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS)\n\
                        --allowed-host <HOSTNAME> Allowed Host header (repeatable, env: OPENWEBIDE_BRIDGE_ALLOWED_HOSTS)\n\
                        --secret-file <PATH>      Path to secret file (default: $XDG_CONFIG_HOME/openwebide/bridge-secret)\n\
+                       --token <TOKEN>           Pairing token (min 16 chars, env: OPENWEBIDE_BRIDGE_TOKEN)\n\
                        --help                    Show this help message\n"
                 );
                 std::process::exit(0);
@@ -107,6 +119,15 @@ fn parse_args() -> Result<Args, String> {
                     .ok_or_else(|| "missing value for --secret-file".to_string())?;
                 secret_file = Some(PathBuf::from(w_str));
             }
+            "--token" => {
+                let t_str = args
+                    .next()
+                    .ok_or_else(|| "missing value for --token".to_string())?;
+                if t_str.len() < 16 {
+                    return Err("--token must be at least 16 characters if set".to_string());
+                }
+                pairing_token = Some(t_str);
+            }
             "--allowed-origin" => {
                 let orig = args
                     .next()
@@ -132,6 +153,7 @@ fn parse_args() -> Result<Args, String> {
         allowed_origins,
         allowed_hosts,
         secret_file,
+        pairing_token,
     })
 }
 
@@ -167,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
         };
     let secret: std::sync::Arc<str> = std::sync::Arc::from(secret.as_str());
 
-    let mut config = ServerConfig::new(workspace_root, secret.clone());
+    let mut config = ServerConfig::new(workspace_root, secret.clone(), args.pairing_token);
     for orig in args.allowed_origins {
         if !config
             .allowed_origins

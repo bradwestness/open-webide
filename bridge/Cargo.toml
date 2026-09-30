@@ -27,6 +27,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.30"
 rand = { workspace = true }
 base64 = { workspace = true }
+openwebide-auth = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

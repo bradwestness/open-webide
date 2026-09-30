@@ -11,6 +11,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Added token-based authentication to `openwebide-bridge` for WebSockets and API endpoints.
+- Added `/api/bridge/token` to mint short-lived tokens for frontend/companion apps.
+- Added `bridge_url` user setting and `OPENWEBIDE_BRIDGE_TOKEN` daemon argument for pairing.
+
 ### Added
 - **Bridge Security**: Added `Authorization: Bearer <SECRET>` for Origin-less `/exec` and `/git/*` routes. The bridge generates a 32-byte secret at startup and the backend auto-fetches it over loopback via `POST /secret`, with caching in SQLite.
 

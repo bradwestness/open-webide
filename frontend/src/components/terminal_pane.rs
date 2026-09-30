@@ -23,16 +23,6 @@ fn next_session_id() -> String {
     format!("term-{now}-{count}")
 }
 
-fn default_bridge_ws_url() -> String {
-    if let Some(window) = web_sys::window()
-        && let Ok(loc) = window.location().hostname()
-        && !loc.is_empty()
-    {
-        return format!("ws://{loc}:3001");
-    }
-    "ws://127.0.0.1:3001".to_string()
-}
-
 /// Convert basic ANSI escape codes into HTML spans for colorized terminal rendering.
 pub fn ansi_to_html(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
@@ -157,8 +147,13 @@ pub enum ConnectionStatus {
 }
 
 #[component]
-pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
+pub fn TerminalPane(
+    #[prop(into)] bridge_config: Signal<crate::bridge::BridgeConfig>,
+    bridge_credentials: crate::bridge::BridgeCredentials,
+    on_close: impl Fn() + Copy + 'static,
+) -> impl IntoView {
     let status = RwSignal::new(ConnectionStatus::Connecting);
+    let error_msg = RwSignal::new(Option::<String>::None);
     let raw_output = RwSignal::new(String::new());
     let active_session = RwSignal::new(Option::<String>::None);
     let sessions = RwSignal::new(Vec::<BridgeSessionInfo>::new());
@@ -177,24 +172,33 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
     let spawned_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Connect to bridge daemon over WebSocket
-    let ws_url = default_bridge_ws_url();
     let tx_clone = tx_outbound.clone();
 
-    let url = ws_url.clone();
     let tx = tx_clone.clone();
     let spawned_ids_for_conn = spawned_ids.clone();
 
     let (connection_task, abort_handle) = futures::future::abortable(async move {
+        let ws_url = bridge_config.get().ws_url.clone();
         status.set(ConnectionStatus::Connecting);
+        error_msg.set(None);
         raw_output.update(|s| s.push_str("\x1b[90mConnecting to bridge daemon...\x1b[0m\n"));
 
-        let ws = match WebSocket::open(&url) {
+        let token = match bridge_credentials.credential().await {
+            Ok(t) => t,
+            Err(e) => {
+                status.set(ConnectionStatus::Disconnected);
+                error_msg.set(Some(format!("bridge authentication failed: {e}")));
+                return;
+            }
+        };
+
+        let ws = match WebSocket::open(&ws_url) {
             Ok(w) => w,
             Err(e) => {
                 status.set(ConnectionStatus::Disconnected);
                 raw_output.update(|s| {
                         s.push_str(&format!(
-                            "\x1b[31mFailed to connect to bridge at {url}: {e}\n\
+                            "\x1b[31mFailed to connect to bridge at {ws_url}: {e}\n\
                              Start the daemon with `openwebide-bridge` to enable the terminal.\x1b[0m\n"
                         ));
                     });
@@ -205,7 +209,7 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
         status.set(ConnectionStatus::Connected);
         raw_output.update(|s| {
             s.push_str(&format!(
-                "\x1b[32m✔ Connected to bridge daemon ({url})\x1b[0m\n\
+                "\x1b[32m✔ Connected to bridge daemon ({ws_url})\x1b[0m\n\
                      \x1b[90mType a shell command or press Enter to spawn a shell.\x1b[0m\n"
             ));
         });
@@ -223,12 +227,18 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
             }
         });
 
-        // Automatically request active sessions
+        // Automatically send Hello
         if let Ok(mut sender) = tx.lock() {
-            let _ = sender.try_send(BridgeClientMessage::List);
+            let _ = sender.try_send(BridgeClientMessage::Hello {
+                token: token.clone(),
+            });
         }
 
+        let bridge_credentials_clone = bridge_credentials.clone();
+        let tx_clone2 = tx.clone();
+
         // Task 2: Inbound message reader
+        let mut retried_auth = false;
         while let Some(msg_result) = ws_read.next().await {
             let text = match msg_result {
                 Ok(Message::Text(t)) => t,
@@ -242,6 +252,25 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
             };
 
             match server_msg {
+                BridgeServerMessage::HelloOk { .. } => {
+                    if let Ok(mut sender) = tx_clone2.lock() {
+                        let _ = sender.try_send(BridgeClientMessage::List);
+                    }
+                }
+                BridgeServerMessage::HelloError { message } => {
+                    if message.contains("expired") && !retried_auth {
+                        retried_auth = true;
+                        bridge_credentials_clone.clear_cache();
+                        if let Ok(new_token) = bridge_credentials_clone.credential().await {
+                            if let Ok(mut sender) = tx_clone2.lock() {
+                                let _ = sender
+                                    .try_send(BridgeClientMessage::Hello { token: new_token });
+                            }
+                            continue;
+                        }
+                    }
+                    error_msg.set(Some(format!("bridge: {message}")));
+                }
                 BridgeServerMessage::Spawned { id, pid, .. } => {
                     active_session.set(Some(id.clone()));
                     raw_output.update(|s| {
@@ -278,9 +307,15 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
                     });
                 }
                 BridgeServerMessage::Error { message, .. } => {
-                    raw_output.update(|s| {
-                        s.push_str(&format!("\x1b[31m[Bridge error: {message}]\x1b[0m\n"));
-                    });
+                    if message.contains("unknown variant `Hello`") {
+                        if let Ok(mut sender) = tx_clone2.lock() {
+                            let _ = sender.try_send(BridgeClientMessage::List);
+                        }
+                    } else {
+                        raw_output.update(|s| {
+                            s.push_str(&format!("\x1b[31m[Bridge error: {message}]\x1b[0m\n"));
+                        });
+                    }
                 }
                 BridgeServerMessage::Sessions { sessions: active } => {
                     sessions.set(active);
@@ -487,6 +522,11 @@ pub fn TerminalPane(on_close: impl Fn() + Copy + 'static) -> impl IntoView {
                             ConnectionStatus::Disconnected => "bridge offline",
                         }}
                     </span>
+                    <Show when=move || error_msg.get().is_some() fallback=|| ()>
+                        <span class="term-status offline" style="margin-left: 8px;">
+                            {move || error_msg.get().unwrap()}
+                        </span>
+                    </Show>
                 </div>
                 <div class="terminal-actions">
                     <button

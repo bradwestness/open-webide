@@ -2,19 +2,18 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::{Method, Request};
 use openwebide_bridge::ServerConfig;
-use std::net::SocketAddr;
 use std::sync::Arc;
-use tempfile::tempdir;
 use tokio::net::{TcpListener, TcpStream};
 
+#[allow(deprecated)]
 async fn start_server() -> (u16, Arc<str>) {
-    let workspace = tempdir().unwrap().into_path();
+    let workspace = tempfile::Builder::new().tempdir().unwrap().into_path();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
     // In these tests we just use a dummy secret
     let secret: Arc<str> = Arc::from("this_is_a_very_long_dummy_secret_32_bytes_min");
-    let config = ServerConfig::new(workspace, secret.clone());
+    let config = ServerConfig::new(workspace, secret.clone(), None);
 
     tokio::spawn(openwebide_bridge::run_server(listener, config));
     (port, secret)
@@ -52,7 +51,7 @@ async fn exec_without_secret_is_401() {
         )))
         .unwrap();
 
-    let res = request(port, req.into()).await;
+    let res = request(port, req).await;
     assert_eq!(res.status(), 401);
 }
 
@@ -70,7 +69,7 @@ async fn exec_with_secret_ok() {
         )))
         .unwrap();
 
-    let res = request(port, req.into()).await;
+    let res = request(port, req).await;
     assert_eq!(res.status(), 200);
 }
 
@@ -85,7 +84,7 @@ async fn git_without_secret_is_401() {
         .body(http_body_util::Full::new(Bytes::from(r#"{}"#)))
         .unwrap();
 
-    let res = request(port, req.into()).await;
+    let res = request(port, req).await;
     assert_eq!(res.status(), 401);
 }
 
@@ -99,7 +98,7 @@ async fn secret_endpoint_loopback_ok() {
         .body(http_body_util::Empty::<bytes::Bytes>::new())
         .unwrap();
 
-    let res = request(port, req.into()).await;
+    let res = request(port, req).await;
     assert_eq!(res.status(), 200);
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -118,12 +117,12 @@ async fn secret_endpoint_with_origin_403() {
         .body(http_body_util::Empty::<bytes::Bytes>::new())
         .unwrap();
 
-    let res = request(port, req.into()).await;
+    let res = request(port, req).await;
     assert_eq!(res.status(), 403);
 }
 
 #[tokio::test]
-async fn browser_origin_exec_unchanged() {
+async fn browser_origin_exec_requires_token() {
     let (port, _) = start_server().await;
     // Without bearer, but WITH an origin, should not hit 401
     // (though in reality, missing CORS preflight or missing token in later steps might reject it,
@@ -139,6 +138,6 @@ async fn browser_origin_exec_unchanged() {
         )))
         .unwrap();
 
-    let res = request(port, req.into()).await;
-    assert_eq!(res.status(), 200);
+    let res = request(port, req).await;
+    assert_eq!(res.status(), 401);
 }

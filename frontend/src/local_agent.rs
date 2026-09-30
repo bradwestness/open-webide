@@ -135,13 +135,15 @@ impl WebClient for BrowserWebClient {
 /// Browser bridge client sending command execution requests to the local bridge daemon.
 #[derive(Clone)]
 pub struct BrowserBridgeClient {
-    endpoint: String,
+    http_url: String,
+    credentials: crate::bridge::BridgeCredentials,
 }
 
-impl Default for BrowserBridgeClient {
-    fn default() -> Self {
+impl BrowserBridgeClient {
+    pub fn new(http_url: String, credentials: crate::bridge::BridgeCredentials) -> Self {
         Self {
-            endpoint: "http://127.0.0.1:3001/exec".to_string(),
+            http_url,
+            credentials,
         }
     }
 }
@@ -152,7 +154,8 @@ impl BridgeClient for BrowserBridgeClient {
         command: &str,
         timeout_seconds: u64,
     ) -> impl Future<Output = Result<CommandOutcome, String>> + Send {
-        let endpoint = self.endpoint.clone();
+        let endpoint = format!("{}/exec", self.http_url);
+        let credentials = self.credentials.clone();
         let payload = serde_json::json!({
             "command": command,
             "timeout_seconds": timeout_seconds,
@@ -160,8 +163,13 @@ impl BridgeClient for BrowserBridgeClient {
         .to_string();
 
         ForceSend(async move {
+            let token = credentials
+                .credential()
+                .await
+                .map_err(|e| format!("auth error: {e}"))?;
             let resp = gloo_net::http::Request::post(&endpoint)
                 .header("Content-Type", "application/json")
+                .header("Authorization", &format!("Bearer {token}"))
                 .body(payload)
                 .map_err(|e| format!("request error: {e}"))?
                 .send()
@@ -184,9 +192,16 @@ impl BridgeClient for BrowserBridgeClient {
     fn git_status(
         &self,
     ) -> impl Future<Output = Result<openwebide_core::GitRepoStatus, String>> + Send {
+        let endpoint = format!("{}/git/status", self.http_url);
+        let credentials = self.credentials.clone();
         ForceSend(async move {
-            let resp = gloo_net::http::Request::post("http://127.0.0.1:3001/git/status")
+            let token = credentials
+                .credential()
+                .await
+                .map_err(|e| format!("auth error: {e}"))?;
+            let resp = gloo_net::http::Request::post(&endpoint)
                 .header("Content-Type", "application/json")
+                .header("Authorization", &format!("Bearer {token}"))
                 .body("{}")
                 .map_err(|e| format!("request error: {e}"))?
                 .send()
@@ -204,10 +219,17 @@ impl BridgeClient for BrowserBridgeClient {
 
     fn git_diff(&self, path: Option<&str>) -> impl Future<Output = Result<String, String>> + Send {
         let path = path.map(|s| s.to_string());
+        let endpoint = format!("{}/git/diff", self.http_url);
+        let credentials = self.credentials.clone();
         ForceSend(async move {
+            let token = credentials
+                .credential()
+                .await
+                .map_err(|e| format!("auth error: {e}"))?;
             let payload = serde_json::json!({ "path": path }).to_string();
-            let resp = gloo_net::http::Request::post("http://127.0.0.1:3001/git/diff")
+            let resp = gloo_net::http::Request::post(&endpoint)
                 .header("Content-Type", "application/json")
+                .header("Authorization", &format!("Bearer {token}"))
                 .body(payload)
                 .map_err(|e| format!("request error: {e}"))?
                 .send()
@@ -233,9 +255,16 @@ impl BridgeClient for BrowserBridgeClient {
         req: &openwebide_core::GitCommitRequest,
     ) -> impl Future<Output = Result<openwebide_core::GitCommitResult, String>> + Send {
         let payload = serde_json::to_string(req).unwrap_or_default();
+        let endpoint = format!("{}/git/commit", self.http_url);
+        let credentials = self.credentials.clone();
         ForceSend(async move {
-            let resp = gloo_net::http::Request::post("http://127.0.0.1:3001/git/commit")
+            let token = credentials
+                .credential()
+                .await
+                .map_err(|e| format!("auth error: {e}"))?;
+            let resp = gloo_net::http::Request::post(&endpoint)
                 .header("Content-Type", "application/json")
+                .header("Authorization", &format!("Bearer {token}"))
                 .body(payload)
                 .map_err(|e| format!("request error: {e}"))?
                 .send()
@@ -256,9 +285,16 @@ impl BridgeClient for BrowserBridgeClient {
         req: &openwebide_core::GitCheckoutRequest,
     ) -> impl Future<Output = Result<openwebide_core::GitCheckoutResult, String>> + Send {
         let payload = serde_json::to_string(req).unwrap_or_default();
+        let endpoint = format!("{}/git/checkout", self.http_url);
+        let credentials = self.credentials.clone();
         ForceSend(async move {
-            let resp = gloo_net::http::Request::post("http://127.0.0.1:3001/git/checkout")
+            let token = credentials
+                .credential()
+                .await
+                .map_err(|e| format!("auth error: {e}"))?;
+            let resp = gloo_net::http::Request::post(&endpoint)
                 .header("Content-Type", "application/json")
+                .header("Authorization", &format!("Bearer {token}"))
                 .body(payload)
                 .map_err(|e| format!("request error: {e}"))?
                 .send()
@@ -328,6 +364,8 @@ pub async fn run_local_agent(
     cancel_flag: Arc<AtomicBool>,
     local_decisions: Arc<Mutex<HashMap<String, bool>>>,
     mut on_event: impl FnMut(SseEvent),
+    bridge_config: crate::bridge::BridgeConfig,
+    bridge_credentials: crate::bridge::BridgeCredentials,
 ) -> Result<(), String> {
     // 1. Fetch prior conversation history before persisting the new message
     let history_entries = api.list_messages(session_id).await.unwrap_or_default();
@@ -360,7 +398,7 @@ pub async fn run_local_agent(
     };
 
     let web = BrowserWebClient::new(api.clone());
-    let bridge = BrowserBridgeClient::default();
+    let bridge = BrowserBridgeClient::new(bridge_config.http_url, bridge_credentials);
     let executor = VfsToolExecutor::with_web_and_bridge(vfs, web, bridge);
     let provider = BrowserLlmProvider::new(api.clone(), ProviderKind::Ollama);
     let cancel = LocalCancelCheck {

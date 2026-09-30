@@ -1,5 +1,6 @@
 mod api;
 mod app;
+mod bridge;
 mod components;
 mod idb;
 mod local_agent;

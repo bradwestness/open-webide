@@ -1486,6 +1486,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "openwebide-auth",
  "openwebide-core",
  "portable-pty",
  "rand 0.10.3",

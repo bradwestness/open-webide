@@ -202,3 +202,63 @@ pub async fn request_permission(handle: &FileSystemDirectoryHandle) -> Result<bo
         .map_err(|e| js_error(&e))?;
     Ok(result.as_string().as_deref() == Some("granted"))
 }
+
+pub async fn set_bridge_pairing_token(token: &str) -> Result<(), String> {
+    let db = open_db().await?;
+    let store = get_store(&db, IdbTransactionMode::Readwrite)?;
+    let request = store
+        .put_with_key(
+            &JsValue::from_str(token),
+            &JsValue::from_str("bridge_pairing_token"),
+        )
+        .map_err(|e| js_error(&e))?;
+    let (tx, rx) = oneshot::channel();
+    let mut closures = Vec::new();
+    attach(&request, &mut closures, tx, "put");
+    let _ = IdbRequestFuture {
+        _request: Some(request),
+        rx: Some(rx),
+        _closures: closures,
+    }
+    .await?;
+    Ok(())
+}
+
+pub async fn get_bridge_pairing_token() -> Result<Option<String>, String> {
+    let db = open_db().await?;
+    let store = get_store(&db, IdbTransactionMode::Readonly)?;
+    let request = store
+        .get(&JsValue::from_str("bridge_pairing_token"))
+        .map_err(|e| js_error(&e))?;
+    let (tx, rx) = oneshot::channel();
+    let mut closures = Vec::new();
+    attach(&request, &mut closures, tx, "get");
+    let result = IdbRequestFuture {
+        _request: Some(request),
+        rx: Some(rx),
+        _closures: closures,
+    }
+    .await?;
+    if result.is_null() || result.is_undefined() {
+        return Ok(None);
+    }
+    Ok(result.as_string())
+}
+
+pub async fn delete_bridge_pairing_token() -> Result<(), String> {
+    let db = open_db().await?;
+    let store = get_store(&db, IdbTransactionMode::Readwrite)?;
+    let request = store
+        .delete(&JsValue::from_str("bridge_pairing_token"))
+        .map_err(|e| js_error(&e))?;
+    let (tx, rx) = oneshot::channel();
+    let mut closures = Vec::new();
+    attach(&request, &mut closures, tx, "delete");
+    let _ = IdbRequestFuture {
+        _request: Some(request),
+        rx: Some(rx),
+        _closures: closures,
+    }
+    .await?;
+    Ok(())
+}

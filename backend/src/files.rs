@@ -957,14 +957,14 @@ mod tests {
     fn search_budget_refuses_file_once_bytes_exhausted() {
         let mut budget = SearchBudget::new();
         // A file larger than the whole budget is refused outright.
-        assert!(!budget.allow_file(64 * 1024 * 1024 as u64 + 1));
+        assert!(!budget.allow_file(64 * 1024 * 1024_u64 + 1));
         // Exactly the full budget is allowed and leaves nothing for the next.
-        assert!(budget.allow_file(64 * 1024 * 1024 as u64));
+        assert!(budget.allow_file(64 * 1024 * 1024_u64));
         assert!(!budget.allow_file(1));
         // Smaller reads drain the budget incrementally.
         let mut fresh = SearchBudget::new();
         assert!(fresh.allow_file(10));
-        assert!(!fresh.allow_file(64 * 1024 * 1024 as u64));
+        assert!(!fresh.allow_file(64 * 1024 * 1024_u64));
     }
 
     #[test]
@@ -997,10 +997,10 @@ mod tests {
     #[test]
     fn truncate_line_is_multibyte_safe_at_400() {
         // Exactly 400 multi-byte chars: untouched.
-        let s: String = std::iter::repeat('é').take(400).collect();
+        let s: String = "é".repeat(400);
         assert_eq!(truncate_line(&s, 400), s);
         // 401 multi-byte chars: truncated to exactly 400.
-        let s: String = std::iter::repeat('é').take(401).collect();
+        let s: String = "é".repeat(401);
         assert_eq!(truncate_line(&s, 400).chars().count(), 400);
         // A 3-byte char straddling the 400-char boundary is kept whole,
         // not split mid-sequence (a byte-wise cut at 400 would split it).

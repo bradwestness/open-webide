@@ -11,10 +11,12 @@ pub fn Settings(
     default_prompt: ReadSignal<Option<i64>>,
     connections: ReadSignal<Vec<Connection>>,
     system_prompts: ReadSignal<Vec<SystemPrompt>>,
+    bridge_url: ReadSignal<String>,
     on_close: Callback<()>,
     on_set_theme: Callback<String>,
     on_set_default_connection: Callback<Option<i64>>,
     on_set_default_prompt: Callback<Option<i64>>,
+    on_set_bridge_url: Callback<String>,
 ) -> impl IntoView {
     let conn_ref = NodeRef::<leptos::html::Select>::new();
     let prompt_ref = NodeRef::<leptos::html::Select>::new();
@@ -40,6 +42,15 @@ pub fn Settings(
         if let Some(el) = prompt_ref.get() {
             el.set_value(&value);
         }
+    });
+
+    let (pairing_token, set_pairing_token) = leptos::prelude::signal(String::new());
+    Effect::new(move || {
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(Some(pt)) = crate::idb::get_bridge_pairing_token().await {
+                set_pairing_token.set(pt);
+            }
+        });
     });
 
     view! {
@@ -164,6 +175,60 @@ pub fn Settings(
                                 .collect::<Vec<_>>()}
                         </select>
                     </div>
+
+                    <div class="setting-row">
+                        <span class="setting-label">"Bridge URL"</span>
+                        <input
+                            type="text"
+                            class="form-input"
+                            value=bridge_url
+                            on:change=move |e: web_sys::Event| {
+                                if let Some(target) = e.target()
+                                    && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
+                                {
+                                    on_set_bridge_url.run(input.value());
+                                }
+                            }
+                        />
+                    </div>
+
+                    <div class="setting-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
+                        <span class="setting-label">"Bridge pairing token"</span>
+                        <div style="display: flex; gap: 0.5rem; width: 100%;">
+                            <input
+                                type="password"
+                                class="form-input"
+                                style="flex: 1;"
+                                value=pairing_token
+                                on:change=move |e: web_sys::Event| {
+                                    if let Some(target) = e.target()
+                                        && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
+                                    {
+                                        let val = input.value();
+                                        set_pairing_token.set(val.clone());
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let _ = crate::idb::set_bridge_pairing_token(&val).await;
+                                        });
+                                    }
+                                }
+                            />
+                            <button
+                                class="btn stop"
+                                on:click=move |_| {
+                                    set_pairing_token.set(String::new());
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        let _ = crate::idb::delete_bridge_pairing_token().await;
+                                    });
+                                }
+                            >
+                                "Clear"
+                            </button>
+                        </div>
+                        <div class="form-hint" style="color: var(--border-subtle); font-size: 0.85rem;">
+                            "Required only if your bridge daemon was started with OPENWEBIDE_BRIDGE_TOKEN to allow local execution (the laptop-companion case)."
+                        </div>
+                    </div>
+
                 </div>
             </div>
         </div>

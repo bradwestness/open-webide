@@ -51,7 +51,7 @@ pub async fn start(workspace_root: PathBuf) -> u16 {
         .await
         .expect("failed to bind 127.0.0.1:0");
     let port = listener.local_addr().expect("local_addr failed").port();
-    let config = ServerConfig::new(workspace_root, std::sync::Arc::from("dummy_secret"));
+    let config = ServerConfig::new(workspace_root, std::sync::Arc::from("dummy_secret"), None);
     tokio::spawn(async move {
         run_server(listener, config).await;
     });
@@ -122,6 +122,7 @@ pub async fn post(
     let mut req = format!("POST {path} HTTP/1.1\r\n");
     let mut has_host = false;
     let mut has_cl = false;
+    let mut has_origin = false;
     for (k, v) in extra_headers {
         if k.eq_ignore_ascii_case("host") {
             has_host = true;
@@ -129,12 +130,20 @@ pub async fn post(
         if k.eq_ignore_ascii_case("content-length") {
             has_cl = true;
         }
+        if k.eq_ignore_ascii_case("origin") {
+            has_origin = true;
+        }
         req.push_str(&format!("{k}: {v}\r\n"));
     }
     if !has_host {
         req.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
     }
-    req.push_str("Authorization: Bearer dummy_secret\r\n");
+    if has_origin {
+        let token = openwebide_auth::sign_token_expires("dummy_secret", 42, 9999999999, 0);
+        req.push_str(&format!("Authorization: Bearer {}\r\n", token));
+    } else {
+        req.push_str("Authorization: Bearer dummy_secret\r\n");
+    }
     if !has_cl {
         req.push_str(&format!("Content-Length: {}\r\n", body.len()));
     }
@@ -163,8 +172,16 @@ pub async fn ws_with_headers(
     let stream = TcpStream::connect(("127.0.0.1", port))
         .await
         .map_err(|e| e.to_string())?;
-    let (ws, _) = tokio_tungstenite::client_async(req, stream)
+    let (mut ws, _) = tokio_tungstenite::client_async(req, stream)
         .await
         .map_err(|e| e.to_string())?;
+    use futures::{SinkExt, StreamExt};
+    let token = openwebide_auth::sign_token_expires("dummy_secret", 42, 9999999999, 0);
+    let hello = format!(r#"{{"type":"hello","token":"{token}"}}"#);
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(hello.into()))
+        .await
+        .map_err(|e| e.to_string())?;
+    let resp = ws.next().await.unwrap().unwrap();
+    assert!(resp.to_text().unwrap().contains("hello_ok"));
     Ok(ws)
 }

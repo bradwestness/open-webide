@@ -19,9 +19,10 @@ Instructions, conventions, and architectural principles for AI agents working on
 - **Seamless Multi-Device Continuity**: The core product philosophy is that a user must be able to switch machines, devices, or browsers and immediately pick up right where they left off without losing state.
 - **Never rely on `localStorage`** for user preferences, workspaces, layout configurations, or session state. The session is an HttpOnly cookie.
 - **User-Scoped Database Settings**:
-  - Persist all user layout preferences, panel dimensions (`panel_sidebar_width`, `panel_tree_width`, `panel_chat_width`), active tabs (`open_tabs`), active project (`active_project`), theme, and default configurations in the SQLite database via the `/api/settings` endpoints (`crates/storage/src/store.rs` -> `user_settings` table).
+  - Persist all user layout preferences, panel dimensions (`panel_sidebar_width`, `panel_tree_width`, `panel_chat_width`), active tabs (`open_tabs`), active project (`active_project`), theme, `bridge_url`, and default configurations in the SQLite database via the `/api/settings` endpoints (`crates/storage/src/store.rs` -> `user_settings` table).
   - All settings queries and mutations must be scoped to the authenticated `user_id`.
-  - The only browser-specific storage permitted is IndexedDB for local file system directory handles (`FileSystemDirectoryHandle`) when running in browser local-mode, where native browser permissions require origin-bound handles. (There are no exceptions to this rule.)
+  - Tools that depend on the `bridge_url` user setting must authenticate natively via `BridgeCredentials`.
+  - The only browser-specific storage permitted is IndexedDB for local file system directory handles (`FileSystemDirectoryHandle`) and the bridge pairing token when running in browser local-mode, where native browser permissions or security requirements require origin-bound data. (There are no exceptions to this rule.)
 
 ---
 

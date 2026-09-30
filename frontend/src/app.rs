@@ -165,6 +165,8 @@ pub fn App() -> impl IntoView {
     let open_tabs = RwSignal::new(Vec::<Project>::new());
     let active_project = RwSignal::new(Option::<i64>::None);
     let projects_loaded = RwSignal::new(false);
+    let bridge_url = RwSignal::new(crate::bridge::default_bridge_url());
+    let bridge_credentials = StoredValue::new(crate::bridge::BridgeCredentials::new(api.clone()));
     let sidebar_width = RwSignal::new(240.0f64);
     let tree_width = RwSignal::new(260.0f64);
     let chat_width = RwSignal::new(420.0f64);
@@ -2110,6 +2112,8 @@ format!(
                             local_cancel,
                             local_perms,
                             on_event,
+                            crate::bridge::BridgeConfig::new(&bridge_url.get()),
+                            bridge_credentials.with_value(|c| c.clone()),
                         )
                         .await;
                         if let Err(e) = res
@@ -2657,6 +2661,9 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
                     {
                         theme.set(t.to_string());
                     }
+                    if let Some(url) = s.get("bridge_url") {
+                        bridge_url.set(url.to_string());
+                    }
                     if let Some(v) = s
                         .get("default_connection")
                         .and_then(|v| v.parse::<i64>().ok())
@@ -3184,7 +3191,11 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
                         on_reject=on_reject
                     />
                     <Show when=move || show_terminal.get() fallback=|| ()>
-                        <TerminalPane on_close=move || show_terminal.set(false) />
+                        <TerminalPane
+                            bridge_config=Signal::derive(move || crate::bridge::BridgeConfig::new(&bridge_url.get()))
+                            bridge_credentials=bridge_credentials.with_value(|c| c.clone())
+                            on_close=move || show_terminal.set(false)
+                        />
                     </Show>
                 </div>
                 <div
@@ -3245,10 +3256,18 @@ format!("Dispatched test run: `cargo test {arg}` via execution bridge.\nCheck te
                     default_prompt=default_prompt.read_only()
                     connections=connections.read_only()
                     system_prompts=system_prompts.read_only()
+                    bridge_url=bridge_url.read_only()
                     on_close=on_close_settings
                     on_set_theme=on_set_theme
                     on_set_default_connection=on_set_default_connection
                     on_set_default_prompt=on_set_default_prompt
+                    on_set_bridge_url=Callback::new(move |url: String| {
+                        let api = api_ref.get();
+                        bridge_url.set(url.clone());
+                        spawn_local(async move {
+                            let _ = api.set_setting("bridge_url", &url).await;
+                        });
+                    })
                 />
             </Show>
             <Show when=move || error.get().is_some() fallback=|| ()>

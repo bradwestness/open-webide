@@ -1,6 +1,6 @@
 //! Thin client for the backend REST API, including SSE streaming.
 
-use gloo_net::http::{Method, Request, RequestBuilder};
+use gloo_net::http::{Method, RequestBuilder};
 
 use leptos::prelude::Set;
 use openwebide_core::{
@@ -55,10 +55,10 @@ impl BackendApi {
 
         let cross_origin = !base.starts_with(&origin);
 
-        if let Some(window) = web_sys::window() {
-            if let Ok(Some(storage)) = window.local_storage() {
-                let _ = storage.remove_item("owide_token");
-            }
+        if let Some(window) = web_sys::window()
+            && let Ok(Some(storage)) = window.local_storage()
+        {
+            let _ = storage.remove_item("owide_token");
         }
 
         Self {
@@ -105,6 +105,16 @@ impl BackendApi {
             .await;
         self.signed_in.set(false);
         Ok(())
+    }
+
+    pub async fn bridge_token(&self) -> Result<(String, i64), String> {
+        #[derive(serde::Deserialize)]
+        struct TokenResp {
+            token: String,
+            expires_at: i64,
+        }
+        let resp: TokenResp = self.post("/bridge/token", &json!({})).await?;
+        Ok((resp.token, resp.expires_at))
     }
 
     pub async fn health(&self) -> Result<Health, String> {

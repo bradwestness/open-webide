@@ -2,8 +2,10 @@ use crate::git::BridgeError;
 use crate::state::AppDb;
 use http_body_util::BodyExt;
 use openwebide_storage::Store;
-use serde::Deserialize;
+
 use spin_sdk::http;
+
+pub const BRIDGE_TOKEN_TTL_SECS: i64 = 120;
 
 pub fn resolve_url(var: Option<String>) -> String {
     let url = var.unwrap_or_else(|| "http://127.0.0.1:3001".to_string());
@@ -32,11 +34,15 @@ pub fn is_loopback_url(url: &str) -> bool {
 }
 
 pub async fn bridge_url() -> String {
+    #[cfg(not(test))]
     let var = spin_sdk::variables::get("bridge_url").await.ok();
+    #[cfg(test)]
+    let var = None;
     resolve_url(var)
 }
 
 pub async fn bridge_secret(store: &Store<AppDb>) -> Result<Option<String>, BridgeError> {
+    #[cfg(not(test))]
     if let Ok(var) = spin_sdk::variables::get("bridge_secret").await
         && !var.trim().is_empty()
     {
@@ -49,26 +55,30 @@ pub async fn bridge_secret(store: &Store<AppDb>) -> Result<Option<String>, Bridg
         return Ok(Some(cached));
     }
 
-    let url = bridge_url().await;
-    if is_loopback_url(&url) {
-        let endpoint = format!("{url}/secret");
-        match http::post(&endpoint, "").await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(collected) = resp.into_body().collect().await {
-                    #[derive(Deserialize)]
-                    struct SecretResp {
-                        secret: String,
-                    }
-                    if let Ok(val) = serde_json::from_slice::<SecretResp>(&collected.to_bytes()) {
-                        let _ = store.set_setting("bridge_secret_cache", &val.secret).await;
-                        return Ok(Some(val.secret));
+    #[cfg(not(test))]
+    {
+        let url = bridge_url().await;
+        if is_loopback_url(&url) {
+            let endpoint = format!("{url}/secret");
+            match http::post(&endpoint, "").await {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(collected) = resp.into_body().collect().await {
+                        #[derive(serde::Deserialize)]
+                        struct SecretResp {
+                            secret: String,
+                        }
+                        if let Ok(val) = serde_json::from_slice::<SecretResp>(&collected.to_bytes())
+                        {
+                            let _ = store.set_setting("bridge_secret_cache", &val.secret).await;
+                            return Ok(Some(val.secret));
+                        }
                     }
                 }
+                Err(e) => {
+                    return Err(BridgeError::Unreachable(e.to_string()));
+                }
+                _ => {}
             }
-            Err(e) => {
-                return Err(BridgeError::Unreachable(e.to_string()));
-            }
-            _ => {}
         }
     }
 

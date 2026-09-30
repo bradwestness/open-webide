@@ -43,6 +43,7 @@ pub async fn route(req: Request) -> JsonResp {
             ("POST", "/api/auth/register") => api::register(req, &state).await,
             ("POST", "/api/auth/login") => api::login(req, &state).await,
             ("GET", "/api/auth/me") => api::me(&state).await,
+            ("POST", "/api/bridge/token") => api::bridge_token(&state).await,
             ("POST", "/api/auth/logout") => api::logout(req, &state).await,
             ("GET", "/api/connections") => api::list_connections(&state).await,
             ("POST", "/api/connections") => api::create_connection(req, &state).await,

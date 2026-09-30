@@ -7,8 +7,11 @@ use tokio_tungstenite::tungstenite::Message;
 async fn spawn_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let mut config =
-        openwebide_bridge::ServerConfig::new(std::env::temp_dir(), std::sync::Arc::from("dummy"));
+    let mut config = openwebide_bridge::ServerConfig::new(
+        std::env::temp_dir(),
+        std::sync::Arc::from("dummy"),
+        None,
+    );
     config.allowed_origins.push("http://test.local".to_string());
     tokio::spawn(openwebide_bridge::run_server(listener, config));
     port
@@ -28,7 +31,15 @@ async fn connect_ws(
         .body(())
         .unwrap();
 
-    let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    use futures::{SinkExt, StreamExt};
+    let token = openwebide_auth::sign_token_expires("dummy", 42, 9999999999, 0);
+    let hello = format!(r#"{{"type":"hello","token":"{token}"}}"#);
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(hello.into()))
+        .await
+        .unwrap();
+    let resp = ws.next().await.unwrap().unwrap();
+    assert!(resp.to_text().unwrap().contains("hello_ok"));
     ws
 }
 
@@ -129,12 +140,12 @@ async fn kill_is_responsive_while_client_not_reading() {
     let mut exited = false;
 
     while !exited {
-        match tokio::time::timeout(Duration::from_secs(3), recv_msg(&mut ws))
-            .await
-            .unwrap()
+        if let BridgeServerMessage::Exited { .. } =
+            tokio::time::timeout(Duration::from_secs(3), recv_msg(&mut ws))
+                .await
+                .unwrap()
         {
-            BridgeServerMessage::Exited { .. } => exited = true,
-            _ => {}
+            exited = true;
         }
     }
     assert!(start.elapsed() < Duration::from_secs(3));

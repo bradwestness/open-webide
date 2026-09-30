@@ -48,10 +48,11 @@ pub struct ServerConfig {
     /// reaper removes it. Running sessions are never reaped.
     pub session_ttl: Duration,
     pub secret: Arc<str>,
+    pub pairing_token: Option<String>,
 }
 
 impl ServerConfig {
-    pub fn new(workspace_root: PathBuf, secret: Arc<str>) -> Self {
+    pub fn new(workspace_root: PathBuf, secret: Arc<str>, pairing_token: Option<String>) -> Self {
         Self {
             workspace_root,
             allowed_origins: default_origins(),
@@ -59,6 +60,7 @@ impl ServerConfig {
             limits: Limits::default(),
             session_ttl: DEFAULT_SESSION_TTL,
             secret,
+            pairing_token,
         }
     }
 }
@@ -378,26 +380,33 @@ async fn route(
 
     let path = req.uri().path().to_string();
 
-    // Check authorization for Origin-less API requests
     let is_api_req = path == "/exec" || path.starts_with("/git/");
-    if is_api_req && origin.is_none() {
+    if is_api_req && method != "OPTIONS" {
         let auth_header = req
             .headers()
             .get(hyper::header::AUTHORIZATION)
             .and_then(|h| h.to_str().ok());
-        let authorized = if let Some(h) = auth_header {
-            if let Some(token) = h.strip_prefix("Bearer ") {
-                crate::secret::constant_time_eq(token.as_bytes(), config.secret.as_bytes())
+        let mut authorized = false;
+
+        if let Some(h) = auth_header
+            && let Some(token) = h.strip_prefix("Bearer ")
+        {
+            if origin.is_none() {
+                authorized =
+                    crate::secret::constant_time_eq(token.as_bytes(), config.secret.as_bytes());
             } else {
-                false
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                authorized = crate::auth::authenticate(token, &config, now).is_ok();
             }
-        } else {
-            false
-        };
+        }
+
         if !authorized {
             return Ok(respond(
                 StatusCode::UNAUTHORIZED,
-                r#"{"error":"bridge secret required"}"#,
+                r#"{"error":"bridge token required"}"#,
                 allowed_origin,
             ));
         }
@@ -525,7 +534,6 @@ fn handle_ws_upgrade(
     };
     let accept_key = derive_accept_key(key.as_bytes());
 
-    let workspace_root = config.workspace_root.clone();
     tokio::spawn(async move {
         // Claim the connection's accept permit for the life of the WebSocket session, instead
         // of letting it release when the HTTP dispatch for this upgrade request completes: an
@@ -545,7 +553,7 @@ fn handle_ws_upgrade(
                     Some(ws_config),
                 )
                 .await;
-                handle_websocket(ws_stream, sessions, workspace_root).await;
+                handle_websocket(ws_stream, sessions, config).await;
             }
             Err(err) => eprintln!("bridge: websocket upgrade failed: {err}"),
         }
@@ -805,7 +813,7 @@ enum WriterCmd {
 async fn handle_websocket<S>(
     ws_stream: tokio_tungstenite::WebSocketStream<S>,
     sessions: SessionManager,
-    workspace_root: PathBuf,
+    config: ServerConfig,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -912,9 +920,21 @@ async fn handle_websocket<S>(
     });
 
     let mut attached_id: Option<String> = None;
+    let mut principal: Option<crate::auth::Principal> = None;
+    let start_time = std::time::Instant::now();
 
     loop {
-        let inbound = tokio::time::timeout(WS_IDLE_TIMEOUT, ws_rx.next()).await;
+        let timeout_dur = if principal.is_none() {
+            let elapsed = start_time.elapsed();
+            if elapsed >= Duration::from_secs(10) {
+                break;
+            }
+            Duration::from_secs(10) - elapsed
+        } else {
+            WS_IDLE_TIMEOUT
+        };
+
+        let inbound = tokio::time::timeout(timeout_dur, ws_rx.next()).await;
 
         let msg_res = match inbound {
             Ok(Some(m)) => m,
@@ -939,6 +959,10 @@ async fn handle_websocket<S>(
             _ => continue,
         };
 
+        if principal.is_none() && text.len() > 65536 {
+            break;
+        }
+
         let client_msg: BridgeClientMessage = match serde_json::from_str(&text) {
             Ok(m) => m,
             Err(e) => {
@@ -952,6 +976,52 @@ async fn handle_websocket<S>(
         };
 
         match client_msg {
+            BridgeClientMessage::Hello { token } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                match crate::auth::authenticate(&token, &config, now) {
+                    Ok(p) => {
+                        let user_id = match p {
+                            crate::auth::Principal::User { user_id } => Some(user_id),
+                            crate::auth::Principal::Paired => None,
+                        };
+                        principal = Some(p);
+                        let _ = cmd_tx
+                            .send(WriterCmd::Send(BridgeServerMessage::HelloOk {
+                                user_id,
+                                protocol: 1,
+                                runs: false,
+                            }))
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = cmd_tx
+                            .send(WriterCmd::Send(BridgeServerMessage::HelloError {
+                                message: e,
+                            }))
+                            .await;
+                    }
+                }
+                continue;
+            }
+            _ if principal.is_none() => {
+                let id = match &client_msg {
+                    BridgeClientMessage::Spawn { id, .. } => id.clone(),
+                    BridgeClientMessage::Input { id, .. } => id.clone(),
+                    BridgeClientMessage::Resize { id, .. } => id.clone(),
+                    BridgeClientMessage::Kill { id, .. } => id.clone(),
+                    BridgeClientMessage::Attach { id, .. } => id.clone(),
+                    _ => "".to_string(),
+                };
+                let err = BridgeServerMessage::Error {
+                    id,
+                    message: "unauthorized: send hello first".to_string(),
+                };
+                let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                continue;
+            }
             BridgeClientMessage::Spawn {
                 id,
                 command,
@@ -980,10 +1050,17 @@ async fn handle_websocket<S>(
                         env,
                         cols,
                         rows,
-                        &workspace_root,
+                        &config.workspace_root,
                     )
                 } else {
-                    spawn_headless(id.clone(), command.clone(), args, cwd, env, &workspace_root)
+                    spawn_headless(
+                        id.clone(),
+                        command.clone(),
+                        args,
+                        cwd,
+                        env,
+                        &config.workspace_root,
+                    )
                 };
 
                 match result {
