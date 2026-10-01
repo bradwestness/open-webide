@@ -8,3 +8,8 @@ test-native = "test -p openwebide-core -p openwebide-llm -p openwebide-storage"
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg", "web_sys_unstable_apis"]
 runner = "wasm-bindgen-test-runner"
+
+# wasm-bindgen-test-runner gives the whole headless test binary one budget
+# (default 20 s), and the stalled-HTTP component tests alone use most of it.
+[env]
+WASM_BINDGEN_TEST_TIMEOUT = "120"
