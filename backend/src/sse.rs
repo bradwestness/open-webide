@@ -74,6 +74,7 @@ impl http_body::Body for SseBody {
 struct StreamState {
     store: Arc<Store<AppDb>>,
     session_id: i64,
+    started_ms: i64,
     chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
     buffer: String,
     usage: Option<TurnTelemetry>,
@@ -94,10 +95,12 @@ pub fn message_stream(
     session_id: i64,
     user_message: ChatMessage,
     chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
+    started_ms: i64,
 ) -> Pin<Box<dyn Stream<Item = RunEvent> + Send + 'static>> {
     let state = StreamState {
         store,
         session_id,
+        started_ms,
         chunks,
         buffer: String::new(),
         usage: None,
@@ -114,12 +117,11 @@ pub fn message_stream(
                 // `Cancelled`, and the triggering delta is not sent.
                 if state
                     .store
-                    .cancel_requested(state.session_id)
+                    .cancel_requested_since(state.session_id, state.started_ms)
                     .await
                     .unwrap_or(false)
                 {
                     state.done = true;
-                    let _ = state.store.clear_cancel(state.session_id).await;
                     Some((RunEvent::Cancelled, state))
                 } else {
                     state.buffer.push_str(&delta);
@@ -134,7 +136,6 @@ pub fn message_stream(
                 // The provider cut the reply short: keep what arrived,
                 // marked, rather than dropping it or saving it as complete.
                 state.done = true;
-                let _ = state.store.clear_cancel(state.session_id).await;
                 let mut content = state.buffer.clone();
                 content.push_str(REPLY_TRUNCATED_MARKER);
                 match state
@@ -159,7 +160,6 @@ pub fn message_stream(
             }
             Some(Err(error)) => {
                 state.done = true;
-                let _ = state.store.clear_cancel(state.session_id).await;
                 Some((
                     RunEvent::Error {
                         message: error.to_string(),
@@ -168,10 +168,7 @@ pub fn message_stream(
                 ))
             }
             None => {
-                // The run is over: drop the flag so a late or stale cancel
-                // can't affect the next run.
                 state.done = true;
-                let _ = state.store.clear_cancel(state.session_id).await;
                 // Persist the accumulated reply. On failure the partial
                 // reply is not saved, so history never contains a
                 // truncated assistant message.
@@ -309,7 +306,7 @@ mod tests {
             .insert_message(session_id, Role::User, "hello", now())
             .await
             .unwrap();
-        let events = message_stream(store, session_id, user_message, fake_chunks(items))
+        let events = message_stream(store, session_id, user_message, fake_chunks(items), 1000)
             .collect::<Vec<_>>()
             .await;
         events.iter().map(kind).collect()
@@ -403,15 +400,25 @@ mod tests {
     fn cancel_before_first_delta_yields_cancelled_and_persists_nothing() {
         block_on(async {
             let (store, session_id) = test_store().await;
-            store.request_cancel(session_id).await.unwrap();
+            store.request_cancel(session_id, 1500).await.unwrap();
             let events = run(store.clone(), session_id, vec![delta("a"), delta("b")]).await;
             assert_eq!(events, vec![Kind::Message, Kind::Cancelled]);
-            // The partial reply is not saved, and the flag is cleared so
-            // the next run starts clean.
+            // The partial reply is not saved; later runs ignore the old cancel.
             let messages = store.list_messages(session_id).await.unwrap();
             assert_eq!(messages.len(), 1);
             assert_eq!(messages[0].role, Role::User);
-            assert!(!store.cancel_requested(session_id).await.unwrap());
+            assert!(
+                store
+                    .cancel_requested_since(session_id, 1000)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !store
+                    .cancel_requested_since(session_id, 1600)
+                    .await
+                    .unwrap()
+            );
         });
     }
 

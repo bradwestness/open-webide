@@ -56,3 +56,12 @@ pub fn unix_now_checked() -> Option<i64> {
         .ok()
         .and_then(|d| i64::try_from(d.as_secs()).ok())
 }
+
+/// Current unix time in milliseconds, or 0 if the clock is unusable.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
+}

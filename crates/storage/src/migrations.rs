@@ -9,6 +9,7 @@
 //! Latest steps:
 //! - 14: `add_message_tool_calls` persists interim wire calls.
 //! - 15: `add_connection_tool_stream_unsupported` persists the streamed-tools memo.
+//! - 17: `add_cancel_requested_at_ms` isolates cancellation by run start time.
 //!
 //! Rules for changing the schema:
 //! - Append a new numbered step at the end of [`apply_step`] and bump
@@ -21,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -133,6 +134,7 @@ async fn apply_step<D: Db>(
         14 => add_message_tool_calls(db).await,
         15 => add_connection_tool_stream_unsupported(db).await,
         16 => add_connection_tool_stream_revision(db).await,
+        17 => add_cancel_requested_at_ms(db).await,
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),
     }
 }
@@ -510,6 +512,23 @@ async fn add_connection_tool_stream_revision<D: Db>(db: &D) -> Result<(), Storag
     if res.rows.is_empty() {
         db.execute(
             "ALTER TABLE connections ADD COLUMN tool_stream_revision INTEGER NOT NULL DEFAULT 0",
+            &[],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn add_cancel_requested_at_ms<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('run_cancels') WHERE name = 'requested_at_ms'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE run_cancels ADD COLUMN requested_at_ms INTEGER NOT NULL DEFAULT 0",
             &[],
         )
         .await?;

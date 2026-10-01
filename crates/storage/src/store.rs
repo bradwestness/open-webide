@@ -1021,40 +1021,32 @@ impl<D: Db> Store<D> {
 
     // -- run cancellation ----------------------------------------------------
 
-    /// Mark the session's in-flight run for cancellation. The streaming
-    /// request polls [`Self::cancel_requested`] at step boundaries; Spin
-    /// requests are stateless, so the flag lives in the database.
-    pub async fn request_cancel(&self, session_id: i64) -> Result<(), StorageError> {
+    /// Record when cancellation was requested; runs started later ignore it.
+    pub async fn request_cancel(&self, session_id: i64, at_ms: i64) -> Result<(), StorageError> {
         self.db
             .execute(
-                "INSERT OR IGNORE INTO run_cancels (session_id) VALUES (?)",
-                &[DbValue::Int(session_id)],
+                "INSERT INTO run_cancels (session_id, requested_at_ms) VALUES (?, ?) \
+             ON CONFLICT(session_id) DO UPDATE SET requested_at_ms = excluded.requested_at_ms",
+                &[DbValue::Int(session_id), DbValue::Int(at_ms)],
             )
             .await?;
         Ok(())
     }
 
-    /// Whether a cancel has been requested for the session's in-flight run.
-    pub async fn cancel_requested(&self, session_id: i64) -> Result<bool, StorageError> {
+    /// Whether cancellation was requested after this run started.
+    pub async fn cancel_requested_since(
+        &self,
+        session_id: i64,
+        started_ms: i64,
+    ) -> Result<bool, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT 1 FROM run_cancels WHERE session_id = ?",
-                &[DbValue::Int(session_id)],
+                "SELECT 1 FROM run_cancels WHERE session_id = ? AND requested_at_ms > ?",
+                &[DbValue::Int(session_id), DbValue::Int(started_ms)],
             )
             .await?;
         Ok(!res.rows.is_empty())
-    }
-
-    /// Clear the cancel flag, called when a run finishes or a new one starts.
-    pub async fn clear_cancel(&self, session_id: i64) -> Result<(), StorageError> {
-        self.db
-            .execute(
-                "DELETE FROM run_cancels WHERE session_id = ?",
-                &[DbValue::Int(session_id)],
-            )
-            .await?;
-        Ok(())
     }
 
     // -- tool permissions ----------------------------------------------------
@@ -1116,13 +1108,19 @@ impl<D: Db> Store<D> {
         Ok(Some(decision))
     }
 
-    /// Clear recorded decisions, called when a run finishes or a new one
-    /// starts.
-    pub async fn clear_tool_permissions(&self, session_id: i64) -> Result<(), StorageError> {
+    /// Clear recorded decisions belonging to this run's original anchor.
+    pub async fn clear_tool_permissions_for_run(
+        &self,
+        session_id: i64,
+        anchor_id: i64,
+    ) -> Result<(), StorageError> {
         self.db
             .execute(
-                "DELETE FROM tool_permissions WHERE session_id = ?",
-                &[DbValue::Int(session_id)],
+                "DELETE FROM tool_permissions WHERE session_id = ? AND tool_call_id LIKE ?",
+                &[
+                    DbValue::Int(session_id),
+                    DbValue::Text(format!("{}%", openwebide_agent::step_id_prefix(anchor_id))),
+                ],
             )
             .await?;
         Ok(())
@@ -2568,6 +2566,39 @@ mod tests {
     }
 
     #[test]
+    fn migrate_cancel_timestamp_from_version_16() {
+        block_on(async {
+            let db = RusqliteDb::open_in_memory().unwrap();
+            migrations::apply_through(&db, 16).await.unwrap();
+            let store = Store::new(db);
+            let user = store
+                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let session = store
+                .create_session("s", None, None, None, user.id, 1)
+                .await
+                .unwrap();
+            store
+                .db
+                .execute(
+                    "INSERT INTO run_cancels (session_id) VALUES (?)",
+                    &[DbValue::Int(session.id)],
+                )
+                .await
+                .unwrap();
+            store.migrate().await.unwrap();
+            assert_eq!(schema_version(&store.db).await, 17);
+            assert!(!store.cancel_requested_since(session.id, 0).await.unwrap());
+            store.request_cancel(session.id, 1000).await.unwrap();
+            migrations::apply_through(&store.db, 17).await.unwrap();
+            assert!(store.cancel_requested_since(session.id, 999).await.unwrap());
+            store.migrate().await.unwrap();
+            assert!(store.cancel_requested_since(session.id, 999).await.unwrap());
+        });
+    }
+
+    #[test]
     fn cancel_flag_lifecycle() {
         let store = test_store();
         let user_id = test_user(&store, "alice", UserRole::Admin);
@@ -2576,15 +2607,28 @@ mod tests {
                 .create_session("s", None, None, None, user_id, 1)
                 .await
                 .unwrap();
-            assert!(!store.cancel_requested(session.id).await.unwrap());
-
-            store.request_cancel(session.id).await.unwrap();
-            // Repeating the request is a no-op.
-            store.request_cancel(session.id).await.unwrap();
-            assert!(store.cancel_requested(session.id).await.unwrap());
-
-            store.clear_cancel(session.id).await.unwrap();
-            assert!(!store.cancel_requested(session.id).await.unwrap());
+            assert!(!store.cancel_requested_since(session.id, 0).await.unwrap());
+            store.request_cancel(session.id, 1000).await.unwrap();
+            assert!(store.cancel_requested_since(session.id, 999).await.unwrap());
+            assert!(
+                !store
+                    .cancel_requested_since(session.id, 1000)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !store
+                    .cancel_requested_since(session.id, 2000)
+                    .await
+                    .unwrap()
+            );
+            store.request_cancel(session.id, 3000).await.unwrap();
+            assert!(
+                store
+                    .cancel_requested_since(session.id, 2000)
+                    .await
+                    .unwrap()
+            );
         });
     }
 
@@ -2651,7 +2695,36 @@ mod tests {
                 .set_tool_permission(session.id, "a1t1c1", true)
                 .await
                 .unwrap();
-            store.clear_tool_permissions(session.id).await.unwrap();
+            store
+                .set_tool_permission(session.id, "a10t1c0", true)
+                .await
+                .unwrap();
+            let other = store
+                .create_session("other", None, None, None, user_id, 1)
+                .await
+                .unwrap();
+            store
+                .set_tool_permission(other.id, "a1t1c1", false)
+                .await
+                .unwrap();
+            store
+                .clear_tool_permissions_for_run(session.id, 1)
+                .await
+                .unwrap();
+            assert_eq!(
+                store
+                    .take_tool_permission(session.id, "a10t1c0")
+                    .await
+                    .unwrap(),
+                Some(true)
+            );
+            assert_eq!(
+                store
+                    .take_tool_permission(other.id, "a1t1c1")
+                    .await
+                    .unwrap(),
+                Some(false)
+            );
             assert_eq!(
                 store
                     .take_tool_permission(session.id, "a1t1c1")

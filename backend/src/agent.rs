@@ -33,11 +33,16 @@ pub fn workspace_tools() -> Vec<ToolDefinition> {
 pub struct CancelFlag {
     store: Arc<Store<AppDb>>,
     session_id: i64,
+    started_ms: i64,
 }
 
 impl CancelFlag {
-    pub fn new(store: Arc<Store<AppDb>>, session_id: i64) -> Self {
-        Self { store, session_id }
+    pub fn new(store: Arc<Store<AppDb>>, session_id: i64, started_ms: i64) -> Self {
+        Self {
+            store,
+            session_id,
+            started_ms,
+        }
     }
 }
 
@@ -45,7 +50,13 @@ impl CancelCheck for CancelFlag {
     fn check(&self) -> impl Future<Output = bool> + Send {
         let store = self.store.clone();
         let session_id = self.session_id;
-        async move { store.cancel_requested(session_id).await.unwrap_or(false) }
+        let started_ms = self.started_ms;
+        async move {
+            store
+                .cancel_requested_since(session_id, started_ms)
+                .await
+                .unwrap_or(false)
+        }
     }
 }
 
@@ -60,11 +71,20 @@ const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub struct PermissionPoller {
     store: Arc<Store<AppDb>>,
     session_id: i64,
+    started_ms: i64,
+    poll_interval: Duration,
+    timeout: Duration,
 }
 
 impl PermissionPoller {
-    pub fn new(store: Arc<Store<AppDb>>, session_id: i64) -> Self {
-        Self { store, session_id }
+    pub fn new(store: Arc<Store<AppDb>>, session_id: i64, started_ms: i64) -> Self {
+        Self {
+            store,
+            session_id,
+            started_ms,
+            poll_interval: PERMISSION_POLL_INTERVAL,
+            timeout: PERMISSION_TIMEOUT,
+        }
     }
 }
 
@@ -72,7 +92,10 @@ impl PermissionGate for PermissionPoller {
     fn approve(&self, call: &ToolCall) -> impl Future<Output = bool> + Send {
         let store = self.store.clone();
         let session_id = self.session_id;
+        let started_ms = self.started_ms;
         let tool_call_id = call.id.clone();
+        let poll_interval = self.poll_interval;
+        let timeout = self.timeout;
         async move {
             let started = Instant::now();
             loop {
@@ -85,13 +108,19 @@ impl PermissionGate for PermissionPoller {
                 }
                 // A cancel landing while waiting also denies the call; the
                 // loop re-checks the cancel flag and reports `Cancelled`.
-                if store.cancel_requested(session_id).await.unwrap_or(false) {
+                if store
+                    .cancel_requested_since(session_id, started_ms)
+                    .await
+                    .unwrap_or(false)
+                {
                     return false;
                 }
-                if started.elapsed() >= PERMISSION_TIMEOUT {
+                if started.elapsed() >= timeout {
                     return false;
                 }
-                std::thread::sleep(PERMISSION_POLL_INTERVAL);
+                if !poll_interval.is_zero() {
+                    spin_sdk::time::sleep(poll_interval).await;
+                }
             }
         }
     }
@@ -143,14 +172,12 @@ fn map_agent_events(
     let last_usage: Option<TurnTelemetry> = None;
     stream::unfold(
         (store, session_id, display_anchor, events, last_usage),
-        |state| async move {
+        move |state| async move {
             let (store, session_id, mut display_anchor, mut events, mut last_usage) = state;
             let Some(event) = events.next().await else {
-                // The run finished (completed, failed, or cancelled): drop the
-                // flag and any recorded decisions so a late or stale cancel or
-                // permission can't affect the next run.
-                let _ = store.clear_cancel(session_id).await;
-                let _ = store.clear_tool_permissions(session_id).await;
+                let _ = store
+                    .clear_tool_permissions_for_run(session_id, anchor_id)
+                    .await;
                 return None;
             };
             let sse = match event {
@@ -248,6 +275,257 @@ fn map_agent_events(
 mod tests {
     use super::*;
     use openwebide_core::UserRole;
+
+    use openwebide_agent::{ToolExecutor, ToolOutcome};
+    use openwebide_core::{ChatCompletion, ChatResponse, ModelInfo, ProviderKind};
+    use openwebide_llm::{LlmProvider, ProviderError, StreamChunk, ToolStreamChunk};
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    struct ScriptedProvider(Mutex<VecDeque<ChatResponse>>);
+
+    impl LlmProvider for ScriptedProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Ollama
+        }
+        async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(vec![])
+        }
+        async fn chat(&self, _: &ChatRequest) -> Result<String, ProviderError> {
+            unreachable!()
+        }
+        fn chat_stream(
+            &self,
+            _: &ChatRequest,
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>> {
+            unreachable!()
+        }
+        async fn chat_tools(&self, _: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
+            unreachable!()
+        }
+        fn chat_tools_stream(
+            &self,
+            _: &ChatRequest,
+        ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send>> {
+            let response = self.0.lock().unwrap().pop_front().unwrap();
+            Box::pin(stream::iter([Ok(ToolStreamChunk::Response(response))]))
+        }
+        async fn context_limit(&self, _: Option<&str>) -> Result<Option<usize>, ProviderError> {
+            Ok(None)
+        }
+    }
+
+    struct RecordingExecutor(Arc<Mutex<Vec<String>>>);
+
+    impl ToolExecutor for RecordingExecutor {
+        fn describe(&self, call: &ToolCall) -> String {
+            call.name.clone()
+        }
+        async fn execute(&self, call: &ToolCall) -> ToolOutcome {
+            self.0.lock().unwrap().push(call.name.clone());
+            ToolOutcome {
+                ok: true,
+                content: "ok".into(),
+                summary: "ok".into(),
+                diff: None,
+            }
+        }
+    }
+
+    fn tool_turn(name: &str) -> ChatResponse {
+        ChatResponse::ToolCalls(vec![ToolCall {
+            id: "call_0".into(),
+            name: name.into(),
+            arguments: "{}".into(),
+        }])
+    }
+
+    fn request() -> ChatRequest {
+        ChatRequest {
+            connection_id: 1,
+            system_prompt: None,
+            model: None,
+            messages: vec![],
+            tools: vec![],
+        }
+    }
+
+    async fn test_store() -> (Arc<Store<AppDb>>, i64) {
+        let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+        store.migrate().await.unwrap();
+        let user = store
+            .insert_user("tester", "hash", UserRole::Admin, 1)
+            .await
+            .unwrap();
+        let session = store
+            .create_session("s", None, None, None, user.id, 1)
+            .await
+            .unwrap();
+        (store, session.id)
+    }
+
+    fn test_gate(store: Arc<Store<AppDb>>, session_id: i64, started_ms: i64) -> PermissionPoller {
+        PermissionPoller {
+            store,
+            session_id,
+            started_ms,
+            poll_interval: Duration::ZERO,
+            timeout: Duration::from_millis(20),
+        }
+    }
+
+    #[test]
+    fn repeated_provider_ids_do_not_reuse_approval() {
+        futures::executor::block_on(async {
+            let (store, session_id) = test_store().await;
+            let executed = Arc::new(Mutex::new(vec![]));
+            let events = openwebide_agent::run(
+                ScriptedProvider(Mutex::new(VecDeque::from([
+                    tool_turn("write_file"),
+                    tool_turn("run_command"),
+                    ChatResponse::Text("done".into()),
+                ]))),
+                RecordingExecutor(executed.clone()),
+                request(),
+                AgentConfig::default(),
+                CancelFlag::new(store.clone(), session_id, 1000),
+                test_gate(store.clone(), session_id, 1000),
+                7,
+            );
+            let mut events = Box::pin(events);
+            let mut prompts = vec![];
+            let mut denied = None;
+            while let Some(event) = events.next().await {
+                match event {
+                    AgentEvent::PermissionRequest { id, .. } => {
+                        prompts.push(id.clone());
+                        if prompts.len() == 1 {
+                            store
+                                .set_tool_permission(session_id, &id, true)
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    AgentEvent::ToolResult {
+                        id,
+                        ok: false,
+                        summary,
+                        ..
+                    } => denied = Some((id, summary)),
+                    _ => {}
+                }
+            }
+            assert_eq!(prompts, ["a7t1c0", "a7t2c0"]);
+            assert_eq!(*executed.lock().unwrap(), ["write_file"]);
+            assert_eq!(denied, Some(("a7t2c0".into(), "denied by user".into())));
+        });
+    }
+
+    #[test]
+    fn cleanup_preserves_other_run_and_session_permissions() {
+        futures::executor::block_on(async {
+            let (store, session_id) = test_store().await;
+            let other = store
+                .create_session("other", None, None, None, 1, 1)
+                .await
+                .unwrap();
+            for (session, id) in [
+                (session_id, "a7t1c0"),
+                (session_id, "a7t2c0"),
+                (session_id, "a70t1c0"),
+                (other.id, "a7t1c0"),
+            ] {
+                store.set_tool_permission(session, id, true).await.unwrap();
+            }
+            let events = [
+                AgentEvent::TurnCalls {
+                    text: "interim".into(),
+                    calls: vec![],
+                },
+                AgentEvent::Cancelled,
+            ];
+            map_agent_events(store.clone(), session_id, 7, stream::iter(events))
+                .collect::<Vec<_>>()
+                .await;
+            for id in ["a7t1c0", "a7t2c0"] {
+                assert_eq!(
+                    store.take_tool_permission(session_id, id).await.unwrap(),
+                    None
+                );
+            }
+            assert_eq!(
+                store
+                    .take_tool_permission(session_id, "a70t1c0")
+                    .await
+                    .unwrap(),
+                Some(true)
+            );
+            assert_eq!(
+                store
+                    .take_tool_permission(other.id, "a7t1c0")
+                    .await
+                    .unwrap(),
+                Some(true)
+            );
+        });
+    }
+
+    #[test]
+    fn cancel_only_applies_after_run_start() {
+        futures::executor::block_on(async {
+            let (store, session_id) = test_store().await;
+            let cancel = CancelFlag::new(store.clone(), session_id, 2000);
+            store.request_cancel(session_id, 1000).await.unwrap();
+            assert!(!cancel.check().await);
+            store.request_cancel(session_id, 3000).await.unwrap();
+            assert!(cancel.check().await);
+        });
+    }
+
+    #[test]
+    fn stop_then_resend_keeps_waiting_run_cancelled() {
+        futures::executor::block_on(async {
+            let (store, session_id) = test_store().await;
+            let executed = Arc::new(Mutex::new(vec![]));
+            let gate = test_gate(store.clone(), session_id, 1000);
+            let mut run_a = Box::pin(openwebide_agent::run(
+                ScriptedProvider(Mutex::new(VecDeque::from([tool_turn("write_file")]))),
+                RecordingExecutor(executed.clone()),
+                request(),
+                AgentConfig::default(),
+                CancelFlag::new(store.clone(), session_id, 1000),
+                test_gate(store.clone(), session_id, 1000),
+                7,
+            ));
+            assert!(matches!(
+                run_a.next().await,
+                Some(AgentEvent::TurnCalls { .. })
+            ));
+            let Some(AgentEvent::PermissionRequest { id, name, .. }) = run_a.next().await else {
+                panic!("missing permission prompt")
+            };
+            assert_eq!(
+                store.take_tool_permission(session_id, &id).await.unwrap(),
+                None
+            );
+            store.request_cancel(session_id, 1500).await.unwrap();
+            let cancel_b = CancelFlag::new(store.clone(), session_id, 1600);
+            let _gate_b = test_gate(store.clone(), session_id, 1600);
+            assert!(
+                !gate
+                    .approve(&ToolCall {
+                        id,
+                        name,
+                        arguments: "{}".into()
+                    })
+                    .await
+            );
+            assert_eq!(run_a.next().await, Some(AgentEvent::Cancelled));
+            assert_eq!(run_a.next().await, None);
+            assert!(!cancel_b.check().await);
+            assert!(executed.lock().unwrap().is_empty());
+        });
+    }
 
     #[test]
     fn empty_tool_turn_persists_wire_calls() {

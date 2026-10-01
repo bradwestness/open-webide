@@ -22,7 +22,7 @@ use crate::auth;
 use crate::error::{ApiError, JsonResp};
 use crate::http_client::SpinHttpClient;
 use crate::sse::{SseBody, message_stream};
-use crate::state::{AppState, now};
+use crate::state::{AppState, now, now_ms};
 
 fn json_response(status: u16, value: &impl serde::Serialize) -> JsonResp {
     let body = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
@@ -940,7 +940,7 @@ pub async fn cancel_session(state: &AppState, path: &str) -> Result<JsonResp, Ap
     let id = session_id(path)?;
     // Verify ownership before setting the flag.
     state.store.get_session(id, user_id).await?;
-    state.store.request_cancel(id).await?;
+    state.store.request_cancel(id, now_ms()).await?;
     Ok(json_response(200, &json!({ "cancelled": id })))
 }
 
@@ -1067,14 +1067,13 @@ pub async fn send_session_message(
     state: AppState,
     path: &str,
 ) -> Result<JsonResp, ApiError> {
+    let started_ms = now_ms();
     let user_id = current_user_id(&state)?;
     let session_id = session_id(path)?;
     let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let send: SendMessageBody = parse_json(body)?;
 
     let plan = build_run_plan(&state, user_id, session_id, send).await?;
-    let _ = state.store.clear_cancel(session_id).await;
-    let _ = state.store.clear_tool_permissions(session_id).await;
     let user_message = state
         .store
         .insert_message(session_id, Role::User, &plan.user_content, now())
@@ -1087,8 +1086,8 @@ pub async fn send_session_message(
     let provider =
         Provider::for_connection_with_memo(&plan.connection, SpinHttpClient, memo.clone());
     let store = Arc::new(state.store);
-    let cancel = CancelFlag::new(store.clone(), session_id);
-    let gate = PermissionPoller::new(store.clone(), session_id);
+    let cancel = CancelFlag::new(store.clone(), session_id, started_ms);
+    let gate = PermissionPoller::new(store.clone(), session_id, started_ms);
     let memo_store = store.clone();
     let stream = if let RunKind::Agent { project_path } = plan.kind {
         agent_stream(
@@ -1108,6 +1107,7 @@ pub async fn send_session_message(
             session_id,
             user_message,
             provider.chat_stream(&request),
+            started_ms,
         )
     };
 
@@ -1597,7 +1597,7 @@ mod tests {
                     .insert_message(session.id, Role::User, "earlier", 2)
                     .await
                     .unwrap();
-                state.store.request_cancel(session.id).await.unwrap();
+                state.store.request_cancel(session.id, 1000).await.unwrap();
                 let context = EditorContext {
                     file_path: "src/main.rs".into(),
                     cursor_line: 1,
@@ -1643,7 +1643,13 @@ mod tests {
                     state.store.list_messages(session.id).await.unwrap(),
                     vec![history]
                 );
-                assert!(state.store.cancel_requested(session.id).await.unwrap());
+                assert!(
+                    state
+                        .store
+                        .cancel_requested_since(session.id, 0)
+                        .await
+                        .unwrap()
+                );
                 assert!(
                     build_run_plan(&state, other.id, session.id, make_body())
                         .await
