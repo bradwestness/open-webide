@@ -787,7 +787,12 @@ pub async fn git_get(req: Request, state: &AppState, path: &str) -> Result<JsonR
                 .ok_or_else(|| ApiError::bad_request("missing path query parameter"))?;
             let content =
                 crate::git::repo_file_head(&state.store, &project_dir, &file_path).await?;
-            Ok(json_response(200, &json!({ "content": content })))
+            match content {
+                crate::git::Blob::Text(content) => {
+                    Ok(json_response(200, &json!({ "content": content })))
+                }
+                crate::git::Blob::Binary(_bytes) => Err(ApiError::new(415, "binary file at HEAD")),
+            }
         }
         other => Err(ApiError::not_found(format!("unknown git action: {other}"))),
     }

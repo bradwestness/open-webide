@@ -372,6 +372,17 @@ pub fn Editor(
             backup_path: None,
         })
     });
+    let binary_head = Signal::derive(move || {
+        git.head_content.get().is_some_and(|head| {
+            head.project_id == projects.active_project.get()
+                && Some(head.path) == workspace.open_file.get()
+                && head
+                    .content
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error == "binary file")
+        })
+    });
     let can_revert = Signal::derive(move || {
         let Some(open_file) = workspace.open_file.get() else {
             return false;
@@ -591,6 +602,8 @@ pub fn Editor(
                             }
                             ViewMode::Code => render_content_view(diff.new).into_any(),
                         }
+                    } else if (mode == ViewMode::InlineDiff || mode == ViewMode::SideBySide) && binary_head.get() {
+                        view! { <p class="empty editor-empty">"Binary file — no text diff"</p> }.into_any()
                     } else if (mode == ViewMode::InlineDiff || mode == ViewMode::SideBySide || mode == ViewMode::Content) && git_head_diff.get().is_some() {
                         let diff = git_head_diff.get().unwrap();
                         match mode {

@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use base64::Engine;
 use openwebide_core::{
     GitBranchInfo, GitCheckoutRequest, GitCheckoutResult, GitCommitRequest, GitCommitResult,
     GitRepoStatus, GitSyncRequest, GitSyncResult, parse_diff_stat, parse_porcelain_v1,
@@ -30,6 +31,15 @@ impl std::error::Error for GitError {}
 
 /// Helper to execute git command with 30s timeout and return untrimmed stdout/stderr.
 async fn exec_git(args: &[&str], cwd: &Path) -> Result<(String, String, bool), GitError> {
+    let (stdout, stderr, success) = exec_git_bytes(args, cwd).await?;
+    Ok((
+        String::from_utf8_lossy(&stdout).into_owned(),
+        stderr,
+        success,
+    ))
+}
+
+async fn exec_git_bytes(args: &[&str], cwd: &Path) -> Result<(Vec<u8>, String, bool), GitError> {
     let mut cmd = Command::new("git");
     cmd.args(args);
     cmd.current_dir(cwd);
@@ -55,7 +65,7 @@ async fn exec_git(args: &[&str], cwd: &Path) -> Result<(String, String, bool), G
             if output.stdout.len() > 16 * 1024 * 1024 {
                 return Err(GitError::Execution("git output exceeds 16 MiB".into()));
             }
-            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stdout = output.stdout;
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
             let success = output.status.success();
             Ok((stdout, stderr, success))
@@ -215,16 +225,31 @@ pub async fn get_repo_diff(repo_dir: &Path, file_path: Option<&str>) -> Result<S
     Ok(diff_out)
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct ShowOut {
+    pub content: String,
+    pub encoding: &'static str,
+}
+
 /// Retrieve the raw contents of a file at Git HEAD.
-pub async fn get_file_at_head(repo_dir: &Path, file_path: &str) -> Result<String, GitError> {
+pub async fn get_file_at_head(repo_dir: &Path, file_path: &str) -> Result<ShowOut, GitError> {
     let clean_path = file_path.trim_start_matches('/');
-    let (out, err, ok) = exec_git(&["show", &format!("HEAD:{clean_path}")], repo_dir).await?;
+    let (out, err, ok) = exec_git_bytes(&["show", &format!("HEAD:{clean_path}")], repo_dir).await?;
     if !ok {
         return Err(GitError::Execution(format!(
             "git show HEAD:{clean_path} failed: {err}"
         )));
     }
-    Ok(out)
+    Ok(match String::from_utf8(out) {
+        Ok(content) => ShowOut {
+            content,
+            encoding: "utf8",
+        },
+        Err(error) => ShowOut {
+            content: base64::engine::general_purpose::STANDARD.encode(error.into_bytes()),
+            encoding: "base64",
+        },
+    })
 }
 
 /// List local and remote branches.
@@ -600,7 +625,49 @@ mod tests {
         assert!(cmd.status().await.unwrap().success());
 
         let content = get_file_at_head(&td.path, "spaced.txt").await.unwrap();
-        assert_eq!(content, exact_content);
+        assert_eq!(content.content, exact_content);
+        assert_eq!(content.encoding, "utf8");
+    }
+
+    #[tokio::test]
+    async fn show_text_file_utf8() {
+        let td = create_test_repo().await;
+        let text = "Hello, 世界!\n";
+        std::fs::write(td.path.join("text.txt"), text).unwrap();
+        assert!(exec_git(&["add", "text.txt"], &td.path).await.unwrap().2);
+        assert!(
+            exec_git(&["commit", "-m", "text"], &td.path)
+                .await
+                .unwrap()
+                .2
+        );
+        let shown = get_file_at_head(&td.path, "text.txt").await.unwrap();
+        let response = serde_json::to_value(shown).unwrap();
+        assert_eq!(response["encoding"], "utf8");
+        assert_eq!(response["content"], text);
+    }
+
+    #[tokio::test]
+    async fn show_binary_file_base64() {
+        let td = create_test_repo().await;
+        let bytes = b"\x89PNG\r\n\x1a\n";
+        std::fs::write(td.path.join("image.png"), bytes).unwrap();
+        assert!(exec_git(&["add", "image.png"], &td.path).await.unwrap().2);
+        assert!(
+            exec_git(&["commit", "-m", "image"], &td.path)
+                .await
+                .unwrap()
+                .2
+        );
+        let shown = get_file_at_head(&td.path, "image.png").await.unwrap();
+        let response = serde_json::to_value(shown).unwrap();
+        assert_eq!(response["encoding"], "base64");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(response["content"].as_str().unwrap())
+                .unwrap(),
+            bytes
+        );
     }
 
     #[tokio::test]

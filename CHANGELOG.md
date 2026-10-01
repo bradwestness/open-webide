@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Preserve binary Git HEAD contents and hide Revert with a clear binary-file notice in text diffs.
+
 - Preview file diffs before approving agent edits, expand long previews, and flag unreadable overwrites.
 
 - Stop interrupts running commands, web requests, and searches while allowing file writes and Git mutations to finish.

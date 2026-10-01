@@ -500,7 +500,13 @@ impl BackendApi {
     ) -> Result<String, String> {
         let ep = self.git_endpoint(project_id, "show");
         let query = format!("{ep}?path={}", urlenc(path));
-        let res: serde_json::Value = self.get(&query).await?;
+        let res: serde_json::Value = self.get(&query).await.map_err(|error| {
+            if error == "binary file at HEAD" {
+                "binary file".into()
+            } else {
+                error
+            }
+        })?;
         Ok(res["content"].as_str().unwrap_or_default().to_string())
     }
 

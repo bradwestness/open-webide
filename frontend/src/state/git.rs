@@ -165,6 +165,23 @@ mod tests {
     }
 
     #[test]
+    fn binary_head_hides_revert_and_has_no_text_diff() {
+        Owner::new().with(|| {
+            let git = GitState::new();
+            git.head_content.set(Some(HeadContent {
+                project_id: Some(1),
+                path: "image.png".into(),
+                content: Err("binary file".into()),
+            }));
+            assert!(!git.can_revert(Some(1), Some("image.png")));
+            assert!(
+                git.head_diff(Some(1), Some("image.png".into()), "working content".into())
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
     fn checkout_notice_keeps_the_existing_message() {
         let result = GitCheckoutResult {
             branch: "feature/new".into(),

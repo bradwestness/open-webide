@@ -746,7 +746,7 @@ async fn handle_git(
             match req.path {
                 Some(p) => crate::git::get_file_at_head(&repo_dir, &p)
                     .await
-                    .map(|c| serde_json::json!({ "content": c }).to_string())
+                    .map(|c| serde_json::to_string(&c).unwrap())
                     .map_err(HandlerError::from),
                 None => Err(HandlerError::BadRequest("missing path parameter".into())),
             }

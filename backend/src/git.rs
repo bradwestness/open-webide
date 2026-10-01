@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use base64::Engine;
 use openwebide_core::{
     GitBranchInfo, GitCheckoutRequest, GitCheckoutResult, GitCommitRequest, GitCommitResult,
     GitLineStats, GitRepoStatus, GitSyncRequest, GitSyncResult,
@@ -161,16 +162,39 @@ pub async fn repo_diff(
     Ok(res.diff)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Blob {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+#[derive(serde::Deserialize)]
+struct ShowOut {
+    content: String,
+    encoding: Option<String>,
+}
+
+impl ShowOut {
+    fn into_blob(self) -> Result<Blob, BridgeError> {
+        match self.encoding.as_deref().unwrap_or("utf8") {
+            "utf8" => Ok(Blob::Text(self.content)),
+            "base64" => base64::engine::general_purpose::STANDARD
+                .decode(self.content)
+                .map(Blob::Binary)
+                .map_err(|e| BridgeError::Parse(e.to_string())),
+            other => Err(BridgeError::Parse(format!(
+                "unknown blob encoding: {other}"
+            ))),
+        }
+    }
+}
+
 /// Fetch file content at Git HEAD from bridge.
 pub async fn repo_file_head(
     store: &openwebide_storage::Store<crate::state::AppDb>,
     project_dir: &str,
     file_path: &str,
-) -> Result<String, BridgeError> {
-    #[derive(serde::Deserialize)]
-    struct ShowOut {
-        content: String,
-    }
+) -> Result<Blob, BridgeError> {
     let res: ShowOut = bridge_post(
         store,
         "/git/show",
@@ -178,7 +202,7 @@ pub async fn repo_file_head(
         &serde_json::json!({ "path": file_path }),
     )
     .await?;
-    Ok(res.content)
+    res.into_blob()
 }
 
 /// List branches from bridge.
@@ -249,6 +273,45 @@ mod tests {
         match res {
             Err(BridgeError::Parse(_)) => (),
             _ => panic!("unexpected result"),
+        }
+    }
+
+    #[test]
+    fn show_response_utf8() {
+        let res: ShowOut = parse_bridge_response(
+            200,
+            r#"{"content":"  世界\n","encoding":"utf8"}"#.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(res.into_blob().unwrap(), Blob::Text("  世界\n".into()));
+    }
+
+    #[test]
+    fn show_response_base64() {
+        let bytes = b"\x89PNG\r\n\x1a\n";
+        let body = serde_json::to_vec(&serde_json::json!({
+            "content": base64::engine::general_purpose::STANDARD.encode(bytes),
+            "encoding": "base64"
+        }))
+        .unwrap();
+        let res: ShowOut = parse_bridge_response(200, &body).unwrap();
+        assert_eq!(res.into_blob().unwrap(), Blob::Binary(bytes.to_vec()));
+    }
+
+    #[test]
+    fn show_response_legacy() {
+        let res: ShowOut = parse_bridge_response(200, br#"{"content":"\n  text\n"}"#).unwrap();
+        assert_eq!(res.into_blob().unwrap(), Blob::Text("\n  text\n".into()));
+    }
+
+    #[test]
+    fn show_response_invalid_encoding() {
+        for body in [
+            br#"{"content":"!","encoding":"base64"}"#.as_slice(),
+            br#"{"content":"text","encoding":"unknown"}"#,
+        ] {
+            let res: ShowOut = parse_bridge_response(200, body).unwrap();
+            assert!(matches!(res.into_blob(), Err(BridgeError::Parse(_))));
         }
     }
 
