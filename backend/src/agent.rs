@@ -206,16 +206,44 @@ fn map_agent_events(
                 AgentEvent::ToolCall { id, name, summary } => {
                     last_usage = None;
                     let _ = store
-                        .upsert_tool_step(session_id, display_anchor, &id, &name, &summary, now())
+                        .upsert_tool_step(
+                            session_id,
+                            display_anchor,
+                            &id,
+                            &name,
+                            &summary,
+                            now(),
+                            None,
+                        )
                         .await;
                     RunEvent::ToolCall { id, name, summary }
                 }
-                AgentEvent::PermissionRequest { id, name, summary } => {
+                AgentEvent::PermissionRequest {
+                    id,
+                    name,
+                    summary,
+                    diff,
+                    note,
+                } => {
                     last_usage = None;
                     let _ = store
-                        .upsert_tool_step(session_id, display_anchor, &id, &name, &summary, now())
+                        .upsert_tool_step(
+                            session_id,
+                            display_anchor,
+                            &id,
+                            &name,
+                            &summary,
+                            now(),
+                            diff.as_ref(),
+                        )
                         .await;
-                    RunEvent::PermissionRequest { id, name, summary }
+                    RunEvent::PermissionRequest {
+                        id,
+                        name,
+                        summary,
+                        diff,
+                        note,
+                    }
                 }
                 AgentEvent::ToolResult {
                     id,
@@ -591,6 +619,72 @@ mod tests {
     }
 
     #[test]
+    fn maps_and_persists_the_awaiting_preview_then_replaces_it_with_the_result() {
+        futures::executor::block_on(async {
+            let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+            store.migrate_with(&|_| true).await.unwrap();
+            let user = store
+                .insert_user("preview", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let session = store
+                .create_session("preview", None, None, None, user.id, 1)
+                .await
+                .unwrap();
+            let anchor = store
+                .insert_message(session.id, Role::User, "write", 2)
+                .await
+                .unwrap();
+            let mut diff = openwebide_core::FileDiff {
+                path: "file".into(),
+                old: Some("before".into()),
+                new: "after".into(),
+                old_unavailable: false,
+                backup_path: None,
+            };
+            let permission = AgentEvent::PermissionRequest {
+                id: "a1t1c0".into(),
+                name: "write_file".into(),
+                summary: "write file".into(),
+                diff: Some(diff.clone()),
+                note: Some("preview".into()),
+            };
+            diff.old = Some("changed before execution".into());
+            let result = AgentEvent::ToolResult {
+                id: "a1t1c0".into(),
+                name: "write_file".into(),
+                ok: true,
+                summary: "written".into(),
+                diff: Some(diff.clone()),
+            };
+            let events = map_agent_events(
+                store.clone(),
+                session.id,
+                anchor.id,
+                stream::iter([permission, result]),
+            );
+            futures::pin_mut!(events);
+            let Some(RunEvent::PermissionRequest {
+                diff: preview,
+                note,
+                ..
+            }) = events.next().await
+            else {
+                panic!("missing permission")
+            };
+            assert_eq!(note.as_deref(), Some("preview"));
+            let steps = store.list_tool_steps(session.id).await.unwrap();
+            assert_eq!(steps[0].diff, preview);
+            assert_eq!(steps[0].ok, None);
+            assert_eq!(steps[0].result_summary, None);
+            events.next().await.unwrap();
+            let steps = store.list_tool_steps(session.id).await.unwrap();
+            assert_eq!(steps[0].diff, Some(diff));
+            assert_eq!(steps[0].ok, Some(true));
+        });
+    }
+
+    #[test]
     fn maps_interim_text_usage_and_display_anchors() {
         futures::executor::block_on(async {
             let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
@@ -636,6 +730,8 @@ mod tests {
                     id: after.clone(),
                     name: "write_file".into(),
                     summary: "second".into(),
+                    diff: None,
+                    note: None,
                 },
                 AgentEvent::ToolCall {
                     id: after.clone(),
@@ -717,6 +813,8 @@ mod tests {
                         id: "a7t1c0".into(),
                         name: "write_file".into(),
                         summary: "write".into(),
+                        diff: None,
+                        note: None,
                     });
                     events.push(AgentEvent::ToolResult {
                         id: "a7t1c0".into(),

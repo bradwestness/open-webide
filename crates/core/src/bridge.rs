@@ -361,6 +361,8 @@ mod tests {
                     id: "t".into(),
                     name: "read".into(),
                     summary: "read file".into(),
+                    diff: None,
+                    note: None,
                 },
             ),
             (
@@ -548,6 +550,8 @@ mod tests {
             id: "t".into(),
             name: "read".into(),
             summary: "file".into(),
+            diff: None,
+            note: None,
         });
         assert!(matches!(&snapshot.items[3], RunItem::Step(step) if step.awaiting_permission));
         snapshot.apply(&RunEvent::Delta {

@@ -306,6 +306,8 @@ impl RunActions {
                                         id: step.id.clone(),
                                         name: step.name.clone(),
                                         summary: step.summary.clone(),
+                                        diff: step.diff.as_deref().cloned(),
+                                        note: step.note.clone(),
                                     },
                                 ));
                             }

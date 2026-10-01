@@ -16,7 +16,7 @@ use crate::tools::{
     self, FetchWebPageArgs, GitBranchArgs, GitCommitArgs, GitDiffArgs, GrepSearchArgs, ListDirArgs,
     ReadFileArgs, RunCommandArgs, SearchArgs, SearchWebArgs, Tool, ToolName, WriteFileArgs,
 };
-use crate::{ToolExecutor, ToolOutcome};
+use crate::{ToolExecutor, ToolOutcome, ToolPreview};
 
 /// Hard cap on a single tool's returned content, so one huge file/command
 /// output can't blow the model's context or the persisted transcript.
@@ -684,6 +684,39 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, 
         }
     }
 
+    async fn preview(&self, call: &ToolCall) -> Option<ToolPreview> {
+        match tools::parse(call).ok()? {
+            Tool::WriteFile(args) => {
+                let path = normalize_vfs_path(&args.path).ok()?;
+                let (old, old_unavailable) = match self.vfs.read(&path).await {
+                    Ok(content) => (Some(content), false),
+                    Err(VfsError::NotFound(_)) => (None, false),
+                    Err(_) => (None, true),
+                };
+                Some(ToolPreview {
+                    diff: Some(FileDiff {
+                        path,
+                        old,
+                        new: args.content,
+                        old_unavailable,
+                        backup_path: None,
+                    }),
+                    note: old_unavailable.then(|| "The existing file isn't readable as text (binary or too large); approving overwrites it — a backup is kept and Reject restores it.".into()),
+                })
+            }
+            Tool::GitCommit(args) => Some(ToolPreview {
+                diff: None,
+                note: Some(
+                    args.paths
+                        .filter(|paths| !paths.is_empty())
+                        .map(|paths| paths.join(", "))
+                        .unwrap_or_else(|| "all tracked changes".into()),
+                ),
+            }),
+            _ => None,
+        }
+    }
+
     async fn execute(&self, call: &ToolCall) -> ToolOutcome {
         match tools::parse(call) {
             Ok(tool) => {
@@ -744,6 +777,119 @@ mod tests {
     use super::*;
     use openwebide_core::{MemoryVfs, SearchHit, vfs::VfsFuture};
     use serde_json::json;
+
+    struct UnreadableVfs {
+        inner: MemoryVfs,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Vfs for UnreadableVfs {
+        fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
+            if path == "binary" {
+                Box::pin(async { Err(VfsError::Io("not text".into())) })
+            } else {
+                self.inner.read(path)
+            }
+        }
+        fn write<'a>(&'a self, path: &'a str, content: &'a str) -> VfsFuture<'a, ()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.write(path, content)
+        }
+        fn list<'a>(&'a self, path: &'a str) -> VfsFuture<'a, Vec<FileEntry>> {
+            self.inner.list(path)
+        }
+        fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
+            self.inner.create(path, is_dir)
+        }
+        fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()> {
+            self.inner.delete(path)
+        }
+        fn search_content<'a>(
+            &'a self,
+            query: &'a str,
+            dir: &'a str,
+            opts: SearchOptions,
+        ) -> VfsFuture<'a, Vec<SearchHit>> {
+            self.inner.search_content(query, dir, opts)
+        }
+    }
+
+    #[test]
+    fn previews_are_read_only_for_new_text_and_unreadable_files() {
+        futures::executor::block_on(async {
+            let inner = MemoryVfs::new();
+            inner.write("text", "before\n").await.unwrap();
+            inner.write("binary", "binary fixture").await.unwrap();
+            let vfs = std::sync::Arc::new(UnreadableVfs {
+                inner,
+                writes: Default::default(),
+            });
+            let before = vfs.list("").await.unwrap();
+            let executor = VfsToolExecutor::new(vfs.clone());
+            for (path, old, unavailable) in [
+                ("new", None, false),
+                ("text", Some("before\n"), false),
+                ("binary", None, true),
+            ] {
+                let call = ToolCall {
+                    id: "preview".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path":path,"content":"after\n"}).to_string(),
+                };
+                let preview = executor.preview(&call).await.unwrap();
+                let diff = preview.diff.unwrap();
+                assert_eq!(diff.path, path);
+                assert_eq!(diff.old.as_deref(), old);
+                assert_eq!(diff.new, "after\n");
+                assert_eq!(diff.old_unavailable, unavailable);
+                assert_eq!(diff.backup_path, None);
+                assert_eq!(preview.note.is_some(), unavailable);
+                if unavailable {
+                    assert!(preview.note.unwrap().contains("Reject restores it"));
+                }
+            }
+            assert_eq!(vfs.writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(vfs.list("").await.unwrap(), before);
+            assert_eq!(vfs.inner.read("text").await.unwrap(), "before\n");
+            assert_eq!(vfs.inner.read("binary").await.unwrap(), "binary fixture");
+            assert!(matches!(vfs.read("new").await, Err(VfsError::NotFound(_))));
+            assert!(
+                vfs.list(openwebide_core::vfs::AGENT_BACKUP_DIR)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(!before.iter().any(|entry| {
+                entry
+                    .path
+                    .starts_with(openwebide_core::vfs::AGENT_BACKUP_DIR)
+            }));
+            let call = ToolCall {
+                id: "command".into(),
+                name: "run_command".into(),
+                arguments: json!({"command":"pwd"}).to_string(),
+            };
+            assert_eq!(executor.preview(&call).await, None);
+            for (paths, expected) in [
+                (None, "all tracked changes"),
+                (Some(vec!["a", "b"]), "a, b"),
+            ] {
+                let call = ToolCall {
+                    id: "commit".into(),
+                    name: "git_commit".into(),
+                    arguments: json!({"message":"save","paths":paths}).to_string(),
+                };
+                assert_eq!(
+                    executor.preview(&call).await.unwrap(),
+                    ToolPreview {
+                        diff: None,
+                        note: Some(expected.into())
+                    }
+                );
+            }
+        });
+    }
 
     #[test]
     fn vfs_tools_json_unchanged() {

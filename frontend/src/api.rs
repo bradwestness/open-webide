@@ -628,6 +628,7 @@ impl BackendApi {
     }
 
     /// Record (or refresh) an agent tool step.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_tool_step(
         &self,
         session_id: i64,
@@ -635,6 +636,7 @@ impl BackendApi {
         tool_call_id: &str,
         name: &str,
         summary: &str,
+        diff: Option<&FileDiff>,
     ) -> Result<(), String> {
         let _value: serde_json::Value = self
             .post(
@@ -644,6 +646,7 @@ impl BackendApi {
                     "tool_call_id": tool_call_id,
                     "name": name,
                     "summary": summary,
+                    "diff": diff,
                 }),
             )
             .await?;

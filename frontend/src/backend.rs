@@ -207,6 +207,7 @@ pub trait Backend {
         connection_id: i64,
         model: Option<&'a str>,
     ) -> LocalBoxFuture<'a, Result<Option<usize>, String>>;
+    #[allow(clippy::too_many_arguments)]
     fn upsert_tool_step<'a>(
         &'a self,
         session_id: i64,
@@ -214,6 +215,7 @@ pub trait Backend {
         tool_call_id: &'a str,
         name: &'a str,
         summary: &'a str,
+        diff: Option<&'a FileDiff>,
     ) -> LocalBoxFuture<'a, Result<(), String>>;
     fn complete_tool_step<'a>(
         &'a self,
@@ -557,6 +559,7 @@ impl Backend for BackendApi {
     ) -> LocalBoxFuture<'a, Result<Option<usize>, String>> {
         Box::pin(BackendApi::model_context(self, connection_id, model))
     }
+    #[allow(clippy::too_many_arguments)]
     fn upsert_tool_step<'a>(
         &'a self,
         session_id: i64,
@@ -564,6 +567,7 @@ impl Backend for BackendApi {
         tool_call_id: &'a str,
         name: &'a str,
         summary: &'a str,
+        diff: Option<&'a FileDiff>,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(BackendApi::upsert_tool_step(
             self,
@@ -572,6 +576,7 @@ impl Backend for BackendApi {
             tool_call_id,
             name,
             summary,
+            diff,
         ))
     }
     fn complete_tool_step<'a>(

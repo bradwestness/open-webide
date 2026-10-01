@@ -497,11 +497,18 @@ async fn map_agent_events<B: RunBackend>(
                         &id,
                         &name,
                         &summary,
+                        None,
                     )
                     .await;
                 RunEvent::ToolCall { id, name, summary }
             }
-            AgentEvent::PermissionRequest { id, name, summary } => {
+            AgentEvent::PermissionRequest {
+                id,
+                name,
+                summary,
+                diff,
+                note,
+            } => {
                 last_usage = None;
                 run.gate.prepare(&id);
                 let _ = backend
@@ -512,9 +519,16 @@ async fn map_agent_events<B: RunBackend>(
                         &id,
                         &name,
                         &summary,
+                        diff.as_ref(),
                     )
                     .await;
-                RunEvent::PermissionRequest { id, name, summary }
+                RunEvent::PermissionRequest {
+                    id,
+                    name,
+                    summary,
+                    diff,
+                    note,
+                }
             }
             AgentEvent::ToolResult {
                 id,

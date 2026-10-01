@@ -315,7 +315,7 @@ impl ChatState {
                     items.push(local_message(session_id, delta));
                 }
             }),
-            RunEvent::PermissionRequest { id, name, summary } => {
+            RunEvent::PermissionRequest { id, name, summary, diff, note } => {
                 let mode = self
                     .approval_mode
                     .get_untracked()
@@ -333,6 +333,8 @@ impl ChatState {
                             summary,
                             result: None,
                             awaiting_permission: true,
+                            diff,
+                            note,
                         });
                     });
                 }
@@ -363,6 +365,8 @@ impl ChatState {
                             summary,
                             result: None,
                             awaiting_permission: false,
+                            diff: None,
+                            note: None,
                         }),
                     }
                 });
@@ -400,6 +404,8 @@ impl ChatState {
                         summary: summary.clone(),
                         result: Some(ToolStepResult { ok, summary, diff }),
                         awaiting_permission: false,
+                        diff: None,
+                        note: None,
                     }),
                 }
             }),
@@ -521,6 +527,8 @@ mod tests {
                 diff: None,
             }),
             awaiting_permission: false,
+            diff: None,
+            note: None,
         }
     }
 
@@ -692,6 +700,8 @@ mod tests {
                 id: "a90t1c0".into(),
                 name: "write_file".into(),
                 summary: "draft.txt".into(),
+                diff: None,
+                note: None,
             });
             chat.apply_event(RunEvent::ToolResult {
                 id: "a90t1c0".into(),
@@ -733,6 +743,8 @@ mod tests {
                 summary: "draft.txt".into(),
                 result: None,
                 awaiting_permission: true,
+                diff: None,
+                note: None,
             }]);
 
             chat.apply_event(RunEvent::Cancelled);
@@ -797,6 +809,8 @@ mod tests {
                 id: "a90t0c0".into(),
                 name: "write_file".into(),
                 summary: "draft.txt".into(),
+                diff: None,
+                note: None,
             });
 
             assert_eq!(

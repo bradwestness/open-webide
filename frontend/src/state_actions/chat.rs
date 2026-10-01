@@ -964,6 +964,8 @@ pub(crate) fn history_items(entries: Vec<ConversationEntry>) -> Vec<Conversation
                     diff: step.diff.clone(),
                 }),
                 awaiting_permission: false,
+                diff: step.ok.is_none().then(|| step.diff.clone()).flatten(),
+                note: None,
             },
         })
         .collect()

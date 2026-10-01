@@ -24,6 +24,10 @@ pub enum RunEvent {
         id: String,
         name: String,
         summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diff: Option<FileDiff>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     ToolResult {
         id: String,
@@ -66,6 +70,10 @@ pub struct RunStep {
     pub name: String,
     pub summary: String,
     pub awaiting_permission: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<Box<FileDiff>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     pub result: Option<ToolStepResultWire>,
 }
 
@@ -87,7 +95,9 @@ impl RunSnapshot {
             }
             RunEvent::Delta { content } => self.text.push_str(content),
             RunEvent::ToolCall { id, name, summary }
-            | RunEvent::PermissionRequest { id, name, summary }
+            | RunEvent::PermissionRequest {
+                id, name, summary, ..
+            }
             | RunEvent::ToolResult {
                 id, name, summary, ..
             } => {
@@ -103,6 +113,8 @@ impl RunSnapshot {
                         summary: summary.clone(),
                         awaiting_permission: false,
                         result: None,
+                        diff: None,
+                        note: None,
                     }));
                     self.items.len() - 1
                 });
@@ -113,11 +125,19 @@ impl RunSnapshot {
                             ok, summary, diff, ..
                         } => {
                             step.awaiting_permission = false;
+                            step.diff = None;
+                            step.note = None;
                             step.result = Some(ToolStepResultWire {
                                 ok: *ok,
                                 summary: summary.clone(),
                                 diff: diff.clone(),
                             });
+                        }
+                        RunEvent::PermissionRequest { diff, note, .. } => {
+                            step.summary.clone_from(summary);
+                            step.awaiting_permission = true;
+                            step.diff = diff.clone().map(Box::new);
+                            step.note.clone_from(note);
                         }
                         _ => {
                             step.summary.clone_from(summary);
@@ -156,5 +176,67 @@ impl RunEvent {
             Self::Cancelled => "cancelled",
             Self::Error { .. } => "error",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_permission_requests_and_snapshots_default_the_preview() {
+        let event: RunEvent = serde_json::from_str(
+            r#"{"kind":"permission_request","id":"t","name":"write_file","summary":"write file"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            event,
+            RunEvent::PermissionRequest {
+                diff: None,
+                note: None,
+                ..
+            }
+        ));
+        let step: RunStep = serde_json::from_str(r#"{"id":"t","name":"write_file","summary":"write file","awaiting_permission":true,"result":null}"#).unwrap();
+        assert_eq!(step.diff, None);
+        assert_eq!(step.note, None);
+    }
+
+    #[test]
+    fn snapshot_keeps_preview_until_completion() {
+        let diff = FileDiff {
+            path: "file".into(),
+            old: Some("old".into()),
+            new: "new".into(),
+            old_unavailable: false,
+            backup_path: None,
+        };
+        let mut snapshot = RunSnapshot::default();
+        snapshot.apply(&RunEvent::PermissionRequest {
+            id: "t".into(),
+            name: "write_file".into(),
+            summary: "write file".into(),
+            diff: Some(diff.clone()),
+            note: Some("preview".into()),
+        });
+        let RunItem::Step(step) = &snapshot.items[0] else {
+            panic!("missing step")
+        };
+        assert_eq!(step.diff.as_deref(), Some(&diff));
+        assert_eq!(step.note.as_deref(), Some("preview"));
+        assert!(step.awaiting_permission);
+        snapshot.apply(&RunEvent::ToolResult {
+            id: "t".into(),
+            name: "write_file".into(),
+            ok: false,
+            summary: "denied".into(),
+            diff: None,
+        });
+        let RunItem::Step(step) = &snapshot.items[0] else {
+            panic!("missing step")
+        };
+        assert_eq!(step.diff, None);
+        assert_eq!(step.note, None);
+        assert!(!step.awaiting_permission);
     }
 }

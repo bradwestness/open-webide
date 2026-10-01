@@ -75,6 +75,7 @@ impl RunBackend for FakeBackend {
         id: &str,
         _name: &str,
         _summary: &str,
+        _diff: Option<&FileDiff>,
     ) -> Result<(), String> {
         self.operations
             .lock()
@@ -324,6 +325,8 @@ async fn agent_mapping_persists_in_order_and_reanchors_with_last_usage() {
                 id: "b".into(),
                 name: "write_file".into(),
                 summary: "b".into(),
+                diff: None,
+                note: None,
             },
             AgentEvent::Telemetry(last),
             AgentEvent::FinalText("final".into()),

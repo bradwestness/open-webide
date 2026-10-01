@@ -1264,6 +1264,8 @@ struct UpsertToolStepBody {
     tool_call_id: String,
     name: String,
     summary: String,
+    #[serde(default)]
+    diff: Option<FileDiff>,
 }
 
 pub async fn upsert_tool_step(
@@ -1285,6 +1287,7 @@ pub async fn upsert_tool_step(
             &step.name,
             &step.summary,
             now(),
+            step.diff.as_ref(),
         )
         .await?;
     Ok(json_response(200, &json!({ "ok": true })))
@@ -1436,7 +1439,7 @@ mod tests {
                     let id = format!("step-{i}");
                     state
                         .store
-                        .upsert_tool_step(session.id, interim.id, &id, "read_file", "read", 1)
+                        .upsert_tool_step(session.id, interim.id, &id, "read_file", "read", 1, None)
                         .await
                         .unwrap();
                     if i == 0 || complete_second {

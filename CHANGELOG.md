@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Preview file diffs before approving agent edits, expand long previews, and flag unreadable overwrites.
+
 - Stop interrupts running commands, web requests, and searches while allowing file writes and Git mutations to finish.
 
 - Sync prompt history and theme through user settings, import legacy history once, and fit panel widths to the viewport.

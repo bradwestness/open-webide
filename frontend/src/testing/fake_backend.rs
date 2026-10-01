@@ -823,6 +823,7 @@ impl Backend for FakeBackend {
         _tool_call_id: &'a str,
         _name: &'a str,
         _summary: &'a str,
+        _diff: Option<&'a FileDiff>,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {

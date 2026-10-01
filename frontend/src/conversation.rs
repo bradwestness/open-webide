@@ -23,6 +23,8 @@ pub enum ConversationItem {
         name: String,
         summary: String,
         result: Option<ToolStepResult>,
+        diff: Option<FileDiff>,
+        note: Option<String>,
         /// A gated call (e.g. a file write) waiting for the user's approval.
         awaiting_permission: bool,
     },
@@ -124,6 +126,8 @@ pub fn merge_snapshot(items: &mut Vec<ConversationItem>, snapshot: &openwebide_c
                     name: step.name.clone(),
                     summary: step.summary.clone(),
                     awaiting_permission: step.awaiting_permission,
+                    diff: step.diff.as_deref().cloned(),
+                    note: step.note.clone(),
                     result: step.result.as_ref().map(|result| ToolStepResult {
                         ok: result.ok,
                         summary: result.summary.clone(),
@@ -201,6 +205,8 @@ mod tests {
                 summary: "old".into(),
                 awaiting_permission: false,
                 result: None,
+                diff: None,
+                note: None,
             },
         ];
         message.content = "updated".into();
@@ -213,6 +219,8 @@ mod tests {
                     summary: "new".into(),
                     awaiting_permission: true,
                     result: None,
+                    diff: None,
+                    note: None,
                 }),
             ],
             text: "live".into(),
@@ -261,6 +269,8 @@ mod tests {
             result: None,
             awaiting_permission: false,
             key: next_item_nonce(),
+            diff: None,
+            note: None,
         };
         let b = ConversationItem::ToolStep {
             id: "same".into(),
@@ -269,6 +279,8 @@ mod tests {
             result: None,
             awaiting_permission: false,
             key: next_item_nonce(),
+            diff: None,
+            note: None,
         };
         assert_ne!(item_key(&a), item_key(&b));
     }

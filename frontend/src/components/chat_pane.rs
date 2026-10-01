@@ -1,7 +1,7 @@
 use crate::state::{chat::ChatState, layout::LayoutState, projects::ProjectsState};
 use leptos::prelude::*;
 use openwebide_core::{
-    FileDiff, ModelInfo, Role, diff_inline_lines,
+    FileDiff, ModelInfo, Role, diff_inline_detailed, diff_inline_lines,
     tui::{SessionTelemetry, SlashCommand, extract_editor_context_prelude, parse_thinking},
 };
 use web_sys::wasm_bindgen::JsCast;
@@ -30,6 +30,35 @@ fn render_diff_view(diff: FileDiff) -> impl IntoView {
                     }
                 }).collect::<Vec<_>>()}
             </div>
+        </div>
+    }
+}
+
+fn render_approval_diff(diff: FileDiff) -> impl IntoView {
+    let expanded = RwSignal::new(false);
+    let lines = diff_inline_detailed(&diff);
+    let has_more = lines.len() > 40;
+    let lines = StoredValue::new(lines);
+    view! {
+        <div class="tui-diff-box">
+            <div class="tui-diff-path">"diff: " {diff.path}</div>
+            <div class="tui-diff-lines">
+                {move || lines.with_value(|lines| {
+                    lines.iter().take(if expanded.get() { lines.len() } else { 40 }).cloned().map(|line| {
+                        let class = if line.marker == '+' { "tui-diff-line add" } else { "tui-diff-line del" };
+                        view! {
+                            <div class=class>
+                                <span>{line.marker} " "</span>
+                                {super::editor::render_diff_chunks(line.chunks)}
+                                {line.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
+                            </div>
+                        }
+                    }).collect::<Vec<_>>()
+                })}
+            </div>
+            <Show when=move || has_more && !expanded.get()>
+                <button class="btn" on:click=move |_| expanded.set(true)>"Show full diff"</button>
+            </Show>
         </div>
     }
 }
@@ -133,6 +162,8 @@ fn render_tool_step(
     name: String,
     summary: String,
     result: Option<ToolStepResult>,
+    diff: Option<FileDiff>,
+    note: Option<String>,
     awaiting_permission: bool,
     is_current_awaiting: bool,
     on_permission: Callback<(String, bool)>,
@@ -156,6 +187,8 @@ fn render_tool_step(
     let (id_sig, _set_id) = signal(id);
     let (name_sig, _set_name) = signal(name.clone());
     let show_diff = RwSignal::new(true);
+    let preview = StoredValue::new(diff);
+    let note = StoredValue::new(note);
 
     view! {
         <div class=format!("tui-box tui-tool-box {status_class}")>
@@ -169,6 +202,15 @@ fn render_tool_step(
             </div>
 
             <div class="tui-tool-inner">
+                <Show when=move || result_sig.with(|result| result.is_none())>
+                    {move || note.get_value().map(|note| view! { <div class="tui-perm-text">{note}</div> })}
+                    <Show when=move || show_diff.get() && preview.with_value(|diff| diff.as_ref().is_some_and(|diff| !diff.old_unavailable))>
+                        {move || render_approval_diff(preview.get_value().unwrap())}
+                    </Show>
+                    <Show when=move || preview.with_value(|diff| diff.as_ref().is_some_and(|diff| diff.old_unavailable))>
+                        <div class="tui-perm-text">"diff unavailable"</div>
+                    </Show>
+                </Show>
                 <Show
                     when=move || awaiting_permission && result_sig.get().is_none() && is_current_awaiting
                     fallback=|| ()
@@ -553,13 +595,15 @@ pub fn ChatPane(
                                             <Show
                                                 when=move || is_msg.get()
                                                 fallback=move || {
-                                                    let (id, name, summary, result, awaiting) =
+                                                    let (id, name, summary, result, diff, note, awaiting) =
                                                         match item_sig.get() {
                                                             ConversationItem::ToolStep {
                                                                 id,
                                                                 name,
                                                                 summary,
                                                                 result,
+                                                                diff,
+                                                                note,
                                                                 awaiting_permission,
                                                                 key: _,
                                                             } => {
@@ -568,6 +612,8 @@ pub fn ChatPane(
                                                                     name,
                                                                     summary,
                                                                     result,
+                                                                    diff,
+                                                                    note,
                                                                     awaiting_permission,
                                                                 )
                                                             }
@@ -579,6 +625,8 @@ pub fn ChatPane(
                                                         name,
                                                         summary,
                                                         result,
+                                                        diff,
+                                                        note,
                                                         awaiting,
                                                         is_current_awaiting,
                                                         on_permission,

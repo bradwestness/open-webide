@@ -236,6 +236,8 @@ async fn stop_and_permission_use_the_current_ws_run() {
             id: "a7t0c0".into(),
             name: "write_file".into(),
             summary: "file".into(),
+            diff: None,
+            note: None,
         },
     );
     settle().await;
@@ -309,6 +311,8 @@ async fn history_discovers_run_and_merges_awaiting_snapshot_twice() {
                 summary: "file".into(),
                 awaiting_permission: true,
                 result: None,
+                diff: None,
+                note: None,
             }),
         ],
         ..Default::default()
@@ -555,6 +559,8 @@ async fn adversarial_permission_during_disconnect_remains_actionable() {
             id: "a7t0c0".into(),
             name: "write_file".into(),
             summary: "file".into(),
+            diff: None,
+            note: None,
         },
     );
     settle().await;
@@ -665,6 +671,8 @@ async fn adversarial_snapshot_autoapproval_is_idempotent() {
                 summary: "file".into(),
                 awaiting_permission: true,
                 result: None,
+                diff: None,
+                note: None,
             }),
         ],
         ..Default::default()
@@ -888,6 +896,8 @@ async fn permission_snapshot_restores_retry(auto_approve: bool) {
             id: "a7t0c0".into(),
             name: "write_file".into(),
             summary: "file".into(),
+            diff: None,
+            note: None,
         },
     );
     settle().await;
@@ -926,6 +936,8 @@ async fn permission_snapshot_restores_retry(auto_approve: bool) {
                     summary: "file".into(),
                     awaiting_permission: true,
                     result: None,
+                    diff: None,
+                    note: None,
                 }),
             ],
             ..Default::default()

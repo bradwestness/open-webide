@@ -803,17 +803,36 @@ pub async fn run_local_agent(
                 last_usage = None;
                 let _ = api
                     .with_value(Clone::clone)
-                    .upsert_tool_step(session_id, display_anchor, &id, &name, &summary)
+                    .upsert_tool_step(session_id, display_anchor, &id, &name, &summary, None)
                     .await;
                 on_event(RunEvent::ToolCall { id, name, summary });
             }
-            AgentEvent::PermissionRequest { id, name, summary } => {
+            AgentEvent::PermissionRequest {
+                id,
+                name,
+                summary,
+                diff,
+                note,
+            } => {
                 last_usage = None;
                 let _ = api
                     .with_value(Clone::clone)
-                    .upsert_tool_step(session_id, display_anchor, &id, &name, &summary)
+                    .upsert_tool_step(
+                        session_id,
+                        display_anchor,
+                        &id,
+                        &name,
+                        &summary,
+                        diff.as_ref(),
+                    )
                     .await;
-                on_event(RunEvent::PermissionRequest { id, name, summary });
+                on_event(RunEvent::PermissionRequest {
+                    id,
+                    name,
+                    summary,
+                    diff,
+                    note,
+                });
             }
             AgentEvent::ToolResult {
                 id,

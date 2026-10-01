@@ -917,6 +917,7 @@ impl<D: Db> Store<D> {
     /// Record (or refresh) a tool step as it is requested. Called for both a
     /// `tool_call` and a `permission_request` (which share an id), so a gated
     /// write is stored once.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_tool_step(
         &self,
         session_id: i64,
@@ -925,14 +926,19 @@ impl<D: Db> Store<D> {
         name: &str,
         summary: &str,
         created_at: i64,
+        diff: Option<&FileDiff>,
     ) -> Result<(), StorageError> {
+        let diff_json = diff
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| StorageError::Db(e.to_string()))?;
         self.db
             .execute(
                 "INSERT INTO tool_steps
-                     (session_id, anchor_message_id, tool_call_id, name, summary, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)
+                     (session_id, anchor_message_id, tool_call_id, name, summary, created_at, diff)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT (session_id, tool_call_id)
-                 DO UPDATE SET name = excluded.name, summary = excluded.summary",
+                 DO UPDATE SET name = excluded.name, summary = excluded.summary, diff = excluded.diff",
                 &[
                     DbValue::Int(session_id),
                     DbValue::Int(anchor_message_id),
@@ -940,6 +946,7 @@ impl<D: Db> Store<D> {
                     DbValue::Text(name.into()),
                     DbValue::Text(summary.into()),
                     DbValue::Int(created_at),
+                    diff_json.map(DbValue::Text).unwrap_or(DbValue::Null),
                 ],
             )
             .await?;
@@ -1825,6 +1832,7 @@ mod tests {
                     "write_file",
                     "write a.txt",
                     3,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -1850,7 +1858,15 @@ mod tests {
                 .await
                 .unwrap();
             store
-                .upsert_tool_step(session.id, user2.id, "call-2", "read_file", "read a.txt", 6)
+                .upsert_tool_step(
+                    session.id,
+                    user2.id,
+                    "call-2",
+                    "read_file",
+                    "read a.txt",
+                    6,
+                    None,
+                )
                 .await
                 .unwrap();
             store

@@ -15,6 +15,8 @@ fn awaiting(id: &str) -> ConversationItem {
         summary: "write file".into(),
         result: None,
         awaiting_permission: true,
+        diff: None,
+        note: None,
     }
 }
 
@@ -106,5 +108,122 @@ async fn permission_shortcuts_target_current_run_and_stop_cancels_prompts() {
             .calls
             .borrow()
             .contains(&Call::CancelSession { session: 1 })
+    );
+}
+
+#[wasm_bindgen_test]
+async fn approval_preview_collapses_expands_and_preserves_alt_y() {
+    use openwebide_core::{FileDiff, RunEvent};
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_session();
+        chat_view(state)
+    });
+    settle().await;
+    let chat = mounted.state.chat;
+    chat.streaming.set(true);
+    chat.streaming_session.set(Some(1));
+    chat.current_run_anchor.set(Some(7));
+    chat.apply_event(RunEvent::PermissionRequest {
+        id: "a7t1c0".into(),
+        name: "write_file".into(),
+        summary: "write large file".into(),
+        diff: Some(FileDiff {
+            path: "large".into(),
+            old: None,
+            new: (0..100).map(|i| format!("line {i}\n")).collect(),
+            old_unavailable: false,
+            backup_path: None,
+        }),
+        note: None,
+    });
+    settle().await;
+    assert_eq!(
+        mounted
+            .root
+            .query_selector(".tui-diff-lines")
+            .unwrap()
+            .unwrap()
+            .child_element_count(),
+        40
+    );
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Show full diff")
+    );
+    mounted.click(".tui-diff-box .btn");
+    settle().await;
+    assert_eq!(
+        mounted
+            .root
+            .query_selector(".tui-diff-lines")
+            .unwrap()
+            .unwrap()
+            .child_element_count(),
+        100
+    );
+    assert!(
+        !mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Show full diff")
+    );
+    mounted.key("y", "KeyY", true);
+    settle().await;
+    assert!(
+        mounted
+            .state
+            .fake
+            .calls
+            .borrow()
+            .contains(&Call::SetPermission {
+                session: 1,
+                id: "a7t1c0".into(),
+                approved: true
+            })
+    );
+}
+
+#[wasm_bindgen_test]
+async fn unreadable_approval_preview_shows_note_without_a_diff() {
+    use openwebide_core::{FileDiff, RunEvent};
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_session();
+        chat_view(state)
+    });
+    settle().await;
+    let chat = mounted.state.chat;
+    chat.streaming.set(true);
+    chat.streaming_session.set(Some(1));
+    chat.current_run_anchor.set(Some(7));
+    let note = "The existing file isn't readable as text (binary or too large); approving overwrites it — a backup is kept and Reject restores it.";
+    chat.apply_event(RunEvent::PermissionRequest {
+        id: "a7t1c0".into(),
+        name: "write_file".into(),
+        summary: "write binary".into(),
+        diff: Some(FileDiff {
+            path: "binary".into(),
+            old: None,
+            new: "replacement".into(),
+            old_unavailable: true,
+            backup_path: None,
+        }),
+        note: Some(note.into()),
+    });
+    settle().await;
+    let text = mounted.root.text_content().unwrap();
+    assert!(text.contains(note));
+    assert!(text.contains("diff unavailable"));
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-diff-line")
+            .unwrap()
+            .is_none()
     );
 }

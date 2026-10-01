@@ -30,6 +30,7 @@ pub trait RunBackend: Send + Sync {
         usage: Option<&TurnTelemetry>,
         tool_calls: Option<&[openwebide_core::ToolCall]>,
     ) -> impl Future<Output = Result<ChatMessage, String>> + Send;
+    #[allow(clippy::too_many_arguments)]
     fn upsert_tool_step(
         &self,
         user_id: i64,
@@ -38,6 +39,7 @@ pub trait RunBackend: Send + Sync {
         id: &str,
         name: &str,
         summary: &str,
+        diff: Option<&FileDiff>,
     ) -> impl Future<Output = Result<(), String>> + Send;
     fn complete_tool_step(
         &self,
@@ -154,6 +156,7 @@ impl RunBackend for BackendClient {
         )
         .await
     }
+    #[allow(clippy::too_many_arguments)]
     async fn upsert_tool_step(
         &self,
         user_id: i64,
@@ -162,8 +165,9 @@ impl RunBackend for BackendClient {
         id: &str,
         name: &str,
         summary: &str,
+        diff: Option<&FileDiff>,
     ) -> Result<(), String> {
-        let _: Value = self.call(user_id, "POST", &format!("/sessions/{session_id}/tool-steps/upsert"), json!({"anchor_message_id":anchor_id,"tool_call_id":id,"name":name,"summary":summary})).await?;
+        let _: Value = self.call(user_id, "POST", &format!("/sessions/{session_id}/tool-steps/upsert"), json!({"anchor_message_id":anchor_id,"tool_call_id":id,"name":name,"summary":summary,"diff":diff})).await?;
         Ok(())
     }
     async fn complete_tool_step(

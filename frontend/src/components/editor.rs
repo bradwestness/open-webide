@@ -76,7 +76,7 @@ fn highlight_html(source: &str, language: Language) -> String {
 }
 
 /// Render a list of intra-line diff chunks with word-level highlights.
-fn render_diff_chunks(chunks: Vec<DiffChunk>) -> impl IntoView {
+pub(crate) fn render_diff_chunks(chunks: Vec<DiffChunk>) -> impl IntoView {
     chunks
         .into_iter()
         .map(|chunk| match chunk {
