@@ -225,6 +225,16 @@ bridge handles PTY sessions and command execution outside Spin's WASI sandbox,
 providing execution capabilities (`cargo test`, interactive shell) to both the
 agent and the user. The bridge requires a Bearer token (generated at startup and passed via HTTP `POST /secret` on loopback) for Origin-less requests to ensure local network security.
 
+The native bridge separates `server/` (HTTP parsing, routes, WebSocket connections),
+`terminals/` (PTY/headless sessions and replay rings), `exec/` (command and Git execution),
+and `runs/` (agent/chat runs, completions, backend clients, native VFS). `ServerConfig`
+holds an `Arc<dyn ToolExecution>` shared by `/exec`, `/git/*`, and the in-process agent
+bridge client. `HostExecution` supplies today's host behavior; a sandbox can implement
+the same object-safe trait. `SpawnSpec` carries command, arguments, cwd, environment,
+timeout, and cancellation; interactive terminals use it but stay outside the executor
+trait. `BridgeError` maps typed failures to HTTP status codes. Bridge logging uses
+`tracing`, with connection/run spans and `RUST_LOG` filtering (default `info`).
+
 ## Roadmap
 
 What's left — grouped as Now / Next / Later — lives in

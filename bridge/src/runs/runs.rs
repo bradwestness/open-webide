@@ -16,12 +16,12 @@ use openwebide_llm::{LlmProvider, ProviderError, StreamChunk};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::agent_host::{BackendWebClient, BridgeCancel, BridgeGate, InProcessBridgeClient};
 use crate::auth::Principal;
-use crate::backend_client::RunBackend;
-use crate::native_vfs::NativeFsVfs;
-use crate::seq_ring::SeqRing;
+use crate::runs::agent_host::{BackendWebClient, BridgeCancel, BridgeGate, InProcessBridgeClient};
+use crate::runs::backend_client::RunBackend;
+use crate::runs::native_vfs::NativeFsVfs;
 use crate::server::WriterCmd;
+use crate::terminals::seq_ring::SeqRing;
 
 fn now() -> u64 {
     SystemTime::now()
@@ -208,7 +208,15 @@ impl RunRegistry {
         F: FnOnce(&RunPlan) -> P,
     {
         let run = self.reserve(principal, &start)?;
-        self.prepare(run, start, workspace, backend, provider).await
+        self.prepare(
+            run,
+            start,
+            workspace,
+            backend,
+            provider,
+            Arc::new(crate::exec::HostExecution),
+        )
+        .await
     }
 
     pub(crate) fn reserve(
@@ -249,6 +257,7 @@ impl RunRegistry {
         workspace: &Path,
         backend: Arc<B>,
         provider: F,
+        execution: Arc<dyn crate::exec::ToolExecution>,
     ) -> Result<Arc<Run>, (RunRejectCode, String)>
     where
         B: RunBackend + 'static,
@@ -306,12 +315,16 @@ impl RunRegistry {
         });
         let body_run = run.clone();
         tokio::spawn(async move {
-            run_body(body_run, provider, backend, plan, dir, message.id).await;
+            run_body(
+                body_run, provider, backend, plan, dir, message.id, execution,
+            )
+            .await;
         });
         Ok(run)
     }
 }
 
+#[tracing::instrument(skip_all, fields(run_id = %run.run_id))]
 async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
     run: Arc<Run>,
     provider: P,
@@ -319,6 +332,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
     plan: RunPlan,
     dir: Option<PathBuf>,
     anchor_id: i64,
+    execution: Arc<dyn crate::exec::ToolExecution>,
 ) {
     match plan.kind {
         RunKind::Chat => {
@@ -381,6 +395,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 },
                 InProcessBridgeClient {
                     dir,
+                    execution,
                     cancel: run.cancel.clone(),
                 },
             );
@@ -426,7 +441,7 @@ pub(crate) async fn record_tool_stream_memo<B: RunBackend>(
             .set_tool_stream_unsupported(user_id, connection_id, tool_stream_revision)
             .await
     {
-        eprintln!("failed to save streamed-tools memo: {error}");
+        tracing::warn!(%error, "failed to save streamed-tools memo");
     }
 }
 
@@ -580,4 +595,5 @@ async fn map_agent_events<B: RunBackend>(
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;

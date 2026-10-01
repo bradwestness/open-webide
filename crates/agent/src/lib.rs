@@ -6,25 +6,28 @@
 //! no filesystem — the host supplies a [`ToolExecutor`] and decides what to do
 //! with the final text.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt, stream};
 use openwebide_core::{
     ChatMessage, ChatRequest, ChatResponse, FileDiff, REPLY_TRUNCATED_MARKER, Role, ToolCall,
-    ToolDefinition, TurnTelemetry,
+    TurnTelemetry,
 };
 use openwebide_llm::{LlmProvider, ProviderError, ToolStreamChunk};
 
 type ModelStream = Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send>>;
 
+pub mod clients;
+pub mod executor;
 pub mod policy;
 pub mod tools;
-pub mod vfs_executor;
-pub use policy::requires_approval;
-pub use vfs_executor::{
+pub use executor as vfs_executor;
+pub use executor::{
     BridgeClient, NoopBridgeClient, NoopWebClient, VfsToolExecutor, WebClient, vfs_tools,
 };
+pub use policy::requires_approval;
 
 /// Budgets that bound a single agent run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,7 +220,7 @@ impl PermissionGate for NoopGate {
 pub fn run<P, T, C, G>(
     provider: P,
     executor: T,
-    request: ChatRequest,
+    mut request: ChatRequest,
     config: AgentConfig,
     cancel: C,
     gate: G,
@@ -229,23 +232,23 @@ where
     C: CancelCheck + 'static,
     G: PermissionGate + 'static,
 {
+    for message in &mut request.messages {
+        if message.role == Role::Assistant {
+            message.content = openwebide_core::strip_reasoning(&message.content).to_string();
+        }
+    }
     Box::pin(stream::unfold(
         LoopState {
             provider,
             executor,
             cancel,
             gate,
-            connection_id: request.connection_id,
-            system_prompt: request.system_prompt,
-            model: request.model,
-            messages: request.messages,
-            tools: request.tools,
+            request,
             config,
             anchor_id,
             turn: config.first_turn.saturating_sub(1),
             tool_calls: 0,
-            pending: Vec::new(),
-            current: None,
+            pending: VecDeque::new(),
             response: None,
             model_stream: None,
             turn_text: String::new(),
@@ -255,7 +258,7 @@ where
         },
         |mut state| async move {
             loop {
-                match state.next {
+                match std::mem::replace(&mut state.next, Next::Stop) {
                     Next::Stop => return None,
                     Next::Cancelled => {
                         state.next = Next::Stop;
@@ -277,32 +280,14 @@ where
                             ));
                         }
                         state.turn += 1;
-                        let req = ChatRequest {
-                            connection_id: state.connection_id,
-                            system_prompt: state.system_prompt.clone(),
-                            model: state.model.clone(),
-                            messages: state
-                                .messages
-                                .iter()
-                                .cloned()
-                                .map(|mut message| {
-                                    if message.role == Role::Assistant {
-                                        message.content =
-                                            openwebide_core::strip_reasoning(&message.content)
-                                                .to_string();
-                                    }
-                                    message
-                                })
-                                .collect(),
-                            tools: state.tools.clone(),
-                        };
-                        state.model_stream = Some(state.provider.chat_tools_stream(&req));
+                        state.model_stream = Some(state.provider.chat_tools_stream(&state.request));
                         state.turn_text.clear();
                         state.turn_reasoning.clear();
                         state.stop_reason = openwebide_core::StopReason::Complete;
                         state.next = Next::StreamModel;
                     }
                     Next::StreamModel => {
+                        state.next = Next::StreamModel;
                         if state.cancel.check().await {
                             state.model_stream = None;
                             state.next = Next::Stop;
@@ -372,11 +357,12 @@ where
                             }
                             ChatResponse::ToolCalls(calls) => {
                                 let pending = pending_calls(state.anchor_id, state.turn, calls);
-                                state.messages.push(ChatMessage {
+                                state.request.messages.push(ChatMessage {
                                     id: 0,
                                     session_id: 0,
                                     role: Role::Assistant,
-                                    content: state.turn_text.clone(),
+                                    content: openwebide_core::strip_reasoning(&state.turn_text)
+                                        .to_string(),
                                     created_at: 0,
                                     tool_calls: Some(
                                         pending
@@ -390,10 +376,16 @@ where
                                     tool_call_id: None,
                                     usage: None,
                                 });
-                                state.pending = pending;
+                                state.pending = pending.into();
                                 state.next = Next::EmitToolCall;
-                                let calls =
-                                    state.messages.last().unwrap().tool_calls.clone().unwrap();
+                                let calls = state
+                                    .request
+                                    .messages
+                                    .last()
+                                    .unwrap()
+                                    .tool_calls
+                                    .clone()
+                                    .unwrap();
                                 return Some((
                                     AgentEvent::TurnCalls {
                                         text: state.turn_text.clone(),
@@ -419,10 +411,12 @@ where
                                 state,
                             ));
                         }
-                        let pending = state.pending.remove(0);
+                        let pending = state
+                            .pending
+                            .pop_front()
+                            .expect("pending calls are nonempty");
                         let call = pending.call.clone();
                         let summary = state.executor.describe(&call);
-                        state.current = Some(pending);
                         if state.gate.needs_approval(&call) {
                             let preview = {
                                 let preview = Box::pin(state.executor.preview(&call));
@@ -438,7 +432,7 @@ where
                             };
                             let (diff, note) =
                                 preview.map(|p| (p.diff, p.note)).unwrap_or_default();
-                            state.next = Next::AwaitPermission;
+                            state.next = Next::AwaitPermission(pending);
                             return Some((
                                 AgentEvent::PermissionRequest {
                                     id: call.id,
@@ -450,7 +444,7 @@ where
                                 state,
                             ));
                         }
-                        state.next = Next::RunTool;
+                        state.next = Next::RunTool(pending);
                         return Some((
                             AgentEvent::ToolCall {
                                 id: call.id,
@@ -460,16 +454,12 @@ where
                             state,
                         ));
                     }
-                    Next::AwaitPermission => {
+                    Next::AwaitPermission(pending) => {
                         if state.cancel.check().await {
                             state.next = Next::Stop;
                             return Some((AgentEvent::Cancelled, state));
                         }
-                        let PendingCall { call, wire_id } = state
-                            .current
-                            .as_ref()
-                            .expect("AwaitPermission without a current call")
-                            .clone();
+                        let PendingCall { call, wire_id } = pending.clone();
                         let approved = state.gate.approve(&call).await;
                         // The gate also returns `false` when a cancel lands
                         // while waiting, so re-check before treating a
@@ -479,7 +469,7 @@ where
                             return Some((AgentEvent::Cancelled, state));
                         }
                         if !approved {
-                            state.messages.push(ChatMessage {
+                            state.request.messages.push(ChatMessage {
                                 id: 0,
                                 session_id: 0,
                                 role: Role::Tool,
@@ -505,7 +495,7 @@ where
                             ));
                         }
                         let summary = state.executor.describe(&call);
-                        state.next = Next::RunTool;
+                        state.next = Next::RunTool(pending);
                         return Some((
                             AgentEvent::ToolCall {
                                 id: call.id,
@@ -515,15 +505,12 @@ where
                             state,
                         ));
                     }
-                    Next::RunTool => {
+                    Next::RunTool(pending) => {
                         if state.cancel.check().await {
                             state.next = Next::Stop;
                             return Some((AgentEvent::Cancelled, state));
                         }
-                        let PendingCall { call, wire_id } = state
-                            .current
-                            .take()
-                            .expect("RunTool without a current call");
+                        let PendingCall { call, wire_id } = pending;
                         state.tool_calls += 1;
                         let interrupted;
                         let outcome = if call
@@ -552,7 +539,7 @@ where
                             interrupted = false;
                             state.executor.execute(&call).await
                         };
-                        state.messages.push(ChatMessage {
+                        state.request.messages.push(ChatMessage {
                             id: 0,
                             session_id: 0,
                             role: Role::Tool,
@@ -647,20 +634,14 @@ struct LoopState<P, T, C, G> {
     executor: T,
     cancel: C,
     gate: G,
-    connection_id: i64,
-    system_prompt: Option<String>,
-    model: Option<String>,
-    messages: Vec<ChatMessage>,
-    tools: Vec<ToolDefinition>,
+    request: ChatRequest,
     config: AgentConfig,
     /// Namespaces this run's step ids; see [`run`].
     anchor_id: i64,
     turn: usize,
     tool_calls: usize,
     /// Tool calls from the most recent model response, not yet executed.
-    pending: Vec<PendingCall>,
-    /// The call currently being executed (set between Emit and Run).
-    current: Option<PendingCall>,
+    pending: VecDeque<PendingCall>,
     /// The model's response, set by `StreamModel` and consumed by
     /// `HandleResponse`.
     response: Option<ChatResponse>,
@@ -672,14 +653,14 @@ struct LoopState<P, T, C, G> {
 }
 
 /// Which step the loop takes next.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Next {
     CallModel,
     StreamModel,
     HandleResponse,
     EmitToolCall,
-    AwaitPermission,
-    RunTool,
+    AwaitPermission(PendingCall),
+    RunTool(PendingCall),
     Cancelled,
     Stop,
 }
@@ -691,7 +672,7 @@ mod tests {
 
     use super::*;
     use futures::StreamExt;
-    use openwebide_core::{ChatCompletion, ModelInfo, ProviderKind};
+    use openwebide_core::{ChatCompletion, ModelInfo, ProviderKind, ToolDefinition};
     use openwebide_llm::{ProviderError, StreamChunk, ToolStreamChunk, completion_chunks};
 
     /// Wrap a response with no usage, matching what a provider that reports
@@ -1844,6 +1825,7 @@ mod tests {
             "Checking now",
             "",
             "<think>private reasoning</think>checking",
+            "<think>private reasoning</think><think>literal example</think>checking",
         ] {
             let (provider, requests) =
                 FakeProvider::new(vec![Ok(no_usage(ChatResponse::Text("done".into())))]);
@@ -1889,6 +1871,46 @@ mod tests {
                 );
                 assert_eq!(assistant.tool_calls.as_ref().unwrap()[0].id, "call_0");
             }
+        }
+    }
+
+    #[test]
+    fn initial_assistant_reasoning_is_removed_once() {
+        let preamble = "<think>private reasoning</think><think>literal example</think>checking";
+        let (provider, requests) = FakeProvider::new(vec![
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "first",
+                "read_file",
+                "{}",
+            )]))),
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "second",
+                "read_file",
+                "{}",
+            )]))),
+            Ok(no_usage(ChatResponse::Text("done".into()))),
+        ]);
+        let mut request = request();
+        let mut assistant = request.messages[0].clone();
+        assistant.role = Role::Assistant;
+        assistant.content = preamble.into();
+        request.messages.insert(0, assistant);
+        collect(run(
+            provider,
+            FakeExecutor::new(vec![]),
+            request,
+            AgentConfig::default(),
+            NoopCancel,
+            NoopGate,
+            7,
+        ));
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        for request in requests.iter() {
+            assert_eq!(
+                request.messages[0].content,
+                "<think>literal example</think>checking"
+            );
         }
     }
 

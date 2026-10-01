@@ -264,9 +264,16 @@ async fn buffered_start_cancel_survives_delayed_start_task() {
                 task = Some(tokio::spawn(async move {
                     delayed.await.unwrap();
                     registry
-                        .prepare(run, start, &workspace, backend, |_| -> FakeProvider {
-                            panic!("cancelled start must not call the model")
-                        })
+                        .prepare(
+                            run,
+                            start,
+                            &workspace,
+                            backend,
+                            |_| -> FakeProvider {
+                                panic!("cancelled start must not call the model")
+                            },
+                            Arc::new(crate::exec::HostExecution),
+                        )
                         .await
                         .unwrap()
                 }));
@@ -998,4 +1005,167 @@ async fn incomplete_reasoning_only_chat_is_persisted() {
         openwebide_core::with_reasoning(reasoning, REPLY_TRUNCATED_MARKER)
     );
     assert!(matches!(events(&run).last(), Some(RunEvent::Done { .. })));
+}
+
+#[derive(Default)]
+struct FakeExecution {
+    calls: Mutex<Vec<(String, PathBuf)>>,
+}
+
+impl crate::exec::ToolExecution for FakeExecution {
+    fn run_command(
+        &self,
+        spec: crate::exec::SpawnSpec,
+    ) -> crate::exec::ExecutionFuture<crate::exec::ExecOutput> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((spec.args.last().unwrap().clone(), spec.cwd));
+        Box::pin(async {
+            Ok(openwebide_core::CommandOutcome {
+                exit_code: Some(0),
+                stdout: "fake execution".into(),
+                stderr: String::new(),
+            })
+        })
+    }
+
+    fn git(
+        &self,
+        request: crate::exec::GitRequest,
+    ) -> crate::exec::ExecutionFuture<crate::exec::GitResponse> {
+        assert!(matches!(
+            request.operation,
+            crate::exec::GitOperation::Status
+        ));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("git status".into(), request.cwd));
+        Box::pin(async {
+            Ok(serde_json::to_value(openwebide_core::GitRepoStatus {
+                branch: "fake".into(),
+                ..Default::default()
+            })
+            .unwrap())
+        })
+    }
+}
+
+#[tokio::test]
+async fn http_and_agent_run_use_configured_execution() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let execution = Arc::new(FakeExecution::default());
+    let mut config = crate::ServerConfig::new(root.clone(), "secret".into(), None);
+    config.execution = execution.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server_config = config.clone();
+    let server = tokio::spawn(crate::run_server_until(listener, server_config, async {
+        let _ = stopped.await;
+    }));
+    for (path, body, expected) in [
+        (
+            "/exec",
+            r#"{"command":"touch http-marker"}"#,
+            "fake execution",
+        ),
+        ("/git/status", r#"{"cwd":"."}"#, "fake"),
+    ] {
+        let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer secret\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            addr.port(),
+            body.len()
+        );
+        socket.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains(expected), "{response}");
+    }
+    let backend = Arc::new(FakeBackend::default());
+    *backend.kind.lock().unwrap() = Some(RunKind::Agent {
+        project_path: "".into(),
+    });
+    let provider = FakeProvider {
+        tools: Mutex::new(vec![
+            vec![Ok(ToolStreamChunk::Response(ChatResponse::ToolCalls(
+                vec![
+                    ToolCall {
+                        id: "command".into(),
+                        name: "run_command".into(),
+                        arguments: r#"{"command":"touch run-marker"}"#.into(),
+                    },
+                    ToolCall {
+                        id: "git".into(),
+                        name: "git_status".into(),
+                        arguments: "{}".into(),
+                    },
+                ],
+            )))],
+            vec![Ok(ToolStreamChunk::Response(ChatResponse::Text(
+                "final".into(),
+            )))],
+        ]),
+        ..Default::default()
+    };
+    let start = start("fake-run");
+    let run = config.runs.reserve(&user(1), &start).unwrap();
+    let run = config
+        .runs
+        .prepare(
+            run,
+            start,
+            &config.workspace_root,
+            backend,
+            |_| provider,
+            config.execution.clone(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(RunEvent::PermissionRequest { id, .. }) = events(&run)
+                .iter()
+                .find(|event| matches!(event, RunEvent::PermissionRequest { .. }))
+            {
+                run.gate.decide(id, true).unwrap();
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    finished(&run).await;
+    assert!(matches!(events(&run).last(), Some(RunEvent::Done { .. })));
+    assert_eq!(
+        events(&run)
+            .iter()
+            .filter(|event| matches!(event, RunEvent::ToolResult { ok: true, .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        *execution.calls.lock().unwrap(),
+        [
+            ("touch http-marker".into(), root.clone()),
+            ("git status".into(), root.clone()),
+            ("touch run-marker".into(), root.clone()),
+            ("git status".into(), root.clone()),
+        ]
+    );
+    assert!(!root.join("http-marker").exists());
+    assert!(!root.join("run-marker").exists());
+    stop.send(()).unwrap();
+    server.await.unwrap();
 }

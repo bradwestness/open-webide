@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use openwebide_core::{BridgeServerMessage, BridgeSessionInfo};
 use tokio::sync::mpsc;
 
-use crate::proc::Signal;
-use crate::seq_ring::SeqRing;
+use crate::exec::proc::Signal;
+use crate::terminals::seq_ring::SeqRing;
 
 /// Maximum size of the output ring buffer in bytes (2MB default per session).
 const MAX_RING_BUFFER_BYTES: usize = 2 * 1024 * 1024;
@@ -240,7 +240,7 @@ impl SessionManager {
                 .iter()
                 .filter(|s| s.running.load(Ordering::SeqCst))
                 .filter_map(|s| s.pid)
-                .map(|pgid| crate::proc::terminate_group(pgid, Duration::from_secs(2)));
+                .map(|pgid| crate::exec::proc::terminate_group(pgid, Duration::from_secs(2)));
             futures::future::join_all(kills).await;
         }
     }

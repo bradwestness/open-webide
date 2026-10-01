@@ -12,22 +12,7 @@ use openwebide_core::{
 use tokio::process::Command;
 use tokio::time::timeout;
 
-/// Git execution and validation errors.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GitError {
-    Validation(String),
-    Execution(String),
-}
-
-impl std::fmt::Display for GitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Validation(msg) | Self::Execution(msg) => write!(f, "{msg}"),
-        }
-    }
-}
-
-impl std::error::Error for GitError {}
+pub use crate::BridgeError as GitError;
 
 /// Helper to execute git command with 30s timeout and return untrimmed stdout/stderr.
 async fn exec_git(args: &[&str], cwd: &Path) -> Result<(String, String, bool), GitError> {
@@ -74,7 +59,7 @@ async fn exec_git_bytes(args: &[&str], cwd: &Path) -> Result<(Vec<u8>, String, b
         Err(_) => {
             #[cfg(unix)]
             if let Some(pgid) = pid {
-                crate::proc::terminate_group(pgid, Duration::from_secs(2)).await;
+                crate::exec::proc::terminate_group(pgid, Duration::from_secs(2)).await;
             }
             Err(GitError::Execution(
                 "git command timed out after 30s".into(),

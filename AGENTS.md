@@ -39,7 +39,8 @@ Instructions, conventions, and architectural principles for AI agents working on
   - SQLite storage layer. Spin has no migration runner, so `crates/storage/src/migrations.rs` applies version-gated migrations: `PRAGMA user_version` tracks the schema version against `SCHEMA_VERSION`, and each numbered step in `apply_step` runs once (every step stays idempotent, since pre-versioning databases start at 0 and replay). A database whose version is newer than the build refuses to start.
   - Supports user isolation, session histories, project metadata, and key-value user settings.
 - **Execution Bridge (`bridge/`)**:
-  - Native daemon (`openwebide-bridge`) providing PTY terminal emulation, process execution, and host Git operations over WebSockets.
+  - Native daemon (`openwebide-bridge`) with separate `terminals` (PTY/headless sessions), `exec` (host command/Git execution), `runs` (agent/chat runs), and `server` (HTTP/WebSocket routing) modules.
+  - HTTP tools and agent runs share `Arc<dyn ToolExecution>` on `ServerConfig`; terminals retain full host shell access outside that trait.
 - **Shared Crates (`crates/`)**:
   - `openwebide-core`: Shared domain types, diff algorithms, syntax highlighting, TUI telemetry, and VFS abstractions.
   - `openwebide-auth`: argon2id hashing and HMAC session tokens (not JWT).

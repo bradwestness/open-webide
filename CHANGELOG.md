@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Split bridge terminals, tool execution, and agent runs into modules; share an executor trait for host tools and add structured logs with `RUST_LOG` filtering.
+
 - Refactor backend routing and typed errors; hide internal 500 details, surface project lookup failures, and accept raw binary file writes.
 
 - Show streamed model reasoning and mark replies cut off by the output token limit; omit prior reasoning from model context.

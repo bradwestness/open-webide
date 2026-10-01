@@ -16,6 +16,9 @@ default = ["tls"]
 tls = ["dep:hyper-rustls"]
 
 [dependencies]
+thiserror = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }

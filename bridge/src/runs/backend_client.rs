@@ -10,7 +10,7 @@ use openwebide_core::{
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::http_client::ReqwestHttpClient;
+use crate::runs::http_client::ReqwestHttpClient;
 
 pub trait RunBackend: Send + Sync {
     fn run_plan(
@@ -245,7 +245,7 @@ mod tests {
 
     #[tokio::test]
     async fn records_streamed_tools_flag_at_connection_route() {
-        let (url, captured) = crate::http_client::tests::capture(
+        let (url, captured) = crate::runs::http_client::tests::capture(
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
         )
         .await;
@@ -265,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn sends_secret_and_acting_user() {
-        let (url, captured) = crate::http_client::tests::capture(
+        let (url, captured) = crate::runs::http_client::tests::capture(
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]",
         )
         .await;

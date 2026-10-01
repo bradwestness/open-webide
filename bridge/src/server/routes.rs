@@ -1,0 +1,356 @@
+use super::http::{read_body, read_json, respond};
+use super::ws::handle_websocket;
+use super::{PermitCell, ServerConfig, check_request};
+use crate::terminals::session::SessionManager;
+use crate::{
+    BridgeError,
+    exec::{GitOperation, GitRequest, SpawnSpec},
+};
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::header::{CONNECTION, CONTENT_TYPE, HOST, ORIGIN, UPGRADE};
+use hyper::{HeaderMap, Request, Response, StatusCode, body::Incoming};
+use hyper_util::rt::TokioIo;
+use serde::Deserialize;
+use std::convert::Infallible;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::{
+    handshake::derive_accept_key,
+    protocol::{Role, WebSocketConfig},
+};
+use tracing::Instrument;
+const MAX_WS_MESSAGE: usize = 16 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct ExecPayload {
+    command: String,
+    #[serde(default = "default_timeout")]
+    timeout_seconds: u64,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+fn default_timeout() -> u64 {
+    30
+}
+
+/// Route a single request. `check_request` runs first for every method and path, before any
+/// side effect; only requests that pass it reach a handler.
+pub(super) async fn route(
+    req: Request<Incoming>,
+    addr: std::net::SocketAddr,
+    sessions: SessionManager,
+    config: ServerConfig,
+    permit_cell: PermitCell,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let host = req.headers().get(HOST).and_then(|v| v.to_str().ok());
+    let origin = req.headers().get(ORIGIN).and_then(|v| v.to_str().ok());
+    let content_type = req
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+    let method = req.method().as_str().to_string();
+
+    let echo_origin = match check_request(host, origin, &method, content_type, &config) {
+        Ok(o) => o,
+        Err(code) => return Ok(rejection_response(code)),
+    };
+    let allowed_origin = echo_origin.as_deref();
+
+    if is_websocket_upgrade(req.headers()) {
+        return Ok(handle_ws_upgrade(
+            req,
+            allowed_origin,
+            sessions,
+            config,
+            permit_cell,
+        ));
+    }
+
+    let path = req.uri().path().to_string();
+
+    let is_api_req = path == "/exec" || path.starts_with("/git/");
+    if is_api_req && method != "OPTIONS" {
+        let auth_header = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
+        let mut authorized = false;
+
+        if let Some(h) = auth_header
+            && let Some(token) = h.strip_prefix("Bearer ")
+        {
+            if origin.is_none() {
+                authorized =
+                    crate::secret::constant_time_eq(token.as_bytes(), config.secret.as_bytes());
+            } else {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                authorized = crate::auth::authenticate(token, &config, now).is_ok();
+            }
+        }
+
+        if !authorized {
+            return Ok(execution_response(
+                Err(BridgeError::Unauthorized("bridge token required".into())),
+                allowed_origin,
+            ));
+        }
+    }
+
+    match (method.as_str(), path.as_str()) {
+        ("OPTIONS", _) => Ok(preflight_response(req.headers(), allowed_origin)),
+        ("GET", "/health") => Ok(respond(
+            StatusCode::OK,
+            r#"{"status":"ok"}"#,
+            allowed_origin,
+        )),
+        ("POST", "/secret") if origin.is_none() && addr.ip().is_loopback() => Ok(respond(
+            StatusCode::OK,
+            &serde_json::json!({ "secret": config.secret.as_ref() }).to_string(),
+            allowed_origin,
+        )),
+        ("POST", "/secret") => Ok(execution_response(
+            Err(BridgeError::Forbidden("forbidden".into())),
+            allowed_origin,
+        )),
+        ("POST", "/exec") => Ok(execution_response(
+            handle_exec(req, &config).await,
+            allowed_origin,
+        )),
+        (m, p) if (m == "GET" || m == "POST") && p.starts_with("/git/") => Ok(execution_response(
+            handle_git(req, &config).await,
+            allowed_origin,
+        )),
+        _ => Ok(execution_response(
+            Err(BridgeError::NotFound("not found".into())),
+            allowed_origin,
+        )),
+    }
+}
+
+/// Map a `check_request` rejection to a response. These never carry CORS headers: the request
+/// failed the Host/Origin baseline, so there is no origin to trust.
+fn rejection_response(code: u16) -> Response<Full<Bytes>> {
+    let error = match code {
+        403 => BridgeError::Forbidden("forbidden".into()),
+        415 => BridgeError::UnsupportedMediaType,
+        _ => BridgeError::Validation("bad request".into()),
+    };
+    execution_response(Err(error), None)
+}
+
+fn preflight_response(headers: &HeaderMap, allowed_origin: Option<&str>) -> Response<Full<Bytes>> {
+    let private_network = headers
+        .get("access-control-request-private-network")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+
+    let mut builder = Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("connection", "close")
+        .header("access-control-allow-methods", "GET, POST, OPTIONS")
+        .header(
+            "access-control-allow-headers",
+            "Content-Type, Authorization",
+        )
+        .header("access-control-max-age", "600");
+    if let Some(origin) = allowed_origin {
+        builder = builder
+            .header("access-control-allow-origin", origin)
+            .header("vary", "Origin");
+    }
+    if private_network {
+        builder = builder.header("access-control-allow-private-network", "true");
+    }
+    builder
+        .body(Full::new(Bytes::new()))
+        .expect("static headers always produce a valid response")
+}
+
+fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    let is_upgrade = headers
+        .get(UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    let has_connection_upgrade = headers
+        .get(CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
+    is_upgrade && has_connection_upgrade
+}
+
+/// A `Sec-WebSocket-Key` is always the base64 encoding of a 16-byte nonce: 24 characters, the
+/// last two of which are the `==` padding forced by 16 not being a multiple of 3.
+fn is_valid_ws_key(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    bytes.len() == 24
+        && bytes.ends_with(b"==")
+        && bytes[..22]
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+}
+
+fn handle_ws_upgrade(
+    req: Request<Incoming>,
+    allowed_origin: Option<&str>,
+    sessions: SessionManager,
+    config: ServerConfig,
+    permit_cell: PermitCell,
+) -> Response<Full<Bytes>> {
+    let version_ok = req
+        .headers()
+        .get("sec-websocket-version")
+        .and_then(|v| v.to_str().ok())
+        == Some("13");
+    let key = req
+        .headers()
+        .get("sec-websocket-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|k| version_ok && is_valid_ws_key(k))
+        .map(str::to_string);
+
+    let Some(key) = key else {
+        return execution_response(
+            Err(BridgeError::Validation("invalid websocket upgrade".into())),
+            allowed_origin,
+        );
+    };
+    let accept_key = derive_accept_key(key.as_bytes());
+
+    tokio::spawn(
+        async move {
+            // Claim the connection's accept permit for the life of the WebSocket session, instead
+            // of letting it release when the HTTP dispatch for this upgrade request completes: an
+            // open WebSocket must keep counting against `max_connections`.
+            let _permit = permit_cell
+                .lock()
+                .expect("permit cell mutex poisoned")
+                .take();
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    let ws_config = WebSocketConfig::default()
+                        .max_message_size(Some(MAX_WS_MESSAGE))
+                        .max_frame_size(Some(MAX_WS_MESSAGE));
+                    let ws_stream = WebSocketStream::from_raw_socket(
+                        TokioIo::new(upgraded),
+                        Role::Server,
+                        Some(ws_config),
+                    )
+                    .await;
+                    handle_websocket(ws_stream, sessions, config).await;
+                }
+                Err(err) => tracing::warn!(error = %err, "websocket upgrade failed"),
+            }
+        }
+        .instrument(tracing::Span::current()),
+    );
+
+    let mut builder = Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("upgrade", "websocket")
+        .header("connection", "upgrade")
+        .header("sec-websocket-accept", accept_key);
+    if let Some(origin) = allowed_origin {
+        builder = builder
+            .header("access-control-allow-origin", origin)
+            .header("vary", "Origin");
+    }
+    builder
+        .body(Full::new(Bytes::new()))
+        .expect("static headers always produce a valid response")
+}
+
+fn execution_response(
+    result: Result<String, BridgeError>,
+    origin: Option<&str>,
+) -> Response<Full<Bytes>> {
+    match result {
+        Ok(body) => respond(StatusCode::OK, &body, origin),
+        Err(error) => respond(
+            error.status(),
+            &serde_json::json!({"error": error.to_string()}).to_string(),
+            origin,
+        ),
+    }
+}
+
+async fn handle_exec(req: Request<Incoming>, config: &ServerConfig) -> Result<String, BridgeError> {
+    let payload: ExecPayload = read_json(req.into_body(), config.limits.max_body).await?;
+    let cwd = crate::paths::resolve_in_root(&config.workspace_root, payload.cwd.as_deref())
+        .map_err(BridgeError::Validation)?;
+    let output = config
+        .execution
+        .run_command(SpawnSpec::shell(
+            payload.command,
+            cwd,
+            payload.timeout_seconds,
+            std::future::pending(),
+        ))
+        .await?;
+    serde_json::to_string(&output).map_err(|error| BridgeError::Execution(error.to_string()))
+}
+
+async fn handle_git(req: Request<Incoming>, config: &ServerConfig) -> Result<String, BridgeError> {
+    let method = req.method().as_str().to_string();
+    let path = req.uri().path().to_string();
+    let is_get = method == "GET";
+    let body = read_body(req.into_body(), config.limits.max_body).await?;
+    let repo_dir = if is_get && body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<serde_json::Value>(&body)
+            .map_err(|error| BridgeError::Validation(format!("invalid JSON: {error}")))?
+            .get("cwd")
+            .and_then(|value| value.as_str().filter(|s| !s.is_empty()).map(String::from))
+    };
+    let cwd = match repo_dir {
+        Some(dir) => crate::paths::resolve_in_root(&config.workspace_root, Some(&dir))
+            .map_err(BridgeError::Validation)?,
+        None if is_get => config.workspace_root.clone(),
+        None => return Err(BridgeError::Validation("cwd is missing or empty".into())),
+    };
+    #[derive(Deserialize, Default)]
+    struct PathRequest {
+        path: Option<String>,
+    }
+    let operation = match (method.as_str(), path.as_str()) {
+        ("GET", "/git/status") | ("POST", "/git/status") => GitOperation::Status,
+        ("GET", "/git/diff") | ("POST", "/git/diff") => GitOperation::Diff(
+            serde_json::from_slice::<PathRequest>(&body)
+                .unwrap_or_default()
+                .path,
+        ),
+        ("GET", "/git/show") | ("POST", "/git/show") => GitOperation::Show(
+            serde_json::from_slice::<PathRequest>(&body)
+                .unwrap_or_default()
+                .path
+                .ok_or_else(|| BridgeError::Validation("missing path parameter".into()))?,
+        ),
+        ("GET", "/git/branches") | ("POST", "/git/branches") => GitOperation::Branches,
+        ("POST", "/git/commit") => {
+            GitOperation::Commit(serde_json::from_slice(&body).map_err(|error| {
+                BridgeError::Validation(format!("invalid commit payload: {error}"))
+            })?)
+        }
+        ("POST", "/git/checkout") => {
+            GitOperation::Checkout(serde_json::from_slice(&body).map_err(|error| {
+                BridgeError::Validation(format!("invalid checkout payload: {error}"))
+            })?)
+        }
+        ("POST", "/git/sync") => {
+            GitOperation::Sync(serde_json::from_slice(&body).map_err(|error| {
+                BridgeError::Validation(format!("invalid sync payload: {error}"))
+            })?)
+        }
+        _ => {
+            return Err(BridgeError::Validation(format!(
+                "unrecognized git route: {method} {path}"
+            )));
+        }
+    };
+    let output = config.execution.git(GitRequest { cwd, operation }).await?;
+    serde_json::to_string(&output).map_err(|error| BridgeError::Execution(error.to_string()))
+}

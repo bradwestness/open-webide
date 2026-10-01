@@ -169,10 +169,15 @@ fn parse_args() -> Result<Args, String> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
     let args = match parse_args() {
         Ok(a) => a,
         Err(err) => {
-            eprintln!("Error: {err}");
+            tracing::error!(error = %err);
             std::process::exit(1);
         }
     };
@@ -180,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
     let workspace_root = match openwebide_bridge::paths::canonical_root(&args.workspace) {
         Ok(r) => r,
         Err(err) => {
-            eprintln!("Error: {err}");
+            tracing::error!(error = %err);
             std::process::exit(1);
         }
     };
@@ -193,7 +198,7 @@ async fn main() -> anyhow::Result<()> {
         match openwebide_bridge::secret::load_or_create(env_secret, args.secret_file, home, xdg) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("Error: {}", e);
+                tracing::error!(error = %e);
                 std::process::exit(1);
             }
         };
@@ -226,21 +231,16 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("invalid socket address {addr_str}: {e}"))?;
 
     let listener = TcpListener::bind(addr).await?;
-    println!("OpenWebIDE Bridge daemon listening on ws://{addr} (HTTP POST /exec enabled)");
-    println!("Workspace root: {}", config.workspace_root.display());
-    println!("Allowed origins: {}", config.allowed_origins.join(", "));
-    println!("Allowed hosts: {}", config.allowed_hosts.join(", "));
+    tracing::info!(%addr, "bridge listening (WebSocket and HTTP /exec)");
+    tracing::info!(workspace = %config.workspace_root.display(), origins = %config.allowed_origins.join(", "), hosts = %config.allowed_hosts.join(", "), "bridge configuration");
     match secret_source {
         openwebide_bridge::secret::SecretSource::Env => {
-            println!("Secret source: OPENWEBIDE_BRIDGE_SECRET environment variable");
+            tracing::info!("secret source: OPENWEBIDE_BRIDGE_SECRET environment variable");
         }
         openwebide_bridge::secret::SecretSource::File(p) => {
-            println!("Secret source: {}", p.display());
+            tracing::info!(path = %p.display(), "secret source: file");
             if !addr.ip().is_loopback() {
-                println!(
-                    "Hint: backends on other hosts need SPIN_VARIABLE_BRIDGE_SECRET=<contents of {}>",
-                    p.display()
-                );
+                tracing::info!(path = %p.display(), "backends on other hosts need SPIN_VARIABLE_BRIDGE_SECRET set to this file's contents");
             }
         }
     }

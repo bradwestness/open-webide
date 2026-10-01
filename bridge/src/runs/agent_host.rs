@@ -12,10 +12,11 @@ use openwebide_core::{
 };
 use tokio::sync::{Notify, oneshot};
 
-use crate::backend_client::RunBackend;
+use crate::runs::backend_client::RunBackend;
 
 pub struct InProcessBridgeClient {
     pub dir: PathBuf,
+    pub execution: Arc<dyn crate::exec::ToolExecution>,
     pub cancel: BridgeCancel,
 }
 
@@ -25,33 +26,56 @@ impl BridgeClient for InProcessBridgeClient {
         command: &str,
         timeout_seconds: u64,
     ) -> Result<CommandOutcome, String> {
-        crate::headless::execute_command_direct(
-            command,
-            &self.dir,
-            timeout_seconds,
-            self.cancel.cancelled(),
-        )
-        .await
+        let cancel = self.cancel.clone();
+        self.execution
+            .run_command(crate::exec::SpawnSpec::shell(
+                command.into(),
+                self.dir.clone(),
+                timeout_seconds,
+                async move { cancel.cancelled().await },
+            ))
+            .await
+            .map_err(|error| error.to_string())
     }
     async fn git_status(&self) -> Result<GitRepoStatus, String> {
-        crate::git::get_repo_status(&self.dir)
-            .await
-            .map_err(|e| e.to_string())
+        self.git(crate::exec::GitOperation::Status).await
     }
     async fn git_diff(&self, path: Option<&str>) -> Result<String, String> {
-        crate::git::get_repo_diff(&self.dir, path)
-            .await
-            .map_err(|e| e.to_string())
+        let value: serde_json::Value = self
+            .git(crate::exec::GitOperation::Diff(path.map(String::from)))
+            .await?;
+        serde_json::from_value(
+            value
+                .get("diff")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(|error| error.to_string())
     }
     async fn git_commit(&self, req: &GitCommitRequest) -> Result<GitCommitResult, String> {
-        crate::git::commit_changes(&self.dir, req)
+        self.git(crate::exec::GitOperation::Commit(req.clone()))
             .await
-            .map_err(|e| e.to_string())
     }
     async fn git_checkout(&self, req: &GitCheckoutRequest) -> Result<GitCheckoutResult, String> {
-        crate::git::checkout_branch(&self.dir, req)
+        self.git(crate::exec::GitOperation::Checkout(req.clone()))
             .await
-            .map_err(|e| e.to_string())
+    }
+}
+
+impl InProcessBridgeClient {
+    async fn git<T: serde::de::DeserializeOwned>(
+        &self,
+        operation: crate::exec::GitOperation,
+    ) -> Result<T, String> {
+        let value = self
+            .execution
+            .git(crate::exec::GitRequest {
+                cwd: self.dir.clone(),
+                operation,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        serde_json::from_value(value).map_err(|error| error.to_string())
     }
 }
 

@@ -3,15 +3,13 @@
 //! Executes workspace tools (`read_file`, `write_file`, `list_dir`, `search`, `grep_search`)
 //! against any implementation of the [`Vfs`] trait.
 
-use std::future::Future;
-
 use openwebide_core::{
-    CommandOutcome, FileDiff, FileEntry, GitCheckoutRequest, GitCheckoutResult, GitCommitRequest,
-    GitCommitResult, GitRepoStatus, ToolCall, ToolDefinition, Vfs, VfsError, WebSearchResult,
-    normalize_vfs_path,
+    FileDiff, FileEntry, GitCheckoutRequest, GitCommitRequest, ToolCall, ToolDefinition, Vfs,
+    VfsError, normalize_vfs_path,
     vfs::{SearchOptions, skip_dir},
 };
 
+pub use crate::clients::{BridgeClient, NoopBridgeClient, NoopWebClient, WebClient};
 use crate::tools::{
     self, FetchWebPageArgs, GitBranchArgs, GitCommitArgs, GitDiffArgs, GrepSearchArgs, ListDirArgs,
     ReadFileArgs, RunCommandArgs, SearchArgs, SearchWebArgs, Tool, ToolName, WriteFileArgs,
@@ -63,79 +61,6 @@ fn cap_head_tail(s: &str, max: usize) -> String {
 /// The standard workspace tools offered to the agent model.
 pub fn vfs_tools() -> Vec<ToolDefinition> {
     ToolName::ALL.iter().map(|t| t.definition()).collect()
-}
-
-/// Web search and documentation fetching capability for the agent.
-pub trait WebClient: Send + Sync {
-    fn search(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> impl Future<Output = Result<Vec<WebSearchResult>, String>> + Send;
-
-    fn fetch_page(&self, url: &str) -> impl Future<Output = Result<String, String>> + Send;
-}
-
-/// A no-op web client for environments without external web access.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoopWebClient;
-
-impl WebClient for NoopWebClient {
-    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<WebSearchResult>, String> {
-        Err("Web access is not configured in this environment.".into())
-    }
-
-    async fn fetch_page(&self, _url: &str) -> Result<String, String> {
-        Err("Web access is not configured in this environment.".into())
-    }
-}
-
-/// Process execution bridge client capability for the agent.
-pub trait BridgeClient: Send + Sync {
-    fn execute_command(
-        &self,
-        command: &str,
-        timeout_seconds: u64,
-    ) -> impl Future<Output = Result<CommandOutcome, String>> + Send;
-
-    fn git_status(&self) -> impl Future<Output = Result<GitRepoStatus, String>> + Send {
-        async { Err("Git status is not available (bridge daemon not connected).".into()) }
-    }
-
-    fn git_diff(&self, path: Option<&str>) -> impl Future<Output = Result<String, String>> + Send {
-        let _ = path;
-        async { Err("Git diff is not available (bridge daemon not connected).".into()) }
-    }
-
-    fn git_commit(
-        &self,
-        req: &GitCommitRequest,
-    ) -> impl Future<Output = Result<GitCommitResult, String>> + Send {
-        let _ = req;
-        async { Err("Git commit is not available (bridge daemon not connected).".into()) }
-    }
-
-    fn git_checkout(
-        &self,
-        req: &GitCheckoutRequest,
-    ) -> impl Future<Output = Result<GitCheckoutResult, String>> + Send {
-        let _ = req;
-        async { Err("Git checkout is not available (bridge daemon not connected).".into()) }
-    }
-}
-
-/// A no-op bridge client for environments without an active terminal bridge daemon.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoopBridgeClient;
-
-impl BridgeClient for NoopBridgeClient {
-    async fn execute_command(
-        &self,
-        _command: &str,
-        _timeout_seconds: u64,
-    ) -> Result<CommandOutcome, String> {
-        Err("Process execution is not available (bridge daemon not connected). Start 'openwebide-bridge' to enable shell commands.".into())
-    }
 }
 
 /// A tool executor backed by a [`Vfs`], optional [`WebClient`], and optional [`BridgeClient`].
@@ -775,6 +700,9 @@ async fn recursive_list<V: Vfs>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openwebide_core::{
+        CommandOutcome, GitCheckoutResult, GitCommitResult, GitRepoStatus, WebSearchResult,
+    };
     use openwebide_core::{MemoryVfs, SearchHit, vfs::VfsFuture};
     use serde_json::json;
 

@@ -7,8 +7,8 @@ use openwebide_llm::{LlmProvider, ToolStreamMemos, registry::Provider};
 use tokio::sync::mpsc;
 
 use crate::auth::Principal;
-use crate::backend_client::{BackendClient, RunBackend};
-use crate::http_client::ReqwestHttpClient;
+use crate::runs::backend_client::{BackendClient, RunBackend};
+use crate::runs::http_client::ReqwestHttpClient;
 use crate::server::WriterCmd;
 
 pub(crate) async fn complete(

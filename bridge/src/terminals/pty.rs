@@ -1,28 +1,29 @@
 //! Interactive pseudo-terminal (PTY) process spawning via portable-pty.
 
-use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
 use std::sync::Arc;
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::mpsc;
 
-use crate::proc::Signal;
-use crate::session::Session;
+use crate::exec::proc::Signal;
+use crate::terminals::session::Session;
 
 /// Spawn an interactive PTY session.
-#[allow(clippy::too_many_arguments)] // bundling into a config struct is an API change for callers, not a lint fix
 pub fn spawn_pty(
     id: String,
-    command: String,
-    args: Vec<String>,
-    cwd: Option<String>,
-    env: HashMap<String, String>,
+    spec: crate::exec::SpawnSpec,
     cols: u16,
     rows: u16,
-    workspace_root: &Path,
 ) -> Result<Arc<Session>, String> {
+    let display_cmd = spec.display_cmd();
+    let crate::exec::SpawnSpec {
+        command,
+        args,
+        cwd: effective_cwd,
+        env,
+        ..
+    } = spec;
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -32,9 +33,6 @@ pub fn spawn_pty(
             pixel_height: 0,
         })
         .map_err(|e| format!("openpty failed: {e}"))?;
-
-    // Determine working directory: confined to workspace_root
-    let effective_cwd = crate::paths::resolve_in_root(workspace_root, cwd.as_deref())?;
 
     let mut cmd = CommandBuilder::new(&command);
     cmd.args(&args);
@@ -58,12 +56,6 @@ pub fn spawn_pty(
     let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(128);
     let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(32);
     let (kill_tx, mut kill_rx) = mpsc::channel::<Signal>(4);
-
-    let display_cmd = if args.is_empty() {
-        command.clone()
-    } else {
-        format!("{command} {}", args.join(" "))
-    };
 
     let session = Arc::new(Session::new(
         id.clone(),
@@ -166,7 +158,7 @@ pub fn spawn_pty(
                     }
                     #[cfg(unix)]
                     Signal::Term | Signal::Hup | Signal::Kill => match pid {
-                        Some(pgid) => crate::proc::signal_group(pgid, sig),
+                        Some(pgid) => crate::exec::proc::signal_group(pgid, sig),
                         None => {
                             let _ = killer.kill();
                         }
@@ -221,13 +213,16 @@ mod tests {
         let temp_dir = crate::paths::canonical_root(&std::env::temp_dir()).unwrap();
         let session = spawn_pty(
             "sess-pty-int".into(),
-            "sh".into(),
-            vec![],
-            None,
-            Default::default(),
+            crate::exec::SpawnSpec::in_root(
+                "sh".into(),
+                vec![],
+                None,
+                Default::default(),
+                &temp_dir,
+            )
+            .unwrap(),
             80,
             24,
-            &temp_dir,
         )
         .unwrap();
 

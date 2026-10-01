@@ -1,23 +1,17 @@
-//! Native WebSocket terminal and process execution bridge daemon library.
-
+//! Native terminal, tool execution, and agent run bridge.
 pub mod auth;
-pub mod git;
-pub mod headless;
-pub mod http;
+mod error;
+pub mod exec;
 pub mod paths;
-pub mod proc;
-pub mod pty;
+pub mod runs;
 pub mod secret;
 pub mod server;
-pub mod session;
-
+pub mod terminals;
+pub use error::BridgeError;
 pub use server::{ServerConfig, check_request, run_server, run_server_until};
-pub use session::SessionManager;
-pub mod seq_ring;
-
-pub mod agent_host;
-pub mod backend_client;
-mod completions;
-pub mod http_client;
-pub mod native_vfs;
-pub mod runs;
+pub use terminals::session::SessionManager;
+// Preserve the library's module paths for existing hosts.
+pub use exec::{git, proc};
+pub use runs::{agent_host, backend_client, http_client, native_vfs};
+pub use server::http;
+pub use terminals::{headless, pty, seq_ring, session};
