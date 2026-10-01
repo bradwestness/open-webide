@@ -114,3 +114,266 @@ async fn empty_interim_with_calls_is_hidden_but_text_interim_renders() {
             .is_none()
     );
 }
+
+fn interrupted_local_view(state: super::support::TestState) -> impl leptos::prelude::IntoView {
+    use leptos::prelude::*;
+    use openwebide_core::{ConversationEntry, WorkspaceMode};
+    use wasm_bindgen::JsCast;
+    state.seed_project();
+    state
+        .projects
+        .projects
+        .update(|projects| projects[0].mode = WorkspaceMode::Local);
+    state.seed_connection();
+    state.seed_session();
+    state.fake.messages.borrow_mut().insert(
+        1,
+        vec![ConversationEntry::Message(message(7, Role::User, "check"))],
+    );
+    state
+        .fake
+        .scripted_completions
+        .borrow_mut()
+        .push_back(openwebide_core::ChatCompletion {
+            response: openwebide_core::ChatResponse::Text("Resumed reply".into()),
+            preamble: String::new(),
+            usage: None,
+        });
+    // A text-only completion never accesses the directory handle.
+    state.projects.local_handles.update(|handles| {
+        handles.insert(1, js_sys::Object::new().unchecked_into());
+    });
+    chat_view(state)
+}
+
+#[wasm_bindgen_test]
+async fn interrupted_local_resume_requests_model_without_persisting_user() {
+    use openwebide_frontend::testing::fake_backend::Call;
+    let mounted = mount_test(interrupted_local_view);
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("This run was interrupted.")
+    );
+    mounted.state.fake.calls.borrow_mut().clear();
+    mounted.click_text("Resume");
+    settle().await;
+    let calls = mounted.state.fake.calls.borrow();
+    assert!(calls.contains(&Call::Request {
+        method: "chat_tools"
+    }));
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| **call
+                == Call::Request {
+                    method: "persist_message"
+                })
+            .count(),
+        1
+    );
+    let messages = mounted.state.fake.messages.borrow();
+    assert_eq!(messages[&1].len(), 2);
+    assert_eq!(messages[&1].iter().filter(|entry| matches!(entry, openwebide_core::ConversationEntry::Message(message) if message.role == Role::User)).count(), 1);
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Resumed reply")
+    );
+    let requests = mounted.state.fake.completion_requests.borrow();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].messages, vec![message(7, Role::User, "check")]);
+}
+
+#[wasm_bindgen_test]
+async fn dismiss_hides_interrupted_local_notice_for_page_lifetime() {
+    use leptos::prelude::*;
+    let mounted = mount_test(interrupted_local_view);
+    settle().await;
+    mounted.click_text("Dismiss");
+    settle().await;
+    assert!(
+        !mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("This run was interrupted.")
+    );
+    mounted.state.chat.active_session.set(None);
+    settle().await;
+    mounted.state.chat.active_session.set(Some(1));
+    settle().await;
+    assert!(
+        !mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("This run was interrupted.")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn stale_resume_uses_fresh_history_turns() {
+    use leptos::prelude::*;
+    use openwebide_core::{ChatCompletion, ChatResponse, ConversationEntry, ToolCall, ToolStep};
+    use openwebide_frontend::conversation::ConversationItem;
+    let mounted = mount_test(interrupted_local_view);
+    settle().await;
+    let mut interim = message(8, Role::Assistant, "Checking old.txt");
+    interim.tool_calls = Some(vec![ToolCall {
+        id: "wire".into(),
+        name: "read_file".into(),
+        arguments: "{}".into(),
+    }]);
+    mounted
+        .state
+        .fake
+        .messages
+        .borrow_mut()
+        .get_mut(&1)
+        .unwrap()
+        .extend([
+            ConversationEntry::Message(interim),
+            ConversationEntry::ToolStep(ToolStep {
+                tool_call_id: "a7t1c0".into(),
+                name: "read_file".into(),
+                summary: "read old.txt".into(),
+                ok: Some(true),
+                result_summary: Some("old contents".into()),
+                diff: None,
+                anchor_message_id: 8,
+            }),
+        ]);
+    mounted
+        .state
+        .fake
+        .scripted_completions
+        .borrow_mut()
+        .push_front(ChatCompletion {
+            response: ChatResponse::ToolCalls(vec![ToolCall {
+                id: "wire".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            }]),
+            preamble: String::new(),
+            usage: None,
+        });
+    mounted.click_text("Resume");
+    settle().await;
+    let ids: Vec<_> = mounted
+        .state
+        .chat
+        .messages
+        .get_untracked()
+        .into_iter()
+        .filter_map(|item| match item {
+            ConversationItem::ToolStep { id, .. } => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec!["a7t2c0"]);
+    assert!(mounted.state.chat.interrupted_run.get_untracked().is_none());
+}
+
+#[wasm_bindgen_test]
+async fn stale_resume_rejects_final_reply_or_different_user_anchor() {
+    use leptos::prelude::*;
+    use openwebide_core::ConversationEntry;
+    for role in [Role::Assistant, Role::User] {
+        let mounted = mount_test(interrupted_local_view);
+        settle().await;
+        mounted
+            .state
+            .fake
+            .messages
+            .borrow_mut()
+            .get_mut(&1)
+            .unwrap()
+            .push(ConversationEntry::Message(message(8, role, "new message")));
+        mounted.click_text("Resume");
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .chat
+                .error
+                .get_untracked()
+                .unwrap()
+                .contains("conversation changed")
+        );
+        assert!(mounted.state.fake.completion_requests.borrow().is_empty());
+        assert_eq!(mounted.state.fake.messages.borrow()[&1].len(), 2);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn failed_resume_keeps_recovery_after_missing_handle() {
+    use leptos::prelude::*;
+    let mounted = mount_test(interrupted_local_view);
+    settle().await;
+    let handle = mounted.state.projects.local_handles.get_untracked()[&1].clone();
+    mounted
+        .state
+        .projects
+        .local_handles
+        .update(|handles| handles.clear());
+    mounted.click_text("Resume");
+    settle().await;
+    assert!(
+        mounted
+            .state
+            .chat
+            .error
+            .get_untracked()
+            .unwrap()
+            .contains("local directory handle not available")
+    );
+    assert!(!mounted.state.chat.streaming.get_untracked());
+    assert!(mounted.state.chat.interrupted_run.get_untracked().is_some());
+    mounted.state.projects.local_handles.update(|handles| {
+        handles.insert(1, handle);
+    });
+    mounted.click_text("Resume");
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Resumed reply")
+    );
+    assert!(mounted.state.chat.interrupted_run.get_untracked().is_none());
+}
+
+#[wasm_bindgen_test]
+async fn failed_model_resume_keeps_recovery_available() {
+    use leptos::prelude::*;
+    use openwebide_core::{ChatCompletion, ChatResponse};
+    let mounted = mount_test(interrupted_local_view);
+    settle().await;
+    mounted.state.fake.scripted_completions.borrow_mut().clear();
+    mounted.click_text("Resume");
+    settle().await;
+    assert!(mounted.state.chat.error.get_untracked().is_some());
+    assert!(!mounted.state.chat.streaming.get_untracked());
+    assert!(mounted.state.chat.interrupted_run.get_untracked().is_some());
+    mounted
+        .state
+        .fake
+        .scripted_completions
+        .borrow_mut()
+        .push_back(ChatCompletion {
+            response: ChatResponse::Text("Retry reply".into()),
+            preamble: String::new(),
+            usage: None,
+        });
+    mounted.click_text("Resume");
+    settle().await;
+    assert!(mounted.root.text_content().unwrap().contains("Retry reply"));
+    assert!(mounted.state.chat.interrupted_run.get_untracked().is_none());
+}

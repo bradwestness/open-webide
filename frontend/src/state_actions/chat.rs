@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 
 use crate::conversation::{ConversationItem, next_item_nonce};
 use crate::state::{
-    chat::{ChatEffect, ChatState},
+    chat::{ChatEffect, ChatState, InterruptedRun},
     git::GitState,
     projects::ProjectsState,
     settings::SettingsState,
@@ -42,6 +42,7 @@ pub struct ChatActionContext {
 /// and executing slash-command intents.
 pub struct ChatActions {
     pub send: Callback<()>,
+    pub resume_local_run: Callback<()>,
     pub stop: Callback<()>,
     pub permission: Callback<(String, bool)>,
     pub permission_always: Callback<String>,
@@ -205,12 +206,12 @@ impl ChatActions {
             super::runs::RunActions::new(bridge, chat, api, apply_stream_event, run_controls);
         runs.install_reconnect();
 
-        let send = {
+        let start = {
             let local_cancel = chat.local_cancel_flag.get_value();
             let local_permissions = chat.local_permissions.get_value();
-            Callback::new(move |_| {
+            Callback::new(move |resume: Option<InterruptedRun>| {
                 let content = chat.draft.with(|draft| draft.trim().to_string());
-                if content.is_empty() || chat.streaming.get() {
+                if (resume.is_none() && content.is_empty()) || chat.streaming.get() {
                     return;
                 }
                 local_cancel.store(false, Ordering::Relaxed);
@@ -229,7 +230,10 @@ impl ChatActions {
                 }
                 // Clear the draft and mark streaming synchronously so a second
                 // send can't fire while the session is (possibly) created.
-                chat.draft.set(String::new());
+                if resume.is_none() {
+                    chat.draft.set(String::new());
+                    chat.interrupted_run.set(None);
+                }
                 chat.streaming.set(true);
                 chat.error.set(None);
                 chat.notice.set(None);
@@ -309,10 +313,23 @@ impl ChatActions {
                         .as_ref()
                         .and_then(|project| projects.local_handles.get().get(&project.id).cloned());
 
-                    let on_event = move |event| apply_stream_event.run((session_id, event));
+                    let on_event = move |event| {
+                        if resume.is_some()
+                            && matches!(event, openwebide_core::RunEvent::Done { .. })
+                            && chat.active_session.get_untracked() == Some(session_id)
+                        {
+                            chat.interrupted_run.set(None);
+                        }
+                        apply_stream_event.run((session_id, event));
+                    };
 
-                    let editor_context = chat.active_editor_context.get();
-                    chat.active_editor_context.set(None);
+                    let editor_context = if resume.is_none() {
+                        let context = chat.active_editor_context.get();
+                        chat.active_editor_context.set(None);
+                        context
+                    } else {
+                        None
+                    };
 
                     if is_local {
                         if let Some(handle) = local_handle {
@@ -357,6 +374,9 @@ impl ChatActions {
                                     .map(|prompt| prompt.content)
                             });
                             let vfs = local_fs::BrowserFsaVfs::new(handle);
+                            if let Some(resume) = resume {
+                                chat.current_run_anchor.set(Some(resume.anchor_id));
+                            }
                             let result = local_agent::run_local_agent(
                                 api,
                                 session_id,
@@ -372,6 +392,7 @@ impl ChatActions {
                                 crate::bridge::BridgeConfig::new(&settings.bridge_url.get()),
                                 bridge_credentials.with_value(Clone::clone),
                                 bridge.get_untracked(),
+                                resume,
                             )
                             .await;
                             if let Err(error) = result
@@ -437,6 +458,28 @@ impl ChatActions {
                     let _ = models.insert(session_id, model);
                 });
             }
+        });
+
+        let send = Callback::new(move |_| start.run(None));
+        let resume_local_run = Callback::new(move |_| {
+            let Some(resume) = chat.interrupted_run.get_untracked() else {
+                return;
+            };
+            let session_project = chat
+                .sessions
+                .get_untracked()
+                .into_iter()
+                .find(|session| Some(session.id) == chat.active_session.get_untracked())
+                .and_then(|session| session.project_id);
+            if session_project != projects.active_project.get_untracked()
+                || !projects.projects.get_untracked().iter().any(|project| {
+                    Some(project.id) == session_project && project.mode == WorkspaceMode::Local
+                })
+                || chat.active_run.get_untracked().is_some()
+            {
+                return;
+            }
+            start.run(Some(resume));
         });
 
         let on_select_session =
@@ -658,10 +701,11 @@ impl ChatActions {
             })
         };
 
-        install_effects(api, chat, settings, runs);
+        install_effects(api, chat, projects, settings, runs);
 
         Self {
             send,
+            resume_local_run,
             stop,
             permission,
             permission_always,
@@ -678,6 +722,7 @@ impl ChatActions {
 fn install_effects(
     api: Api,
     chat: ChatState,
+    projects: ProjectsState,
     settings: SettingsState,
     runs: super::runs::RunActions,
 ) {
@@ -759,6 +804,7 @@ fn install_effects(
     let skip_history_load = chat.skip_history_load;
     Effect::new(move |_| {
         let session_id = active_session.get();
+        chat.interrupted_run.set(None);
         if let Some(id) = session_id
             && skip_history_load.get_value() == Some(id)
         {
@@ -783,6 +829,43 @@ fn install_effects(
                             session_telemetry
                                 .update(|telemetry| telemetry.restore_from_conversation(&entries));
                             chat.messages.set(history_items(entries));
+                            let mode = chat
+                                .sessions
+                                .get_untracked()
+                                .into_iter()
+                                .find(|session| session.id == id)
+                                .and_then(|session| session.project_id)
+                                .and_then(|project_id| {
+                                    projects
+                                        .projects
+                                        .get_untracked()
+                                        .into_iter()
+                                        .find(|project| project.id == project_id)
+                                })
+                                .map(|project| project.mode);
+                            if let Some(mode) = mode {
+                                chat.detect_interrupted_run(mode);
+                                if mode == WorkspaceMode::Local
+                                    && !chat.streaming.get_untracked()
+                                    && chat.active_run.get_untracked().is_none()
+                                {
+                                    let anchor =
+                                        chat.messages.get_untracked().iter().rev().find_map(
+                                            |item| match item {
+                                                ConversationItem::Message(message)
+                                                    if message.role
+                                                        == openwebide_core::Role::User =>
+                                                {
+                                                    Some(message.id)
+                                                }
+                                                _ => None,
+                                            },
+                                        );
+                                    if let Some(anchor) = anchor {
+                                        chat.cancel_run_prompts(anchor);
+                                    }
+                                }
+                            }
                             runs.history.set(Some((id, this_gen)));
                         }
                         Err(error) => {
@@ -855,7 +938,7 @@ fn derive_session_name(prompt: &str) -> String {
     name
 }
 
-pub(super) fn history_items(entries: Vec<ConversationEntry>) -> Vec<ConversationItem> {
+pub(crate) fn history_items(entries: Vec<ConversationEntry>) -> Vec<ConversationItem> {
     entries
         .into_iter()
         .map(|entry| match entry {

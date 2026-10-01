@@ -417,6 +417,7 @@ fn TuiStatusLine(
 pub fn ChatPane(
     on_select_model: Callback<Option<String>>,
     on_send: Callback<()>,
+    on_resume_local_run: Callback<()>,
     on_stop: Callback<()>,
     /// Approve or deny a gated tool call: `(tool_call_id, approved)`.
     on_permission: Callback<(String, bool)>,
@@ -634,6 +635,13 @@ pub fn ChatPane(
                             }
                         }
                     />
+                    <Show when=move || chat.interrupted_run.get().is_some() && !streaming.get()>
+                        <div class="tui-stopped-marker">
+                            "This run was interrupted. "
+                            <button class="btn send" on:click=move |_| on_resume_local_run.run(())>"Resume"</button>
+                            <button class="btn" on:click=move |_| chat.dismiss_interrupted_run()>"Dismiss"</button>
+                        </div>
+                    </Show>
                 </div>
             </Show>
 

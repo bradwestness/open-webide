@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Resume interrupted local-mode runs from their saved conversation, preserving user messages and tool-step numbering.
+
 - Persist interim tool calls for follow-up history and remember servers that reject streamed tool calls.
 
 - Unify SSE and WebSocket chat events in one shared protocol; deploy frontend and backend together.

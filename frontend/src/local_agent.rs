@@ -469,13 +469,25 @@ pub async fn run_local_agent(
     bridge_config: crate::bridge::BridgeConfig,
     bridge_credentials: crate::bridge::BridgeCredentials,
     bridge_connection: Option<crate::bridge::BridgeConn>,
+    resume: Option<crate::state::chat::InterruptedRun>,
 ) -> Result<(), String> {
     // 1. Fetch prior conversation history before persisting the new message
-    let history_entries = api
-        .with_value(Clone::clone)
-        .list_messages(session_id)
-        .await
-        .unwrap_or_default();
+    let history = api.with_value(Clone::clone).list_messages(session_id).await;
+    let history_entries = if resume.is_some() {
+        history?
+    } else {
+        history.unwrap_or_default()
+    };
+    let resume = if let Some(resume) = resume {
+        let current = crate::state::chat::interrupted_run(
+            &crate::state_actions::chat::history_items(history_entries.clone()),
+        )
+        .filter(|current| current.anchor_id == resume.anchor_id)
+        .ok_or_else(|| "conversation changed; reload the session before resuming".to_string())?;
+        Some(current)
+    } else {
+        None
+    };
     let mut history_messages = Vec::new();
     let mut steps = Vec::new();
     for entry in history_entries {
@@ -486,19 +498,24 @@ pub async fn run_local_agent(
     }
     let mut messages = openwebide_core::tool_history(history_messages, &steps);
 
-    // 2. Prepend editor context if present and persist user message to backend store
-    let full_content = match &editor_context {
-        Some(ctx) => format!("{}{}", ctx.format_prompt_injection(), user_content),
-        None => user_content,
+    let (anchor_id, first_turn) = if let Some(resume) = resume {
+        (resume.anchor_id, resume.first_turn)
+    } else {
+        let full_content = match &editor_context {
+            Some(ctx) => format!("{}{}", ctx.format_prompt_injection(), user_content),
+            None => user_content,
+        };
+        let user_message = api
+            .with_value(Clone::clone)
+            .persist_message(session_id, Role::User, &full_content, None, None)
+            .await?;
+        let anchor_id = user_message.id;
+        on_event(RunEvent::Message {
+            message: user_message.clone(),
+        });
+        messages.push(user_message);
+        (anchor_id, 1)
     };
-    let user_message = api
-        .with_value(Clone::clone)
-        .persist_message(session_id, Role::User, &full_content, None, None)
-        .await?;
-    on_event(RunEvent::Message {
-        message: user_message.clone(),
-    });
-    messages.push(user_message.clone());
 
     // 3. Assemble chat request with standard workspace tools
     let request = ChatRequest {
@@ -522,13 +539,15 @@ pub async fn run_local_agent(
     };
 
     // 4. Drive agent stream
-    let anchor_id = user_message.id;
     let mut display_anchor = anchor_id;
     let mut stream = openwebide_agent::run(
         provider,
         executor,
         request,
-        AgentConfig::default(),
+        AgentConfig {
+            first_turn,
+            ..AgentConfig::default()
+        },
         cancel,
         gate,
         anchor_id,

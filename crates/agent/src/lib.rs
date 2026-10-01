@@ -33,6 +33,8 @@ pub struct AgentConfig {
     /// that returns tool calls still counts as one turn even if it runs many
     /// tools.
     pub max_turns: usize,
+    /// First turn number, including turns already persisted by an interrupted run.
+    pub first_turn: usize,
     /// Maximum total tool executions across the whole run.
     pub max_tool_calls: usize,
 }
@@ -41,6 +43,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             max_turns: 12,
+            first_turn: 1,
             max_tool_calls: 24,
         }
     }
@@ -218,7 +221,7 @@ where
             tools: request.tools,
             config,
             anchor_id,
-            turn: 0,
+            turn: config.first_turn.saturating_sub(1),
             tool_calls: 0,
             pending: Vec::new(),
             current: None,
@@ -496,6 +499,19 @@ struct PendingCall {
 
 pub fn step_id_prefix(anchor_id: i64) -> String {
     format!("a{anchor_id}t")
+}
+
+pub fn parse_step_id(id: &str) -> Option<(i64, usize, usize)> {
+    let (anchor, rest) = id.strip_prefix('a')?.split_once('t')?;
+    let (turn, index) = rest.split_once('c')?;
+    if !turn.bytes().all(|b| b.is_ascii_digit()) || !index.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((
+        anchor.parse().ok()?,
+        turn.parse().ok()?,
+        index.parse().ok()?,
+    ))
 }
 
 /// Assign step ids and wire ids to one response's tool calls.
@@ -926,6 +942,7 @@ mod tests {
             executor,
             request(),
             AgentConfig {
+                first_turn: 1,
                 max_turns: 2,
                 max_tool_calls: 10,
             },
@@ -989,6 +1006,7 @@ mod tests {
             executor,
             request(),
             AgentConfig {
+                first_turn: 1,
                 max_turns: 10,
                 max_tool_calls: 1,
             },
@@ -1527,6 +1545,56 @@ mod tests {
         assert!(gate.needs_approval(&call("2", "fetch_web_page", "{}")));
         assert!(!gate.needs_approval(&call("3", "read_file", "{}")));
         assert!(!gate.needs_approval(&call("4", "search_web", "{}")));
+    }
+
+    #[test]
+    fn parse_step_ids() {
+        for (id, expected) in [
+            ("a7t3c0", Some((7, 3, 0))),
+            ("a71t12c4", Some((71, 12, 4))),
+            ("call_0", None),
+            ("a7tXc0", None),
+            ("a7t3c", None),
+            ("a7t3c0extra", None),
+            ("a7t+3c0", None),
+        ] {
+            assert_eq!(parse_step_id(id), expected, "{id}");
+        }
+    }
+
+    #[test]
+    fn resumed_turn_numbers_and_budget_include_prior_turns() {
+        let (provider, requests) =
+            FakeProvider::new(vec![Ok(no_usage(ChatResponse::ToolCalls(vec![
+                call("wire0", "read_file", "{}"),
+                call("wire1", "read_file", "{}"),
+            ])))]);
+        let executor = FakeExecutor::new(vec![outcome("one", "one"), outcome("two", "two")]);
+        let events = collect(run(
+            provider,
+            executor,
+            request(),
+            AgentConfig {
+                first_turn: 3,
+                max_turns: 3,
+                ..AgentConfig::default()
+            },
+            NoopCancel,
+            NoopGate,
+            7,
+        ));
+        let ids: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::ToolCall { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["a7t3c0", "a7t3c1"]);
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert!(
+            matches!(events.last(), Some(AgentEvent::Error(error)) if error == "turn budget exhausted after 3 turns")
+        );
     }
 
     #[test]

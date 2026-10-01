@@ -56,6 +56,8 @@ pub struct FakeBackend {
     pub connections: RefCell<Vec<Connection>>,
     pub system_prompts: RefCell<Vec<SystemPrompt>>,
     pub settings: RefCell<BTreeMap<String, String>>,
+    pub scripted_completions: RefCell<VecDeque<ChatCompletion>>,
+    pub completion_requests: RefCell<Vec<ChatRequest>>,
     pub scripted_events: RefCell<VecDeque<Vec<RunEvent>>>,
     pub calls: RefCell<Vec<Call>>,
     pub session_expired: RwSignal<bool>,
@@ -730,13 +732,17 @@ impl Backend for FakeBackend {
     }
     fn chat_tools<'a>(
         &'a self,
-        _request: &'a ChatRequest,
+        request: &'a ChatRequest,
     ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {
                 method: "chat_tools",
             });
-            Err("chat_tools has no scripted response".into())
+            self.completion_requests.borrow_mut().push(request.clone());
+            self.scripted_completions
+                .borrow_mut()
+                .pop_front()
+                .ok_or_else(|| "chat_tools has no scripted response".into())
         })
     }
     fn persist_message<'a>(

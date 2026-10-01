@@ -35,6 +35,8 @@ any phone, tablet, or laptop into a seamless remote control:
    - **Local mode:** The workspace lives on the browser's machine, accessed
      directly via the File System Access API (Chromium). Keep client repositories
      strictly on your laptop's local SSD without mounting them to the host.
+     After a reload interrupts a local run, use Resume in its chat session to
+     continue without adding another user message.
 5. **Agentic Coding with Safety First:**
    The model inspects code, calls workspace-confined tools, and presents
    syntax-highlighted diffs with human-in-the-loop permission gates and

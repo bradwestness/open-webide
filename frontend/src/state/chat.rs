@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
@@ -10,6 +10,73 @@ use openwebide_core::{ChatSession, FileDiff, ModelInfo, RunEvent, SessionTelemet
 use crate::conversation::{
     ConversationItem, ToolStepResult, local_message, next_item_nonce, notice, stopped_marker,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InterruptedRun {
+    pub anchor_id: i64,
+    pub first_turn: usize,
+}
+
+pub fn interrupted_run(items: &[ConversationItem]) -> Option<InterruptedRun> {
+    use openwebide_core::Role;
+    let last = items.iter().rev().find_map(|item| match item {
+        ConversationItem::Message(message) if message.id > 0 => Some(message),
+        _ => None,
+    })?;
+    if last.role != Role::User && !(last.role == Role::Assistant && last.tool_calls.is_some()) {
+        return None;
+    }
+    let anchor_id = items.iter().rev().find_map(|item| match item {
+        ConversationItem::Message(message) if message.id > 0 && message.role == Role::User => {
+            Some(message.id)
+        }
+        _ => None,
+    })?;
+    if last.role == Role::Assistant {
+        let calls = last.tool_calls.as_ref()?;
+        let last_position = items.iter().rposition(
+            |item| matches!(item, ConversationItem::Message(message) if message.id == last.id),
+        )?;
+        let steps: Vec<_> = items[last_position + 1..]
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::ToolStep {
+                    id,
+                    result,
+                    awaiting_permission,
+                    ..
+                } if openwebide_agent::parse_step_id(id)
+                    .is_some_and(|(anchor, _, _)| anchor == anchor_id) =>
+                {
+                    Some((result, awaiting_permission))
+                }
+                _ => None,
+            })
+            .collect();
+        if calls.is_empty()
+            || steps.len() != calls.len()
+            || steps
+                .iter()
+                .any(|(result, awaiting)| result.is_none() || **awaiting)
+        {
+            return None;
+        }
+    }
+    let highest_turn = items
+        .iter()
+        .filter_map(|item| match item {
+            ConversationItem::ToolStep { id, .. } => openwebide_agent::parse_step_id(id)
+                .filter(|(anchor, _, _)| *anchor == anchor_id)
+                .map(|(_, turn, _)| turn),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    Some(InterruptedRun {
+        anchor_id,
+        first_turn: highest_turn.checked_add(1)?,
+    })
+}
 
 /// Side effects that need a browser or another feature store to execute.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +99,8 @@ pub struct ChatState {
     pub streaming: RwSignal<bool>,
     pub active_run: RwSignal<Option<(i64, String, u64)>>,
     pub notice: RwSignal<Option<String>>,
+    pub interrupted_run: RwSignal<Option<InterruptedRun>>,
+    pub dismissed_interruptions: StoredValue<HashSet<i64>>,
     pub error: RwSignal<Option<String>>,
     pub draft: RwSignal<String>,
     pub show_terminal: RwSignal<bool>,
@@ -95,6 +164,8 @@ impl ChatState {
             streaming: RwSignal::new(false),
             active_run: RwSignal::new(None),
             notice: RwSignal::new(None),
+            interrupted_run: RwSignal::new(None),
+            dismissed_interruptions: StoredValue::new(HashSet::new()),
             error,
             draft: RwSignal::new(String::new()),
             show_terminal: RwSignal::new(false),
@@ -113,6 +184,31 @@ impl ChatState {
             active_editor_context: RwSignal::new(None),
             awaiting_step_id,
         }
+    }
+
+    pub fn detect_interrupted_run(&self, mode: openwebide_core::WorkspaceMode) {
+        let interrupted = if mode == openwebide_core::WorkspaceMode::Local
+            && !self.streaming.get_untracked()
+            && self.active_run.get_untracked().is_none()
+        {
+            interrupted_run(&self.messages.get_untracked())
+        } else {
+            None
+        };
+        self.interrupted_run.set(interrupted.filter(|run| {
+            !self
+                .dismissed_interruptions
+                .with_value(|dismissed| dismissed.contains(&run.anchor_id))
+        }));
+    }
+
+    pub fn dismiss_interrupted_run(&self) {
+        if let Some(run) = self.interrupted_run.get_untracked() {
+            self.dismissed_interruptions.update_value(|dismissed| {
+                dismissed.insert(run.anchor_id);
+            });
+        }
+        self.interrupted_run.set(None);
     }
 
     /// Append a transient notice to the active conversation.
@@ -362,7 +458,6 @@ fn cancel_run_prompts(items: &mut [ConversationItem], anchor: i64) {
             ..
         } = item
             && id.starts_with(&prefix)
-            && *awaiting_permission
             && result.is_none()
         {
             *awaiting_permission = false;
@@ -394,6 +489,109 @@ mod tests {
             tool_call_id: None,
             usage: None,
         }
+    }
+
+    fn complete_step(id: &str) -> ConversationItem {
+        ConversationItem::ToolStep {
+            key: next_item_nonce(),
+            id: id.into(),
+            name: "read_file".into(),
+            summary: "read".into(),
+            result: Some(ToolStepResult {
+                ok: true,
+                summary: "read".into(),
+                diff: None,
+            }),
+            awaiting_permission: false,
+        }
+    }
+
+    fn interim(id: i64) -> ConversationItem {
+        let mut msg = message(id, Role::Assistant, "checking");
+        msg.tool_calls = Some(vec![openwebide_core::ToolCall {
+            id: "wire".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        }]);
+        ConversationItem::Message(msg)
+    }
+
+    #[test]
+    fn detects_interrupted_users_and_completed_tool_turns() {
+        let mut items = vec![ConversationItem::Message(message(7, Role::User, "go"))];
+        assert_eq!(
+            interrupted_run(&items),
+            Some(InterruptedRun {
+                anchor_id: 7,
+                first_turn: 1
+            })
+        );
+        items.extend([
+            interim(8),
+            complete_step("a7t1c0"),
+            interim(9),
+            complete_step("a7t2c0"),
+        ]);
+        assert_eq!(
+            interrupted_run(&items),
+            Some(InterruptedRun {
+                anchor_id: 7,
+                first_turn: 3
+            })
+        );
+        items.push(ConversationItem::Message(message(
+            10,
+            Role::Assistant,
+            "done",
+        )));
+        assert_eq!(interrupted_run(&items), None);
+        assert_eq!(interrupted_run(&[]), None);
+    }
+
+    #[test]
+    fn incomplete_or_missing_tool_results_do_not_offer_resume() {
+        let mut items = vec![
+            ConversationItem::Message(message(7, Role::User, "go")),
+            interim(8),
+        ];
+        assert_eq!(interrupted_run(&items), None);
+        let mut step = complete_step("a7t1c0");
+        if let ConversationItem::ToolStep { result, .. } = &mut step {
+            *result = None;
+        }
+        items.push(step);
+        assert_eq!(interrupted_run(&items), None);
+        cancel_run_prompts(&mut items, 7);
+        assert!(
+            matches!(&items[2], ConversationItem::ToolStep { result: Some(result), awaiting_permission: false, .. } if result.summary == "cancelled")
+        );
+    }
+
+    #[test]
+    fn detection_is_local_idle_and_dismissal_lasts_across_history_loads() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            chat.messages.set(vec![ConversationItem::Message(message(
+                7,
+                Role::User,
+                "go",
+            ))]);
+            chat.detect_interrupted_run(openwebide_core::WorkspaceMode::Remote);
+            assert_eq!(chat.interrupted_run.get_untracked(), None);
+            chat.streaming.set(true);
+            chat.detect_interrupted_run(openwebide_core::WorkspaceMode::Local);
+            assert_eq!(chat.interrupted_run.get_untracked(), None);
+            chat.streaming.set(false);
+            chat.active_run.set(Some((7, "run".into(), 0)));
+            chat.detect_interrupted_run(openwebide_core::WorkspaceMode::Local);
+            assert_eq!(chat.interrupted_run.get_untracked(), None);
+            chat.active_run.set(None);
+            chat.detect_interrupted_run(openwebide_core::WorkspaceMode::Local);
+            assert!(chat.interrupted_run.get_untracked().is_some());
+            chat.dismiss_interrupted_run();
+            chat.detect_interrupted_run(openwebide_core::WorkspaceMode::Local);
+            assert_eq!(chat.interrupted_run.get_untracked(), None);
+        });
     }
 
     #[test]

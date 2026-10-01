@@ -72,6 +72,8 @@ impl AuthState {
         chat.streaming.set(false);
         chat.active_run.set(None);
         chat.notice.set(None);
+        chat.interrupted_run.set(None);
+        chat.dismissed_interruptions.set_value(Default::default());
         chat.streaming_session.set(None);
 
         self.logout();
@@ -241,6 +243,14 @@ mod tests {
             chat.notify("notice");
             chat.active_run.set(Some((2, "run".into(), 1)));
             chat.notice.set(Some("fallback".into()));
+            chat.interrupted_run
+                .set(Some(crate::state::chat::InterruptedRun {
+                    anchor_id: 4,
+                    first_turn: 2,
+                }));
+            chat.dismissed_interruptions.update_value(|dismissed| {
+                dismissed.insert(4);
+            });
             chat.streaming.set(true);
             chat.streaming_session.set(Some(2));
             chat.local_cancel_flag
@@ -310,6 +320,8 @@ mod tests {
             assert!(!chat.streaming.get_untracked());
             assert!(chat.active_run.get_untracked().is_none());
             assert!(chat.notice.get_untracked().is_none());
+            assert!(chat.interrupted_run.get_untracked().is_none());
+            assert!(chat.dismissed_interruptions.get_value().is_empty());
             assert!(chat.streaming_session.get_untracked().is_none());
             assert!(
                 chat.local_cancel_flag
