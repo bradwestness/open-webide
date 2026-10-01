@@ -239,14 +239,35 @@ impl WebClient for BrowserWebClient {
 pub struct BrowserBridgeClient {
     http_url: String,
     credentials: crate::bridge::BridgeCredentials,
+    cwd: String,
+    verified: Arc<AtomicBool>,
 }
 
 impl BrowserBridgeClient {
-    pub fn new(http_url: String, credentials: crate::bridge::BridgeCredentials) -> Self {
+    pub fn for_project(
+        http_url: String,
+        cwd: String,
+        credentials: crate::bridge::BridgeCredentials,
+    ) -> Self {
         Self {
             http_url,
             credentials,
+            cwd,
+            verified: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    fn git_cwd(&self) -> &str {
+        if self.cwd.is_empty() { "." } else { &self.cwd }
+    }
+}
+
+struct CommandFetchGuard(web_sys::AbortController);
+
+impl Drop for CommandFetchGuard {
+    fn drop(&mut self) {
+        // Dropping a fetch future alone leaves the browser's HTTP connection occupied.
+        self.0.abort();
     }
 }
 
@@ -258,18 +279,30 @@ impl BridgeClient for BrowserBridgeClient {
     ) -> impl Future<Output = Result<CommandOutcome, String>> + Send {
         let endpoint = format!("{}/exec", self.http_url);
         let credentials = self.credentials.clone();
+        let verified = self.verified.clone();
         let payload = serde_json::json!({
             "command": command,
+            "cwd": self.cwd,
             "timeout_seconds": timeout_seconds,
         })
         .to_string();
 
         ForceSend(async move {
+            if !verified.load(Ordering::Relaxed) {
+                return Err(
+                    "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
+                );
+            }
             let token = credentials
                 .credential()
                 .await
                 .map_err(|e| format!("auth error: {e}"))?;
+            let guard = CommandFetchGuard(
+                web_sys::AbortController::new()
+                    .map_err(|e| format!("request cancellation error: {e:?}"))?,
+            );
             let resp = gloo_net::http::Request::post(&endpoint)
+                .abort_signal(Some(&guard.0.signal()))
                 .header("Content-Type", "application/json")
                 .header("Authorization", &format!("Bearer {token}"))
                 .body(payload)
@@ -282,6 +315,9 @@ impl BridgeClient for BrowserBridgeClient {
 
             if !resp.ok() {
                 let err_text = resp.text().await.unwrap_or_default();
+                if resp.status() == 400 && is_cwd_resolution_error(&err_text) {
+                    verified.store(false, Ordering::Relaxed);
+                }
                 return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
             }
 
@@ -296,39 +332,18 @@ impl BridgeClient for BrowserBridgeClient {
     ) -> impl Future<Output = Result<openwebide_core::GitRepoStatus, String>> + Send {
         let endpoint = format!("{}/git/status", self.http_url);
         let credentials = self.credentials.clone();
+        let verified = self.verified.clone();
+        let payload = serde_json::json!({ "cwd": self.git_cwd() }).to_string();
         ForceSend(async move {
-            let token = credentials
-                .credential()
-                .await
-                .map_err(|e| format!("auth error: {e}"))?;
-            let resp = gloo_net::http::Request::post(&endpoint)
-                .header("Content-Type", "application/json")
-                .header("Authorization", &format!("Bearer {token}"))
-                .body("{}")
-                .map_err(|e| format!("request error: {e}"))?
-                .send()
-                .await
-                .map_err(|e| format!("Bridge connection error: {e}"))?;
-            if !resp.ok() {
-                let err_text = resp.text().await.unwrap_or_default();
-                return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
+            if !verified.load(Ordering::Relaxed) {
+                return Err(
+                    "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
+                );
             }
-            resp.json::<openwebide_core::GitRepoStatus>()
-                .await
-                .map_err(|e| format!("Parse error: {e}"))
-        })
-    }
-
-    fn git_diff(&self, path: Option<&str>) -> impl Future<Output = Result<String, String>> + Send {
-        let path = path.map(|s| s.to_string());
-        let endpoint = format!("{}/git/diff", self.http_url);
-        let credentials = self.credentials.clone();
-        ForceSend(async move {
             let token = credentials
                 .credential()
                 .await
                 .map_err(|e| format!("auth error: {e}"))?;
-            let payload = serde_json::json!({ "path": path }).to_string();
             let resp = gloo_net::http::Request::post(&endpoint)
                 .header("Content-Type", "application/json")
                 .header("Authorization", &format!("Bearer {token}"))
@@ -339,6 +354,45 @@ impl BridgeClient for BrowserBridgeClient {
                 .map_err(|e| format!("Bridge connection error: {e}"))?;
             if !resp.ok() {
                 let err_text = resp.text().await.unwrap_or_default();
+                if resp.status() == 400 && is_cwd_resolution_error(&err_text) {
+                    verified.store(false, Ordering::Relaxed);
+                }
+                return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
+            }
+            resp.json::<openwebide_core::GitRepoStatus>()
+                .await
+                .map_err(|e| format!("Parse error: {e}"))
+        })
+    }
+
+    fn git_diff(&self, path: Option<&str>) -> impl Future<Output = Result<String, String>> + Send {
+        let payload = serde_json::json!({ "path": path, "cwd": self.git_cwd() }).to_string();
+        let endpoint = format!("{}/git/diff", self.http_url);
+        let credentials = self.credentials.clone();
+        let verified = self.verified.clone();
+        ForceSend(async move {
+            if !verified.load(Ordering::Relaxed) {
+                return Err(
+                    "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
+                );
+            }
+            let token = credentials
+                .credential()
+                .await
+                .map_err(|e| format!("auth error: {e}"))?;
+            let resp = gloo_net::http::Request::post(&endpoint)
+                .header("Content-Type", "application/json")
+                .header("Authorization", &format!("Bearer {token}"))
+                .body(payload)
+                .map_err(|e| format!("request error: {e}"))?
+                .send()
+                .await
+                .map_err(|e| format!("Bridge connection error: {e}"))?;
+            if !resp.ok() {
+                let err_text = resp.text().await.unwrap_or_default();
+                if resp.status() == 400 && is_cwd_resolution_error(&err_text) {
+                    verified.store(false, Ordering::Relaxed);
+                }
                 return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
             }
             #[derive(serde::Deserialize)]
@@ -356,10 +410,18 @@ impl BridgeClient for BrowserBridgeClient {
         &self,
         req: &openwebide_core::GitCommitRequest,
     ) -> impl Future<Output = Result<openwebide_core::GitCommitResult, String>> + Send {
-        let payload = serde_json::to_string(req).unwrap_or_default();
+        let mut payload = serde_json::to_value(req).unwrap_or_default();
+        payload["cwd"] = serde_json::json!(self.git_cwd());
+        let payload = payload.to_string();
         let endpoint = format!("{}/git/commit", self.http_url);
         let credentials = self.credentials.clone();
+        let verified = self.verified.clone();
         ForceSend(async move {
+            if !verified.load(Ordering::Relaxed) {
+                return Err(
+                    "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
+                );
+            }
             let token = credentials
                 .credential()
                 .await
@@ -374,6 +436,9 @@ impl BridgeClient for BrowserBridgeClient {
                 .map_err(|e| format!("Bridge connection error: {e}"))?;
             if !resp.ok() {
                 let err_text = resp.text().await.unwrap_or_default();
+                if resp.status() == 400 && is_cwd_resolution_error(&err_text) {
+                    verified.store(false, Ordering::Relaxed);
+                }
                 return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
             }
             resp.json::<openwebide_core::GitCommitResult>()
@@ -386,10 +451,18 @@ impl BridgeClient for BrowserBridgeClient {
         &self,
         req: &openwebide_core::GitCheckoutRequest,
     ) -> impl Future<Output = Result<openwebide_core::GitCheckoutResult, String>> + Send {
-        let payload = serde_json::to_string(req).unwrap_or_default();
+        let mut payload = serde_json::to_value(req).unwrap_or_default();
+        payload["cwd"] = serde_json::json!(self.git_cwd());
+        let payload = payload.to_string();
         let endpoint = format!("{}/git/checkout", self.http_url);
         let credentials = self.credentials.clone();
+        let verified = self.verified.clone();
         ForceSend(async move {
+            if !verified.load(Ordering::Relaxed) {
+                return Err(
+                    "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
+                );
+            }
             let token = credentials
                 .credential()
                 .await
@@ -404,6 +477,9 @@ impl BridgeClient for BrowserBridgeClient {
                 .map_err(|e| format!("Bridge connection error: {e}"))?;
             if !resp.ok() {
                 let err_text = resp.text().await.unwrap_or_default();
+                if resp.status() == 400 && is_cwd_resolution_error(&err_text) {
+                    verified.store(false, Ordering::Relaxed);
+                }
                 return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
             }
             resp.json::<openwebide_core::GitCheckoutResult>()
@@ -411,6 +487,111 @@ impl BridgeClient for BrowserBridgeClient {
                 .map_err(|e| format!("Parse error: {e}"))
         })
     }
+}
+
+fn is_cwd_resolution_error(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.as_str())
+                .map(str::to_owned)
+        })
+        .is_some_and(|error| {
+            error.starts_with("cwd does not exist:")
+                || error.starts_with("cwd escapes workspace root:")
+                || error == "cwd is missing or empty"
+        })
+}
+
+async fn probe_command<B: BridgeClient>(
+    bridge: B,
+    command: &str,
+    timeout_seconds: u64,
+) -> Result<CommandOutcome, String> {
+    let request = bridge.execute_command(command, timeout_seconds);
+    let deadline = sleep_ms((timeout_seconds * 1000 + 1000) as i32);
+    futures::pin_mut!(request, deadline);
+    match futures::future::select(request, deadline).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right(_) => Err("Bridge probe timed out".into()),
+    }
+}
+
+pub const BRIDGE_FOLDER_NOTICE: &str = "Command and git tools are off for this local project: the bridge can't see this folder. Start `openwebide-bridge --workspace <a folder containing it>` (or inside it) and send again.";
+
+pub async fn resolve_bridge_cwd(
+    api: Api,
+    handle: web_sys::FileSystemDirectoryHandle,
+    pid: i64,
+    bridge_cfg: &crate::bridge::BridgeConfig,
+    credentials: &crate::bridge::BridgeCredentials,
+) -> Option<String> {
+    let nonce = format!(
+        "{:08x}{:08x}",
+        (js_sys::Math::random() * 4294967296.0) as u32,
+        (js_sys::Math::random() * 4294967296.0) as u32
+    );
+    resolve_bridge_cwd_with(api, &BrowserFsaVfs::new(handle), pid, &nonce, |cwd| {
+        BrowserBridgeClient::for_project(bridge_cfg.http_url.clone(), cwd, credentials.clone())
+    })
+    .await
+}
+
+pub async fn resolve_bridge_cwd_with<V: openwebide_core::Vfs, B: BridgeClient>(
+    api: Api,
+    vfs: &V,
+    pid: i64,
+    nonce: &str,
+    bridge: impl Fn(String) -> B,
+) -> Option<String> {
+    let probe = format!(".openwebide-probe-{nonce}");
+    let written = vfs.write(&probe, "").await;
+    let result = if written.is_ok() {
+        let key = format!("local_bridge_cwd.{pid}");
+        let candidate = api
+            .with_value(Clone::clone)
+            .get_settings()
+            .await
+            .ok()
+            .and_then(|settings| settings.get(&key).cloned());
+        let mut found = None;
+        if let Some(candidate) = candidate
+            && probe_command(bridge(candidate.clone()), &format!("test -f {probe}"), 5)
+                .await
+                .is_ok_and(|out| out.is_success())
+        {
+            found = Some(candidate);
+        }
+        if found.is_none() {
+            let command = format!(
+                r"find . -maxdepth 5 \( -name .git -o -name node_modules -o -name target -o -name .spin \) -prune -o -name {probe} -print -quit"
+            );
+            if let Ok(out) = probe_command(bridge(String::new()), &command, 10).await {
+                found = crate::parse_probe_output(&out.stdout, nonce);
+                if let Some(cwd) = &found {
+                    let _ = api.with_value(Clone::clone).set_setting(&key, cwd).await;
+                }
+            }
+        }
+        found
+    } else {
+        None
+    };
+    // A failed write may still have created the file before its stream failed.
+    if vfs.delete(&probe).await.is_err() {
+        return None;
+    }
+    result
+}
+
+pub fn local_tools(cwd: Option<&str>) -> Vec<openwebide_core::ToolDefinition> {
+    let mut tools = openwebide_agent::vfs_tools();
+    if cwd.is_none() {
+        tools.retain(|tool| !openwebide_agent::policy::BRIDGE_TOOLS.contains(&tool.name.as_str()));
+    }
+    tools
 }
 
 /// Local-mode cancel checker observing a shared atomic flag.
@@ -462,7 +643,9 @@ pub async fn run_local_agent(
     editor_context: Option<EditorContext>,
     connection_id: i64,
     system_prompt: Option<String>,
-    vfs: BrowserFsaVfs,
+    handle: web_sys::FileSystemDirectoryHandle,
+    pid: i64,
+    chat: crate::state::chat::ChatState,
     cancel_flag: Arc<AtomicBool>,
     local_decisions: Arc<Mutex<HashMap<String, bool>>>,
     mut on_event: impl FnMut(RunEvent),
@@ -471,6 +654,18 @@ pub async fn run_local_agent(
     bridge_connection: Option<crate::bridge::BridgeConn>,
     resume: Option<crate::state::chat::InterruptedRun>,
 ) -> Result<(), String> {
+    let cwd = resolve_bridge_cwd(
+        api,
+        handle.clone(),
+        pid,
+        &bridge_config,
+        &bridge_credentials,
+    )
+    .await;
+    if cwd.is_none() {
+        chat.notify_bridge_folder_once(session_id);
+    }
+    let vfs = BrowserFsaVfs::new(handle);
     // 1. Fetch prior conversation history before persisting the new message
     let history = api.with_value(Clone::clone).list_messages(session_id).await;
     let history_entries = if resume.is_some() {
@@ -523,12 +718,10 @@ pub async fn run_local_agent(
         system_prompt,
         model,
         messages,
-        tools: openwebide_agent::vfs_tools(),
+        tools: local_tools(cwd.as_deref()),
     };
 
     let web = BrowserWebClient::new(api);
-    let bridge = BrowserBridgeClient::new(bridge_config.http_url, bridge_credentials);
-    let executor = VfsToolExecutor::with_web_and_bridge(vfs, web, bridge);
     let provider = BrowserLlmProvider::new(api, ProviderKind::Ollama, bridge_connection);
     let cancel = LocalCancelCheck {
         flag: cancel_flag.clone(),
@@ -540,18 +733,33 @@ pub async fn run_local_agent(
 
     // 4. Drive agent stream
     let mut display_anchor = anchor_id;
-    let mut stream = openwebide_agent::run(
-        provider,
-        executor,
-        request,
-        AgentConfig {
-            first_turn,
-            ..AgentConfig::default()
-        },
-        cancel,
-        gate,
-        anchor_id,
-    );
+    let config = AgentConfig {
+        first_turn,
+        ..AgentConfig::default()
+    };
+    let mut stream = if let Some(cwd) = cwd {
+        let bridge =
+            BrowserBridgeClient::for_project(bridge_config.http_url, cwd, bridge_credentials);
+        openwebide_agent::run(
+            provider,
+            VfsToolExecutor::with_web_and_bridge(vfs, web, bridge),
+            request,
+            config,
+            cancel,
+            gate,
+            anchor_id,
+        )
+    } else {
+        openwebide_agent::run(
+            provider,
+            VfsToolExecutor::with_web_and_bridge(vfs, web, openwebide_agent::NoopBridgeClient),
+            request,
+            config,
+            cancel,
+            gate,
+            anchor_id,
+        )
+    };
 
     let mut last_usage: Option<TurnTelemetry> = None;
     while let Some(event) = stream.next().await {

@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Run local-mode command and git tools in the picked folder, discovered and verified through a temporary bridge probe.
+
 - Bundle the execution bridge in Docker and Podman deployments for terminals, Git operations, and streamed chat on port 3001.
 
 - Resume interrupted local-mode runs from their saved conversation, preserving user messages and tool-step numbering.

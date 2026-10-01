@@ -74,6 +74,7 @@ impl AuthState {
         chat.notice.set(None);
         chat.interrupted_run.set(None);
         chat.dismissed_interruptions.set_value(Default::default());
+        chat.bridge_folder_notices.set_value(Default::default());
         chat.streaming_session.set(None);
 
         self.logout();

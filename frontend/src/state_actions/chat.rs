@@ -19,9 +19,7 @@ use openwebide_core::{
 };
 use web_sys::AbortController;
 
-use crate::{
-    backend::Api, bridge::BridgeCredentials, components::ToolStepResult, local_agent, local_fs,
-};
+use crate::{backend::Api, bridge::BridgeCredentials, components::ToolStepResult, local_agent};
 
 pub struct ChatActionContext {
     pub api: Api,
@@ -373,7 +371,6 @@ impl ChatActions {
                                     .find(|prompt| prompt.id == prompt_id)
                                     .map(|prompt| prompt.content)
                             });
-                            let vfs = local_fs::BrowserFsaVfs::new(handle);
                             if let Some(resume) = resume {
                                 chat.current_run_anchor.set(Some(resume.anchor_id));
                             }
@@ -385,7 +382,9 @@ impl ChatActions {
                                 editor_context,
                                 connection_id,
                                 system_prompt,
-                                vfs,
+                                handle,
+                                active_project.as_ref().unwrap().id,
+                                chat,
                                 local_cancel,
                                 local_permissions,
                                 on_event,

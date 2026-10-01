@@ -37,3 +37,48 @@ pub fn mount() {
     }));
     leptos::mount::mount_to_body(app::App);
 }
+
+/// Parse the bridge's project-relative probe path.
+pub fn parse_probe_output(stdout: &str, nonce: &str) -> Option<String> {
+    let probe = format!(".openwebide-probe-{nonce}");
+    let path = stdout.trim_end_matches(['\n', '\r']).strip_prefix("./")?;
+    if path == probe {
+        return Some(String::new());
+    }
+    let cwd = path.strip_suffix(&format!("/{probe}"))?;
+    if cwd.is_empty()
+        || cwd
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || cwd.contains(['\n', '\r'])
+    {
+        return None;
+    }
+    Some(cwd.to_string())
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::parse_probe_output;
+
+    #[test]
+    fn probe_paths() {
+        assert_eq!(
+            parse_probe_output("./repos/x/.openwebide-probe-ab12\n", "ab12"),
+            Some("repos/x".into())
+        );
+        assert_eq!(
+            parse_probe_output("./.openwebide-probe-ab12", "ab12"),
+            Some(String::new())
+        );
+        for output in [
+            "",
+            "unrelated",
+            "./repos/x/.openwebide-probe-other",
+            "./../.openwebide-probe-ab12",
+            "./x\n/y/.openwebide-probe-ab12",
+        ] {
+            assert_eq!(parse_probe_output(output, "ab12"), None);
+        }
+    }
+}

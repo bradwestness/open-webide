@@ -101,6 +101,14 @@ mod tests {
     }
 
     #[test]
+    fn bridge_tools_are_available_in_vfs_tools() {
+        let tools = crate::vfs_tools();
+        for name in BRIDGE_TOOLS {
+            assert!(tools.iter().any(|tool| tool.name == *name));
+        }
+    }
+
+    #[test]
     fn bridge_tools_match_needs_bridge() {
         let needs_bridge: Vec<&str> = ToolName::ALL
             .iter()

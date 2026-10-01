@@ -18,3 +18,6 @@ mod terminal;
 
 #[path = "components/runs.rs"]
 mod runs;
+
+#[path = "components/local_bridge.rs"]
+mod local_bridge;

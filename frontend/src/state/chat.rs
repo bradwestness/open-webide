@@ -100,6 +100,7 @@ pub struct ChatState {
     pub active_run: RwSignal<Option<(i64, String, u64)>>,
     pub notice: RwSignal<Option<String>>,
     pub interrupted_run: RwSignal<Option<InterruptedRun>>,
+    pub bridge_folder_notices: StoredValue<HashSet<i64>>,
     pub dismissed_interruptions: StoredValue<HashSet<i64>>,
     pub error: RwSignal<Option<String>>,
     pub draft: RwSignal<String>,
@@ -165,6 +166,7 @@ impl ChatState {
             active_run: RwSignal::new(None),
             notice: RwSignal::new(None),
             interrupted_run: RwSignal::new(None),
+            bridge_folder_notices: StoredValue::new(HashSet::new()),
             dismissed_interruptions: StoredValue::new(HashSet::new()),
             error,
             draft: RwSignal::new(String::new()),
@@ -214,6 +216,20 @@ impl ChatState {
     /// Append a transient notice to the active conversation.
     pub fn notify(&self, text: impl Into<String>) {
         self.messages.update(|items| items.push(notice(text)));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn notify_bridge_folder_once(&self, session_id: i64) {
+        if self.active_session.get_untracked() != Some(session_id) {
+            return;
+        }
+        let first = self
+            .bridge_folder_notices
+            .try_update_value(|sessions| sessions.insert(session_id))
+            .unwrap_or(false);
+        if first {
+            self.notify(crate::local_agent::BRIDGE_FOLDER_NOTICE);
+        }
     }
 
     pub fn set_approval_mode(&self, session_id: i64, mode: ApprovalMode) {

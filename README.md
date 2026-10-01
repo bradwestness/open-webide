@@ -35,6 +35,11 @@ any phone, tablet, or laptop into a seamless remote control:
    - **Local mode:** The workspace lives on the browser's machine, accessed
      directly via the File System Access API (Chromium). Keep client repositories
      strictly on your laptop's local SSD without mounting them to the host.
+     Command and git tools find the picked folder using a temporary probe file,
+     verified at each run and removed afterwards. Start the bridge with
+     `--workspace` pointing to a folder containing the project (within five
+     directory levels), or start it inside the project. If the bridge cannot see
+     the folder, those tools are hidden and chat explains how to enable them.
      After a reload interrupts a local run, use Resume in its chat session to
      continue without adding another user message.
 5. **Agentic Coding with Safety First:**
