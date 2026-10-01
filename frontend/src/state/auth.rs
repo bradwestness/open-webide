@@ -11,6 +11,7 @@ use super::{
 pub struct AuthState {
     pub user: RwSignal<Option<User>>,
     pub checked: RwSignal<bool>,
+    pub generation: RwSignal<u64>,
     pub username: Memo<Option<String>>,
     #[cfg(target_arch = "wasm32")]
     pub bridge: StoredValue<Option<crate::bridge::BridgeConn>, LocalStorage>,
@@ -26,6 +27,7 @@ impl AuthState {
         Self {
             user,
             checked,
+            generation: RwSignal::new(0),
             username,
             #[cfg(target_arch = "wasm32")]
             bridge: StoredValue::new_local(None),
@@ -33,6 +35,7 @@ impl AuthState {
     }
 
     pub fn set_user(&self, user: User) {
+        self.generation.update(|generation| *generation += 1);
         self.user.set(Some(user));
     }
 
@@ -42,6 +45,7 @@ impl AuthState {
 
     /// Clear the signed-in account while keeping the completed auth check.
     pub fn logout(&self) {
+        self.generation.update(|generation| *generation += 1);
         self.user.set(None);
     }
 
@@ -82,6 +86,7 @@ impl AuthState {
         projects.reset();
         chat.sessions.set(Vec::new());
         chat.messages.set(Vec::new());
+        chat.prompt_history.set(Vec::new());
         let mut object_urls = workspace
             .snapshots
             .get_untracked()
@@ -241,6 +246,7 @@ mod tests {
                 user_id: Some(1),
                 created_at: 0,
             }]);
+            chat.prompt_history.set(vec!["private prompt".into()]);
             chat.notify("notice");
             chat.active_run.set(Some((2, "run".into(), 1)));
             chat.notice.set(Some("fallback".into()));
@@ -318,6 +324,7 @@ mod tests {
             assert!(git.status.get_untracked().is_none());
             assert!(chat.sessions.get_untracked().is_empty());
             assert!(chat.messages.get_untracked().is_empty());
+            assert!(chat.prompt_history.get_untracked().is_empty());
             assert!(!chat.streaming.get_untracked());
             assert!(chat.active_run.get_untracked().is_none());
             assert!(chat.notice.get_untracked().is_none());

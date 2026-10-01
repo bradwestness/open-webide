@@ -33,6 +33,8 @@ bridge WebSocket connection:
 - **Frontend structure & tests:** the `App` component split into
   per-feature state stores, and a component-test harness running in
   headless Chrome in CI.
+- **Frontend persistence:** theme and prompt history use per-user database
+  settings, with no localStorage cache; panel widths fit the viewport.
 - **Agent quality:** typed tool arguments, approval cards that show the full
   diff, Stop that interrupts a running command, search that can opt into
   ignored folders, truncated or cut-off replies kept with a visible marker,

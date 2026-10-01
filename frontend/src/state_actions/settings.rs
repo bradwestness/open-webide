@@ -269,7 +269,6 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
     let on_set_theme = Callback::new(move |value: String| {
         let theme = Theme::parse(&value);
         settings.theme.set(theme);
-        write_theme_to_storage(theme);
         spawn_local(async move {
             if let Err(error) = api
                 .with_value(Clone::clone)
@@ -338,18 +337,6 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
     }
 }
 
-pub fn read_theme_from_storage() -> Theme {
-    let theme = web_sys::window()
-        .and_then(|window| window.local_storage().ok().flatten())
-        .and_then(|storage| storage.get_item("owide-theme").ok().flatten());
-    match theme.as_deref() {
-        Some("dark") => Theme::Dark,
-        Some("light") => Theme::Light,
-        Some("system") => Theme::System,
-        _ => Theme::System,
-    }
-}
-
 fn install_theme_effect(settings: SettingsState) {
     let theme = settings.theme;
     Effect::new(move |_| {
@@ -395,13 +382,5 @@ fn effective_theme(preference: Theme) -> &'static str {
         if prefers_light { "light" } else { "dark" }
     } else {
         preference.as_str()
-    }
-}
-
-fn write_theme_to_storage(theme: Theme) {
-    if let Some(storage) =
-        web_sys::window().and_then(|window| window.local_storage().ok().flatten())
-    {
-        let _ = storage.set_item("owide-theme", theme.as_str());
     }
 }

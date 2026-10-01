@@ -104,6 +104,7 @@ pub struct ChatState {
     pub dismissed_interruptions: StoredValue<HashSet<i64>>,
     pub error: RwSignal<Option<String>>,
     pub draft: RwSignal<String>,
+    pub prompt_history: RwSignal<Vec<String>>,
     pub show_terminal: RwSignal<bool>,
     #[cfg(target_arch = "wasm32")]
     pub abort: RwSignal<Option<web_sys::AbortController>>,
@@ -170,6 +171,7 @@ impl ChatState {
             dismissed_interruptions: StoredValue::new(HashSet::new()),
             error,
             draft: RwSignal::new(String::new()),
+            prompt_history: RwSignal::new(Vec::new()),
             show_terminal: RwSignal::new(false),
             #[cfg(target_arch = "wasm32")]
             abort: RwSignal::new(None),

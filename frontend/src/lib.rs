@@ -9,6 +9,7 @@ pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod components;
 pub mod conversation;
+pub mod history;
 #[cfg(target_arch = "wasm32")]
 pub mod idb;
 #[cfg(target_arch = "wasm32")]

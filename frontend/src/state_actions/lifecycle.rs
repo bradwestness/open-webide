@@ -1,7 +1,7 @@
 use crate::state::{
     auth::AuthState,
     chat::ChatState,
-    layout::{ActiveResizer, LayoutState},
+    layout::{LayoutState, fit_panels},
     projects::ProjectsState,
     settings::{SettingsState, Theme},
     workspace::WorkspaceState,
@@ -130,7 +130,30 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         layout,
         select_project,
     } = context;
+    let history_loaded = RwSignal::new(None::<u64>);
+    let history_pending = RwSignal::new(None::<String>);
+    let history_saving = RwSignal::new(false);
+    let history_imported = RwSignal::new(false);
+    let resize_listener = window_event_listener(leptos::ev::resize, move |_| {
+        let [sidebar, tree, chat_width] = fit_panels(
+            viewport_width(),
+            [
+                layout.sidebar_width.get_untracked(),
+                layout.tree_width.get_untracked(),
+                layout.chat_width.get_untracked(),
+            ],
+        );
+        layout.sidebar_width.set(sidebar);
+        layout.tree_width.set(tree);
+        layout.chat_width.set(chat_width);
+    });
+    on_cleanup(move || resize_listener.remove());
     Effect::new(move |_| {
+        let generation = auth.generation.get();
+        history_loaded.set(None);
+        history_pending.set(None);
+        history_saving.set(false);
+        history_imported.set(false);
         if auth.user.get().is_none() {
             return;
         }
@@ -147,49 +170,15 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                     false
                 }
             };
-            if !backend_ok {
+            if !backend_ok || auth.generation.get_untracked() != generation {
                 return;
             }
 
             let backend = api.with_value(Clone::clone);
-            let (
-                settings_result,
-                projects_result,
-                connections_result,
-                sessions_result,
-                prompts_result,
-            ) = futures::join!(
-                backend.get_settings(),
-                backend.list_projects(),
-                backend.list_connections(),
-                backend.list_sessions(),
-                backend.list_system_prompts(),
-            );
-            if let Ok(connections) = connections_result {
-                settings.connections.set(connections);
+            let settings_result = backend.get_settings().await;
+            if auth.generation.get_untracked() != generation {
+                return;
             }
-            if let Ok(project_list) = projects_result {
-                projects.projects.set(project_list);
-            }
-            for project in projects
-                .projects
-                .get()
-                .into_iter()
-                .filter(|project| project.mode == WorkspaceMode::Local)
-            {
-                if let Ok(Some(handle)) = crate::idb::load_handle(project.id).await {
-                    projects.local_handles.update(|handles| {
-                        handles.insert(project.id, handle);
-                    });
-                }
-            }
-            if let Ok(sessions) = sessions_result {
-                chat.sessions.set(sessions);
-            }
-            if let Ok(prompts) = prompts_result {
-                settings.system_prompts.set(prompts);
-            }
-
             let mut stored_tab_ids = Vec::<i64>::new();
             let mut stored_active_project = None;
             if let Ok(values) = settings_result {
@@ -222,49 +211,89 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 {
                     stored_active_project = Some(id);
                 }
-                let total_width = web_sys::window()
-                    .and_then(|window| window.inner_width().ok())
-                    .and_then(|value| value.as_f64())
-                    .unwrap_or(1200.0);
-                if let Some(width) = values
-                    .get("panel_sidebar_width")
-                    .and_then(|value| value.parse().ok())
+                let mut widths = [
+                    layout.sidebar_width.get_untracked(),
+                    layout.tree_width.get_untracked(),
+                    layout.chat_width.get_untracked(),
+                ];
+                for (i, key) in [
+                    "panel_sidebar_width",
+                    "panel_tree_width",
+                    "panel_chat_width",
+                ]
+                .iter()
+                .enumerate()
                 {
-                    layout.sidebar_width.set(LayoutState::clamp(
-                        ActiveResizer::Sidebar,
-                        width,
-                        layout.sidebar_width.get_untracked(),
-                        layout.tree_width.get_untracked(),
-                        layout.chat_width.get_untracked(),
-                        total_width,
-                    ));
+                    if let Some(width) =
+                        values.get(*key).and_then(|value| value.parse::<f64>().ok())
+                    {
+                        widths[i] = width;
+                    }
                 }
-                if let Some(width) = values
-                    .get("panel_tree_width")
-                    .and_then(|value| value.parse().ok())
+                let [sidebar, tree, chat_width] = fit_panels(viewport_width(), widths);
+                layout.sidebar_width.set(sidebar);
+                layout.tree_width.set(tree);
+                layout.chat_width.set(chat_width);
+
+                let mut history = values
+                    .get("prompt_history")
+                    .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+                    .unwrap_or_default();
+                // Legacy browser data is consumed only when the account has no history setting.
+                if let Some(storage) =
+                    web_sys::window().and_then(|window| window.local_storage().ok().flatten())
                 {
-                    layout.tree_width.set(LayoutState::clamp(
-                        ActiveResizer::Tree,
-                        width,
-                        layout.sidebar_width.get_untracked(),
-                        layout.tree_width.get_untracked(),
-                        layout.chat_width.get_untracked(),
-                        total_width,
-                    ));
+                    if !values.contains_key("prompt_history")
+                        && let Some(entries) = storage
+                            .get_item("owide-prompt-history")
+                            .ok()
+                            .flatten()
+                            .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+                    {
+                        for entry in entries {
+                            crate::history::push_history(&mut history, entry);
+                        }
+                    }
+                    if values.contains_key("prompt_history") {
+                        let _ = storage.remove_item("owide-prompt-history");
+                    } else {
+                        history_imported.set(true);
+                    }
+                    let _ = storage.remove_item("owide-theme");
                 }
-                if let Some(width) = values
-                    .get("panel_chat_width")
-                    .and_then(|value| value.parse().ok())
-                {
-                    layout.chat_width.set(LayoutState::clamp(
-                        ActiveResizer::Chat,
-                        width,
-                        layout.sidebar_width.get_untracked(),
-                        layout.tree_width.get_untracked(),
-                        layout.chat_width.get_untracked(),
-                        total_width,
-                    ));
+                chat.prompt_history.set(history);
+                history_loaded.set(Some(generation));
+            }
+
+            let (projects_result, connections_result, sessions_result, prompts_result) = futures::join!(
+                backend.list_projects(),
+                backend.list_connections(),
+                backend.list_sessions(),
+                backend.list_system_prompts(),
+            );
+            if let Ok(connections) = connections_result {
+                settings.connections.set(connections);
+            }
+            if let Ok(project_list) = projects_result {
+                projects.projects.set(project_list);
+            }
+            for project in projects
+                .projects
+                .get()
+                .into_iter()
+                .filter(|project| project.mode == WorkspaceMode::Local)
+            {
+                if let Ok(Some(handle)) = crate::idb::load_handle(project.id).await {
+                    projects.local_handles.update(|handles| {
+                        handles.insert(project.id, handle);
+                    });
                 }
+            }
+            if let Ok(sessions) = sessions_result {
+                chat.sessions.set(sessions);
+            }
+            if let Ok(prompts) = prompts_result {
+                settings.system_prompts.set(prompts);
             }
 
             let all_projects = projects.projects.get();
@@ -290,6 +319,49 @@ pub fn install_project_effects(context: ProjectEffectContext) {
             }
             projects.projects_loaded.set(true);
         });
+    });
+
+    Effect::new(move |_| {
+        let generation = auth.generation.get();
+        if auth.user.get().is_none() || history_loaded.get() != Some(generation) {
+            return;
+        }
+        let history = chat.prompt_history.get();
+        if let Ok(json) = serde_json::to_string(&history) {
+            history_pending.set(Some(json));
+            if history_saving.get_untracked() {
+                return;
+            }
+            history_saving.set(true);
+            spawn_local(async move {
+                loop {
+                    if auth.generation.get_untracked() != generation {
+                        return;
+                    }
+                    let mut next = None;
+                    history_pending.update(|pending| next = pending.take());
+                    let Some(json) = next else {
+                        break;
+                    };
+                    if api
+                        .with_value(Clone::clone)
+                        .set_setting("prompt_history", &json)
+                        .await
+                        .is_ok()
+                        && auth.generation.get_untracked() == generation
+                        && history_imported.get_untracked()
+                    {
+                        if let Some(storage) = web_sys::window()
+                            .and_then(|window| window.local_storage().ok().flatten())
+                        {
+                            let _ = storage.remove_item("owide-prompt-history");
+                        }
+                        history_imported.set(false);
+                    }
+                }
+                history_saving.set(false);
+            });
+        }
     });
 
     Effect::new(move |_| {
@@ -320,4 +392,11 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 .await;
         });
     });
+}
+
+fn viewport_width() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1200.0)
 }

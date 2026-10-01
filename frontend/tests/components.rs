@@ -21,3 +21,6 @@ mod runs;
 
 #[path = "components/local_bridge.rs"]
 mod local_bridge;
+
+#[path = "components/persistence.rs"]
+mod persistence;

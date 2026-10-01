@@ -16,6 +16,10 @@ use web_sys::AbortSignal;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Call {
+    SetSetting {
+        key: String,
+        value: String,
+    },
     SetPermission {
         session: i64,
         id: String,
@@ -45,6 +49,8 @@ pub enum Call {
     },
 }
 
+type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, String>, String>>;
+
 #[derive(Default)]
 pub struct FakeBackend {
     pub sessions: RefCell<Vec<ChatSession>>,
@@ -56,6 +62,10 @@ pub struct FakeBackend {
     pub connections: RefCell<Vec<Connection>>,
     pub system_prompts: RefCell<Vec<SystemPrompt>>,
     pub settings: RefCell<BTreeMap<String, String>>,
+    pub settings_load_error: RefCell<Option<String>>,
+    pub settings_load_results: RefCell<VecDeque<SettingsLoad>>,
+    pub history_save_results:
+        RefCell<VecDeque<futures::channel::oneshot::Receiver<Result<(), String>>>>,
     pub scripted_completions: RefCell<VecDeque<ChatCompletion>>,
     pub completion_requests: RefCell<Vec<ChatRequest>>,
     pub scripted_events: RefCell<VecDeque<Vec<RunEvent>>>,
@@ -292,6 +302,13 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "get_settings",
             });
+            let result = self.settings_load_results.borrow_mut().pop_front();
+            if let Some(result) = result {
+                return result.await.map_err(|error| error.to_string())?;
+            }
+            if let Some(error) = self.settings_load_error.borrow().clone() {
+                return Err(error);
+            }
             Ok(self.settings.borrow().clone())
         })
     }
@@ -301,9 +318,16 @@ impl Backend for FakeBackend {
         value: &'a str,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            self.calls.borrow_mut().push(Call::Request {
-                method: "set_setting",
+            self.calls.borrow_mut().push(Call::SetSetting {
+                key: key.into(),
+                value: value.into(),
             });
+            if key == "prompt_history" {
+                let result = self.history_save_results.borrow_mut().pop_front();
+                if let Some(result) = result {
+                    result.await.map_err(|error| error.to_string())??;
+                }
+            }
             self.settings.borrow_mut().insert(key.into(), value.into());
             Ok(())
         })

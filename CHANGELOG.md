@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Sync prompt history and theme through user settings, import legacy history once, and fit panel widths to the viewport.
+
 - Run `/test [filter]` in the terminal with shell-quoted filters and the project directory.
 
 - Isolate SSE run cancellation and permission cleanup so a quick resend preserves Stop and concurrent runs retain their decisions.

@@ -17,6 +17,7 @@ Instructions, conventions, and architectural principles for AI agents working on
 
 ### Always Use the Database for Persistence (No LocalStorage)
 - **Seamless Multi-Device Continuity**: The core product philosophy is that a user must be able to switch machines, devices, or browsers and immediately pick up right where they left off without losing state.
+- **No user state is persisted in localStorage**: theme and prompt history use user-scoped database settings; legacy keys are removed after import.
 - **Never rely on `localStorage`** for user preferences, workspaces, layout configurations, or session state. The session is an HttpOnly cookie.
 - **User-Scoped Database Settings**:
   - Persist all user layout preferences, panel dimensions (`panel_sidebar_width`, `panel_tree_width`, `panel_chat_width`), active tabs (`open_tabs`), active project (`active_project`), theme, `bridge_url`, and default configurations in the SQLite database via the `/api/settings` endpoints (`crates/storage/src/store.rs` -> `user_settings` table).

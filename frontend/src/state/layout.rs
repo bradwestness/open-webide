@@ -1,6 +1,22 @@
 use leptos::prelude::*;
 
-const CENTER_MIN_WIDTH: f64 = 260.0;
+pub const CENTER_MIN: f64 = 260.0;
+
+pub fn fit_panels(viewport: f64, widths: [f64; 3]) -> [f64; 3] {
+    let panels = [
+        ActiveResizer::Sidebar,
+        ActiveResizer::Tree,
+        ActiveResizer::Chat,
+    ];
+    let mut widths = std::array::from_fn(|i| widths[i].clamp(panels[i].min(), panels[i].max()));
+    let mut excess = (widths.iter().sum::<f64>() + CENTER_MIN - viewport).max(0.0);
+    for i in [2, 1, 0] {
+        let shrink = excess.min(widths[i] - panels[i].min());
+        widths[i] -= shrink;
+        excess -= shrink;
+    }
+    widths
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ActiveResizer {
@@ -93,7 +109,7 @@ impl LayoutState {
         let lower = resizer.min();
         let upper = resizer.max();
         let width = requested.clamp(lower, upper);
-        let max_for_center = (total_width - other_width - CENTER_MIN_WIDTH).max(lower);
+        let max_for_center = (total_width - other_width - CENTER_MIN).max(lower);
 
         width.min(max_for_center)
     }
@@ -108,6 +124,33 @@ impl Default for LayoutState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_shrinks_chat_then_tree_then_sidebar() {
+        let fitted = fit_panels(1280.0, [480.0, 650.0, 1000.0]);
+        assert_eq!(fitted, [480.0, 280.0, 260.0]);
+        assert!(fitted.iter().sum::<f64>() <= 1020.0);
+        assert_eq!(
+            fit_panels(900.0, [240.0, 260.0, 420.0]),
+            [220.0, 160.0, 260.0]
+        );
+    }
+
+    #[test]
+    fn wide_viewports_preserve_widths_and_tiny_viewports_use_minimums() {
+        assert_eq!(
+            fit_panels(3000.0, [480.0, 650.0, 1000.0]),
+            [480.0, 650.0, 1000.0]
+        );
+        assert_eq!(
+            fit_panels(100.0, [480.0, 650.0, 1000.0]),
+            [140.0, 160.0, 260.0]
+        );
+        assert_eq!(
+            fit_panels(3000.0, [1.0, 900.0, 2000.0]),
+            [140.0, 650.0, 1000.0]
+        );
+    }
 
     #[test]
     fn resizer_bounds_defaults_and_settings_match_the_panel_table() {

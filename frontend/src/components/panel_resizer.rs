@@ -46,29 +46,16 @@ pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
     });
 
     let _ = window_event_listener(leptos::ev::pointerup, move |_| {
-        if layout.active_resizer.get() == ActiveResizer::None {
+        if layout.active_resizer.get() != kind || kind == ActiveResizer::None {
             return;
         }
 
         layout.active_resizer.set(ActiveResizer::None);
-        let sidebar_width = layout.sidebar_width.get();
-        let tree_width = layout.tree_width.get();
-        let chat_width = layout.chat_width.get();
+        let value = width.get().to_string();
         spawn_local(async move {
             let _ = api
                 .with_value(Clone::clone)
-                .set_setting(
-                    ActiveResizer::Sidebar.setting_key(),
-                    &sidebar_width.to_string(),
-                )
-                .await;
-            let _ = api
-                .with_value(Clone::clone)
-                .set_setting(ActiveResizer::Tree.setting_key(), &tree_width.to_string())
-                .await;
-            let _ = api
-                .with_value(Clone::clone)
-                .set_setting(ActiveResizer::Chat.setting_key(), &chat_width.to_string())
+                .set_setting(kind.setting_key(), &value)
                 .await;
         });
     });

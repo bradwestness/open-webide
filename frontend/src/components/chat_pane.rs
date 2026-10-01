@@ -6,28 +6,6 @@ use openwebide_core::{
 };
 use web_sys::wasm_bindgen::JsCast;
 
-const PROMPT_HISTORY_KEY: &str = "owide-prompt-history";
-const MAX_HISTORY: usize = 200;
-
-fn load_prompt_history() -> Vec<String> {
-    web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|ls| ls.get_item(PROMPT_HISTORY_KEY).ok().flatten())
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default()
-}
-
-fn save_prompt_history(history: &[String]) {
-    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let trimmed: Vec<String> = history.iter().rev().take(MAX_HISTORY).cloned().collect();
-        let mut ordered = trimmed;
-        ordered.reverse();
-        if let Ok(json) = serde_json::to_string(&ordered) {
-            let _ = ls.set_item(PROMPT_HISTORY_KEY, &json);
-        }
-    }
-}
-
 pub use crate::conversation::{ConversationItem, ToolStepResult, item_key};
 
 pub(crate) use crate::markdown::render as render_markdown;
@@ -443,7 +421,7 @@ pub fn ChatPane(
     let model_ref = NodeRef::<leptos::html::Select>::new();
 
     // Readline prompt history state
-    let prompt_history = RwSignal::new(load_prompt_history());
+    let prompt_history = chat.prompt_history;
     let history_index = RwSignal::new(Option::<usize>::None);
     let draft_backup = RwSignal::new(String::new());
 
@@ -502,13 +480,7 @@ pub fn ChatPane(
                 return;
             }
 
-            // Save to readline history buffer
-            prompt_history.update(|h| {
-                if h.last().map(|s| s.as_str()) != Some(&current) {
-                    h.push(current.clone());
-                }
-            });
-            save_prompt_history(&prompt_history.get());
+            prompt_history.update(|history| crate::history::push_history(history, current.clone()));
             history_index.set(None);
 
             if current.starts_with('/')

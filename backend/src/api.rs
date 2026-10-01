@@ -40,6 +40,8 @@ const AUTH_BODY_LIMIT: usize = 64 * 1024;
 const CHAT_BODY_LIMIT: usize = 16 * 1024 * 1024;
 const FILE_BODY_LIMIT: usize = crate::files::MAX_READ_BYTES as usize;
 const JSON_BODY_LIMIT: usize = 1024 * 1024;
+// 200 × 2,000 characters can expand to seven bytes each in double-encoded JSON.
+const SETTINGS_BODY_LIMIT: usize = 4 * 1024 * 1024;
 
 /// Collect a body already wrapped in [`http_body_util::Limited`], mapping a
 /// length-limit violation to 413 and any other body error to 400.
@@ -341,7 +343,7 @@ struct SettingBody {
 
 pub async fn set_setting(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let user_id = current_user_id(state)?;
-    let body = read_body(req, JSON_BODY_LIMIT).await?;
+    let body = read_body(req, SETTINGS_BODY_LIMIT).await?;
     let setting: SettingBody = parse_json(body)?;
     state
         .store
@@ -1360,6 +1362,25 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_body_limit_accepts_maximum_prompt_history() {
+        for character in ['😀', '\0'] {
+            let history: Vec<String> = (0..200)
+                .map(|i| {
+                    let prefix = format!("{i:03}");
+                    prefix + &character.to_string().repeat(1997)
+                })
+                .collect();
+            let value = serde_json::to_string(&history).unwrap();
+            let body = serde_json::to_vec(&serde_json::json!({
+                "key": "prompt_history",
+                "value": value,
+            }))
+            .unwrap();
+            assert!(body.len() <= super::SETTINGS_BODY_LIMIT);
+        }
+    }
+
     use super::*;
 
     #[test]
