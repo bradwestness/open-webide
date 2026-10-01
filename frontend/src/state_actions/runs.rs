@@ -233,12 +233,12 @@ impl RunActions {
                             .set(!snapshot.reasoning.is_empty() && snapshot.text.is_empty());
                         self.chat
                             .messages
-                            .update(|items| merge_snapshot(items, &snapshot));
+                            .reconcile(|items| merge_snapshot(items, &snapshot));
                         // Rebuild before recording the live turn so repeated snapshots don't add usage twice.
                         let entries = self
                             .chat
                             .messages
-                            .get_untracked()
+                            .snapshot()
                             .into_iter()
                             .filter_map(|item| match item {
                                 ConversationItem::Message(m) if m.id > 0 => {
@@ -252,7 +252,7 @@ impl RunActions {
                             telemetry.tool_calls_count = self
                                 .chat
                                 .messages
-                                .get_untracked()
+                                .snapshot()
                                 .iter()
                                 .filter(|item| matches!(item, ConversationItem::ToolStep { .. }))
                                 .count();
@@ -400,11 +400,13 @@ impl RunActions {
                     self.chat
                         .session_telemetry
                         .update(|telemetry| telemetry.restore_from_conversation(&entries));
-                    self.chat.messages.set(super::chat::history_items(entries));
+                    self.chat
+                        .messages
+                        .install_history(super::chat::history_items(entries));
                     if !has_reply {
                         self.chat
                             .messages
-                            .update(|items| items.push(notice("The run was interrupted.")));
+                            .reconcile(|items| items.push(notice("The run was interrupted.")));
                     }
                 }
                 Err(error) => self.chat.error.set(Some(error)),
@@ -486,19 +488,7 @@ impl RunActions {
     }
 
     fn clear_prompt(self, step: &str) {
-        self.chat.messages.update(|items| {
-            for item in items {
-                if let ConversationItem::ToolStep {
-                    id,
-                    awaiting_permission,
-                    ..
-                } = item
-                    && id == step
-                {
-                    *awaiting_permission = false;
-                }
-            }
-        });
+        self.chat.messages.clear_prompt(step, false);
     }
 
     pub fn install_reconnect(self) {

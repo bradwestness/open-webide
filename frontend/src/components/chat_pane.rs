@@ -6,7 +6,7 @@ use openwebide_core::{
 };
 use web_sys::wasm_bindgen::JsCast;
 
-pub use crate::conversation::{ConversationItem, ToolStepResult, item_key};
+pub use crate::conversation::{ConversationItem, ToolStepResult};
 
 pub(crate) use crate::markdown::render as render_markdown;
 
@@ -34,16 +34,17 @@ fn render_diff_view(diff: FileDiff) -> impl IntoView {
     }
 }
 
-fn render_approval_diff(diff: FileDiff) -> impl IntoView {
+fn render_approval_diff(diff: Memo<Option<FileDiff>>) -> impl IntoView {
     let expanded = RwSignal::new(false);
-    let lines = diff_inline_detailed(&diff);
-    let has_more = lines.len() > 40;
-    let lines = StoredValue::new(lines);
+    let lines = Memo::new(move |_| {
+        diff.with(|diff| diff.as_ref().map(diff_inline_detailed).unwrap_or_default())
+    });
+    let has_more = move || lines.with(|lines| lines.len() > 40);
     view! {
         <div class="tui-diff-box">
-            <div class="tui-diff-path">"diff: " {diff.path}</div>
+            <div class="tui-diff-path">"diff: " {move || diff.with(|diff| diff.as_ref().map(|diff| diff.path.clone()).unwrap_or_default())}</div>
             <div class="tui-diff-lines">
-                {move || lines.with_value(|lines| {
+                {move || lines.with(|lines| {
                     lines.iter().take(if expanded.get() { lines.len() } else { 40 }).cloned().map(|line| {
                         let class = if line.marker == '+' { "tui-diff-line add" } else { "tui-diff-line del" };
                         view! {
@@ -56,7 +57,7 @@ fn render_approval_diff(diff: FileDiff) -> impl IntoView {
                     }).collect::<Vec<_>>()
                 })}
             </div>
-            <Show when=move || has_more && !expanded.get()>
+            <Show when=move || has_more() && !expanded.get()>
                 <button class="btn" on:click=move |_| expanded.set(true)>"Show full diff"</button>
             </Show>
         </div>
@@ -64,16 +65,13 @@ fn render_approval_diff(diff: FileDiff) -> impl IntoView {
 }
 
 /// Render a single assistant message with collapsible thinking stream.
-fn render_assistant_message(content: String) -> AnyView {
-    let parsed = parse_thinking(&content);
-    let is_thinking_active = parsed.is_thinking;
-    let thinking_text = parsed.thinking.unwrap_or_default();
-    let answer_text = parsed.answer;
-    let has_thinking = !thinking_text.is_empty();
-    let thinking_expanded = RwSignal::new(is_thinking_active);
-
-    let (thinking_sig, _) = signal(thinking_text);
-    let (answer_sig, _) = signal(answer_text);
+fn render_assistant_message(content: Memo<String>) -> AnyView {
+    let parsed = Memo::new(move |_| content.with(|content| parse_thinking(content)));
+    let thinking_sig =
+        Memo::new(move |_| parsed.with(|parsed| parsed.thinking.clone().unwrap_or_default()));
+    let answer_sig = Memo::new(move |_| parsed.with(|parsed| parsed.answer.clone()));
+    let is_thinking_active = Memo::new(move |_| parsed.with(|parsed| parsed.is_thinking));
+    let thinking_expanded = RwSignal::new(false);
 
     view! {
         <div class="tui-stream-line tui-assistant">
@@ -82,12 +80,12 @@ fn render_assistant_message(content: String) -> AnyView {
                 <span class="tui-role-label">"assistant"</span>
             </div>
 
-            <Show when=move || has_thinking fallback=|| ()>
+            <Show when=move || !thinking_sig.with(String::is_empty) fallback=|| ()>
                 <div class="tui-thinking-box">
                     <Show
-                        when=move || is_thinking_active
+                        when=move || is_thinking_active.get()
                         fallback=move || {
-                            let tok_approx = thinking_sig.with(|t| t.split_whitespace().count() * 4 / 3);
+                            let tok_approx = move || thinking_sig.with(|t| t.split_whitespace().count() * 4 / 3);
                             view! {
                                 <div
                                     class="tui-thinking-summary"
@@ -99,7 +97,7 @@ fn render_assistant_message(content: String) -> AnyView {
                                     </span>
                                     <span class="tui-think-badge">"💭 Thought"</span>
                                     <span class="tui-think-meta">
-                                        {format!("(~{tok_approx} tokens)")}
+                                        {move || format!("(~{} tokens)", tok_approx())}
                                     </span>
                                 </div>
                             }
@@ -111,7 +109,7 @@ fn render_assistant_message(content: String) -> AnyView {
                         </div>
                     </Show>
 
-                    <Show when=move || thinking_expanded.get() || is_thinking_active fallback=|| ()>
+                    <Show when=move || thinking_expanded.get() || is_thinking_active.get() fallback=|| ()>
                         <div class="tui-thinking-trace">
                             <pre class="tui-thinking-pre">{move || thinking_sig.get()}</pre>
                         </div>
@@ -130,13 +128,17 @@ fn render_assistant_message(content: String) -> AnyView {
 }
 
 /// Render a single user message with extracted editor context pill if present.
-fn render_user_message(content: String) -> AnyView {
-    let (pill_opt, clean) = extract_editor_context_prelude(&content);
-    let pill_label = pill_opt.map(ToString::to_string);
-    let clean_text = clean.to_string();
-
-    let (pill_sig, _) = signal(pill_label);
-    let (text_sig, _) = signal(clean_text);
+fn render_user_message(content: Memo<String>) -> AnyView {
+    let pill_sig = Memo::new(move |_| {
+        content.with(|content| {
+            extract_editor_context_prelude(content)
+                .0
+                .map(ToString::to_string)
+        })
+    });
+    let text_sig = Memo::new(move |_| {
+        content.with(|content| extract_editor_context_prelude(content).1.to_string())
+    });
 
     view! {
         <div class="tui-stream-line tui-user">
@@ -156,68 +158,109 @@ fn render_user_message(content: String) -> AnyView {
 }
 
 /// Render an agent tool step as a terminal TUI box with box-drawing glyphs.
-#[allow(clippy::too_many_arguments)]
 fn render_tool_step(
-    id: String,
-    name: String,
-    summary: String,
-    result: Option<ToolStepResult>,
-    diff: Option<FileDiff>,
-    note: Option<String>,
-    awaiting_permission: bool,
-    is_current_awaiting: bool,
+    item: RwSignal<ConversationItem>,
+    awaiting_step: Memo<Option<(String, String)>>,
     on_permission: Callback<(String, bool)>,
     on_permission_always: Callback<String>,
 ) -> impl IntoView {
-    let status_class = match result.as_ref() {
-        Some(r) if r.ok => "ok",
-        Some(_) => "err",
-        None if awaiting_permission => "awaiting",
-        None => "running",
+    let result_sig = Memo::new(move |_| {
+        item.with(|item| match item {
+            ConversationItem::ToolStep { result, .. } => result.clone(),
+            _ => None,
+        })
+    });
+    let id_sig = Memo::new(move |_| {
+        item.with(|item| match item {
+            ConversationItem::ToolStep { id, .. } => id.clone(),
+            _ => String::new(),
+        })
+    });
+    let name_sig = Memo::new(move |_| {
+        item.with(|item| match item {
+            ConversationItem::ToolStep { name, .. } => name.clone(),
+            _ => String::new(),
+        })
+    });
+    let summary = Memo::new(move |_| {
+        item.with(|item| match item {
+            ConversationItem::ToolStep { summary, .. } => summary.clone(),
+            _ => String::new(),
+        })
+    });
+    let awaiting_permission = Memo::new(move |_| {
+        item.with(|item| {
+            matches!(
+                item,
+                ConversationItem::ToolStep {
+                    awaiting_permission: true,
+                    ..
+                }
+            )
+        })
+    });
+    let is_current_awaiting = Memo::new(move |_| {
+        awaiting_step.with(|step| {
+            step.as_ref()
+                .is_some_and(|(id, _)| id_sig.with(|row_id| id == row_id))
+        })
+    });
+    let preview = Memo::new(move |_| {
+        item.with(|item| match item {
+            ConversationItem::ToolStep { diff, .. } => diff.clone(),
+            _ => None,
+        })
+    });
+    let note = Memo::new(move |_| {
+        item.with(|item| match item {
+            ConversationItem::ToolStep { note, .. } => note.clone(),
+            _ => None,
+        })
+    });
+    let status_class = move || {
+        result_sig.with(|result| match result {
+            Some(result) if result.ok => "ok",
+            Some(_) => "err",
+            None if awaiting_permission.get() => "awaiting",
+            None => "running",
+        })
     };
-
-    let status_badge = match result.as_ref() {
-        Some(r) if r.ok => "[✔ ok]",
-        Some(_) => "[✖ err]",
-        None if awaiting_permission => "[? permission required]",
-        None => "[⠋ running]",
+    let status_badge = move || match status_class() {
+        "ok" => "[✔ ok]",
+        "err" => "[✖ err]",
+        "awaiting" => "[? permission required]",
+        _ => "[⠋ running]",
     };
-
-    let (result_sig, _set_result) = signal(result);
-    let (id_sig, _set_id) = signal(id);
-    let (name_sig, _set_name) = signal(name.clone());
     let show_diff = RwSignal::new(true);
-    let preview = StoredValue::new(diff);
-    let note = StoredValue::new(note);
 
     view! {
-        <div class=format!("tui-box tui-tool-box {status_class}")>
+        <div class=move || format!("tui-box tui-tool-box {}", status_class())>
             <div class="tui-tool-topbar">
                 <span class="tui-box-corner">"┌─"</span>
                 <span class="tui-tool-tag">"[tool]"</span>
-                <span class="tui-tool-title">{format!(" {name}(\"{summary}\") ")}</span>
+                <span class="tui-tool-title">{move || format!(" {}(\"{}\") ", name_sig.get(), summary.get())}</span>
                 <span class="tui-tool-spacer"></span>
-                <span class=format!("tui-tool-status-badge {status_class}")>{status_badge}</span>
+                <span class=move || format!("tui-tool-status-badge {}", status_class())>{status_badge}</span>
                 <span class="tui-box-corner">"─┐"</span>
             </div>
 
             <div class="tui-tool-inner">
                 <Show when=move || result_sig.with(Option::is_none)>
-                    {move || note.get_value().map(|note| view! { <div class="tui-perm-text">{note}</div> })}
-                    <Show when=move || show_diff.get() && preview.with_value(|diff| diff.as_ref().is_some_and(|diff| !diff.old_unavailable))>
-                        {move || render_approval_diff(preview.get_value().unwrap())}
+                    {move || note.get().map(|note| view! { <div class="tui-perm-text">{note}</div> })}
+                    <Show when=move || show_diff.get() && preview.with(|diff| diff.as_ref().is_some_and(|diff| !diff.old_unavailable))>
+                        {render_approval_diff(preview)}
                     </Show>
-                    <Show when=move || preview.with_value(|diff| diff.as_ref().is_some_and(|diff| diff.old_unavailable))>
+                    <Show when=move || preview.with(|diff| diff.as_ref().is_some_and(|diff| diff.old_unavailable))>
                         <div class="tui-perm-text">"diff unavailable"</div>
                     </Show>
                 </Show>
                 <Show
-                    when=move || awaiting_permission && result_sig.get().is_none() && is_current_awaiting
+                    when=move || awaiting_permission.get() && result_sig.get().is_none() && is_current_awaiting.get()
                     fallback=|| ()
                 >
                     <div class="tui-permission-prompt">
                         <div class="tui-perm-text">
-                            {format!("? Allow {name} \"{summary}\"?")}
+                            {move || format!("? Allow {} \"{}\"?", name_sig.get(), summary.get())}
                         </div>
                         <div class="tui-perm-buttons">
                             <button
@@ -258,7 +301,7 @@ fn render_tool_step(
                 </Show>
 
                 <Show
-                    when=move || awaiting_permission && result_sig.get().is_none() && !is_current_awaiting
+                    when=move || awaiting_permission.get() && result_sig.get().is_none() && !is_current_awaiting.get()
                     fallback=|| ()
                 >
                     <div class="tui-tool-pending muted">
@@ -267,7 +310,7 @@ fn render_tool_step(
                 </Show>
 
                 <Show
-                    when=move || result_sig.get().is_none() && !awaiting_permission
+                    when=move || result_sig.get().is_none() && !awaiting_permission.get()
                     fallback=|| ()
                 >
                     <div class="tui-tool-pending">
@@ -447,7 +490,7 @@ pub fn ChatPane(
     let chat = expect_context::<ChatState>();
     let layout = expect_context::<LayoutState>();
     let projects = expect_context::<ProjectsState>();
-    let messages = chat.messages.read_only();
+    let messages = chat.messages;
     let streaming = chat.streaming.read_only();
     let draft = chat.draft.read_only();
     let set_draft = chat.draft.write_only();
@@ -471,19 +514,11 @@ pub fn ChatPane(
     let awaiting_step_id = chat.awaiting_step_id;
     let awaiting_step = Memo::new(move |_| {
         let awaiting_id = awaiting_step_id.get()?;
-        messages.get().into_iter().rev().find_map(|item| {
-            if let ConversationItem::ToolStep {
-                id,
-                name,
-                awaiting_permission: true,
-                result: None,
-                ..
-            } = item
-                && id == awaiting_id
-            {
-                return Some((id, name));
-            }
-            None
+        messages.handles.with(|handles| {
+            handles
+                .iter()
+                .rev()
+                .find_map(|handle| handle.permission.get().filter(|(id, _)| *id == awaiting_id))
         })
     });
     let has_awaiting = Signal::derive(move || awaiting_step.get().is_some());
@@ -499,7 +534,7 @@ pub fn ChatPane(
 
     // Keep the newest message in view as tokens arrive.
     Effect::new(move || {
-        let _ = messages.get();
+        messages.changed.get();
         if let Some(el) = scroll_ref.get() {
             el.set_scroll_top(f64::from(el.scroll_height()));
         }
@@ -543,7 +578,7 @@ pub fn ChatPane(
             style=move || format!("width: {}px; flex: none;", layout.chat_width.get())
         >
             <Show
-                when=move || !messages.get().is_empty()
+                when=move || !messages.handles.with(Vec::is_empty)
                 fallback=move || {
                     view! {
                         <Show
@@ -573,67 +608,26 @@ pub fn ChatPane(
                 <div class="messages tui-stream" node_ref=scroll_ref>
                     <div class="tui-stream-spacer"></div>
                     <For
-                        each=move || { messages.get().into_iter().filter(|item| {
-                            !matches!(item, ConversationItem::Message(message) if message.role == Role::Assistant && message.content.is_empty() && message.tool_calls.is_some())
-                        }).collect::<Vec<_>>() }
-                        key=|item| item_key(item)
-                        children=move |item| {
-                            let (item_sig, _set_item) = signal(item);
-                            let is_stopped = matches!(item_sig.get(), ConversationItem::Stopped { .. });
-                            let (stopped, _set_stopped) = signal(is_stopped);
-                            let is_message = matches!(
-                                item_sig.get(),
-                                ConversationItem::Message(_) | ConversationItem::Notice { .. }
-                            );
-                            let (is_msg, _set_is_msg) = signal(is_message);
-
-                            view! {
-                                <Show
-                                    when=move || stopped.get()
-                                    fallback=move || {
-                                        view! {
-                                            <Show
-                                                when=move || is_msg.get()
-                                                fallback=move || {
-                                                    let ConversationItem::ToolStep {
-                                                        id, name, summary, result, diff, note,
-                                                        awaiting_permission: awaiting, ..
-                                                    } = item_sig.get() else {
-                                                        unreachable!("not a tool step");
-                                                    };
-                                                    let is_current_awaiting = awaiting_step.get().is_some_and(|(cur_id, _)| cur_id == id);
-                                                    render_tool_step(
-                                                        id,
-                                                        name,
-                                                        summary,
-                                                        result,
-                                                        diff,
-                                                        note,
-                                                        awaiting,
-                                                        is_current_awaiting,
-                                                        on_permission,
-                                                        on_permission_always,
-                                                    )
-                                                }
-                                            >
-                                                {move || {
-                                                    let (role, content) = match item_sig.get() {
-                                                        ConversationItem::Message(message) => (message.role, message.content),
-                                                        ConversationItem::Notice { text, .. } => (Role::Assistant, text),
-                                                        _ => unreachable!("not a message or notice"),
-                                                    };
-                                                    if role == Role::Assistant {
-                                                        render_assistant_message(content)
-                                                    } else {
-                                                        render_user_message(content)
-                                                    }
-                                                }}
-                                            </Show>
-                                        }
-                                    }
-                                >
-                                    <div class="stopped-marker tui-stopped-marker">"⏹ execution aborted"</div>
-                                </Show>
+                        each=move || messages.handles.with(|handles| handles.iter().copied().filter(|handle| handle.visible.get()).collect::<Vec<_>>())
+                        key=|handle| handle.key
+                        children=move |handle| {
+                            let item = handle.item;
+                            match item.get_untracked() {
+                                ConversationItem::Stopped { .. } => view! { <div class="stopped-marker tui-stopped-marker">"⏹ execution aborted"</div> }.into_any(),
+                                ConversationItem::ToolStep { .. } => render_tool_step(item, awaiting_step, on_permission, on_permission_always).into_any(),
+                                ConversationItem::Message(_) | ConversationItem::Notice { .. } => {
+                                    let content = Memo::new(move |_| item.with(|item| match item {
+                                        ConversationItem::Message(message) => message.content.clone(),
+                                        ConversationItem::Notice { text, .. } => text.clone(),
+                                        _ => String::new(),
+                                    }));
+                                    let assistant = Memo::new(move |_| item.with(|item| !matches!(item, ConversationItem::Message(message) if message.role != Role::Assistant)));
+                                    view! {
+                                        <Show when=move || assistant.get() fallback=move || render_user_message(content)>
+                                            {render_assistant_message(content)}
+                                        </Show>
+                                    }.into_any()
+                                }
                             }
                         }
                     />

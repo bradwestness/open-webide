@@ -9,7 +9,7 @@ use openwebide_core::{ChatMessage, FileDiff, Role};
 
 /// One item in the conversation: a chat message, an agent tool step, or a
 /// stop marker.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversationItem {
     /// A user or assistant chat message.
     Message(ChatMessage),
@@ -85,7 +85,7 @@ pub fn local_message(session_id: i64, text: impl Into<String>) -> ConversationIt
 }
 
 /// The outcome of a finished tool step.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolStepResult {
     pub ok: bool,
     pub summary: String,
@@ -171,22 +171,11 @@ pub fn merge_snapshot(items: &mut Vec<ConversationItem>, snapshot: &openwebide_c
     }
 }
 
-/// A key for a conversation item that changes when the item's content changes
-/// (a streamed delta, a tool result arriving) so Leptos' `For` re-renders it.
+/// Payload identity for reconciliation; UI handles also survive server-ID assignment.
 pub fn item_key(item: &ConversationItem) -> String {
     match item {
-        ConversationItem::Message(m) => format!("m-{}-{}", m.id, m.content.len()),
-        ConversationItem::ToolStep {
-            key,
-            result,
-            awaiting_permission,
-            ..
-        } => format!(
-            "t-{}-{}-{}",
-            key,
-            if result.is_some() { 1 } else { 0 },
-            if *awaiting_permission { 1 } else { 0 }
-        ),
+        ConversationItem::Message(m) => format!("m-{}", m.id),
+        ConversationItem::ToolStep { key, .. } => format!("t-{key}"),
         ConversationItem::Stopped { nonce } => format!("s-{nonce}"),
         ConversationItem::Notice { nonce, .. } => format!("n-{nonce}"),
     }
@@ -303,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn message_key_changes_when_content_grows() {
+    fn message_key_survives_content_changes() {
         let mut item = local_message(1, "hello");
         let before = item_key(&item);
         if let ConversationItem::Message(m) = &mut item {
@@ -311,7 +300,7 @@ mod tests {
         } else {
             unreachable!("local_message returns a Message");
         }
-        assert_ne!(before, item_key(&item));
+        assert_eq!(before, item_key(&item));
     }
 
     #[test]

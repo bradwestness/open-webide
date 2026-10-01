@@ -128,18 +128,7 @@ impl ChatActions {
                 }
                 // Clear the prompt immediately; the ToolCall (approved) or
                 // ToolResult (denied) event that follows confirms it.
-                chat.messages.update(|items| {
-                    if let Some(awaiting) = items.iter_mut().find_map(|item| match item {
-                        crate::conversation::ConversationItem::ToolStep {
-                            id,
-                            awaiting_permission,
-                            ..
-                        } if *id == tool_call_id => Some(awaiting_permission),
-                        _ => None,
-                    }) {
-                        *awaiting = false;
-                    }
-                });
+                chat.messages.clear_prompt(&tool_call_id, true);
                 if chat.active_run.get_untracked().is_some() {
                     return;
                 }
@@ -557,7 +546,7 @@ impl ChatActions {
                         select_model.run(Some(name.clone()));
                         chat.notify(format!("Switched model to `{name}`."));
                     }
-                    SlashAction::Clear => chat.messages.set(Vec::new()),
+                    SlashAction::Clear => chat.messages.install_history(Vec::new()),
                     SlashAction::GitDiff { project_id, path } => {
                         spawn_local(async move {
                             match api
@@ -838,7 +827,7 @@ fn install_effects(
                         Ok(entries) => {
                             session_telemetry
                                 .update(|telemetry| telemetry.restore_from_conversation(&entries));
-                            chat.messages.set(history_items(entries));
+                            chat.messages.install_history(history_items(entries));
                             let mode = chat
                                 .sessions
                                 .get_untracked()
@@ -860,8 +849,8 @@ fn install_effects(
                                     && chat.active_run.get_untracked().is_none()
                                 {
                                     let anchor =
-                                        chat.messages.get_untracked().iter().rev().find_map(
-                                            |item| match item {
+                                        chat.messages.snapshot().iter().rev().find_map(|item| {
+                                            match item {
                                                 ConversationItem::Message(message)
                                                     if message.role
                                                         == openwebide_core::Role::User =>
@@ -869,8 +858,8 @@ fn install_effects(
                                                     Some(message.id)
                                                 }
                                                 _ => None,
-                                            },
-                                        );
+                                            }
+                                        });
                                     if let Some(anchor) = anchor {
                                         chat.cancel_run_prompts(anchor);
                                     }
@@ -887,7 +876,7 @@ fn install_effects(
                 }
                 None => {
                     session_telemetry.update(|telemetry| telemetry.restore_from_conversation(&[]));
-                    chat.messages.set(Vec::new());
+                    chat.messages.install_history(Vec::new());
                 }
             }
         });

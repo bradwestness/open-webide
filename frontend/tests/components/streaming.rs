@@ -552,3 +552,166 @@ async fn local_completion_persists_reasoning_and_omits_prior_reasoning() {
             .contains("[reply cut off: output token limit reached]")
     );
 }
+
+#[wasm_bindgen_test]
+async fn streaming_rows_keep_nodes_and_expanded_reasoning_through_finalization() {
+    use openwebide_frontend::conversation::ConversationItem;
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_session();
+        chat_view(state)
+    });
+    settle().await;
+    let chat = mounted.state.chat;
+    chat.messages
+        .install_history(vec![ConversationItem::Message(message(
+            5,
+            Role::Assistant,
+            "historical **answer**",
+        ))]);
+    chat.apply_event(RunEvent::ReasoningDelta {
+        content: "reason".into(),
+    });
+    settle().await;
+    let historical = mounted
+        .root
+        .query_selector(".tui-assistant")
+        .unwrap()
+        .unwrap();
+    let historical_markdown = historical.query_selector(".markdown p").unwrap().unwrap();
+    let live = mounted
+        .root
+        .query_selector(".tui-assistant:last-child")
+        .unwrap()
+        .unwrap();
+    chat.apply_event(RunEvent::Delta {
+        content: "first".into(),
+    });
+    settle().await;
+    mounted.click(".tui-assistant:last-child .tui-thinking-summary");
+    settle().await;
+    for content in [" second", " third"] {
+        chat.apply_event(RunEvent::Delta {
+            content: content.into(),
+        });
+        settle().await;
+        assert!(
+            live.is_same_node(
+                mounted
+                    .root
+                    .query_selector(".tui-assistant:last-child")
+                    .unwrap()
+                    .as_ref()
+                    .map(AsRef::as_ref)
+            )
+        );
+        assert!(live.query_selector(".tui-thinking-pre").unwrap().is_some());
+    }
+    chat.apply_event(RunEvent::Done {
+        message: message(8, Role::Assistant, "<think>reason updated</think>final"),
+    });
+    settle().await;
+    assert!(
+        live.is_same_node(
+            mounted
+                .root
+                .query_selector(".tui-assistant:last-child")
+                .unwrap()
+                .as_ref()
+                .map(AsRef::as_ref)
+        )
+    );
+    assert_eq!(
+        live.query_selector(".tui-thinking-pre")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("reason updated")
+    );
+    chat.apply_event(RunEvent::Message {
+        message: message(8, Role::Assistant, "<think>reason updated</think>other"),
+    });
+    settle().await;
+    assert_eq!(
+        live.query_selector(".markdown")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("other\n")
+    );
+    assert!(
+        historical.is_same_node(
+            mounted
+                .root
+                .query_selector(".tui-assistant")
+                .unwrap()
+                .as_ref()
+                .map(AsRef::as_ref)
+        )
+    );
+    assert!(
+        historical_markdown.is_same_node(
+            historical
+                .query_selector(".markdown p")
+                .unwrap()
+                .as_ref()
+                .map(AsRef::as_ref)
+        )
+    );
+}
+
+#[wasm_bindgen_test]
+async fn hidden_tool_call_message_becomes_visible_and_user_text_updates() {
+    use openwebide_frontend::conversation::ConversationItem;
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_session();
+        chat_view(state)
+    });
+    settle().await;
+    let mut hidden = message(8, Role::Assistant, "");
+    hidden.tool_calls = Some(vec![]);
+    let chat = mounted.state.chat;
+    chat.messages.set(vec![
+        ConversationItem::Message(message(7, Role::User, "first")),
+        ConversationItem::Message(hidden.clone()),
+    ]);
+    settle().await;
+    let user = mounted.root.query_selector(".tui-user").unwrap().unwrap();
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-assistant")
+            .unwrap()
+            .is_none()
+    );
+    hidden.content = "visible".into();
+    chat.apply_event(RunEvent::Message { message: hidden });
+    chat.apply_event(RunEvent::Message {
+        message: message(7, Role::User, "other"),
+    });
+    settle().await;
+    assert!(
+        user.is_same_node(
+            mounted
+                .root
+                .query_selector(".tui-user")
+                .unwrap()
+                .as_ref()
+                .map(AsRef::as_ref)
+        )
+    );
+    assert!(user.text_content().unwrap().contains("other"));
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-assistant")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .unwrap()
+            .contains("visible")
+    );
+}

@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Keep conversation rows mounted while replies stream, reducing chat update work and preserving expanded reasoning and diff previews.
+
 - Show streamed model reasoning and mark replies cut off by the output token limit; omit prior reasoning from model context.
 - Preview file diffs before approving agent edits, expand long previews, and flag unreadable overwrites.
 - Run `/test [filter]` in the terminal with shell-quoted filters and the project directory.

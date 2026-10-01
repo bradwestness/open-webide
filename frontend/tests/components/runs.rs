@@ -317,6 +317,7 @@ async fn history_discovers_run_and_merges_awaiting_snapshot_twice() {
         ],
         ..Default::default()
     };
+    let mut previous_row: Option<web_sys::Element> = None;
     for _ in 0..2 {
         fake.reply(BridgeServerMessage::RunSnapshot {
             run_id: "running".into(),
@@ -325,6 +326,14 @@ async fn history_discovers_run_and_merges_awaiting_snapshot_twice() {
             snapshot: snapshot.clone(),
         });
         settle().await;
+        let row = mounted
+            .root
+            .query_selector(".tui-tool-box")
+            .unwrap()
+            .unwrap();
+        if let Some(previous) = previous_row.replace(row.clone()) {
+            assert!(previous.is_same_node(Some(&row)));
+        }
         assert_eq!(mounted.state.chat.messages.get_untracked().len(), 2);
         assert_eq!(
             mounted

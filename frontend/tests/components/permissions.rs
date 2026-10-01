@@ -172,6 +172,44 @@ async fn approval_preview_collapses_expands_and_preserves_alt_y() {
             .unwrap()
             .contains("Show full diff")
     );
+    let row = mounted
+        .root
+        .query_selector(".tui-tool-box")
+        .unwrap()
+        .unwrap();
+    chat.messages.reconcile(|items| {
+        if let ConversationItem::ToolStep {
+            summary,
+            diff,
+            note,
+            ..
+        } = &mut items[0]
+        {
+            *summary = "updated preview".into();
+            *note = Some("preview refreshed".into());
+            diff.as_mut().unwrap().new.push_str("last line\n");
+        }
+    });
+    settle().await;
+    assert!(
+        row.is_same_node(
+            mounted
+                .root
+                .query_selector(".tui-tool-box")
+                .unwrap()
+                .as_ref()
+                .map(AsRef::as_ref)
+        )
+    );
+    assert_eq!(
+        row.query_selector(".tui-diff-lines")
+            .unwrap()
+            .unwrap()
+            .child_element_count(),
+        101
+    );
+    assert!(row.text_content().unwrap().contains("updated preview"));
+    assert!(row.text_content().unwrap().contains("preview refreshed"));
     mounted.key("y", "KeyY", true);
     settle().await;
     assert!(
@@ -186,6 +224,30 @@ async fn approval_preview_collapses_expands_and_preserves_alt_y() {
                 approved: true
             })
     );
+    chat.apply_event(RunEvent::ToolResult {
+        id: "a7t1c0".into(),
+        name: "write_file".into(),
+        ok: true,
+        summary: "written".into(),
+        diff: None,
+    });
+    settle().await;
+    assert!(
+        row.is_same_node(
+            mounted
+                .root
+                .query_selector(".tui-tool-box")
+                .unwrap()
+                .as_ref()
+                .map(AsRef::as_ref)
+        )
+    );
+    assert!(
+        row.query_selector(".tui-permission-prompt")
+            .unwrap()
+            .is_none()
+    );
+    assert!(row.text_content().unwrap().contains("written"));
 }
 
 #[wasm_bindgen_test]

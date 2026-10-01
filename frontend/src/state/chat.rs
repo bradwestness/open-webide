@@ -87,13 +87,266 @@ pub enum ChatEffect {
     ToolDiff(FileDiff),
 }
 
+/// An independently owned conversation row. Its UI key outlives a local message ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConversationHandle {
+    pub key: u64,
+    pub item: RwSignal<ConversationItem>,
+    pub visible: RwSignal<bool>,
+    pub permission: RwSignal<Option<(String, String)>>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ConversationStore {
+    pub handles: RwSignal<Vec<ConversationHandle>>,
+    pub changed: RwSignal<u64>,
+    owners: StoredValue<HashMap<u64, Owner>>,
+    owner: StoredValue<WeakOwner>,
+}
+
+impl ConversationStore {
+    fn new() -> Self {
+        Self {
+            handles: RwSignal::new(Vec::new()),
+            changed: RwSignal::new(0),
+            owners: StoredValue::new(HashMap::new()),
+            owner: StoredValue::new(
+                Owner::current()
+                    .expect("chat requires an owner")
+                    .downgrade(),
+            ),
+        }
+    }
+
+    fn create(self, payload: ConversationItem) -> ConversationHandle {
+        let owner = self.owner.with_value(|parent| {
+            parent
+                .upgrade()
+                .expect("chat owner is alive")
+                .with(Owner::new)
+        });
+        let key = next_item_nonce();
+        let handle = owner.with(|| {
+            let visible = RwSignal::new(Self::is_visible(&payload));
+            let permission = RwSignal::new(Self::permission(&payload));
+            let item = RwSignal::new(payload);
+            ConversationHandle {
+                key,
+                item,
+                visible,
+                permission,
+            }
+        });
+        self.owners.update_value(|owners| {
+            owners.insert(key, owner);
+        });
+        handle
+    }
+
+    fn is_visible(item: &ConversationItem) -> bool {
+        !matches!(item, ConversationItem::Message(message) if message.role == openwebide_core::Role::Assistant && message.content.is_empty() && message.tool_calls.is_some())
+    }
+
+    fn permission(item: &ConversationItem) -> Option<(String, String)> {
+        match item {
+            ConversationItem::ToolStep {
+                id,
+                name,
+                awaiting_permission: true,
+                result: None,
+                ..
+            } => Some((id.clone(), name.clone())),
+            _ => None,
+        }
+    }
+
+    fn refresh_metadata(handle: ConversationHandle) {
+        let (visible, permission) = handle
+            .item
+            .with_untracked(|item| (Self::is_visible(item), Self::permission(item)));
+        if handle.visible.get_untracked() != visible {
+            handle.visible.set(visible);
+        }
+        if handle
+            .permission
+            .with_untracked(|current| *current != permission)
+        {
+            handle.permission.set(permission);
+        }
+    }
+
+    pub fn get_untracked(self) -> Vec<ConversationItem> {
+        self.handles.with_untracked(|handles| {
+            handles
+                .iter()
+                .map(|handle| handle.item.get_untracked())
+                .collect()
+        })
+    }
+
+    pub fn snapshot(self) -> Vec<ConversationItem> {
+        self.get_untracked()
+    }
+
+    pub fn install_history(self, items: Vec<ConversationItem>) {
+        self.set(items);
+    }
+
+    pub fn reconcile(self, update: impl FnOnce(&mut Vec<ConversationItem>)) {
+        self.update(update);
+    }
+
+    /// Installing history starts a new row lifetime, even for reused server IDs.
+    pub fn set(self, items: Vec<ConversationItem>) {
+        let handles = items.into_iter().map(|item| self.create(item)).collect();
+        let old = self.handles.get_untracked();
+        self.handles.set(handles);
+        self.remove(&old);
+        self.changed.update(|version| *version += 1);
+    }
+
+    fn remove(self, handles: &[ConversationHandle]) {
+        self.owners.update_value(|owners| {
+            for handle in handles {
+                if let Some(owner) = owners.remove(&handle.key) {
+                    owner.cleanup();
+                }
+            }
+        });
+    }
+
+    /// Reconcile structural events without publishing unchanged rows or ordering.
+    pub fn update(self, update: impl FnOnce(&mut Vec<ConversationItem>)) {
+        let old = self.handles.get_untracked();
+        let mut items = self.snapshot();
+        update(&mut items);
+        let identities: HashSet<_> = items.iter().map(crate::conversation::item_key).collect();
+        let mut available = old.clone();
+        let mut handles = Vec::with_capacity(items.len());
+        for (index, payload) in items.into_iter().enumerate() {
+            let identity = crate::conversation::item_key(&payload);
+            let found = available.iter().position(|handle| {
+                handle.item.with_untracked(|item| crate::conversation::item_key(item) == identity)
+            }).or_else(|| {
+                let previous = old.get(index)?;
+                // A live row can follow newly replayed messages; reserve its existing identity first.
+                let replaces_local = previous.item.with_untracked(|item| {
+                    matches!(item, ConversationItem::Message(message) if message.id <= 0 && message.role == openwebide_core::Role::Assistant)
+                        && !identities.contains(&crate::conversation::item_key(item))
+                }) && matches!(&payload, ConversationItem::Message(message) if message.role == openwebide_core::Role::Assistant);
+                if replaces_local { available.iter().position(|handle| handle.key == previous.key) } else { None }
+            });
+            let handle = if let Some(position) = found {
+                let handle = available.remove(position);
+                if handle.item.with_untracked(|item| *item != payload) {
+                    handle.item.set(payload);
+                    Self::refresh_metadata(handle);
+                }
+                handle
+            } else {
+                self.create(payload)
+            };
+            handles.push(handle);
+        }
+        if handles != old {
+            self.handles.set(handles);
+        }
+        self.remove(&available);
+        self.changed.update(|version| *version += 1);
+    }
+
+    pub fn last(self) -> Option<ConversationHandle> {
+        self.handles
+            .with_untracked(|handles| handles.last().copied())
+    }
+
+    pub fn push(self, item: ConversationItem) {
+        let handle = self.create(item);
+        self.handles.update(|handles| handles.push(handle));
+        self.changed.update(|version| *version += 1);
+    }
+
+    pub fn update_item(
+        self,
+        handle: ConversationHandle,
+        update: impl FnOnce(&mut ConversationItem),
+    ) {
+        handle.item.update(update);
+        Self::refresh_metadata(handle);
+        self.changed.update(|version| *version += 1);
+    }
+
+    pub fn message(self, id: i64) -> Option<ConversationHandle> {
+        self.handles.with_untracked(|handles| {
+            handles.iter().copied().find(|handle| {
+                handle.item.with_untracked(
+                    |item| matches!(item, ConversationItem::Message(message) if message.id == id),
+                )
+            })
+        })
+    }
+
+    pub fn tool(self, id: &str) -> Option<ConversationHandle> {
+        self.handles.with_untracked(|handles| handles.iter().rev().copied().find(|handle| handle.item.with_untracked(|item| matches!(item, ConversationItem::ToolStep { id: step, .. } if step == id))))
+    }
+
+    fn pop(self) {
+        let removed = self.handles.try_update(Vec::pop).flatten();
+        if let Some(handle) = removed {
+            self.remove(&[handle]);
+        }
+        self.changed.update(|version| *version += 1);
+    }
+
+    pub fn clear_prompt(self, id: &str, first_only: bool) {
+        let handles = self.handles.get_untracked();
+        for handle in handles {
+            if handle.item.with_untracked(
+                |item| matches!(item, ConversationItem::ToolStep { id: step, .. } if step == id),
+            ) {
+                self.update_item(handle, |item| {
+                    if let ConversationItem::ToolStep {
+                        awaiting_permission,
+                        ..
+                    } = item
+                    {
+                        *awaiting_permission = false;
+                    }
+                });
+                if first_only {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn append_delta(self, session_id: i64, content: &str, reasoning: bool, close_reasoning: bool) {
+        let last = self
+            .handles
+            .with_untracked(|handles| handles.last().copied());
+        if let Some(handle) = last.filter(|handle| handle.item.with_untracked(|item| matches!(item, ConversationItem::Message(message) if message.role == openwebide_core::Role::Assistant && message.id <= 0))) {
+            self.update_item(handle, |item| {
+                if let ConversationItem::Message(message) = item {
+                    if close_reasoning { message.content.push_str("</think>"); }
+                    message.content.push_str(content);
+                }
+            });
+        } else {
+            let text = if reasoning { format!("{}{content}", openwebide_core::ESCAPED_REASONING_OPEN) } else { content.to_string() };
+            let handle = self.create(local_message(session_id, text));
+            self.handles.update(|handles| handles.push(handle));
+            self.changed.update(|version| *version += 1);
+        }
+    }
+}
+
 /// Signals shared by the chat pane and run handlers.
 #[derive(Clone, Copy)]
 pub struct ChatState {
     pub sessions: RwSignal<Vec<ChatSession>>,
     pub active_session: RwSignal<Option<i64>>,
     pub has_session: Memo<bool>,
-    pub messages: RwSignal<Vec<ConversationItem>>,
+    pub messages: ConversationStore,
     pub history_gen: StoredValue<u64>,
     pub skip_history_load: StoredValue<Option<i64>>,
     pub streaming: RwSignal<bool>,
@@ -136,24 +389,20 @@ impl ChatState {
         active_session: RwSignal<Option<i64>>,
         error: RwSignal<Option<String>>,
     ) -> Self {
-        let messages = RwSignal::new(Vec::new());
+        let messages = ConversationStore::new();
         let current_run_anchor = RwSignal::new(None);
         let has_session = Memo::new(move |_| active_session.get().is_some());
         let awaiting_step_id = Memo::new(move |_| {
             let anchor = current_run_anchor.get()?;
             let prefix = openwebide_agent::step_id_prefix(anchor);
-            messages.get().into_iter().rev().find_map(|item| {
-                if let ConversationItem::ToolStep {
-                    id,
-                    awaiting_permission: true,
-                    result: None,
-                    ..
-                } = item
-                    && id.starts_with(&prefix)
-                {
-                    return Some(id);
-                }
-                None
+            messages.handles.with(|handles| {
+                handles.iter().rev().find_map(|handle| {
+                    handle
+                        .permission
+                        .get()
+                        .filter(|(id, _)| id.starts_with(&prefix))
+                        .map(|(id, _)| id)
+                })
             })
         });
 
@@ -219,7 +468,7 @@ impl ChatState {
 
     /// Append a transient notice to the active conversation.
     pub fn notify(&self, text: impl Into<String>) {
-        self.messages.update(|items| items.push(notice(text)));
+        self.messages.push(notice(text));
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -244,20 +493,30 @@ impl ChatState {
 
     /// Mark prompts owned by this run as cancelled.
     pub fn cancel_run_prompts(&self, anchor: i64) {
-        self.messages
-            .update(|items| cancel_run_prompts(items, anchor));
+        let prefix = openwebide_agent::step_id_prefix(anchor);
+        for handle in self.messages.handles.get_untracked() {
+            if handle.item.with_untracked(|item| matches!(item, ConversationItem::ToolStep { id, result: None, .. } if id.starts_with(&prefix))) {
+                self.messages.update_item(handle, |item| cancel_run_prompts(std::slice::from_mut(item), anchor));
+            }
+        }
     }
 
     pub fn mark_stopped(&self) {
         if let Some(anchor) = self.current_run_anchor.get_untracked() {
             self.cancel_run_prompts(anchor);
         }
-        self.messages.update(|items| {
-            if !matches!(items.last(), Some(ConversationItem::Stopped { .. })) {
-                items.push(stopped_marker());
-            }
-        });
+        self.ensure_stopped_marker();
         self.current_run_anchor.set(None);
+    }
+
+    fn ensure_stopped_marker(&self) {
+        if !self.messages.last().is_some_and(|handle| {
+            handle
+                .item
+                .with_untracked(|item| matches!(item, ConversationItem::Stopped { .. }))
+        }) {
+            self.messages.push(stopped_marker());
+        }
     }
 
     /// Apply one stream event to chat state and return effects owned by the
@@ -299,43 +558,30 @@ impl ChatState {
                 if msg.role == openwebide_core::Role::User {
                     self.current_run_anchor.set(Some(msg.id));
                 }
-                self.messages.update(|items| {
-                    if let Some(ConversationItem::Message(existing)) = items.iter_mut().find(|item| matches!(item, ConversationItem::Message(m) if m.id == msg.id)) {
-                        *existing = msg;
-                    } else {
-                        items.push(ConversationItem::Message(msg));
-                    }
-                });
+                if let Some(handle) = self.messages.message(msg.id) {
+                    self.messages
+                        .update_item(handle, |item| *item = ConversationItem::Message(msg));
+                } else {
+                    self.messages.push(ConversationItem::Message(msg));
+                }
             }
-            RunEvent::ReasoningDelta { content } => self.messages.update(|items| {
-                if let Some(ConversationItem::Message(message)) = items.last_mut()
-                    && message.role == openwebide_core::Role::Assistant && message.id <= 0
-                {
-                    message.content.push_str(&openwebide_core::escape_reasoning(&content));
-                } else {
-                    items.push(local_message(session_id, format!("{}{}", openwebide_core::ESCAPED_REASONING_OPEN, openwebide_core::escape_reasoning(&content))));
-                }
-            }),
-            RunEvent::Delta { content: delta } => self.messages.update(|items| {
-                let extends_assistant = items.last().is_some_and(|item| {
-                    matches!(
-                        item,
-                        ConversationItem::Message(message)
-                            if message.role == openwebide_core::Role::Assistant && message.id <= 0
-                    )
-                });
-                if extends_assistant {
-                    if let Some(ConversationItem::Message(message)) = items.last_mut() {
-                        if close_reasoning {
-                            message.content.push_str("</think>");
-                        }
-                        message.content.push_str(&delta);
-                    }
-                } else {
-                    items.push(local_message(session_id, delta));
-                }
-            }),
-            RunEvent::PermissionRequest { id, name, summary, diff, note } => {
+            RunEvent::ReasoningDelta { content } => self.messages.append_delta(
+                session_id,
+                &openwebide_core::escape_reasoning(&content),
+                true,
+                false,
+            ),
+            RunEvent::Delta { content } => {
+                self.messages
+                    .append_delta(session_id, &content, false, close_reasoning);
+            }
+            RunEvent::PermissionRequest {
+                id,
+                name,
+                summary,
+                diff,
+                note,
+            } => {
                 let mode = self
                     .approval_mode
                     .get_untracked()
@@ -345,51 +591,45 @@ impl ChatState {
                 if mode.auto_approves(&name) {
                     effects.push(ChatEffect::ApprovePermission { id });
                 } else {
-                    self.messages.update(|items| {
-                        items.push(ConversationItem::ToolStep {
-                            key: next_item_nonce(),
-                            id,
-                            name,
-                            summary,
-                            result: None,
-                            awaiting_permission: true,
-                            diff,
-                            note,
-                        });
+                    self.messages.push(ConversationItem::ToolStep {
+                        key: next_item_nonce(),
+                        id,
+                        name,
+                        summary,
+                        result: None,
+                        awaiting_permission: true,
+                        diff,
+                        note,
                     });
                 }
             }
             RunEvent::ToolCall { id, name, summary } => {
                 self.session_telemetry
                     .update(|telemetry| telemetry.tool_calls_count += 1);
-                self.messages.update(|items| {
-                    let idx = items.iter().rposition(|item| {
-                        matches!(item, ConversationItem::ToolStep { id: tool_id, .. } if *tool_id == id)
-                    });
-                    match idx {
-                        Some(i) => {
-                            if let ConversationItem::ToolStep {
-                                summary: step_summary,
-                                awaiting_permission,
-                                ..
-                            } = &mut items[i]
-                            {
-                                *step_summary = summary;
-                                *awaiting_permission = false;
-                            }
+                if let Some(handle) = self.messages.tool(&id) {
+                    self.messages.update_item(handle, |item| {
+                        if let ConversationItem::ToolStep {
+                            summary: step_summary,
+                            awaiting_permission,
+                            ..
+                        } = item
+                        {
+                            *step_summary = summary;
+                            *awaiting_permission = false;
                         }
-                        None => items.push(ConversationItem::ToolStep {
-                            key: next_item_nonce(),
-                            id,
-                            name,
-                            summary,
-                            result: None,
-                            awaiting_permission: false,
-                            diff: None,
-                            note: None,
-                        }),
-                    }
-                });
+                    });
+                } else {
+                    self.messages.push(ConversationItem::ToolStep {
+                        key: next_item_nonce(),
+                        id,
+                        name,
+                        summary,
+                        result: None,
+                        awaiting_permission: false,
+                        diff: None,
+                        note: None,
+                    });
+                }
             }
             RunEvent::ToolResult {
                 id,
@@ -397,27 +637,21 @@ impl ChatState {
                 ok,
                 summary,
                 diff,
-            } => self.messages.update(|items| {
-                let idx = items.iter().rposition(|item| {
-                    matches!(item, ConversationItem::ToolStep { id: tool_id, .. } if *tool_id == id)
-                });
-                match idx {
-                    Some(i) => {
+            } => {
+                if let Some(handle) = self.messages.tool(&id) {
+                    self.messages.update_item(handle, |item| {
                         if let ConversationItem::ToolStep {
                             result,
                             awaiting_permission,
                             ..
-                        } = &mut items[i]
+                        } = item
                         {
-                            *result = Some(ToolStepResult {
-                                ok,
-                                summary: summary.clone(),
-                                diff: diff.clone(),
-                            });
+                            *result = Some(ToolStepResult { ok, summary, diff });
                             *awaiting_permission = false;
                         }
-                    }
-                    None => items.push(ConversationItem::ToolStep {
+                    });
+                } else {
+                    self.messages.push(ConversationItem::ToolStep {
                         key: next_item_nonce(),
                         id,
                         name: String::new(),
@@ -426,53 +660,37 @@ impl ChatState {
                         awaiting_permission: false,
                         diff: None,
                         note: None,
-                    }),
+                    });
                 }
-            }),
-            RunEvent::Interim { message } | RunEvent::Done { message } => self.messages.update(|items| {
-                if message.id > 0
-                    && let Some(ConversationItem::Message(existing)) = items.iter_mut().find(|item| {
-                        matches!(item, ConversationItem::Message(existing) if existing.id == message.id)
-                    })
+            }
+            RunEvent::Interim { message } | RunEvent::Done { message } => {
+                let placeholder = self.messages.last().filter(|handle| handle.item.with_untracked(|item| matches!(item, ConversationItem::Message(message) if message.role == openwebide_core::Role::Assistant && message.id <= 0)));
+                if let Some(existing) = (message.id > 0)
+                    .then(|| self.messages.message(message.id))
+                    .flatten()
                 {
-                    *existing = message;
-                    if matches!(
-                        items.last(),
-                        Some(ConversationItem::Message(last))
-                            if last.role == openwebide_core::Role::Assistant && last.id <= 0
-                    ) {
-                        items.pop();
+                    self.messages
+                        .update_item(existing, |item| *item = ConversationItem::Message(message));
+                    if placeholder.is_some() {
+                        self.messages.pop();
                     }
-                    return;
-                }
-                let replace_assistant = items.last().is_some_and(|item| {
-                    matches!(
-                        item,
-                        ConversationItem::Message(last)
-                            if last.role == openwebide_core::Role::Assistant && last.id <= 0
-                    )
-                });
-                if replace_assistant {
-                    if let Some(ConversationItem::Message(last)) = items.last_mut() {
-                        *last = message;
-                    }
+                } else if let Some(placeholder) = placeholder {
+                    self.messages.update_item(placeholder, |item| {
+                        *item = ConversationItem::Message(message);
+                    });
                 } else {
-                    items.push(ConversationItem::Message(message));
+                    self.messages.push(ConversationItem::Message(message));
                 }
-            }),
+            }
             RunEvent::Telemetry { usage: telemetry } => {
                 self.session_telemetry
                     .update(|session| session.record_turn(&telemetry));
             }
             RunEvent::Cancelled => {
-                self.messages.update(|items| {
-                    if let Some(anchor) = self.current_run_anchor.get_untracked() {
-                        cancel_run_prompts(items, anchor);
-                    }
-                    if !matches!(items.last(), Some(ConversationItem::Stopped { .. })) {
-                        items.push(stopped_marker());
-                    }
-                });
+                if let Some(anchor) = self.current_run_anchor.get_untracked() {
+                    self.cancel_run_prompts(anchor);
+                }
+                self.ensure_stopped_marker();
             }
             RunEvent::Error { message: error } => {
                 if let Some(anchor) = self.current_run_anchor.get_untracked() {
@@ -560,6 +778,159 @@ mod tests {
             arguments: "{}".into(),
         }]);
         ConversationItem::Message(msg)
+    }
+
+    #[test]
+    fn snapshot_inserts_interim_before_the_existing_live_row_without_stealing_its_handle() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            chat.messages.push(local_message(7, "live"));
+            let live = chat.messages.last().unwrap();
+            let snapshot = openwebide_core::RunSnapshot {
+                items: vec![openwebide_core::RunItem::Message(message(8, Role::Assistant, "interim"))],
+                text: "updated live".into(),
+                ..Default::default()
+            };
+            for _ in 0..2 {
+                chat.messages.reconcile(|items| crate::conversation::merge_snapshot(items, &snapshot));
+                assert_eq!(chat.messages.last(), Some(live));
+                assert!(matches!(chat.messages.snapshot()[0], ConversationItem::Message(ref message) if message.content == "interim"));
+                assert!(matches!(live.item.get_untracked(), ConversationItem::Message(message) if message.content == "updated live"));
+            }
+        });
+    }
+
+    #[test]
+    fn duplicate_tool_ids_update_the_newest_handle_and_results_before_calls_stay_completed() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            for _ in 0..2 {
+                chat.apply_event(RunEvent::PermissionRequest { id: "legacy".into(), name: "write_file".into(), summary: "pending".into(), diff: None, note: None });
+            }
+            let handles = chat.messages.handles.get_untracked();
+            chat.apply_event(RunEvent::ToolResult { id: "legacy".into(), name: "write_file".into(), ok: true, summary: "written".into(), diff: None });
+            assert!(matches!(handles[0].item.get_untracked(), ConversationItem::ToolStep { result: None, .. }));
+            assert!(matches!(handles[1].item.get_untracked(), ConversationItem::ToolStep { result: Some(_), .. }));
+            chat.apply_event(RunEvent::ToolCall { id: "legacy".into(), name: "write_file".into(), summary: "call".into() });
+            assert_eq!(chat.messages.handles.get_untracked(), handles);
+            assert!(matches!(handles[1].item.get_untracked(), ConversationItem::ToolStep { result: Some(_), summary, .. } if summary == "call"));
+        });
+    }
+
+    #[test]
+    fn permission_selection_keeps_the_newest_unresolved_step_in_the_current_run() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            chat.current_run_anchor.set(Some(7));
+            for id in ["a7t0c0", "a3t0c0", "a7t0c1"] {
+                chat.apply_event(RunEvent::PermissionRequest {
+                    id: id.into(),
+                    name: "write_file".into(),
+                    summary: "write".into(),
+                    diff: None,
+                    note: None,
+                });
+            }
+            assert_eq!(
+                chat.awaiting_step_id.get_untracked().as_deref(),
+                Some("a7t0c1")
+            );
+            let handles = chat.messages.handles.get_untracked();
+            chat.apply_event(RunEvent::ToolResult {
+                id: "a7t0c1".into(),
+                name: "write_file".into(),
+                ok: false,
+                summary: "denied".into(),
+                diff: None,
+            });
+            assert_eq!(
+                chat.awaiting_step_id.get_untracked().as_deref(),
+                Some("a7t0c0")
+            );
+            assert_eq!(chat.messages.handles.get_untracked(), handles);
+            chat.cancel_run_prompts(7);
+            assert!(chat.awaiting_step_id.get_untracked().is_none());
+        });
+    }
+
+    #[test]
+    fn dropping_the_chat_owner_disposes_rows() {
+        let owner = Owner::new();
+        let row = owner.with(|| {
+            let chat = ChatState::new();
+            chat.notify("notice");
+            chat.messages.handles.get_untracked()[0]
+        });
+        drop(owner);
+        assert!(row.item.try_get_untracked().is_none());
+    }
+
+    #[test]
+    fn row_identity_survives_deltas_server_ids_and_equal_length_replacements() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            chat.apply_event(RunEvent::Delta { content: "first".into() });
+            let row = chat.messages.handles.get_untracked()[0];
+            let publications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = publications.clone();
+            let list = Memo::new(move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                chat.messages.handles.with(|handles| handles.iter().copied().filter(|handle| handle.visible.get()).collect::<Vec<_>>())
+            });
+            list.get();
+            for _ in 0..1000 {
+                chat.apply_event(RunEvent::Delta { content: ".".into() });
+                assert_eq!(list.get(), vec![row]);
+            }
+            assert_eq!(publications.load(std::sync::atomic::Ordering::Relaxed), 1);
+            chat.apply_event(RunEvent::Done { message: message(9, openwebide_core::Role::Assistant, "final") });
+            assert_eq!(chat.messages.handles.get_untracked()[0], row);
+            chat.apply_event(RunEvent::Message { message: message(9, openwebide_core::Role::Assistant, "other") });
+            assert_eq!(chat.messages.handles.get_untracked()[0], row);
+            assert!(matches!(row.item.get_untracked(), ConversationItem::Message(message) if message.content == "other"));
+        });
+    }
+
+    #[test]
+    fn removing_and_resetting_rows_disposes_their_payloads() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            chat.notify("notice");
+            let row = chat.messages.handles.get_untracked()[0];
+            chat.messages.reconcile(Vec::clear);
+            assert!(row.item.try_get_untracked().is_none());
+            chat.notify("another");
+            let row = chat.messages.handles.get_untracked()[0];
+            chat.messages
+                .install_history(vec![local_message(1, "history")]);
+            assert!(row.item.try_get_untracked().is_none());
+            let replacement = chat.messages.handles.get_untracked()[0];
+            assert_ne!(row.key, replacement.key);
+        });
+    }
+
+    #[test]
+    fn repeated_snapshots_keep_handles_and_order() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            let snapshot = openwebide_core::RunSnapshot {
+                items: vec![openwebide_core::RunItem::Message(message(
+                    7,
+                    openwebide_core::Role::User,
+                    "ask",
+                ))],
+                text: "live".into(),
+                ..Default::default()
+            };
+            chat.messages
+                .reconcile(|items| crate::conversation::merge_snapshot(items, &snapshot));
+            let rows = chat.messages.handles.get_untracked();
+            for _ in 0..2 {
+                chat.messages
+                    .reconcile(|items| crate::conversation::merge_snapshot(items, &snapshot));
+                assert_eq!(chat.messages.handles.get_untracked(), rows);
+            }
+        });
     }
 
     #[test]
