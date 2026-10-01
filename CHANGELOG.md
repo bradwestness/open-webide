@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Run `/test [filter]` in the terminal with shell-quoted filters and the project directory.
+
 - Isolate SSE run cancellation and permission cleanup so a quick resend preserves Stop and concurrent runs retain their decisions.
 
 - Run local-mode command and git tools in the picked folder, discovered and verified through a temporary bridge probe.

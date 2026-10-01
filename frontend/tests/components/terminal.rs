@@ -377,3 +377,289 @@ async fn close_during_reconnect_retains_cleanup_without_consumers() {
     settle().await;
     assert_eq!(fake.connections(), 2);
 }
+
+fn mount_test_command() -> TerminalFixture {
+    let fake = Rc::new(FakeTransport::default());
+    let transport = fake.clone();
+    let slot = Rc::new(std::cell::RefCell::new(None));
+    let connection_slot = slot.clone();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        let bridge = BridgeConn::with_transport(
+            BridgeConfig::new("ws://test"),
+            transport,
+            Rc::new(|| Box::pin(async { Ok("token".into()) })),
+        );
+        *connection_slot.borrow_mut() = Some(bridge.clone());
+        state.bridge.set(Some(bridge.clone()));
+        let bridge = StoredValue::new_local(bridge);
+        view! {
+            {super::support::chat_view(state.clone())}
+            <Show when=move || state.chat.show_terminal.get()>
+                <TerminalPane bridge=bridge.get_value() on_close=|| () />
+            </Show>
+        }
+    });
+    (mounted, fake, Rc::new(Cell::new(0)), slot)
+}
+
+#[wasm_bindgen_test]
+async fn test_slash_command_opens_terminal_and_spawns_in_project() {
+    let (mounted, fake, _, slot) = mount_test_command();
+    settle().await;
+    ready(&fake);
+    settle().await;
+    mounted.input("/test parser");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    assert!(mounted.state.chat.show_terminal.get_untracked());
+    assert!(fake.sent().iter().any(|message| matches!(message,
+        BridgeClientMessage::Spawn { command, args, cwd, .. }
+        if command == "sh" && args == &["-lc", "cargo test -- 'parser'"]
+            && cwd.as_deref() == Some("test")
+    )));
+    drop(mounted);
+    slot.borrow_mut().take().unwrap().close();
+}
+
+#[wasm_bindgen_test]
+async fn test_slash_command_with_unavailable_bridge_renders_notice() {
+    let (mounted, fake, _, slot) = mount_test_command();
+    settle().await;
+    slot.borrow().as_ref().unwrap().close();
+    settle().await;
+    mounted.input("/test parser");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    assert!(!mounted.state.chat.show_terminal.get_untracked());
+    assert!(
+        mounted.root.text_content().unwrap().contains(
+            "The terminal bridge isn't connected; start openwebide-bridge and try again."
+        )
+    );
+    assert!(
+        !fake
+            .sent()
+            .iter()
+            .any(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+    );
+    drop(mounted);
+    slot.borrow_mut().take().unwrap().close();
+}
+
+#[wasm_bindgen_test]
+async fn repeated_test_preserves_output_and_interrupt_until_exit() {
+    let (mounted, fake, _, slot) = mount_test_command();
+    settle().await;
+    ready(&fake);
+    settle().await;
+    mounted.input("/test slow");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    let first_id = fake
+        .sent()
+        .into_iter()
+        .find_map(|message| match message {
+            BridgeClientMessage::Spawn { id, .. } => Some(id),
+            _ => None,
+        })
+        .unwrap();
+
+    fake.reply(BridgeServerMessage::Sessions {
+        sessions: Vec::new(),
+    });
+    mounted.input("/test before-ack");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    fake.reply(BridgeServerMessage::Spawned {
+        id: first_id.clone(),
+        pid: 52,
+        pty: true,
+    });
+    mounted.input("/test parser");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    assert_eq!(
+        fake.sent()
+            .iter()
+            .filter(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Terminal is busy")
+    );
+    fake.reply(BridgeServerMessage::Output {
+        id: first_id.clone(),
+        seq: 1,
+        data: "slow test failed".into(),
+        stream: "stdout".into(),
+    });
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("slow test failed")
+    );
+    mounted.click_text("Kill");
+    assert!(fake.sent().contains(&BridgeClientMessage::Kill {
+        id: first_id.clone(),
+        signal: Some("SIGINT".into()),
+    }));
+    fake.reply(BridgeServerMessage::Exited {
+        id: first_id,
+        exit_code: Some(1),
+        signal: None,
+    });
+    settle().await;
+    assert!(mounted.root.text_content().unwrap().contains("exit code 1"));
+    mounted.input("/test parser");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    assert_eq!(
+        fake.sent()
+            .iter()
+            .filter(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+            .count(),
+        2
+    );
+    let second_id = fake
+        .sent()
+        .into_iter()
+        .rev()
+        .find_map(|message| match message {
+            BridgeClientMessage::Spawn { id, .. } => Some(id),
+            _ => None,
+        })
+        .unwrap();
+    fake.reply(BridgeServerMessage::Error {
+        id: second_id,
+        message: "failed to spawn".into(),
+    });
+    mounted.input("/test retry");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    assert_eq!(
+        fake.sent()
+            .iter()
+            .filter(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+            .count(),
+        3
+    );
+    drop(mounted);
+    slot.borrow_mut().take().unwrap().close();
+}
+
+#[wasm_bindgen_test]
+async fn reconnect_reconciles_test_spawn_without_acknowledgement() {
+    for survives in [false, true] {
+        let (mounted, fake, _, slot) = mount_test_command();
+        settle().await;
+        ready(&fake);
+        settle().await;
+        mounted.input("/test parser");
+        mounted.key("Enter", "Enter", false);
+        settle().await;
+        let id = fake
+            .sent()
+            .into_iter()
+            .find_map(|message| match message {
+                BridgeClientMessage::Spawn { id, .. } => Some(id),
+                _ => None,
+            })
+            .unwrap();
+        fake.disconnect();
+        settle().await;
+        sleep_ms(1100).await;
+        settle().await;
+        assert_eq!(fake.connections(), 2);
+        ready(&fake);
+        settle().await;
+        assert_eq!(fake.sent().last(), Some(&BridgeClientMessage::List));
+        fake.reply(BridgeServerMessage::Sessions {
+            sessions: if survives {
+                vec![openwebide_core::BridgeSessionInfo {
+                    id: id.clone(),
+                    command: "sh".into(),
+                    running: true,
+                    pty: true,
+                    started_at: 0,
+                }]
+            } else {
+                Vec::new()
+            },
+        });
+        settle().await;
+        if survives {
+            assert_eq!(
+                fake.sent().last(),
+                Some(&BridgeClientMessage::Attach {
+                    id: id.clone(),
+                    last_seq: 0,
+                })
+            );
+            fake.reply(BridgeServerMessage::Output {
+                id: id.clone(),
+                seq: 1,
+                stream: "pty".into(),
+                data: "recovered test output".into(),
+            });
+            mounted.input("/test busy");
+            mounted.key("Enter", "Enter", false);
+            settle().await;
+            assert_eq!(
+                fake.sent()
+                    .iter()
+                    .filter(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+                    .count(),
+                1
+            );
+            assert!(
+                mounted
+                    .root
+                    .text_content()
+                    .unwrap()
+                    .contains("Terminal is busy")
+            );
+            assert!(
+                mounted
+                    .root
+                    .text_content()
+                    .unwrap()
+                    .contains("recovered test output")
+            );
+            mounted.click_text("Kill");
+            assert_eq!(
+                fake.sent().last(),
+                Some(&BridgeClientMessage::Kill {
+                    id: id.clone(),
+                    signal: Some("SIGINT".into()),
+                })
+            );
+            fake.reply(BridgeServerMessage::Exited {
+                id,
+                exit_code: Some(0),
+                signal: None,
+            });
+            settle().await;
+        }
+        mounted.input("/test retry");
+        mounted.key("Enter", "Enter", false);
+        settle().await;
+        assert_eq!(
+            fake.sent()
+                .iter()
+                .filter(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+                .count(),
+            2
+        );
+        drop(mounted);
+        slot.borrow_mut().take().unwrap().close();
+    }
+}

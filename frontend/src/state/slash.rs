@@ -156,7 +156,7 @@ const HELP_TEXT: &str = "**Open WebIDE Terminal Execution & Slash Commands**\n\n
                         * `/checkout <branch>` — Switch active Git branch\n\
                         * `/branch <name>` — Create and switch to new Git branch\n\
                         * `/sync` — Synchronize upstream commits (pull & push)\n\
-                        * `/test [filter]` — Run tests via execution bridge\n\
+                        * `/test [filter]` — run cargo test in the terminal\n\
                         * `/tokens` or `/context` — Show session token accounting\n\
                         * `/stop` — Abort active execution\n\n\
                         **Keybindings:**\n\
@@ -228,6 +228,26 @@ mod tests {
                     &WorkspaceState::new(),
                 ),
                 SlashAction::SelectModel("X".into())
+            );
+        });
+    }
+
+    #[test]
+    fn test_command_dispatches_the_filter_and_project() {
+        Owner::new().with(|| {
+            let workspace = WorkspaceState::new();
+            workspace.active_project.set(Some(12));
+            assert_eq!(
+                dispatch(
+                    SlashCommand::parse("/test parser").unwrap(),
+                    &ChatState::new(),
+                    &GitState::new(),
+                    &workspace,
+                ),
+                SlashAction::RunTests {
+                    project_id: Some(12),
+                    filter: "parser".into()
+                },
             );
         });
     }

@@ -1,3 +1,15 @@
+/// Quote one argument for a POSIX shell.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+pub fn test_command(filter: Option<&str>) -> String {
+    match filter {
+        Some(filter) => format!("cargo test -- {}", shell_quote(filter)),
+        None => "cargo test".into(),
+    }
+}
+
 use openwebide_core::tui::{EditorContext, SelectionContext};
 
 pub fn urlenc(s: &str) -> String {
@@ -89,6 +101,16 @@ pub fn editor_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_arguments_are_single_quoted() {
+        assert_eq!(shell_quote("a b"), "'a b'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(test_command(None), "cargo test");
+        assert_eq!(test_command(Some("parser")), "cargo test -- 'parser'");
+        assert_eq!(test_command(Some("it's")), "cargo test -- 'it'\\''s'");
+    }
 
     #[test]
     fn test_editor_context_basic() {

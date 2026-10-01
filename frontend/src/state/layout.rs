@@ -52,6 +52,7 @@ impl ActiveResizer {
 /// User-adjustable widths for the three resizable panels.
 #[derive(Clone, Copy)]
 pub struct LayoutState {
+    pub terminal_cmd: RwSignal<Option<String>>,
     pub sidebar_width: RwSignal<f64>,
     pub tree_width: RwSignal<f64>,
     pub chat_width: RwSignal<f64>,
@@ -61,6 +62,7 @@ pub struct LayoutState {
 impl LayoutState {
     pub fn new() -> Self {
         Self {
+            terminal_cmd: RwSignal::new(None),
             sidebar_width: RwSignal::new(ActiveResizer::Sidebar.default()),
             tree_width: RwSignal::new(ActiveResizer::Tree.default()),
             chat_width: RwSignal::new(ActiveResizer::Chat.default()),

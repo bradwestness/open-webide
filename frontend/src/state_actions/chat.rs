@@ -583,10 +583,21 @@ impl ChatActions {
                         ));
                     }
                     SlashAction::RunTests { filter, .. } => {
-                        chat.notify(format!(
-                            "Dispatched test run: `cargo test {filter}` via execution bridge.\nCheck terminal dock below for full stream."
-                        ));
+                        if !bridge
+                            .get_untracked()
+                            .is_some_and(|bridge| bridge.status().get_untracked().terminal_ready())
+                        {
+                            chat.notify("The terminal bridge isn't connected; start openwebide-bridge and try again.");
+                            return;
+                        }
+                        let cmd = crate::text::test_command(
+                            (!filter.is_empty()).then_some(filter.as_str()),
+                        );
                         chat.show_terminal.set(true);
+                        expect_context::<crate::state::layout::LayoutState>()
+                            .terminal_cmd
+                            .set(Some(cmd.clone()));
+                        chat.notify(format!("Running `{cmd}` in the terminal."));
                     }
                     SlashAction::Commit {
                         project_id,

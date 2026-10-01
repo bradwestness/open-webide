@@ -29,6 +29,7 @@ bridge WebSocket connection:
   bridge connection, and a frontend fallback to SSE when the bridge is
   unavailable; afterwards one event type for SSE and WebSocket, resumable
   local-mode runs, and the bridge bundled into the Docker image.
+- **Terminal tests:** `/test [filter]` now runs `cargo test` in the project directory through the authenticated bridge. Project-type detection for default commands remains planned.
 - **Frontend structure & tests:** the `App` component split into
   per-feature state stores, and a component-test harness running in
   headless Chrome in CI.

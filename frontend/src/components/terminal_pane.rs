@@ -154,6 +154,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
     let spawned_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let spawned_ids_for_conn = spawned_ids.clone();
     let reconnecting = RwSignal::new(false);
+    let pending_spawn_ids = RwSignal::new(Vec::<String>::new());
     let spawn_fresh = move || {
         if !status.get_untracked().terminal_ready() {
             return;
@@ -235,18 +236,48 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     reconnecting.set(false);
                     spawn_fresh.with_value(|spawn| spawn());
                 } else {
+                    if active_session.get_untracked().as_ref() != Some(&id) {
+                        ids_for_messages
+                            .lock()
+                            .unwrap()
+                            .retain(|tracked| tracked != &id);
+                    }
                     raw_output.update(|text| {
                         text.push_str(&format!("\x1b[31m[Bridge error: {message}]\x1b[0m\n"))
                     });
                 }
             }
-            BridgeServerMessage::Sessions { sessions: active } => sessions.set(active),
+            BridgeServerMessage::Sessions { sessions: active } => {
+                let pending = pending_spawn_ids.get_untracked();
+                pending_spawn_ids.set(Vec::new());
+                ids_for_messages.lock().unwrap().retain(|id| {
+                    !pending.contains(id) || active.iter().any(|session| &session.id == id)
+                });
+                if active_session.get_untracked().is_none()
+                    && let Some(session) =
+                        active.iter().find(|session| pending.contains(&session.id))
+                {
+                    active_session.set(Some(session.id.clone()));
+                    last_seq.set(0);
+                    reconnecting.set(true);
+                    tx_outbound.with_value(|bridge| {
+                        let _ = bridge.send(BridgeClientMessage::Attach {
+                            id: session.id.clone(),
+                            last_seq: 0,
+                        });
+                    });
+                }
+                sessions.set(active);
+            }
             _ => {}
         }))
     });
+    let ids_for_list = spawned_ids.clone();
     Effect::new(move |previous: Option<bool>| {
         let ready = status.get().terminal_ready();
         if ready && !previous.unwrap_or(false) {
+            // A List response cannot confirm absence of spawns sent after that List.
+            pending_spawn_ids.set(ids_for_list.lock().unwrap().clone());
             bridge.with_value(|bridge| {
                 let _ = bridge.send(BridgeClientMessage::List);
                 if let Some(id) = active_session.get_untracked() {
@@ -267,6 +298,113 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                 bridge.kill_shell(id.clone());
             }
             bridge.unregister_terminal();
+        });
+    });
+
+    let terminal_cmd = expect_context::<crate::state::layout::LayoutState>().terminal_cmd;
+    let projects = expect_context::<crate::state::projects::ProjectsState>();
+    let command_ids = spawned_ids.clone();
+    let command_pending = RwSignal::new(false);
+    let reject_busy_command = move || {
+        raw_output.update(|text| {
+            text.push_str("Terminal is busy; wait for the current process to finish before running /test again.\n");
+        });
+    };
+    let command_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let alive_for_cleanup = command_alive.clone();
+    on_cleanup(move || alive_for_cleanup.store(false, Ordering::Relaxed));
+    #[cfg(target_arch = "wasm32")]
+    let api = expect_context::<crate::backend::Api>();
+    #[cfg(target_arch = "wasm32")]
+    let settings = expect_context::<crate::state::settings::SettingsState>();
+    Effect::new(move |_| {
+        if terminal_cmd.get().is_none() {
+            return;
+        }
+        let mut command = None;
+        terminal_cmd.update(|pending| command = pending.take());
+        let Some(cmd) = command else { return };
+        if !status.get_untracked().terminal_ready() {
+            return;
+        }
+        if command_pending.get_untracked()
+            || active_session.get_untracked().is_some()
+            || !command_ids.lock().unwrap().is_empty()
+        {
+            reject_busy_command();
+            return;
+        }
+        command_pending.set(true);
+        let project = projects
+            .active_project
+            .get_untracked()
+            .and_then(|id| projects.project(id));
+        let ids = command_ids.clone();
+        let alive = command_alive.clone();
+        let sender = bridge.get_value();
+        #[cfg(target_arch = "wasm32")]
+        let handle = project.as_ref().and_then(|project| {
+            projects
+                .local_handles
+                .with_untracked(|handles| handles.get(&project.id).cloned())
+        });
+        #[cfg(target_arch = "wasm32")]
+        let config = crate::bridge::BridgeConfig::new(&settings.bridge_url.get_untracked());
+        leptos::task::spawn_local(async move {
+            let cwd = match project {
+                Some(project) if project.mode == openwebide_core::WorkspaceMode::Remote => {
+                    project.path
+                }
+                Some(project) => {
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        match handle {
+                            Some(handle) => {
+                                crate::local_agent::resolve_bridge_cwd(
+                                    api,
+                                    handle,
+                                    project.id,
+                                    &config,
+                                    &crate::bridge::BridgeCredentials::new(api),
+                                )
+                                .await
+                            }
+                            None => None,
+                        }
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let _ = project;
+                        None
+                    }
+                }
+                None => None,
+            };
+            if !alive.load(Ordering::Relaxed) {
+                return;
+            }
+            command_pending.set(false);
+            if active_session.get_untracked().is_some() || !ids.lock().unwrap().is_empty() {
+                reject_busy_command();
+                return;
+            }
+            let id = next_session_id();
+            if sender
+                .send(BridgeClientMessage::Spawn {
+                    id: id.clone(),
+                    command: "sh".into(),
+                    args: vec!["-lc".into(), cmd.clone()],
+                    cwd,
+                    env: std::collections::HashMap::new(),
+                    pty: true,
+                    cols: 120,
+                    rows: 30,
+                })
+                .is_ok()
+            {
+                ids.lock().unwrap().push(id);
+                raw_output.update(|text| text.push_str(&format!("\x1b[36m❯ {cmd}\x1b[0m\n")));
+            }
         });
     });
 
