@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Stream server-side agent replies token by token, retain text before tool calls in conversation history, and add a run-plan API.
+
 - Add provider streaming for tool-call turns, with automatic non-streaming fallback for older llama.cpp servers.
 
 - Add a frontend component test harness with a fake backend and headless Chrome tests in CI.

@@ -201,3 +201,20 @@ What's left — grouped as Now / Next / Later — lives in
 meters and per-connection context limit) is in
 [CHANGELOG.md](../CHANGELOG.md).
 
+
+## Agent turn streaming
+
+Server-side agent runs stream model text token by token over SSE, alongside
+telemetry and tool steps. Text preceding tool calls is persisted as an interim
+assistant message and emitted as an `interim` event; tool steps follow that message
+in the conversation. The same text is included in the assistant tool-call message
+sent back to the model. Tool-call ids use the initiating user message id throughout
+the run, while the display anchor moves to each persisted interim message.
+Local-mode runs use the same loop and persist interim text, but model text still
+arrives per turn through `/api/chat-tools`.
+
+`POST /api/sessions/<id>/run-plan` prepares a run without persisting a message or
+clearing run flags. It checks session ownership and returns the connection, chat
+request with prior history and temporal context, editor-prefixed user content, and
+run kind (`chat` or `agent` with a project path). The SSE message handler uses the
+same builder before persisting the new user message and starting the run.

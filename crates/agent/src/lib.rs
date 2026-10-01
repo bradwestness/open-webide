@@ -9,11 +9,14 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use futures::{Stream, stream};
+use futures::{Stream, StreamExt, stream};
 use openwebide_core::{
-    ChatMessage, ChatRequest, ChatResponse, FileDiff, Role, ToolCall, ToolDefinition, TurnTelemetry,
+    ChatMessage, ChatRequest, ChatResponse, FileDiff, REPLY_TRUNCATED_MARKER, Role, ToolCall,
+    ToolDefinition, TurnTelemetry,
 };
-use openwebide_llm::LlmProvider;
+use openwebide_llm::{LlmProvider, ProviderError, ToolStreamChunk};
+
+type ModelStream = Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send>>;
 
 pub mod policy;
 pub mod tools;
@@ -26,7 +29,7 @@ pub use vfs_executor::{
 /// Budgets that bound a single agent run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentConfig {
-    /// Maximum model round-trips. Each turn is one `chat_tools` call; a turn
+    /// Maximum model round-trips. Each turn is one `chat_tools_stream` call; a turn
     /// that returns tool calls still counts as one turn even if it runs many
     /// tools.
     pub max_turns: usize,
@@ -62,6 +65,10 @@ pub struct ToolOutcome {
 /// tool-call id, so it is unique within a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
+    /// Text received during the current model turn.
+    TextDelta(String),
+    /// Completed text preceding this turn's tool calls.
+    TurnText(String),
     /// The model requested a tool call.
     ToolCall {
         id: String,
@@ -91,7 +98,7 @@ pub enum AgentEvent {
     Error(String),
     /// The user cancelled the run; no final text will follow.
     Cancelled,
-    /// Usage for one model call; emitted after each `chat_tools` that
+    /// Usage for one model call; emitted during each model stream that
     /// reports usage, before its tool calls or final text.
     Telemetry(TurnTelemetry),
 }
@@ -110,9 +117,8 @@ pub trait ToolExecutor: Send {
 
 /// Decides whether the current run should stop.
 ///
-/// The loop calls this at step boundaries — before each model call and before
-/// each tool execution — so a cancel takes effect at the next boundary
-/// without interrupting an in-flight request.
+/// The loop checks before each model call, stream chunk, and tool execution.
+/// Cancellation drops the model stream at the next chunk boundary.
 pub trait CancelCheck: Send {
     /// Returns `true` when the run should stop.
     ///
@@ -171,11 +177,11 @@ impl PermissionGate for NoopGate {
     }
 }
 
-/// Run the agent loop, streaming one [`AgentEvent`] per step.
+/// Run the agent loop, streaming one [`AgentEvent`] per chunk or step.
 ///
 /// The loop ends with a [`AgentEvent::FinalText`] (the model's answer), an
 /// [`AgentEvent::Error`] (a budget was exhausted or the provider failed), or
-/// an [`AgentEvent::Cancelled`] (the cancel check fired at a step boundary).
+/// an [`AgentEvent::Cancelled`] (the cancel check fired at a chunk or step boundary).
 ///
 /// `anchor_id` must be unique per run within a session; hosts pass the
 /// persisted id of the user message that started the run. Each tool call gets
@@ -217,6 +223,8 @@ where
             pending: Vec::new(),
             current: None,
             response: None,
+            model_stream: None,
+            turn_text: String::new(),
             next: Next::CallModel,
         },
         |mut state| async move {
@@ -246,17 +254,54 @@ where
                             messages: state.messages.clone(),
                             tools: state.tools.clone(),
                         };
-                        match state.provider.chat_tools(&req).await {
-                            Err(e) => {
-                                state.next = Next::Stop;
-                                return Some((AgentEvent::Error(e.to_string()), state));
+                        state.model_stream = Some(state.provider.chat_tools_stream(&req));
+                        state.turn_text.clear();
+                        state.next = Next::StreamModel;
+                    }
+                    Next::StreamModel => {
+                        if state.cancel.check().await {
+                            state.model_stream = None;
+                            state.next = Next::Stop;
+                            return Some((AgentEvent::Cancelled, state));
+                        }
+                        let chunk = state
+                            .model_stream
+                            .as_mut()
+                            .expect("StreamModel without a stream")
+                            .next()
+                            .await;
+                        match chunk {
+                            Some(Ok(ToolStreamChunk::Delta(delta))) => {
+                                state.turn_text.push_str(&delta);
+                                return Some((AgentEvent::TextDelta(delta), state));
                             }
-                            Ok(completion) => {
-                                state.response = Some(completion.response);
+                            Some(Ok(ToolStreamChunk::Usage(usage))) => {
+                                return Some((AgentEvent::Telemetry(usage), state));
+                            }
+                            Some(Ok(ToolStreamChunk::Response(response))) => {
+                                state.response = Some(response);
+                                state.model_stream = None;
                                 state.next = Next::HandleResponse;
-                                if let Some(usage) = completion.usage {
-                                    return Some((AgentEvent::Telemetry(usage), state));
-                                }
+                            }
+                            error => {
+                                state.model_stream = None;
+                                state.next = Next::Stop;
+                                let event = match error {
+                                    Some(Err(ProviderError::Incomplete))
+                                        if !state.turn_text.is_empty() =>
+                                    {
+                                        AgentEvent::FinalText(format!(
+                                            "{}{REPLY_TRUNCATED_MARKER}",
+                                            state.turn_text
+                                        ))
+                                    }
+                                    Some(Err(error)) => AgentEvent::Error(error.to_string()),
+                                    None => AgentEvent::Error(
+                                        "model stream ended without a response".into(),
+                                    ),
+                                    Some(Ok(_)) => unreachable!(),
+                                };
+                                return Some((event, state));
                             }
                         }
                     }
@@ -276,7 +321,7 @@ where
                                     id: 0,
                                     session_id: 0,
                                     role: Role::Assistant,
-                                    content: String::new(),
+                                    content: state.turn_text.clone(),
                                     created_at: 0,
                                     tool_calls: Some(
                                         pending
@@ -292,6 +337,12 @@ where
                                 });
                                 state.pending = pending;
                                 state.next = Next::EmitToolCall;
+                                if !state.turn_text.is_empty() {
+                                    return Some((
+                                        AgentEvent::TurnText(state.turn_text.clone()),
+                                        state,
+                                    ));
+                                }
                             }
                         }
                     }
@@ -493,9 +544,11 @@ struct LoopState<P, T, C, G> {
     pending: Vec<PendingCall>,
     /// The call currently being executed (set between Emit and Run).
     current: Option<PendingCall>,
-    /// The model's response, set by `CallModel` and consumed by
+    /// The model's response, set by `StreamModel` and consumed by
     /// `HandleResponse`.
     response: Option<ChatResponse>,
+    model_stream: Option<ModelStream>,
+    turn_text: String,
     next: Next,
 }
 
@@ -503,6 +556,7 @@ struct LoopState<P, T, C, G> {
 #[derive(Debug, Clone, Copy)]
 enum Next {
     CallModel,
+    StreamModel,
     HandleResponse,
     EmitToolCall,
     AwaitPermission,
@@ -535,6 +589,8 @@ mod tests {
     struct FakeProvider {
         responses: Arc<Mutex<VecDeque<Result<ChatCompletion, ProviderError>>>>,
         requests: Arc<Mutex<Vec<ChatRequest>>>,
+        scripts: Mutex<VecDeque<Vec<Result<ToolStreamChunk, ProviderError>>>>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeProvider {
@@ -546,6 +602,8 @@ mod tests {
                 Self {
                     responses: Arc::new(Mutex::new(responses.into())),
                     requests: requests.clone(),
+                    scripts: Mutex::new(VecDeque::new()),
+                    dropped: Arc::default(),
                 },
                 requests,
             )
@@ -583,6 +641,13 @@ mod tests {
         ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>>
         {
             self.requests.lock().unwrap().push(request.clone());
+            if let Some(chunks) = self.scripts.lock().unwrap().pop_front() {
+                let guard = StreamDrop(self.dropped.clone());
+                return Box::pin(stream::iter(chunks).map(move |chunk| {
+                    let _ = &guard;
+                    chunk
+                }));
+            }
             let response = self
                 .responses
                 .lock()
@@ -716,6 +781,7 @@ mod tests {
                     summary: "read src/main.rs".into(),
                     diff: None,
                 },
+                AgentEvent::TextDelta("fixed it".into()),
                 AgentEvent::FinalText("fixed it".into()),
             ]
         );
@@ -793,6 +859,7 @@ mod tests {
                     summary: "read src/main.rs".into(),
                     diff: None,
                 },
+                AgentEvent::TextDelta("fixed it".into()),
                 AgentEvent::Telemetry(usage_2),
                 AgentEvent::FinalText("fixed it".into()),
             ]
@@ -816,7 +883,13 @@ mod tests {
             1,
         ));
 
-        assert_eq!(events, vec![AgentEvent::FinalText("just an answer".into())]);
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::TextDelta("just an answer".into()),
+                AgentEvent::FinalText("just an answer".into())
+            ]
+        );
         assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
@@ -944,7 +1017,7 @@ mod tests {
         assert_eq!(events, vec![AgentEvent::Error("HTTP error: boom".into())]);
     }
 
-    /// A cancel check that fires on its second call.
+    /// A cancel check that fires on its third call.
     struct FlippingCancel {
         calls: Arc<Mutex<u32>>,
     }
@@ -955,7 +1028,7 @@ mod tests {
             async move {
                 let n = *calls.lock().unwrap() + 1;
                 *calls.lock().unwrap() = n;
-                n >= 2
+                n >= 3
             }
         }
     }
@@ -972,9 +1045,7 @@ mod tests {
         ]);
         let executor = FakeExecutor::new(vec![outcome("1", "s1")]);
 
-        // The first check (before the model call) passes; the second (before
-        // the tool runs) fires, so the tool never executes and the run ends
-        // with Cancelled.
+        // The model and response checks pass; the tool check cancels the run.
         let events = collect(run(
             provider,
             executor,
@@ -1057,6 +1128,7 @@ mod tests {
                     summary: "denied by user".into(),
                     diff: None,
                 },
+                AgentEvent::TextDelta("skipped it".into()),
                 AgentEvent::FinalText("skipped it".into()),
             ]
         );
@@ -1115,6 +1187,7 @@ mod tests {
                     summary: "wrote src/main.rs".into(),
                     diff: None,
                 },
+                AgentEvent::TextDelta("done".into()),
                 AgentEvent::FinalText("done".into()),
             ]
         );
@@ -1231,6 +1304,7 @@ mod tests {
                     summary: "denied by user".into(),
                     diff: None,
                 },
+                AgentEvent::TextDelta("done".into()),
                 AgentEvent::FinalText("done".into()),
             ]
         );
@@ -1416,5 +1490,188 @@ mod tests {
         }
         let calls_other = pending_calls(71, 1, vec![call("call_0", "read_file", "{}")]);
         assert!(!calls_other[0].call.id.starts_with(&prefix));
+    }
+
+    struct StreamDrop(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for StreamDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn scripted(chunks: Vec<Result<ToolStreamChunk, ProviderError>>) -> FakeProvider {
+        let (provider, _) = FakeProvider::new(Vec::new());
+        provider.scripts.lock().unwrap().push_back(chunks);
+        provider
+    }
+
+    #[test]
+    fn streams_deltas_usage_and_final_text() {
+        let usage = TurnTelemetry {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+            ..Default::default()
+        };
+        let events = collect(run(
+            scripted(vec![
+                Ok(ToolStreamChunk::Delta("hel".into())),
+                Ok(ToolStreamChunk::Delta("lo".into())),
+                Ok(ToolStreamChunk::Usage(usage)),
+                Ok(ToolStreamChunk::Response(ChatResponse::Text(
+                    "hello".into(),
+                ))),
+            ]),
+            FakeExecutor::new(vec![]),
+            request(),
+            AgentConfig::default(),
+            NoopCancel,
+            NoopGate,
+            7,
+        ));
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::TextDelta("hel".into()),
+                AgentEvent::TextDelta("lo".into()),
+                AgentEvent::Telemetry(usage),
+                AgentEvent::FinalText("hello".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn interim_text_is_in_transcript_and_keeps_run_ids() {
+        for preamble in ["Checking now", ""] {
+            let (provider, requests) =
+                FakeProvider::new(vec![Ok(no_usage(ChatResponse::Text("done".into())))]);
+            for _ in 0..2 {
+                let mut chunks = Vec::new();
+                if !preamble.is_empty() {
+                    chunks.push(Ok(ToolStreamChunk::Delta("Checking ".into())));
+                    chunks.push(Ok(ToolStreamChunk::Delta("now".into())));
+                }
+                chunks.push(Ok(ToolStreamChunk::Response(ChatResponse::ToolCalls(
+                    vec![call("call_0", "read_file", "{}")],
+                ))));
+                provider.scripts.lock().unwrap().push_back(chunks);
+            }
+            let events = collect(run(
+                provider,
+                FakeExecutor::new(vec![]),
+                request(),
+                AgentConfig::default(),
+                NoopCancel,
+                NoopGate,
+                7,
+            ));
+            if preamble.is_empty() {
+                assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, AgentEvent::TurnText(_)))
+                );
+            } else {
+                assert_eq!(events[0], AgentEvent::TextDelta("Checking ".into()));
+                assert_eq!(events[1], AgentEvent::TextDelta("now".into()));
+                assert_eq!(events[2], AgentEvent::TurnText(preamble.into()));
+                assert!(matches!(&events[3], AgentEvent::ToolCall { id, .. } if id == "a7t1c0"));
+            }
+            assert_eq!(
+                event_ids(&events),
+                vec!["a7t1c0", "a7t1c0", "a7t2c0", "a7t2c0"]
+            );
+            let requests = requests.lock().unwrap();
+            for assistant in [&requests[2].messages[1], &requests[2].messages[3]] {
+                assert_eq!(assistant.content, preamble);
+                assert_eq!(assistant.tool_calls.as_ref().unwrap()[0].id, "call_0");
+            }
+        }
+    }
+
+    #[test]
+    fn stream_failures_and_truncation() {
+        for (chunks, expected) in [
+            (
+                vec![
+                    Ok(ToolStreamChunk::Delta("partial".into())),
+                    Err(ProviderError::Incomplete),
+                ],
+                vec![
+                    AgentEvent::TextDelta("partial".into()),
+                    AgentEvent::FinalText(format!("partial{REPLY_TRUNCATED_MARKER}")),
+                ],
+            ),
+            (
+                vec![Err(ProviderError::Incomplete)],
+                vec![AgentEvent::Error(ProviderError::Incomplete.to_string())],
+            ),
+            (
+                vec![Ok(ToolStreamChunk::Delta("partial".into()))],
+                vec![
+                    AgentEvent::TextDelta("partial".into()),
+                    AgentEvent::Error("model stream ended without a response".into()),
+                ],
+            ),
+            (
+                vec![
+                    Ok(ToolStreamChunk::Delta("partial".into())),
+                    Err(ProviderError::Http("boom".into())),
+                ],
+                vec![
+                    AgentEvent::TextDelta("partial".into()),
+                    AgentEvent::Error("HTTP error: boom".into()),
+                ],
+            ),
+        ] {
+            let events = collect(run(
+                scripted(chunks),
+                FakeExecutor::new(vec![]),
+                request(),
+                AgentConfig::default(),
+                NoopCancel,
+                NoopGate,
+                7,
+            ));
+            assert_eq!(events, expected);
+        }
+    }
+
+    struct AtomicCancel(Arc<std::sync::atomic::AtomicBool>);
+
+    impl CancelCheck for AtomicCancel {
+        async fn check(&self) -> bool {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn cancel_between_deltas_drops_stream() {
+        futures::executor::block_on(async {
+            let provider = scripted(vec![
+                Ok(ToolStreamChunk::Delta("first".into())),
+                Ok(ToolStreamChunk::Delta("second".into())),
+            ]);
+            let dropped = provider.dropped.clone();
+            let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut events = run(
+                provider,
+                FakeExecutor::new(vec![]),
+                request(),
+                AgentConfig::default(),
+                AtomicCancel(cancelled.clone()),
+                NoopGate,
+                7,
+            );
+            assert_eq!(
+                events.next().await,
+                Some(AgentEvent::TextDelta("first".into()))
+            );
+            assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
+            cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(events.next().await, Some(AgentEvent::Cancelled));
+            assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(events.next().await, None);
+        });
     }
 }

@@ -439,7 +439,8 @@ pub async fn run_local_agent(
     };
 
     // 4. Drive agent stream
-    let anchor = user_message.id;
+    let anchor_id = user_message.id;
+    let mut display_anchor = anchor_id;
     let mut stream = openwebide_agent::run(
         provider,
         executor,
@@ -447,27 +448,54 @@ pub async fn run_local_agent(
         AgentConfig::default(),
         cancel,
         gate,
-        anchor,
+        anchor_id,
     );
 
     let mut last_usage: Option<TurnTelemetry> = None;
     while let Some(event) = stream.next().await {
         match event {
+            AgentEvent::TextDelta(delta) => on_event(SseEvent::Delta(delta)),
+            AgentEvent::TurnText(text) => {
+                let usage = last_usage.take();
+                let message = api
+                    .with_value(Clone::clone)
+                    .persist_message(session_id, Role::Assistant, &text, usage.as_ref())
+                    .await;
+                let message = match message {
+                    Ok(message) => {
+                        display_anchor = message.id;
+                        message
+                    }
+                    Err(_) => ChatMessage {
+                        id: 0,
+                        session_id,
+                        role: Role::Assistant,
+                        content: text,
+                        created_at: 0,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        usage,
+                    },
+                };
+                on_event(SseEvent::Interim(message));
+            }
             AgentEvent::Telemetry(usage) => {
                 last_usage = Some(usage);
                 on_event(SseEvent::Telemetry(usage));
             }
             AgentEvent::ToolCall { id, name, summary } => {
+                last_usage = None;
                 let _ = api
                     .with_value(Clone::clone)
-                    .upsert_tool_step(session_id, anchor, &id, &name, &summary)
+                    .upsert_tool_step(session_id, display_anchor, &id, &name, &summary)
                     .await;
                 on_event(SseEvent::ToolCall { id, name, summary });
             }
             AgentEvent::PermissionRequest { id, name, summary } => {
+                last_usage = None;
                 let _ = api
                     .with_value(Clone::clone)
-                    .upsert_tool_step(session_id, anchor, &id, &name, &summary)
+                    .upsert_tool_step(session_id, display_anchor, &id, &name, &summary)
                     .await;
                 on_event(SseEvent::PermissionRequest { id, name, summary });
             }
@@ -493,7 +521,12 @@ pub async fn run_local_agent(
             AgentEvent::FinalText(text) => {
                 match api
                     .with_value(Clone::clone)
-                    .persist_message(session_id, Role::Assistant, &text, last_usage.as_ref())
+                    .persist_message(
+                        session_id,
+                        Role::Assistant,
+                        &text,
+                        last_usage.take().as_ref(),
+                    )
                     .await
                 {
                     Ok(msg) => on_event(SseEvent::Done(msg)),

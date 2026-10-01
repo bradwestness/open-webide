@@ -185,7 +185,7 @@ impl ChatState {
                     matches!(
                         item,
                         ConversationItem::Message(message)
-                            if message.role == openwebide_core::Role::Assistant
+                            if message.role == openwebide_core::Role::Assistant && message.id <= 0
                     )
                 });
                 if extends_assistant {
@@ -284,12 +284,27 @@ impl ChatState {
                     }),
                 }
             }),
-            SseEvent::Done(message) => self.messages.update(|items| {
+            SseEvent::Interim(message) | SseEvent::Done(message) => self.messages.update(|items| {
+                if message.id > 0
+                    && let Some(ConversationItem::Message(existing)) = items.iter_mut().find(|item| {
+                        matches!(item, ConversationItem::Message(existing) if existing.id == message.id)
+                    })
+                {
+                    *existing = message;
+                    if matches!(
+                        items.last(),
+                        Some(ConversationItem::Message(last))
+                            if last.role == openwebide_core::Role::Assistant && last.id <= 0
+                    ) {
+                        items.pop();
+                    }
+                    return;
+                }
                 let replace_assistant = items.last().is_some_and(|item| {
                     matches!(
                         item,
                         ConversationItem::Message(last)
-                            if last.role == openwebide_core::Role::Assistant
+                            if last.role == openwebide_core::Role::Assistant && last.id <= 0
                     )
                 });
                 if replace_assistant {
@@ -374,6 +389,61 @@ mod tests {
             tool_call_id: None,
             usage: None,
         }
+    }
+
+    #[test]
+    fn interim_completes_placeholder_and_next_delta_starts_reply() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            chat.active_session.set(Some(7));
+            chat.apply_event(SseEvent::Message(message(90, Role::User, "go")));
+            chat.apply_event(SseEvent::Delta("checking".into()));
+            chat.apply_event(SseEvent::Interim(message(91, Role::Assistant, "checking")));
+            chat.apply_event(SseEvent::Delta("finished".into()));
+            chat.apply_event(SseEvent::Done(message(92, Role::Assistant, "finished")));
+            let items = chat.messages.get_untracked();
+            assert_eq!(items.len(), 3);
+            for (item, (id, text)) in items.iter().zip([(90, "go"), (91, "checking"), (92, "finished")]) {
+                assert!(matches!(item, ConversationItem::Message(msg) if msg.id == id && msg.content == text));
+            }
+        });
+    }
+
+    #[test]
+    fn persisted_reply_events_reconcile_messages_loaded_from_history() {
+        Owner::new().with(|| {
+            for (interim, queued_delta) in
+                [(true, false), (false, false), (true, true), (false, true)]
+            {
+                let chat = ChatState::new();
+                chat.active_session.set(Some(7));
+                let existing = message(91, Role::Assistant, "checking");
+                let later = message(92, Role::Assistant, "finished");
+                chat.messages.set(vec![
+                    ConversationItem::Message(message(90, Role::User, "go")),
+                    ConversationItem::Message(existing.clone()),
+                    ConversationItem::Message(later.clone()),
+                ]);
+                let mut incoming = existing;
+                incoming.usage = Some(TurnTelemetry {
+                    prompt_tokens: 100,
+                    ..Default::default()
+                });
+                if queued_delta {
+                    chat.apply_event(SseEvent::Delta("check".into()));
+                    chat.apply_event(SseEvent::Delta("ing".into()));
+                }
+                chat.apply_event(if interim {
+                    SseEvent::Interim(incoming.clone())
+                } else {
+                    SseEvent::Done(incoming.clone())
+                });
+                let items = chat.messages.get_untracked();
+                assert_eq!(items.len(), 3);
+                assert!(matches!(&items[1], ConversationItem::Message(msg) if msg == &incoming));
+                assert!(matches!(&items[2], ConversationItem::Message(msg) if msg == &later));
+            }
+        });
     }
 
     #[test]

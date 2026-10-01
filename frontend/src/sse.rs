@@ -32,6 +32,8 @@ pub enum SseEvent {
     },
     /// The final, persisted assistant reply.
     Done(ChatMessage),
+    /// Persisted text preceding tool calls; the run continues.
+    Interim(ChatMessage),
     /// Telemetry metrics for the turn.
     Telemetry(TurnTelemetry),
     /// The run was cancelled; the stream ends after this.
@@ -78,6 +80,7 @@ pub fn parse_event(event: &str, value: serde_json::Value) -> Option<SseEvent> {
                 .get("diff")
                 .and_then(|d| serde_json::from_value(d.clone()).ok().flatten()),
         },
+        "interim" => SseEvent::Interim(serde_json::from_value(value).ok()?),
         "done" => SseEvent::Done(serde_json::from_value(value).ok()?),
         "telemetry" => SseEvent::Telemetry(serde_json::from_value(value).ok()?),
         "cancelled" => SseEvent::Cancelled,

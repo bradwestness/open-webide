@@ -5,7 +5,7 @@
 //! coding), and finally the persisted assistant message. Frame format:
 //!
 //! ```text
-//! event: message | delta | tool_call | permission_request | tool_result | done | telemetry | cancelled | error
+//! event: message | delta | tool_call | permission_request | tool_result | interim | done | telemetry | cancelled | error
 //! data: {json}
 //!
 //! ```
@@ -53,6 +53,8 @@ pub enum SseEvent {
     },
     /// The persisted assistant message; the stream ends after this.
     Done(ChatMessage),
+    /// Persisted text preceding tool calls; the run continues.
+    Interim(ChatMessage),
     /// Telemetry metrics for the turn.
     Telemetry(TurnTelemetry),
     /// The user cancelled the run; the stream ends after this.
@@ -85,6 +87,7 @@ fn frame(event: &SseEvent) -> Bytes {
             json!({ "id": id, "name": name, "ok": ok, "summary": summary, "diff": diff })
                 .to_string(),
         ),
+        SseEvent::Interim(message) => ("interim", serde_json::to_string(message).unwrap()),
         SseEvent::Done(message) => ("done", serde_json::to_string(message).unwrap()),
         SseEvent::Telemetry(telem) => (
             "telemetry",
@@ -305,6 +308,7 @@ mod tests {
         match event {
             SseEvent::Message(_) => Kind::Message,
             SseEvent::Delta(d) => Kind::Delta(d.clone()),
+            SseEvent::Interim(_) => panic!("unexpected interim"),
             SseEvent::ToolCall { .. } => panic!("unexpected tool_call"),
             SseEvent::PermissionRequest { .. } => panic!("unexpected permission_request"),
             SseEvent::ToolResult { .. } => panic!("unexpected tool_result"),

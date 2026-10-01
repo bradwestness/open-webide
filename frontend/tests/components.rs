@@ -8,5 +8,7 @@ mod models;
 mod pending_edits;
 #[path = "components/permissions.rs"]
 mod permissions;
+#[path = "components/streaming.rs"]
+mod streaming;
 #[path = "components/support.rs"]
 mod support;

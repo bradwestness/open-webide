@@ -119,16 +119,26 @@ pub fn agent_stream(
         crate::web::SpinWebClient,
         crate::bridge_client::SpinBridgeClient::for_project(store.clone(), base),
     );
-    // Tool steps anchor to the user message that started this turn, so a
-    // reloaded session renders them right after it; the same id namespaces
-    // the run's tool-call ids.
-    let anchor = user_message.id;
-    let events = openwebide_agent::run(provider, executor, request, config, cancel, gate, anchor);
+    let anchor_id = user_message.id;
+    let events =
+        openwebide_agent::run(provider, executor, request, config, cancel, gate, anchor_id);
+    let tail = map_agent_events(store, session_id, anchor_id, events);
+    Box::pin(stream::iter([SseEvent::Message(user_message)]).chain(tail))
+}
+
+fn map_agent_events(
+    store: Arc<Store<AppDb>>,
+    session_id: i64,
+    anchor_id: i64,
+    events: impl Stream<Item = AgentEvent> + Send + 'static,
+) -> impl Stream<Item = SseEvent> + Send {
+    let events = Box::pin(events);
+    let display_anchor = anchor_id;
     let last_usage: Option<TurnTelemetry> = None;
-    let tail = stream::unfold(
-        (store, session_id, anchor, events, last_usage),
+    stream::unfold(
+        (store, session_id, display_anchor, events, last_usage),
         |state| async move {
-            let (store, session_id, anchor, mut events, mut last_usage) = state;
+            let (store, session_id, mut display_anchor, mut events, mut last_usage) = state;
             let Some(event) = events.next().await else {
                 // The run finished (completed, failed, or cancelled): drop the
                 // flag and any recorded decisions so a late or stale cancel or
@@ -139,14 +149,16 @@ pub fn agent_stream(
             };
             let sse = match event {
                 AgentEvent::ToolCall { id, name, summary } => {
+                    last_usage = None;
                     let _ = store
-                        .upsert_tool_step(session_id, anchor, &id, &name, &summary, now())
+                        .upsert_tool_step(session_id, display_anchor, &id, &name, &summary, now())
                         .await;
                     SseEvent::ToolCall { id, name, summary }
                 }
                 AgentEvent::PermissionRequest { id, name, summary } => {
+                    last_usage = None;
                     let _ = store
-                        .upsert_tool_step(session_id, anchor, &id, &name, &summary, now())
+                        .upsert_tool_step(session_id, display_anchor, &id, &name, &summary, now())
                         .await;
                     SseEvent::PermissionRequest { id, name, summary }
                 }
@@ -168,6 +180,36 @@ pub fn agent_stream(
                         diff,
                     }
                 }
+                AgentEvent::TextDelta(delta) => SseEvent::Delta(delta),
+                AgentEvent::TurnText(text) => {
+                    let usage = last_usage.take();
+                    let message = store
+                        .insert_message_with_usage(
+                            session_id,
+                            Role::Assistant,
+                            &text,
+                            now(),
+                            usage.as_ref(),
+                        )
+                        .await;
+                    let message = match message {
+                        Ok(message) => {
+                            display_anchor = message.id;
+                            message
+                        }
+                        Err(_) => ChatMessage {
+                            id: 0,
+                            session_id,
+                            role: Role::Assistant,
+                            content: text,
+                            created_at: now(),
+                            tool_calls: None,
+                            tool_call_id: None,
+                            usage,
+                        },
+                    };
+                    SseEvent::Interim(message)
+                }
                 AgentEvent::Telemetry(usage) => {
                     last_usage = Some(usage);
                     SseEvent::Telemetry(usage)
@@ -178,7 +220,7 @@ pub fn agent_stream(
                         Role::Assistant,
                         &text,
                         now(),
-                        last_usage.as_ref(),
+                        last_usage.take().as_ref(),
                     )
                     .await
                 {
@@ -188,8 +230,186 @@ pub fn agent_stream(
                 AgentEvent::Cancelled => SseEvent::Cancelled,
                 AgentEvent::Error(message) => SseEvent::Error(message),
             };
-            Some((sse, (store, session_id, anchor, events, last_usage)))
+            Some((sse, (store, session_id, display_anchor, events, last_usage)))
         },
-    );
-    Box::pin(stream::iter([SseEvent::Message(user_message)]).chain(tail))
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openwebide_core::UserRole;
+
+    #[test]
+    fn maps_interim_text_usage_and_display_anchors() {
+        futures::executor::block_on(async {
+            let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+            store.migrate_with(&|_| true).await.unwrap();
+            let user = store
+                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let session = store
+                .create_session("s", None, None, None, user.id, 1)
+                .await
+                .unwrap();
+            let user_message = store
+                .insert_message(session.id, Role::User, "go", 2)
+                .await
+                .unwrap();
+            let anchor_id = user_message.id;
+            let before = format!("a{anchor_id}t1c0");
+            let after = format!("a{anchor_id}t2c0");
+            let first_usage = TurnTelemetry {
+                prompt_tokens: 10,
+                completion_tokens: 2,
+                ..Default::default()
+            };
+            let last_usage = TurnTelemetry {
+                prompt_tokens: 20,
+                completion_tokens: 3,
+                ..Default::default()
+            };
+            let events = vec![
+                AgentEvent::ToolCall {
+                    id: before.clone(),
+                    name: "read_file".into(),
+                    summary: "first".into(),
+                },
+                AgentEvent::TextDelta("checking".into()),
+                AgentEvent::Telemetry(first_usage),
+                AgentEvent::TurnText("checking".into()),
+                AgentEvent::PermissionRequest {
+                    id: after.clone(),
+                    name: "write_file".into(),
+                    summary: "second".into(),
+                },
+                AgentEvent::ToolCall {
+                    id: after.clone(),
+                    name: "write_file".into(),
+                    summary: "second".into(),
+                },
+                AgentEvent::ToolResult {
+                    id: after.clone(),
+                    name: "write_file".into(),
+                    ok: true,
+                    summary: "wrote".into(),
+                    diff: None,
+                },
+                AgentEvent::TextDelta("done".into()),
+                AgentEvent::Telemetry(last_usage),
+                AgentEvent::FinalText("done".into()),
+            ];
+            let mapped =
+                map_agent_events(store.clone(), session.id, anchor_id, stream::iter(events))
+                    .collect::<Vec<_>>()
+                    .await;
+            assert!(matches!(&mapped[1], SseEvent::Delta(text) if text == "checking"));
+            assert!(matches!(&mapped[2], SseEvent::Telemetry(usage) if *usage == first_usage));
+            let SseEvent::Interim(interim) = &mapped[3] else {
+                panic!("missing interim")
+            };
+            assert_eq!(interim.content, "checking");
+            assert_eq!(interim.usage, Some(first_usage));
+            assert!(matches!(&mapped[4], SseEvent::PermissionRequest { id, .. } if id == &after));
+            let steps = store.list_tool_steps(session.id).await.unwrap();
+            assert_eq!(steps[0].tool_call_id, before);
+            assert_eq!(steps[0].anchor_message_id, anchor_id);
+            assert_eq!(steps[1].tool_call_id, after);
+            assert_eq!(steps[1].anchor_message_id, interim.id);
+            assert_eq!(steps[1].ok, Some(true));
+            let SseEvent::Done(final_message) = mapped.last().unwrap() else {
+                panic!("missing final")
+            };
+            assert_eq!(final_message.usage, Some(last_usage));
+            let messages = store.list_messages(session.id).await.unwrap();
+            assert_eq!(
+                messages,
+                vec![user_message, interim.clone(), final_message.clone()]
+            );
+        });
+    }
+
+    #[test]
+    fn truncated_reply_does_not_inherit_tool_turn_usage() {
+        futures::executor::block_on(async {
+            for (has_text, denied) in [(true, false), (false, false), (true, true), (false, true)] {
+                let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+                store.migrate_with(&|_| true).await.unwrap();
+                let user = store
+                    .insert_user("alice", "hash", UserRole::Admin, 1)
+                    .await
+                    .unwrap();
+                let session = store
+                    .create_session("s", None, None, None, user.id, 1)
+                    .await
+                    .unwrap();
+                let usage = TurnTelemetry {
+                    prompt_tokens: 100,
+                    completion_tokens: 20,
+                    ..Default::default()
+                };
+                let mut events = vec![AgentEvent::Telemetry(usage)];
+                if has_text {
+                    events.push(AgentEvent::TurnText("checking".into()));
+                }
+                if denied {
+                    events.push(AgentEvent::PermissionRequest {
+                        id: "a7t1c0".into(),
+                        name: "write_file".into(),
+                        summary: "write".into(),
+                    });
+                    events.push(AgentEvent::ToolResult {
+                        id: "a7t1c0".into(),
+                        name: "write_file".into(),
+                        ok: false,
+                        summary: "denied".into(),
+                        diff: None,
+                    });
+                } else {
+                    events.push(AgentEvent::ToolCall {
+                        id: "a7t1c0".into(),
+                        name: "read_file".into(),
+                        summary: "read".into(),
+                    });
+                }
+                let partial = format!("partial{}", openwebide_core::REPLY_TRUNCATED_MARKER);
+                events.push(AgentEvent::TextDelta("partial".into()));
+                events.push(AgentEvent::FinalText(partial.clone()));
+                let mapped = map_agent_events(store.clone(), session.id, 7, stream::iter(events))
+                    .collect::<Vec<_>>()
+                    .await;
+                let SseEvent::Done(reply) = mapped.last().unwrap() else {
+                    panic!("missing final")
+                };
+                assert_eq!(reply.content, partial);
+                assert_eq!(reply.usage, None);
+                let messages = store.list_messages(session.id).await.unwrap();
+                assert_eq!(messages.last(), Some(reply));
+                if has_text {
+                    assert_eq!(messages[0].usage, Some(usage));
+                }
+                assert_eq!(messages.len(), if has_text { 2 } else { 1 });
+            }
+        });
+    }
+
+    #[test]
+    fn interim_persistence_failure_still_forwards_text() {
+        futures::executor::block_on(async {
+            let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+            store.migrate_with(&|_| true).await.unwrap();
+            let mapped = map_agent_events(
+                store,
+                999,
+                7,
+                stream::iter([AgentEvent::TurnText("checking".into())]),
+            )
+            .collect::<Vec<_>>()
+            .await;
+            assert!(
+                matches!(&mapped[0], SseEvent::Interim(message) if message.id == 0 && message.content == "checking")
+            );
+        });
+    }
 }

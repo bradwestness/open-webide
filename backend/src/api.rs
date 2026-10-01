@@ -7,10 +7,10 @@ use http_body_util::BodyExt;
 use openwebide_agent::AgentConfig;
 use openwebide_core::{
     ChatRequest, EditorContext, FileDiff, FileEntry, GitCheckoutRequest, GitCommitRequest,
-    GitSyncRequest, Health, NewConnection, NewProject, Role, SearchHit, SystemPrompt,
-    TurnTelemetry, WorkspaceMode, vfs::SearchOptions,
+    GitSyncRequest, Health, NewConnection, NewProject, Role, RunKind, RunPlan, SearchHit,
+    SystemPrompt, TurnTelemetry, WorkspaceMode, vfs::SearchOptions, with_temporal_context,
 };
-use openwebide_llm::{LlmProvider, registry::Provider};
+use openwebide_llm::{LlmProvider, ToolStreamMemo, registry::Provider};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -967,25 +967,13 @@ struct SendMessageBody {
     editor_context: Option<EditorContext>,
 }
 
-/// Send a user message and stream the assistant reply back as SSE.
-///
-/// `state` is taken by value: the store is moved into the response body so
-/// the assistant message can be persisted from inside the stream.
-pub async fn send_session_message(
-    req: Request,
-    state: AppState,
-    path: &str,
-) -> Result<JsonResp, ApiError> {
-    let user_id = current_user_id(&state)?;
-    let session_id = session_id(path)?;
-    let body = read_body(req, CHAT_BODY_LIMIT).await?;
-    let send: SendMessageBody = parse_json(body)?;
-
+async fn build_run_plan(
+    state: &AppState,
+    user_id: i64,
+    session_id: i64,
+    send: SendMessageBody,
+) -> Result<RunPlan, ApiError> {
     let session = state.store.get_session(session_id, user_id).await?;
-    // A new run starts: clear any stale cancel flag and permission
-    // decisions from a previous run.
-    let _ = state.store.clear_cancel(session_id).await;
-    let _ = state.store.clear_tool_permissions(session_id).await;
     let connection_id = session
         .connection_id
         .ok_or_else(|| ApiError::bad_request("session has no connection; pick one first"))?;
@@ -1000,11 +988,6 @@ pub async fn send_session_message(
         Some(ctx) => format!("{}{}", ctx.format_prompt_injection(), send.content),
         None => send.content,
     };
-    let user_message = state
-        .store
-        .insert_message(session_id, Role::User, &full_content, now())
-        .await?;
-
     // Remote-mode projects run the agentic loop with workspace tools;
     // everything else is plain chat.
     let (is_remote, base) = match session.project_id {
@@ -1017,31 +1000,76 @@ pub async fn send_session_message(
         None => (false, String::new()),
     };
 
-    let mut messages = history;
-    messages.push(user_message.clone());
-    let request = ChatRequest {
-        connection_id,
-        system_prompt,
-        model: send.model,
-        messages,
-        tools: if is_remote {
-            workspace_tools()
-        } else {
-            Vec::new()
+    Ok(RunPlan {
+        user_content: full_content,
+        request: ChatRequest {
+            connection_id,
+            system_prompt,
+            model: send.model,
+            messages: history,
+            tools: if is_remote {
+                workspace_tools()
+            } else {
+                Vec::new()
+            },
         },
-    };
-    let provider = Provider::for_connection(&connection, SpinHttpClient);
+        connection,
+        kind: if is_remote {
+            RunKind::Agent { project_path: base }
+        } else {
+            RunKind::Chat
+        },
+    })
+}
+
+pub async fn run_plan(req: Request, state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(state)?;
+    let session_id = session_id(path)?;
+    let body = read_body(req, CHAT_BODY_LIMIT).await?;
+    let send: SendMessageBody = parse_json(body)?;
+    let plan = build_run_plan(state, user_id, session_id, send).await?;
+    Ok(json_response(200, &plan))
+}
+
+/// Send a user message and stream the assistant reply back as SSE.
+///
+/// `state` is taken by value: the store is moved into the response body so
+/// the assistant message can be persisted from inside the stream.
+pub async fn send_session_message(
+    req: Request,
+    state: AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let user_id = current_user_id(&state)?;
+    let session_id = session_id(path)?;
+    let body = read_body(req, CHAT_BODY_LIMIT).await?;
+    let send: SendMessageBody = parse_json(body)?;
+
+    let plan = build_run_plan(&state, user_id, session_id, send).await?;
+    let _ = state.store.clear_cancel(session_id).await;
+    let _ = state.store.clear_tool_permissions(session_id).await;
+    let user_message = state
+        .store
+        .insert_message(session_id, Role::User, &plan.user_content, now())
+        .await?;
+    let mut request = plan.request;
+    request.messages.push(user_message.clone());
+    let provider = Provider::for_connection_with_memo(
+        &plan.connection,
+        SpinHttpClient,
+        ToolStreamMemo::default(),
+    );
     let store = Arc::new(state.store);
     let cancel = CancelFlag::new(store.clone(), session_id);
     let gate = PermissionPoller::new(store.clone(), session_id);
-    let stream = if is_remote {
+    let stream = if let RunKind::Agent { project_path } = plan.kind {
         agent_stream(
             store.clone(),
             session_id,
             user_message,
             request,
             provider,
-            base,
+            project_path,
             AgentConfig::default(),
             cancel,
             gate,
@@ -1096,18 +1124,6 @@ pub async fn list_models(req: Request, state: &AppState) -> Result<JsonResp, Api
     let provider = Provider::for_connection(&connection, SpinHttpClient);
     let models = provider.list_models().await?;
     Ok(json_response(200, &models))
-}
-
-/// Append current UTC date and time to the system prompt for zero-turn temporal context.
-fn with_temporal_context(system_prompt: Option<String>, timestamp_secs: i64) -> String {
-    let temporal = format!(
-        "Current Date & Time: {}",
-        openwebide_core::format_utc_timestamp(timestamp_secs)
-    );
-    match system_prompt {
-        Some(base) if !base.trim().is_empty() => format!("{base}\n\n{temporal}"),
-        _ => temporal,
-    }
 }
 
 pub async fn chat(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
@@ -1283,6 +1299,124 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
+        futures::executor::block_on(async {
+            let store =
+                openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+            store.migrate_with(&|_| true).await.unwrap();
+            let user = store
+                .insert_user("alice", "hash", openwebide_core::UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let other = store
+                .insert_user("bob", "hash", openwebide_core::UserRole::User, 1)
+                .await
+                .unwrap();
+            let connection = store
+                .insert_connection(&NewConnection {
+                    name: "local".into(),
+                    kind: openwebide_core::ProviderKind::Ollama,
+                    base_url: "http://localhost:11434".into(),
+                    model: Some("model".into()),
+                    context_limit: None,
+                })
+                .await
+                .unwrap();
+            let prompt = store
+                .insert_system_prompt("coder", "Be helpful")
+                .await
+                .unwrap();
+            let project = store
+                .create_project(
+                    &NewProject {
+                        name: "app".into(),
+                        mode: WorkspaceMode::Remote,
+                        path: Some("repos/app".into()),
+                    },
+                    user.id,
+                    1,
+                )
+                .await
+                .unwrap();
+            let state = AppState {
+                store,
+                current_user: None,
+            };
+            for project_id in [None, Some(project.id)] {
+                let session = state
+                    .store
+                    .create_session(
+                        "s",
+                        Some(connection.id),
+                        Some(prompt.id),
+                        project_id,
+                        user.id,
+                        1,
+                    )
+                    .await
+                    .unwrap();
+                let history = state
+                    .store
+                    .insert_message(session.id, Role::User, "earlier", 2)
+                    .await
+                    .unwrap();
+                state.store.request_cancel(session.id).await.unwrap();
+                let context = EditorContext {
+                    file_path: "src/main.rs".into(),
+                    cursor_line: 1,
+                    cursor_col: 1,
+                    selection: None,
+                };
+                let make_body = || SendMessageBody {
+                    content: "go".into(),
+                    model: Some("chosen".into()),
+                    editor_context: Some(context.clone()),
+                };
+                let plan = build_run_plan(&state, user.id, session.id, make_body())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    plan.user_content,
+                    format!("{}go", context.format_prompt_injection())
+                );
+                assert_eq!(plan.connection, connection);
+                assert_eq!(plan.request.connection_id, connection.id);
+                assert_eq!(plan.request.model.as_deref(), Some("chosen"));
+                assert!(
+                    plan.request
+                        .system_prompt
+                        .as_ref()
+                        .unwrap()
+                        .starts_with("Be helpful\n\nCurrent Date & Time: ")
+                );
+                assert_eq!(plan.request.messages, vec![history.clone()]);
+                if project_id.is_some() {
+                    assert_eq!(
+                        plan.kind,
+                        RunKind::Agent {
+                            project_path: "repos/app".into()
+                        }
+                    );
+                    assert_eq!(plan.request.tools, workspace_tools());
+                } else {
+                    assert_eq!(plan.kind, RunKind::Chat);
+                    assert!(plan.request.tools.is_empty());
+                }
+                assert_eq!(
+                    state.store.list_messages(session.id).await.unwrap(),
+                    vec![history]
+                );
+                assert!(state.store.cancel_requested(session.id).await.unwrap());
+                assert!(
+                    build_run_plan(&state, other.id, session.id, make_body())
+                        .await
+                        .is_err()
+                );
+            }
+        });
+    }
 
     #[test]
     fn test_health() {

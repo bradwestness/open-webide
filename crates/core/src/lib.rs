@@ -197,6 +197,35 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDefinition>,
 }
 
+/// A prepared run before its user message is persisted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPlan {
+    pub user_content: String,
+    /// Prior history only; the host appends the new user message after persistence.
+    pub request: ChatRequest,
+    pub connection: Connection,
+    pub kind: RunKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunKind {
+    Chat,
+    Agent { project_path: String },
+}
+
+/// Append current UTC date and time to the system prompt for zero-turn temporal context.
+pub fn with_temporal_context(system_prompt: Option<String>, timestamp_secs: i64) -> String {
+    let temporal = format!(
+        "Current Date & Time: {}",
+        format_utc_timestamp(timestamp_secs)
+    );
+    match system_prompt {
+        Some(base) if !base.trim().is_empty() => format!("{base}\n\n{temporal}"),
+        _ => temporal,
+    }
+}
+
 /// A tool the agent may call, described by a name and a JSON-schema
 /// parameter object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -930,6 +959,52 @@ pub fn find_content_matches(content: &str, query: &str) -> Vec<(usize, String)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporal_context_preserves_prompt_and_formats_utc() {
+        let temporal = "Current Date & Time: Thursday, January 1, 1970 00:00 UTC";
+        assert_eq!(with_temporal_context(None, 0), temporal);
+        assert_eq!(with_temporal_context(Some("   ".into()), 0), temporal);
+        assert_eq!(
+            with_temporal_context(Some("coder".into()), 0),
+            format!("coder\n\n{temporal}")
+        );
+    }
+
+    #[test]
+    fn run_plan_json_round_trip() {
+        let connection: Connection = serde_json::from_value(serde_json::json!({
+            "name": "local", "kind": "ollama", "base_url": "http://localhost:11434",
+            "model": null, "enabled": true,
+        }))
+        .unwrap();
+        for (kind, json) in [
+            (RunKind::Chat, serde_json::json!({"kind": "chat"})),
+            (
+                RunKind::Agent {
+                    project_path: "repos/app".into(),
+                },
+                serde_json::json!({"kind": "agent", "project_path": "repos/app"}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&kind).unwrap(), json);
+            let plan = RunPlan {
+                user_content: "go".into(),
+                request: ChatRequest {
+                    connection_id: 1,
+                    system_prompt: None,
+                    model: None,
+                    messages: vec![],
+                    tools: vec![],
+                },
+                connection: connection.clone(),
+                kind,
+            };
+            let encoded = serde_json::to_value(&plan).unwrap();
+            assert_eq!(encoded["kind"], json);
+            assert_eq!(serde_json::from_value::<RunPlan>(encoded).unwrap(), plan);
+        }
+    }
 
     #[test]
     fn content_matches_finds_case_insensitive_lines() {
