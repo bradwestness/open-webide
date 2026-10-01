@@ -187,15 +187,16 @@ fn map_agent_events(
                     }
                 }
                 AgentEvent::TextDelta(delta) => RunEvent::Delta { content: delta },
-                AgentEvent::TurnText(text) => {
+                AgentEvent::TurnCalls { text, calls } => {
                     let usage = last_usage.take();
                     let message = store
-                        .insert_message_with_usage(
+                        .insert_interim_message(
                             session_id,
                             Role::Assistant,
                             &text,
                             now(),
                             usage.as_ref(),
+                            Some(&calls),
                         )
                         .await;
                     let message = match message {
@@ -209,7 +210,7 @@ fn map_agent_events(
                             role: Role::Assistant,
                             content: text,
                             created_at: now(),
-                            tool_calls: None,
+                            tool_calls: Some(calls),
                             tool_call_id: None,
                             usage,
                         },
@@ -249,6 +250,47 @@ mod tests {
     use openwebide_core::UserRole;
 
     #[test]
+    fn empty_tool_turn_persists_wire_calls() {
+        futures::executor::block_on(async {
+            let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+            store.migrate().await.unwrap();
+            let user = store
+                .insert_user("u", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let session = store
+                .create_session("s", None, None, None, user.id, 1)
+                .await
+                .unwrap();
+            let calls = vec![openwebide_core::ToolCall {
+                id: "wire-id".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            }];
+            let events = map_agent_events(
+                store.clone(),
+                session.id,
+                7,
+                stream::iter([AgentEvent::TurnCalls {
+                    text: String::new(),
+                    calls: calls.clone(),
+                }]),
+            )
+            .collect::<Vec<_>>()
+            .await;
+            let RunEvent::Interim { message } = &events[0] else {
+                panic!("missing interim")
+            };
+            assert!(message.content.is_empty());
+            assert_eq!(message.tool_calls.as_ref(), Some(&calls));
+            assert_eq!(
+                store.list_messages(session.id).await.unwrap(),
+                vec![message.clone()]
+            );
+        });
+    }
+
+    #[test]
     fn maps_interim_text_usage_and_display_anchors() {
         futures::executor::block_on(async {
             let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
@@ -286,7 +328,10 @@ mod tests {
                 },
                 AgentEvent::TextDelta("checking".into()),
                 AgentEvent::Telemetry(first_usage),
-                AgentEvent::TurnText("checking".into()),
+                AgentEvent::TurnCalls {
+                    text: "checking".into(),
+                    calls: vec![],
+                },
                 AgentEvent::PermissionRequest {
                     id: after.clone(),
                     name: "write_file".into(),
@@ -362,7 +407,10 @@ mod tests {
                 };
                 let mut events = vec![AgentEvent::Telemetry(usage)];
                 if has_text {
-                    events.push(AgentEvent::TurnText("checking".into()));
+                    events.push(AgentEvent::TurnCalls {
+                        text: "checking".into(),
+                        calls: vec![],
+                    });
                 }
                 if denied {
                     events.push(AgentEvent::PermissionRequest {
@@ -414,7 +462,10 @@ mod tests {
                 store,
                 999,
                 7,
-                stream::iter([AgentEvent::TurnText("checking".into())]),
+                stream::iter([AgentEvent::TurnCalls {
+                    text: "checking".into(),
+                    calls: vec![],
+                }]),
             )
             .collect::<Vec<_>>()
             .await;

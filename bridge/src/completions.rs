@@ -35,10 +35,18 @@ pub(crate) async fn complete(
             .unwrap_or_default()
             .as_secs() as i64;
         request.system_prompt = Some(with_temporal_context(request.system_prompt, now));
-        let memo = memos.get_or_insert(connection.id, &connection.base_url);
-        let provider = Provider::for_connection_with_memo(&connection, http, memo);
+        let memo = memos.get_or_insert(&connection);
+        let provider = Provider::for_connection_with_memo(&connection, http, memo.clone());
         let mut stream = provider.chat_tools_stream(&request);
         while let Some(chunk) = stream.next().await {
+            crate::runs::record_tool_stream_memo(
+                &*backend,
+                user_id,
+                connection.id,
+                connection.tool_stream_revision,
+                &memo,
+            )
+            .await;
             let chunk = chunk.map_err(|e| e.to_string())?;
             sender
                 .send(WriterCmd::send(BridgeServerMessage::CompletionChunk {

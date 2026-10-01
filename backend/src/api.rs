@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use futures::StreamExt;
 use http_body_util::BodyExt;
 use openwebide_agent::AgentConfig;
 use openwebide_core::{
@@ -292,7 +293,30 @@ pub async fn update_connection(
     validate_context_limit(connection.context_limit)?;
     connection.id = id;
     state.store.update_connection(&connection).await?;
+    let connection = state.store.get_connection(id).await?;
     Ok(json_response(200, &connection))
+}
+
+pub async fn set_tool_stream_unsupported(
+    req: Request,
+    state: &AppState,
+    path: &str,
+) -> Result<JsonResp, ApiError> {
+    let _ = current_user_id(state)?;
+    let root = path
+        .strip_suffix("/tool-stream-unsupported")
+        .ok_or_else(|| ApiError::bad_request("invalid connection route"))?;
+    let id = path_id(root, "/api/connections")?;
+    #[derive(Deserialize)]
+    struct MemoBody {
+        tool_stream_revision: i64,
+    }
+    let body: MemoBody = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
+    state
+        .store
+        .set_tool_stream_unsupported(id, body.tool_stream_revision)
+        .await?;
+    Ok(json_response(200, &json!({})))
 }
 
 pub async fn delete_connection(state: &AppState, path: &str) -> Result<JsonResp, ApiError> {
@@ -983,7 +1007,10 @@ async fn build_run_plan(
         None => None,
     };
     let system_prompt = Some(with_temporal_context(system_prompt, now()));
-    let history = state.store.list_messages(session_id).await?;
+    let history = openwebide_core::tool_history(
+        state.store.list_messages(session_id).await?,
+        &state.store.list_tool_steps(session_id).await?,
+    );
     let full_content = match &send.editor_context {
         Some(ctx) => format!("{}{}", ctx.format_prompt_injection(), send.content),
         None => send.content,
@@ -1054,14 +1081,15 @@ pub async fn send_session_message(
         .await?;
     let mut request = plan.request;
     request.messages.push(user_message.clone());
-    let provider = Provider::for_connection_with_memo(
-        &plan.connection,
-        SpinHttpClient,
-        ToolStreamMemo::default(),
-    );
+    let memo = ToolStreamMemo::new(plan.connection.tool_stream_unsupported);
+    let connection_id = plan.connection.id;
+    let tool_stream_revision = plan.connection.tool_stream_revision;
+    let provider =
+        Provider::for_connection_with_memo(&plan.connection, SpinHttpClient, memo.clone());
     let store = Arc::new(state.store);
     let cancel = CancelFlag::new(store.clone(), session_id);
     let gate = PermissionPoller::new(store.clone(), session_id);
+    let memo_store = store.clone();
     let stream = if let RunKind::Agent { project_path } = plan.kind {
         agent_stream(
             store.clone(),
@@ -1087,7 +1115,22 @@ pub async fn send_session_message(
         .status(200)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
-        .body(box_body(SseBody::new(stream)))
+        .body(box_body(SseBody::new(Box::pin(stream.then(
+            move |event| {
+                let store = memo_store.clone();
+                let memo = memo.clone();
+                async move {
+                    if memo.take_unrecorded()
+                        && let Err(error) = store
+                            .set_tool_stream_unsupported(connection_id, tool_stream_revision)
+                            .await
+                    {
+                        eprintln!("failed to save streamed-tools memo: {error}");
+                    }
+                    event
+                }
+            },
+        )))))
         .expect("valid status and headers"))
 }
 
@@ -1141,9 +1184,19 @@ pub async fn chat_tools(req: Request, state: &AppState) -> Result<JsonResp, ApiE
     let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let mut request: ChatRequest = parse_json(body)?;
     let connection = state.store.get_connection(request.connection_id).await?;
-    let provider = Provider::for_connection(&connection, SpinHttpClient);
+    let memo = ToolStreamMemo::new(connection.tool_stream_unsupported);
+    let provider = Provider::for_connection_with_memo(&connection, SpinHttpClient, memo.clone());
     request.system_prompt = Some(with_temporal_context(request.system_prompt, now()));
-    let response = provider.chat_tools(&request).await?;
+    let response = provider.chat_tools(&request).await;
+    if memo.take_unrecorded()
+        && let Err(error) = state
+            .store
+            .set_tool_stream_unsupported(connection.id, connection.tool_stream_revision)
+            .await
+    {
+        eprintln!("failed to save streamed-tools memo: {error}");
+    }
+    let response = response?;
     Ok(json_response(200, &response))
 }
 
@@ -1153,6 +1206,8 @@ struct PersistMessageBody {
     content: String,
     #[serde(default)]
     usage: Option<TurnTelemetry>,
+    #[serde(default)]
+    tool_calls: Option<Vec<openwebide_core::ToolCall>>,
 }
 
 pub async fn persist_message(
@@ -1167,7 +1222,14 @@ pub async fn persist_message(
     let msg: PersistMessageBody = parse_json(body)?;
     let message = state
         .store
-        .insert_message_with_usage(id, msg.role, &msg.content, now(), msg.usage.as_ref())
+        .insert_interim_message(
+            id,
+            msg.role,
+            &msg.content,
+            now(),
+            msg.usage.as_ref(),
+            msg.tool_calls.as_deref(),
+        )
         .await?;
     Ok(json_response(201, &message))
 }
@@ -1299,6 +1361,179 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_plan_rebuilds_tool_history_and_falls_back_across_gaps() {
+        futures::executor::block_on(async {
+            let store =
+                openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+            store.migrate().await.unwrap();
+            let user = store
+                .insert_user("u", "hash", openwebide_core::UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let connection = store
+                .insert_connection(&NewConnection {
+                    name: "server".into(),
+                    kind: openwebide_core::ProviderKind::LlamaCpp,
+                    base_url: "http://server".into(),
+                    model: None,
+                    context_limit: None,
+                })
+                .await
+                .unwrap();
+            let state = AppState {
+                store,
+                current_user: Some(user.public()),
+            };
+            for (row_count, complete_second) in [(2, true), (2, false), (1, true)] {
+                let session = state
+                    .store
+                    .create_session("s", Some(connection.id), None, None, user.id, 1)
+                    .await
+                    .unwrap();
+                let calls: Vec<_> = (0..2)
+                    .map(|i| openwebide_core::ToolCall {
+                        id: format!("wire-{i}"),
+                        name: "read_file".into(),
+                        arguments: format!("{{\"path\":\"{i}\"}}"),
+                    })
+                    .collect();
+                let interim = state
+                    .store
+                    .insert_interim_message(
+                        session.id,
+                        Role::Assistant,
+                        "checking",
+                        1,
+                        None,
+                        Some(&calls),
+                    )
+                    .await
+                    .unwrap();
+                for i in 0..row_count {
+                    let id = format!("step-{i}");
+                    state
+                        .store
+                        .upsert_tool_step(session.id, interim.id, &id, "read_file", "read", 1)
+                        .await
+                        .unwrap();
+                    if i == 0 || complete_second {
+                        state
+                            .store
+                            .complete_tool_step(session.id, &id, true, &format!("result-{i}"), None)
+                            .await
+                            .unwrap();
+                    }
+                }
+                let plan = build_run_plan(
+                    &state,
+                    user.id,
+                    session.id,
+                    SendMessageBody {
+                        content: "next".into(),
+                        model: None,
+                        editor_context: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let history = plan.request.messages;
+                assert_eq!(history[0].content, "checking");
+                if row_count == 1 {
+                    assert_eq!(history.len(), 1);
+                    assert!(history[0].tool_calls.is_none());
+                } else {
+                    assert_eq!(history.len(), 3);
+                    assert_eq!(history[0].tool_calls.as_ref(), Some(&calls));
+                    for i in 0..2 {
+                        assert_eq!(history[i + 1].role, Role::Tool);
+                        assert_eq!(
+                            history[i + 1].tool_call_id.as_deref(),
+                            Some(calls[i].id.as_str())
+                        );
+                        assert_eq!(
+                            history[i + 1].content,
+                            if i == 1 && !complete_second {
+                                "result not recorded".into()
+                            } else {
+                                format!("result-{i}")
+                            }
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    #[derive(Clone, Default)]
+    struct MemoHttp(std::sync::Arc<std::sync::Mutex<Vec<bool>>>);
+
+    impl openwebide_llm::HttpClient for MemoHttp {
+        async fn get_json(
+            &self,
+            _: &str,
+        ) -> Result<serde_json::Value, openwebide_llm::ProviderError> {
+            unreachable!()
+        }
+        async fn post_json(
+            &self,
+            _: &str,
+            body: &serde_json::Value,
+        ) -> Result<serde_json::Value, openwebide_llm::ProviderError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(body["stream"].as_bool().unwrap());
+            Ok(json!({"choices":[{"message":{"content":"done"}}]}))
+        }
+        fn post_stream(
+            &self,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = Result<Bytes, openwebide_llm::ProviderError>>
+                    + Send
+                    + 'static,
+            >,
+        > {
+            self.0.lock().unwrap().push(true);
+            Box::pin(futures::stream::empty())
+        }
+    }
+
+    #[test]
+    fn persisted_memo_skips_streaming() {
+        futures::executor::block_on(async {
+            let connection = openwebide_core::Connection {
+                id: 1,
+                name: "server".into(),
+                kind: openwebide_core::ProviderKind::LlamaCpp,
+                base_url: "http://server".into(),
+                model: None,
+                enabled: true,
+                context_limit: None,
+                tool_stream_unsupported: true,
+                tool_stream_revision: 0,
+            };
+            let http = MemoHttp::default();
+            let provider = Provider::for_connection(&connection, http.clone());
+            let request = ChatRequest {
+                connection_id: 1,
+                system_prompt: None,
+                model: Some("model".into()),
+                messages: vec![],
+                tools: vec![],
+            };
+            let chunks = provider
+                .chat_tools_stream(&request)
+                .collect::<Vec<_>>()
+                .await;
+            assert!(chunks.iter().all(Result::is_ok));
+            assert_eq!(*http.0.lock().unwrap(), vec![false]);
+        });
+    }
 
     #[test]
     fn run_plan_prepares_chat_and_remote_agent_without_mutations() {

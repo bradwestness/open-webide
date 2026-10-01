@@ -230,11 +230,13 @@ meters and per-connection context limit) is in
 
 Server-side agent runs stream model text token by token over SSE, alongside
 telemetry and tool steps. Text preceding tool calls is persisted as an interim
-assistant message and emitted as an `interim` event; tool steps follow that message
+assistant message with wire tool calls and emitted as an `interim` event; tool steps follow that message
 in the conversation. The same text is included in the assistant tool-call message
 sent back to the model. Tool-call ids use the initiating user message id throughout
 the run, while the display anchor moves to each persisted interim message.
-Local-mode runs use the same loop and persist interim text, but model text still
+History reconstructs tool replies from anchored step summaries; incomplete row sets
+fall back to plain text. Empty interim messages carrying calls are hidden in the UI.
+Local-mode runs use the same loop and persist interim text and calls, but model text still
 arrives per turn through `/api/chat-tools`.
 
 `POST /api/sessions/<id>/run-plan` prepares a run without persisting a message or

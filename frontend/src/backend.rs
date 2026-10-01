@@ -200,6 +200,7 @@ pub trait Backend {
         role: Role,
         content: &'a str,
         usage: Option<&'a TurnTelemetry>,
+        tool_calls: Option<&'a [openwebide_core::ToolCall]>,
     ) -> LocalBoxFuture<'a, Result<ChatMessage, String>>;
     fn model_context<'a>(
         &'a self,
@@ -543,9 +544,10 @@ impl Backend for BackendApi {
         role: Role,
         content: &'a str,
         usage: Option<&'a TurnTelemetry>,
+        tool_calls: Option<&'a [openwebide_core::ToolCall]>,
     ) -> LocalBoxFuture<'a, Result<ChatMessage, String>> {
         Box::pin(BackendApi::persist_message(
-            self, session_id, role, content, usage,
+            self, session_id, role, content, usage, tool_calls,
         ))
     }
     fn model_context<'a>(

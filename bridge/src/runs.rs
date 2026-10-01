@@ -285,6 +285,7 @@ impl RunRegistry {
                     Role::User,
                     &plan.user_content,
                     None,
+                    None,
                 )
                 .await
                 .map_err(|e| (RunRejectCode::PlanFailed, e))?;
@@ -367,6 +368,9 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 },
                 InProcessBridgeClient { dir },
             );
+            let memo = provider.tool_stream_memo();
+            let connection_id = plan.connection.id;
+            let tool_stream_revision = plan.connection.tool_stream_revision;
             let events = openwebide_agent::run(
                 provider,
                 executor,
@@ -376,8 +380,37 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 run.gate.clone(),
                 anchor_id,
             );
+            let events = events.then(|event| async {
+                if let Some(memo) = &memo {
+                    record_tool_stream_memo(
+                        &*backend,
+                        run.owner,
+                        connection_id,
+                        tool_stream_revision,
+                        memo,
+                    )
+                    .await;
+                }
+                event
+            });
             map_agent_events(&run, &*backend, anchor_id, events).await;
         }
+    }
+}
+
+pub(crate) async fn record_tool_stream_memo<B: RunBackend>(
+    backend: &B,
+    user_id: i64,
+    connection_id: i64,
+    tool_stream_revision: i64,
+    memo: &openwebide_llm::ToolStreamMemo,
+) {
+    if memo.take_unrecorded()
+        && let Err(error) = backend
+            .set_tool_stream_unsupported(user_id, connection_id, tool_stream_revision)
+            .await
+    {
+        eprintln!("failed to save streamed-tools memo: {error}");
     }
 }
 
@@ -388,7 +421,14 @@ async fn persist_final<B: RunBackend>(
     usage: Option<&TurnTelemetry>,
 ) {
     match backend
-        .persist_message(run.owner, run.session_id, Role::Assistant, text, usage)
+        .persist_message(
+            run.owner,
+            run.session_id,
+            Role::Assistant,
+            text,
+            usage,
+            None,
+        )
         .await
     {
         Ok(message) => run.emit(RunEvent::Done { message }),
@@ -414,7 +454,7 @@ async fn map_agent_events<B: RunBackend>(
                 last_usage = Some(usage);
                 RunEvent::Telemetry { usage }
             }
-            AgentEvent::TurnText(text) => {
+            AgentEvent::TurnCalls { text, calls } => {
                 let usage = last_usage.take();
                 let message = match backend
                     .persist_message(
@@ -423,6 +463,7 @@ async fn map_agent_events<B: RunBackend>(
                         Role::Assistant,
                         &text,
                         usage.as_ref(),
+                        Some(&calls),
                     )
                     .await
                 {
@@ -436,7 +477,7 @@ async fn map_agent_events<B: RunBackend>(
                         role: Role::Assistant,
                         content: text,
                         created_at: now() as i64,
-                        tool_calls: None,
+                        tool_calls: Some(calls),
                         tool_call_id: None,
                         usage,
                     },

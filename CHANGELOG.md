@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Persist interim tool calls for follow-up history and remember servers that reject streamed tool calls.
+
 - Unify SSE and WebSocket chat events in one shared protocol; deploy frontend and backend together.
 
 - Use the bridge for frontend chat and local completion streaming, with SSE fallback, run resume, and project availability notices.

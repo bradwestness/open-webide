@@ -260,6 +260,9 @@ pub fn Sidebar(
                                 }
                             }}
                         </div>
+                        <Show when=move || conn_edit_id.get().is_some_and(|id| connections.get().iter().any(|connection| connection.id == id && connection.tool_stream_unsupported))>
+                            <div class="form-hint">"Streaming tool calls disabled — this server rejected them. Changing the server URL or provider kind re-checks."</div>
+                        </Show>
                         <div class="form-actions">
                             <button
                                 class="btn send"

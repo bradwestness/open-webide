@@ -25,8 +25,8 @@ use std::sync::{
 use bytes::Bytes;
 use futures::Stream;
 use openwebide_core::{
-    ChatCompletion, ChatRequest, ModelInfo, ProviderKind, ToolDefinition, TurnTelemetry,
-    estimate_chat_request_tokens, estimate_tokens,
+    ChatCompletion, ChatRequest, Connection, ModelInfo, ProviderKind, ToolDefinition,
+    TurnTelemetry, estimate_chat_request_tokens, estimate_tokens,
 };
 use serde_json::json;
 
@@ -50,29 +50,65 @@ pub fn completion_chunks(c: ChatCompletion) -> Vec<ToolStreamChunk> {
 }
 
 #[derive(Clone, Default)]
-pub struct ToolStreamMemo(Arc<AtomicBool>);
+pub struct ToolStreamMemo {
+    unsupported: Arc<AtomicBool>,
+    recorded: Arc<AtomicBool>,
+}
 
 impl ToolStreamMemo {
-    pub(crate) fn unsupported(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+    pub fn new(unsupported: bool) -> Self {
+        Self {
+            unsupported: Arc::new(AtomicBool::new(unsupported)),
+            recorded: Arc::new(AtomicBool::new(unsupported)),
+        }
     }
 
-    pub(crate) fn mark_unsupported(&self) {
-        self.0.store(true, Ordering::Relaxed);
+    pub fn unsupported(&self) -> bool {
+        self.unsupported.load(Ordering::Relaxed)
+    }
+
+    pub fn mark_unsupported(&self) {
+        self.unsupported.store(true, Ordering::Relaxed);
+    }
+
+    /// Claim the newly detected flag once, even when several runs share this memo.
+    pub fn take_unrecorded(&self) -> bool {
+        self.unsupported() && !self.recorded.swap(true, Ordering::Relaxed)
     }
 }
 
 #[derive(Default)]
-pub struct ToolStreamMemos(Mutex<HashMap<(i64, String), ToolStreamMemo>>);
+pub struct ToolStreamMemos(Mutex<HashMap<i64, (ProviderKind, String, i64, ToolStreamMemo)>>);
 
 impl ToolStreamMemos {
-    pub fn get_or_insert(&self, connection_id: i64, base_url: &str) -> ToolStreamMemo {
-        self.0
-            .lock()
-            .unwrap()
-            .entry((connection_id, base_url.to_string()))
-            .or_default()
-            .clone()
+    pub fn get_or_insert(&self, connection: &Connection) -> ToolStreamMemo {
+        let mut memos = self.0.lock().unwrap();
+        let entry = memos.entry(connection.id).or_insert_with(|| {
+            (
+                connection.kind,
+                connection.base_url.clone(),
+                connection.tool_stream_revision,
+                ToolStreamMemo::new(connection.tool_stream_unsupported),
+            )
+        });
+        if entry.2 > connection.tool_stream_revision {
+            return ToolStreamMemo::new(connection.tool_stream_unsupported);
+        }
+        if entry.0 != connection.kind
+            || entry.1 != connection.base_url
+            || entry.2 != connection.tool_stream_revision
+        {
+            *entry = (
+                connection.kind,
+                connection.base_url.clone(),
+                connection.tool_stream_revision,
+                ToolStreamMemo::new(connection.tool_stream_unsupported),
+            );
+        } else if connection.tool_stream_unsupported {
+            entry.3.mark_unsupported();
+            entry.3.recorded.store(true, Ordering::Relaxed);
+        }
+        entry.3.clone()
     }
 }
 
@@ -228,6 +264,10 @@ pub trait HttpClient: Send + Sync {
 
 /// A local-LLM runtime the IDE can list models from and chat with.
 pub trait LlmProvider: Send + Sync {
+    fn tool_stream_memo(&self) -> Option<ToolStreamMemo> {
+        None
+    }
+
     fn kind(&self) -> ProviderKind;
     fn list_models(&self) -> impl Future<Output = Result<Vec<ModelInfo>, ProviderError>> + Send;
     fn chat(
@@ -423,6 +463,44 @@ mod tests {
     use futures::{StreamExt, stream};
 
     use super::*;
+
+    #[test]
+    fn connection_reset_replaces_memo_even_when_url_and_kind_return() {
+        let memos = ToolStreamMemos::default();
+        let mut connection = Connection {
+            id: 7,
+            name: "server".into(),
+            kind: ProviderKind::LlamaCpp,
+            base_url: "http://server-a".into(),
+            model: None,
+            enabled: true,
+            context_limit: None,
+            tool_stream_unsupported: true,
+            tool_stream_revision: 0,
+        };
+        let original = connection.clone();
+        let old_memo = memos.get_or_insert(&connection);
+        assert!(old_memo.unsupported());
+        connection.tool_stream_unsupported = false;
+        connection.tool_stream_revision = 2;
+        let fresh = memos.get_or_insert(&connection);
+        let concurrent = memos.get_or_insert(&connection);
+        assert!(!fresh.unsupported());
+        assert!(!concurrent.unsupported());
+        let stale = memos.get_or_insert(&original);
+        assert!(stale.unsupported());
+        assert!(!memos.get_or_insert(&connection).unsupported());
+        old_memo.mark_unsupported();
+        assert!(!fresh.unsupported());
+        fresh.mark_unsupported();
+        assert!(concurrent.unsupported());
+        assert!(fresh.take_unrecorded());
+        assert!(!concurrent.take_unrecorded());
+        connection.tool_stream_revision = 4;
+        let after_kind_reset = memos.get_or_insert(&connection);
+        assert!(!after_kind_reset.unsupported());
+        assert!(concurrent.unsupported());
+    }
 
     fn byte_stream(chunks: Vec<&[u8]>) -> impl Stream<Item = Result<Bytes, ProviderError>> + Unpin {
         stream::iter(chunks.into_iter().map(|c| Ok(Bytes::from(c.to_vec()))))

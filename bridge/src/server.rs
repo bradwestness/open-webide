@@ -1128,9 +1128,7 @@ async fn handle_websocket<S>(
                     match config
                         .runs
                         .prepare(run, start, &config.workspace_root, backend, |plan| {
-                            let memo = config
-                                .tool_stream_memos
-                                .get_or_insert(plan.connection.id, &plan.connection.base_url);
+                            let memo = config.tool_stream_memos.get_or_insert(&plan.connection);
                             openwebide_llm::registry::Provider::for_connection_with_memo(
                                 &plan.connection,
                                 http,

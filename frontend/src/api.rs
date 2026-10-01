@@ -582,10 +582,11 @@ impl BackendApi {
         role: Role,
         content: &str,
         usage: Option<&TurnTelemetry>,
+        tool_calls: Option<&[openwebide_core::ToolCall]>,
     ) -> Result<ChatMessage, String> {
         self.post(
             &format!("/sessions/{session_id}/messages/persist"),
-            &json!({ "role": role, "content": content, "usage": usage }),
+            &json!({ "role": role, "content": content, "usage": usage, "tool_calls": tool_calls }),
         )
         .await
     }

@@ -28,6 +28,7 @@ pub trait RunBackend: Send + Sync {
         role: Role,
         content: &str,
         usage: Option<&TurnTelemetry>,
+        tool_calls: Option<&[openwebide_core::ToolCall]>,
     ) -> impl Future<Output = Result<ChatMessage, String>> + Send;
     fn upsert_tool_step(
         &self,
@@ -46,6 +47,12 @@ pub trait RunBackend: Send + Sync {
         ok: bool,
         summary: &str,
         diff: Option<&FileDiff>,
+    ) -> impl Future<Output = Result<(), String>> + Send;
+    fn set_tool_stream_unsupported(
+        &self,
+        user_id: i64,
+        connection_id: i64,
+        tool_stream_revision: i64,
     ) -> impl Future<Output = Result<(), String>> + Send;
     fn list_connections(
         &self,
@@ -137,12 +144,13 @@ impl RunBackend for BackendClient {
         role: Role,
         content: &str,
         usage: Option<&TurnTelemetry>,
+        tool_calls: Option<&[openwebide_core::ToolCall]>,
     ) -> Result<ChatMessage, String> {
         self.call(
             user_id,
             "POST",
             &format!("/sessions/{session_id}/messages/persist"),
-            json!({"role":role,"content":content,"usage":usage}),
+            json!({"role":role,"content":content,"usage":usage,"tool_calls":tool_calls}),
         )
         .await
     }
@@ -173,6 +181,22 @@ impl RunBackend for BackendClient {
                 "POST",
                 &format!("/sessions/{session_id}/tool-steps/complete"),
                 json!({"tool_call_id":id,"ok":ok,"result_summary":summary,"diff":diff}),
+            )
+            .await?;
+        Ok(())
+    }
+    async fn set_tool_stream_unsupported(
+        &self,
+        user_id: i64,
+        connection_id: i64,
+        tool_stream_revision: i64,
+    ) -> Result<(), String> {
+        let _: Value = self
+            .call(
+                user_id,
+                "POST",
+                &format!("/connections/{connection_id}/tool-stream-unsupported"),
+                json!({"tool_stream_revision": tool_stream_revision}),
             )
             .await?;
         Ok(())
@@ -214,6 +238,26 @@ impl RunBackend for BackendClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn records_streamed_tools_flag_at_connection_route() {
+        let (url, captured) = crate::http_client::tests::capture(
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        )
+        .await;
+        let client = BackendClient::new(
+            format!("{url}/api"),
+            "shared-secret".into(),
+            ReqwestHttpClient::default(),
+        );
+        client.set_tool_stream_unsupported(42, 7, 3).await.unwrap();
+        let request = captured.await.unwrap().to_ascii_lowercase();
+        assert!(
+            request.starts_with("post /api/connections/7/tool-stream-unsupported http/1.1\r\n")
+        );
+        assert!(request.contains("x-openwebide-user: 42\r\n"));
+        assert!(request.contains("\"tool_stream_revision\":3"));
+    }
 
     #[tokio::test]
     async fn sends_secret_and_acting_user() {

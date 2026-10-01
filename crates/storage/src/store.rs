@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, NewConnection, NewProject,
-    Project, ProviderKind, Role, SystemPrompt, ToolStep, TurnTelemetry, User, UserRole,
+    Project, ProviderKind, Role, SystemPrompt, ToolCall, ToolStep, TurnTelemetry, User, UserRole,
     WorkspaceMode,
 };
 
@@ -340,7 +340,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, kind, base_url, model, enabled, context_limit
+                "SELECT id, name, kind, base_url, model, enabled, context_limit, tool_stream_unsupported, tool_stream_revision
                  FROM connections ORDER BY id",
                 &[],
             )
@@ -352,7 +352,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, kind, base_url, model, enabled, context_limit
+                "SELECT id, name, kind, base_url, model, enabled, context_limit, tool_stream_unsupported, tool_stream_revision
                  FROM connections WHERE id = ?",
                 &[DbValue::Int(id)],
             )
@@ -392,9 +392,15 @@ impl<D: Db> Store<D> {
             .db
             .execute(
                 "UPDATE connections
-                 SET name = ?, kind = ?, base_url = ?, model = ?, enabled = ?, context_limit = ?
+                 SET tool_stream_unsupported = CASE WHEN base_url != ? OR kind != ? THEN 0 ELSE tool_stream_unsupported END,
+                     tool_stream_revision = CASE WHEN base_url != ? OR kind != ? THEN tool_stream_revision + 1 ELSE tool_stream_revision END,
+                     name = ?, kind = ?, base_url = ?, model = ?, enabled = ?, context_limit = ?
                  WHERE id = ?",
                 &[
+                    DbValue::Text(conn.base_url.clone()),
+                    DbValue::Text(conn.kind.as_str().into()),
+                    DbValue::Text(conn.base_url.clone()),
+                    DbValue::Text(conn.kind.as_str().into()),
                     DbValue::Text(conn.name.clone()),
                     DbValue::Text(conn.kind.as_str().into()),
                     DbValue::Text(conn.base_url.clone()),
@@ -413,6 +419,20 @@ impl<D: Db> Store<D> {
         if res.changes == 0 {
             return Err(StorageError::NotFound(format!("connection {}", conn.id)));
         }
+        Ok(())
+    }
+
+    pub async fn set_tool_stream_unsupported(
+        &self,
+        connection_id: i64,
+        tool_stream_revision: i64,
+    ) -> Result<(), StorageError> {
+        self.db
+            .execute(
+                "UPDATE connections SET tool_stream_unsupported = 1 WHERE id = ? AND tool_stream_revision = ?",
+                &[DbValue::Int(connection_id), DbValue::Int(tool_stream_revision)],
+            )
+            .await?;
         Ok(())
     }
 
@@ -801,7 +821,7 @@ impl<D: Db> Store<D> {
             .db
             .execute(
                 "SELECT id, session_id, role, content, created_at,
-                        prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated
+                        prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated, tool_calls
                  FROM messages WHERE session_id = ? ORDER BY id",
                 &[DbValue::Int(session_id)],
             )
@@ -830,13 +850,30 @@ impl<D: Db> Store<D> {
         created_at: i64,
         usage: Option<&TurnTelemetry>,
     ) -> Result<ChatMessage, StorageError> {
+        self.insert_interim_message(session_id, role, content, created_at, usage, None)
+            .await
+    }
+
+    pub async fn insert_interim_message(
+        &self,
+        session_id: i64,
+        role: Role,
+        content: &str,
+        created_at: i64,
+        usage: Option<&TurnTelemetry>,
+        tool_calls: Option<&[ToolCall]>,
+    ) -> Result<ChatMessage, StorageError> {
+        let calls_json = tool_calls
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| StorageError::InvalidValue(e.to_string()))?;
         let res = self
             .db
             .execute(
                 "INSERT INTO messages
                      (session_id, role, content, created_at,
-                      prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                      prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated, tool_calls)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 &[
                     DbValue::Int(session_id),
                     DbValue::Text(role.as_str().into()),
@@ -854,6 +891,7 @@ impl<D: Db> Store<D> {
                     usage
                         .map(|u| DbValue::Int(u.estimated as i64))
                         .unwrap_or(DbValue::Null),
+                    calls_json.map(DbValue::Text).unwrap_or(DbValue::Null),
                 ],
             )
             .await?;
@@ -863,7 +901,7 @@ impl<D: Db> Store<D> {
             role,
             content: content.into(),
             created_at,
-            tool_calls: None,
+            tool_calls: tool_calls.map(<[ToolCall]>::to_vec),
             tool_call_id: None,
             usage: usage.copied(),
         })
@@ -1161,6 +1199,8 @@ fn connection_from_row(row: &QueryRow) -> Result<Connection, StorageError> {
         model: row.get_text_opt(4).map(str::to_string),
         enabled: row.get_int(5)? != 0,
         context_limit: row.get_int_opt(6).filter(|&n| n > 0).map(|n| n as usize),
+        tool_stream_unsupported: row.get_int(7)? != 0,
+        tool_stream_revision: row.get_int(8)?,
     })
 }
 
@@ -1241,7 +1281,11 @@ fn message_from_row(row: &QueryRow) -> Result<ChatMessage, StorageError> {
             .ok_or_else(|| StorageError::InvalidValue(format!("unknown role: {role}")))?,
         content: row.get_text(3)?.to_string(),
         created_at: row.get_int(4)?,
-        tool_calls: None,
+        tool_calls: row
+            .get_text_opt(9)
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| StorageError::InvalidValue(e.to_string()))?,
         tool_call_id: None,
         usage,
     })
@@ -1297,6 +1341,164 @@ mod tests {
                 .unwrap()
                 .id
         })
+    }
+
+    #[test]
+    fn interim_calls_round_trip_and_migrations_replay() {
+        block_on(async {
+            let db = RusqliteDb::open_in_memory().unwrap();
+            migrations::apply_through(&db, 13).await.unwrap();
+            migrations::apply_through(&db, 16).await.unwrap();
+            migrations::apply_through(&db, 16).await.unwrap();
+            let store = Store::new(db);
+            store.migrate().await.unwrap();
+            let user = store
+                .insert_user("u", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let session = store
+                .create_session("s", None, None, None, user.id, 1)
+                .await
+                .unwrap();
+            let plain = store
+                .insert_message(session.id, Role::Assistant, "plain", 1)
+                .await
+                .unwrap();
+            let calls = vec![ToolCall {
+                id: "wire-id".into(),
+                name: "read_file".into(),
+                arguments: "{\"path\":\"a\"}".into(),
+            }];
+            let interim = store
+                .insert_interim_message(session.id, Role::Assistant, "", 2, None, Some(&calls))
+                .await
+                .unwrap();
+            assert_eq!(interim.tool_calls.as_ref(), Some(&calls));
+            assert_eq!(
+                store.list_messages(session.id).await.unwrap(),
+                vec![plain, interim]
+            );
+            assert!(
+                store.list_messages(session.id).await.unwrap()[0]
+                    .tool_calls
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    fn streamed_tools_flag_resets_only_for_server_or_kind_changes() {
+        let store = test_store();
+        block_on(async {
+            let mut connection = store
+                .insert_connection(&NewConnection {
+                    name: "server".into(),
+                    kind: ProviderKind::LlamaCpp,
+                    base_url: "http://server".into(),
+                    model: None,
+                    context_limit: None,
+                })
+                .await
+                .unwrap();
+            assert!(!connection.tool_stream_unsupported);
+            store
+                .set_tool_stream_unsupported(connection.id, connection.tool_stream_revision)
+                .await
+                .unwrap();
+            connection.name = "renamed".into();
+            store.update_connection(&connection).await.unwrap();
+            assert!(
+                store
+                    .get_connection(connection.id)
+                    .await
+                    .unwrap()
+                    .tool_stream_unsupported
+            );
+            assert!(store.list_connections().await.unwrap()[0].tool_stream_unsupported);
+            connection.base_url = "http://new-server".into();
+            store.update_connection(&connection).await.unwrap();
+            assert!(
+                !store
+                    .get_connection(connection.id)
+                    .await
+                    .unwrap()
+                    .tool_stream_unsupported
+            );
+            connection = store.get_connection(connection.id).await.unwrap();
+            store
+                .set_tool_stream_unsupported(connection.id, connection.tool_stream_revision)
+                .await
+                .unwrap();
+            connection.kind = ProviderKind::Ollama;
+            store.update_connection(&connection).await.unwrap();
+            assert!(
+                !store
+                    .get_connection(connection.id)
+                    .await
+                    .unwrap()
+                    .tool_stream_unsupported
+            );
+        });
+    }
+
+    #[test]
+    fn stale_stream_detection_is_ignored_after_connection_resets() {
+        let store = test_store();
+        block_on(async {
+            let original = store
+                .insert_connection(&NewConnection {
+                    name: "server".into(),
+                    kind: ProviderKind::LlamaCpp,
+                    base_url: "http://server-a".into(),
+                    model: None,
+                    context_limit: None,
+                })
+                .await
+                .unwrap();
+            let mut connection = original.clone();
+            for change_kind in [false, true] {
+                let before = store.get_connection(connection.id).await.unwrap();
+                if change_kind {
+                    connection.kind = ProviderKind::Ollama;
+                } else {
+                    connection.base_url = "http://server-b".into();
+                }
+                store.update_connection(&connection).await.unwrap();
+                store
+                    .set_tool_stream_unsupported(before.id, before.tool_stream_revision)
+                    .await
+                    .unwrap();
+                let replacement = store.get_connection(connection.id).await.unwrap();
+                assert!(!replacement.tool_stream_unsupported);
+                assert_eq!(
+                    replacement.tool_stream_revision,
+                    before.tool_stream_revision + 1
+                );
+                connection.base_url = original.base_url.clone();
+                connection.kind = original.kind;
+                store.update_connection(&connection).await.unwrap();
+                store
+                    .set_tool_stream_unsupported(before.id, before.tool_stream_revision)
+                    .await
+                    .unwrap();
+                let restored = store.get_connection(connection.id).await.unwrap();
+                assert!(!restored.tool_stream_unsupported);
+                assert_eq!(
+                    restored.tool_stream_revision,
+                    before.tool_stream_revision + 2
+                );
+                store
+                    .set_tool_stream_unsupported(restored.id, restored.tool_stream_revision)
+                    .await
+                    .unwrap();
+                connection.name = "renamed".into();
+                connection.tool_stream_revision = 0;
+                store.update_connection(&connection).await.unwrap();
+                let renamed = store.get_connection(connection.id).await.unwrap();
+                assert!(renamed.tool_stream_unsupported);
+                assert_eq!(renamed.tool_stream_revision, restored.tool_stream_revision);
+            }
+        });
     }
 
     #[test]

@@ -476,13 +476,15 @@ pub async fn run_local_agent(
         .list_messages(session_id)
         .await
         .unwrap_or_default();
-    let mut messages: Vec<ChatMessage> = history_entries
-        .into_iter()
-        .filter_map(|item| match item {
-            ConversationEntry::Message(m) => Some(m),
-            ConversationEntry::ToolStep(_) => None,
-        })
-        .collect();
+    let mut history_messages = Vec::new();
+    let mut steps = Vec::new();
+    for entry in history_entries {
+        match entry {
+            ConversationEntry::Message(message) => history_messages.push(message),
+            ConversationEntry::ToolStep(step) => steps.push(step),
+        }
+    }
+    let mut messages = openwebide_core::tool_history(history_messages, &steps);
 
     // 2. Prepend editor context if present and persist user message to backend store
     let full_content = match &editor_context {
@@ -491,7 +493,7 @@ pub async fn run_local_agent(
     };
     let user_message = api
         .with_value(Clone::clone)
-        .persist_message(session_id, Role::User, &full_content, None)
+        .persist_message(session_id, Role::User, &full_content, None, None)
         .await?;
     on_event(RunEvent::Message {
         message: user_message.clone(),
@@ -536,11 +538,17 @@ pub async fn run_local_agent(
     while let Some(event) = stream.next().await {
         match event {
             AgentEvent::TextDelta(delta) => on_event(RunEvent::Delta { content: delta }),
-            AgentEvent::TurnText(text) => {
+            AgentEvent::TurnCalls { text, calls } => {
                 let usage = last_usage.take();
                 let message = api
                     .with_value(Clone::clone)
-                    .persist_message(session_id, Role::Assistant, &text, usage.as_ref())
+                    .persist_message(
+                        session_id,
+                        Role::Assistant,
+                        &text,
+                        usage.as_ref(),
+                        Some(&calls),
+                    )
                     .await;
                 let message = match message {
                     Ok(message) => {
@@ -553,7 +561,7 @@ pub async fn run_local_agent(
                         role: Role::Assistant,
                         content: text,
                         created_at: 0,
-                        tool_calls: None,
+                        tool_calls: Some(calls),
                         tool_call_id: None,
                         usage,
                     },
@@ -607,6 +615,7 @@ pub async fn run_local_agent(
                         Role::Assistant,
                         &text,
                         last_usage.take().as_ref(),
+                        None,
                     )
                     .await
                 {

@@ -558,7 +558,9 @@ pub fn ChatPane(
                 <div class="messages tui-stream" node_ref=scroll_ref>
                     <div class="tui-stream-spacer"></div>
                     <For
-                        each=move || messages.get()
+                        each=move || { messages.get().into_iter().filter(|item| {
+                            !matches!(item, ConversationItem::Message(message) if message.role == Role::Assistant && message.content.is_empty() && message.tool_calls.is_some())
+                        }).collect::<Vec<_>>() }
                         key=|item| item_key(item)
                         children=move |item| {
                             let (item_sig, _set_item) = signal(item);

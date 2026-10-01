@@ -210,6 +210,8 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
                         model: model.clone(),
                         enabled,
                         context_limit,
+                        tool_stream_unsupported: false,
+                        tool_stream_revision: 0,
                     };
                     api.with_value(Clone::clone)
                         .update_connection(&updated)

@@ -47,6 +47,12 @@ pub async fn route(req: Request) -> JsonResp {
             ("POST", "/api/auth/logout") => api::logout(req, &state).await,
             ("GET", "/api/connections") => api::list_connections(&state).await,
             ("POST", "/api/connections") => api::create_connection(req, &state).await,
+            ("POST", p)
+                if p.starts_with("/api/connections/")
+                    && p.ends_with("/tool-stream-unsupported") =>
+            {
+                api::set_tool_stream_unsupported(req, &state, p).await
+            }
             ("PUT", p) if p.starts_with("/api/connections/") => {
                 api::update_connection(req, &state, p).await
             }

@@ -260,6 +260,10 @@ fn usage_fields(value: &Value, acc: &mut UsageAcc) {
 }
 
 impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
+    fn tool_stream_memo(&self) -> Option<ToolStreamMemo> {
+        Some(self.tool_stream_memo.clone())
+    }
+
     fn kind(&self) -> ProviderKind {
         ProviderKind::LlamaCpp
     }
@@ -1322,7 +1326,18 @@ mod tests {
     #[test]
     fn tool_stream_retry_sets_shared_memo_and_skips_future_streams() {
         let memos = crate::ToolStreamMemos::default();
-        let memo = memos.get_or_insert(7, BASE);
+        let mut connection = openwebide_core::Connection {
+            id: 7,
+            name: "test".into(),
+            kind: ProviderKind::LlamaCpp,
+            base_url: BASE.into(),
+            model: None,
+            enabled: true,
+            context_limit: None,
+            tool_stream_unsupported: false,
+            tool_stream_revision: 0,
+        };
+        let memo = memos.get_or_insert(&connection);
         let (provider, state) = provider(FakeHttpClient::new());
         let provider = provider.with_tool_stream_memo(memo.clone());
         state.push_stream_error(ProviderError::Http(
@@ -1350,15 +1365,20 @@ mod tests {
             expected
         );
         assert!(memo.unsupported());
-        assert!(memos.get_or_insert(7, BASE).unsupported());
-        assert!(!memos.get_or_insert(8, BASE).unsupported());
-        assert!(!memos.get_or_insert(7, "http://other").unsupported());
+        assert!(memos.get_or_insert(&connection).unsupported());
+        connection.id = 8;
+        assert!(!memos.get_or_insert(&connection).unsupported());
+        connection.id = 7;
+        let mut other = connection.clone();
+        other.base_url = "http://other".into();
+        assert!(!memos.get_or_insert(&other).unsupported());
+        connection.tool_stream_unsupported = true;
         state.push(Ok(value));
         let provider = LlamaCppProvider {
             base_url: provider.base_url,
             model: provider.model,
             http: provider.http,
-            tool_stream_memo: memos.get_or_insert(7, BASE),
+            tool_stream_memo: memos.get_or_insert(&connection),
         };
         assert_eq!(
             tool_items(&provider, &request(None, None))

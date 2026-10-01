@@ -67,6 +67,10 @@ pub struct Connection {
     /// discovery, then [`tui::DEFAULT_CONTEXT_LIMIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_limit: Option<usize>,
+    #[serde(default)]
+    pub tool_stream_unsupported: bool,
+    #[serde(default)]
+    pub tool_stream_revision: i64,
 }
 
 /// Payload for creating a new connection.
@@ -129,8 +133,7 @@ pub struct ChatMessage {
     /// Set by the server on insert; clients may omit it in requests.
     #[serde(default)]
     pub created_at: i64,
-    /// Tool calls this assistant message requested. Transient: set only in
-    /// the in-memory agent loop, never persisted.
+    /// Tool calls this assistant message requested, persisted with their wire ids.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     /// For `role = Tool`: the id of the tool call this result answers.
@@ -329,6 +332,46 @@ pub struct ToolStep {
     pub diff: Option<FileDiff>,
     /// The id of the user message that started this turn.
     pub anchor_message_id: i64,
+}
+
+/// Reconstruct model history from persisted assistant calls and tool-step summaries.
+pub fn tool_history(messages: Vec<ChatMessage>, steps: &[ToolStep]) -> Vec<ChatMessage> {
+    let mut history = Vec::new();
+    for mut message in messages {
+        let matching: Vec<_> = steps
+            .iter()
+            .filter(|step| step.anchor_message_id == message.id)
+            .collect();
+        let calls = if message.role == Role::Assistant {
+            message
+                .tool_calls
+                .take()
+                .filter(|calls| calls.len() == matching.len())
+        } else {
+            None
+        };
+        message.tool_calls = calls.clone();
+        let session_id = message.session_id;
+        history.push(message);
+        if let Some(calls) = calls {
+            for (call, step) in calls.into_iter().zip(matching) {
+                history.push(ChatMessage {
+                    id: 0,
+                    session_id,
+                    role: Role::Tool,
+                    content: step
+                        .result_summary
+                        .clone()
+                        .unwrap_or_else(|| "result not recorded".into()),
+                    created_at: 0,
+                    tool_calls: None,
+                    tool_call_id: Some(call.id),
+                    usage: None,
+                });
+            }
+        }
+    }
+    history
 }
 
 /// One item in a session's persisted conversation, in the order it occurred:

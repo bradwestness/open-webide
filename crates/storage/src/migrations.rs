@@ -6,6 +6,10 @@
 //! whose version is newer than this build's [`SCHEMA_VERSION`] refuses to
 //! start (a rollback deploy fails loudly).
 //!
+//! Latest steps:
+//! - 14: `add_message_tool_calls` persists interim wire calls.
+//! - 15: `add_connection_tool_stream_unsupported` persists the streamed-tools memo.
+//!
 //! Rules for changing the schema:
 //! - Append a new numbered step at the end of [`apply_step`] and bump
 //!   [`SCHEMA_VERSION`].
@@ -17,7 +21,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 16;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -126,6 +130,9 @@ async fn apply_step<D: Db>(
         11 => rewrite_docker_workspace_paths(db, probe).await,
         12 => create_login_failures(db).await,
         13 => add_user_token_epoch(db).await,
+        14 => add_message_tool_calls(db).await,
+        15 => add_connection_tool_stream_unsupported(db).await,
+        16 => add_connection_tool_stream_revision(db).await,
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),
     }
 }
@@ -455,6 +462,54 @@ async fn add_user_token_epoch<D: Db>(db: &D) -> Result<(), StorageError> {
     if res.rows.is_empty() {
         db.execute(
             "ALTER TABLE users ADD COLUMN token_epoch INTEGER NOT NULL DEFAULT 0",
+            &[],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn add_message_tool_calls<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('messages') WHERE name = 'tool_calls'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute("ALTER TABLE messages ADD COLUMN tool_calls TEXT", &[])
+            .await?;
+    }
+    Ok(())
+}
+
+async fn add_connection_tool_stream_unsupported<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('connections') WHERE name = 'tool_stream_unsupported'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE connections ADD COLUMN tool_stream_unsupported INTEGER NOT NULL DEFAULT 0",
+            &[],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn add_connection_tool_stream_revision<D: Db>(db: &D) -> Result<(), StorageError> {
+    let res = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('connections') WHERE name = 'tool_stream_revision'",
+            &[],
+        )
+        .await?;
+    if res.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE connections ADD COLUMN tool_stream_revision INTEGER NOT NULL DEFAULT 0",
             &[],
         )
         .await?;

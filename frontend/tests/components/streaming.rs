@@ -65,3 +65,52 @@ async fn interim_text_renders_above_tool_and_final_reply_below() {
     assert_eq!(text.matches("Checking the file").count(), 1);
     assert_eq!(text.matches("Everything is ready").count(), 1);
 }
+
+#[wasm_bindgen_test]
+async fn empty_interim_with_calls_is_hidden_but_text_interim_renders() {
+    use openwebide_core::ConversationEntry;
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_connection();
+        state.seed_session();
+        let mut empty = message(8, Role::Assistant, "");
+        empty.tool_calls = Some(vec![openwebide_core::ToolCall {
+            id: "wire".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        }]);
+        let mut text = empty.clone();
+        text.id = 9;
+        text.content = "Checking the file".into();
+        state.fake.messages.borrow_mut().insert(
+            1,
+            vec![
+                ConversationEntry::Message(empty),
+                ConversationEntry::Message(text),
+            ],
+        );
+        chat_view(state)
+    });
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Checking the file")
+    );
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-assistant")
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-assistant ~ .tui-assistant")
+            .unwrap()
+            .is_none()
+    );
+}

@@ -19,7 +19,11 @@ pub enum Provider<C: HttpClient> {
 
 impl<C: HttpClient> Provider<C> {
     pub fn for_connection(conn: &Connection, http: C) -> Self {
-        Self::for_connection_with_memo(conn, http, ToolStreamMemo::default())
+        Self::for_connection_with_memo(
+            conn,
+            http,
+            ToolStreamMemo::new(conn.tool_stream_unsupported),
+        )
     }
 
     pub fn for_connection_with_memo(conn: &Connection, http: C, memo: ToolStreamMemo) -> Self {
@@ -40,6 +44,13 @@ impl<C: HttpClient> Provider<C> {
 }
 
 impl<C: HttpClient + 'static> LlmProvider for Provider<C> {
+    fn tool_stream_memo(&self) -> Option<ToolStreamMemo> {
+        match self {
+            Self::LlamaCpp(provider) => provider.tool_stream_memo(),
+            Self::Ollama(_) => None,
+        }
+    }
+
     fn kind(&self) -> ProviderKind {
         match self {
             Self::Ollama(p) => p.kind(),

@@ -42,6 +42,7 @@ impl RunBackend for FakeBackend {
         role: Role,
         content: &str,
         usage: Option<&TurnTelemetry>,
+        tool_calls: Option<&[openwebide_core::ToolCall]>,
     ) -> Result<ChatMessage, String> {
         if (content == "final" && self.fail_final.load(Ordering::SeqCst))
             || (content == "interim" && self.fail_interim.load(Ordering::SeqCst))
@@ -56,7 +57,7 @@ impl RunBackend for FakeBackend {
             content: content.into(),
             usage: usage.copied(),
             created_at: 1,
-            tool_calls: None,
+            tool_calls: tool_calls.map(<[ToolCall]>::to_vec),
             tool_call_id: None,
         };
         messages.push(message.clone());
@@ -96,6 +97,17 @@ impl RunBackend for FakeBackend {
             .push(format!("complete:{id}"));
         Ok(())
     }
+    async fn set_tool_stream_unsupported(
+        &self,
+        user_id: i64,
+        connection_id: i64,
+        tool_stream_revision: i64,
+    ) -> Result<(), String> {
+        self.operations.lock().unwrap().push(format!(
+            "memo:{user_id}:{connection_id}:{tool_stream_revision}"
+        ));
+        Ok(())
+    }
     async fn list_connections(&self, _user_id: i64) -> Result<Vec<Connection>, String> {
         Ok(vec![])
     }
@@ -131,6 +143,8 @@ fn plan(kind: RunKind, content: &str) -> RunPlan {
             model: Some("model".into()),
             enabled: true,
             context_limit: None,
+            tool_stream_unsupported: false,
+            tool_stream_revision: 0,
         },
     }
 }
@@ -302,7 +316,10 @@ async fn agent_mapping_persists_in_order_and_reanchors_with_last_usage() {
                 diff: None,
             },
             AgentEvent::Telemetry(first),
-            AgentEvent::TurnText("interim".into()),
+            AgentEvent::TurnCalls {
+                text: "interim".into(),
+                calls: vec![],
+            },
             AgentEvent::PermissionRequest {
                 id: "b".into(),
                 name: "write_file".into(),
@@ -360,7 +377,10 @@ async fn mapping_cancel_error_and_failed_persistence() {
         &backend,
         7,
         stream::iter(vec![
-            AgentEvent::TurnText("interim".into()),
+            AgentEvent::TurnCalls {
+                text: "interim".into(),
+                calls: vec![],
+            },
             AgentEvent::ToolCall {
                 id: "t".into(),
                 name: "read_file".into(),
@@ -546,7 +566,10 @@ async fn cancel_while_agent_waits_for_permission_emits_cancelled() {
     run.cancel.cancel();
     finished(&run).await;
     assert_eq!(events(&run).last(), Some(&RunEvent::Cancelled));
-    assert_eq!(backend.messages.lock().unwrap().len(), 1);
+    let messages = backend.messages.lock().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert!(messages[1].content.is_empty());
+    assert!(messages[1].tool_calls.is_some());
     assert!(!dir.path().join("a").exists());
 }
 
@@ -789,5 +812,85 @@ async fn agent_body_executes_native_tools_and_persists_interim_then_final() {
         events(&run)
             .iter()
             .any(|event| matches!(event, RunEvent::ToolResult { ok: true, .. }))
+    );
+}
+
+#[tokio::test]
+async fn seeded_memo_and_new_detection_record_only_once() {
+    let mut connection = plan(RunKind::Chat, "test").connection;
+    connection.kind = ProviderKind::LlamaCpp;
+    connection.tool_stream_unsupported = true;
+    let memos = openwebide_llm::ToolStreamMemos::default();
+    let backend = FakeBackend::default();
+    let seeded = memos.get_or_insert(&connection);
+    assert!(seeded.unsupported());
+    record_tool_stream_memo(
+        &backend,
+        7,
+        connection.id,
+        connection.tool_stream_revision,
+        &seeded,
+    )
+    .await;
+    assert!(backend.operations.lock().unwrap().is_empty());
+    connection.base_url = "http://new-server".into();
+    connection.tool_stream_revision += 1;
+    connection.tool_stream_unsupported = false;
+    let fresh = memos.get_or_insert(&connection);
+    assert!(!fresh.unsupported());
+    fresh.mark_unsupported();
+    record_tool_stream_memo(
+        &backend,
+        7,
+        connection.id,
+        connection.tool_stream_revision,
+        &fresh,
+    )
+    .await;
+    record_tool_stream_memo(
+        &backend,
+        7,
+        connection.id,
+        connection.tool_stream_revision,
+        &memos.get_or_insert(&connection),
+    )
+    .await;
+    assert_eq!(*backend.operations.lock().unwrap(), vec!["memo:7:1:1"]);
+    connection.kind = ProviderKind::Ollama;
+    assert!(!memos.get_or_insert(&connection).unsupported());
+}
+
+#[tokio::test]
+async fn empty_interim_persists_wire_calls_before_step_rows() {
+    let backend = FakeBackend::default();
+    let run = Run::new("r".into(), 1, 2, 4096);
+    let calls = vec![ToolCall {
+        id: "wire-id".into(),
+        name: "read_file".into(),
+        arguments: "{}".into(),
+    }];
+    map_agent_events(
+        &run,
+        &backend,
+        7,
+        stream::iter([
+            AgentEvent::TurnCalls {
+                text: String::new(),
+                calls: calls.clone(),
+            },
+            AgentEvent::ToolCall {
+                id: "a7t1c0".into(),
+                name: "read_file".into(),
+                summary: "read".into(),
+            },
+        ]),
+    )
+    .await;
+    let messages = backend.messages.lock().unwrap();
+    assert_eq!(messages[0].content, "");
+    assert_eq!(messages[0].tool_calls.as_ref(), Some(&calls));
+    assert_eq!(
+        *backend.operations.lock().unwrap(),
+        vec!["message:10", "step:10:a7t1c0"]
     );
 }

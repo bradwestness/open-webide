@@ -167,6 +167,8 @@ impl Backend for FakeBackend {
                 model: model.map(str::to_string),
                 enabled: true,
                 context_limit,
+                tool_stream_unsupported: false,
+                tool_stream_revision: 0,
             };
             self.connections.borrow_mut().push(connection.clone());
             Ok(connection)
@@ -743,6 +745,7 @@ impl Backend for FakeBackend {
         role: Role,
         content: &'a str,
         usage: Option<&'a TurnTelemetry>,
+        tool_calls: Option<&'a [openwebide_core::ToolCall]>,
     ) -> LocalBoxFuture<'a, Result<ChatMessage, String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {
@@ -754,7 +757,7 @@ impl Backend for FakeBackend {
                 role,
                 content: content.into(),
                 created_at: 0,
-                tool_calls: None,
+                tool_calls: tool_calls.map(<[openwebide_core::ToolCall]>::to_vec),
                 tool_call_id: None,
                 usage: usage.cloned(),
             };
@@ -866,7 +869,7 @@ impl Backend for FakeBackend {
                     .or_default()
                     .push(ConversationEntry::Message(message.clone()));
             } else {
-                self.persist_message(session_id, Role::User, content, None)
+                self.persist_message(session_id, Role::User, content, None, None)
                     .await?;
             }
             let mut assistant = None;
@@ -895,7 +898,7 @@ impl Backend for FakeBackend {
                     .or_default()
                     .push(ConversationEntry::Message(message));
             } else if !interrupted && !deltas.is_empty() {
-                self.persist_message(session_id, Role::Assistant, &deltas, None)
+                self.persist_message(session_id, Role::Assistant, &deltas, None, None)
                     .await?;
             }
             Ok(())
