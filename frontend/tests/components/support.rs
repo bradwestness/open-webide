@@ -35,6 +35,7 @@ pub struct TestState {
     pub settings: SettingsState,
     pub ui: UiState,
     pub git: GitState,
+    pub bridge: RwSignal<Option<openwebide_frontend::bridge::BridgeConn>, LocalStorage>,
 }
 
 impl TestState {
@@ -65,6 +66,7 @@ impl TestState {
             settings,
             ui,
             git,
+            bridge: RwSignal::new_local(None),
         }
     }
 
@@ -163,6 +165,7 @@ pub fn chat_view(state: TestState) -> impl IntoView {
         ui: state.ui,
         git: state.git,
         bridge_credentials: StoredValue::new(BridgeCredentials::new(state.api)),
+        bridge: state.bridge,
         request_open: Callback::new(|_| ()),
         refresh_git: Callback::new(|_| ()),
         on_sync_click: Callback::new(|_| ()),

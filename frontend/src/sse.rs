@@ -42,6 +42,38 @@ pub enum SseEvent {
     Error(String),
 }
 
+impl From<openwebide_core::RunEvent> for SseEvent {
+    fn from(event: openwebide_core::RunEvent) -> Self {
+        use openwebide_core::RunEvent;
+        match event {
+            RunEvent::Message { message } => Self::Message(message),
+            RunEvent::Delta { content } => Self::Delta(content),
+            RunEvent::Interim { message } => Self::Interim(message),
+            RunEvent::ToolCall { id, name, summary } => Self::ToolCall { id, name, summary },
+            RunEvent::PermissionRequest { id, name, summary } => {
+                Self::PermissionRequest { id, name, summary }
+            }
+            RunEvent::ToolResult {
+                id,
+                name,
+                ok,
+                summary,
+                diff,
+            } => Self::ToolResult {
+                id,
+                name,
+                ok,
+                summary,
+                diff,
+            },
+            RunEvent::Telemetry { usage } => Self::Telemetry(usage),
+            RunEvent::Done { message } => Self::Done(message),
+            RunEvent::Cancelled => Self::Cancelled,
+            RunEvent::Error { message } => Self::Error(message),
+        }
+    }
+}
+
 /// Parse one SSE frame (`event: <name>\ndata: <json>\n\n`) into an [`SseEvent`].
 pub fn parse_frame(frame: &str) -> Option<SseEvent> {
     let mut event = "message";
@@ -115,5 +147,129 @@ impl FrameBuffer {
 impl Default for FrameBuffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openwebide_core::{Role, RunEvent};
+
+    #[test]
+    fn typed_run_events_match_sse_events() {
+        let message = ChatMessage {
+            id: 2,
+            session_id: 1,
+            role: Role::Assistant,
+            content: "reply".into(),
+            created_at: 0,
+            tool_calls: None,
+            tool_call_id: None,
+            usage: None,
+        };
+        let pairs = vec![
+            (
+                RunEvent::Message {
+                    message: message.clone(),
+                },
+                SseEvent::Message(message.clone()),
+            ),
+            (
+                RunEvent::Delta {
+                    content: "a".into(),
+                },
+                SseEvent::Delta("a".into()),
+            ),
+            (
+                RunEvent::Interim {
+                    message: message.clone(),
+                },
+                SseEvent::Interim(message.clone()),
+            ),
+            (
+                RunEvent::Done {
+                    message: message.clone(),
+                },
+                SseEvent::Done(message),
+            ),
+            (
+                RunEvent::ToolCall {
+                    id: "t".into(),
+                    name: "read_file".into(),
+                    summary: "file".into(),
+                },
+                SseEvent::ToolCall {
+                    id: "t".into(),
+                    name: "read_file".into(),
+                    summary: "file".into(),
+                },
+            ),
+            (
+                RunEvent::PermissionRequest {
+                    id: "t".into(),
+                    name: "write_file".into(),
+                    summary: "file".into(),
+                },
+                SseEvent::PermissionRequest {
+                    id: "t".into(),
+                    name: "write_file".into(),
+                    summary: "file".into(),
+                },
+            ),
+            (
+                RunEvent::ToolResult {
+                    id: "t".into(),
+                    name: "write_file".into(),
+                    ok: false,
+                    summary: "denied".into(),
+                    diff: Some(FileDiff {
+                        path: "file".into(),
+                        old: None,
+                        new: "text".into(),
+                        old_unavailable: false,
+                        backup_path: None,
+                    }),
+                },
+                SseEvent::ToolResult {
+                    id: "t".into(),
+                    name: "write_file".into(),
+                    ok: false,
+                    summary: "denied".into(),
+                    diff: Some(FileDiff {
+                        path: "file".into(),
+                        old: None,
+                        new: "text".into(),
+                        old_unavailable: false,
+                        backup_path: None,
+                    }),
+                },
+            ),
+            (
+                RunEvent::Telemetry {
+                    usage: TurnTelemetry {
+                        prompt_tokens: 3,
+                        completion_tokens: 4,
+                        estimated: true,
+                        eval_duration_ms: 99,
+                    },
+                },
+                SseEvent::Telemetry(TurnTelemetry {
+                    prompt_tokens: 3,
+                    completion_tokens: 4,
+                    estimated: true,
+                    eval_duration_ms: 99,
+                }),
+            ),
+            (RunEvent::Cancelled, SseEvent::Cancelled),
+            (
+                RunEvent::Error {
+                    message: "error".into(),
+                },
+                SseEvent::Error("error".into()),
+            ),
+        ];
+        for (event, expected) in pairs {
+            assert_eq!(SseEvent::from(event), expected);
+        }
     }
 }

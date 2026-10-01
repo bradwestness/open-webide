@@ -221,6 +221,7 @@ pub fn App() -> impl IntoView {
         ui,
         git: git_state,
         bridge_credentials,
+        bridge: bridge_connection,
         request_open,
         refresh_git,
         on_sync_click,
@@ -361,6 +362,12 @@ pub fn App() -> impl IntoView {
                 />
             </Show>
         </div>
+        </Show>
+        <Show when=move || chat_state.notice.get().is_some()>
+            <div class="toast toast-info" role="status">
+                <span class="toast-message">{move || chat_state.notice.get().unwrap_or_default()}</span>
+                <button class="icon-btn toast-close" title="Dismiss" on:click=move |_| chat_state.notice.set(None)>"×"</button>
+            </div>
         </Show>
         <Show when=move || error.get().is_some() fallback=|| ()>
             <div class="toast" role="alert">

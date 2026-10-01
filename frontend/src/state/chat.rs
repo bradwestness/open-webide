@@ -33,6 +33,8 @@ pub struct ChatState {
     pub history_gen: StoredValue<u64>,
     pub skip_history_load: StoredValue<Option<i64>>,
     pub streaming: RwSignal<bool>,
+    pub active_run: RwSignal<Option<(i64, String, u64)>>,
+    pub notice: RwSignal<Option<String>>,
     pub error: RwSignal<Option<String>>,
     pub draft: RwSignal<String>,
     pub show_terminal: RwSignal<bool>,
@@ -94,6 +96,8 @@ impl ChatState {
             history_gen: StoredValue::new(0),
             skip_history_load: StoredValue::new(None),
             streaming: RwSignal::new(false),
+            active_run: RwSignal::new(None),
+            notice: RwSignal::new(None),
             error,
             draft: RwSignal::new(String::new()),
             show_terminal: RwSignal::new(false),
@@ -177,7 +181,11 @@ impl ChatState {
                     self.current_run_anchor.set(Some(msg.id));
                 }
                 self.messages.update(|items| {
-                    items.push(ConversationItem::Message(msg));
+                    if let Some(ConversationItem::Message(existing)) = items.iter_mut().find(|item| matches!(item, ConversationItem::Message(m) if m.id == msg.id)) {
+                        *existing = msg;
+                    } else {
+                        items.push(ConversationItem::Message(msg));
+                    }
                 });
             }
             SseEvent::Delta(delta) => self.messages.update(|items| {

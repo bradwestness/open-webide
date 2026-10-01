@@ -15,3 +15,6 @@ mod support;
 
 #[path = "components/terminal.rs"]
 mod terminal;
+
+#[path = "components/runs.rs"]
+mod runs;

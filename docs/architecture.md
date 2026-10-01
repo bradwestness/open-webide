@@ -182,6 +182,24 @@ Constraints & Device Roles:
 - Keep the modes coherent: remote = files + LLM on the host, local = files +
   LLM on the laptop. A mixed split (remote files, local LLM) is deferred.
 
+### Chat execution and streaming
+
+The frontend shares one authenticated WebSocket connection for terminals, runs, and completions.
+With `hello_ok.runs = true`, remote chat and agent loops execute in the native bridge. The bridge
+loads plans and persists messages and tool steps through backend REST using its shared secret
+`S` and the hello-verified user ID in `x-openwebide-user`; it never forwards the hello token.
+Browser local-mode agent loops still execute against the browser's directory handle, while model
+completions stream over the bridge. Without run support, chat executes in the backend over SSE
+and local-mode completions use `/api/chat-tools`.
+
+Sending waits up to about two seconds for a connecting bridge. Unavailable or unauthorized
+bridges fall back silently. A project unavailable to the bridge shows a notice and falls back;
+busy or failed run plans show an error. Stops and approvals address the active WS run. History
+loads discover running bridge runs and merge snapshots by message and step IDs, including pending
+approvals and live text. Socket reconnects attach using the last received sequence; an unknown
+run clears streaming, reloads history, and adds an interrupted-run notice if no reply was saved.
+Runs survive socket disconnects; a daemon restart loses its in-memory run registry.
+
 ### Virtual File System (VFS) & process execution
 
 To keep the agent completely decoupled from the underlying storage mechanism, file

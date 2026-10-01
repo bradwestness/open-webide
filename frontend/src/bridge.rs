@@ -459,6 +459,12 @@ impl BridgeConn {
                 inner.status.set(BridgeStatus::Legacy);
                 Self::flush_kills(inner);
             }
+            BridgeServerMessage::Error { id, .. } if inner.runs.borrow().contains_key(id) => {
+                let callback = inner.runs.borrow().get(id).cloned();
+                if let Some(callback) = callback {
+                    callback(message);
+                }
+            }
             BridgeServerMessage::RunEvent { run_id, .. }
             | BridgeServerMessage::RunSnapshot { run_id, .. }
             | BridgeServerMessage::RunRejected { run_id, .. } => {

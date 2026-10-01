@@ -70,6 +70,8 @@ impl AuthState {
         chat.local_cancel_flag
             .with_value(|flag| flag.store(true, std::sync::atomic::Ordering::Relaxed));
         chat.streaming.set(false);
+        chat.active_run.set(None);
+        chat.notice.set(None);
         chat.streaming_session.set(None);
 
         self.logout();
@@ -237,6 +239,8 @@ mod tests {
                 created_at: 0,
             }]);
             chat.notify("notice");
+            chat.active_run.set(Some((2, "run".into(), 1)));
+            chat.notice.set(Some("fallback".into()));
             chat.streaming.set(true);
             chat.streaming_session.set(Some(2));
             chat.local_cancel_flag
@@ -302,6 +306,8 @@ mod tests {
             assert!(chat.sessions.get_untracked().is_empty());
             assert!(chat.messages.get_untracked().is_empty());
             assert!(!chat.streaming.get_untracked());
+            assert!(chat.active_run.get_untracked().is_none());
+            assert!(chat.notice.get_untracked().is_none());
             assert!(chat.streaming_session.get_untracked().is_none());
             assert!(
                 chat.local_cancel_flag

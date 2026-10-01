@@ -234,6 +234,8 @@ pub struct RunSnapshot {
     pub items: Vec<RunItem>,
     pub text: String,
     pub telemetry: Option<TurnTelemetry>,
+    #[serde(default)]
+    pub telemetry_after_message_id: Option<i64>,
     pub finished: Option<RunEvent>,
 }
 
@@ -310,7 +312,14 @@ impl RunSnapshot {
                     }
                 }
             }
-            RunEvent::Telemetry { usage } => self.telemetry = Some(*usage),
+            RunEvent::Telemetry { usage } => {
+                self.telemetry = Some(*usage);
+                self.telemetry_after_message_id =
+                    self.items.iter().rev().find_map(|item| match item {
+                        RunItem::Message(message) => Some(message.id),
+                        _ => None,
+                    });
+            }
             RunEvent::Done { .. } | RunEvent::Cancelled | RunEvent::Error { .. } => {
                 self.finished = Some(event.clone())
             }
@@ -370,6 +379,33 @@ impl CommandOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_telemetry_tracks_message_order_for_equal_turn_usage() {
+        let usage = TurnTelemetry {
+            prompt_tokens: 10,
+            completion_tokens: 3,
+            ..Default::default()
+        };
+        let mut snapshot = RunSnapshot::default();
+        let mut first = message();
+        first.id = 7;
+        snapshot.apply(&RunEvent::Message { message: first });
+        snapshot.apply(&RunEvent::Telemetry { usage });
+        assert_eq!(snapshot.telemetry_after_message_id, Some(7));
+        let mut interim = message();
+        interim.id = 8;
+        interim.usage = Some(usage);
+        snapshot.apply(&RunEvent::Interim { message: interim });
+        assert_eq!(snapshot.telemetry_after_message_id, Some(7));
+        snapshot.apply(&RunEvent::Telemetry { usage });
+        assert_eq!(snapshot.telemetry_after_message_id, Some(8));
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert_eq!(
+            serde_json::from_str::<RunSnapshot>(&json).unwrap(),
+            snapshot
+        );
+    }
 
     #[test]
     fn test_bridge_messages_json_roundtrip() {

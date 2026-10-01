@@ -90,6 +90,75 @@ pub struct ToolStepResult {
     pub diff: Option<FileDiff>,
 }
 
+pub fn merge_snapshot(items: &mut Vec<ConversationItem>, snapshot: &openwebide_core::RunSnapshot) {
+    use openwebide_core::RunItem;
+    let placeholder = if matches!(items.last(), Some(ConversationItem::Message(m)) if m.id <= 0 && m.role == Role::Assistant)
+    {
+        items.pop()
+    } else {
+        None
+    };
+    for item in &snapshot.items {
+        match item {
+            RunItem::Message(message) => {
+                if let Some(ConversationItem::Message(existing)) = items
+                    .iter_mut()
+                    .find(|item| matches!(item, ConversationItem::Message(m) if m.id == message.id))
+                {
+                    *existing = message.clone();
+                } else {
+                    items.push(ConversationItem::Message(message.clone()));
+                }
+            }
+            RunItem::Step(step) => {
+                let key = items
+                    .iter()
+                    .find_map(|item| match item {
+                        ConversationItem::ToolStep { id, key, .. } if *id == step.id => Some(*key),
+                        _ => None,
+                    })
+                    .unwrap_or_else(next_item_nonce);
+                let merged = ConversationItem::ToolStep {
+                    key,
+                    id: step.id.clone(),
+                    name: step.name.clone(),
+                    summary: step.summary.clone(),
+                    awaiting_permission: step.awaiting_permission,
+                    result: step.result.as_ref().map(|result| ToolStepResult {
+                        ok: result.ok,
+                        summary: result.summary.clone(),
+                        diff: result.diff.clone(),
+                    }),
+                };
+                if let Some(existing) = items.iter_mut().find(
+                    |item| matches!(item, ConversationItem::ToolStep { id, .. } if *id == step.id),
+                ) {
+                    *existing = merged;
+                } else {
+                    items.push(merged);
+                }
+            }
+        }
+    }
+    if !snapshot.text.is_empty() {
+        let session_id = snapshot
+            .items
+            .iter()
+            .find_map(|item| match item {
+                RunItem::Message(m) => Some(m.session_id),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let mut placeholder =
+            placeholder.unwrap_or_else(|| local_message(session_id, &snapshot.text));
+        if let ConversationItem::Message(message) = &mut placeholder {
+            message.session_id = session_id;
+            message.content.clone_from(&snapshot.text);
+        }
+        items.push(placeholder);
+    }
+}
+
 /// A key for a conversation item that changes when the item's content changes
 /// (a streamed delta, a tool result arriving) so Leptos' `For` re-renders it.
 pub fn item_key(item: &ConversationItem) -> String {
@@ -114,6 +183,67 @@ pub fn item_key(item: &ConversationItem) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshots_upsert_messages_steps_and_live_text_idempotently() {
+        use openwebide_core::{RunItem, RunSnapshot, RunStep, ToolStepResultWire};
+        let mut message = match local_message(1, "before") {
+            ConversationItem::Message(m) => m,
+            _ => unreachable!(),
+        };
+        message.id = 10;
+        let mut items = vec![
+            ConversationItem::Message(message.clone()),
+            ConversationItem::ToolStep {
+                key: 55,
+                id: "t".into(),
+                name: "write_file".into(),
+                summary: "old".into(),
+                awaiting_permission: false,
+                result: None,
+            },
+        ];
+        message.content = "updated".into();
+        let mut snapshot = RunSnapshot {
+            items: vec![
+                RunItem::Message(message.clone()),
+                RunItem::Step(RunStep {
+                    id: "t".into(),
+                    name: "write_file".into(),
+                    summary: "new".into(),
+                    awaiting_permission: true,
+                    result: None,
+                }),
+            ],
+            text: "live".into(),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            merge_snapshot(&mut items, &snapshot);
+            assert_eq!(items.len(), 3);
+            assert!(matches!(&items[0], ConversationItem::Message(m) if m.content == "updated"));
+            assert!(
+                matches!(&items[1], ConversationItem::ToolStep { key: 55, awaiting_permission: true, summary, .. } if summary == "new")
+            );
+            assert!(matches!(&items[2], ConversationItem::Message(m) if m.content == "live"));
+        }
+        if let RunItem::Step(step) = &mut snapshot.items[1] {
+            step.awaiting_permission = false;
+            step.result = Some(ToolStepResultWire {
+                ok: true,
+                summary: "written".into(),
+                diff: None,
+            });
+        }
+        snapshot.text.clear();
+        for _ in 0..2 {
+            merge_snapshot(&mut items, &snapshot);
+            assert_eq!(items.len(), 2);
+            assert!(
+                matches!(&items[1], ConversationItem::ToolStep { key: 55, awaiting_permission: false, result: Some(result), .. } if result.ok)
+            );
+        }
+    }
 
     #[test]
     fn local_messages_get_distinct_keys() {

@@ -32,6 +32,7 @@ pub struct ChatActionContext {
     pub ui: UiState,
     pub git: GitState,
     pub bridge_credentials: StoredValue<BridgeCredentials>,
+    pub bridge: RwSignal<Option<crate::bridge::BridgeConn>, LocalStorage>,
     pub request_open: Callback<String>,
     pub refresh_git: Callback<()>,
     pub on_sync_click: Callback<()>,
@@ -63,13 +64,24 @@ impl ChatActions {
             ui,
             git,
             bridge_credentials,
+            bridge,
             request_open,
             refresh_git,
             on_sync_click,
         } = context;
+        let run_controls = StoredValue::new_local(super::runs::RunControls::default());
         let stop = {
             let local_cancel = chat.local_cancel_flag.get_value();
             Callback::new(move |_| {
+                if let Some((_, run_id, _)) = chat.active_run.get_untracked() {
+                    run_controls.update_value(|controls| {
+                        controls.send(
+                            bridge.get_untracked().as_ref(),
+                            openwebide_core::BridgeClientMessage::RunCancel { run_id },
+                        );
+                    });
+                    return;
+                }
                 local_cancel.store(true, Ordering::Relaxed);
                 // Ask the server to stop the run; the browser abort below can't do it.
                 if let Some(session_id) = chat.streaming_session.get()
@@ -96,6 +108,22 @@ impl ChatActions {
         let permission = {
             let local_permissions = chat.local_permissions.get_value();
             Callback::new(move |(tool_call_id, approved): (String, bool)| {
+                if let Some((_, run_id, _)) = chat.active_run.get_untracked() {
+                    let mut sent = false;
+                    run_controls.update_value(|controls| {
+                        sent = controls.send(
+                            bridge.get_untracked().as_ref(),
+                            openwebide_core::BridgeClientMessage::RunPermission {
+                                run_id,
+                                tool_call_id: tool_call_id.clone(),
+                                approved,
+                            },
+                        );
+                    });
+                    if !sent {
+                        return;
+                    }
+                }
                 if let Ok(mut map) = local_permissions.lock() {
                     map.insert(tool_call_id.clone(), approved);
                 }
@@ -113,6 +141,9 @@ impl ChatActions {
                         *awaiting = false;
                     }
                 });
+                if chat.active_run.get_untracked().is_some() {
+                    return;
+                }
                 if let Some(session_id) = chat.streaming_session.get() {
                     spawn_local(async move {
                         let _ = api
@@ -134,6 +165,44 @@ impl ChatActions {
                 permission.run((tool_call_id, true));
             })
         };
+
+        let apply_stream_event =
+            Callback::new(move |(session_id, event): (i64, crate::sse::SseEvent)| {
+                let run_project_id = chat
+                    .sessions
+                    .get_untracked()
+                    .into_iter()
+                    .find(|session| session.id == session_id)
+                    .and_then(|session| session.project_id);
+                for effect in chat.apply_event_for_session(session_id, event) {
+                    match effect {
+                        ChatEffect::ApprovePermission { id } => {
+                            permission.run((id, true));
+                        }
+                        ChatEffect::ToolDiff(diff) => {
+                            if let Some(project_id) = run_project_id {
+                                workspace.merge_pending(project_id, diff.clone());
+                            }
+                            if chat.active_session.get_untracked() != Some(session_id) {
+                                continue;
+                            }
+                            if projects.active_project.get_untracked() == run_project_id {
+                                if !workspace.dirty.get_untracked() {
+                                    request_open.run(diff.path.clone());
+                                } else {
+                                    chat.notify(format!(
+                                        "Agent edited `{}`; review it with `/diff {}`.",
+                                        diff.path, diff.path
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        let runs =
+            super::runs::RunActions::new(bridge, chat, api, apply_stream_event, run_controls);
+        runs.install_reconnect();
 
         let send = {
             let local_cancel = chat.local_cancel_flag.get_value();
@@ -162,6 +231,7 @@ impl ChatActions {
                 chat.draft.set(String::new());
                 chat.streaming.set(true);
                 chat.error.set(None);
+                chat.notice.set(None);
                 let local_cancel = local_cancel.clone();
                 let local_permissions = local_permissions.clone();
                 spawn_local(async move {
@@ -238,34 +308,7 @@ impl ChatActions {
                         .as_ref()
                         .and_then(|project| projects.local_handles.get().get(&project.id).cloned());
 
-                    let run_project_id = projects.active_project.get_untracked();
-                    let on_event = move |event| {
-                        for effect in chat.apply_event_for_session(session_id, event) {
-                            match effect {
-                                ChatEffect::ApprovePermission { id } => {
-                                    permission.run((id, true));
-                                }
-                                ChatEffect::ToolDiff(diff) => {
-                                    if let Some(project_id) = run_project_id {
-                                        workspace.merge_pending(project_id, diff.clone());
-                                    }
-                                    if chat.active_session.get_untracked() != Some(session_id) {
-                                        continue;
-                                    }
-                                    if projects.active_project.get_untracked() == run_project_id {
-                                        if !workspace.dirty.get_untracked() {
-                                            request_open.run(diff.path.clone());
-                                        } else {
-                                            chat.notify(format!(
-                                                "Agent edited `{}`; review it with `/diff {}`.",
-                                                diff.path, diff.path
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    };
+                    let on_event = move |event| apply_stream_event.run((session_id, event));
 
                     let editor_context = chat.active_editor_context.get();
                     chat.active_editor_context.set(None);
@@ -327,6 +370,7 @@ impl ChatActions {
                                 on_event,
                                 crate::bridge::BridgeConfig::new(&settings.bridge_url.get()),
                                 bridge_credentials.with_value(Clone::clone),
+                                bridge.get_untracked(),
                             )
                             .await;
                             if let Err(error) = result
@@ -339,7 +383,19 @@ impl ChatActions {
                                 "local directory handle not available; re-open the folder".into(),
                             ));
                         }
-                    } else {
+                    } else if !runs
+                        .start(openwebide_core::BridgeClientMessage::RunStart {
+                            run_id: format!(
+                                "run-{}",
+                                js_sys::Math::random().to_string().trim_start_matches("0.")
+                            ),
+                            session_id,
+                            content: content.clone(),
+                            model: model.clone(),
+                            editor_context: editor_context.clone(),
+                        })
+                        .await
+                    {
                         let result = api
                             .with_value(Clone::clone)
                             .send_message(
@@ -358,10 +414,17 @@ impl ChatActions {
                         }
                     }
 
-                    chat.streaming.set(false);
-                    chat.abort.set(None);
-                    chat.streaming_session.set(None);
-                    chat.current_run_anchor.set(None);
+                    if chat
+                        .abort
+                        .get_untracked()
+                        .as_ref()
+                        .is_none_or(|active| active == &controller)
+                    {
+                        chat.streaming.set(false);
+                        chat.abort.set(None);
+                        chat.streaming_session.set(None);
+                        chat.current_run_anchor.set(None);
+                    }
                 });
             })
         };
@@ -594,7 +657,7 @@ impl ChatActions {
             })
         };
 
-        install_effects(api, chat, settings);
+        install_effects(api, chat, settings, runs);
 
         Self {
             send,
@@ -611,7 +674,12 @@ impl ChatActions {
     }
 }
 
-fn install_effects(api: Api, chat: ChatState, settings: SettingsState) {
+fn install_effects(
+    api: Api,
+    chat: ChatState,
+    settings: SettingsState,
+    runs: super::runs::RunActions,
+) {
     let active_session = chat.active_session;
     let sessions = chat.sessions;
     let connections = settings.connections;
@@ -713,33 +781,8 @@ fn install_effects(api: Api, chat: ChatState, settings: SettingsState) {
                         Ok(entries) => {
                             session_telemetry
                                 .update(|telemetry| telemetry.restore_from_conversation(&entries));
-                            chat.messages.set(
-                                entries
-                                    .into_iter()
-                                    .map(|entry| match entry {
-                                        ConversationEntry::Message(message) => {
-                                            ConversationItem::Message(message)
-                                        }
-                                        ConversationEntry::ToolStep(step) => {
-                                            ConversationItem::ToolStep {
-                                                key: next_item_nonce(),
-                                                id: step.tool_call_id,
-                                                name: step.name,
-                                                summary: step.summary,
-                                                result: step.ok.map(|ok| ToolStepResult {
-                                                    ok,
-                                                    summary: step
-                                                        .result_summary
-                                                        .clone()
-                                                        .unwrap_or_default(),
-                                                    diff: step.diff.clone(),
-                                                }),
-                                                awaiting_permission: false,
-                                            }
-                                        }
-                                    })
-                                    .collect(),
-                            );
+                            chat.messages.set(history_items(entries));
+                            runs.history.set(Some((id, this_gen)));
                         }
                         Err(error) => {
                             session_telemetry
@@ -809,4 +852,25 @@ fn derive_session_name(prompt: &str) -> String {
         name.push('…');
     }
     name
+}
+
+pub(super) fn history_items(entries: Vec<ConversationEntry>) -> Vec<ConversationItem> {
+    entries
+        .into_iter()
+        .map(|entry| match entry {
+            ConversationEntry::Message(message) => ConversationItem::Message(message),
+            ConversationEntry::ToolStep(step) => ConversationItem::ToolStep {
+                key: next_item_nonce(),
+                id: step.tool_call_id,
+                name: step.name,
+                summary: step.summary,
+                result: step.ok.map(|ok| ToolStepResult {
+                    ok,
+                    summary: step.result_summary.clone().unwrap_or_default(),
+                    diff: step.diff.clone(),
+                }),
+                awaiting_permission: false,
+            },
+        })
+        .collect()
 }

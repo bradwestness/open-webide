@@ -5,7 +5,7 @@
 //! requests LLM tool calls from the backend via `/api/chat-tools`, and persists
 //! messages and tool steps to the backend store for full session parity.
 
-use leptos::prelude::WithValue;
+use leptos::prelude::{GetUntracked, WithValue};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -31,14 +31,15 @@ use crate::util::sleep_ms;
 pub struct BrowserLlmProvider {
     api: Api,
     kind: ProviderKind,
+    bridge: Option<crate::bridge::BridgeConn>,
 }
 
 unsafe impl Send for BrowserLlmProvider {}
 unsafe impl Sync for BrowserLlmProvider {}
 
 impl BrowserLlmProvider {
-    pub fn new(api: Api, kind: ProviderKind) -> Self {
-        Self { api, kind }
+    pub fn new(api: Api, kind: ProviderKind, bridge: Option<crate::bridge::BridgeConn>) -> Self {
+        Self { api, kind, bridge }
     }
 }
 
@@ -97,6 +98,29 @@ impl LlmProvider for BrowserLlmProvider {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
+        if let Some(bridge) = &self.bridge
+            && bridge.status().get_untracked()
+                == (crate::bridge::BridgeStatus::Ready { runs: true })
+        {
+            let id = format!("completion-{}", js_sys::Math::random());
+            let receiver = bridge.register_completion(id.clone());
+            let guard = CompletionGuard {
+                bridge: bridge.clone(),
+                id: id.clone(),
+            };
+            let error = bridge
+                .send(openwebide_core::BridgeClientMessage::CompletionStart {
+                    id,
+                    request: request.clone(),
+                })
+                .err();
+            return Box::pin(BrowserCompletionStream {
+                receiver,
+                _guard: guard,
+                ended: false,
+                error,
+            });
+        }
         let api = self.api;
         let request = request.clone();
         Box::pin(
@@ -116,6 +140,66 @@ impl LlmProvider for BrowserLlmProvider {
         _model: Option<&str>,
     ) -> impl Future<Output = Result<Option<usize>, ProviderError>> + Send {
         ForceSend(async move { Ok(None) })
+    }
+}
+
+struct CompletionGuard {
+    bridge: crate::bridge::BridgeConn,
+    id: String,
+}
+
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        let _ = self
+            .bridge
+            .send(openwebide_core::BridgeClientMessage::CompletionCancel {
+                id: self.id.clone(),
+            });
+        self.bridge.unregister_completion(&self.id);
+    }
+}
+
+struct BrowserCompletionStream {
+    receiver: futures::channel::mpsc::UnboundedReceiver<openwebide_core::BridgeServerMessage>,
+    _guard: CompletionGuard,
+    ended: bool,
+    error: Option<String>,
+}
+
+// The browser agent polls and drops this stream only on the WASM main thread.
+unsafe impl Send for BrowserCompletionStream {}
+
+impl Stream for BrowserCompletionStream {
+    type Item = Result<ToolStreamChunk, ProviderError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use openwebide_core::BridgeServerMessage;
+        use std::task::Poll;
+        if self.ended {
+            return Poll::Ready(None);
+        }
+        if let Some(error) = self.error.take() {
+            self.ended = true;
+            return Poll::Ready(Some(Err(ProviderError::Http(error))));
+        }
+        match Pin::new(&mut self.receiver).poll_next(cx) {
+            Poll::Ready(Some(BridgeServerMessage::CompletionChunk { chunk, .. })) => {
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            Poll::Ready(Some(BridgeServerMessage::CompletionEnd { error, .. })) => {
+                self.ended = true;
+                Poll::Ready(error.map(|error| Err(ProviderError::Http(error))))
+            }
+            Poll::Ready(None) => {
+                self.ended = true;
+                Poll::Ready(Some(Err(ProviderError::Http("bridge disconnected".into()))))
+            }
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(_)) => unreachable!("only completion frames reach the receiver"),
+        }
     }
 }
 
@@ -383,6 +467,7 @@ pub async fn run_local_agent(
     mut on_event: impl FnMut(SseEvent),
     bridge_config: crate::bridge::BridgeConfig,
     bridge_credentials: crate::bridge::BridgeCredentials,
+    bridge_connection: Option<crate::bridge::BridgeConn>,
 ) -> Result<(), String> {
     // 1. Fetch prior conversation history before persisting the new message
     let history_entries = api
@@ -422,7 +507,7 @@ pub async fn run_local_agent(
     let web = BrowserWebClient::new(api);
     let bridge = BrowserBridgeClient::new(bridge_config.http_url, bridge_credentials);
     let executor = VfsToolExecutor::with_web_and_bridge(vfs, web, bridge);
-    let provider = BrowserLlmProvider::new(api, ProviderKind::Ollama);
+    let provider = BrowserLlmProvider::new(api, ProviderKind::Ollama, bridge_connection);
     let cancel = LocalCancelCheck {
         flag: cancel_flag.clone(),
     };

@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Use the bridge for frontend chat and local completion streaming, with SSE fallback, run resume, and project availability notices.
+
 - Add bridge-hosted chat/agent runs and streamed completions, with reconnect replay, cancellation, approvals, and TLS enabled by default.
 
 - Share one authenticated bridge connection across terminal, run, and completion traffic; reconnect terminals automatically and open a fresh shell after a bridge restart.

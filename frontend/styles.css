@@ -2590,3 +2590,5 @@ textarea.form-input {
   font-size: 12px;
 }
 
+
+.toast.toast-info { border-color: var(--accent); bottom: 76px; }
