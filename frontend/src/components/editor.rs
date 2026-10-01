@@ -51,8 +51,21 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+#[cfg(feature = "test-support")]
+thread_local! {
+    static HIGHLIGHT_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of overlay generations, for browser performance regressions.
+#[cfg(feature = "test-support")]
+pub fn highlight_count() -> usize {
+    HIGHLIGHT_COUNT.get()
+}
+
 /// Render the highlighted source as an HTML string for the overlay.
 fn highlight_html(source: &str, language: Language) -> String {
+    #[cfg(feature = "test-support")]
+    HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
     let lines = highlight_lines(source, language);
     let mut html = String::new();
     for (idx, line) in lines.iter().enumerate() {
@@ -73,6 +86,83 @@ fn highlight_html(source: &str, language: Language) -> String {
         }
     }
     html
+}
+
+#[component]
+fn HighlightOverlay(
+    content: ReadSignal<String>,
+    open_file: ReadSignal<Option<String>>,
+    node_ref: NodeRef<leptos::html::Div>,
+    textarea_ref: NodeRef<leptos::html::Textarea>,
+) -> impl IntoView {
+    use wasm_bindgen::closure::Closure;
+
+    let rendered = RwSignal::new(String::new());
+    let request = StoredValue::new(None::<i32>);
+    let generation = StoredValue::new(0_u64);
+    let queued_generation = StoredValue::new(0_u64);
+    let path = StoredValue::new(None::<String>);
+    let callback = StoredValue::new_local(Closure::<dyn FnMut()>::new(move || {
+        request.set_value(None);
+        if generation.get_value() != queued_generation.get_value()
+            || open_file.get_untracked() != path.get_value()
+            || node_ref.get_untracked().is_none()
+        {
+            return;
+        }
+        let language = open_file
+            .with_untracked(|path| path.as_deref().map(language_from_path))
+            .unwrap_or(Language::Plain);
+        rendered.set(content.with_untracked(|text| highlight_html(text, language)));
+        let published_generation = generation.get_value();
+        // The old overlay can clamp scroll offsets until its new HTML reaches the DOM.
+        leptos::leptos_dom::helpers::queue_microtask(move || {
+            if generation.try_get_value() != Some(published_generation)
+                || open_file.try_get_untracked() != path.try_get_value()
+            {
+                return;
+            }
+            if let (Some(Some(textarea)), Some(Some(overlay))) = (
+                textarea_ref.try_get_untracked(),
+                node_ref.try_get_untracked(),
+            ) {
+                overlay.set_scroll_top(textarea.scroll_top());
+                overlay.set_scroll_left(textarea.scroll_left());
+            }
+        });
+    }));
+
+    Effect::new(move || {
+        content.track();
+        let current_path = open_file.get();
+        let mounted = node_ref.get().is_some();
+        if current_path != path.get_value() || !mounted {
+            generation.update_value(|value| *value += 1);
+            if let Some(id) = request.get_value() {
+                let _ = window().cancel_animation_frame(id);
+                request.set_value(None);
+            }
+            path.set_value(current_path);
+            rendered.set(String::new());
+        }
+        if mounted && request.get_value().is_none() {
+            queued_generation.set_value(generation.get_value());
+            let id = callback.with_value(|callback| {
+                window().request_animation_frame(callback.as_ref().unchecked_ref())
+            });
+            if let Ok(id) = id {
+                request.set_value(Some(id));
+            }
+        }
+    });
+    // Keep the JS closure owned here so cancellation also releases its captures.
+    on_cleanup(move || {
+        if let Some(id) = request.get_value() {
+            let _ = window().cancel_animation_frame(id);
+        }
+    });
+
+    view! { <div class="editor-highlight" node_ref=node_ref inner_html=move || rendered.get() /> }
 }
 
 /// Render a list of intra-line diff chunks with word-level highlights.
@@ -633,18 +723,7 @@ pub fn Editor(
                             _ => {
                                 view! {
                                     <div class="editor-code">
-                                        <div
-                                            class="editor-highlight"
-                                            node_ref=hl
-                                            inner_html=move || {
-                                                let lang = open_file
-                                                    .get()
-                                                    .as_deref()
-                                                    .map(language_from_path)
-                                                    .unwrap_or(Language::Plain);
-                                                highlight_html(&content.get(), lang)
-                                            }
-                                        />
+                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta />
                                         <textarea
                                             class="editor-textarea"
                                             spellcheck="false"

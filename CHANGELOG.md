@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Coalesce editor syntax highlighting to one animation frame while keeping typing and saving immediate.
+
 - Keep conversation rows mounted while replies stream, reducing chat update work and preserving expanded reasoning and diff previews.
 
 - Show streamed model reasoning and mark replies cut off by the output token limit; omit prior reasoning from model context.

@@ -24,3 +24,6 @@ mod local_bridge;
 
 #[path = "components/persistence.rs"]
 mod persistence;
+
+#[path = "components/editor.rs"]
+mod editor;

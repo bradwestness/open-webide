@@ -18,6 +18,8 @@ pub use auth_gate::AuthGate;
 pub use chat_pane::{ChatPane, ToolStepResult};
 pub use confirm_dialog::ConfirmDialog;
 pub use editor::Editor;
+#[cfg(feature = "test-support")]
+pub use editor::highlight_count;
 pub use file_browser::FileBrowser;
 pub use file_tree::FileTree;
 pub use panel_resizer::PanelResizer;
