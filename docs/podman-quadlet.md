@@ -35,8 +35,14 @@ ContainerName=open-webide
 # Host port 8080 keeps it clear of bare `spin build --up` (3000); the
 # container itself always listens on 3000.
 PublishPort=127.0.0.1:8080:3000
+PublishPort=3001:3001
 Volume=%h/.local/state/open-webide/data:/app/.spin:Z
 Volume=%h/source:/workspace:Z
+# Disable the bundled bridge for SSE-only chat:
+# Environment=OPENWEBIDE_BRIDGE=0
+# Hostnames need an allowlist; IP literals and localhost work by default:
+# Environment=OPENWEBIDE_BRIDGE_ALLOWED_HOSTS=webide.example
+# Environment=OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS=http://webide.example:8080
 Requires=open-webide.image
 
 [Service]
@@ -54,8 +60,13 @@ Notes:
 - The volume maps the SQLite data directory (`/app/.spin` inside the
   container) to a host directory. `:Z` relabels it for SELinux; drop the
   suffix on systems without SELinux. The workspace volume maps your
-  projects directory. The image CMD carries the required mount flags
+  projects directory. The image entrypoint carries the required mount flags
   (`--direct-mounts --allow-transient-write`).
+- The bundled bridge listens on port 3001 and uses `/workspace`. Its secret
+  persists in `/app/.spin/bridge-secret`; the backend discovers it over loopback.
+  `OPENWEBIDE_BRIDGE=0` disables the terminal and uses SSE chat. The allowed-host
+  and allowed-origin environment variables accept comma-separated lists; the
+  origin is only needed when the page and bridge use different hostnames.
 - The first start downloads `spin_static_fs.wasm` (the static file server
   component) from GitHub; after that it is cached in the container image's
   Spin home.

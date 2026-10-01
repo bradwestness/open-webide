@@ -6,11 +6,19 @@ services:
       # Host port differs from bare `spin build --up` (3000) so both can
       # run side by side; the container itself always listens on 3000.
       - "8080:3000"
+      - "3001:3001"
     volumes:
       - openwebide-data:/app/.spin
       - ${OPENWEBIDE_WORKSPACE:-${HOME}/source}:/workspace
     environment:
-      - SPIN_VARIABLE_BRIDGE_SECRET=${SPIN_VARIABLE_BRIDGE_SECRET:-}
+      # Set OPENWEBIDE_BRIDGE=0 to disable the bundled bridge.
+      - OPENWEBIDE_BRIDGE=${OPENWEBIDE_BRIDGE:-1}
+      # Hostnames need an allowlist; IP literals and localhost work by default.
+      - OPENWEBIDE_BRIDGE_ALLOWED_HOSTS=${OPENWEBIDE_BRIDGE_ALLOWED_HOSTS:-}
+      - OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS=${OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS:-}
+      # For a bridge on the host instead, disable the bundled bridge and set:
+      # - SPIN_VARIABLE_BRIDGE_URL=http://host.docker.internal:3001
+      # - SPIN_VARIABLE_BRIDGE_SECRET=${SPIN_VARIABLE_BRIDGE_SECRET:-}
     restart: unless-stopped
 
 volumes:

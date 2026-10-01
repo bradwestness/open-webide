@@ -90,3 +90,20 @@ jobs:
         env:
           CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
         run: cargo test -p openwebide-frontend --target wasm32-unknown-unknown
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test container supervisor
+        run: bash docker/entrypoint-test.sh
+
+      - name: Build container image
+        run: docker build -t open-webide:ci .
+
+      - name: Check bundled bridge
+        run: docker run --rm open-webide:ci openwebide-bridge --help
+
+      - name: Check host-owned workspace Git access
+        run: docker run --rm -v "$PWD/docker/git-ownership-test.sh:/git-ownership-test.sh:ro" open-webide:ci bash /git-ownership-test.sh

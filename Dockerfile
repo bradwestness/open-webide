@@ -28,23 +28,27 @@ COPY . .
 #   backend  -> cargo build -p openwebide-backend --target wasm32-wasip2 --release
 #   frontend -> cd frontend && trunk build --release
 RUN spin build
+RUN cargo build -p openwebide-bridge --release --locked
 
 # --- runtime: Spin + prebuilt components ---
 FROM ghcr.io/spinframework/spin:v4.1.0
 
 WORKDIR /app
+COPY --from=builder /src/target/release/openwebide-bridge /usr/local/bin/
+COPY --chmod=755 docker/entrypoint.sh ./entrypoint.sh
+COPY --chmod=755 docker/git.sh /usr/local/bin/git
 COPY --from=builder /src/spin.toml ./
 COPY --from=builder /src/target/wasm32-wasip2/release/openwebide_backend.wasm \
      ./target/wasm32-wasip2/release/
 COPY --from=builder /src/frontend/dist ./frontend/dist
 
-# Frontend and API share one port.
-EXPOSE 3000
+# Frontend and API share one port; the bridge uses its own.
+EXPOSE 3000 3001
 # SQLite data lives in .spin/ (mount a volume here to persist it).
 VOLUME /app/.spin
 VOLUME /workspace
 
 RUN sed -i 's#source = "../.."#source = "/workspace"#' spin.toml && grep -q 'source = "/workspace"' spin.toml && mkdir -p /workspace
 
-# The base image's entrypoint is already `spin`.
-CMD ["up", "--listen", "0.0.0.0:3000", "--direct-mounts", "--allow-transient-write"]
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD []

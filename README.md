@@ -89,8 +89,8 @@ static files served by Spin's static file server), then starts Spin on
 
 ## Run in a container
 
-One image, one port, one volume for the database — the whole stack
-(frontend + backend + SQLite) runs in a single Spin container. The
+One image, two ports, one volume for the database — the whole stack
+(frontend + backend + SQLite + execution bridge) runs in a single container. The
 Dockerfile builds the components itself (multi-stage), so only Docker is
 needed:
 
@@ -101,22 +101,35 @@ so it can run side by side with a bare `spin build --up` (3000):
 docker compose up --build
 # or manually:
 docker build -t open-webide .
-docker run -d -p 8080:3000 -v openwebide-data:/app/.spin --name open-webide open-webide
+docker run -d -p 8080:3000 -p 3001:3001 -v openwebide-data:/app/.spin --name open-webide open-webide
 ```
 
 - Frontend: <http://localhost:8080/>
 - API: <http://localhost:8080/api/health>
+- Bridge: `ws://localhost:3001` (terminal, Git operations, and streamed chat runs).
+
+The bundled bridge uses `/workspace` and persists its secret at
+`/app/.spin/bridge-secret`; the backend discovers it over loopback. Set
+`OPENWEBIDE_BRIDGE=0` to disable it and use SSE chat instead. Compose passes
+this environment variable through; with `docker run`, use `-e OPENWEBIDE_BRIDGE=0`.
+
+IP literals and `localhost` work by default, including LAN access at
+`http://<host-ip>:8080`. For a host name, set
+`OPENWEBIDE_BRIDGE_ALLOWED_HOSTS=<host-name>`. If the page uses a different
+host name from the bridge, also set
+`OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS=http://<page-host>:8080`. Both accept
+comma-separated lists and are passed through by Compose.
 
 To work on a folder on the host machine, mount it and enable the backend's
 filesystem capability (see [docs/architecture.md](docs/architecture.md) →
 "Workspace: local and remote modes"):
 
 ```sh
-docker run -d -p 8080:3000 -v openwebide-data:/app/.spin -v ~/source:/workspace open-webide
+docker run -d -p 8080:3000 -p 3001:3001 -v openwebide-data:/app/.spin -v ~/source:/workspace open-webide
 ```
 
 > [!NOTE]
-> The workspace root (`/workspace`) is exposed to the file API and the agent — keep secrets out of it. The `.spin/` path is explicitly refused. If you override the Docker container's command (CMD), you must include both `--direct-mounts` and `--allow-transient-write`. Remote project paths created before the `/workspace` mount (stored relative to the container root, e.g. `workspace/foo`) are migrated automatically on first start — no manual SQL needed.
+> The workspace root (`/workspace`) is exposed to the file API and the agent — keep secrets out of it. The `.spin/` path is explicitly refused. Arguments starting with `-` are appended to the default `spin up` flags. A command override (for example, `spin up`) runs directly; overriding the command must keep `--direct-mounts --allow-transient-write`. Remote project paths created before the `/workspace` mount (stored relative to the container root, e.g. `workspace/foo`) are migrated automatically on first start — no manual SQL needed.
 
 On Linux with systemd, it can also run as a Podman quadlet service — see
 [docs/podman-quadlet.md](docs/podman-quadlet.md).
