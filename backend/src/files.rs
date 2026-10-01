@@ -95,7 +95,7 @@ pub async fn sanitize(resolver: &impl PathResolver, rel: &str) -> Result<String>
         return Err(FsError::PathEscape(rel.into()));
     }
 
-    let mut parts: Vec<String> = rel.split('/').map(|s| s.to_string()).collect();
+    let mut parts: Vec<String> = rel.split('/').map(ToString::to_string).collect();
     parts.reverse();
 
     let mut resolved = Vec::new();
@@ -132,13 +132,13 @@ pub async fn sanitize(resolver: &impl PathResolver, rel: &str) -> Result<String>
                     return Err(FsError::PathEscape(rel.into()));
                 }
                 let mut target_parts: Vec<String> =
-                    target.split('/').map(|s| s.to_string()).collect();
+                    target.split('/').map(ToString::to_string).collect();
                 target_parts.reverse();
                 for p in target_parts {
                     parts.push(p);
                 }
             }
-            Err(ErrorCode::Invalid) | Err(ErrorCode::NoEntry) | Err(ErrorCode::NotDirectory) => {
+            Err(ErrorCode::Invalid | ErrorCode::NoEntry | ErrorCode::NotDirectory) => {
                 resolved.push(comp);
             }
             Err(e) => {
@@ -495,10 +495,13 @@ impl SearchBudget {
 
     /// Whether a file of `size` bytes may be read, charging the byte budget.
     pub fn allow_file(&mut self, size: u64) -> bool {
-        if size as usize > self.bytes {
+        let Ok(size) = usize::try_from(size) else {
+            return false;
+        };
+        if size > self.bytes {
             return false;
         }
-        self.bytes -= size as usize;
+        self.bytes -= size;
         true
     }
 
@@ -549,9 +552,8 @@ async fn walk(
     if budget.exhausted() {
         return Ok(());
     }
-    let entries = match list(dir_rel).await {
-        Ok(e) => e,
-        Err(_) => return Ok(()), // not a directory or unreadable; skip
+    let Ok(entries) = list(dir_rel).await else {
+        return Ok(()); // not a directory or unreadable; skip
     };
     for e in entries {
         if budget.exhausted() {
@@ -604,9 +606,8 @@ async fn walk_content(
     if budget.exhausted() {
         return Ok(());
     }
-    let entries = match list(dir_rel).await {
-        Ok(e) => e,
-        Err(_) => return Ok(()), // not a directory or unreadable; skip
+    let Ok(entries) = list(dir_rel).await else {
+        return Ok(()); // not a directory or unreadable; skip
     };
     for e in entries {
         if budget.exhausted() {

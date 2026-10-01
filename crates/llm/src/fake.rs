@@ -165,7 +165,7 @@ impl LlmProvider for FakeProvider {
     async fn chat(&self, _request: &ChatRequest) -> Result<String, ProviderError> {
         match self.next_completion()?.response {
             ChatResponse::Text(text) => Ok(text),
-            _ => Err(ProviderError::Parse("expected text".into())),
+            ChatResponse::ToolCalls(_) => Err(ProviderError::Parse("expected text".into())),
         }
     }
 

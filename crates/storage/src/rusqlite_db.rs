@@ -60,7 +60,10 @@ impl Db for RusqliteDb {
     type Tx<'a> = RusqliteTx;
 
     async fn execute(&self, sql: &str, params: &[DbValue]) -> Result<ExecResult, StorageError> {
-        let mut conn_guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn_guard = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let conn = conn_guard
             .as_mut()
             .ok_or_else(|| StorageError::Db("Connection in use by transaction".to_string()))?;
@@ -120,14 +123,20 @@ impl Db for RusqliteDb {
         Fut: std::future::Future<Output = Result<T, StorageError>> + Send + 'a,
     {
         let conn = {
-            let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .conn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard
                 .take()
                 .ok_or_else(|| StorageError::Db("Concurrent transactions not supported".into()))?
         };
 
         if let Err(e) = conn.execute("BEGIN IMMEDIATE", []) {
-            let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .conn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *guard = Some(conn);
             return Err(StorageError::Db(e.to_string()));
         }
@@ -147,7 +156,7 @@ impl Db for RusqliteDb {
                 if let Some(c) = self
                     .tx_conn
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take()
                 {
                     if self.commit_requested {
@@ -155,7 +164,10 @@ impl Db for RusqliteDb {
                     } else {
                         let _ = c.execute("ROLLBACK", []);
                     }
-                    let mut slot_guard = self.db_conn.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut slot_guard = self
+                        .db_conn
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     *slot_guard = Some(c);
                 }
             }
@@ -184,7 +196,10 @@ impl Db for RusqliteTx {
     type Tx<'b> = RusqliteTx;
 
     async fn execute(&self, sql: &str, params: &[DbValue]) -> Result<ExecResult, StorageError> {
-        let mut conn_guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn_guard = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let conn = conn_guard
             .as_mut()
             .ok_or_else(|| StorageError::Db("Connection in use by transaction".to_string()))?;

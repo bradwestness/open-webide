@@ -463,7 +463,7 @@ async fn fast_spawns_all_see_exited() {
                 Err(_) => break,
             }
         }
-        assert!(exited, "session fast_{} did not exit", i);
+        assert!(exited, "session fast_{i} did not exit");
     }
 }
 

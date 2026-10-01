@@ -199,6 +199,13 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<User,
     Ok(user.public())
 }
 
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,11 +301,4 @@ mod tests {
             "owide_session=t; Path=/api; HttpOnly; SameSite=Strict; Max-Age=2592000; Secure"
         );
     }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

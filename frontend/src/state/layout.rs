@@ -125,30 +125,36 @@ impl Default for LayoutState {
 mod tests {
     use super::*;
 
+    fn assert_widths(actual: [f64; 3], expected: [f64; 3]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < f64::EPSILON);
+        }
+    }
+
     #[test]
     fn fit_shrinks_chat_then_tree_then_sidebar() {
         let fitted = fit_panels(1280.0, [480.0, 650.0, 1000.0]);
-        assert_eq!(fitted, [480.0, 280.0, 260.0]);
+        assert_widths(fitted, [480.0, 280.0, 260.0]);
         assert!(fitted.iter().sum::<f64>() <= 1020.0);
-        assert_eq!(
+        assert_widths(
             fit_panels(900.0, [240.0, 260.0, 420.0]),
-            [220.0, 160.0, 260.0]
+            [220.0, 160.0, 260.0],
         );
     }
 
     #[test]
     fn wide_viewports_preserve_widths_and_tiny_viewports_use_minimums() {
-        assert_eq!(
+        assert_widths(
             fit_panels(3000.0, [480.0, 650.0, 1000.0]),
-            [480.0, 650.0, 1000.0]
+            [480.0, 650.0, 1000.0],
         );
-        assert_eq!(
+        assert_widths(
             fit_panels(100.0, [480.0, 650.0, 1000.0]),
-            [140.0, 160.0, 260.0]
+            [140.0, 160.0, 260.0],
         );
-        assert_eq!(
+        assert_widths(
             fit_panels(3000.0, [1.0, 900.0, 2000.0]),
-            [140.0, 650.0, 1000.0]
+            [140.0, 650.0, 1000.0],
         );
     }
 
@@ -173,9 +179,9 @@ mod tests {
         ];
 
         for (resizer, min, max, default, setting_key) in cases {
-            assert_eq!(resizer.min(), min);
-            assert_eq!(resizer.max(), max);
-            assert_eq!(resizer.default(), default);
+            assert!((resizer.min() - min).abs() < f64::EPSILON);
+            assert!((resizer.max() - max).abs() < f64::EPSILON);
+            assert!((resizer.default() - default).abs() < f64::EPSILON);
             assert_eq!(resizer.setting_key(), setting_key);
         }
     }
@@ -222,9 +228,10 @@ mod tests {
         ];
 
         for (resizer, requested, sidebar, tree, chat, total, expected) in cases {
-            assert_eq!(
-                LayoutState::clamp(resizer, requested, sidebar, tree, chat, total),
-                expected
+            assert!(
+                (LayoutState::clamp(resizer, requested, sidebar, tree, chat, total) - expected)
+                    .abs()
+                    < f64::EPSILON
             );
         }
     }

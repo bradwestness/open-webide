@@ -262,7 +262,7 @@ impl RunActions {
                                         openwebide_core::ConversationEntry::Message(m) => {
                                             Some(m.id)
                                         }
-                                        _ => None,
+                                        openwebide_core::ConversationEntry::ToolStep(_) => None,
                                     })
                             {
                                 telemetry.record_turn(&usage);
@@ -336,7 +336,7 @@ impl RunActions {
                         }
                         RunRejectCode::Unauthorized | RunRejectCode::Unavailable => handled = false,
                         RunRejectCode::Busy | RunRejectCode::PlanFailed => {
-                            self.chat.error.set(Some(message))
+                            self.chat.error.set(Some(message));
                         }
                     }
                 }

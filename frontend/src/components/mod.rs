@@ -28,5 +28,4 @@ pub use status_bar::StatusBar;
 pub use tab_bar::TabBar;
 pub use terminal_pane::TerminalPane;
 pub use top_bar::TopBar;
-#[allow(unused_imports)]
-pub use ui::{Button, ButtonSize, ButtonVariant, SegmentOption, SegmentedControl};
+pub use ui::{Button, ButtonSize, ButtonVariant};

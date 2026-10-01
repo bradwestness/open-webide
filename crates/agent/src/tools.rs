@@ -590,7 +590,9 @@ mod tests {
         );
         match err {
             ToolArgError::InvalidArguments { tool, .. } => assert_eq!(tool, "write_file"),
-            other => panic!("expected InvalidArguments, got {other:?}"),
+            other @ ToolArgError::UnknownTool(_) => {
+                panic!("expected InvalidArguments, got {other:?}")
+            }
         }
     }
 
@@ -599,7 +601,9 @@ mod tests {
         let err = parse(&call("write_file", r#"{"path":"a","con"#)).unwrap_err();
         match err {
             ToolArgError::InvalidArguments { tool, .. } => assert_eq!(tool, "write_file"),
-            other => panic!("expected InvalidArguments, got {other:?}"),
+            other @ ToolArgError::UnknownTool(_) => {
+                panic!("expected InvalidArguments, got {other:?}")
+            }
         }
     }
 
@@ -622,7 +626,9 @@ mod tests {
         assert_eq!(err.to_string(), "unknown tool: rm_rf");
         match err {
             ToolArgError::UnknownTool(name) => assert_eq!(name, "rm_rf"),
-            other => panic!("expected UnknownTool, got {other:?}"),
+            other @ ToolArgError::InvalidArguments { .. } => {
+                panic!("expected UnknownTool, got {other:?}")
+            }
         }
     }
 

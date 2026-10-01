@@ -8,7 +8,7 @@ use leptos::prelude::*;
 pub fn ConfirmDialog() -> impl IntoView {
     let ui = expect_context::<UiState>();
     let req = ui.confirm.read_only();
-    let on_close = Callback::new(move |_| ui.clear_confirm());
+    let on_close = Callback::new(move |()| ui.clear_confirm());
     view! {
         <Show when=move || req.get().is_some() fallback=|| ()>
             <div class="modal-overlay" on:click=move |_| on_close.run(())>

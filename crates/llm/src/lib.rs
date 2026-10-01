@@ -130,6 +130,7 @@ pub enum StreamChunk {
 /// `Instant::now()` panics. Providers use this instead of calling
 /// `Instant::now()` directly, so the same code compiles for the browser and
 /// the timing there degrades to "unknown" (duration 0) rather than crashing.
+#[allow(clippy::unnecessary_wraps)] // Browser targets have no Instant, so both targets share an optional clock.
 pub(crate) fn clock_now() -> Option<std::time::Instant> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
@@ -186,9 +187,10 @@ impl UsageAcc {
         let eval_duration_ms = self
             .eval_ms
             .unwrap_or_else(|| match (self.started, self.ended) {
-                (Some(start), Some(end)) => {
-                    round_ns_to_ms(end.saturating_duration_since(start).as_nanos() as u64)
-                }
+                (Some(start), Some(end)) => round_ns_to_ms(
+                    u64::try_from(end.saturating_duration_since(start).as_nanos())
+                        .unwrap_or(u64::MAX),
+                ),
                 _ => 0,
             });
         TurnTelemetry {

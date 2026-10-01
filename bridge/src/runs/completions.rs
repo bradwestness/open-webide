@@ -30,10 +30,13 @@ pub(crate) async fn complete(
             .into_iter()
             .find(|c| c.id == request.connection_id)
             .ok_or_else(|| "connection not found".to_string())?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        )
+        .unwrap_or(i64::MAX);
         request.system_prompt = Some(with_temporal_context(request.system_prompt, now));
         let memo = memos.get_or_insert(&connection);
         let provider = Provider::for_connection_with_memo(&connection, http, memo.clone());

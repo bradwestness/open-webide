@@ -276,7 +276,6 @@ impl BackendApi {
         self.post("/projects", &body).await
     }
 
-    #[allow(dead_code)] // wired to the project UI in a later step
     pub async fn rename_project(&self, id: i64, name: &str) -> Result<Project, String> {
         self.put(&format!("/projects/{id}"), &json!({ "name": name }))
             .await
@@ -467,7 +466,7 @@ impl BackendApi {
 
     // -- git operations (Phase 13) -----------------------------------------
 
-    fn git_endpoint(&self, project_id: Option<i64>, sub: &str) -> String {
+    fn git_endpoint(project_id: Option<i64>, sub: &str) -> String {
         if let Some(id) = project_id {
             format!("/projects/{id}/git/{sub}")
         } else {
@@ -476,7 +475,7 @@ impl BackendApi {
     }
 
     pub async fn git_status(&self, project_id: Option<i64>) -> Result<GitRepoStatus, String> {
-        self.get(&self.git_endpoint(project_id, "status")).await
+        self.get(&Self::git_endpoint(project_id, "status")).await
     }
 
     pub async fn git_diff(
@@ -484,7 +483,7 @@ impl BackendApi {
         project_id: Option<i64>,
         path: Option<&str>,
     ) -> Result<String, String> {
-        let ep = self.git_endpoint(project_id, "diff");
+        let ep = Self::git_endpoint(project_id, "diff");
         let query = match path {
             Some(p) => format!("{ep}?path={}", urlenc(p)),
             None => ep,
@@ -498,7 +497,7 @@ impl BackendApi {
         project_id: Option<i64>,
         path: &str,
     ) -> Result<String, String> {
-        let ep = self.git_endpoint(project_id, "show");
+        let ep = Self::git_endpoint(project_id, "show");
         let query = format!("{ep}?path={}", urlenc(path));
         let res: serde_json::Value = self.get(&query).await.map_err(|error| {
             if error == "binary file at HEAD" {
@@ -514,7 +513,7 @@ impl BackendApi {
         &self,
         project_id: Option<i64>,
     ) -> Result<Vec<GitBranchInfo>, String> {
-        self.get(&self.git_endpoint(project_id, "branches")).await
+        self.get(&Self::git_endpoint(project_id, "branches")).await
     }
 
     pub async fn git_commit(
@@ -522,7 +521,7 @@ impl BackendApi {
         project_id: Option<i64>,
         req: &GitCommitRequest,
     ) -> Result<GitCommitResult, String> {
-        self.post(&self.git_endpoint(project_id, "commit"), req)
+        self.post(&Self::git_endpoint(project_id, "commit"), req)
             .await
     }
 
@@ -531,7 +530,7 @@ impl BackendApi {
         project_id: Option<i64>,
         req: &GitCheckoutRequest,
     ) -> Result<GitCheckoutResult, String> {
-        self.post(&self.git_endpoint(project_id, "checkout"), req)
+        self.post(&Self::git_endpoint(project_id, "checkout"), req)
             .await
     }
 
@@ -540,7 +539,8 @@ impl BackendApi {
         project_id: Option<i64>,
         req: &GitSyncRequest,
     ) -> Result<GitSyncResult, String> {
-        self.post(&self.git_endpoint(project_id, "sync"), req).await
+        self.post(&Self::git_endpoint(project_id, "sync"), req)
+            .await
     }
 
     pub async fn rename_session(&self, id: i64, name: &str) -> Result<ChatSession, String> {
@@ -629,8 +629,8 @@ impl BackendApi {
         let value: serde_json::Value = self.get(&path).await?;
         Ok(value
             .get("context_limit")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as usize))
+            .and_then(serde_json::Value::as_u64)
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX)))
     }
 
     /// Record (or refresh) an agent tool step.
@@ -709,7 +709,7 @@ impl BackendApi {
             .await?;
         resp.get("content")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .ok_or_else(|| "missing content in web fetch response".to_string())
     }
 
@@ -856,7 +856,7 @@ impl BackendApi {
             return Err(self.error_from(resp).await);
         }
         if is_delete {
-            // The backend answers 204 No Content; nothing to decode.
+            // Delete responses need no decoded body.
             return serde_json::from_value(serde_json::Value::Null).map_err(|e| e.to_string());
         }
         resp.json().await.map_err(|e| e.to_string())

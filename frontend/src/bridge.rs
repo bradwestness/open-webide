@@ -18,7 +18,7 @@ impl BridgeConfig {
             ws_url.replacen("ws://", "http://", 1)
         } else {
             // Default to http if no scheme
-            format!("http://{}", ws_url)
+            format!("http://{ws_url}")
         };
         Self { ws_url, http_url }
     }
@@ -28,7 +28,7 @@ pub fn default_bridge_url() -> String {
     let hostname = web_sys::window()
         .and_then(|w| w.location().hostname().ok())
         .unwrap_or_else(|| "127.0.0.1".to_string());
-    format!("ws://{}:3001", hostname)
+    format!("ws://{hostname}:3001")
 }
 
 #[derive(Clone)]
@@ -52,6 +52,8 @@ impl BridgeCredentials {
             return Ok(pt);
         }
 
+        #[allow(clippy::cast_possible_truncation)]
+        // JS timestamps are fractional seconds; the cast saturates to i64.
         let now = (js_sys::Date::now() / 1000.0) as i64;
         let needs_refresh = {
             let cache = self.cached_token.lock().unwrap();
@@ -162,7 +164,7 @@ impl BridgeTransport for GlooTransport {
                     match message {
                         Message::Text(text) => on_message(text),
                         Message::Bytes(bytes) => {
-                            on_message(String::from_utf8_lossy(&bytes).into_owned())
+                            on_message(String::from_utf8_lossy(&bytes).into_owned());
                         }
                     }
                 }
@@ -290,7 +292,7 @@ impl BridgeConn {
                     drop(inner);
                     let timeout = crate::util::sleep_ms(2000);
                     futures::pin_mut!(timeout, closed_rx);
-                    if let futures::future::Either::Right((_, closed_rx)) =
+                    if let futures::future::Either::Right(((), closed_rx)) =
                         futures::future::select(closed_rx, timeout).await
                     {
                         if let Some(inner) = weak.upgrade() {

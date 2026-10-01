@@ -15,9 +15,8 @@ pub fn safe_url(u: &str, use_type: UrlUse) -> bool {
         }
     }
 
-    let colon_idx = match clean.find(':') {
-        Some(idx) => idx,
-        None => return true,
+    let Some(colon_idx) = clean.find(':') else {
+        return true;
     };
 
     let before_colon = &clean[..colon_idx];

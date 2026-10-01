@@ -290,7 +290,11 @@ fn render_preview_view(
                     </div>
                 }
                 .into_any()
-            } else if path.ends_with(".svg") && !content.is_empty() {
+            } else if std::path::Path::new(&path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+                && !content.is_empty()
+            {
                 let src = crate::markdown::svg_data_url(content);
                 view! {
                     <div class="editor-media-preview">

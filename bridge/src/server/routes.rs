@@ -84,10 +84,13 @@ pub(super) async fn route(
                 authorized =
                     crate::secret::constant_time_eq(token.as_bytes(), config.secret.as_bytes());
             } else {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64;
+                let now = i64::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                )
+                .unwrap_or(i64::MAX);
                 authorized = crate::auth::authenticate(token, &config, now).is_ok();
             }
         }
@@ -317,19 +320,19 @@ async fn handle_git(req: Request<Incoming>, config: &ServerConfig) -> Result<Str
         path: Option<String>,
     }
     let operation = match (method.as_str(), path.as_str()) {
-        ("GET", "/git/status") | ("POST", "/git/status") => GitOperation::Status,
-        ("GET", "/git/diff") | ("POST", "/git/diff") => GitOperation::Diff(
+        ("GET" | "POST", "/git/status") => GitOperation::Status,
+        ("GET" | "POST", "/git/diff") => GitOperation::Diff(
             serde_json::from_slice::<PathRequest>(&body)
                 .unwrap_or_default()
                 .path,
         ),
-        ("GET", "/git/show") | ("POST", "/git/show") => GitOperation::Show(
+        ("GET" | "POST", "/git/show") => GitOperation::Show(
             serde_json::from_slice::<PathRequest>(&body)
                 .unwrap_or_default()
                 .path
                 .ok_or_else(|| BridgeError::Validation("missing path parameter".into()))?,
         ),
-        ("GET", "/git/branches") | ("POST", "/git/branches") => GitOperation::Branches,
+        ("GET" | "POST", "/git/branches") => GitOperation::Branches,
         ("POST", "/git/commit") => {
             GitOperation::Commit(serde_json::from_slice(&body).map_err(|error| {
                 BridgeError::Validation(format!("invalid commit payload: {error}"))

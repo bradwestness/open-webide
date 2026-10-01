@@ -72,7 +72,7 @@ pub fn normalize_vfs_path(raw: &str) -> Result<String, VfsError> {
 /// Example: `Tuesday, September 22, 2026 12:42 UTC`
 pub fn format_utc_timestamp(secs: i64) -> String {
     let days = secs.div_euclid(86400);
-    let rem_secs = secs.rem_euclid(86400) as u32;
+    let rem_secs = u32::try_from(secs.rem_euclid(86400)).expect("seconds within one day fit u32");
     let hour = rem_secs / 3600;
     let minute = (rem_secs % 3600) / 60;
 
@@ -80,9 +80,9 @@ pub fn format_utc_timestamp(secs: i64) -> String {
     // Shift epoch from 1970-01-01 to 0000-03-01
     let z = days + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
-    let doe = (z - era * 146097) as u32;
+    let doe = u32::try_from(z - era * 146097).expect("days within a 400-year era fit u32");
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = (yoe as i64) + era * 400;
+    let y = i64::from(yoe) + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;

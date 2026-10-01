@@ -68,7 +68,7 @@ impl Session {
         let tx = self.stdin_tx.lock().unwrap().clone();
         if let Some(tx) = tx {
             match tx.try_send(data) {
-                Ok(_) => Ok(()),
+                Ok(()) => Ok(()),
                 Err(mpsc::error::TrySendError::Full(_)) => Err("input buffer full"),
                 Err(mpsc::error::TrySendError::Closed(_)) => Err("session has exited"),
             }

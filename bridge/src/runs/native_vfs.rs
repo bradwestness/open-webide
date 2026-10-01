@@ -200,9 +200,8 @@ impl Vfs for NativeFsVfs {
             let mut bytes_left = 64 * 1024 * 1024;
             let query = query.to_lowercase();
             'walk: while let Some(dir) = pending.pop() {
-                let mut reader = match fs::read_dir(self.directory(&dir)?).await {
-                    Ok(reader) => reader,
-                    Err(_) => continue,
+                let Ok(mut reader) = fs::read_dir(self.directory(&dir)?).await else {
+                    continue;
                 };
                 while let Ok(Some(entry)) = reader.next_entry().await {
                     if entries_left == 0 || bytes_left == 0 || out.len() == 500 {
@@ -289,7 +288,7 @@ mod tests {
         for path in ["hooks/pre-commit", "hooks/new/sub/hook"] {
             assert_eq!(
                 vfs.canonicalize(path).await.unwrap(),
-                format!(".git/{}", path)
+                format!(".git/{path}")
             );
             let outcome = executor
                 .execute(&ToolCall {

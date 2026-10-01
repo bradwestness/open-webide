@@ -137,7 +137,7 @@ impl PermissionGate for PermissionPoller {
                     Ok(true) => return false,
                     Ok(false) => {}
                     Err(error) => {
-                        eprintln!("session {session_id}: cancel_requested_since: {error}")
+                        eprintln!("session {session_id}: cancel_requested_since: {error}");
                     }
                 }
                 if started.elapsed() >= timeout {

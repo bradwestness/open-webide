@@ -50,7 +50,7 @@ pub(super) async fn handle_websocket<S>(
                 if let Some(rx) = watch_rx.as_mut() {
                     let _ = rx.changed().await;
                 } else {
-                    std::future::pending().await
+                    std::future::pending::<()>().await;
                 }
             };
 
@@ -104,7 +104,7 @@ pub(super) async fn handle_websocket<S>(
                     }
                 }
 
-                _ = watch_future => {
+                () = watch_future => {
                     if let Some(sess) = &attached_session {
                         loop {
                             let (batch, truncated) = sess.ring.lock().unwrap().read_after(attached_cursor, 256);
@@ -167,7 +167,7 @@ pub(super) async fn handle_websocket<S>(
         };
 
         let inbound = tokio::select! {
-            _ = cmd_tx.closed() => break,
+            () = cmd_tx.closed() => break,
             inbound = tokio::time::timeout(timeout_dur, ws_rx.next()) => inbound,
         };
 
@@ -177,9 +177,8 @@ pub(super) async fn handle_websocket<S>(
             Err(_) => break, // Idle timeout
         };
 
-        let msg = match msg_res {
-            Ok(m) => m,
-            Err(_) => break,
+        let Ok(msg) = msg_res else {
+            break;
         };
 
         let text = match msg {
@@ -191,7 +190,7 @@ pub(super) async fn handle_websocket<S>(
             }
             Message::Pong(_) => continue,
             Message::Close(_) => break,
-            _ => continue,
+            Message::Frame(_) => continue,
         };
 
         if connection.principal.is_none() && text.len() > 65536 {
@@ -355,10 +354,13 @@ impl Connection {
                 .await?;
             return Ok(());
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap_or(i64::MAX);
         match crate::auth::authenticate(&token, config, now) {
             Ok(p) => {
                 let user_id = match p {
@@ -752,7 +754,7 @@ impl Connection {
 
                 let spawned = BridgeServerMessage::Spawned {
                     id: id.clone(),
-                    pid: session.pid.map(|p| p as u32).unwrap_or(0),
+                    pid: session.pid.and_then(|p| u32::try_from(p).ok()).unwrap_or(0),
                     pty,
                 };
                 cmd_tx.send(WriterCmd::send(spawned)).await?;

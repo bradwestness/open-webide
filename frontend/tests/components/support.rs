@@ -169,8 +169,8 @@ pub fn chat_view(state: TestState) -> impl IntoView {
         bridge_credentials: StoredValue::new(BridgeCredentials::new(state.api)),
         bridge: state.bridge,
         request_open: Callback::new(|_| ()),
-        refresh_git: Callback::new(|_| ()),
-        on_sync_click: Callback::new(|_| ()),
+        refresh_git: Callback::new(|()| ()),
+        on_sync_click: Callback::new(|()| ()),
     });
     view! {
         <ChatPane on_select_model=actions.select_model on_send=actions.send on_resume_local_run=actions.resume_local_run on_stop=actions.stop
@@ -186,7 +186,7 @@ pub fn editor_view(state: TestState) -> impl IntoView {
         state.workspace,
         state.ui,
         read_only,
-        Callback::new(|_| ()),
+        Callback::new(|()| ()),
     );
     view! {
         <Editor read_only=read_only.into() on_open_lossy=actions.on_open_lossy on_save=actions.on_save on_accept=actions.on_accept on_reject=actions.on_reject />

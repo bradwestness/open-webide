@@ -30,3 +30,6 @@ test-support = []
 [dev-dependencies]
 wasm-bindgen-test = "0.3.78"
 openwebide-frontend = { path = ".", features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -66,7 +66,7 @@ impl AuthActions {
             }
         });
 
-        let on_logout = Callback::new(move |_| {
+        let on_logout = Callback::new(move |()| {
             let has_unsaved = workspace.dirty.get_untracked()
                 || workspace
                     .snapshots
@@ -82,7 +82,7 @@ impl AuthActions {
                 title: "Log out".to_string(),
                 message,
                 confirm_label: "Log out".to_string(),
-                action: Callback::new(move |_| {
+                action: Callback::new(move |()| {
                     spawn_local(async move {
                         let _ = api.with_value(Clone::clone).logout().await;
                     });

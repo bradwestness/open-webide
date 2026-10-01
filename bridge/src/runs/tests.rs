@@ -51,7 +51,7 @@ impl RunBackend for FakeBackend {
         }
         let mut messages = self.messages.lock().unwrap();
         let message = ChatMessage {
-            id: messages.len() as i64 + 10,
+            id: i64::try_from(messages.len()).unwrap() + 10,
             session_id,
             role,
             content: content.into(),
@@ -703,7 +703,8 @@ async fn websocket_scopes_attach_cancel_permission_and_list() {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{address}/"))
         .await
         .unwrap();
-    let token = openwebide_auth::sign_token_expires("secret", 2, now() as i64 + 120, 0);
+    let token =
+        openwebide_auth::sign_token_expires("secret", 2, i64::try_from(now()).unwrap() + 120, 0);
     ws.send(Message::Text(
         serde_json::to_string(&openwebide_core::BridgeClientMessage::Hello { token })
             .unwrap()

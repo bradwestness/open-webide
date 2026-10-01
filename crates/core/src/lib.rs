@@ -1274,8 +1274,8 @@ mod tests {
         );
 
         // Verification: reconstructing chunks reproduces original lines
-        let reconstructed_old: String = old_chunks.iter().map(|c| c.text()).collect();
-        let reconstructed_new: String = new_chunks.iter().map(|c| c.text()).collect();
+        let reconstructed_old: String = old_chunks.iter().map(DiffChunk::text).collect();
+        let reconstructed_new: String = new_chunks.iter().map(DiffChunk::text).collect();
         assert_eq!(reconstructed_old, old);
         assert_eq!(reconstructed_new, new);
     }
@@ -1294,8 +1294,8 @@ mod tests {
         assert_eq!(new_chunks.len(), 3);
         assert!(matches!(new_chunks[1], DiffChunk::Inserted(_)));
 
-        let reconstructed_old: String = old_chunks.iter().map(|c| c.text()).collect();
-        let reconstructed_new: String = new_chunks.iter().map(|c| c.text()).collect();
+        let reconstructed_old: String = old_chunks.iter().map(DiffChunk::text).collect();
+        let reconstructed_new: String = new_chunks.iter().map(DiffChunk::text).collect();
         assert_eq!(reconstructed_old, old_line);
         assert_eq!(reconstructed_new, new_line);
     }
@@ -1313,8 +1313,8 @@ mod tests {
         ];
         for (old, new) in cases {
             let (old_chunks, new_chunks) = compute_word_diff(old, new);
-            let reconstructed_old: String = old_chunks.iter().map(|c| c.text()).collect();
-            let reconstructed_new: String = new_chunks.iter().map(|c| c.text()).collect();
+            let reconstructed_old: String = old_chunks.iter().map(DiffChunk::text).collect();
+            let reconstructed_new: String = new_chunks.iter().map(DiffChunk::text).collect();
             assert_eq!(
                 reconstructed_old, old,
                 "old mismatch for {old:?} vs {new:?}"

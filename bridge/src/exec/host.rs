@@ -101,7 +101,7 @@ pub(super) async fn execute_command_direct(spec: SpawnSpec) -> Result<CommandOut
         BridgeError::Execution(format!("failed to spawn command '{display_cmd}': {e}"))
     })?;
 
-    let pid = child.id().map(|id| id as i32);
+    let pid = child.id().and_then(|id| i32::try_from(id).ok());
     // Armed for as long as this future can still be dropped mid-flight (e.g. hyper dropping the
     // `/exec` handler on a disconnected client) instead of running to a controlled exit —
     // including while the timeout/cancel branches below are themselves awaiting

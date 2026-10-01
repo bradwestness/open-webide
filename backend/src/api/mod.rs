@@ -39,6 +39,7 @@ fn json_response(status: u16, value: &impl serde::Serialize) -> JsonResp {
 /// full history); file writes mirror the file-read cap.
 const AUTH_BODY_LIMIT: usize = 64 * 1024;
 const CHAT_BODY_LIMIT: usize = 16 * 1024 * 1024;
+#[allow(clippy::cast_possible_truncation)] // The 10 MiB read limit fits usize on every supported target.
 const FILE_BODY_LIMIT: usize = crate::files::MAX_READ_BYTES as usize;
 const JSON_BODY_LIMIT: usize = 1024 * 1024;
 // 200 × 2,000 characters can expand to seven bytes each in double-encoded JSON.

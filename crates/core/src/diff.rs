@@ -436,8 +436,8 @@ mod tests {
         #[test]
         fn word_diff_rejoins(old_line in any::<String>(), new_line in any::<String>()) {
             let (old_chunks, new_chunks) = crate::compute_word_diff(&old_line, &new_line);
-            let reconstructed_old: String = old_chunks.iter().map(|c| c.text()).collect();
-            let reconstructed_new: String = new_chunks.iter().map(|c| c.text()).collect();
+            let reconstructed_old: String = old_chunks.iter().map(crate::DiffChunk::text).collect();
+            let reconstructed_new: String = new_chunks.iter().map(crate::DiffChunk::text).collect();
             prop_assert_eq!(reconstructed_old, old_line);
             prop_assert_eq!(reconstructed_new, new_line);
         }

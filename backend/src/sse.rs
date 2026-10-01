@@ -335,8 +335,8 @@ mod tests {
         Box::pin(stream::iter(items))
     }
 
-    fn delta(s: &str) -> Result<StreamChunk, ProviderError> {
-        Ok(StreamChunk::Delta(s.to_string()))
+    fn delta(s: &str) -> StreamChunk {
+        StreamChunk::Delta(s.to_string())
     }
 
     /// The event reduced to the fields the assertions care about.
@@ -392,7 +392,7 @@ mod tests {
                 store.clone(),
                 session_id,
                 vec![
-                    delta("a"),
+                    Ok(delta("a")),
                     Err(ProviderError::Http("401 Unauthorized".to_string())),
                 ],
             )
@@ -419,7 +419,7 @@ mod tests {
             let events = run(
                 store.clone(),
                 session_id,
-                vec![delta("ab"), Err(ProviderError::Incomplete)],
+                vec![Ok(delta("ab")), Err(ProviderError::Incomplete)],
             )
             .await;
             assert_eq!(
@@ -503,7 +503,12 @@ mod tests {
         block_on(async {
             let (store, session_id) = test_store().await;
             store.request_cancel(session_id, 1500).await.unwrap();
-            let events = run(store.clone(), session_id, vec![delta("a"), delta("b")]).await;
+            let events = run(
+                store.clone(),
+                session_id,
+                vec![Ok(delta("a")), Ok(delta("b"))],
+            )
+            .await;
             assert_eq!(events, vec![Kind::Message, Kind::Cancelled]);
             // The partial reply is not saved; later runs ignore the old cancel.
             let messages = store.list_messages(session_id).await.unwrap();
@@ -537,7 +542,11 @@ mod tests {
             let events = run(
                 store.clone(),
                 session_id,
-                vec![delta("a"), Ok(StreamChunk::Usage(usage)), delta("b")],
+                vec![
+                    Ok(delta("a")),
+                    Ok(StreamChunk::Usage(usage)),
+                    Ok(delta("b")),
+                ],
             )
             .await;
             assert_eq!(
@@ -581,7 +590,7 @@ mod tests {
                 session_id,
                 vec![
                     Ok(StreamChunk::Reasoning("r".into())),
-                    delta("answer"),
+                    Ok(delta("answer")),
                     Ok(StreamChunk::Stop(openwebide_core::StopReason::Length)),
                 ],
             )

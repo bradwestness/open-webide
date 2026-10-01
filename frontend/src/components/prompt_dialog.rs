@@ -10,7 +10,7 @@ use leptos::prelude::*;
 pub fn PromptDialog() -> impl IntoView {
     let ui = expect_context::<UiState>();
     let req = ui.prompt.read_only();
-    let on_close = Callback::new(move |_| ui.clear_prompt());
+    let on_close = Callback::new(move |()| ui.clear_prompt());
     let input_ref = NodeRef::<leptos::html::Input>::new();
     // Pre-fill the field's initial value and focus it when the dialog opens.
     Effect::new(move || {

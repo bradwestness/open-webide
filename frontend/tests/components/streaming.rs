@@ -325,7 +325,7 @@ async fn failed_resume_keeps_recovery_after_missing_handle() {
         .state
         .projects
         .local_handles
-        .update(|handles| handles.clear());
+        .update(std::collections::HashMap::clear);
     mounted.click_text("Resume");
     settle().await;
     assert!(

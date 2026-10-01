@@ -43,7 +43,7 @@ async fn exec_git_bytes(args: &[&str], cwd: &Path) -> Result<(Vec<u8>, String, b
         .spawn()
         .map_err(|e| GitError::Execution(format!("failed to spawn git {}: {e}", args.join(" "))))?;
     #[cfg(unix)]
-    let pid = child.id().map(|id| id as i32);
+    let pid = child.id().and_then(|id| i32::try_from(id).ok());
 
     match timeout(Duration::from_secs(30), child.wait_with_output()).await {
         Ok(Ok(output)) => {

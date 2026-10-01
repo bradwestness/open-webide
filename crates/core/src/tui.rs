@@ -116,7 +116,7 @@ impl TurnTelemetry {
 
     /// The total tokens this turn occupies in the model's context window.
     pub fn context_tokens(&self) -> usize {
-        self.prompt_tokens + self.completion_tokens
+        self.prompt_tokens.saturating_add(self.completion_tokens)
     }
 }
 
@@ -189,6 +189,8 @@ impl SessionTelemetry {
     /// Render a 10-character gauge bar (e.g. `[====······]`).
     pub fn gauge_bar(&self) -> String {
         let pct = self.context_percent();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        // context_percent clamps to [0, 100], so rounded cells fit usize.
         let filled = ((pct / 10.0).round() as usize).min(10);
         let empty = 10 - filled;
         format!("[{}{}]", "=".repeat(filled), "·".repeat(empty))
@@ -199,8 +201,10 @@ impl SessionTelemetry {
     pub fn record_turn(&mut self, t: &TurnTelemetry) {
         self.context_tokens = t.context_tokens();
         self.context_estimated = t.estimated;
-        self.total_prompt_tokens += t.prompt_tokens;
-        self.total_completion_tokens += t.completion_tokens;
+        self.total_prompt_tokens = self.total_prompt_tokens.saturating_add(t.prompt_tokens);
+        self.total_completion_tokens = self
+            .total_completion_tokens
+            .saturating_add(t.completion_tokens);
         self.totals_estimated |= t.estimated;
         if let Some(tps) = t.tokens_per_second() {
             self.current_speed_tps = Some(tps);
@@ -598,7 +602,7 @@ mod tests {
             tool_calls_count: 2,
         };
 
-        assert_eq!(telem.context_percent(), 50.0);
+        assert!((telem.context_percent() - 50.0).abs() < f64::EPSILON);
         assert_eq!(telem.gauge_bar(), "[=====·····]");
     }
 
@@ -669,6 +673,27 @@ mod tests {
         // ...while the totals accumulate across every call.
         assert_eq!(telem.total_prompt_tokens, 230);
         assert_eq!(telem.total_completion_tokens, 30);
+    }
+
+    #[test]
+    fn record_turn_saturates_context_and_cumulative_tokens() {
+        let mut telemetry = SessionTelemetry::default();
+        let usage = TurnTelemetry {
+            prompt_tokens: usize::MAX,
+            completion_tokens: 1,
+            ..TurnTelemetry::default()
+        };
+        telemetry.record_turn(&usage);
+        assert_eq!(telemetry.context_tokens, usize::MAX);
+        assert_eq!(telemetry.gauge_bar(), "[==========]");
+        telemetry.record_turn(&TurnTelemetry {
+            prompt_tokens: 1,
+            completion_tokens: usize::MAX,
+            ..TurnTelemetry::default()
+        });
+        assert_eq!(telemetry.context_tokens, usize::MAX);
+        assert_eq!(telemetry.total_prompt_tokens, usize::MAX);
+        assert_eq!(telemetry.total_completion_tokens, usize::MAX);
     }
 
     #[test]

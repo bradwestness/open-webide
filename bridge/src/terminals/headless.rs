@@ -36,7 +36,7 @@ pub fn spawn_headless(id: String, spec: crate::exec::SpawnSpec) -> Result<Arc<Se
         .spawn()
         .map_err(|e| format!("failed to spawn '{command}': {e}"))?;
 
-    let pid = child.id().map(|id| id as i32);
+    let pid = child.id().and_then(|id| i32::try_from(id).ok());
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();

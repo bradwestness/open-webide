@@ -49,7 +49,7 @@ impl BridgeClient for SpinBridgeClient {
                     crate::git::BridgeError::Unreachable(msg) => format!("Failed to connect to bridge daemon: {msg}. Ensure 'openwebide-bridge' is running."),
                     crate::git::BridgeError::Unauthorized => "Bridge error (HTTP 401): bridge secret required".to_string(),
                     crate::git::BridgeError::NoSecret => "Bridge error: no secret configured (set SPIN_VARIABLE_BRIDGE_SECRET)".to_string(),
-                    _ => format!("Bridge error: {:?}", e),
+                    _ => format!("Bridge error: {e:?}"),
                 })?;
 
             if !(200..300).contains(&status) {
@@ -71,18 +71,18 @@ impl BridgeClient for SpinBridgeClient {
         async move {
             crate::git::repo_status(&store, &dir)
                 .await
-                .map_err(|e| format!("{:?}", e))
+                .map_err(|e| format!("{e:?}"))
         }
     }
 
     fn git_diff(&self, path: Option<&str>) -> impl Future<Output = Result<String, String>> + Send {
-        let path_owned = path.map(|s| s.to_string());
+        let path_owned = path.map(ToString::to_string);
         let dir = self.project_dir.clone();
         let store = self.store.clone();
         async move {
             crate::git::repo_diff(&store, &dir, path_owned.as_deref())
                 .await
-                .map_err(|e| format!("{:?}", e))
+                .map_err(|e| format!("{e:?}"))
         }
     }
 
@@ -96,7 +96,7 @@ impl BridgeClient for SpinBridgeClient {
         async move {
             crate::git::repo_commit(&store, &dir, &req_clone)
                 .await
-                .map_err(|e| format!("{:?}", e))
+                .map_err(|e| format!("{e:?}"))
         }
     }
 
@@ -110,7 +110,7 @@ impl BridgeClient for SpinBridgeClient {
         async move {
             crate::git::repo_checkout(&store, &dir, &req_clone)
                 .await
-                .map_err(|e| format!("{:?}", e))
+                .map_err(|e| format!("{e:?}"))
         }
     }
 }

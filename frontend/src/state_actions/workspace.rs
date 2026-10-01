@@ -82,7 +82,7 @@ impl WorkspaceActions {
             });
         });
 
-        let on_grant_access = Callback::new(move |_| {
+        let on_grant_access = Callback::new(move |()| {
             let Some(project_id) = active_project.get() else {
                 return;
             };
@@ -109,7 +109,7 @@ impl WorkspaceActions {
             load_dir.run((project_id, String::new()));
         });
 
-        let on_open_lossy = Callback::new(move |_| {
+        let on_open_lossy = Callback::new(move |()| {
             let Some(project_id) = active_project.get() else {
                 return;
             };
@@ -210,11 +210,10 @@ impl WorkspaceActions {
                 ui.confirm.set(Some(ConfirmRequest {
                     title: "Discard unsaved changes".to_string(),
                     message: format!(
-                        "`{}` has unsaved changes. Discard them and open `{}`?",
-                        current_path, path
+                        "`{current_path}` has unsaved changes. Discard them and open `{path}`?"
                     ),
                     confirm_label: "Discard".to_string(),
-                    action: Callback::new(move |_| on_open.run(path_clone.clone())),
+                    action: Callback::new(move |()| on_open.run(path_clone.clone())),
                 }));
             } else {
                 on_open.run(path);
@@ -238,7 +237,7 @@ impl WorkspaceActions {
             }
         });
 
-        let on_save = Callback::new(move |_| {
+        let on_save = Callback::new(move |()| {
             let Some(project_id) = active_project.get() else {
                 return;
             };
@@ -278,7 +277,7 @@ impl WorkspaceActions {
             });
         });
 
-        let on_accept = Callback::new(move |_| {
+        let on_accept = Callback::new(move |()| {
             let Some(project_id) = active_project.get() else {
                 return;
             };
@@ -309,7 +308,7 @@ impl WorkspaceActions {
             refresh_git.run(());
         });
 
-        let on_reject = Callback::new(move |_| {
+        let on_reject = Callback::new(move |()| {
             let Some(project_id) = active_project.get() else {
                 return;
             };
@@ -344,7 +343,7 @@ impl WorkspaceActions {
                     crate::pending::RejectAction::Unavailable => "Ok".to_string(),
                     _ => "Reject".to_string(),
                 },
-                action: Callback::new(move |_| {
+                action: Callback::new(move |()| {
                     let action = action_clone.clone();
                     if matches!(action, crate::pending::RejectAction::Unavailable) {
                         return;
@@ -372,7 +371,7 @@ impl WorkspaceActions {
                                 result.map(|()| String::new())
                             }
                             crate::pending::RejectAction::Delete => {
-                                ws.delete(&path).await.map(|_| String::new())
+                                ws.delete(&path).await.map(|()| String::new())
                             }
                             crate::pending::RejectAction::Unavailable => unreachable!(),
                         };
@@ -403,7 +402,7 @@ impl WorkspaceActions {
             }));
         });
 
-        let on_new_file = Callback::new(move |_| {
+        let on_new_file = Callback::new(move |()| {
             if active_project.get().is_none() {
                 return;
             }
@@ -445,7 +444,7 @@ impl WorkspaceActions {
             }));
         });
 
-        let on_new_dir = Callback::new(move |_| {
+        let on_new_dir = Callback::new(move |()| {
             if active_project.get().is_none() {
                 return;
             }
@@ -517,7 +516,7 @@ impl WorkspaceActions {
             });
         });
 
-        let on_clear_search = Callback::new(move |_| {
+        let on_clear_search = Callback::new(move |()| {
             search_gen.update_value(|generation| *generation += 1);
             workspace.search.set(None);
         });

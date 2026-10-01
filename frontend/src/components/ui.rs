@@ -15,12 +15,10 @@ pub enum ButtonVariant {
 
 /// Size variant for buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 pub enum ButtonSize {
     Sm,
     #[default]
     Md,
-    Lg,
 }
 
 impl ButtonVariant {
@@ -40,7 +38,6 @@ impl ButtonSize {
         match self {
             Self::Sm => "ui-btn-sm",
             Self::Md => "ui-btn-md",
-            Self::Lg => "ui-btn-lg",
         }
     }
 }
@@ -87,15 +84,6 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> SegmentOption<T> {
             label: label.into(),
             value,
             glyph: None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_glyph(label: impl Into<String>, glyph: impl Into<String>, value: T) -> Self {
-        Self {
-            label: label.into(),
-            value,
-            glyph: Some(glyph.into()),
         }
     }
 }

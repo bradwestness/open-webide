@@ -96,7 +96,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
         select_project.run(id);
     });
 
-    let on_open_local = Callback::new(move |_| {
+    let on_open_local = Callback::new(move |()| {
         ui.clear_toast();
         spawn_local(async move {
             let picked = match local_fs::pick_directory().await {
@@ -177,7 +177,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
             message: "Delete this project? Its sessions and messages will be removed too."
                 .to_string(),
             confirm_label: "Delete".to_string(),
-            action: Callback::new(move |_| {
+            action: Callback::new(move |()| {
                 spawn_local(async move {
                     if let Err(error) = api.with_value(Clone::clone).delete_project(id).await {
                         ui.notify(error);
@@ -197,7 +197,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                         .projects
                         .update(|all| all.retain(|project| project.id != id));
                     chat.sessions.update(|sessions| {
-                        sessions.retain(|session| session.project_id != Some(id))
+                        sessions.retain(|session| session.project_id != Some(id));
                     });
                     close_project.run(id);
                     git.forget_project(id);

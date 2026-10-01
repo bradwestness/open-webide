@@ -379,7 +379,7 @@ impl<D: Db> Store<D> {
                         .map(|m| DbValue::Text(m.clone()))
                         .unwrap_or(DbValue::Null),
                     new.context_limit
-                        .map(|n| DbValue::Int(n as i64))
+                        .map(|n| DbValue::Int(i64::try_from(n).unwrap_or(i64::MAX)))
                         .unwrap_or(DbValue::Null),
                 ],
             )
@@ -408,9 +408,9 @@ impl<D: Db> Store<D> {
                         .as_ref()
                         .map(|m| DbValue::Text(m.clone()))
                         .unwrap_or(DbValue::Null),
-                    DbValue::Int(conn.enabled as i64),
+                    DbValue::Int(i64::from(conn.enabled)),
                     conn.context_limit
-                        .map(|n| DbValue::Int(n as i64))
+                        .map(|n| DbValue::Int(i64::try_from(n).unwrap_or(i64::MAX)))
                         .unwrap_or(DbValue::Null),
                     DbValue::Int(conn.id),
                 ],
@@ -880,16 +880,16 @@ impl<D: Db> Store<D> {
                     DbValue::Text(content.into()),
                     DbValue::Int(created_at),
                     usage
-                        .map(|u| DbValue::Int(u.prompt_tokens as i64))
+                        .map(|u| DbValue::Int(i64::try_from(u.prompt_tokens).unwrap_or(i64::MAX)))
                         .unwrap_or(DbValue::Null),
                     usage
-                        .map(|u| DbValue::Int(u.completion_tokens as i64))
+                        .map(|u| DbValue::Int(i64::try_from(u.completion_tokens).unwrap_or(i64::MAX)))
                         .unwrap_or(DbValue::Null),
                     usage
-                        .map(|u| DbValue::Int(u.eval_duration_ms as i64))
+                        .map(|u| DbValue::Int(i64::try_from(u.eval_duration_ms).unwrap_or(i64::MAX)))
                         .unwrap_or(DbValue::Null),
                     usage
-                        .map(|u| DbValue::Int(u.estimated as i64))
+                        .map(|u| DbValue::Int(i64::from(u.estimated)))
                         .unwrap_or(DbValue::Null),
                     calls_json.map(DbValue::Text).unwrap_or(DbValue::Null),
                 ],
@@ -1074,7 +1074,7 @@ impl<D: Db> Store<D> {
                 &[
                     DbValue::Int(session_id),
                     DbValue::Text(tool_call_id.to_string()),
-                    DbValue::Int(approved as i64),
+                    DbValue::Int(i64::from(approved)),
                 ],
             )
             .await?;
@@ -1203,7 +1203,10 @@ fn connection_from_row(row: &QueryRow) -> Result<Connection, StorageError> {
         base_url: row.get_text(3)?.to_string(),
         model: row.get_text_opt(4).map(str::to_string),
         enabled: row.get_int(5)? != 0,
-        context_limit: row.get_int_opt(6).filter(|&n| n > 0).map(|n| n as usize),
+        context_limit: row
+            .get_int_opt(6)
+            .filter(|&n| n > 0)
+            .and_then(|n| usize::try_from(n).ok()),
         tool_stream_unsupported: row.get_int(7)? != 0,
         tool_stream_revision: row.get_int(8)?,
     })
@@ -1271,9 +1274,10 @@ fn message_from_row(row: &QueryRow) -> Result<ChatMessage, StorageError> {
     let completion_tokens = row.get_int_opt(6);
     let usage = if prompt_tokens.is_some() || completion_tokens.is_some() {
         Some(TurnTelemetry {
-            prompt_tokens: prompt_tokens.unwrap_or(0) as usize,
-            completion_tokens: completion_tokens.unwrap_or(0) as usize,
-            eval_duration_ms: row.get_int_opt(7).unwrap_or(0) as u64,
+            prompt_tokens: usize::try_from(prompt_tokens.unwrap_or(0).max(0)).unwrap_or(usize::MAX),
+            completion_tokens: usize::try_from(completion_tokens.unwrap_or(0).max(0))
+                .unwrap_or(usize::MAX),
+            eval_duration_ms: u64::try_from(row.get_int_opt(7).unwrap_or(0)).unwrap_or(0),
             estimated: row.get_int_opt(8).map(|v| v != 0).unwrap_or(false),
         })
     } else {
@@ -1737,6 +1741,36 @@ mod tests {
     }
 
     #[test]
+    fn oversized_persisted_usage_saturates_restored_telemetry() {
+        let row = QueryRow {
+            values: vec![
+                DbValue::Int(1),
+                DbValue::Int(1),
+                DbValue::Text("assistant".into()),
+                DbValue::Text("hello".into()),
+                DbValue::Int(1),
+                DbValue::Int(i64::MAX),
+                DbValue::Int(i64::MAX),
+                DbValue::Int(1),
+                DbValue::Int(0),
+                DbValue::Null,
+            ],
+        };
+        let message = message_from_row(&row).unwrap();
+        let entries = vec![ConversationEntry::Message(message); 3];
+        let mut telemetry = openwebide_core::SessionTelemetry::default();
+        telemetry.restore_from_conversation(&entries);
+        assert_eq!(
+            telemetry.context_tokens,
+            usize::try_from(i64::MAX)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(2)
+        );
+        assert_eq!(telemetry.total_prompt_tokens, usize::MAX);
+        assert_eq!(telemetry.total_completion_tokens, usize::MAX);
+    }
+
+    #[test]
     fn message_usage_roundtrips_through_list_messages_and_conversation() {
         let store = test_store();
         let user_id = test_user(&store, "alice", UserRole::Admin);
@@ -1894,7 +1928,9 @@ mod tests {
                     assert_eq!(ts.anchor_message_id, user1.id);
                     assert!(ts.diff.is_some());
                 }
-                other => panic!("expected tool step, got {other:?}"),
+                other @ ConversationEntry::Message(_) => {
+                    panic!("expected tool step, got {other:?}")
+                }
             }
             assert!(matches!(
                 convo[2],
@@ -1911,7 +1947,9 @@ mod tests {
                     assert_eq!(ts.ok, Some(true));
                     assert!(ts.diff.is_none());
                 }
-                other => panic!("expected tool step, got {other:?}"),
+                other @ ConversationEntry::Message(_) => {
+                    panic!("expected tool step, got {other:?}")
+                }
             }
             assert!(matches!(
                 convo[5],
@@ -2940,8 +2978,7 @@ mod tests {
             match err {
                 StorageError::Conflict(msg) => assert!(
                     msg.contains("connections.name"),
-                    "Expected connections.name in conflict msg, got: {}",
-                    msg
+                    "Expected connections.name in conflict msg, got: {msg}"
                 ),
                 _ => panic!("Expected Conflict error"),
             }
@@ -2961,8 +2998,7 @@ mod tests {
             match err {
                 StorageError::Conflict(msg) => assert!(
                     msg.contains("system_prompts.name"),
-                    "Expected system_prompts.name in conflict msg, got: {}",
-                    msg
+                    "Expected system_prompts.name in conflict msg, got: {msg}"
                 ),
                 _ => panic!("Expected Conflict error"),
             }

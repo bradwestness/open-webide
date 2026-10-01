@@ -36,13 +36,10 @@ pub(crate) async fn register(req: Request, state: &AppState) -> Result<JsonResp,
         .insert_first_admin(username, &password_hash, now())
         .await?;
 
-    let user = match user_opt {
-        Some(u) => u,
-        None => {
-            return Err(ApiError::forbidden(
-                "registration is closed; an account already exists",
-            ));
-        }
+    let Some(user) = user_opt else {
+        return Err(ApiError::forbidden(
+            "registration is closed; an account already exists",
+        ));
     };
     // Pre-auth projects and sessions (user_id NULL) belong to whoever signs
     // up first, so nothing created before accounts existed is lost to scoping.

@@ -16,3 +16,6 @@ serde_json = { workspace = true }
 futures = { workspace = true }
 proptest = "1.11"
 
+
+[lints]
+workspace = true

@@ -1,3 +1,3 @@
 fn main() {
-    openwebide_frontend::mount()
+    openwebide_frontend::mount();
 }

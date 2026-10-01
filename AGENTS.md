@@ -91,6 +91,8 @@ Instructions, conventions, and architectural principles for AI agents working on
 3. **Database Migrations**: Append a numbered step in `apply_step` (`crates/storage/src/migrations.rs`), bump `SCHEMA_VERSION`, keep every step idempotent, and never edit a shipped step; update `Store` methods with corresponding unit tests in `crates/storage/src/store.rs`.
 4. **Resilience & Safe Layouts**: When implementing layout resizing, enforce sane minimum and maximum bounds to ensure critical panels (like the code editor or diff viewer) are never crushed.
 
+5. **Lint Policy**: Clippy pedantic picks are enforced via `[workspace.lints]` — add a lint there, not per crate; `#[allow]` needs a reason.
+
 ## 5. In-flight work
 
 A numbered implementation sequence lives in `ai_docs/sequence/` (git-excluded). Read

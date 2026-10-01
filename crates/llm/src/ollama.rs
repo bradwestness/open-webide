@@ -44,13 +44,19 @@ impl<C: HttpClient> OllamaProvider<C> {
 
 /// Read the usage fields Ollama reports and overwrite only the ones present.
 fn usage_fields(value: &Value, acc: &mut UsageAcc) {
-    if let Some(n) = value.get("prompt_eval_count").and_then(|v| v.as_u64()) {
-        acc.prompt = Some(n as usize);
+    if let Some(n) = value
+        .get("prompt_eval_count")
+        .and_then(serde_json::Value::as_u64)
+    {
+        acc.prompt = Some(usize::try_from(n).unwrap_or(usize::MAX));
     }
-    if let Some(n) = value.get("eval_count").and_then(|v| v.as_u64()) {
-        acc.completion = Some(n as usize);
+    if let Some(n) = value.get("eval_count").and_then(serde_json::Value::as_u64) {
+        acc.completion = Some(usize::try_from(n).unwrap_or(usize::MAX));
     }
-    if let Some(ns) = value.get("eval_duration").and_then(|v| v.as_u64()) {
+    if let Some(ns) = value
+        .get("eval_duration")
+        .and_then(serde_json::Value::as_u64)
+    {
         acc.eval_ms = Some(round_ns_to_ms(ns));
     }
 }
@@ -115,9 +121,8 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
-        let model = match request.model.clone().or_else(|| self.model.clone()) {
-            Some(model) => model,
-            None => return Box::pin(stream::once(async { Err(ProviderError::NoModel) })),
+        let Some(model) = request.model.clone().or_else(|| self.model.clone()) else {
+            return Box::pin(stream::once(async { Err(ProviderError::NoModel) }));
         };
         let mut body = json!({
             "model": model,
@@ -502,7 +507,7 @@ fn ollama_tool_messages(request: &ChatRequest) -> Vec<Value> {
                     .push(json!({ "role": "assistant", "content": content, "tool_calls": calls }));
             }
             _ => {
-                messages.push(json!({ "role": message.role.as_str(), "content": message.content }))
+                messages.push(json!({ "role": message.role.as_str(), "content": message.content }));
             }
         }
     }
@@ -529,7 +534,7 @@ fn parse_stream_line(line: &str) -> Result<StreamLine, ProviderError> {
                 .get("message")
                 .and_then(|m| m.get("content"))
                 .and_then(|c| c.as_str());
-            let done = value.get("done").and_then(|d| d.as_bool()) == Some(true);
+            let done = value.get("done").and_then(serde_json::Value::as_bool) == Some(true);
             if done {
                 // A final line may carry a last delta alongside `done: true`.
                 return match content {
@@ -555,6 +560,22 @@ mod tests {
     use crate::fake::{FakeHttpClient, FakeState};
     use futures::executor::block_on;
     use openwebide_core::{ChatMessage, Role, ToolDefinition, TurnTelemetry};
+
+    #[test]
+    fn oversized_usage_keeps_telemetry_saturated() {
+        let mut acc = UsageAcc::new(&request(None, None));
+        usage_fields(
+            &json!({"prompt_eval_count": u64::MAX, "eval_count": 1}),
+            &mut acc,
+        );
+        let usage = acc.finish();
+        let mut telemetry = openwebide_core::SessionTelemetry::default();
+        telemetry.record_turn(&usage);
+        telemetry.record_turn(&usage);
+        assert_eq!(telemetry.context_tokens, usize::MAX);
+        assert_eq!(telemetry.total_prompt_tokens, usize::MAX);
+        assert_eq!(telemetry.total_completion_tokens, 2);
+    }
 
     const BASE: &str = "http://localhost:11434";
 
@@ -756,9 +777,9 @@ mod tests {
 
     #[test]
     fn chat_stream_splits_lines_across_chunks() {
-        let (provider, _state) = provider(FakeHttpClient::new());
+        let (provider, state) = provider(FakeHttpClient::new());
         // One chunk holds a partial line, the next finishes it and adds more.
-        _state.push_stream(vec![
+        state.push_stream(vec![
             r#"{"message":{"role":"assistant","content":"a"},"done":fal"#,
             r#"se}
 {"message":{"role":"assistant","content":"b"},"done":true}
@@ -772,9 +793,9 @@ mod tests {
 
     #[test]
     fn chat_stream_decodes_utf8_split_across_chunks() {
-        let (provider, _state) = provider(FakeHttpClient::new());
+        let (provider, state) = provider(FakeHttpClient::new());
         // "héllo" with the 'é' (0xC3 0xA9) split across chunk boundaries.
-        _state.push_stream_bytes(vec![
+        state.push_stream_bytes(vec![
             br#"{"message":{"role":"assistant","content":"h"#.to_vec(),
             vec![0xC3],
             vec![0xA9],

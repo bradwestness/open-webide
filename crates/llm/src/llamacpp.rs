@@ -185,7 +185,10 @@ impl<C: HttpClient> LlamaCppProvider<C> {
                                                         let index = value
                                                             .get("index")
                                                             .and_then(Value::as_u64)
-                                                            .map(|n| n as usize)
+                                                            .map(|n| {
+                                                                usize::try_from(n)
+                                                                    .unwrap_or(usize::MAX)
+                                                            })
                                                             .unwrap_or(position);
                                                         let call = calls.entry(index).or_default();
                                                         if call.id.is_empty() {
@@ -288,21 +291,35 @@ struct PartialToolCall {
 fn usage_fields(value: &Value, acc: &mut UsageAcc) {
     let usage = value.get("usage").filter(|u| !u.is_null());
     if let Some(usage) = usage {
-        if let Some(n) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-            acc.prompt = Some(n as usize);
+        if let Some(n) = usage
+            .get("prompt_tokens")
+            .and_then(serde_json::Value::as_u64)
+        {
+            acc.prompt = Some(usize::try_from(n).unwrap_or(usize::MAX));
         }
-        if let Some(n) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
-            acc.completion = Some(n as usize);
+        if let Some(n) = usage
+            .get("completion_tokens")
+            .and_then(serde_json::Value::as_u64)
+        {
+            acc.completion = Some(usize::try_from(n).unwrap_or(usize::MAX));
         }
     }
     if let Some(timings) = value.get("timings") {
-        if let Some(ms) = timings.get("predicted_ms").and_then(|v| v.as_f64()) {
-            acc.eval_ms = Some(ms.round() as u64);
+        if let Some(ms) = timings
+            .get("predicted_ms")
+            .and_then(serde_json::Value::as_f64)
+        {
+            // Float-to-integer casts saturate; clamp negative durations to zero first.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let duration = ms.max(0.0).round() as u64;
+            acc.eval_ms = Some(duration);
         }
         if usage.is_none()
-            && let Some(n) = timings.get("predicted_n").and_then(|v| v.as_u64())
+            && let Some(n) = timings
+                .get("predicted_n")
+                .and_then(serde_json::Value::as_u64)
         {
-            acc.completion = Some(n as usize);
+            acc.completion = Some(usize::try_from(n).unwrap_or(usize::MAX));
         }
     }
 }
@@ -371,9 +388,8 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
-        let model = match request.model.clone().or_else(|| self.model.clone()) {
-            Some(model) => model,
-            None => return Box::pin(stream::once(async { Err(ProviderError::NoModel) })),
+        let Some(model) = request.model.clone().or_else(|| self.model.clone()) else {
+            return Box::pin(stream::once(async { Err(ProviderError::NoModel) }));
         };
         let body = json!({
             "model": model,
@@ -618,8 +634,8 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
             Ok(value) => Ok(value
                 .get("default_generation_settings")
                 .and_then(|s| s.get("n_ctx"))
-                .and_then(|v| v.as_u64())
-                .map(|n| n as usize)),
+                .and_then(serde_json::Value::as_u64)
+                .map(|n| usize::try_from(n).unwrap_or(usize::MAX))),
             Err(_) => Ok(None),
         }
     }
@@ -667,7 +683,7 @@ fn llamacpp_tool_messages(request: &ChatRequest) -> Vec<Value> {
                     .push(json!({ "role": "assistant", "content": content, "tool_calls": calls }));
             }
             _ => {
-                messages.push(json!({ "role": message.role.as_str(), "content": message.content }))
+                messages.push(json!({ "role": message.role.as_str(), "content": message.content }));
             }
         }
     }
@@ -729,6 +745,22 @@ mod tests {
     use crate::fake::{FakeHttpClient, FakeState};
     use futures::executor::block_on;
     use openwebide_core::{ChatMessage, Role, ToolDefinition, TurnTelemetry};
+
+    #[test]
+    fn oversized_usage_keeps_telemetry_saturated() {
+        let mut acc = UsageAcc::new(&request(None, None));
+        usage_fields(
+            &json!({"usage": {"prompt_tokens": u64::MAX, "completion_tokens": 1}}),
+            &mut acc,
+        );
+        let usage = acc.finish();
+        let mut telemetry = openwebide_core::SessionTelemetry::default();
+        telemetry.record_turn(&usage);
+        telemetry.record_turn(&usage);
+        assert_eq!(telemetry.context_tokens, usize::MAX);
+        assert_eq!(telemetry.total_prompt_tokens, usize::MAX);
+        assert_eq!(telemetry.total_completion_tokens, 2);
+    }
 
     const BASE: &str = "http://localhost:8080";
 

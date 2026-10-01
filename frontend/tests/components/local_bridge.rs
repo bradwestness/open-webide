@@ -121,12 +121,12 @@ fn bridge(replies: Vec<Result<CommandOutcome, String>>) -> FakeBridgeHttp {
     }
 }
 
-fn outcome(stdout: &str, exit_code: i32) -> Result<CommandOutcome, String> {
-    Ok(CommandOutcome {
+fn outcome(stdout: &str, exit_code: i32) -> CommandOutcome {
+    CommandOutcome {
         exit_code: Some(exit_code),
         stdout: stdout.into(),
         stderr: String::new(),
-    })
+    }
 }
 
 #[wasm_bindgen_test]
@@ -137,7 +137,7 @@ async fn discovery_with_traversal_error_is_saved_and_enables_commands() {
     });
     let folder = probe_folder();
     let vfs = BrowserFsaVfs::new(folder.clone().unchecked_into());
-    let http = bridge(vec![outcome("./repos/x/.openwebide-probe-ab12\n", 1)]);
+    let http = bridge(vec![Ok(outcome("./repos/x/.openwebide-probe-ab12\n", 1))]);
     let cwd = resolve_bridge_cwd_with(mounted.state.api, &vfs, 12, "ab12", |cwd| FakeBridgeHttp {
         cwd,
         ..http.clone()
@@ -173,7 +173,7 @@ async fn missing_folder_hides_bridge_tools_and_notifies_once() {
         state.seed_session();
         chat_view(state)
     });
-    for reply in [outcome("", 0), Err("bridge unreachable".into())] {
+    for reply in [Ok(outcome("", 0)), Err("bridge unreachable".into())] {
         let folder = probe_folder();
         let vfs = BrowserFsaVfs::new(folder.clone().unchecked_into());
         let http = bridge(vec![reply]);
@@ -220,9 +220,9 @@ async fn candidate_is_verified_each_run_and_rediscovered_when_stale() {
     let folder = probe_folder();
     let vfs = BrowserFsaVfs::new(folder.clone().unchecked_into());
     let http = bridge(vec![
-        outcome("", 0),
-        outcome("", 1),
-        outcome("./.openwebide-probe-ab12", 0),
+        Ok(outcome("", 0)),
+        Ok(outcome("", 1)),
+        Ok(outcome("./.openwebide-probe-ab12", 0)),
     ]);
     let first =
         resolve_bridge_cwd_with(mounted.state.api, &vfs, 12, "ab12", |cwd| FakeBridgeHttp {

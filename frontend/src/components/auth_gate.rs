@@ -20,7 +20,7 @@ pub fn AuthGate() -> impl IntoView {
     let busy = RwSignal::new(false);
 
     let submit = {
-        Callback::new(move |_| {
+        Callback::new(move |()| {
             let user = username.with(|u| u.trim().to_string());
             let pass = password.get();
             if user.is_empty() || pass.is_empty() {

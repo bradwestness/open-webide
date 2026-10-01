@@ -85,7 +85,7 @@ pub fn App() -> impl IntoView {
             if let Some(connection) = connection {
                 connection.close();
             }
-        })
+        });
     });
     let active_resizer = layout.active_resizer;
     let error = ui.toast;
@@ -113,10 +113,10 @@ pub fn App() -> impl IntoView {
     // by navigating the mount tree. The chosen path is relative to the mount
     // root, which is exactly what NewProject.path wants.
     let show_browser = RwSignal::new(false);
-    let on_open_remote = Callback::new(move |_| {
+    let on_open_remote = Callback::new(move |()| {
         show_browser.set(true);
     });
-    let on_close_browser = Callback::new(move |_| {
+    let on_close_browser = Callback::new(move |()| {
         show_browser.set(false);
     });
 
@@ -309,7 +309,7 @@ pub fn App() -> impl IntoView {
                     on_search=on_search
                     on_clear_search=on_clear_search
                     include_ignored=include_ignored_search.read_only()
-                    on_toggle_include_ignored=Callback::new(move |_| include_ignored_search.update(|v| *v = !*v))
+                    on_toggle_include_ignored=Callback::new(move |()| include_ignored_search.update(|v| *v = !*v))
                     on_grant_access=on_grant_access
                 />
                 <PanelResizer kind=ActiveResizer::Tree />

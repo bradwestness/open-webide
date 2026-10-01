@@ -191,8 +191,8 @@ impl PermissionGate for BridgeGate {
         };
         let decision = tokio::select! {
             result = receiver => result.unwrap_or(false),
-            _ = self.cancel.cancelled() => false,
-            _ = tokio::time::sleep(Duration::from_secs(300)) => false,
+            () = self.cancel.cancelled() => false,
+            () = tokio::time::sleep(Duration::from_secs(300)) => false,
         };
         self.pending.lock().unwrap().take();
         decision

@@ -25,7 +25,8 @@ async fn hello_with_valid_token_ok() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let token = openwebide_auth::sign_token_expires(secret, 42, (now as i64) + 120, 0);
+    let token =
+        openwebide_auth::sign_token_expires(secret, 42, i64::try_from(now).unwrap() + 120, 0);
 
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/"))
         .await
@@ -47,7 +48,7 @@ async fn hello_with_valid_token_ok() {
                 runs,
                 ..
             } => assert_eq!(runs, cfg!(feature = "tls")),
-            _ => panic!("Expected HelloOk with user_id 42, got: {:?}", msg),
+            _ => panic!("Expected HelloOk with user_id 42, got: {msg:?}"),
         }
     } else {
         panic!("Expected text message");
@@ -64,7 +65,8 @@ async fn hello_with_expired_token_rejected() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let token = openwebide_auth::sign_token_expires(secret, 42, (now as i64) - 10, 0);
+    let token =
+        openwebide_auth::sign_token_expires(secret, 42, i64::try_from(now).unwrap() - 10, 0);
 
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/"))
         .await
@@ -82,7 +84,7 @@ async fn hello_with_expired_token_rejected() {
         let msg: BridgeServerMessage = serde_json::from_str(&txt).unwrap();
         match msg {
             BridgeServerMessage::HelloError { message } => assert!(message.contains("expired")),
-            _ => panic!("Expected HelloError, got: {:?}", msg),
+            _ => panic!("Expected HelloError, got: {msg:?}"),
         }
     } else {
         panic!("Expected text message");
@@ -100,7 +102,8 @@ async fn hello_with_login_secret_token_rejected() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let token = openwebide_auth::sign_token_expires(login_secret, 42, (now as i64) + 120, 0);
+    let token =
+        openwebide_auth::sign_token_expires(login_secret, 42, i64::try_from(now).unwrap() + 120, 0);
 
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/"))
         .await
@@ -118,7 +121,7 @@ async fn hello_with_login_secret_token_rejected() {
         let msg: BridgeServerMessage = serde_json::from_str(&txt).unwrap();
         match msg {
             BridgeServerMessage::HelloError { .. } => {}
-            _ => panic!("Expected HelloError, got: {:?}", msg),
+            _ => panic!("Expected HelloError, got: {msg:?}"),
         }
     } else {
         panic!("Expected text message");
@@ -156,7 +159,7 @@ async fn pairing_token_accepted() {
                 runs,
                 ..
             } => assert!(!runs),
-            _ => panic!("Expected HelloOk with None user_id, got: {:?}", msg),
+            _ => panic!("Expected HelloOk with None user_id, got: {msg:?}"),
         }
     } else {
         panic!("Expected text message");
@@ -193,7 +196,7 @@ async fn ws_terminal_requires_hello() {
         let msg: BridgeServerMessage = serde_json::from_str(&txt).unwrap();
         match msg {
             BridgeServerMessage::Error { message, .. } => assert!(message.contains("hello first")),
-            _ => panic!("Expected Error, got: {:?}", msg),
+            _ => panic!("Expected Error, got: {msg:?}"),
         }
     } else {
         panic!("Expected text message");
@@ -212,8 +215,8 @@ async fn hello_timeout_closes() {
     // Do nothing and wait for connection to drop
     let res = tokio::time::timeout(std::time::Duration::from_secs(12), ws.next()).await;
     match res {
-        Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => {}
-        _ => panic!("Expected connection to be closed by timeout, got {:?}", res),
+        Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) => {}
+        _ => panic!("Expected connection to be closed by timeout, got {res:?}"),
     }
 }
 
@@ -232,7 +235,7 @@ async fn oversized_pre_hello_frame_closes() {
     let response = ws.next().await.unwrap();
     match response {
         Ok(Message::Close(_)) | Err(_) => {}
-        _ => panic!("Expected connection to be closed, got {:?}", response),
+        _ => panic!("Expected connection to be closed, got {response:?}"),
     }
 }
 
@@ -248,7 +251,8 @@ async fn browser_exec_requires_bridge_token() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let token = openwebide_auth::sign_token_expires(secret, 42, (now as i64) + 120, 0);
+    let token =
+        openwebide_auth::sign_token_expires(secret, 42, i64::try_from(now).unwrap() + 120, 0);
 
     let req_no_bearer = format!(
         "POST /exec HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://localhost:8080\r\nContent-Type: application/json

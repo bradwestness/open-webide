@@ -502,7 +502,10 @@ async fn probe_command<B: BridgeClient>(
     timeout_seconds: u64,
 ) -> Result<CommandOutcome, String> {
     let request = bridge.execute_command(command, timeout_seconds);
-    let deadline = sleep_ms((timeout_seconds * 1000 + 1000) as i32);
+    let deadline = sleep_ms(
+        i32::try_from(timeout_seconds.saturating_mul(1000).saturating_add(1000))
+            .unwrap_or(i32::MAX),
+    );
     futures::pin_mut!(request, deadline);
     match futures::future::select(request, deadline).await {
         futures::future::Either::Left((result, _)) => result,
@@ -519,6 +522,8 @@ pub async fn resolve_bridge_cwd(
     bridge_cfg: &crate::bridge::BridgeConfig,
     credentials: &crate::bridge::BridgeCredentials,
 ) -> Option<String> {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // Math.random is in [0, 1), scaled values fit u32; fractional bits are discarded.
     let nonce = format!(
         "{:08x}{:08x}",
         (js_sys::Math::random() * 4294967296.0) as u32,

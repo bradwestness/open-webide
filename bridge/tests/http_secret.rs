@@ -25,14 +25,14 @@ where
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+    let stream = TcpStream::connect(format!("127.0.0.1:{port}"))
         .await
         .unwrap();
     let io = hyper_util::rt::TokioIo::new(stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
     tokio::spawn(async move {
         if let Err(err) = conn.await {
-            println!("Connection failed: {:?}", err);
+            println!("Connection failed: {err:?}");
         }
     });
     sender.send_request(req).await.unwrap()
@@ -43,8 +43,8 @@ async fn exec_without_secret_is_401() {
     let (port, _) = start_server().await;
     let req = Request::builder()
         .method(Method::POST)
-        .uri(format!("http://127.0.0.1:{}/exec", port))
-        .header("host", format!("127.0.0.1:{}", port))
+        .uri(format!("http://127.0.0.1:{port}/exec"))
+        .header("host", format!("127.0.0.1:{port}"))
         .header("content-type", "application/json")
         .body(http_body_util::Full::new(Bytes::from(
             r#"{"command":"echo test"}"#,
@@ -60,9 +60,9 @@ async fn exec_with_secret_ok() {
     let (port, secret) = start_server().await;
     let req = Request::builder()
         .method(Method::POST)
-        .uri(format!("http://127.0.0.1:{}/exec", port))
-        .header("host", format!("127.0.0.1:{}", port))
-        .header("authorization", format!("Bearer {}", secret))
+        .uri(format!("http://127.0.0.1:{port}/exec"))
+        .header("host", format!("127.0.0.1:{port}"))
+        .header("authorization", format!("Bearer {secret}"))
         .header("content-type", "application/json")
         .body(http_body_util::Full::new(Bytes::from(
             r#"{"command":"echo test"}"#,
@@ -78,8 +78,8 @@ async fn git_without_secret_is_401() {
     let (port, _) = start_server().await;
     let req = Request::builder()
         .method(Method::POST)
-        .uri(format!("http://127.0.0.1:{}/git/status", port))
-        .header("host", format!("127.0.0.1:{}", port))
+        .uri(format!("http://127.0.0.1:{port}/git/status"))
+        .header("host", format!("127.0.0.1:{port}"))
         .header("content-type", "application/json")
         .body(http_body_util::Full::new(Bytes::from(r#"{}"#)))
         .unwrap();
@@ -93,8 +93,8 @@ async fn secret_endpoint_loopback_ok() {
     let (port, secret) = start_server().await;
     let req = Request::builder()
         .method(Method::POST)
-        .uri(format!("http://127.0.0.1:{}/secret", port))
-        .header("host", format!("127.0.0.1:{}", port))
+        .uri(format!("http://127.0.0.1:{port}/secret"))
+        .header("host", format!("127.0.0.1:{port}"))
         .body(http_body_util::Empty::<bytes::Bytes>::new())
         .unwrap();
 
@@ -110,8 +110,8 @@ async fn secret_endpoint_with_origin_403() {
     let (port, _) = start_server().await;
     let req = Request::builder()
         .method(Method::POST)
-        .uri(format!("http://127.0.0.1:{}/secret", port))
-        .header("host", format!("127.0.0.1:{}", port))
+        .uri(format!("http://127.0.0.1:{port}/secret"))
+        .header("host", format!("127.0.0.1:{port}"))
         .header("origin", "http://127.0.0.1:3000")
         .header("content-type", "application/json")
         .body(http_body_util::Empty::<bytes::Bytes>::new())
@@ -129,8 +129,8 @@ async fn browser_origin_exec_requires_token() {
     // in this step it should be allowed because origin is present).
     let req = Request::builder()
         .method(Method::POST)
-        .uri(format!("http://127.0.0.1:{}/exec", port))
-        .header("host", format!("127.0.0.1:{}", port))
+        .uri(format!("http://127.0.0.1:{port}/exec"))
+        .header("host", format!("127.0.0.1:{port}"))
         .header("origin", "http://127.0.0.1:3000")
         .header("content-type", "application/json")
         .body(http_body_util::Full::new(Bytes::from(

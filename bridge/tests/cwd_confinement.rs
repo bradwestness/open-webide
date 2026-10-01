@@ -139,8 +139,7 @@ async fn exec_honors_cwd() {
     // Path resolution might be absolute, so we check if it ends with "sub"
     assert!(
         stdout.ends_with("sub") || stdout.contains("sub"),
-        "expected 'sub' in pwd output, got {}",
-        stdout
+        "expected 'sub' in pwd output, got {stdout}"
     );
 }
 

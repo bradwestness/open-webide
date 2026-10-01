@@ -516,7 +516,7 @@ where
                         let outcome = if call
                             .name
                             .parse::<tools::ToolName>()
-                            .is_ok_and(|name| name.cancellable())
+                            .is_ok_and(tools::ToolName::cancellable)
                         {
                             let execute = Box::pin(state.executor.execute(&call));
                             let cancel = Box::pin(state.cancel.cancelled());

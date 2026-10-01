@@ -5,6 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The workspace is at `0.1.0` with no tags and no releases yet, so everything
 to date lives under [Unreleased](#unreleased). See [docs/roadmap.md](docs/roadmap.md)
+
+- Enforce selected pedantic Clippy lints across the workspace, remove unused code, and trim bridge Tokio features.
+- Preview SVG files with uppercase extensions.
 - Replaced WebSockets broadcast delivery with robust cursor-based SeqRing buffers
 
 for what's still ahead.

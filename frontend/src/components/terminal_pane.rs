@@ -9,19 +9,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::bridge::{BridgeConn, BridgeStatus};
 use leptos::html::Div;
 use leptos::prelude::*;
-use openwebide_core::{BridgeClientMessage, BridgeServerMessage, BridgeSessionInfo};
+use openwebide_core::{BridgeClientMessage, BridgeServerMessage};
 use web_sys::wasm_bindgen::JsCast;
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_session_id() -> String {
-    let now = js_sys::Date::now() as u64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // JS milliseconds are rounded down and saturate at the u64 bounds.
+    let now = js_sys::Date::now().max(0.0) as u64;
     let count = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("term-{now}-{count}")
 }
 
 /// Convert basic ANSI escape codes into HTML spans for colorized terminal rendering.
-pub fn ansi_to_html(input: &str) -> String {
+fn ansi_to_html(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     let mut in_span = false;
@@ -142,7 +144,6 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
     let bridge = StoredValue::new_local(bridge);
     let raw_output = RwSignal::new(String::new());
     let active_session = RwSignal::new(Option::<String>::None);
-    let sessions = RwSignal::new(Vec::<BridgeSessionInfo>::new());
     let input_text = RwSignal::new(String::new());
     let history = RwSignal::new(Vec::<String>::new());
     let history_index = RwSignal::new(Option::<usize>::None);
@@ -186,7 +187,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                 active_session.set(Some(id));
                 last_seq.set(0);
                 raw_output.update(|text| {
-                    text.push_str(&format!("\x1b[90m[Process spawned (PID: {pid})]\x1b[0m\n"))
+                    text.push_str(&format!("\x1b[90m[Process spawned (PID: {pid})]\x1b[0m\n"));
                 });
             }
             BridgeServerMessage::Output { id, seq, data, .. } => {
@@ -197,7 +198,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                 raw_output.update(|text| text.push_str(&data));
                 if let Some(Some(el)) = output_ref.try_get_untracked() {
                     let div: &web_sys::HtmlElement = el.as_ref();
-                    div.set_scroll_top(div.scroll_height() as f64);
+                    div.set_scroll_top(f64::from(div.scroll_height()));
                 }
             }
             BridgeServerMessage::Exited {
@@ -218,7 +219,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     _ => "unknown status".into(),
                 };
                 raw_output.update(|text| {
-                    text.push_str(&format!("\x1b[90m[Process finished with {code}]\x1b[0m\n"))
+                    text.push_str(&format!("\x1b[90m[Process finished with {code}]\x1b[0m\n"));
                 });
             }
             BridgeServerMessage::Error { id, message } => {
@@ -243,7 +244,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                             .retain(|tracked| tracked != &id);
                     }
                     raw_output.update(|text| {
-                        text.push_str(&format!("\x1b[31m[Bridge error: {message}]\x1b[0m\n"))
+                        text.push_str(&format!("\x1b[31m[Bridge error: {message}]\x1b[0m\n"));
                     });
                 }
             }
@@ -267,10 +268,9 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                         });
                     });
                 }
-                sessions.set(active);
             }
             _ => {}
-        }))
+        }));
     });
     let ids_for_list = spawned_ids.clone();
     Effect::new(move |previous: Option<bool>| {

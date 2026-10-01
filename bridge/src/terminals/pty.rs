@@ -51,7 +51,7 @@ pub fn spawn_pty(
 
     // Children are session leaders (portable-pty calls `setsid`), so their pid is also their
     // pgid.
-    let pid = child.process_id().map(|id| id as i32);
+    let pid = child.process_id().and_then(|id| i32::try_from(id).ok());
 
     let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(128);
     let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(32);
@@ -183,8 +183,8 @@ pub fn spawn_pty(
                 Ok(status) => {
                     let _ = reader_exit_rx.recv_timeout(std::time::Duration::from_millis(500));
                     sess_exit.emit_exit(
-                        Some(status.exit_code() as i32),
-                        status.signal().map(|s| s.to_string()),
+                        i32::try_from(status.exit_code()).ok(),
+                        status.signal().map(ToString::to_string),
                     );
                 }
                 Err(e) => {

@@ -218,13 +218,7 @@ pub fn parse_porcelain_v1(
 
         let status = if matches!(
             (index_status, work_status),
-            (b'D', b'D')
-                | (b'A', b'U')
-                | (b'U', b'D')
-                | (b'U', b'A')
-                | (b'D', b'U')
-                | (b'U', b'U')
-                | (b'A', b'A')
+            (b'D' | b'U', b'D') | (b'A' | b'D' | b'U', b'U') | (b'U' | b'A', b'A')
         ) {
             GitFileStatus::Conflict
         } else if index_status == b'?' || work_status == b'?' {

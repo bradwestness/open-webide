@@ -342,7 +342,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
             let mut usage = None;
             loop {
                 let chunk = tokio::select! {
-                    _ = run.cancel.cancelled() => { run.emit(RunEvent::Cancelled); return; }
+                    () = run.cancel.cancelled() => { run.emit(RunEvent::Cancelled); return; }
                     chunk = stream.next() => chunk,
                 };
                 match chunk {
@@ -513,7 +513,7 @@ async fn map_agent_events<B: RunBackend>(
                         session_id: run.session_id,
                         role: Role::Assistant,
                         content: text,
-                        created_at: now() as i64,
+                        created_at: i64::try_from(now()).unwrap_or(i64::MAX),
                         tool_calls: Some(calls),
                         tool_call_id: None,
                         usage,

@@ -160,11 +160,11 @@ impl RunSnapshot {
                 self.telemetry_after_message_id =
                     self.items.iter().rev().find_map(|item| match item {
                         RunItem::Message(message) => Some(message.id),
-                        _ => None,
+                        RunItem::Step(_) => None,
                     });
             }
             RunEvent::Done { .. } | RunEvent::Cancelled | RunEvent::Error { .. } => {
-                self.finished = Some(event.clone())
+                self.finished = Some(event.clone());
             }
         }
     }

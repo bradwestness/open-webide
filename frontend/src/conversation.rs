@@ -159,7 +159,7 @@ pub fn merge_snapshot(items: &mut Vec<ConversationItem>, snapshot: &openwebide_c
             .iter()
             .find_map(|item| match item {
                 RunItem::Message(m) => Some(m.session_id),
-                _ => None,
+                RunItem::Step(_) => None,
             })
             .unwrap_or_default();
         let mut placeholder = placeholder.unwrap_or_else(|| local_message(session_id, &content));
@@ -199,9 +199,8 @@ mod tests {
     #[test]
     fn snapshots_upsert_messages_steps_and_live_text_idempotently() {
         use openwebide_core::{RunItem, RunSnapshot, RunStep, ToolStepResultWire};
-        let mut message = match local_message(1, "before") {
-            ConversationItem::Message(m) => m,
-            _ => unreachable!(),
+        let ConversationItem::Message(mut message) = local_message(1, "before") else {
+            unreachable!();
         };
         message.id = 10;
         let mut items = vec![

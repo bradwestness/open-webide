@@ -119,7 +119,7 @@ fn render_assistant_message(content: String) -> AnyView {
                 </div>
             </Show>
 
-            <Show when=move || !answer_sig.with(|a| a.is_empty()) fallback=|| ()>
+            <Show when=move || !answer_sig.with(String::is_empty) fallback=|| ()>
                 <div
                     class="tui-assistant-body markdown"
                     inner_html=move || render_markdown(&answer_sig.get())
@@ -132,7 +132,7 @@ fn render_assistant_message(content: String) -> AnyView {
 /// Render a single user message with extracted editor context pill if present.
 fn render_user_message(content: String) -> AnyView {
     let (pill_opt, clean) = extract_editor_context_prelude(&content);
-    let pill_label = pill_opt.map(|s| s.to_string());
+    let pill_label = pill_opt.map(ToString::to_string);
     let clean_text = clean.to_string();
 
     let (pill_sig, _) = signal(pill_label);
@@ -140,7 +140,7 @@ fn render_user_message(content: String) -> AnyView {
 
     view! {
         <div class="tui-stream-line tui-user">
-            <Show when=move || pill_sig.with(|p| p.is_some()) fallback=|| ()>
+            <Show when=move || pill_sig.with(Option::is_some) fallback=|| ()>
                 <div class="tui-attached-pill">
                     <span class="tui-pill-icon">"📎"</span>
                     <span class="tui-pill-text">{move || pill_sig.get().unwrap_or_default()}</span>
@@ -202,7 +202,7 @@ fn render_tool_step(
             </div>
 
             <div class="tui-tool-inner">
-                <Show when=move || result_sig.with(|result| result.is_none())>
+                <Show when=move || result_sig.with(Option::is_none)>
                     {move || note.get_value().map(|note| view! { <div class="tui-perm-text">{note}</div> })}
                     <Show when=move || show_diff.get() && preview.with_value(|diff| diff.as_ref().is_some_and(|diff| !diff.old_unavailable))>
                         {move || render_approval_diff(preview.get_value().unwrap())}
@@ -501,7 +501,7 @@ pub fn ChatPane(
     Effect::new(move || {
         let _ = messages.get();
         if let Some(el) = scroll_ref.get() {
-            el.set_scroll_top(el.scroll_height() as f64);
+            el.set_scroll_top(f64::from(el.scroll_height()));
         }
     });
 
@@ -595,30 +595,12 @@ pub fn ChatPane(
                                             <Show
                                                 when=move || is_msg.get()
                                                 fallback=move || {
-                                                    let (id, name, summary, result, diff, note, awaiting) =
-                                                        match item_sig.get() {
-                                                            ConversationItem::ToolStep {
-                                                                id,
-                                                                name,
-                                                                summary,
-                                                                result,
-                                                                diff,
-                                                                note,
-                                                                awaiting_permission,
-                                                                key: _,
-                                                            } => {
-                                                                (
-                                                                    id,
-                                                                    name,
-                                                                    summary,
-                                                                    result,
-                                                                    diff,
-                                                                    note,
-                                                                    awaiting_permission,
-                                                                )
-                                                            }
-                                                            _ => unreachable!("not a tool step"),
-                                                        };
+                                                    let ConversationItem::ToolStep {
+                                                        id, name, summary, result, diff, note,
+                                                        awaiting_permission: awaiting, ..
+                                                    } = item_sig.get() else {
+                                                        unreachable!("not a tool step");
+                                                    };
                                                     let is_current_awaiting = awaiting_step.get().is_some_and(|(cur_id, _)| cur_id == id);
                                                     render_tool_step(
                                                         id,
@@ -678,7 +660,7 @@ pub fn ChatPane(
                 <div class="tui-active-context-pill">
                     <span class="pill-icon">"📎"</span>
                     <span class="pill-text">
-                        {move || active_context.get().as_ref().map(|c| c.pill_label()).unwrap_or_default()}
+                        {move || active_context.get().as_ref().map(openwebide_core::EditorContext::pill_label).unwrap_or_default()}
                     </span>
                     <button
                         class="pill-dismiss"

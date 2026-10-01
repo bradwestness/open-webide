@@ -125,7 +125,7 @@ impl GitActions {
             });
         });
 
-        let on_load_diff = Callback::new(move |_| {
+        let on_load_diff = Callback::new(move |()| {
             let Some(file_path) = open_file.get() else {
                 return;
             };
@@ -163,7 +163,7 @@ impl GitActions {
             });
         });
 
-        let on_discard_diff = Callback::new(move |_| {
+        let on_discard_diff = Callback::new(move |()| {
             let Some(head) = git.head_content.get() else {
                 return;
             };
@@ -177,11 +177,10 @@ impl GitActions {
             ui.set_confirm(ConfirmRequest {
                 title: "Revert to HEAD".to_string(),
                 message: format!(
-                    "Discard all changes to `{}` and restore the committed version?",
-                    head_path
+                    "Discard all changes to `{head_path}` and restore the committed version?"
                 ),
                 confirm_label: "Revert".to_string(),
-                action: Callback::new(move |_| {
+                action: Callback::new(move |()| {
                     let content = head_content.clone();
                     let path = head_path.clone();
                     spawn_local(async move {

@@ -782,7 +782,9 @@ impl Backend for FakeBackend {
                 method: "persist_message",
             });
             let message = ChatMessage {
-                id: self.messages.borrow().values().map(Vec::len).sum::<usize>() as i64 + 1,
+                id: i64::try_from(self.messages.borrow().values().map(Vec::len).sum::<usize>())
+                    .expect("test message count fits i64")
+                    + 1,
                 session_id,
                 role,
                 content: content.into(),

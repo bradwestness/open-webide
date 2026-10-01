@@ -70,7 +70,7 @@ pub(super) fn strip_base_hits(base: &str, hits: Vec<SearchHit>) -> Vec<SearchHit
 }
 
 pub(super) fn is_include_ignored(value: Option<String>) -> bool {
-    matches!(value.as_deref(), Some("1") | Some("true"))
+    matches!(value.as_deref(), Some("1" | "true"))
 }
 
 pub(super) fn raw_headers(rel: &str) -> Vec<(&'static str, String)> {

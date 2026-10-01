@@ -1,6 +1,6 @@
 //! Common helpers for bridge integration tests.
 
-#![allow(dead_code)]
+#![allow(dead_code)] // Each integration-test binary uses a different subset of these shared helpers.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -108,7 +108,7 @@ impl HttpResponse {
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .get(&name.to_ascii_lowercase())
-            .map(|s| s.as_str())
+            .map(String::as_str)
     }
 }
 
@@ -140,7 +140,7 @@ pub async fn post(
     }
     if has_origin {
         let token = openwebide_auth::sign_token_expires("dummy_secret", 42, 9999999999, 0);
-        req.push_str(&format!("Authorization: Bearer {}\r\n", token));
+        req.push_str(&format!("Authorization: Bearer {token}\r\n"));
     } else {
         req.push_str("Authorization: Bearer dummy_secret\r\n");
     }

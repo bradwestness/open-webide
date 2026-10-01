@@ -165,7 +165,7 @@ fn resolve_redirect(base: &Uri, location: &str) -> Result<String, String> {
     let base_scheme = base
         .scheme_str()
         .ok_or_else(|| "base URI missing scheme".to_string())?;
-    let base_authority = base.authority().map(|a| a.as_str());
+    let base_authority = base.authority().map(AsRef::<str>::as_ref);
     let base_path = base.path();
 
     let (loc_without_frag, frag) = match location.split_once('#') {

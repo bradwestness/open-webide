@@ -119,8 +119,9 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Ok(content) => {
                 let all_lines: Vec<&str> = content.lines().collect();
                 let total_lines = all_lines.len();
-                let offset = args.offset.unwrap_or(1).max(1) as usize;
-                let limit = args.limit.unwrap_or(2000).max(1) as usize;
+                let offset = usize::try_from(args.offset.unwrap_or(1).max(1)).unwrap_or(usize::MAX);
+                let limit =
+                    usize::try_from(args.limit.unwrap_or(2000).max(1)).unwrap_or(usize::MAX);
                 let start = (offset - 1).min(total_lines);
                 let end = start.saturating_add(limit).min(total_lines);
                 let shown = &all_lines[start..end];
@@ -364,7 +365,8 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
         if query.is_empty() {
             return fail("search_web", "", "missing 'query' argument");
         }
-        let limit = args.limit.map(|v| v as usize).unwrap_or(5).clamp(1, 10);
+        let limit = usize::try_from(args.limit.unwrap_or(5).clamp(1, 10))
+            .expect("search limit is at most 10");
 
         match self.web.search(query, limit).await {
             Ok(results) => {

@@ -26,7 +26,7 @@ fn parse_bridge_response<T: DeserializeOwned>(status: u16, body: &[u8]) -> Resul
             .and_then(|val| {
                 val.get("error")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                    .map(ToString::to_string)
             })
             .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned());
         return Err(BridgeError::Status(status, msg));
@@ -102,7 +102,7 @@ pub async fn repo_status(
 }
 
 /// In-process passive inspection of `.git/HEAD` and `.git/refs/`.
-pub fn passive_repo_status(project_full_path: &Path) -> Result<GitRepoStatus, String> {
+fn passive_repo_status(project_full_path: &Path) -> Result<GitRepoStatus, String> {
     let git_dir = project_full_path.join(".git");
     if !git_dir.exists() {
         return Err("not a git repository".into());
@@ -148,7 +148,6 @@ pub async fn repo_diff(
     file_path: Option<&str>,
 ) -> Result<String, BridgeError> {
     #[derive(serde::Deserialize)]
-    #[allow(dead_code)]
     struct DiffOut {
         diff: String,
     }
@@ -265,7 +264,7 @@ mod tests {
     fn test_parse_bridge_response_parse_error() {
         let json = b"{\"error\": \"not the expected schema\"}";
         #[derive(serde::Deserialize)]
-        #[allow(dead_code)]
+        #[allow(dead_code)] // The field defines the schema this malformed response must fail to decode.
         struct DiffOut {
             diff: String,
         }

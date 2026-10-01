@@ -96,3 +96,31 @@ web-sys = { version = "0.3", features = [
 [profile.release]
 opt-level = "s"
 lto = true
+
+[workspace.lints.clippy]
+# Leave off documentation/attribute churn: missing_errors_doc, missing_panics_doc,
+# must_use_candidate, return_self_not_must_use, doc_markdown.
+# Leave off framework constraints: too_many_lines, needless_pass_by_value,
+# same_length_and_capacity (spin-sdk http_service expansion).
+# Leave off style/micro-optimisation picks: map_unwrap_or, if_not_else,
+# single_match_else, match_same_arms, items_after_statements, needless_continue,
+# bool_to_int_with_if, default_trait_access, needless_raw_string_hashes,
+# unreadable_literal, format_push_string, cast_precision_loss (tokens/s maths),
+# implicit_hasher, struct_excessive_bools, assigning_clones, duration_suboptimal_units.
+case_sensitive_file_extension_comparisons = "warn"
+cast_lossless = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+float_cmp = "warn"
+ignored_unit_patterns = "warn"
+manual_let_else = "warn"
+match_wildcard_for_single_variants = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+trivially_copy_pass_by_ref = "warn"
+uninlined_format_args = "warn"
+unnecessary_wraps = "warn"
+unnested_or_patterns = "warn"
+unused_self = "warn"
+used_underscore_binding = "warn"

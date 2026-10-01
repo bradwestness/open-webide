@@ -18,7 +18,7 @@ pub fn Settings(
     let connections = settings.connections.read_only();
     let system_prompts = settings.system_prompts.read_only();
     let bridge_url = settings.bridge_url.read_only();
-    let on_close = Callback::new(move |_| settings.show_settings.set(false));
+    let on_close = Callback::new(move |()| settings.show_settings.set(false));
     let conn_ref = NodeRef::<leptos::html::Select>::new();
     let prompt_ref = NodeRef::<leptos::html::Select>::new();
 

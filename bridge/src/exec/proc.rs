@@ -176,7 +176,7 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("failed to spawn sleep");
-        let pgid = child.id().expect("child has a pid") as i32;
+        let pgid = i32::try_from(child.id().expect("child has a pid")).expect("pid fits i32");
 
         terminate_group(pgid, Duration::from_millis(300)).await;
 

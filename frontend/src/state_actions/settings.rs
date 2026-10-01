@@ -39,7 +39,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
     let SettingsActionContext { api, settings, ui } = context;
     install_theme_effect(settings);
 
-    let on_new_prompt = Callback::new(move |_| {
+    let on_new_prompt = Callback::new(move |()| {
         settings.show_prompt_form.set(true);
         settings.prompt_edit_id.set(None);
         settings.prompt_name.set(String::new());
@@ -61,11 +61,11 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         settings.show_prompt_form.set(true);
     });
 
-    let on_cancel_prompt = Callback::new(move |_| {
+    let on_cancel_prompt = Callback::new(move |()| {
         settings.show_prompt_form.set(false);
     });
 
-    let on_save_prompt = Callback::new(move |_| {
+    let on_save_prompt = Callback::new(move |()| {
         let name = settings.prompt_name.get().trim().to_string();
         if name.is_empty() {
             ui.notify("Prompt name is required.");
@@ -109,7 +109,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
             title: "Delete system prompt".to_string(),
             message: "Delete this system prompt?".to_string(),
             confirm_label: "Delete".to_string(),
-            action: Callback::new(move |_| {
+            action: Callback::new(move |()| {
                 spawn_local(async move {
                     if let Err(error) = api.with_value(Clone::clone).delete_system_prompt(id).await
                     {
@@ -124,7 +124,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         });
     });
 
-    let on_new_connection = Callback::new(move |_| {
+    let on_new_connection = Callback::new(move |()| {
         settings.show_conn_form.set(true);
         settings.conn_edit_id.set(None);
         settings.conn_name.set(String::new());
@@ -159,11 +159,11 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         settings.show_conn_form.set(true);
     });
 
-    let on_cancel_connection = Callback::new(move |_| {
+    let on_cancel_connection = Callback::new(move |()| {
         settings.show_conn_form.set(false);
     });
 
-    let on_save_connection = Callback::new(move |_| {
+    let on_save_connection = Callback::new(move |()| {
         let name = settings.conn_name.get().trim().to_string();
         if name.is_empty() {
             ui.notify("Connection name is required.");
@@ -248,7 +248,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
             message: "Delete this connection? Sessions using it will lose their LLM connection."
                 .to_string(),
             confirm_label: "Delete".to_string(),
-            action: Callback::new(move |_| {
+            action: Callback::new(move |()| {
                 spawn_local(async move {
                     if let Err(error) = api.with_value(Clone::clone).delete_connection(id).await {
                         ui.notify(error);
@@ -262,7 +262,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         });
     });
 
-    let on_open_settings = Callback::new(move |_| {
+    let on_open_settings = Callback::new(move |()| {
         settings.show_settings.set(true);
     });
 

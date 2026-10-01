@@ -71,7 +71,7 @@ impl ChatActions {
         let run_controls = StoredValue::new_local(super::runs::RunControls::default());
         let stop = {
             let local_cancel = chat.local_cancel_flag.get_value();
-            Callback::new(move |_| {
+            Callback::new(move |()| {
                 if let Some((_, run_id, _)) = chat.active_run.get_untracked() {
                     run_controls.update_value(|controls| {
                         controls.send(
@@ -459,8 +459,8 @@ impl ChatActions {
             }
         });
 
-        let send = Callback::new(move |_| start.run(None));
-        let resume_local_run = Callback::new(move |_| {
+        let send = Callback::new(move |()| start.run(None));
+        let resume_local_run = Callback::new(move |()| {
             let Some(resume) = chat.interrupted_run.get_untracked() else {
                 return;
             };
@@ -483,7 +483,7 @@ impl ChatActions {
 
         let on_select_session =
             Callback::new(move |session_id: i64| chat.active_session.set(Some(session_id)));
-        let on_new_session = Callback::new(move |_| chat.active_session.set(None));
+        let on_new_session = Callback::new(move |()| chat.active_session.set(None));
 
         let on_rename_session = Callback::new(move |session_id: i64| {
             let current = chat
@@ -526,7 +526,7 @@ impl ChatActions {
                 title: "Delete session".to_string(),
                 message: "Delete this session and its messages?".to_string(),
                 confirm_label: "Delete".to_string(),
-                action: Callback::new(move |_| {
+                action: Callback::new(move |()| {
                     spawn_local(async move {
                         if let Err(error) = api
                             .with_value(Clone::clone)
@@ -569,7 +569,7 @@ impl ChatActions {
                                     "**Git Repository Diff:**\n```diff\n{diff}\n```"
                                 )),
                                 Ok(_) => {
-                                    chat.notify("Working tree is clean (no uncommitted diffs).")
+                                    chat.notify("Working tree is clean (no uncommitted diffs).");
                                 }
                                 Err(error) => chat.notify(format!("Git diff failed: {error}")),
                             }

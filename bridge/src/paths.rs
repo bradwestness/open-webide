@@ -22,12 +22,12 @@ pub fn resolve_in_root(root: &Path, requested: Option<&str>) -> Result<PathBuf, 
     let normalized = normalize_joined(root, req);
 
     if !normalized.starts_with(root) {
-        return Err(format!("cwd escapes workspace root: {}", req));
+        return Err(format!("cwd escapes workspace root: {req}"));
     }
 
     match std::fs::metadata(&normalized) {
         Ok(m) if m.is_dir() => Ok(normalized),
-        _ => Err(format!("cwd does not exist: {}", req)),
+        _ => Err(format!("cwd does not exist: {req}")),
     }
 }
 
