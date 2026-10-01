@@ -195,7 +195,9 @@ and local-mode completions use `/api/chat-tools`.
 Chat and agent streams share core's `RunEvent` type across SSE, WebSocket runs, and browser
 local-mode execution. SSE frames use `event: <kind>` and `data: <tagged RunEvent JSON>`, followed
 by a blank line. For example, `event: delta` carries `{"kind":"delta","content":"hi"}`;
-message and done events wrap the persisted message in `message`. The frontend parses the data's
+`reasoning_delta` carries separate model reasoning in `content`. It is persisted as a leading
+`<think>…</think>` block, stripped from assistant history sent back to the model. Length stops
+append a plain-text reply-cutoff marker. Message and done events wrap the persisted message in `message`. The frontend parses the data's
 `kind` tag. Frontend and backend must be deployed together for this frame format.
 
 Sending waits up to about two seconds for a connecting bridge. Unavailable or unauthorized

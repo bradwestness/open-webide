@@ -12,6 +12,9 @@ pub enum RunEvent {
     Delta {
         content: String,
     },
+    ReasoningDelta {
+        content: String,
+    },
     Interim {
         message: ChatMessage,
     },
@@ -52,6 +55,8 @@ pub enum RunEvent {
 pub struct RunSnapshot {
     pub items: Vec<RunItem>,
     pub text: String,
+    #[serde(default)]
+    pub reasoning: String,
     pub telemetry: Option<TurnTelemetry>,
     #[serde(default)]
     pub telemetry_after_message_id: Option<i64>,
@@ -91,9 +96,11 @@ impl RunSnapshot {
                 self.items.push(RunItem::Message(message.clone()));
                 if matches!(event, RunEvent::Interim { .. }) {
                     self.text.clear();
+                    self.reasoning.clear();
                 }
             }
             RunEvent::Delta { content } => self.text.push_str(content),
+            RunEvent::ReasoningDelta { content } => self.reasoning.push_str(content),
             RunEvent::ToolCall { id, name, summary }
             | RunEvent::PermissionRequest {
                 id, name, summary, ..
@@ -102,6 +109,7 @@ impl RunSnapshot {
                 id, name, summary, ..
             } => {
                 self.text.clear();
+                self.reasoning.clear();
                 let index = self
                     .items
                     .iter()
@@ -167,6 +175,7 @@ impl RunEvent {
         match self {
             Self::Message { .. } => "message",
             Self::Delta { .. } => "delta",
+            Self::ReasoningDelta { .. } => "reasoning_delta",
             Self::Interim { .. } => "interim",
             Self::ToolCall { .. } => "tool_call",
             Self::PermissionRequest { .. } => "permission_request",
@@ -238,5 +247,24 @@ mod tests {
         assert_eq!(step.diff, None);
         assert_eq!(step.note, None);
         assert!(!step.awaiting_permission);
+    }
+    #[test]
+    fn snapshot_retains_live_reasoning_and_clears_it_after_tool_turn() {
+        let mut snapshot = RunSnapshot::default();
+        snapshot.apply(&RunEvent::ReasoningDelta {
+            content: "r".into(),
+        });
+        snapshot.apply(&RunEvent::Delta {
+            content: "answer".into(),
+        });
+        assert_eq!(snapshot.reasoning, "r");
+        assert_eq!(snapshot.text, "answer");
+        snapshot.apply(&RunEvent::ToolCall {
+            id: "t".into(),
+            name: "read_file".into(),
+            summary: "read".into(),
+        });
+        assert!(snapshot.reasoning.is_empty());
+        assert!(snapshot.text.is_empty());
     }
 }

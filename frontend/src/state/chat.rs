@@ -97,6 +97,7 @@ pub struct ChatState {
     pub history_gen: StoredValue<u64>,
     pub skip_history_load: StoredValue<Option<i64>>,
     pub streaming: RwSignal<bool>,
+    pub reasoning_active: RwSignal<bool>,
     pub active_run: RwSignal<Option<(i64, String, u64)>>,
     pub notice: RwSignal<Option<String>>,
     pub interrupted_run: RwSignal<Option<InterruptedRun>>,
@@ -164,6 +165,7 @@ impl ChatState {
             history_gen: StoredValue::new(0),
             skip_history_load: StoredValue::new(None),
             streaming: RwSignal::new(false),
+            reasoning_active: RwSignal::new(false),
             active_run: RwSignal::new(None),
             notice: RwSignal::new(None),
             interrupted_run: RwSignal::new(None),
@@ -286,6 +288,12 @@ impl ChatState {
             .or_else(|| self.active_session.get_untracked())
             .unwrap_or_default();
 
+        let close_reasoning = self.reasoning_active.get_untracked();
+        match &event {
+            RunEvent::ReasoningDelta { .. } => self.reasoning_active.set(true),
+            RunEvent::Telemetry { .. } => {}
+            _ => self.reasoning_active.set(false),
+        }
         match event {
             RunEvent::Message { message: msg } => {
                 if msg.role == openwebide_core::Role::User {
@@ -299,6 +307,15 @@ impl ChatState {
                     }
                 });
             }
+            RunEvent::ReasoningDelta { content } => self.messages.update(|items| {
+                if let Some(ConversationItem::Message(message)) = items.last_mut()
+                    && message.role == openwebide_core::Role::Assistant && message.id <= 0
+                {
+                    message.content.push_str(&openwebide_core::escape_reasoning(&content));
+                } else {
+                    items.push(local_message(session_id, format!("{}{}", openwebide_core::ESCAPED_REASONING_OPEN, openwebide_core::escape_reasoning(&content))));
+                }
+            }),
             RunEvent::Delta { content: delta } => self.messages.update(|items| {
                 let extends_assistant = items.last().is_some_and(|item| {
                     matches!(
@@ -309,6 +326,9 @@ impl ChatState {
                 });
                 if extends_assistant {
                     if let Some(ConversationItem::Message(message)) = items.last_mut() {
+                        if close_reasoning {
+                            message.content.push_str("</think>");
+                        }
                         message.content.push_str(&delta);
                     }
                 } else {
@@ -840,6 +860,17 @@ mod tests {
             let telemetry = chat.session_telemetry.get_untracked();
             assert_eq!(telemetry.total_prompt_tokens, 3);
             assert_eq!(telemetry.total_completion_tokens, 2);
+        });
+    }
+    #[test]
+    fn inline_thinking_deltas_remain_open_until_the_model_closes_them() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let chat = ChatState::new();
+            for content in ["<think>", "r", "</think>answer"] {
+                chat.apply_event(RunEvent::Delta { content: content.into() });
+            }
+            assert!(matches!(&chat.messages.get_untracked()[0], ConversationItem::Message(m) if m.content == "<think>r</think>answer"));
         });
     }
 }

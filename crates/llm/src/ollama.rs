@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use futures::{Stream, StreamExt, stream};
 use openwebide_core::{
-    ChatCompletion, ChatRequest, ChatResponse, ModelInfo, ProviderKind, Role, ToolCall,
+    ChatCompletion, ChatRequest, ChatResponse, ModelInfo, ProviderKind, Role, StopReason, ToolCall,
 };
 use serde_json::{Value, json};
 
@@ -129,86 +129,83 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         }
         let url = url_for(&self.base_url, "/api/chat");
         let lines = LineStream::new(self.http.post_stream(&url, &body));
-        let acc = UsageAcc::new(request);
         Box::pin(stream::unfold(
-            (lines, acc, false, false, false),
-            |state| async move {
-                let (mut lines, mut acc, emitted_usage, done, mut complete) = state;
-                if done {
-                    return None;
-                }
+            (
+                lines,
+                UsageAcc::new(request),
+                VecDeque::new(),
+                false,
+                false,
+                StopReason::Complete,
+            ),
+            |(mut lines, mut acc, mut pending, mut complete, mut ended, mut stop_reason)| async move {
                 loop {
-                    let Some(line) = lines.next().await else {
-                        // EOF: a stream that never signalled completion is
-                        // incomplete, not a success.
-                        if !complete {
-                            return Some((
-                                Err(ProviderError::Incomplete),
-                                (lines, acc, emitted_usage, true, complete),
-                            ));
-                        }
-                        if acc.ended.is_none() {
-                            acc.ended = clock_now();
-                        }
-                        if !emitted_usage {
-                            return Some((
-                                Ok(StreamChunk::Usage(acc.finish())),
-                                (lines, acc, true, true, complete),
-                            ));
-                        }
+                    if let Some(chunk) = pending.pop_front() {
+                        return Some((
+                            Ok(chunk),
+                            (lines, acc, pending, complete, ended, stop_reason),
+                        ));
+                    }
+                    if ended {
                         return None;
-                    };
-                    match line {
-                        Err(e) => {
-                            return Some((Err(e), (lines, acc, emitted_usage, true, complete)));
-                        }
-                        Ok(line) => {
-                            let parsed: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-                            usage_fields(&parsed, &mut acc);
-                            match parse_stream_line(&line) {
-                                Ok(StreamLine::Delta(delta)) => {
+                    }
+                    let result = match lines.next().await {
+                        None if !complete => Err(ProviderError::Incomplete),
+                        Some(Err(e)) => Err(e),
+                        line => (|| {
+                            let mut done = line.is_none();
+                            if let Some(Ok(line)) = line {
+                                let parsed = parse_stream_line(&line)?;
+                                if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                                    usage_fields(&value, &mut acc);
+                                    if value["done_reason"] == "length" {
+                                        stop_reason = StopReason::Length;
+                                    }
+                                    if let Some(reasoning) = value["message"]["thinking"]
+                                        .as_str()
+                                        .filter(|s| !s.is_empty())
+                                    {
+                                        if acc.started.is_none() {
+                                            acc.started = clock_now();
+                                        }
+                                        acc.text.push_str(reasoning);
+                                        pending.push_back(StreamChunk::Reasoning(
+                                            reasoning.to_string(),
+                                        ));
+                                    }
+                                }
+                                let delta = match parsed {
+                                    StreamLine::Delta(delta) => Some(delta),
+                                    StreamLine::Finished(delta) => {
+                                        complete = true;
+                                        delta
+                                    }
+                                    StreamLine::Done => {
+                                        done = true;
+                                        None
+                                    }
+                                    StreamLine::Skip => None,
+                                };
+                                if let Some(delta) = delta {
                                     if acc.started.is_none() {
                                         acc.started = clock_now();
                                     }
                                     acc.text.push_str(&delta);
-                                    return Some((
-                                        Ok(StreamChunk::Delta(delta)),
-                                        (lines, acc, emitted_usage, false, complete),
-                                    ));
-                                }
-                                Ok(StreamLine::Finished(delta)) => {
-                                    complete = true;
-                                    if let Some(delta) = delta {
-                                        if acc.started.is_none() {
-                                            acc.started = clock_now();
-                                        }
-                                        acc.text.push_str(&delta);
-                                        return Some((
-                                            Ok(StreamChunk::Delta(delta)),
-                                            (lines, acc, emitted_usage, false, complete),
-                                        ));
-                                    }
-                                    continue;
-                                }
-                                Ok(StreamLine::Done) => {
-                                    acc.ended = clock_now();
-                                    if !emitted_usage {
-                                        return Some((
-                                            Ok(StreamChunk::Usage(acc.finish())),
-                                            (lines, acc, true, true, complete),
-                                        ));
-                                    }
-                                    return None;
-                                }
-                                Ok(StreamLine::Skip) => continue,
-                                Err(e) => {
-                                    return Some((
-                                        Err(e),
-                                        (lines, acc, emitted_usage, true, complete),
-                                    ));
+                                    pending.push_back(StreamChunk::Delta(delta));
                                 }
                             }
-                        }
+                            if done {
+                                acc.ended = clock_now();
+                                pending.push_back(StreamChunk::Stop(stop_reason));
+                                pending.push_back(StreamChunk::Usage(acc.finish()));
+                                ended = true;
+                            }
+                            Ok(())
+                        })(),
+                    };
+                    if let Err(e) = result {
+                        pending.clear();
+                        return Some((Err(e), (lines, acc, pending, complete, true, stop_reason)));
                     }
                 }
             },
@@ -254,6 +251,16 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
                 .to_string();
             acc.text.push_str(&preamble);
             return Ok(ChatCompletion {
+                reasoning: message
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                stop_reason: if value["done_reason"] == "length" {
+                    StopReason::Length
+                } else {
+                    StopReason::Complete
+                },
                 response: ChatResponse::ToolCalls(tool_calls),
                 preamble,
                 usage: Some(acc.finish()),
@@ -266,6 +273,16 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
             .to_string();
         acc.text.push_str(&content);
         Ok(ChatCompletion {
+            reasoning: message
+                .get("thinking")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            stop_reason: if value["done_reason"] == "length" {
+                StopReason::Length
+            } else {
+                StopReason::Complete
+            },
             response: ChatResponse::Text(content),
             preamble: String::new(),
             usage: Some(acc.finish()),
@@ -320,6 +337,18 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
                             };
                             let value: Value = serde_json::from_str(data)
                                 .map_err(|e| ProviderError::Parse(e.to_string()))?;
+                            if let Some(reasoning) = value["message"]
+                                .get("thinking")
+                                .and_then(Value::as_str)
+                                .filter(|s| !s.is_empty())
+                            {
+                                if acc.started.is_none() {
+                                    acc.started = clock_now();
+                                }
+                                acc.text.push_str(reasoning);
+                                pending
+                                    .push_back(ToolStreamChunk::Reasoning(reasoning.to_string()));
+                            }
                             if let Some(values) = value.get("message").and_then(tool_call_values) {
                                 if acc.started.is_none() {
                                     acc.started = clock_now();
@@ -348,6 +377,13 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
                             if done {
                                 acc.ended = clock_now();
                                 usage_fields(&value, &mut acc);
+                                pending.push_back(ToolStreamChunk::Stop(
+                                    if value["done_reason"] == "length" {
+                                        StopReason::Length
+                                    } else {
+                                        StopReason::Complete
+                                    },
+                                ));
                                 pending.push_back(ToolStreamChunk::Usage(acc.finish()));
                                 let response = if calls.is_empty() {
                                     ChatResponse::Text(std::mem::take(&mut content))
@@ -683,6 +719,7 @@ mod tests {
             match item {
                 Ok(StreamChunk::Delta(d)) => deltas.push(d),
                 Ok(StreamChunk::Usage(u)) => usages.push(u),
+                Ok(StreamChunk::Reasoning(_) | StreamChunk::Stop(_)) => {}
                 Err(e) => errors.push(e),
             }
         }
@@ -1096,6 +1133,10 @@ mod tests {
         let mut req = request(None, None);
         req.tools = vec![read_file_tool()];
         let items = tool_items(&provider, &req);
+        assert!(matches!(
+            items[2],
+            Ok(ToolStreamChunk::Stop(StopReason::Complete))
+        ));
         let calls = vec![
             ToolCall {
                 id: "call_0".into(),
@@ -1108,7 +1149,7 @@ mod tests {
                 arguments: "{}".into(),
             },
         ];
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 5);
         assert_eq!(
             items[0].as_ref().unwrap(),
             &ToolStreamChunk::Delta("Let ".into())
@@ -1118,7 +1159,7 @@ mod tests {
             &ToolStreamChunk::Delta("me check".into())
         );
         assert_eq!(
-            items[2].as_ref().unwrap(),
+            items[3].as_ref().unwrap(),
             &ToolStreamChunk::Usage(TurnTelemetry {
                 prompt_tokens: 40,
                 completion_tokens: 10,
@@ -1127,7 +1168,7 @@ mod tests {
             })
         );
         assert_eq!(
-            items[3].as_ref().unwrap(),
+            items[4].as_ref().unwrap(),
             &ToolStreamChunk::Response(ChatResponse::ToolCalls(calls.clone()))
         );
         let body = state.calls.lock().unwrap()[0].body.clone().unwrap();
@@ -1155,7 +1196,11 @@ mod tests {
 "#,
         ]);
         let items = tool_items(&provider, &request(None, None));
-        assert_eq!(items.len(), 4);
+        assert!(matches!(
+            items[2],
+            Ok(ToolStreamChunk::Stop(StopReason::Complete))
+        ));
+        assert_eq!(items.len(), 5);
         assert_eq!(
             items[0].as_ref().unwrap(),
             &ToolStreamChunk::Delta("a".into())
@@ -1164,9 +1209,9 @@ mod tests {
             items[1].as_ref().unwrap(),
             &ToolStreamChunk::Delta("b".into())
         );
-        assert!(matches!(items[2], Ok(ToolStreamChunk::Usage(_))));
+        assert!(matches!(items[3], Ok(ToolStreamChunk::Usage(_))));
         assert_eq!(
-            items[3].as_ref().unwrap(),
+            items[4].as_ref().unwrap(),
             &ToolStreamChunk::Response(ChatResponse::Text("ab".into()))
         );
     }
@@ -1195,5 +1240,65 @@ mod tests {
                 assert!(matches!(items[1], Err(ProviderError::Incomplete)));
             }
         }
+    }
+    #[test]
+    fn reasoning_and_stop_reason_stream_in_order() {
+        for length in [false, true] {
+            for tools in [false, true] {
+                let (provider, state) = provider(FakeHttpClient::new());
+                state.push_stream(vec![
+                    "{\"message\":{\"thinking\":\"r\"}}\n",
+                    "{\"message\":{\"content\":\"answer\"}}\n",
+                    if length {
+                        "{\"done\":true,\"done_reason\":\"length\"}\n"
+                    } else {
+                        "{\"done\":true,\"done_reason\":\"stop\"}\n"
+                    },
+                ]);
+                let reason = if length {
+                    StopReason::Length
+                } else {
+                    StopReason::Complete
+                };
+                let req = request(None, None);
+                if tools {
+                    let chunks = tool_items(&provider, &req)
+                        .into_iter()
+                        .map(Result::unwrap)
+                        .collect::<Vec<_>>();
+                    assert_eq!(chunks.len(), 5);
+                    assert_eq!(chunks[0], ToolStreamChunk::Reasoning("r".into()));
+                    assert_eq!(chunks[1], ToolStreamChunk::Delta("answer".into()));
+                    assert_eq!(chunks[2], ToolStreamChunk::Stop(reason));
+                    assert!(matches!(chunks[3], ToolStreamChunk::Usage(_)));
+                    assert_eq!(
+                        chunks[4],
+                        ToolStreamChunk::Response(ChatResponse::Text("answer".into()))
+                    );
+                } else {
+                    let chunks = block_on(provider.chat_stream(&req).collect::<Vec<_>>())
+                        .into_iter()
+                        .map(Result::unwrap)
+                        .collect::<Vec<_>>();
+                    assert_eq!(chunks.len(), 4);
+                    assert!(matches!(&chunks[0], StreamChunk::Reasoning(r) if r == "r"));
+                    assert!(matches!(&chunks[1], StreamChunk::Delta(d) if d == "answer"));
+                    assert!(matches!(chunks[2], StreamChunk::Stop(r) if r == reason));
+                    assert!(matches!(chunks[3], StreamChunk::Usage(_)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nonstream_completion_preserves_reasoning_and_length() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push(Ok(json!({"message":{"content":"answer","thinking":"r"},"done":true,"done_reason":"length"})));
+        let completion = block_on(provider.chat_tools(&request(None, None))).unwrap();
+        let chunks = crate::completion_chunks(completion);
+        assert_eq!(chunks[0], ToolStreamChunk::Reasoning("r".into()));
+        assert_eq!(chunks[1], ToolStreamChunk::Delta("answer".into()));
+        assert_eq!(chunks[2], ToolStreamChunk::Stop(StopReason::Length));
+        assert!(matches!(chunks[3], ToolStreamChunk::Usage(_)));
     }
 }

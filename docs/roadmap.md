@@ -306,8 +306,7 @@ The chat/TUI surface grows into a full agent workspace. In priority order:
    tool, pinned above the composer.
 8. **Reasoning polish** — a live timer and token count while the model
    thinks, and a collapsed "Thought for 3.2s · 1.4k tokens" summary
-   (extends the inline `<think>` blocks and the hardening sequence's
-   provider-reasoning step).
+   (extends the inline `<think>` blocks and streamed provider reasoning).
 9. **Tool-step polish** — a running spinner with elapsed time, durations,
    show-more for long output, ANSI colors, a copy button, and a per-turn
    summary line ("5 tools · 2 files changed · 12.3s").

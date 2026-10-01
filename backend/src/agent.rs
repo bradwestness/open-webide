@@ -193,9 +193,17 @@ fn map_agent_events(
     let display_anchor = anchor_id;
     let last_usage: Option<TurnTelemetry> = None;
     stream::unfold(
-        (store, session_id, display_anchor, events, last_usage),
+        (
+            store,
+            session_id,
+            display_anchor,
+            events,
+            last_usage,
+            String::new(),
+        ),
         move |state| async move {
-            let (store, session_id, mut display_anchor, mut events, mut last_usage) = state;
+            let (store, session_id, mut display_anchor, mut events, mut last_usage, mut reasoning) =
+                state;
             let Some(event) = events.next().await else {
                 let _ = store
                     .clear_tool_permissions_for_run(session_id, anchor_id)
@@ -263,8 +271,14 @@ fn map_agent_events(
                         diff,
                     }
                 }
+                AgentEvent::ReasoningDelta(content) => {
+                    reasoning.push_str(&content);
+                    RunEvent::ReasoningDelta { content }
+                }
                 AgentEvent::TextDelta(delta) => RunEvent::Delta { content: delta },
                 AgentEvent::TurnCalls { text, calls } => {
+                    let text =
+                        openwebide_core::with_reasoning(&std::mem::take(&mut reasoning), &text);
                     let usage = last_usage.take();
                     let message = store
                         .insert_interim_message(
@@ -298,25 +312,38 @@ fn map_agent_events(
                     last_usage = Some(usage);
                     RunEvent::Telemetry { usage }
                 }
-                AgentEvent::FinalText(text) => match store
-                    .insert_message_with_usage(
-                        session_id,
-                        Role::Assistant,
-                        &text,
-                        now(),
-                        last_usage.take().as_ref(),
-                    )
-                    .await
-                {
-                    Ok(message) => RunEvent::Done { message },
-                    Err(error) => RunEvent::Error {
-                        message: format!("failed to save reply: {error}"),
-                    },
-                },
+                AgentEvent::FinalText(text) => {
+                    let text = openwebide_core::with_reasoning(&reasoning, &text);
+                    match store
+                        .insert_message_with_usage(
+                            session_id,
+                            Role::Assistant,
+                            &text,
+                            now(),
+                            last_usage.take().as_ref(),
+                        )
+                        .await
+                    {
+                        Ok(message) => RunEvent::Done { message },
+                        Err(error) => RunEvent::Error {
+                            message: format!("failed to save reply: {error}"),
+                        },
+                    }
+                }
                 AgentEvent::Cancelled => RunEvent::Cancelled,
                 AgentEvent::Error(message) => RunEvent::Error { message },
             };
-            Some((sse, (store, session_id, display_anchor, events, last_usage)))
+            Some((
+                sse,
+                (
+                    store,
+                    session_id,
+                    display_anchor,
+                    events,
+                    last_usage,
+                    reasoning,
+                ),
+            ))
         },
     )
 }
@@ -883,6 +910,45 @@ mod tests {
             assert!(futures::poll!(&mut waiter).is_pending());
             store.request_cancel(session_id, 3000).await.unwrap();
             waiter.await;
+        });
+    }
+    #[test]
+    fn reasoning_prefix_is_persisted_per_turn() {
+        futures::executor::block_on(async {
+            let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+            store.migrate().await.unwrap();
+            let user = store
+                .insert_user("u", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let session = store
+                .create_session("s", None, None, None, user.id, 1)
+                .await
+                .unwrap();
+            let answer = format!("answer{}", openwebide_core::REPLY_CUT_OFF_MARKER);
+            let events = map_agent_events(
+                store.clone(),
+                session.id,
+                7,
+                stream::iter([
+                    AgentEvent::ReasoningDelta("first".into()),
+                    AgentEvent::TurnCalls {
+                        text: "checking".into(),
+                        calls: vec![],
+                    },
+                    AgentEvent::ReasoningDelta("r".into()),
+                    AgentEvent::TextDelta("answer".into()),
+                    AgentEvent::FinalText(answer.clone()),
+                ]),
+            )
+            .collect::<Vec<_>>()
+            .await;
+            assert!(
+                matches!(&events[0], RunEvent::ReasoningDelta { content } if content == "first")
+            );
+            let messages = store.list_messages(session.id).await.unwrap();
+            assert_eq!(messages[0].content, "<think>first</think>checking");
+            assert_eq!(messages[1].content, format!("<think>r</think>{answer}"));
         });
     }
 }

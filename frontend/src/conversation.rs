@@ -144,7 +144,16 @@ pub fn merge_snapshot(items: &mut Vec<ConversationItem>, snapshot: &openwebide_c
             }
         }
     }
-    if !snapshot.text.is_empty() {
+    if !snapshot.text.is_empty() || !snapshot.reasoning.is_empty() {
+        let content = if snapshot.text.is_empty() && !snapshot.reasoning.is_empty() {
+            format!(
+                "{}{}",
+                openwebide_core::ESCAPED_REASONING_OPEN,
+                openwebide_core::escape_reasoning(&snapshot.reasoning)
+            )
+        } else {
+            openwebide_core::with_reasoning(&snapshot.reasoning, &snapshot.text)
+        };
         let session_id = snapshot
             .items
             .iter()
@@ -153,11 +162,10 @@ pub fn merge_snapshot(items: &mut Vec<ConversationItem>, snapshot: &openwebide_c
                 _ => None,
             })
             .unwrap_or_default();
-        let mut placeholder =
-            placeholder.unwrap_or_else(|| local_message(session_id, &snapshot.text));
+        let mut placeholder = placeholder.unwrap_or_else(|| local_message(session_id, &content));
         if let ConversationItem::Message(message) = &mut placeholder {
             message.session_id = session_id;
-            message.content.clone_from(&snapshot.text);
+            message.content = content;
         }
         items.push(placeholder);
     }
@@ -312,5 +320,23 @@ mod tests {
         let a = notice("Saved.");
         let b = notice("Saved.");
         assert_ne!(item_key(&a), item_key(&b));
+    }
+    #[test]
+    fn reasoning_snapshot_restores_open_then_closed_thinking_block() {
+        let mut snapshot = openwebide_core::RunSnapshot {
+            reasoning: "r <tag> & </think>".into(),
+            ..Default::default()
+        };
+        let mut items = Vec::new();
+        merge_snapshot(&mut items, &snapshot);
+        assert!(
+            matches!(&items[0], ConversationItem::Message(m) if m.content == format!("{}r &lt;tag&gt; &amp; &lt;/think&gt;", openwebide_core::ESCAPED_REASONING_OPEN))
+        );
+        snapshot.text = "answer".into();
+        merge_snapshot(&mut items, &snapshot);
+        assert_eq!(items.len(), 1);
+        assert!(
+            matches!(&items[0], ConversationItem::Message(m) if m.content == openwebide_core::with_reasoning(&snapshot.reasoning, "answer"))
+        );
     }
 }

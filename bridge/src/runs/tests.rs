@@ -945,3 +945,57 @@ async fn cancel_running_command_kills_group_before_marker() {
     tokio::time::sleep(Duration::from_secs(31)).await;
     assert!(!dir.path().join("marker").exists());
 }
+
+#[tokio::test]
+async fn reasoning_is_streamed_and_persisted_per_agent_turn() {
+    let backend = FakeBackend::default();
+    let run = Run::new("r".into(), 1, 1, 4096);
+    let answer = format!("answer{}", openwebide_core::REPLY_CUT_OFF_MARKER);
+    map_agent_events(
+        &run,
+        &backend,
+        7,
+        stream::iter([
+            AgentEvent::ReasoningDelta("first".into()),
+            AgentEvent::TurnCalls {
+                text: "checking".into(),
+                calls: vec![],
+            },
+            AgentEvent::ReasoningDelta("r".into()),
+            AgentEvent::FinalText(answer.clone()),
+        ]),
+    )
+    .await;
+    let messages = backend.messages.lock().unwrap();
+    assert_eq!(messages[0].content, "<think>first</think>checking");
+    assert_eq!(messages[1].content, format!("<think>r</think>{answer}"));
+    assert!(matches!(&events(&run)[0], RunEvent::ReasoningDelta { content } if content == "first"));
+}
+
+#[tokio::test]
+async fn incomplete_reasoning_only_chat_is_persisted() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = RunRegistry::default();
+    let backend = Arc::new(FakeBackend::default());
+    let reasoning = "analysis with </think> literal";
+    let run = registry
+        .start(&user(1), start("r"), dir.path(), backend.clone(), |_| {
+            FakeProvider {
+                chat: Mutex::new(vec![
+                    Ok(StreamChunk::Reasoning(reasoning.into())),
+                    Err(ProviderError::Incomplete),
+                ]),
+                ..Default::default()
+            }
+        })
+        .await
+        .unwrap();
+    finished(&run).await;
+    let messages = backend.messages.lock().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(
+        messages[1].content,
+        openwebide_core::with_reasoning(reasoning, REPLY_TRUNCATED_MARKER)
+    );
+    assert!(matches!(events(&run).last(), Some(RunEvent::Done { .. })));
+}

@@ -258,10 +258,51 @@ pub enum ChatResponse {
     ToolCalls(Vec<ToolCall>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum StopReason {
+    #[default]
+    Complete,
+    Length,
+}
+
+pub const REPLY_CUT_OFF_MARKER: &str = "\n\n[reply cut off: output token limit reached]";
+
+pub const ESCAPED_REASONING_OPEN: &str = "<think data-escaped>";
+
+pub fn escape_reasoning(reasoning: &str) -> String {
+    reasoning
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+pub fn with_reasoning(reasoning: &str, answer: &str) -> String {
+    if reasoning.is_empty() {
+        answer.to_string()
+    } else if reasoning.contains(['&', '<', '>']) {
+        format!(
+            "{ESCAPED_REASONING_OPEN}{}</think>{answer}",
+            escape_reasoning(reasoning)
+        )
+    } else {
+        format!("<think>{reasoning}</think>{answer}")
+    }
+}
+
+pub fn strip_reasoning(content: &str) -> &str {
+    content
+        .strip_prefix("<think>")
+        .or_else(|| content.strip_prefix(ESCAPED_REASONING_OPEN))
+        .and_then(|rest| rest.split_once("</think>"))
+        .map_or(content, |(_, answer)| answer)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ToolStreamChunk {
     Delta(String),
+    Reasoning(String),
+    Stop(StopReason),
     Usage(TurnTelemetry),
     Response(ChatResponse),
 }
@@ -275,6 +316,10 @@ pub enum ToolStreamChunk {
 /// older bundle or backend does not deserialize this shape at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatCompletion {
+    #[serde(default)]
+    pub reasoning: String,
+    #[serde(default)]
+    pub stop_reason: StopReason,
     #[serde(default)]
     pub preamble: String,
     pub response: ChatResponse,
@@ -1327,5 +1372,31 @@ mod tests {
         let c: ChatCompletion = serde_json::from_str(r#"{"response":{"Text":"hello"}}"#).unwrap();
         assert_eq!(c.preamble, "");
         assert_eq!(c.response, ChatResponse::Text("hello".into()));
+    }
+    #[test]
+    fn literal_reasoning_delimiters_roundtrip() {
+        let reasoning = "The literal closing tag is </think>; <think> &lt; then continue.";
+        let content = with_reasoning(reasoning, "answer");
+        assert_eq!(strip_reasoning(&content), "answer");
+        let parsed = tui::parse_thinking(&content);
+        assert_eq!(parsed.thinking.as_deref(), Some(reasoning));
+        assert_eq!(parsed.answer, "answer");
+        assert!(!parsed.is_thinking);
+        let partial = format!("{ESCAPED_REASONING_OPEN}{}", escape_reasoning(reasoning));
+        let parsed = tui::parse_thinking(&partial);
+        assert_eq!(parsed.thinking.as_deref(), Some(reasoning));
+        assert!(parsed.is_thinking);
+    }
+
+    #[test]
+    fn prior_reasoning_is_stripped_only_from_a_complete_leading_block() {
+        assert_eq!(strip_reasoning("<think>r</think>answer"), "answer");
+        for content in [
+            "answer",
+            "<think>unfinished",
+            "quote <think>r</think>answer",
+        ] {
+            assert_eq!(strip_reasoning(content), content);
+        }
     }
 }

@@ -1014,10 +1014,15 @@ async fn build_run_plan(
         None => None,
     };
     let system_prompt = Some(with_temporal_context(system_prompt, now()));
-    let history = openwebide_core::tool_history(
+    let mut history = openwebide_core::tool_history(
         state.store.list_messages(session_id).await?,
         &state.store.list_tool_steps(session_id).await?,
     );
+    for message in &mut history {
+        if message.role == Role::Assistant {
+            message.content = openwebide_core::strip_reasoning(&message.content).to_string();
+        }
+    }
     let full_content = match &send.editor_context {
         Some(ctx) => format!("{}{}", ctx.format_prompt_injection(), send.content),
         None => send.content,
@@ -1623,7 +1628,7 @@ mod tests {
                     .unwrap();
                 let history = state
                     .store
-                    .insert_message(session.id, Role::User, "earlier", 2)
+                    .insert_message(session.id, Role::Assistant, "<think>r</think>earlier", 2)
                     .await
                     .unwrap();
                 state.store.request_cancel(session.id, 1000).await.unwrap();
@@ -1655,7 +1660,9 @@ mod tests {
                         .unwrap()
                         .starts_with("Be helpful\n\nCurrent Date & Time: ")
                 );
-                assert_eq!(plan.request.messages, vec![history.clone()]);
+                let mut model_history = history.clone();
+                model_history.content = "earlier".into();
+                assert_eq!(plan.request.messages, vec![model_history]);
                 if project_id.is_some() {
                     assert_eq!(
                         plan.kind,

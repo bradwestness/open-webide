@@ -323,9 +323,22 @@ pub fn parse_thinking(raw: &str) -> ParsedThinking {
     const OPEN_TAG: &str = "<think>";
     const CLOSE_TAG: &str = "</think>";
 
-    if let Some(open_idx) = raw.find(OPEN_TAG) {
+    let opening = [OPEN_TAG, crate::ESCAPED_REASONING_OPEN]
+        .into_iter()
+        .filter_map(|tag| raw.find(tag).map(|idx| (idx, tag)))
+        .min_by_key(|(idx, _)| *idx);
+    if let Some((open_idx, tag)) = opening {
+        let decode = |text: &str| {
+            if tag == crate::ESCAPED_REASONING_OPEN {
+                text.replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&")
+            } else {
+                text.to_string()
+            }
+        };
         let prefix = &raw[..open_idx];
-        let after_open = &raw[open_idx + OPEN_TAG.len()..];
+        let after_open = &raw[open_idx + tag.len()..];
 
         if let Some(close_idx) = after_open.find(CLOSE_TAG) {
             let thinking_content = &after_open[..close_idx];
@@ -333,14 +346,14 @@ pub fn parse_thinking(raw: &str) -> ParsedThinking {
 
             let answer = format!("{}{}", prefix, after_close.trim_start_matches('\n'));
             ParsedThinking {
-                thinking: Some(thinking_content.trim().to_string()),
+                thinking: Some(decode(thinking_content.trim())),
                 is_thinking: false,
                 answer,
             }
         } else {
             // Still in progress: tag opened, not yet closed
             ParsedThinking {
-                thinking: Some(after_open.trim_start().to_string()),
+                thinking: Some(decode(after_open.trim_start())),
                 is_thinking: true,
                 answer: prefix.to_string(),
             }

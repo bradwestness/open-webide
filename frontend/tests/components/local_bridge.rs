@@ -304,6 +304,8 @@ async fn local_runs_use_discovered_tools_and_hide_them_when_bridge_cannot_see_fo
             .scripted_completions
             .borrow_mut()
             .push_back(openwebide_core::ChatCompletion {
+                reasoning: String::new(),
+                stop_reason: openwebide_core::StopReason::Complete,
                 response: openwebide_core::ChatResponse::Text("Reply".into()),
                 preamble: String::new(),
                 usage: None,

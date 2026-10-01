@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Show streamed model reasoning and mark replies cut off by the output token limit; omit prior reasoning from model context.
+
 - Preserve binary Git HEAD contents and hide Revert with a clear binary-file notice in text diffs.
 
 - Preview file diffs before approving agent edits, expand long previews, and flag unreadable overwrites.

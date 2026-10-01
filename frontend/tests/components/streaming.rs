@@ -135,6 +135,8 @@ fn interrupted_local_view(state: super::support::TestState) -> impl leptos::prel
         .scripted_completions
         .borrow_mut()
         .push_back(openwebide_core::ChatCompletion {
+            reasoning: String::new(),
+            stop_reason: openwebide_core::StopReason::Complete,
             response: openwebide_core::ChatResponse::Text("Resumed reply".into()),
             preamble: String::new(),
             usage: None,
@@ -255,6 +257,8 @@ async fn stale_resume_uses_fresh_history_turns() {
         .scripted_completions
         .borrow_mut()
         .push_front(ChatCompletion {
+            reasoning: String::new(),
+            stop_reason: openwebide_core::StopReason::Complete,
             response: ChatResponse::ToolCalls(vec![ToolCall {
                 id: "wire".into(),
                 name: "read_file".into(),
@@ -368,6 +372,8 @@ async fn failed_model_resume_keeps_recovery_available() {
         .scripted_completions
         .borrow_mut()
         .push_back(ChatCompletion {
+            reasoning: String::new(),
+            stop_reason: openwebide_core::StopReason::Complete,
             response: ChatResponse::Text("Retry reply".into()),
             preamble: String::new(),
             usage: None,
@@ -376,4 +382,173 @@ async fn failed_model_resume_keeps_recovery_available() {
     settle().await;
     assert!(mounted.root.text_content().unwrap().contains("Retry reply"));
     assert!(mounted.state.chat.interrupted_run.get_untracked().is_none());
+}
+
+#[wasm_bindgen_test]
+async fn resumed_reasoning_deltas_render_literal_text() {
+    use leptos::prelude::*;
+    use openwebide_frontend::conversation::merge_snapshot;
+
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_connection();
+        state.seed_session();
+        chat_view(state)
+    });
+    settle().await;
+    mounted.state.chat.reasoning_active.set(true);
+    mounted.state.chat.messages.update(|items| {
+        merge_snapshot(
+            items,
+            &openwebide_core::RunSnapshot {
+                reasoning: "first <tag> & ".into(),
+                ..Default::default()
+            },
+        );
+    });
+    mounted.state.chat.apply_event(RunEvent::ReasoningDelta {
+        content: "next <tag> & </think>".into(),
+    });
+    settle().await;
+    assert_eq!(
+        mounted
+            .root
+            .query_selector(".tui-thinking-pre")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("first <tag> & next <tag> & </think>")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn reasoning_stream_expands_then_collapses_and_shows_cutoff() {
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_connection();
+        state.seed_session();
+        chat_view(state)
+    });
+    settle().await;
+    let chat = mounted.state.chat;
+    for content in ["checking </thi", "nk> &lt; carefully"] {
+        chat.apply_event(RunEvent::ReasoningDelta {
+            content: content.into(),
+        });
+        settle().await;
+    }
+    let trace = mounted
+        .root
+        .query_selector(".tui-thinking-pre")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        trace.text_content().as_deref(),
+        Some("checking </think> &lt; carefully")
+    );
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-thinking-summary.active")
+            .unwrap()
+            .is_some()
+    );
+    chat.apply_event(RunEvent::Delta {
+        content: "answer".into(),
+    });
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-thinking-summary.active")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-thinking-pre")
+            .unwrap()
+            .is_none()
+    );
+    let content = openwebide_core::with_reasoning(
+        "checking </think> &lt; carefully",
+        &format!("answer{}", openwebide_core::REPLY_CUT_OFF_MARKER),
+    );
+    chat.apply_event(RunEvent::Done {
+        message: message(9, Role::Assistant, &content),
+    });
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("[reply cut off: output token limit reached]")
+    );
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-thinking-summary")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[wasm_bindgen_test]
+async fn local_completion_persists_reasoning_and_omits_prior_reasoning() {
+    use openwebide_core::{ConversationEntry, StopReason};
+    let mounted = mount_test(|state| {
+        let view = interrupted_local_view(state.clone());
+        let mut completions = state.fake.scripted_completions.borrow_mut();
+        let completion = completions.front_mut().unwrap();
+        completion.reasoning = "new reasoning".into();
+        completion.stop_reason = StopReason::Length;
+        state
+            .fake
+            .messages
+            .borrow_mut()
+            .get_mut(&1)
+            .unwrap()
+            .insert(
+                0,
+                ConversationEntry::Message(message(
+                    6,
+                    Role::Assistant,
+                    "<think>old reasoning</think>earlier",
+                )),
+            );
+        view
+    });
+    settle().await;
+    mounted.click_text("Resume");
+    settle().await;
+    let expected = format!(
+        "<think>new reasoning</think>Resumed reply{}",
+        openwebide_core::REPLY_CUT_OFF_MARKER
+    );
+    assert!(
+        matches!(mounted.state.fake.messages.borrow()[&1].last(), Some(ConversationEntry::Message(m)) if m.content == expected)
+    );
+    assert_eq!(
+        mounted.state.fake.completion_requests.borrow()[0].messages[0].content,
+        "earlier"
+    );
+    mounted.click(".tui-assistant:last-child .tui-thinking-summary");
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("new reasoning")
+    );
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("[reply cut off: output token limit reached]")
+    );
 }

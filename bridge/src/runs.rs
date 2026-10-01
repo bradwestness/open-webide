@@ -324,6 +324,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
         RunKind::Chat => {
             let mut stream = provider.chat_stream(&plan.request);
             let mut text = String::new();
+            let mut reasoning = String::new();
             let mut usage = None;
             loop {
                 let chunk = tokio::select! {
@@ -335,11 +336,22 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                         text.push_str(&delta);
                         run.emit(RunEvent::Delta { content: delta });
                     }
+                    Some(Ok(StreamChunk::Reasoning(content))) => {
+                        reasoning.push_str(&content);
+                        run.emit(RunEvent::ReasoningDelta { content });
+                    }
+                    Some(Ok(StreamChunk::Stop(reason))) => {
+                        if reason == openwebide_core::StopReason::Length {
+                            text.push_str(openwebide_core::REPLY_CUT_OFF_MARKER);
+                        }
+                    }
                     Some(Ok(StreamChunk::Usage(value))) => {
                         usage = Some(value);
                         run.emit(RunEvent::Telemetry { usage: value });
                     }
-                    Some(Err(ProviderError::Incomplete)) if !text.is_empty() => {
+                    Some(Err(ProviderError::Incomplete))
+                        if !text.is_empty() || !reasoning.is_empty() =>
+                    {
                         text.push_str(REPLY_TRUNCATED_MARKER);
                         break;
                     }
@@ -356,6 +368,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 run.emit(RunEvent::Cancelled);
                 return;
             }
+            let text = openwebide_core::with_reasoning(&reasoning, &text);
             persist_final(&run, &*backend, &text, usage.as_ref()).await;
         }
         RunKind::Agent { .. } => {
@@ -449,15 +462,21 @@ async fn map_agent_events<B: RunBackend>(
 ) {
     let mut events = Box::pin(events);
     let mut display_anchor = anchor_id;
+    let mut reasoning = String::new();
     let mut last_usage = None;
     while let Some(event) = events.next().await {
         let event = match event {
+            AgentEvent::ReasoningDelta(content) => {
+                reasoning.push_str(&content);
+                RunEvent::ReasoningDelta { content }
+            }
             AgentEvent::TextDelta(content) => RunEvent::Delta { content },
             AgentEvent::Telemetry(usage) => {
                 last_usage = Some(usage);
                 RunEvent::Telemetry { usage }
             }
             AgentEvent::TurnCalls { text, calls } => {
+                let text = openwebide_core::with_reasoning(&std::mem::take(&mut reasoning), &text);
                 let usage = last_usage.take();
                 let message = match backend
                     .persist_message(
@@ -549,6 +568,7 @@ async fn map_agent_events<B: RunBackend>(
                 }
             }
             AgentEvent::FinalText(text) => {
+                let text = openwebide_core::with_reasoning(&reasoning, &text);
                 persist_final(run, backend, &text, last_usage.as_ref()).await;
                 return;
             }

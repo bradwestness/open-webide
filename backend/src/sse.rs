@@ -5,7 +5,7 @@
 //! coding), and finally the persisted assistant message. Frame format:
 //!
 //! ```text
-//! event: message | delta | tool_call | permission_request | tool_result | interim | done | telemetry | cancelled | error
+//! event: message | delta | reasoning_delta | tool_call | permission_request | tool_result | interim | done | telemetry | cancelled | error
 //! data: {json}
 //!
 //! ```
@@ -77,6 +77,7 @@ struct StreamState {
     started_ms: i64,
     chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
     buffer: String,
+    reasoning: String,
     usage: Option<TurnTelemetry>,
     done: bool,
 }
@@ -103,6 +104,7 @@ pub fn message_stream(
         started_ms,
         chunks,
         buffer: String::new(),
+        reasoning: String::new(),
         usage: None,
         done: false,
     };
@@ -110,88 +112,113 @@ pub fn message_stream(
         if state.done {
             return None;
         }
-        match state.chunks.as_mut().next().await {
-            Some(Ok(StreamChunk::Delta(delta))) => {
-                // Poll the cancel flag as each delta arrives; a cancel
-                // requested by a separate request ends the stream with
-                // `Cancelled`, and the triggering delta is not sent.
-                if state
-                    .store
-                    .cancel_requested_since(state.session_id, state.started_ms)
-                    .await
-                    .unwrap_or(false)
+        loop {
+            return match state.chunks.as_mut().next().await {
+                Some(Ok(StreamChunk::Delta(delta))) => {
+                    // Poll the cancel flag as each delta arrives; a cancel
+                    // requested by a separate request ends the stream with
+                    // `Cancelled`, and the triggering delta is not sent.
+                    if state
+                        .store
+                        .cancel_requested_since(state.session_id, state.started_ms)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        state.done = true;
+                        Some((RunEvent::Cancelled, state))
+                    } else {
+                        state.buffer.push_str(&delta);
+                        Some((RunEvent::Delta { content: delta }, state))
+                    }
+                }
+                Some(Ok(StreamChunk::Reasoning(content))) => {
+                    if state
+                        .store
+                        .cancel_requested_since(state.session_id, state.started_ms)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        state.done = true;
+                        Some((RunEvent::Cancelled, state))
+                    } else {
+                        state.reasoning.push_str(&content);
+                        Some((RunEvent::ReasoningDelta { content }, state))
+                    }
+                }
+                Some(Ok(StreamChunk::Stop(reason))) => {
+                    if reason == openwebide_core::StopReason::Length {
+                        state.buffer.push_str(openwebide_core::REPLY_CUT_OFF_MARKER);
+                    }
+                    continue;
+                }
+                Some(Ok(StreamChunk::Usage(usage))) => {
+                    state.usage = Some(usage);
+                    Some((RunEvent::Telemetry { usage }, state))
+                }
+                Some(Err(ProviderError::Incomplete))
+                    if !state.buffer.is_empty() || !state.reasoning.is_empty() =>
                 {
+                    // The provider cut the reply short: keep what arrived,
+                    // marked, rather than dropping it or saving it as complete.
                     state.done = true;
-                    Some((RunEvent::Cancelled, state))
-                } else {
-                    state.buffer.push_str(&delta);
-                    Some((RunEvent::Delta { content: delta }, state))
+                    let mut content =
+                        openwebide_core::with_reasoning(&state.reasoning, &state.buffer);
+                    content.push_str(REPLY_TRUNCATED_MARKER);
+                    match state
+                        .store
+                        .insert_message_with_usage(
+                            state.session_id,
+                            Role::Assistant,
+                            &content,
+                            now(),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(message) => Some((RunEvent::Done { message }, state)),
+                        Err(error) => Some((
+                            RunEvent::Error {
+                                message: format!("failed to save reply: {error}"),
+                            },
+                            state,
+                        )),
+                    }
                 }
-            }
-            Some(Ok(StreamChunk::Usage(usage))) => {
-                state.usage = Some(usage);
-                Some((RunEvent::Telemetry { usage }, state))
-            }
-            Some(Err(ProviderError::Incomplete)) if !state.buffer.is_empty() => {
-                // The provider cut the reply short: keep what arrived,
-                // marked, rather than dropping it or saving it as complete.
-                state.done = true;
-                let mut content = state.buffer.clone();
-                content.push_str(REPLY_TRUNCATED_MARKER);
-                match state
-                    .store
-                    .insert_message_with_usage(
-                        state.session_id,
-                        Role::Assistant,
-                        &content,
-                        now(),
-                        None,
-                    )
-                    .await
-                {
-                    Ok(message) => Some((RunEvent::Done { message }, state)),
-                    Err(error) => Some((
+                Some(Err(error)) => {
+                    state.done = true;
+                    Some((
                         RunEvent::Error {
-                            message: format!("failed to save reply: {error}"),
+                            message: error.to_string(),
                         },
                         state,
-                    )),
+                    ))
                 }
-            }
-            Some(Err(error)) => {
-                state.done = true;
-                Some((
-                    RunEvent::Error {
-                        message: error.to_string(),
-                    },
-                    state,
-                ))
-            }
-            None => {
-                state.done = true;
-                // Persist the accumulated reply. On failure the partial
-                // reply is not saved, so history never contains a
-                // truncated assistant message.
-                match state
-                    .store
-                    .insert_message_with_usage(
-                        state.session_id,
-                        Role::Assistant,
-                        &state.buffer,
-                        now(),
-                        state.usage.as_ref(),
-                    )
-                    .await
-                {
-                    Ok(message) => Some((RunEvent::Done { message }, state)),
-                    Err(error) => Some((
-                        RunEvent::Error {
-                            message: format!("failed to save reply: {error}"),
-                        },
-                        state,
-                    )),
+                None => {
+                    state.done = true;
+                    // Persist the accumulated reply. On failure the partial
+                    // reply is not saved, so history never contains a
+                    // truncated assistant message.
+                    match state
+                        .store
+                        .insert_message_with_usage(
+                            state.session_id,
+                            Role::Assistant,
+                            &openwebide_core::with_reasoning(&state.reasoning, &state.buffer),
+                            now(),
+                            state.usage.as_ref(),
+                        )
+                        .await
+                    {
+                        Ok(message) => Some((RunEvent::Done { message }, state)),
+                        Err(error) => Some((
+                            RunEvent::Error {
+                                message: format!("failed to save reply: {error}"),
+                            },
+                            state,
+                        )),
+                    }
                 }
-            }
+            };
         }
     });
     Box::pin(
@@ -274,6 +301,7 @@ mod tests {
     enum Kind {
         Message,
         Delta(String),
+        Reasoning(String),
         Telemetry(TurnTelemetry),
         Done(String),
         Cancelled,
@@ -284,6 +312,7 @@ mod tests {
         match event {
             RunEvent::Message { .. } => Kind::Message,
             RunEvent::Delta { content: d } => Kind::Delta(d.clone()),
+            RunEvent::ReasoningDelta { content } => Kind::Reasoning(content.clone()),
             RunEvent::Interim { .. } => panic!("unexpected interim"),
             RunEvent::ToolCall { .. } => panic!("unexpected tool_call"),
             RunEvent::PermissionRequest { .. } => panic!("unexpected permission_request"),
@@ -366,6 +395,36 @@ mod tests {
             assert_eq!(assistant.role, Role::Assistant);
             assert_eq!(assistant.content, "ab\n\n[reply truncated]");
             assert_eq!(assistant.usage, None);
+        });
+    }
+
+    #[test]
+    fn incomplete_reasoning_only_reply_is_persisted() {
+        block_on(async {
+            let (store, session_id) = test_store().await;
+            let reasoning = "analysis with </think> literal";
+            let events = run(
+                store.clone(),
+                session_id,
+                vec![
+                    Ok(StreamChunk::Reasoning(reasoning.into())),
+                    Err(ProviderError::Incomplete),
+                ],
+            )
+            .await;
+            let content = openwebide_core::with_reasoning(reasoning, REPLY_TRUNCATED_MARKER);
+            assert_eq!(
+                events,
+                vec![
+                    Kind::Message,
+                    Kind::Reasoning(reasoning.into()),
+                    Kind::Done(content.clone())
+                ]
+            );
+            let messages = store.list_messages(session_id).await.unwrap();
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[1].content, content);
+            assert_eq!(messages[1].usage, None);
         });
     }
 
@@ -468,6 +527,39 @@ mod tests {
             assert_eq!(messages[1].role, Role::Assistant);
             assert_eq!(messages[1].content, "");
             assert_eq!(messages[1].usage, None);
+        });
+    }
+    #[test]
+    fn reasoning_and_cutoff_are_persisted_in_plain_chat() {
+        block_on(async {
+            let (store, session_id) = test_store().await;
+            let events = run(
+                store.clone(),
+                session_id,
+                vec![
+                    Ok(StreamChunk::Reasoning("r".into())),
+                    delta("answer"),
+                    Ok(StreamChunk::Stop(openwebide_core::StopReason::Length)),
+                ],
+            )
+            .await;
+            let content = format!(
+                "<think>r</think>answer{}",
+                openwebide_core::REPLY_CUT_OFF_MARKER
+            );
+            assert_eq!(
+                events,
+                vec![
+                    Kind::Message,
+                    Kind::Reasoning("r".into()),
+                    Kind::Delta("answer".into()),
+                    Kind::Done(content.clone())
+                ]
+            );
+            assert_eq!(
+                store.list_messages(session_id).await.unwrap()[1].content,
+                content
+            );
         });
     }
 }

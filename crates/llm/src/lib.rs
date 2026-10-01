@@ -39,9 +39,13 @@ pub fn completion_chunks(c: ChatCompletion) -> Vec<ToolStreamChunk> {
         openwebide_core::ChatResponse::ToolCalls(_) => &c.preamble,
     };
     let mut chunks = Vec::new();
+    if !c.reasoning.is_empty() {
+        chunks.push(ToolStreamChunk::Reasoning(c.reasoning));
+    }
     if !text.is_empty() {
         chunks.push(ToolStreamChunk::Delta(text.clone()));
     }
+    chunks.push(ToolStreamChunk::Stop(c.stop_reason));
     if let Some(usage) = c.usage {
         chunks.push(ToolStreamChunk::Usage(usage));
     }
@@ -116,6 +120,8 @@ impl ToolStreamMemos {
 pub enum StreamChunk {
     /// A content delta to append to the reply.
     Delta(String),
+    Reasoning(String),
+    Stop(openwebide_core::StopReason),
     /// The turn's usage, yielded exactly once, just before a successful end.
     Usage(TurnTelemetry),
 }
@@ -588,17 +594,23 @@ mod tests {
         }]);
         let provider = fake::FakeProvider::new(vec![
             Ok(ChatCompletion {
+                reasoning: String::new(),
+                stop_reason: openwebide_core::StopReason::Complete,
                 preamble: "Checking".into(),
                 response: response.clone(),
                 usage: Some(usage),
             }),
             Ok(ChatCompletion {
+                reasoning: String::new(),
+                stop_reason: openwebide_core::StopReason::Complete,
                 preamble: String::new(),
                 response: ChatResponse::Text("done".into()),
                 usage: None,
             }),
             Err(ProviderError::Incomplete),
             Ok(ChatCompletion {
+                reasoning: String::new(),
+                stop_reason: openwebide_core::StopReason::Complete,
                 preamble: String::new(),
                 response: ChatResponse::Text(String::new()),
                 usage: None,
@@ -618,6 +630,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ToolStreamChunk::Delta("Checking".into()),
+                ToolStreamChunk::Stop(openwebide_core::StopReason::Complete),
                 ToolStreamChunk::Usage(usage),
                 ToolStreamChunk::Response(response),
             ]
@@ -629,6 +642,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ToolStreamChunk::Delta("done".into()),
+                ToolStreamChunk::Stop(openwebide_core::StopReason::Complete),
                 ToolStreamChunk::Response(ChatResponse::Text("done".into())),
             ]
         );
@@ -640,7 +654,10 @@ mod tests {
                 .into_iter()
                 .map(Result::unwrap)
                 .collect::<Vec<_>>(),
-            vec![ToolStreamChunk::Response(ChatResponse::Text(String::new()))]
+            vec![
+                ToolStreamChunk::Stop(openwebide_core::StopReason::Complete),
+                ToolStreamChunk::Response(ChatResponse::Text(String::new()))
+            ]
         );
     }
 }

@@ -229,6 +229,9 @@ impl RunActions {
                             self.chat.current_run_anchor.set(Some(anchor));
                         }
                         self.chat
+                            .reasoning_active
+                            .set(!snapshot.reasoning.is_empty() && snapshot.text.is_empty());
+                        self.chat
                             .messages
                             .update(|items| merge_snapshot(items, &snapshot));
                         // Rebuild before recording the live turn so repeated snapshots don't add usage twice.

@@ -692,6 +692,11 @@ pub async fn run_local_agent(
         }
     }
     let mut messages = openwebide_core::tool_history(history_messages, &steps);
+    for message in &mut messages {
+        if message.role == Role::Assistant {
+            message.content = openwebide_core::strip_reasoning(&message.content).to_string();
+        }
+    }
 
     let (anchor_id, first_turn) = if let Some(resume) = resume {
         (resume.anchor_id, resume.first_turn)
@@ -761,11 +766,17 @@ pub async fn run_local_agent(
         )
     };
 
+    let mut reasoning = String::new();
     let mut last_usage: Option<TurnTelemetry> = None;
     while let Some(event) = stream.next().await {
         match event {
+            AgentEvent::ReasoningDelta(content) => {
+                reasoning.push_str(&content);
+                on_event(RunEvent::ReasoningDelta { content });
+            }
             AgentEvent::TextDelta(delta) => on_event(RunEvent::Delta { content: delta }),
             AgentEvent::TurnCalls { text, calls } => {
+                let text = openwebide_core::with_reasoning(&std::mem::take(&mut reasoning), &text);
                 let usage = last_usage.take();
                 let message = api
                     .with_value(Clone::clone)
@@ -854,6 +865,7 @@ pub async fn run_local_agent(
                 });
             }
             AgentEvent::FinalText(text) => {
+                let text = openwebide_core::with_reasoning(&reasoning, &text);
                 match api
                     .with_value(Clone::clone)
                     .persist_message(

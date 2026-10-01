@@ -70,8 +70,12 @@ pub struct ToolOutcome {
 pub enum AgentEvent {
     /// Text received during the current model turn.
     TextDelta(String),
+    ReasoningDelta(String),
     /// Completed tool-call turn, including empty text and the model's wire calls.
-    TurnCalls { text: String, calls: Vec<ToolCall> },
+    TurnCalls {
+        text: String,
+        calls: Vec<ToolCall>,
+    },
     /// The model requested a tool call.
     ToolCall {
         id: String,
@@ -245,6 +249,8 @@ where
             response: None,
             model_stream: None,
             turn_text: String::new(),
+            turn_reasoning: String::new(),
+            stop_reason: openwebide_core::StopReason::Complete,
             next: Next::CallModel,
         },
         |mut state| async move {
@@ -275,11 +281,25 @@ where
                             connection_id: state.connection_id,
                             system_prompt: state.system_prompt.clone(),
                             model: state.model.clone(),
-                            messages: state.messages.clone(),
+                            messages: state
+                                .messages
+                                .iter()
+                                .cloned()
+                                .map(|mut message| {
+                                    if message.role == Role::Assistant {
+                                        message.content =
+                                            openwebide_core::strip_reasoning(&message.content)
+                                                .to_string();
+                                    }
+                                    message
+                                })
+                                .collect(),
                             tools: state.tools.clone(),
                         };
                         state.model_stream = Some(state.provider.chat_tools_stream(&req));
                         state.turn_text.clear();
+                        state.turn_reasoning.clear();
+                        state.stop_reason = openwebide_core::StopReason::Complete;
                         state.next = Next::StreamModel;
                     }
                     Next::StreamModel => {
@@ -299,6 +319,13 @@ where
                                 state.turn_text.push_str(&delta);
                                 return Some((AgentEvent::TextDelta(delta), state));
                             }
+                            Some(Ok(ToolStreamChunk::Reasoning(reasoning))) => {
+                                state.turn_reasoning.push_str(&reasoning);
+                                return Some((AgentEvent::ReasoningDelta(reasoning), state));
+                            }
+                            Some(Ok(ToolStreamChunk::Stop(reason))) => {
+                                state.stop_reason = reason;
+                            }
                             Some(Ok(ToolStreamChunk::Usage(usage))) => {
                                 return Some((AgentEvent::Telemetry(usage), state));
                             }
@@ -312,7 +339,8 @@ where
                                 state.next = Next::Stop;
                                 let event = match error {
                                     Some(Err(ProviderError::Incomplete))
-                                        if !state.turn_text.is_empty() =>
+                                        if !state.turn_text.is_empty()
+                                            || !state.turn_reasoning.is_empty() =>
                                     {
                                         AgentEvent::FinalText(format!(
                                             "{}{REPLY_TRUNCATED_MARKER}",
@@ -335,7 +363,10 @@ where
                             .take()
                             .expect("HandleResponse without a response")
                         {
-                            ChatResponse::Text(text) => {
+                            ChatResponse::Text(mut text) => {
+                                if state.stop_reason == openwebide_core::StopReason::Length {
+                                    text.push_str(openwebide_core::REPLY_CUT_OFF_MARKER);
+                                }
                                 state.next = Next::Stop;
                                 return Some((AgentEvent::FinalText(text), state));
                             }
@@ -635,6 +666,8 @@ struct LoopState<P, T, C, G> {
     response: Option<ChatResponse>,
     model_stream: Option<ModelStream>,
     turn_text: String,
+    turn_reasoning: String,
+    stop_reason: openwebide_core::StopReason,
     next: Next,
 }
 
@@ -665,6 +698,8 @@ mod tests {
     /// nothing (or an older backend) returns.
     fn no_usage(response: ChatResponse) -> ChatCompletion {
         ChatCompletion {
+            reasoning: String::new(),
+            stop_reason: openwebide_core::StopReason::Complete,
             response,
             preamble: String::new(),
             usage: None,
@@ -912,11 +947,15 @@ mod tests {
         };
         let (provider, _requests) = FakeProvider::new(vec![
             Ok(ChatCompletion {
+                reasoning: String::new(),
+                stop_reason: openwebide_core::StopReason::Complete,
                 preamble: String::new(),
                 response: ChatResponse::ToolCalls(vec![read]),
                 usage: Some(usage_1),
             }),
             Ok(ChatCompletion {
+                reasoning: String::new(),
+                stop_reason: openwebide_core::StopReason::Complete,
                 preamble: String::new(),
                 response: ChatResponse::Text("fixed it".into()),
                 usage: Some(usage_2),
@@ -1143,7 +1182,7 @@ mod tests {
             async move {
                 let n = *calls.lock().unwrap() + 1;
                 *calls.lock().unwrap() = n;
-                n >= 3
+                n >= 4
             }
         }
     }
@@ -1160,7 +1199,7 @@ mod tests {
         ]);
         let executor = FakeExecutor::new(vec![outcome("1", "s1")]);
 
-        // The model and response checks pass; the tool check cancels the run.
+        // The model, stop, and response checks pass; the tool check cancels the run.
         let events = collect(run(
             provider,
             executor,
@@ -1801,14 +1840,17 @@ mod tests {
 
     #[test]
     fn interim_text_is_in_transcript_and_keeps_run_ids() {
-        for preamble in ["Checking now", ""] {
+        for preamble in [
+            "Checking now",
+            "",
+            "<think>private reasoning</think>checking",
+        ] {
             let (provider, requests) =
                 FakeProvider::new(vec![Ok(no_usage(ChatResponse::Text("done".into())))]);
             for _ in 0..2 {
                 let mut chunks = Vec::new();
                 if !preamble.is_empty() {
-                    chunks.push(Ok(ToolStreamChunk::Delta("Checking ".into())));
-                    chunks.push(Ok(ToolStreamChunk::Delta("now".into())));
+                    chunks.push(Ok(ToolStreamChunk::Delta(preamble.into())));
                 }
                 chunks.push(Ok(ToolStreamChunk::Response(ChatResponse::ToolCalls(
                     vec![call("call_0", "read_file", "{}")],
@@ -1824,7 +1866,7 @@ mod tests {
                 NoopGate,
                 7,
             ));
-            let interim_index = if preamble.is_empty() { 0 } else { 2 };
+            let interim_index = if preamble.is_empty() { 0 } else { 1 };
             assert_eq!(
                 events[interim_index],
                 AgentEvent::TurnCalls {
@@ -1841,7 +1883,10 @@ mod tests {
             );
             let requests = requests.lock().unwrap();
             for assistant in [&requests[2].messages[1], &requests[2].messages[3]] {
-                assert_eq!(assistant.content, preamble);
+                assert_eq!(
+                    assistant.content,
+                    openwebide_core::strip_reasoning(preamble)
+                );
                 assert_eq!(assistant.tool_calls.as_ref().unwrap()[0].id, "call_0");
             }
         }
@@ -1858,6 +1903,16 @@ mod tests {
                 vec![
                     AgentEvent::TextDelta("partial".into()),
                     AgentEvent::FinalText(format!("partial{REPLY_TRUNCATED_MARKER}")),
+                ],
+            ),
+            (
+                vec![
+                    Ok(ToolStreamChunk::Reasoning("analysis".into())),
+                    Err(ProviderError::Incomplete),
+                ],
+                vec![
+                    AgentEvent::ReasoningDelta("analysis".into()),
+                    AgentEvent::FinalText(REPLY_TRUNCATED_MARKER.into()),
                 ],
             ),
             (
@@ -2129,5 +2184,32 @@ mod tests {
                 .any(|event| matches!(event, AgentEvent::ToolResult { ok: true, .. }))
         );
         assert!(!events.contains(&AgentEvent::Cancelled));
+    }
+    #[test]
+    fn reasoning_stays_separate_and_length_marks_final_answer() {
+        let events = collect(run(
+            scripted(vec![
+                Ok(ToolStreamChunk::Reasoning("r".into())),
+                Ok(ToolStreamChunk::Delta("answer".into())),
+                Ok(ToolStreamChunk::Stop(openwebide_core::StopReason::Length)),
+                Ok(ToolStreamChunk::Response(ChatResponse::Text(
+                    "answer".into(),
+                ))),
+            ]),
+            FakeExecutor::new(vec![]),
+            request(),
+            AgentConfig::default(),
+            NoopCancel,
+            NoopGate,
+            7,
+        ));
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::ReasoningDelta("r".into()),
+                AgentEvent::TextDelta("answer".into()),
+                AgentEvent::FinalText(format!("answer{}", openwebide_core::REPLY_CUT_OFF_MARKER)),
+            ]
+        );
     }
 }
