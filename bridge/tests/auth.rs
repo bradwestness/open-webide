@@ -265,3 +265,157 @@ Content-Length: 2\r\n\r\n{{}}"
         parsed_with_bearer.status
     );
 }
+
+#[tokio::test]
+async fn multiplexed_commands_require_hello_and_terminal_still_streams() {
+    use openwebide_core::{ChatRequest, RunRejectCode};
+    let port = start_with_config(ServerConfig::new(
+        std::env::temp_dir(),
+        "secret".into(),
+        Some("paired".into()),
+    ))
+    .await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/"))
+        .await
+        .unwrap();
+    let run = BridgeClientMessage::RunStart {
+        run_id: "run-1".into(),
+        session_id: 1,
+        content: "hi".into(),
+        model: None,
+        editor_context: None,
+    };
+    let completion = BridgeClientMessage::CompletionStart {
+        id: "c".into(),
+        request: ChatRequest {
+            connection_id: 1,
+            system_prompt: None,
+            model: None,
+            messages: vec![],
+            tools: vec![],
+        },
+    };
+    let spawn = BridgeClientMessage::Spawn {
+        id: "shell".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "printf terminal-ok".into()],
+        cwd: None,
+        env: Default::default(),
+        pty: false,
+        cols: 80,
+        rows: 24,
+    };
+    for command in [run.clone(), completion.clone(), spawn.clone()] {
+        ws.send(Message::Text(
+            serde_json::to_string(&command).unwrap().into(),
+        ))
+        .await
+        .unwrap();
+        let response = ws.next().await.unwrap().unwrap();
+        let response: BridgeServerMessage =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
+        match (command, response) {
+            (
+                BridgeClientMessage::RunStart { run_id, .. },
+                BridgeServerMessage::RunRejected {
+                    run_id: actual,
+                    code,
+                    ..
+                },
+            ) => {
+                assert_eq!(actual, run_id);
+                assert_eq!(code, RunRejectCode::Unauthorized);
+            }
+            (
+                BridgeClientMessage::CompletionStart { id, .. },
+                BridgeServerMessage::CompletionEnd { id: actual, error },
+            ) => {
+                assert_eq!(actual, id);
+                assert_eq!(error.as_deref(), Some("unauthorized"));
+            }
+            (
+                BridgeClientMessage::Spawn { id, .. },
+                BridgeServerMessage::Error {
+                    id: actual,
+                    message,
+                },
+            ) => {
+                assert_eq!(actual, id);
+                assert!(message.contains("unauthorized"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    ws.send(Message::Text(r#"{"type":"hello","token":"paired"}"#.into()))
+        .await
+        .unwrap();
+    assert!(
+        ws.next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .contains("hello_ok")
+    );
+    for command in [run, completion] {
+        ws.send(Message::Text(
+            serde_json::to_string(&command).unwrap().into(),
+        ))
+        .await
+        .unwrap();
+        let response = ws.next().await.unwrap().unwrap();
+        let response: BridgeServerMessage =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
+        match (command, response) {
+            (
+                BridgeClientMessage::RunStart { run_id, .. },
+                BridgeServerMessage::RunRejected {
+                    run_id: actual,
+                    code,
+                    message,
+                },
+            ) => {
+                assert_eq!(actual, run_id);
+                assert_eq!(code, RunRejectCode::Unavailable);
+                assert_eq!(message, "runs are not available on this bridge");
+            }
+            (
+                BridgeClientMessage::CompletionStart { id, .. },
+                BridgeServerMessage::CompletionEnd { id: actual, error },
+            ) => {
+                assert_eq!(actual, id);
+                assert_eq!(
+                    error.as_deref(),
+                    Some("completions are not available on this bridge")
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    ws.send(Message::Text(serde_json::to_string(&spawn).unwrap().into()))
+        .await
+        .unwrap();
+    let (mut spawned, mut output) = (false, String::new());
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Message::Text(text) = frame else {
+            continue;
+        };
+        match serde_json::from_str::<BridgeServerMessage>(&text).unwrap() {
+            BridgeServerMessage::Spawned { .. } => spawned = true,
+            BridgeServerMessage::Output { data, .. } => output.push_str(&data),
+            BridgeServerMessage::Exited { exit_code, .. } => {
+                assert_eq!(exit_code, Some(0));
+                break;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(spawned);
+    assert_eq!(output, "terminal-ok");
+}

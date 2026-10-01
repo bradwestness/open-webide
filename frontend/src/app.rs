@@ -62,7 +62,31 @@ pub fn App() -> impl IntoView {
     // -- global state ------------------------------------------------------
     let health = RwSignal::new(Option::<HealthState>::None);
     let bridge_url = settings.bridge_url;
+    let bridge_connection = RwSignal::new_local(Option::<crate::bridge::BridgeConn>::None);
     let bridge_credentials = StoredValue::new(crate::bridge::BridgeCredentials::new(api));
+    Effect::new(move |_| {
+        let user = auth.user.get().map(|user| user.id);
+        let url = bridge_url.get();
+        auth.bridge.update_value(|connection| {
+            if let Some(connection) = connection.take() {
+                connection.close();
+            }
+            if user.is_some() {
+                *connection = Some(crate::bridge::BridgeConn::new(
+                    crate::bridge::BridgeConfig::new(&url),
+                    bridge_credentials.get_value(),
+                ));
+            }
+            bridge_connection.set(connection.clone());
+        });
+    });
+    on_cleanup(move || {
+        auth.bridge.with_value(|connection| {
+            if let Some(connection) = connection {
+                connection.close();
+            }
+        })
+    });
     let active_resizer = layout.active_resizer;
     let error = ui.toast;
 
@@ -299,11 +323,9 @@ pub fn App() -> impl IntoView {
                         on_reject=on_reject
                     />
                     <Show when=move || show_terminal.get() fallback=|| ()>
-                        <TerminalPane
-                            bridge_config=Signal::derive(move || crate::bridge::BridgeConfig::new(&bridge_url.get()))
-                            bridge_credentials=bridge_credentials.with_value(|c| c.clone())
-                            on_close=move || show_terminal.set(false)
-                        />
+                        {move || bridge_connection.get().map(|bridge| view! {
+                            <TerminalPane bridge=bridge on_close=move || show_terminal.set(false) />
+                        })}
                     </Show>
                 </div>
                 <PanelResizer kind=ActiveResizer::Chat />

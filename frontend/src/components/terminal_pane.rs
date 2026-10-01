@@ -6,12 +6,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use futures::{SinkExt, StreamExt};
-use gloo_net::websocket::Message;
-use gloo_net::websocket::futures::WebSocket;
+use crate::bridge::{BridgeConn, BridgeStatus};
 use leptos::html::Div;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 use openwebide_core::{BridgeClientMessage, BridgeServerMessage, BridgeSessionInfo};
 use web_sys::wasm_bindgen::JsCast;
 
@@ -139,21 +136,10 @@ pub fn ansi_to_html(input: &str) -> String {
     out
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ConnectionStatus {
-    Connecting,
-    Connected,
-    Disconnected,
-}
-
 #[component]
-pub fn TerminalPane(
-    #[prop(into)] bridge_config: Signal<crate::bridge::BridgeConfig>,
-    bridge_credentials: crate::bridge::BridgeCredentials,
-    on_close: impl Fn() + Copy + 'static,
-) -> impl IntoView {
-    let status = RwSignal::new(ConnectionStatus::Connecting);
-    let error_msg = RwSignal::new(Option::<String>::None);
+pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) -> impl IntoView {
+    let status = RwSignal::from(bridge.status());
+    let bridge = StoredValue::new_local(bridge);
     let raw_output = RwSignal::new(String::new());
     let active_session = RwSignal::new(Option::<String>::None);
     let sessions = RwSignal::new(Vec::<BridgeSessionInfo>::new());
@@ -164,198 +150,139 @@ pub fn TerminalPane(
 
     let output_ref = NodeRef::<Div>::new();
 
-    // Outbound channel from UI to the WebSocket writer task
-    let (tx_outbound, mut rx_outbound) = futures::channel::mpsc::channel::<BridgeClientMessage>(32);
-    let tx_outbound = Arc::new(std::sync::Mutex::new(tx_outbound));
-
-    // Ids of sessions this pane has spawned, so they can be killed on unmount.
+    let tx_outbound = bridge;
     let spawned_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-
-    // Connect to bridge daemon over WebSocket
-    let tx_clone = tx_outbound.clone();
-
-    let tx = tx_clone.clone();
     let spawned_ids_for_conn = spawned_ids.clone();
-
-    let (connection_task, abort_handle) = futures::future::abortable(async move {
-        let ws_url = bridge_config.get().ws_url.clone();
-        status.set(ConnectionStatus::Connecting);
-        error_msg.set(None);
-        raw_output.update(|s| s.push_str("\x1b[90mConnecting to bridge daemon...\x1b[0m\n"));
-
-        let token = match bridge_credentials.credential().await {
-            Ok(t) => t,
-            Err(e) => {
-                status.set(ConnectionStatus::Disconnected);
-                error_msg.set(Some(format!("bridge authentication failed: {e}")));
-                return;
+    let reconnecting = RwSignal::new(false);
+    let spawn_fresh = move || {
+        if !status.get_untracked().terminal_ready() {
+            return;
+        }
+        let id = next_session_id();
+        if bridge
+            .with_value(|bridge| {
+                bridge.send(BridgeClientMessage::Spawn {
+                    id: id.clone(),
+                    command: "sh".into(),
+                    args: vec!["-i".into()],
+                    cwd: None,
+                    env: std::collections::HashMap::new(),
+                    pty: true,
+                    cols: 120,
+                    rows: 30,
+                })
+            })
+            .is_ok()
+        {
+            spawned_ids_for_conn.lock().unwrap().push(id);
+        }
+    };
+    let spawn_fresh = StoredValue::new_local(spawn_fresh);
+    let ids_for_messages = spawned_ids.clone();
+    bridge.with_value(|bridge| {
+        bridge.register_terminal(std::rc::Rc::new(move |message| match message {
+            BridgeServerMessage::Spawned { id, pid, .. } => {
+                active_session.set(Some(id));
+                last_seq.set(0);
+                raw_output.update(|text| {
+                    text.push_str(&format!("\x1b[90m[Process spawned (PID: {pid})]\x1b[0m\n"))
+                });
             }
-        };
-
-        let ws = match WebSocket::open(&ws_url) {
-            Ok(w) => w,
-            Err(e) => {
-                status.set(ConnectionStatus::Disconnected);
-                raw_output.update(|s| {
-                        s.push_str(&format!(
-                            "\x1b[31mFailed to connect to bridge at {ws_url}: {e}\n\
-                             Start the daemon with `openwebide-bridge` to enable the terminal.\x1b[0m\n"
-                        ));
-                    });
-                return;
-            }
-        };
-
-        status.set(ConnectionStatus::Connected);
-        raw_output.update(|s| {
-            s.push_str(&format!(
-                "\x1b[32m✔ Connected to bridge daemon ({ws_url})\x1b[0m\n\
-                     \x1b[90mType a shell command or press Enter to spawn a shell.\x1b[0m\n"
-            ));
-        });
-
-        let (mut ws_write, mut ws_read) = ws.split();
-
-        // Task 1: Outbound message sender
-        spawn_local(async move {
-            while let Some(client_msg) = rx_outbound.next().await {
-                if let Ok(json_str) = serde_json::to_string(&client_msg)
-                    && ws_write.send(Message::Text(json_str)).await.is_err()
-                {
-                    break;
+            BridgeServerMessage::Output { id, seq, data, .. } => {
+                if active_session.get_untracked().as_ref() != Some(&id) {
+                    return;
+                }
+                last_seq.set(seq);
+                raw_output.update(|text| text.push_str(&data));
+                if let Some(Some(el)) = output_ref.try_get_untracked() {
+                    let div: &web_sys::HtmlElement = el.as_ref();
+                    div.set_scroll_top(div.scroll_height() as f64);
                 }
             }
-        });
-
-        // Automatically send Hello
-        if let Ok(mut sender) = tx.lock() {
-            let _ = sender.try_send(BridgeClientMessage::Hello {
-                token: token.clone(),
+            BridgeServerMessage::Exited {
+                id,
+                exit_code,
+                signal,
+            } => {
+                ids_for_messages
+                    .lock()
+                    .unwrap()
+                    .retain(|tracked| tracked != &id);
+                if active_session.get_untracked().as_ref() == Some(&id) {
+                    active_session.set(None);
+                }
+                let code = match (exit_code, signal) {
+                    (Some(code), _) => format!("exit code {code}"),
+                    (_, Some(signal)) => format!("signal {signal}"),
+                    _ => "unknown status".into(),
+                };
+                raw_output.update(|text| {
+                    text.push_str(&format!("\x1b[90m[Process finished with {code}]\x1b[0m\n"))
+                });
+            }
+            BridgeServerMessage::Error { id, message } => {
+                if reconnecting.get_untracked()
+                    && active_session.get_untracked().as_ref() == Some(&id)
+                    && message.contains("session not found")
+                {
+                    raw_output.update(|text| text.push_str("Terminal ended (bridge restarted)\n"));
+                    ids_for_messages
+                        .lock()
+                        .unwrap()
+                        .retain(|tracked| tracked != &id);
+                    active_session.set(None);
+                    last_seq.set(0);
+                    reconnecting.set(false);
+                    spawn_fresh.with_value(|spawn| spawn());
+                } else {
+                    raw_output.update(|text| {
+                        text.push_str(&format!("\x1b[31m[Bridge error: {message}]\x1b[0m\n"))
+                    });
+                }
+            }
+            BridgeServerMessage::Sessions { sessions: active } => sessions.set(active),
+            _ => {}
+        }))
+    });
+    Effect::new(move |previous: Option<bool>| {
+        let ready = status.get().terminal_ready();
+        if ready && !previous.unwrap_or(false) {
+            bridge.with_value(|bridge| {
+                let _ = bridge.send(BridgeClientMessage::List);
+                if let Some(id) = active_session.get_untracked() {
+                    reconnecting.set(true);
+                    let _ = bridge.send(BridgeClientMessage::Attach {
+                        id,
+                        last_seq: last_seq.get_untracked(),
+                    });
+                }
             });
         }
-
-        let bridge_credentials_clone = bridge_credentials.clone();
-        let tx_clone2 = tx.clone();
-
-        // Task 2: Inbound message reader
-        let mut retried_auth = false;
-        while let Some(msg_result) = ws_read.next().await {
-            let text = match msg_result {
-                Ok(Message::Text(t)) => t,
-                Ok(Message::Bytes(b)) => String::from_utf8_lossy(&b).to_string(),
-                _ => continue,
-            };
-
-            let server_msg: BridgeServerMessage = match serde_json::from_str(&text) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-
-            match server_msg {
-                BridgeServerMessage::HelloOk { .. } => {
-                    if let Ok(mut sender) = tx_clone2.lock() {
-                        let _ = sender.try_send(BridgeClientMessage::List);
-                    }
-                }
-                BridgeServerMessage::HelloError { message } => {
-                    if message.contains("expired") && !retried_auth {
-                        retried_auth = true;
-                        bridge_credentials_clone.clear_cache();
-                        if let Ok(new_token) = bridge_credentials_clone.credential().await {
-                            if let Ok(mut sender) = tx_clone2.lock() {
-                                let _ = sender
-                                    .try_send(BridgeClientMessage::Hello { token: new_token });
-                            }
-                            continue;
-                        }
-                    }
-                    error_msg.set(Some(format!("bridge: {message}")));
-                }
-                BridgeServerMessage::Spawned { id, pid, .. } => {
-                    active_session.set(Some(id.clone()));
-                    raw_output.update(|s| {
-                        s.push_str(&format!("\x1b[90m[Process spawned (PID: {pid})]\x1b[0m\n"));
-                    });
-                }
-                BridgeServerMessage::Output { seq, data, .. } => {
-                    last_seq.set(seq);
-                    raw_output.update(|s| s.push_str(&data));
-
-                    // Auto-scroll output container
-                    if let Some(Some(el)) = output_ref.try_get_untracked() {
-                        let div: &web_sys::HtmlElement = el.as_ref();
-                        div.set_scroll_top(div.scroll_height() as f64);
-                    }
-                }
-                BridgeServerMessage::Exited {
-                    id,
-                    exit_code,
-                    signal,
-                } => {
-                    if let Ok(mut ids) = spawned_ids_for_conn.lock() {
-                        ids.retain(|tracked| tracked != &id);
-                    }
-                    let code_str = match (exit_code, signal) {
-                        (Some(c), _) => format!("exit code {c}"),
-                        (None, Some(sig)) => format!("signal {sig}"),
-                        (None, None) => "unknown status".to_string(),
-                    };
-                    raw_output.update(|s| {
-                        s.push_str(&format!(
-                            "\x1b[90m[Process finished with {code_str}]\x1b[0m\n"
-                        ));
-                    });
-                }
-                BridgeServerMessage::Error { message, .. } => {
-                    if message.contains("unknown variant `Hello`") {
-                        if let Ok(mut sender) = tx_clone2.lock() {
-                            let _ = sender.try_send(BridgeClientMessage::List);
-                        }
-                    } else {
-                        raw_output.update(|s| {
-                            s.push_str(&format!("\x1b[31m[Bridge error: {message}]\x1b[0m\n"));
-                        });
-                    }
-                }
-                BridgeServerMessage::Sessions { sessions: active } => {
-                    sessions.set(active);
-                }
-            }
-        }
-
-        status.set(ConnectionStatus::Disconnected);
-        raw_output.update(|s| {
-            s.push_str("\x1b[33m[Bridge daemon disconnected]\x1b[0m\n");
-        });
+        ready
     });
-    spawn_local(async move {
-        let _ = connection_task.await;
-    });
-
-    let tx_for_cleanup = tx_outbound.clone();
     let spawned_ids_for_cleanup = spawned_ids.clone();
     on_cleanup(move || {
-        let ids: Vec<String> = spawned_ids_for_cleanup
-            .lock()
-            .map(|ids| ids.clone())
-            .unwrap_or_default();
-        if let Ok(mut sender) = tx_for_cleanup.lock() {
-            for id in ids {
-                let _ = sender.try_send(BridgeClientMessage::Kill { id, signal: None });
+        bridge.with_value(|bridge| {
+            for id in spawned_ids_for_cleanup.lock().unwrap().iter() {
+                bridge.kill_shell(id.clone());
             }
-        }
-        abort_handle.abort();
+            bridge.unregister_terminal();
+        });
     });
 
-    let tx_for_shell = tx_outbound.clone();
+    let tx_for_shell = tx_outbound;
     let spawned_ids_for_shell = spawned_ids.clone();
     let spawn_shell = move || {
+        if !status.get_untracked().terminal_ready() {
+            return;
+        }
         let id = next_session_id();
-        if let Ok(mut sender) = tx_for_shell.lock() {
+        {
+            let sender = tx_for_shell.get_value();
             if let Ok(mut ids) = spawned_ids_for_shell.lock() {
                 ids.push(id.clone());
             }
-            let _ = sender.try_send(BridgeClientMessage::Spawn {
+            let _ = sender.send(BridgeClientMessage::Spawn {
                 id,
                 command: "sh".into(),
                 args: vec!["-i".into()],
@@ -368,12 +295,11 @@ pub fn TerminalPane(
         }
     };
 
-    let tx_for_kill = tx_outbound.clone();
+    let tx_for_kill = tx_outbound;
     let kill_current = move || {
-        if let Some(id) = active_session.get()
-            && let Ok(mut sender) = tx_for_kill.lock()
-        {
-            let _ = sender.try_send(BridgeClientMessage::Kill {
+        if let Some(id) = active_session.get() {
+            let sender = tx_for_kill.get_value();
+            let _ = sender.send(BridgeClientMessage::Kill {
                 id,
                 signal: Some("SIGINT".into()),
             });
@@ -384,25 +310,30 @@ pub fn TerminalPane(
         raw_output.set(String::new());
     };
 
-    let tx_for_submit = tx_outbound.clone();
+    let tx_for_submit = tx_outbound;
     let spawned_ids_for_submit = spawned_ids.clone();
     let on_submit_command = move || {
+        if !status.get_untracked().terminal_ready() {
+            return;
+        }
         let cmd = input_text.get().trim().to_string();
         if cmd.is_empty() {
             if let Some(id) = active_session.get() {
-                if let Ok(mut sender) = tx_for_submit.lock() {
-                    let _ = sender.try_send(BridgeClientMessage::Input {
+                {
+                    let sender = tx_for_submit.get_value();
+                    let _ = sender.send(BridgeClientMessage::Input {
                         id,
                         data: "\n".into(),
                     });
                 }
             } else {
                 let id = next_session_id();
-                if let Ok(mut sender) = tx_for_submit.lock() {
+                {
+                    let sender = tx_for_submit.get_value();
                     if let Ok(mut ids) = spawned_ids_for_submit.lock() {
                         ids.push(id.clone());
                     }
-                    let _ = sender.try_send(BridgeClientMessage::Spawn {
+                    let _ = sender.send(BridgeClientMessage::Spawn {
                         id,
                         command: "sh".into(),
                         args: vec!["-i".into()],
@@ -422,10 +353,11 @@ pub fn TerminalPane(
         history_index.set(None);
         input_text.set(String::new());
 
-        if let Ok(mut sender) = tx_for_submit.lock() {
+        {
+            let sender = tx_for_submit.get_value();
             match active_session.get() {
                 Some(id) => {
-                    let _ = sender.try_send(BridgeClientMessage::Input {
+                    let _ = sender.send(BridgeClientMessage::Input {
                         id,
                         data: format!("{cmd}\n"),
                     });
@@ -438,7 +370,7 @@ pub fn TerminalPane(
                     if let Ok(mut ids) = spawned_ids_for_submit.lock() {
                         ids.push(id.clone());
                     }
-                    let _ = sender.try_send(BridgeClientMessage::Spawn {
+                    let _ = sender.send(BridgeClientMessage::Spawn {
                         id,
                         command: "sh".into(),
                         args: vec!["-lc".into(), "--".into(), cmd],
@@ -454,7 +386,7 @@ pub fn TerminalPane(
     };
 
     let spawn_shell_btn = spawn_shell.clone();
-    let kill_current_btn = kill_current.clone();
+    let kill_current_btn = kill_current;
     let on_submit_btn = on_submit_command.clone();
 
     let on_keydown = move |ev: web_sys::KeyboardEvent| match ev.key().as_str() {
@@ -512,21 +444,18 @@ pub fn TerminalPane(
                     <span class="terminal-glyph">""</span>
                     <span class="terminal-label">"Terminal"</span>
                     <span class=move || match status.get() {
-                        ConnectionStatus::Connected => "term-status online",
-                        ConnectionStatus::Connecting => "term-status connecting",
-                        ConnectionStatus::Disconnected => "term-status offline",
+                        BridgeStatus::Ready { .. } | BridgeStatus::Legacy => "term-status online",
+                        BridgeStatus::Connecting => "term-status connecting",
+                        BridgeStatus::Unavailable | BridgeStatus::Rejected => "term-status offline",
                     }>
                         {move || match status.get() {
-                            ConnectionStatus::Connected => "connected · ws:3001",
-                            ConnectionStatus::Connecting => "connecting...",
-                            ConnectionStatus::Disconnected => "bridge offline",
+                            BridgeStatus::Ready { .. } | BridgeStatus::Legacy => "connected · ws:3001",
+                            BridgeStatus::Connecting => "connecting...",
+                            BridgeStatus::Unavailable => "bridge offline",
+                            BridgeStatus::Rejected => "sign-in rejected",
                         }}
                     </span>
-                    <Show when=move || error_msg.get().is_some() fallback=|| ()>
-                        <span class="term-status offline" style="margin-left: 8px;">
-                            {move || error_msg.get().unwrap()}
-                        </span>
-                    </Show>
+
                 </div>
                 <div class="terminal-actions">
                     <button

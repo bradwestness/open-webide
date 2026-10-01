@@ -24,6 +24,8 @@ pub mod state_actions;
 #[cfg(all(target_arch = "wasm32", any(test, feature = "test-support")))]
 pub mod testing;
 pub mod text;
+#[cfg(target_arch = "wasm32")]
+pub mod util;
 pub mod vfs_err;
 #[cfg(target_arch = "wasm32")]
 pub mod workspace;

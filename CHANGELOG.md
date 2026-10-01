@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share one authenticated bridge connection across terminal, run, and completion traffic; reconnect terminals automatically and open a fresh shell after a bridge restart.
+
 - Stream server-side agent replies token by token, retain text before tool calls in conversation history, and add a run-plan API.
 
 - Add provider streaming for tool-call turns, with automatic non-streaming fallback for older llama.cpp servers.

@@ -803,11 +803,17 @@ async fn handle_git(
 }
 
 enum WriterCmd {
-    Send(BridgeServerMessage),
+    Send(Box<BridgeServerMessage>),
     Attach {
         session: std::sync::Arc<crate::session::Session>,
         after_seq: u64,
     },
+}
+
+impl WriterCmd {
+    fn send(message: BridgeServerMessage) -> Self {
+        Self::Send(Box::new(message))
+    }
 }
 
 async fn handle_websocket<S>(
@@ -820,7 +826,7 @@ async fn handle_websocket<S>(
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<WriterCmd>(256);
 
-    let _writer_task = tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
         let mut attached_session: Option<Arc<crate::session::Session>> = None;
         let mut attached_cursor = 0;
         let mut watch_rx: Option<tokio::sync::watch::Receiver<u64>> = None;
@@ -970,7 +976,7 @@ async fn handle_websocket<S>(
                     id: attached_id.clone().unwrap_or_default(),
                     message: format!("invalid message: {e}"),
                 };
-                let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                let _ = cmd_tx.send(WriterCmd::send(err)).await;
                 continue;
             }
         };
@@ -989,7 +995,7 @@ async fn handle_websocket<S>(
                         };
                         principal = Some(p);
                         let _ = cmd_tx
-                            .send(WriterCmd::Send(BridgeServerMessage::HelloOk {
+                            .send(WriterCmd::send(BridgeServerMessage::HelloOk {
                                 user_id,
                                 protocol: 1,
                                 runs: false,
@@ -998,13 +1004,70 @@ async fn handle_websocket<S>(
                     }
                     Err(e) => {
                         let _ = cmd_tx
-                            .send(WriterCmd::Send(BridgeServerMessage::HelloError {
+                            .send(WriterCmd::send(BridgeServerMessage::HelloError {
                                 message: e,
                             }))
                             .await;
                     }
                 }
                 continue;
+            }
+            BridgeClientMessage::RunStart { run_id, .. }
+            | BridgeClientMessage::RunAttach { run_id, .. }
+            | BridgeClientMessage::RunCancel { run_id }
+            | BridgeClientMessage::RunPermission { run_id, .. } => {
+                let (code, message) = if principal.is_none() {
+                    (
+                        openwebide_core::RunRejectCode::Unauthorized,
+                        "unauthorized: send hello first",
+                    )
+                } else {
+                    (
+                        openwebide_core::RunRejectCode::Unavailable,
+                        "runs are not available on this bridge",
+                    )
+                };
+                let _ = cmd_tx
+                    .send(WriterCmd::send(BridgeServerMessage::RunRejected {
+                        run_id,
+                        code,
+                        message: message.into(),
+                    }))
+                    .await;
+            }
+            BridgeClientMessage::RunList { .. } => {
+                let (code, message) = if principal.is_none() {
+                    (
+                        openwebide_core::RunRejectCode::Unauthorized,
+                        "unauthorized: send hello first",
+                    )
+                } else {
+                    (
+                        openwebide_core::RunRejectCode::Unavailable,
+                        "runs are not available on this bridge",
+                    )
+                };
+                let _ = cmd_tx
+                    .send(WriterCmd::send(BridgeServerMessage::RunRejected {
+                        run_id: String::new(),
+                        code,
+                        message: message.into(),
+                    }))
+                    .await;
+            }
+            BridgeClientMessage::CompletionStart { id, .. }
+            | BridgeClientMessage::CompletionCancel { id } => {
+                let error = if principal.is_none() {
+                    "unauthorized"
+                } else {
+                    "completions are not available on this bridge"
+                };
+                let _ = cmd_tx
+                    .send(WriterCmd::send(BridgeServerMessage::CompletionEnd {
+                        id,
+                        error: Some(error.into()),
+                    }))
+                    .await;
             }
             _ if principal.is_none() => {
                 let id = match &client_msg {
@@ -1019,7 +1082,7 @@ async fn handle_websocket<S>(
                     id,
                     message: "unauthorized: send hello first".to_string(),
                 };
-                let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                let _ = cmd_tx.send(WriterCmd::send(err)).await;
                 continue;
             }
             BridgeClientMessage::Spawn {
@@ -1037,7 +1100,7 @@ async fn handle_websocket<S>(
                         id,
                         message: "session id already exists".to_string(),
                     };
-                    let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                    let _ = cmd_tx.send(WriterCmd::send(err)).await;
                     continue;
                 }
 
@@ -1072,7 +1135,7 @@ async fn handle_websocket<S>(
                                 id,
                                 message: "session id already exists".to_string(),
                             };
-                            let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                            let _ = cmd_tx.send(WriterCmd::send(err)).await;
                             continue;
                         }
 
@@ -1081,7 +1144,7 @@ async fn handle_websocket<S>(
                             pid: session.pid.map(|p| p as u32).unwrap_or(0),
                             pty,
                         };
-                        let _ = cmd_tx.send(WriterCmd::Send(spawned)).await;
+                        let _ = cmd_tx.send(WriterCmd::send(spawned)).await;
 
                         attached_id = Some(id.clone());
                         let _ = cmd_tx
@@ -1093,7 +1156,7 @@ async fn handle_websocket<S>(
                     }
                     Err(e) => {
                         let err = BridgeServerMessage::Error { id, message: e };
-                        let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                        let _ = cmd_tx.send(WriterCmd::send(err)).await;
                     }
                 }
             }
@@ -1106,7 +1169,7 @@ async fn handle_websocket<S>(
                         id,
                         message: e.to_string(),
                     };
-                    let _ = cmd_tx.try_send(WriterCmd::Send(err));
+                    let _ = cmd_tx.try_send(WriterCmd::send(err));
                 }
             }
 
@@ -1125,7 +1188,7 @@ async fn handle_websocket<S>(
                     }
                     Err(message) => {
                         let err = BridgeServerMessage::Error { id, message };
-                        let _ = cmd_tx.try_send(WriterCmd::Send(err));
+                        let _ = cmd_tx.try_send(WriterCmd::send(err));
                     }
                 }
             }
@@ -1144,15 +1207,16 @@ async fn handle_websocket<S>(
                         id: id.clone(),
                         message: format!("session not found: {id}"),
                     };
-                    let _ = cmd_tx.send(WriterCmd::Send(err)).await;
+                    let _ = cmd_tx.send(WriterCmd::send(err)).await;
                 }
             }
 
             BridgeClientMessage::List => {
                 let active = sessions.list();
                 let msg = BridgeServerMessage::Sessions { sessions: active };
-                let _ = cmd_tx.send(WriterCmd::Send(msg)).await;
+                let _ = cmd_tx.send(WriterCmd::send(msg)).await;
             }
         }
     }
+    writer_task.abort();
 }

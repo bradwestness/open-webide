@@ -12,6 +12,8 @@ pub struct AuthState {
     pub user: RwSignal<Option<User>>,
     pub checked: RwSignal<bool>,
     pub username: Memo<Option<String>>,
+    #[cfg(target_arch = "wasm32")]
+    pub bridge: StoredValue<Option<crate::bridge::BridgeConn>, LocalStorage>,
 }
 
 impl AuthState {
@@ -25,6 +27,8 @@ impl AuthState {
             user,
             checked,
             username,
+            #[cfg(target_arch = "wasm32")]
+            bridge: StoredValue::new_local(None),
         }
     }
 
@@ -52,6 +56,12 @@ impl AuthState {
         settings: SettingsState,
         ui: UiState,
     ) -> Vec<String> {
+        #[cfg(target_arch = "wasm32")]
+        self.bridge.update_value(|connection| {
+            if let Some(connection) = connection.take() {
+                connection.close();
+            }
+        });
         projects.projects_loaded.set(false);
         #[cfg(target_arch = "wasm32")]
         if let Some(controller) = chat.abort.get() {

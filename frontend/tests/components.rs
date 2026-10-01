@@ -12,3 +12,6 @@ mod permissions;
 mod streaming;
 #[path = "components/support.rs"]
 mod support;
+
+#[path = "components/terminal.rs"]
+mod terminal;
