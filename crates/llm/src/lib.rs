@@ -14,8 +14,13 @@ pub(crate) mod sse;
 #[cfg(test)]
 mod fake;
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -26,6 +31,50 @@ use openwebide_core::{
 use serde_json::json;
 
 pub use error::ProviderError;
+pub use openwebide_core::ToolStreamChunk;
+
+pub fn completion_chunks(c: ChatCompletion) -> Vec<ToolStreamChunk> {
+    let text = match &c.response {
+        openwebide_core::ChatResponse::Text(text) => text,
+        openwebide_core::ChatResponse::ToolCalls(_) => &c.preamble,
+    };
+    let mut chunks = Vec::new();
+    if !text.is_empty() {
+        chunks.push(ToolStreamChunk::Delta(text.clone()));
+    }
+    if let Some(usage) = c.usage {
+        chunks.push(ToolStreamChunk::Usage(usage));
+    }
+    chunks.push(ToolStreamChunk::Response(c.response));
+    chunks
+}
+
+#[derive(Clone, Default)]
+pub struct ToolStreamMemo(Arc<AtomicBool>);
+
+impl ToolStreamMemo {
+    pub(crate) fn unsupported(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn mark_unsupported(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+#[derive(Default)]
+pub struct ToolStreamMemos(Mutex<HashMap<(i64, String), ToolStreamMemo>>);
+
+impl ToolStreamMemos {
+    pub fn get_or_insert(&self, connection_id: i64, base_url: &str) -> ToolStreamMemo {
+        self.0
+            .lock()
+            .unwrap()
+            .entry((connection_id, base_url.to_string()))
+            .or_default()
+            .clone()
+    }
+}
 
 /// A chunk of a streamed chat completion.
 pub enum StreamChunk {
@@ -198,6 +247,10 @@ pub trait LlmProvider: Send + Sync {
         &self,
         request: &ChatRequest,
     ) -> impl Future<Output = Result<ChatCompletion, ProviderError>> + Send;
+    fn chat_tools_stream(
+        &self,
+        req: &ChatRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>>;
     /// The model's context window, in tokens, discovered from the runtime.
     /// `Ok(None)` when the runtime doesn't report one (or `model` is
     /// absent and the provider has no configured model either).
@@ -440,5 +493,76 @@ mod tests {
         let mut lines = LineStream::new(byte_stream(chunks));
         assert_eq!(block_on(lines.next()).unwrap().unwrap(), "result;\r");
         assert!(block_on(lines.next()).is_none());
+    }
+    #[test]
+    fn completion_queue_replays_preamble_text_usage_and_errors() {
+        use openwebide_core::{ChatResponse, ToolCall};
+        let usage = TurnTelemetry {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+            eval_duration_ms: 4,
+            estimated: false,
+        };
+        let response = ChatResponse::ToolCalls(vec![ToolCall {
+            id: "c1".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        }]);
+        let provider = fake::FakeProvider::new(vec![
+            Ok(ChatCompletion {
+                preamble: "Checking".into(),
+                response: response.clone(),
+                usage: Some(usage),
+            }),
+            Ok(ChatCompletion {
+                preamble: String::new(),
+                response: ChatResponse::Text("done".into()),
+                usage: None,
+            }),
+            Err(ProviderError::Incomplete),
+            Ok(ChatCompletion {
+                preamble: String::new(),
+                response: ChatResponse::Text(String::new()),
+                usage: None,
+            }),
+        ]);
+        let request = ChatRequest {
+            connection_id: 1,
+            model: None,
+            system_prompt: None,
+            messages: vec![],
+            tools: vec![],
+        };
+        assert_eq!(
+            block_on(provider.chat_tools_stream(&request).collect::<Vec<_>>())
+                .into_iter()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>(),
+            vec![
+                ToolStreamChunk::Delta("Checking".into()),
+                ToolStreamChunk::Usage(usage),
+                ToolStreamChunk::Response(response),
+            ]
+        );
+        assert_eq!(
+            block_on(provider.chat_tools_stream(&request).collect::<Vec<_>>())
+                .into_iter()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>(),
+            vec![
+                ToolStreamChunk::Delta("done".into()),
+                ToolStreamChunk::Response(ChatResponse::Text("done".into())),
+            ]
+        );
+        let items = block_on(provider.chat_tools_stream(&request).collect::<Vec<_>>());
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], Err(ProviderError::Incomplete)));
+        assert_eq!(
+            block_on(provider.chat_tools_stream(&request).collect::<Vec<_>>())
+                .into_iter()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>(),
+            vec![ToolStreamChunk::Response(ChatResponse::Text(String::new()))]
+        );
     }
 }

@@ -518,13 +518,14 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use openwebide_core::{ChatCompletion, ModelInfo, ProviderKind};
-    use openwebide_llm::{ProviderError, StreamChunk};
+    use openwebide_llm::{ProviderError, StreamChunk, ToolStreamChunk, completion_chunks};
 
     /// Wrap a response with no usage, matching what a provider that reports
     /// nothing (or an older backend) returns.
     fn no_usage(response: ChatResponse) -> ChatCompletion {
         ChatCompletion {
             response,
+            preamble: String::new(),
             usage: None,
         }
     }
@@ -575,6 +576,24 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .unwrap_or_else(|| Ok(no_usage(ChatResponse::Text(String::new()))))
+        }
+        fn chat_tools_stream(
+            &self,
+            request: &ChatRequest,
+        ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>>
+        {
+            self.requests.lock().unwrap().push(request.clone());
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Ok(no_usage(ChatResponse::Text(String::new()))));
+            let chunks = match response {
+                Ok(c) => completion_chunks(c).into_iter().map(Ok).collect(),
+                Err(e) => vec![Err(e)],
+            };
+            Box::pin(stream::iter(chunks))
         }
         async fn context_limit(
             &self,
@@ -736,10 +755,12 @@ mod tests {
         };
         let (provider, _requests) = FakeProvider::new(vec![
             Ok(ChatCompletion {
+                preamble: String::new(),
                 response: ChatResponse::ToolCalls(vec![read]),
                 usage: Some(usage_1),
             }),
             Ok(ChatCompletion {
+                preamble: String::new(),
                 response: ChatResponse::Text("fixed it".into()),
                 usage: Some(usage_2),
             }),

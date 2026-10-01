@@ -20,7 +20,7 @@ use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatResponse, CommandOutcome, ConversationEntry,
     EditorContext, ModelInfo, ProviderKind, Role, ToolCall, TurnTelemetry, WebSearchResult,
 };
-use openwebide_llm::{LlmProvider, ProviderError, StreamChunk};
+use openwebide_llm::{LlmProvider, ProviderError, StreamChunk, ToolStreamChunk, completion_chunks};
 
 use crate::local_fs::{BrowserFsaVfs, ForceSend};
 use crate::{api::SseEvent, backend::Api};
@@ -98,6 +98,24 @@ impl LlmProvider for BrowserLlmProvider {
                 .await
                 .map_err(ProviderError::Http)
         })
+    }
+
+    fn chat_tools_stream(
+        &self,
+        request: &ChatRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
+        let api = self.api;
+        let request = request.clone();
+        Box::pin(
+            futures::stream::once(ForceSend(async move {
+                let chunks = match api.with_value(Clone::clone).chat_tools(&request).await {
+                    Ok(c) => completion_chunks(c).into_iter().map(Ok).collect::<Vec<_>>(),
+                    Err(e) => vec![Err(ProviderError::Http(e))],
+                };
+                futures::stream::iter(chunks)
+            }))
+            .flatten(),
+        )
     }
 
     fn context_limit(

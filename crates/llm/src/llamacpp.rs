@@ -1,4 +1,6 @@
+use std::collections::{BTreeMap, VecDeque};
 use std::pin::Pin;
+use std::sync::Arc;
 
 use futures::{Stream, StreamExt, stream};
 use openwebide_core::{
@@ -8,8 +10,9 @@ use serde_json::{Value, json};
 
 use crate::sse::{SseField, sse_field};
 use crate::{
-    HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, UsageAcc,
-    chat_messages, clock_now, stream_error, tool_call_values, tools_wire, url_for,
+    HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, ToolStreamChunk,
+    ToolStreamMemo, UsageAcc, chat_messages, clock_now, completion_chunks, stream_error,
+    tool_call_values, tools_wire, url_for,
 };
 
 /// Provider for a [llama.cpp](https://github.com/ggml-org/llama.cpp) server
@@ -17,7 +20,8 @@ use crate::{
 pub struct LlamaCppProvider<C: HttpClient> {
     base_url: String,
     model: Option<String>,
-    http: C,
+    http: Arc<C>,
+    tool_stream_memo: ToolStreamMemo,
 }
 
 impl<C: HttpClient> LlamaCppProvider<C> {
@@ -25,9 +29,205 @@ impl<C: HttpClient> LlamaCppProvider<C> {
         Self {
             base_url: base_url.into(),
             model,
-            http,
+            http: Arc::new(http),
+            tool_stream_memo: ToolStreamMemo::default(),
         }
     }
+    pub fn with_tool_stream_memo(mut self, memo: ToolStreamMemo) -> Self {
+        self.tool_stream_memo = memo;
+        self
+    }
+
+    fn stream_tools(
+        &self,
+        request: &ChatRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
+        let Some(model) = request.model.clone().or_else(|| self.model.clone()) else {
+            return Box::pin(stream::once(async { Err(ProviderError::NoModel) }));
+        };
+        let body = json!({
+            "model": model,
+            "messages": llamacpp_tool_messages(request),
+            "stream": true,
+            "tools": tools_wire(&request.tools),
+            "stream_options": { "include_usage": true },
+        });
+        let lines = LineStream::new(
+            self.http
+                .post_stream(&url_for(&self.base_url, "/v1/chat/completions"), &body),
+        );
+        Box::pin(stream::unfold(
+            (
+                lines,
+                UsageAcc::new(request),
+                String::new(),
+                BTreeMap::<usize, PartialToolCall>::new(),
+                VecDeque::new(),
+                false,
+                false,
+            ),
+            |(mut lines, mut acc, mut content, mut calls, mut pending, mut complete, mut ended)| async move {
+                loop {
+                    if let Some(chunk) = pending.pop_front() {
+                        return Some((
+                            Ok(chunk),
+                            (lines, acc, content, calls, pending, complete, ended),
+                        ));
+                    }
+                    if ended {
+                        return None;
+                    }
+                    let result = match lines.next().await {
+                        None if !complete => Err(ProviderError::Incomplete),
+                        Some(Err(e)) => Err(e),
+                        line => (|| {
+                            let mut done = line.is_none();
+                            if let Some(Ok(line)) = line {
+                                match sse_field(&line) {
+                                    SseField::Ignore => return Ok(()),
+                                    SseField::Error(value) => {
+                                        let parsed =
+                                            serde_json::from_str(value).unwrap_or(Value::Null);
+                                        return Err(ProviderError::Http(
+                                            stream_error(&parsed)
+                                                .unwrap_or_else(|| value.to_string()),
+                                        ));
+                                    }
+                                    SseField::Data(data) if data.trim() == "[DONE]" => {
+                                        done = true;
+                                    }
+                                    SseField::Data(data) => {
+                                        let value: Value =
+                                            serde_json::from_str(data).map_err(|e| {
+                                                ProviderError::Parse(format!(
+                                                    "llama.cpp stream: invalid JSON: {e}"
+                                                ))
+                                            })?;
+                                        if let Some(error) = stream_error(&value) {
+                                            return Err(ProviderError::Http(error));
+                                        }
+                                        usage_fields(&value, &mut acc);
+                                        if let Some(choice) = value
+                                            .get("choices")
+                                            .and_then(Value::as_array)
+                                            .and_then(|v| v.first())
+                                        {
+                                            if choice
+                                                .get("finish_reason")
+                                                .is_some_and(|v| !v.is_null())
+                                            {
+                                                complete = true;
+                                            }
+                                            if let Some(delta) = choice.get("delta") {
+                                                if let Some(text) = delta
+                                                    .get("content")
+                                                    .and_then(Value::as_str)
+                                                    .filter(|s| !s.is_empty())
+                                                {
+                                                    if acc.started.is_none() {
+                                                        acc.started = clock_now();
+                                                    }
+                                                    content.push_str(text);
+                                                    acc.text.push_str(text);
+                                                    pending.push_back(ToolStreamChunk::Delta(
+                                                        text.to_string(),
+                                                    ));
+                                                }
+                                                if let Some(values) = delta
+                                                    .get("tool_calls")
+                                                    .and_then(Value::as_array)
+                                                    .filter(|v| !v.is_empty())
+                                                {
+                                                    if acc.started.is_none() {
+                                                        acc.started = clock_now();
+                                                    }
+                                                    for (position, value) in
+                                                        values.iter().enumerate()
+                                                    {
+                                                        let index = value
+                                                            .get("index")
+                                                            .and_then(Value::as_u64)
+                                                            .map(|n| n as usize)
+                                                            .unwrap_or(position);
+                                                        let call = calls.entry(index).or_default();
+                                                        if call.id.is_empty() {
+                                                            call.id = value
+                                                                .get("id")
+                                                                .and_then(Value::as_str)
+                                                                .unwrap_or_default()
+                                                                .to_string();
+                                                        }
+                                                        if let Some(function) =
+                                                            value.get("function")
+                                                        {
+                                                            if call.name.is_empty() {
+                                                                call.name = function
+                                                                    .get("name")
+                                                                    .and_then(Value::as_str)
+                                                                    .unwrap_or_default()
+                                                                    .to_string();
+                                                            }
+                                                            if let Some(args) = function
+                                                                .get("arguments")
+                                                                .and_then(Value::as_str)
+                                                            {
+                                                                call.arguments.push_str(args);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if done {
+                                let mut tool_calls = Vec::new();
+                                for call in std::mem::take(&mut calls).into_values() {
+                                    if call.name.is_empty() {
+                                        return Err(ProviderError::Parse(
+                                            "llama.cpp tool call missing `name`".into(),
+                                        ));
+                                    }
+                                    acc.text.push_str(&call.name);
+                                    acc.text.push_str(&call.arguments);
+                                    tool_calls.push(ToolCall {
+                                        id: call.id,
+                                        name: call.name,
+                                        arguments: call.arguments,
+                                    });
+                                }
+                                acc.ended = clock_now();
+                                pending.push_back(ToolStreamChunk::Usage(acc.finish()));
+                                let response = if tool_calls.is_empty() {
+                                    ChatResponse::Text(std::mem::take(&mut content))
+                                } else {
+                                    ChatResponse::ToolCalls(tool_calls)
+                                };
+                                pending.push_back(ToolStreamChunk::Response(response));
+                                ended = true;
+                            }
+                            Ok(())
+                        })(),
+                    };
+                    if let Err(e) = result {
+                        pending.clear();
+                        return Some((
+                            Err(e),
+                            (lines, acc, content, calls, pending, complete, true),
+                        ));
+                    }
+                }
+            },
+        ))
+    }
+}
+
+#[derive(Default)]
+struct PartialToolCall {
+    id: String,
+    name: String,
+    arguments: String,
 }
 
 /// Read the usage/timing fields an OpenAI-compatible llama.cpp response
@@ -59,7 +259,7 @@ fn usage_fields(value: &Value, acc: &mut UsageAcc) {
     }
 }
 
-impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
+impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
     fn kind(&self) -> ProviderKind {
         ProviderKind::LlamaCpp
     }
@@ -284,8 +484,15 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
                     arguments,
                 });
             }
+            let preamble = message
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            acc.text.push_str(&preamble);
             return Ok(ChatCompletion {
                 response: ChatResponse::ToolCalls(tool_calls),
+                preamble,
                 usage: Some(acc.finish()),
             });
         }
@@ -297,8 +504,40 @@ impl<C: HttpClient> LlmProvider for LlamaCppProvider<C> {
         acc.text.push_str(&content);
         Ok(ChatCompletion {
             response: ChatResponse::Text(content),
+            preamble: String::new(),
             usage: Some(acc.finish()),
         })
+    }
+
+    fn chat_tools_stream(
+        &self,
+        request: &ChatRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
+        let provider = Self {
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            http: self.http.clone(),
+            tool_stream_memo: self.tool_stream_memo.clone(),
+        };
+        let request = request.clone();
+        Box::pin(stream::once(async move {
+            let mut first = None;
+            if !provider.tool_stream_memo.unsupported() {
+                let mut streaming = provider.stream_tools(&request);
+                first = streaming.next().await;
+                if !matches!(&first, Some(Err(ProviderError::Http(msg))) if msg.to_lowercase().contains("stream")) {
+                    return Box::pin(stream::iter(first).chain(streaming)) as Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send>>;
+                }
+            }
+            let chunks = match provider.chat_tools(&request).await {
+                Ok(completion) => {
+                    if first.is_some() { provider.tool_stream_memo.mark_unsupported(); }
+                    completion_chunks(completion).into_iter().map(Ok).collect::<Vec<_>>()
+                }
+                Err(e) => vec![Err(e)],
+            };
+            Box::pin(stream::iter(chunks)) as Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send>>
+        }).flatten())
     }
 
     async fn context_limit(&self, _model: Option<&str>) -> Result<Option<usize>, ProviderError> {
@@ -941,5 +1180,236 @@ mod tests {
         state.push(Err(ProviderError::Http("404 Not Found".into())));
 
         assert_eq!(block_on(provider.context_limit(None)).unwrap(), None);
+    }
+    fn tool_items(
+        provider: &LlamaCppProvider<FakeHttpClient>,
+        req: &ChatRequest,
+    ) -> Vec<Result<ToolStreamChunk, ProviderError>> {
+        block_on(provider.chat_tools_stream(req).collect())
+    }
+
+    #[test]
+    fn tool_stream_reassembles_interleaved_calls_and_trailing_usage() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            r#"data: {"choices":[{"delta":{"content":"Checking","tool_calls":[{"index":1,"id":"second","function":{"name":"write_file","arguments":"{\"path\":"}}]}}]}
+"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"first","function":{"name":"read_file","arguments":"{}"}},{"index":1,"id":"ignored","function":{"name":"ignored","arguments":"\"a\"}"}}]}}]}
+"#,
+            r#"data: {"choices":[{"finish_reason":"tool_calls"}]}
+"#,
+            r#"data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":8},"timings":{"predicted_ms":123}}
+"#,
+        ]);
+        let mut req = request(None, None);
+        req.tools = vec![read_file_tool()];
+        let items = tool_items(&provider, &req);
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0].as_ref().unwrap(),
+            &ToolStreamChunk::Delta("Checking".into())
+        );
+        assert_eq!(
+            items[1].as_ref().unwrap(),
+            &ToolStreamChunk::Usage(TurnTelemetry {
+                prompt_tokens: 12,
+                completion_tokens: 8,
+                eval_duration_ms: 123,
+                estimated: false
+            })
+        );
+        assert_eq!(
+            items[2].as_ref().unwrap(),
+            &ToolStreamChunk::Response(ChatResponse::ToolCalls(vec![
+                ToolCall {
+                    id: "first".into(),
+                    name: "read_file".into(),
+                    arguments: "{}".into()
+                },
+                ToolCall {
+                    id: "second".into(),
+                    name: "write_file".into(),
+                    arguments: r#"{"path":"a"}"#.into()
+                },
+            ]))
+        );
+        let body = state.calls.lock().unwrap()[0].body.clone().unwrap();
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"], json!({"include_usage":true}));
+        assert_eq!(body["tools"][0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn tool_stream_missing_indexes_use_array_positions_and_defaults() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            r#"data:{"choices":[{"delta":{"tool_calls":[{"function":{"name":"read_file"}},{"function":{"name":"git_status"}}]}}]}
+"#,
+            "data:[DONE]\n",
+        ]);
+        let items = tool_items(&provider, &request(None, None));
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], Ok(ToolStreamChunk::Usage(_))));
+        assert_eq!(
+            items[1].as_ref().unwrap(),
+            &ToolStreamChunk::Response(ChatResponse::ToolCalls(vec![
+                ToolCall {
+                    id: "".into(),
+                    name: "read_file".into(),
+                    arguments: "".into()
+                },
+                ToolCall {
+                    id: "".into(),
+                    name: "git_status".into(),
+                    arguments: "".into()
+                },
+            ]))
+        );
+    }
+
+    #[test]
+    fn tool_stream_text_only_and_incomplete() {
+        for complete in [false, true] {
+            let (provider, state) = provider(FakeHttpClient::new());
+            let mut lines = vec![
+                r#"data: {"choices":[{"delta":{"content":"a"}}]}
+"#,
+                r#"data: {"choices":[{"delta":{"content":"b"}}]}
+"#,
+            ];
+            if complete {
+                lines.push("data: [DONE]\n");
+            }
+            state.push_stream(lines);
+            let items = tool_items(&provider, &request(None, None));
+            assert_eq!(
+                items[0].as_ref().unwrap(),
+                &ToolStreamChunk::Delta("a".into())
+            );
+            assert_eq!(
+                items[1].as_ref().unwrap(),
+                &ToolStreamChunk::Delta("b".into())
+            );
+            if complete {
+                assert_eq!(items.len(), 4);
+                assert!(matches!(items[2], Ok(ToolStreamChunk::Usage(_))));
+                assert_eq!(
+                    items[3].as_ref().unwrap(),
+                    &ToolStreamChunk::Response(ChatResponse::Text("ab".into()))
+                );
+            } else {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(items[2], Err(ProviderError::Incomplete)));
+            }
+        }
+    }
+
+    #[test]
+    fn tool_stream_missing_name_is_parse_error() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}
+"#,
+            "data: [DONE]\n",
+        ]);
+        let items = tool_items(&provider, &request(None, None));
+        assert_eq!(items.len(), 1);
+        assert!(
+            matches!(&items[0], Err(ProviderError::Parse(msg)) if msg == "llama.cpp tool call missing `name`")
+        );
+    }
+
+    #[test]
+    fn tool_stream_retry_sets_shared_memo_and_skips_future_streams() {
+        let memos = crate::ToolStreamMemos::default();
+        let memo = memos.get_or_insert(7, BASE);
+        let (provider, state) = provider(FakeHttpClient::new());
+        let provider = provider.with_tool_stream_memo(memo.clone());
+        state.push_stream_error(ProviderError::Http(
+            "500: Cannot use tools with STREAM".into(),
+        ));
+        let value = json!({"choices":[{"message":{"content":"Checking","tool_calls":[{"id":"c1","function":{"name":"read_file","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5},"timings":{"predicted_ms":50}});
+        state.push(Ok(value.clone()));
+        let expected = completion_chunks(ChatCompletion {
+            preamble: "Checking".into(),
+            response: ChatResponse::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            }]),
+            usage: Some(TurnTelemetry {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                eval_duration_ms: 50,
+                estimated: false,
+            }),
+        });
+        let items = tool_items(&provider, &request(None, None));
+        assert_eq!(
+            items.into_iter().map(Result::unwrap).collect::<Vec<_>>(),
+            expected
+        );
+        assert!(memo.unsupported());
+        assert!(memos.get_or_insert(7, BASE).unsupported());
+        assert!(!memos.get_or_insert(8, BASE).unsupported());
+        assert!(!memos.get_or_insert(7, "http://other").unsupported());
+        state.push(Ok(value));
+        let provider = LlamaCppProvider {
+            base_url: provider.base_url,
+            model: provider.model,
+            http: provider.http,
+            tool_stream_memo: memos.get_or_insert(7, BASE),
+        };
+        assert_eq!(
+            tool_items(&provider, &request(None, None))
+                .into_iter()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let calls = state.calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].body.as_ref().unwrap()["stream"], true);
+        assert_eq!(calls[1].body.as_ref().unwrap()["stream"], false);
+        assert_eq!(calls[2].body.as_ref().unwrap()["stream"], false);
+    }
+
+    #[test]
+    fn tool_stream_nonmatching_error_does_not_retry() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream_error(ProviderError::Http("500: bad model".into()));
+        let items = tool_items(&provider, &request(None, None));
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], Err(ProviderError::Http(msg)) if msg == "500: bad model"));
+        assert_eq!(state.calls.lock().unwrap().len(), 1);
+        assert!(!provider.tool_stream_memo.unsupported());
+    }
+
+    #[test]
+    fn tool_stream_failed_retry_leaves_memo_unset() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream_error(ProviderError::Http("Cannot use tools with stream".into()));
+        state.push(Err(ProviderError::Http("retry failed".into())));
+        let items = tool_items(&provider, &request(None, None));
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], Err(ProviderError::Http(msg)) if msg == "retry failed"));
+        assert_eq!(state.calls.lock().unwrap().len(), 2);
+        assert!(!provider.tool_stream_memo.unsupported());
+    }
+
+    #[test]
+    fn tool_stream_error_after_delta_never_retries() {
+        let (provider, state) = provider(FakeHttpClient::new());
+        state.push_stream(vec![
+            r#"data: {"choices":[{"delta":{"content":"a"}}]}
+"#,
+            r#"error: {"error":"Cannot stream"}
+"#,
+        ]);
+        let items = tool_items(&provider, &request(None, None));
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], Ok(ToolStreamChunk::Delta(_))));
+        assert!(matches!(items[1], Err(ProviderError::Http(_))));
+        assert_eq!(state.calls.lock().unwrap().len(), 1);
     }
 }

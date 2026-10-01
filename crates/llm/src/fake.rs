@@ -6,8 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use futures::{Stream, stream};
+use openwebide_core::{ChatCompletion, ChatRequest, ChatResponse, ModelInfo, ProviderKind};
 
-use crate::{HttpClient, ProviderError};
+use crate::{
+    HttpClient, LlmProvider, ProviderError, StreamChunk, ToolStreamChunk, completion_chunks,
+};
 
 /// One recorded provider request.
 #[derive(Debug, Clone, PartialEq)]
@@ -123,5 +126,72 @@ impl FakeHttpClient {
                     "FakeHttpClient: no response queued".into(),
                 ))
             })
+    }
+}
+
+pub struct FakeProvider {
+    responses: Mutex<VecDeque<Result<ChatCompletion, ProviderError>>>,
+}
+
+impl FakeProvider {
+    pub fn new(responses: Vec<Result<ChatCompletion, ProviderError>>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into()),
+        }
+    }
+
+    fn next_completion(&self) -> Result<ChatCompletion, ProviderError> {
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| {
+                Err(ProviderError::Parse(
+                    "FakeProvider: no completion queued".into(),
+                ))
+            })
+    }
+}
+
+impl LlmProvider for FakeProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Ollama
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(Vec::new())
+    }
+
+    async fn chat(&self, _request: &ChatRequest) -> Result<String, ProviderError> {
+        match self.next_completion()?.response {
+            ChatResponse::Text(text) => Ok(text),
+            _ => Err(ProviderError::Parse("expected text".into())),
+        }
+    }
+
+    fn chat_stream(
+        &self,
+        _request: &ChatRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
+        Box::pin(stream::empty())
+    }
+
+    async fn chat_tools(&self, _request: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
+        self.next_completion()
+    }
+
+    fn chat_tools_stream(
+        &self,
+        _request: &ChatRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
+        let chunks = match self.next_completion() {
+            Ok(c) => completion_chunks(c).into_iter().map(Ok).collect(),
+            Err(e) => vec![Err(e)],
+        };
+        Box::pin(stream::iter(chunks))
+    }
+
+    async fn context_limit(&self, _model: Option<&str>) -> Result<Option<usize>, ProviderError> {
+        Ok(None)
     }
 }

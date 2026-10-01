@@ -184,7 +184,7 @@ pub struct ModelInfo {
 }
 
 /// Request to run a chat completion against a saved connection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub connection_id: i64,
     pub system_prompt: Option<String>,
@@ -224,6 +224,14 @@ pub enum ChatResponse {
     ToolCalls(Vec<ToolCall>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ToolStreamChunk {
+    Delta(String),
+    Usage(TurnTelemetry),
+    Response(ChatResponse),
+}
+
 /// The wire body for `/api/chat-tools`: the completion plus the usage the
 /// provider reported for the call, when it did.
 ///
@@ -233,6 +241,8 @@ pub enum ChatResponse {
 /// older bundle or backend does not deserialize this shape at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatCompletion {
+    #[serde(default)]
+    pub preamble: String,
     pub response: ChatResponse,
     #[serde(default)]
     pub usage: Option<TurnTelemetry>,
@@ -1158,5 +1168,44 @@ mod tests {
                 DiffChunk::Unchanged(" {".into()),
             ]
         );
+    }
+    #[test]
+    fn tool_stream_chunks_round_trip_with_tags() {
+        let chunks = [
+            (ToolStreamChunk::Delta("hello".into()), "delta"),
+            (
+                ToolStreamChunk::Usage(TurnTelemetry {
+                    prompt_tokens: 3,
+                    completion_tokens: 2,
+                    eval_duration_ms: 5,
+                    estimated: false,
+                }),
+                "usage",
+            ),
+            (
+                ToolStreamChunk::Response(ChatResponse::ToolCalls(vec![ToolCall {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    arguments: "{}".into(),
+                }])),
+                "response",
+            ),
+        ];
+        for (chunk, kind) in chunks {
+            let value = serde_json::to_value(&chunk).unwrap();
+            assert_eq!(value["kind"], kind);
+            assert!(value.get("value").is_some());
+            assert_eq!(
+                serde_json::from_value::<ToolStreamChunk>(value).unwrap(),
+                chunk
+            );
+        }
+    }
+
+    #[test]
+    fn completion_without_preamble_deserializes() {
+        let c: ChatCompletion = serde_json::from_str(r#"{"response":{"Text":"hello"}}"#).unwrap();
+        assert_eq!(c.preamble, "");
+        assert_eq!(c.response, ChatResponse::Text("hello".into()));
     }
 }

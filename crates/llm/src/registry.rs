@@ -4,8 +4,8 @@ use futures::Stream;
 use openwebide_core::{ChatCompletion, ChatRequest, Connection, ModelInfo, ProviderKind};
 
 use crate::{
-    HttpClient, LlmProvider, ProviderError, StreamChunk, llamacpp::LlamaCppProvider,
-    ollama::OllamaProvider,
+    HttpClient, LlmProvider, ProviderError, StreamChunk, ToolStreamChunk, ToolStreamMemo,
+    llamacpp::LlamaCppProvider, ollama::OllamaProvider,
 };
 
 /// The concrete provider set, selected by the connection's kind.
@@ -19,6 +19,10 @@ pub enum Provider<C: HttpClient> {
 
 impl<C: HttpClient> Provider<C> {
     pub fn for_connection(conn: &Connection, http: C) -> Self {
+        Self::for_connection_with_memo(conn, http, ToolStreamMemo::default())
+    }
+
+    pub fn for_connection_with_memo(conn: &Connection, http: C, memo: ToolStreamMemo) -> Self {
         match conn.kind {
             ProviderKind::Ollama => Self::Ollama(
                 OllamaProvider::new(conn.base_url.clone(), conn.model.clone(), http)
@@ -27,16 +31,15 @@ impl<C: HttpClient> Provider<C> {
             // llama.cpp has no per-request context size: `n_ctx` is fixed
             // when `llama-server` starts, so a configured limit only drives
             // the gauge, not the runtime window.
-            ProviderKind::LlamaCpp => Self::LlamaCpp(LlamaCppProvider::new(
-                conn.base_url.clone(),
-                conn.model.clone(),
-                http,
-            )),
+            ProviderKind::LlamaCpp => Self::LlamaCpp(
+                LlamaCppProvider::new(conn.base_url.clone(), conn.model.clone(), http)
+                    .with_tool_stream_memo(memo),
+            ),
         }
     }
 }
 
-impl<C: HttpClient> LlmProvider for Provider<C> {
+impl<C: HttpClient + 'static> LlmProvider for Provider<C> {
     fn kind(&self) -> ProviderKind {
         match self {
             Self::Ollama(p) => p.kind(),
@@ -72,6 +75,16 @@ impl<C: HttpClient> LlmProvider for Provider<C> {
         match self {
             Self::Ollama(p) => p.chat_tools(request).await,
             Self::LlamaCpp(p) => p.chat_tools(request).await,
+        }
+    }
+
+    fn chat_tools_stream(
+        &self,
+        request: &ChatRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
+        match self {
+            Self::Ollama(p) => p.chat_tools_stream(request),
+            Self::LlamaCpp(p) => p.chat_tools_stream(request),
         }
     }
 
