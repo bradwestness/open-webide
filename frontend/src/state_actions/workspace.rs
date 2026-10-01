@@ -1,13 +1,13 @@
-use leptos::prelude::*;
-use leptos::task::spawn_local;
-use openwebide_core::{FileKind, vfs::SearchOptions};
-use openwebide_frontend::state::{
+use crate::state::{
     projects::ProjectsState,
     ui::{ConfirmRequest, PromptRequest, UiState},
     workspace::WorkspaceState,
 };
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use openwebide_core::{FileKind, vfs::SearchOptions};
 
-use crate::{api::BackendApi, local_fs, workspace::Workspace};
+use crate::{backend::Api, local_fs, workspace::Workspace};
 
 /// Browser and backend actions for opening, editing, and searching files.
 #[derive(Clone, Copy)]
@@ -29,7 +29,7 @@ pub struct WorkspaceActions {
 
 impl WorkspaceActions {
     pub fn new(
-        api: BackendApi,
+        api: Api,
         projects: ProjectsState,
         workspace: WorkspaceState,
         ui: UiState,
@@ -124,7 +124,9 @@ impl WorkspaceActions {
                 };
                 let result = match ws {
                     Workspace::Remote { api, project_id } => {
-                        api.read_file_lossy(project_id, &path).await
+                        api.with_value(Clone::clone)
+                            .read_file_lossy(project_id, &path)
+                            .await
                     }
                     Workspace::Local { handle } => local_fs::read_lossy(&handle, &path).await,
                 };
@@ -320,31 +322,31 @@ impl WorkspaceActions {
             else {
                 return;
             };
-            let action = openwebide_frontend::pending::reject_action(&diff);
+            let action = crate::pending::reject_action(&diff);
             let action_clone = action.clone();
             let load_dir = load_dir;
             ui.confirm.set(Some(ConfirmRequest {
                 title: "Reject edit".to_string(),
                 message: match &action {
-                    openwebide_frontend::pending::RejectAction::Restore(_) => {
+                    crate::pending::RejectAction::Restore(_) => {
                         "Reject this edit? The file will be restored to its previous contents."
                             .to_string()
                     }
-                    openwebide_frontend::pending::RejectAction::RestoreFromBackup(_) => {
+                    crate::pending::RejectAction::RestoreFromBackup(_) => {
                         "Reject this edit? The file will be restored from backup.".to_string()
                     }
-                    openwebide_frontend::pending::RejectAction::Delete => {
+                    crate::pending::RejectAction::Delete => {
                         "Reject this edit? The newly created file will be deleted.".to_string()
                     }
-                    openwebide_frontend::pending::RejectAction::Unavailable => "Cannot reject this edit because the file's previous contents were too large to back up and no copy exists.".to_string(),
+                    crate::pending::RejectAction::Unavailable => "Cannot reject this edit because the file's previous contents were too large to back up and no copy exists.".to_string(),
                 },
                 confirm_label: match &action {
-                    openwebide_frontend::pending::RejectAction::Unavailable => "Ok".to_string(),
+                    crate::pending::RejectAction::Unavailable => "Ok".to_string(),
                     _ => "Reject".to_string(),
                 },
                 action: Callback::new(move |_| {
                     let action = action_clone.clone();
-                    if matches!(action, openwebide_frontend::pending::RejectAction::Unavailable) {
+                    if matches!(action, crate::pending::RejectAction::Unavailable) {
                         return;
                     }
                     let path = path.clone();
@@ -357,29 +359,29 @@ impl WorkspaceActions {
                             return;
                         };
                         let result = match &action {
-                            openwebide_frontend::pending::RejectAction::Restore(previous) => {
+                            crate::pending::RejectAction::Restore(previous) => {
                                 ws.write(&path, previous)
                                     .await
                                     .map(|()| previous.clone())
                             }
-                            openwebide_frontend::pending::RejectAction::RestoreFromBackup(backup) => {
+                            crate::pending::RejectAction::RestoreFromBackup(backup) => {
                                 let result = ws.copy(backup, &path).await;
                                 if result.is_ok() {
                                     let _ = ws.delete(backup).await;
                                 }
                                 result.map(|()| String::new())
                             }
-                            openwebide_frontend::pending::RejectAction::Delete => {
+                            crate::pending::RejectAction::Delete => {
                                 ws.delete(&path).await.map(|_| String::new())
                             }
-                            openwebide_frontend::pending::RejectAction::Unavailable => unreachable!(),
+                            crate::pending::RejectAction::Unavailable => unreachable!(),
                         };
                         match result {
                             Ok(content) => {
                                 if active_project.get() == Some(project_id) {
-                                    if matches!(action, openwebide_frontend::pending::RejectAction::Delete) {
+                                    if matches!(action, crate::pending::RejectAction::Delete) {
                                         workspace.open_file.set(None);
-                                    } else if matches!(action, openwebide_frontend::pending::RejectAction::RestoreFromBackup(_)) {
+                                    } else if matches!(action, crate::pending::RejectAction::RestoreFromBackup(_)) {
                                         workspace.open_file.set(None);
                                         workspace.open_file.set(Some(path.clone()));
                                     } else {

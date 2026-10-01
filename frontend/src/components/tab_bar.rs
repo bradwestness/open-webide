@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use openwebide_core::Project;
 
-use openwebide_frontend::state::projects::ProjectsState;
+use crate::state::projects::ProjectsState;
 
 /// Rider-style project tabs: each open project is a tab; the active one is
 /// highlighted. The left side holds the "Open local" / "Open remote" buttons

@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 use crate::api::HealthState;
-use openwebide_frontend::state::{chat::ChatState, git::GitState};
+use crate::state::{chat::ChatState, git::GitState};
 
 #[component]
 pub fn StatusBar(

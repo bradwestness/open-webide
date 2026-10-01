@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use openwebide_core::FileEntry;
 use wasm_bindgen_futures::spawn_local;
 
-use crate::api::BackendApi;
+use crate::backend::Api;
 
 /// A modal file browser for picking a host folder (remote-mode projects).
 /// It navigates the host mount tree (the preopen root, e.g. `~/source`); the
@@ -10,7 +10,7 @@ use crate::api::BackendApi;
 /// (relative to the mount root). Local-mode projects keep the system picker.
 #[component]
 pub fn FileBrowser(on_close: Callback<()>, on_select: Callback<String>) -> impl IntoView {
-    let api = expect_context::<BackendApi>();
+    let api = expect_context::<Api>();
     let current = RwSignal::new(String::new());
     let entries = RwSignal::new(Vec::<FileEntry>::new());
     let error = RwSignal::new(Option::<String>::None);
@@ -22,7 +22,7 @@ pub fn FileBrowser(on_close: Callback<()>, on_select: Callback<String>) -> impl 
         let api = api;
         loading.set(true);
         spawn_local(async move {
-            let result = api.browse(&dir).await;
+            let result = api.with_value(Clone::clone).browse(&dir).await;
             // Drop a stale response: `current` may have changed again while
             // this request was in flight (a quick navigation into one
             // directory and out before the listing arrives). The newer

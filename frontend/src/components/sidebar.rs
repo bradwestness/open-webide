@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use openwebide_core::ProviderKind;
 use web_sys::wasm_bindgen::JsCast;
 
-use openwebide_frontend::state::{
+use crate::state::{
     chat::ChatState, layout::LayoutState, projects::ProjectsState, settings::SettingsState,
 };
 

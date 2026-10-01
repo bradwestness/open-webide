@@ -7,9 +7,7 @@ use web_sys::wasm_bindgen::JsCast;
 
 use crate::components::chat_pane::render_markdown;
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SegmentOption, SegmentedControl};
-use openwebide_frontend::state::{
-    git::GitState, projects::ProjectsState, workspace::WorkspaceState,
-};
+use crate::state::{git::GitState, projects::ProjectsState, workspace::WorkspaceState};
 
 /// How the open file is displayed in the editor pane.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -293,7 +291,7 @@ fn render_preview_view(
                 }
                 .into_any()
             } else if path.ends_with(".svg") && !content.is_empty() {
-                let src = openwebide_frontend::markdown::svg_data_url(content);
+                let src = crate::markdown::svg_data_url(content);
                 view! {
                     <div class="editor-media-preview">
                         <div class="editor-image-frame"><img src=src alt=file_name.clone() class="editor-preview-image"/></div>

@@ -2,17 +2,17 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::WorkspaceMode;
 
-use crate::{api::BackendApi, idb, local_fs};
-use openwebide_frontend::state::{
+use crate::state::{
     chat::ChatState,
     git::GitState,
     projects::ProjectsState,
     ui::{ConfirmRequest, UiState},
     workspace::WorkspaceState,
 };
+use crate::{backend::Api, idb, local_fs};
 
 pub struct ProjectsActionContext {
-    pub api: BackendApi,
+    pub api: Api,
     pub projects: ProjectsState,
     pub workspace: WorkspaceState,
     pub git: GitState,
@@ -112,6 +112,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
 
             let name = handle.name();
             let project = match api
+                .with_value(Clone::clone)
                 .create_project(&name, WorkspaceMode::Local, Some(name.clone()))
                 .await
             {
@@ -130,7 +131,10 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                 .any(|existing| existing.id == project.id);
             if let Err(error) = idb::save_handle(project.id, &handle).await {
                 if !preexisting {
-                    let _ = api.delete_project(project.id).await;
+                    let _ = api
+                        .with_value(Clone::clone)
+                        .delete_project(project.id)
+                        .await;
                 }
                 ui.notify(error);
                 return;
@@ -150,6 +154,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
         spawn_local(async move {
             let name = folder_name(&path);
             let project = match api
+                .with_value(Clone::clone)
                 .create_project(&name, WorkspaceMode::Remote, Some(path))
                 .await
             {
@@ -174,7 +179,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
             confirm_label: "Delete".to_string(),
             action: Callback::new(move |_| {
                 spawn_local(async move {
-                    if let Err(error) = api.delete_project(id).await {
+                    if let Err(error) = api.with_value(Clone::clone).delete_project(id).await {
                         ui.notify(error);
                         return;
                     }

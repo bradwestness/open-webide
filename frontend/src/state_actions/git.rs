@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_core::{GitCheckoutRequest, GitSyncRequest};
 
-use openwebide_frontend::state::{
+use crate::state::{
     chat::ChatState,
     git::{GitState, HeadContent},
     projects::ProjectsState,
@@ -10,10 +10,10 @@ use openwebide_frontend::state::{
     workspace::WorkspaceState,
 };
 
-use crate::{api::BackendApi, workspace::Workspace};
+use crate::{backend::Api, workspace::Workspace};
 
 pub struct GitActionContext {
-    pub api: BackendApi,
+    pub api: Api,
     pub projects: ProjectsState,
     pub workspace: WorkspaceState,
     pub git: GitState,
@@ -32,12 +32,12 @@ pub struct GitActions {
 }
 
 impl GitActions {
-    pub fn refresh(api: BackendApi, projects: ProjectsState, git: GitState) -> Callback<()> {
+    pub fn refresh(api: Api, projects: ProjectsState, git: GitState) -> Callback<()> {
         let active_project = projects.active_project;
         Callback::new(move |()| {
             let project_id = active_project.get();
             spawn_local(async move {
-                if let Ok(status) = api.git_status(project_id).await
+                if let Ok(status) = api.with_value(Clone::clone).git_status(project_id).await
                     && active_project.get_untracked() == project_id
                 {
                     git.status.set(Some(status));
@@ -81,7 +81,11 @@ impl GitActions {
                             branch,
                             create_if_missing: true,
                         };
-                        match api.git_checkout(project_id, &request).await {
+                        match api
+                            .with_value(Clone::clone)
+                            .git_checkout(project_id, &request)
+                            .await
+                        {
                             Ok(result) => {
                                 refresh.run(());
                                 chat.notify(GitState::checkout_notice(&result));
@@ -101,7 +105,11 @@ impl GitActions {
                     remote: None,
                     branch: None,
                 };
-                match api.git_sync(project_id, &request).await {
+                match api
+                    .with_value(Clone::clone)
+                    .git_sync(project_id, &request)
+                    .await
+                {
                     Ok(result) => {
                         refresh.run(());
                         chat.notify(format!(
@@ -123,7 +131,11 @@ impl GitActions {
             };
             let project_id = active_project.get();
             spawn_local(async move {
-                match api.git_file_head(project_id, &file_path).await {
+                match api
+                    .with_value(Clone::clone)
+                    .git_file_head(project_id, &file_path)
+                    .await
+                {
                     Ok(content) => {
                         if active_project.get_untracked() == project_id
                             && open_file.get_untracked().as_deref() == Some(file_path.as_str())

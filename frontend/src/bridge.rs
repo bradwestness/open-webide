@@ -1,5 +1,6 @@
-use crate::api::BackendApi;
+use crate::backend::Api;
 use crate::idb;
+use leptos::prelude::WithValue;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,12 +33,12 @@ pub fn default_bridge_url() -> String {
 
 #[derive(Clone)]
 pub struct BridgeCredentials {
-    api: BackendApi,
+    api: Api,
     cached_token: Arc<Mutex<Option<(String, i64)>>>,
 }
 
 impl BridgeCredentials {
-    pub fn new(api: BackendApi) -> Self {
+    pub fn new(api: Api) -> Self {
         Self {
             api,
             cached_token: Arc::new(Mutex::new(None)),
@@ -61,7 +62,7 @@ impl BridgeCredentials {
         };
 
         if needs_refresh {
-            let (token, expires_at) = self.api.bridge_token().await?;
+            let (token, expires_at) = self.api.with_value(Clone::clone).bridge_token().await?;
             *self.cached_token.lock().unwrap() = Some((token.clone(), expires_at));
             Ok(token)
         } else {

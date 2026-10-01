@@ -1,5 +1,5 @@
+use crate::state::ui::UiState;
 use leptos::prelude::*;
-use openwebide_frontend::state::ui::UiState;
 
 /// A themed confirmation dialog. Shown while `req` is `Some`; clicking the
 /// overlay, the close button, or "Cancel" runs `on_close` (which clears the

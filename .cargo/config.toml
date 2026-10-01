@@ -7,3 +7,4 @@ test-native = "test -p openwebide-core -p openwebide-llm -p openwebide-storage"
 # unstable-apis cfg.
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg", "web_sys_unstable_apis"]
+runner = "wasm-bindgen-test-runner"

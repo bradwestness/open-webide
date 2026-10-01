@@ -11,6 +11,7 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add a frontend component test harness with a fake backend and headless Chrome tests in CI.
 - Added session expiry handling (auto-logout) and statusline model switcher dropdown.
 - Added token-based authentication to `openwebide-bridge` for WebSockets and API endpoints.
 - Added `/api/bridge/token` to mint short-lived tokens for frontend/companion apps.

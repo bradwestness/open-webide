@@ -1,0 +1,624 @@
+use crate::{api::BackendApi, sse::SseEvent};
+use futures::future::LocalBoxFuture;
+use leptos::prelude::{LocalStorage, RwSignal, StoredValue};
+use openwebide_core::{
+    ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
+    EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
+    GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest, GitSyncResult, Health,
+    ModelInfo, Project, ProviderKind, Role, SearchHit, SystemPrompt, TurnTelemetry, User,
+    WebSearchResult, WorkspaceMode, vfs::SearchOptions,
+};
+use std::rc::Rc;
+use web_sys::AbortSignal;
+
+pub type Api = StoredValue<Rc<dyn Backend>, LocalStorage>;
+
+pub trait Backend {
+    fn session_expired(&self) -> RwSignal<bool>;
+    fn register<'a>(
+        &'a self,
+        username: &'a str,
+        password: &'a str,
+    ) -> LocalBoxFuture<'a, Result<User, String>>;
+    fn login<'a>(
+        &'a self,
+        username: &'a str,
+        password: &'a str,
+    ) -> LocalBoxFuture<'a, Result<User, String>>;
+    fn me<'a>(&'a self) -> LocalBoxFuture<'a, Result<User, String>>;
+    fn logout<'a>(&'a self) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn bridge_token<'a>(&'a self) -> LocalBoxFuture<'a, Result<(String, i64), String>>;
+    fn health<'a>(&'a self) -> LocalBoxFuture<'a, Result<Health, String>>;
+    fn list_connections<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<Connection>, String>>;
+    fn create_connection<'a>(
+        &'a self,
+        name: &'a str,
+        kind: ProviderKind,
+        base_url: &'a str,
+        model: Option<&'a str>,
+        context_limit: Option<usize>,
+    ) -> LocalBoxFuture<'a, Result<Connection, String>>;
+    fn update_connection<'a>(
+        &'a self,
+        connection: &'a Connection,
+    ) -> LocalBoxFuture<'a, Result<Connection, String>>;
+    fn delete_connection<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn list_sessions<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<ChatSession>, String>>;
+    fn list_models<'a>(
+        &'a self,
+        connection_id: i64,
+    ) -> LocalBoxFuture<'a, Result<Vec<ModelInfo>, String>>;
+    fn list_system_prompts<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<SystemPrompt>, String>>;
+    fn create_system_prompt<'a>(
+        &'a self,
+        name: &'a str,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<SystemPrompt, String>>;
+    fn update_system_prompt<'a>(
+        &'a self,
+        id: i64,
+        name: &'a str,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<SystemPrompt, String>>;
+    fn delete_system_prompt<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn get_settings<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, Result<std::collections::BTreeMap<String, String>, String>>;
+    fn set_setting<'a>(
+        &'a self,
+        key: &'a str,
+        value: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn create_session<'a>(
+        &'a self,
+        name: &'a str,
+        connection_id: Option<i64>,
+        system_prompt_id: Option<i64>,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'a, Result<ChatSession, String>>;
+    fn list_projects<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<Project>, String>>;
+    fn create_project<'a>(
+        &'a self,
+        name: &'a str,
+        mode: WorkspaceMode,
+        path: Option<String>,
+    ) -> LocalBoxFuture<'a, Result<Project, String>>;
+    fn rename_project<'a>(
+        &'a self,
+        id: i64,
+        name: &'a str,
+    ) -> LocalBoxFuture<'a, Result<Project, String>>;
+    fn delete_project<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn list_files<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<Vec<FileEntry>, String>>;
+    fn read_file_object_url<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>>;
+    fn read_file<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>>;
+    fn read_file_lossy<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>>;
+    fn write_file<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn copy_file<'a>(
+        &'a self,
+        project_id: i64,
+        from: &'a str,
+        to: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn create_file<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+        is_dir: bool,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn delete_file<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn browse<'a>(&'a self, path: &'a str) -> LocalBoxFuture<'a, Result<Vec<FileEntry>, String>>;
+    fn search_content<'a>(
+        &'a self,
+        project_id: i64,
+        query: &'a str,
+        path: &'a str,
+        opts: SearchOptions,
+    ) -> LocalBoxFuture<'a, Result<Vec<SearchHit>, String>>;
+    fn git_status<'a>(
+        &'a self,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'a, Result<GitRepoStatus, String>>;
+    fn git_diff<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        path: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<String, String>>;
+    fn git_file_head<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>>;
+    fn git_branches<'a>(
+        &'a self,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'a, Result<Vec<GitBranchInfo>, String>>;
+    fn git_commit<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        req: &'a GitCommitRequest,
+    ) -> LocalBoxFuture<'a, Result<GitCommitResult, String>>;
+    fn git_checkout<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        req: &'a GitCheckoutRequest,
+    ) -> LocalBoxFuture<'a, Result<GitCheckoutResult, String>>;
+    fn git_sync<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        req: &'a GitSyncRequest,
+    ) -> LocalBoxFuture<'a, Result<GitSyncResult, String>>;
+    fn rename_session<'a>(
+        &'a self,
+        id: i64,
+        name: &'a str,
+    ) -> LocalBoxFuture<'a, Result<ChatSession, String>>;
+    fn delete_session<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn cancel_session<'a>(&'a self, session_id: i64) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn set_permission<'a>(
+        &'a self,
+        session_id: i64,
+        tool_call_id: &'a str,
+        approved: bool,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn list_messages<'a>(
+        &'a self,
+        session_id: i64,
+    ) -> LocalBoxFuture<'a, Result<Vec<ConversationEntry>, String>>;
+    fn chat_tools<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+    ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>>;
+    fn persist_message<'a>(
+        &'a self,
+        session_id: i64,
+        role: Role,
+        content: &'a str,
+        usage: Option<&'a TurnTelemetry>,
+    ) -> LocalBoxFuture<'a, Result<ChatMessage, String>>;
+    fn model_context<'a>(
+        &'a self,
+        connection_id: i64,
+        model: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<Option<usize>, String>>;
+    fn upsert_tool_step<'a>(
+        &'a self,
+        session_id: i64,
+        anchor_message_id: i64,
+        tool_call_id: &'a str,
+        name: &'a str,
+        summary: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn complete_tool_step<'a>(
+        &'a self,
+        session_id: i64,
+        tool_call_id: &'a str,
+        ok: bool,
+        result_summary: &'a str,
+        diff: Option<&'a FileDiff>,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn web_search<'a>(
+        &'a self,
+        query: &'a str,
+        limit: usize,
+    ) -> LocalBoxFuture<'a, Result<Vec<WebSearchResult>, String>>;
+    fn fetch_web_page<'a>(
+        &'a self,
+        target_url: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>>;
+    fn send_message<'a>(
+        &'a self,
+        session_id: i64,
+        content: &'a str,
+        model: Option<&'a str>,
+        editor_context: Option<&'a EditorContext>,
+        signal: Option<&'a AbortSignal>,
+        on_event: Box<dyn FnMut(SseEvent) + 'a>,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+}
+
+impl Backend for BackendApi {
+    fn session_expired(&self) -> RwSignal<bool> {
+        self.session_expired
+    }
+    fn register<'a>(
+        &'a self,
+        username: &'a str,
+        password: &'a str,
+    ) -> LocalBoxFuture<'a, Result<User, String>> {
+        Box::pin(BackendApi::register(self, username, password))
+    }
+    fn login<'a>(
+        &'a self,
+        username: &'a str,
+        password: &'a str,
+    ) -> LocalBoxFuture<'a, Result<User, String>> {
+        Box::pin(BackendApi::login(self, username, password))
+    }
+    fn me<'a>(&'a self) -> LocalBoxFuture<'a, Result<User, String>> {
+        Box::pin(BackendApi::me(self))
+    }
+    fn logout<'a>(&'a self) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::logout(self))
+    }
+    fn bridge_token<'a>(&'a self) -> LocalBoxFuture<'a, Result<(String, i64), String>> {
+        Box::pin(BackendApi::bridge_token(self))
+    }
+    fn health<'a>(&'a self) -> LocalBoxFuture<'a, Result<Health, String>> {
+        Box::pin(BackendApi::health(self))
+    }
+    fn list_connections<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<Connection>, String>> {
+        Box::pin(BackendApi::list_connections(self))
+    }
+    fn create_connection<'a>(
+        &'a self,
+        name: &'a str,
+        kind: ProviderKind,
+        base_url: &'a str,
+        model: Option<&'a str>,
+        context_limit: Option<usize>,
+    ) -> LocalBoxFuture<'a, Result<Connection, String>> {
+        Box::pin(BackendApi::create_connection(
+            self,
+            name,
+            kind,
+            base_url,
+            model,
+            context_limit,
+        ))
+    }
+    fn update_connection<'a>(
+        &'a self,
+        connection: &'a Connection,
+    ) -> LocalBoxFuture<'a, Result<Connection, String>> {
+        Box::pin(BackendApi::update_connection(self, connection))
+    }
+    fn delete_connection<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::delete_connection(self, id))
+    }
+    fn list_sessions<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<ChatSession>, String>> {
+        Box::pin(BackendApi::list_sessions(self))
+    }
+    fn list_models<'a>(
+        &'a self,
+        connection_id: i64,
+    ) -> LocalBoxFuture<'a, Result<Vec<ModelInfo>, String>> {
+        Box::pin(BackendApi::list_models(self, connection_id))
+    }
+    fn list_system_prompts<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<SystemPrompt>, String>> {
+        Box::pin(BackendApi::list_system_prompts(self))
+    }
+    fn create_system_prompt<'a>(
+        &'a self,
+        name: &'a str,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<SystemPrompt, String>> {
+        Box::pin(BackendApi::create_system_prompt(self, name, content))
+    }
+    fn update_system_prompt<'a>(
+        &'a self,
+        id: i64,
+        name: &'a str,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<SystemPrompt, String>> {
+        Box::pin(BackendApi::update_system_prompt(self, id, name, content))
+    }
+    fn delete_system_prompt<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::delete_system_prompt(self, id))
+    }
+    fn get_settings<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, Result<std::collections::BTreeMap<String, String>, String>> {
+        Box::pin(BackendApi::get_settings(self))
+    }
+    fn set_setting<'a>(
+        &'a self,
+        key: &'a str,
+        value: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::set_setting(self, key, value))
+    }
+    fn create_session<'a>(
+        &'a self,
+        name: &'a str,
+        connection_id: Option<i64>,
+        system_prompt_id: Option<i64>,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'a, Result<ChatSession, String>> {
+        Box::pin(BackendApi::create_session(
+            self,
+            name,
+            connection_id,
+            system_prompt_id,
+            project_id,
+        ))
+    }
+    fn list_projects<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<Project>, String>> {
+        Box::pin(BackendApi::list_projects(self))
+    }
+    fn create_project<'a>(
+        &'a self,
+        name: &'a str,
+        mode: WorkspaceMode,
+        path: Option<String>,
+    ) -> LocalBoxFuture<'a, Result<Project, String>> {
+        Box::pin(BackendApi::create_project(self, name, mode, path))
+    }
+    fn rename_project<'a>(
+        &'a self,
+        id: i64,
+        name: &'a str,
+    ) -> LocalBoxFuture<'a, Result<Project, String>> {
+        Box::pin(BackendApi::rename_project(self, id, name))
+    }
+    fn delete_project<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::delete_project(self, id))
+    }
+    fn list_files<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<Vec<FileEntry>, String>> {
+        Box::pin(BackendApi::list_files(self, project_id, path))
+    }
+    fn read_file_object_url<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>> {
+        Box::pin(BackendApi::read_file_object_url(self, project_id, path))
+    }
+    fn read_file<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>> {
+        Box::pin(BackendApi::read_file(self, project_id, path))
+    }
+    fn read_file_lossy<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>> {
+        Box::pin(BackendApi::read_file_lossy(self, project_id, path))
+    }
+    fn write_file<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::write_file(self, project_id, path, content))
+    }
+    fn copy_file<'a>(
+        &'a self,
+        project_id: i64,
+        from: &'a str,
+        to: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::copy_file(self, project_id, from, to))
+    }
+    fn create_file<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+        is_dir: bool,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::create_file(self, project_id, path, is_dir))
+    }
+    fn delete_file<'a>(
+        &'a self,
+        project_id: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::delete_file(self, project_id, path))
+    }
+    fn browse<'a>(&'a self, path: &'a str) -> LocalBoxFuture<'a, Result<Vec<FileEntry>, String>> {
+        Box::pin(BackendApi::browse(self, path))
+    }
+    fn search_content<'a>(
+        &'a self,
+        project_id: i64,
+        query: &'a str,
+        path: &'a str,
+        opts: SearchOptions,
+    ) -> LocalBoxFuture<'a, Result<Vec<SearchHit>, String>> {
+        Box::pin(BackendApi::search_content(
+            self, project_id, query, path, opts,
+        ))
+    }
+    fn git_status<'a>(
+        &'a self,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'a, Result<GitRepoStatus, String>> {
+        Box::pin(BackendApi::git_status(self, project_id))
+    }
+    fn git_diff<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        path: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<String, String>> {
+        Box::pin(BackendApi::git_diff(self, project_id, path))
+    }
+    fn git_file_head<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>> {
+        Box::pin(BackendApi::git_file_head(self, project_id, path))
+    }
+    fn git_branches<'a>(
+        &'a self,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'a, Result<Vec<GitBranchInfo>, String>> {
+        Box::pin(BackendApi::git_branches(self, project_id))
+    }
+    fn git_commit<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        req: &'a GitCommitRequest,
+    ) -> LocalBoxFuture<'a, Result<GitCommitResult, String>> {
+        Box::pin(BackendApi::git_commit(self, project_id, req))
+    }
+    fn git_checkout<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        req: &'a GitCheckoutRequest,
+    ) -> LocalBoxFuture<'a, Result<GitCheckoutResult, String>> {
+        Box::pin(BackendApi::git_checkout(self, project_id, req))
+    }
+    fn git_sync<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        req: &'a GitSyncRequest,
+    ) -> LocalBoxFuture<'a, Result<GitSyncResult, String>> {
+        Box::pin(BackendApi::git_sync(self, project_id, req))
+    }
+    fn rename_session<'a>(
+        &'a self,
+        id: i64,
+        name: &'a str,
+    ) -> LocalBoxFuture<'a, Result<ChatSession, String>> {
+        Box::pin(BackendApi::rename_session(self, id, name))
+    }
+    fn delete_session<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::delete_session(self, id))
+    }
+    fn cancel_session<'a>(&'a self, session_id: i64) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::cancel_session(self, session_id))
+    }
+    fn set_permission<'a>(
+        &'a self,
+        session_id: i64,
+        tool_call_id: &'a str,
+        approved: bool,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::set_permission(
+            self,
+            session_id,
+            tool_call_id,
+            approved,
+        ))
+    }
+    fn list_messages<'a>(
+        &'a self,
+        session_id: i64,
+    ) -> LocalBoxFuture<'a, Result<Vec<ConversationEntry>, String>> {
+        Box::pin(BackendApi::list_messages(self, session_id))
+    }
+    fn chat_tools<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+    ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
+        Box::pin(BackendApi::chat_tools(self, request))
+    }
+    fn persist_message<'a>(
+        &'a self,
+        session_id: i64,
+        role: Role,
+        content: &'a str,
+        usage: Option<&'a TurnTelemetry>,
+    ) -> LocalBoxFuture<'a, Result<ChatMessage, String>> {
+        Box::pin(BackendApi::persist_message(
+            self, session_id, role, content, usage,
+        ))
+    }
+    fn model_context<'a>(
+        &'a self,
+        connection_id: i64,
+        model: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<Option<usize>, String>> {
+        Box::pin(BackendApi::model_context(self, connection_id, model))
+    }
+    fn upsert_tool_step<'a>(
+        &'a self,
+        session_id: i64,
+        anchor_message_id: i64,
+        tool_call_id: &'a str,
+        name: &'a str,
+        summary: &'a str,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::upsert_tool_step(
+            self,
+            session_id,
+            anchor_message_id,
+            tool_call_id,
+            name,
+            summary,
+        ))
+    }
+    fn complete_tool_step<'a>(
+        &'a self,
+        session_id: i64,
+        tool_call_id: &'a str,
+        ok: bool,
+        result_summary: &'a str,
+        diff: Option<&'a FileDiff>,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::complete_tool_step(
+            self,
+            session_id,
+            tool_call_id,
+            ok,
+            result_summary,
+            diff,
+        ))
+    }
+    fn web_search<'a>(
+        &'a self,
+        query: &'a str,
+        limit: usize,
+    ) -> LocalBoxFuture<'a, Result<Vec<WebSearchResult>, String>> {
+        Box::pin(BackendApi::web_search(self, query, limit))
+    }
+    fn fetch_web_page<'a>(
+        &'a self,
+        target_url: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>> {
+        Box::pin(BackendApi::fetch_web_page(self, target_url))
+    }
+    fn send_message<'a>(
+        &'a self,
+        session_id: i64,
+        content: &'a str,
+        model: Option<&'a str>,
+        editor_context: Option<&'a EditorContext>,
+        signal: Option<&'a AbortSignal>,
+        on_event: Box<dyn FnMut(SseEvent) + 'a>,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::send_message(
+            self,
+            session_id,
+            content,
+            model,
+            editor_context,
+            signal,
+            on_event,
+        ))
+    }
+}

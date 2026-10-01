@@ -2,6 +2,7 @@
 
 use gloo_net::http::{Method, RequestBuilder};
 
+pub use crate::sse::SseEvent;
 use leptos::prelude::{GetUntracked, Set, WithValue};
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
@@ -10,7 +11,6 @@ use openwebide_core::{
     ModelInfo, NewConnection, NewProject, NewSession, Project, ProviderKind, Role, SearchHit,
     SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode, vfs::SearchOptions,
 };
-pub use openwebide_frontend::sse::SseEvent;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -721,7 +721,7 @@ impl BackendApi {
             .dyn_into()
             .map_err(|e| format!("{e:?}"))?;
         let mut decoder = openwebide_core::utf8::Utf8Decoder::new();
-        let mut frames = openwebide_frontend::sse::FrameBuffer::new();
+        let mut frames = crate::sse::FrameBuffer::new();
 
         loop {
             let read = reader.read();
@@ -741,13 +741,13 @@ impl BackendApi {
                 chunk.get_value().dyn_into().map_err(|e| format!("{e:?}"))?;
             let bytes = value.to_vec();
             for f in frames.push(&decoder.push(&bytes)) {
-                if let Some(event) = openwebide_frontend::sse::parse_frame(&f) {
+                if let Some(event) = crate::sse::parse_frame(&f) {
                     on_event(event);
                 }
             }
         }
         for f in frames.push(&decoder.finish()) {
-            if let Some(event) = openwebide_frontend::sse::parse_frame(&f) {
+            if let Some(event) = crate::sse::parse_frame(&f) {
                 on_event(event);
             }
         }
@@ -836,4 +836,4 @@ fn query_param(query: &str, key: &str) -> Option<String> {
     })
 }
 
-pub use openwebide_frontend::text::urlenc;
+pub use crate::text::urlenc;

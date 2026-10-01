@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use openwebide_core::{FileEntry, vfs::SearchOptions};
 use web_sys::wasm_bindgen::JsCast;
 
-use openwebide_frontend::state::{
+use crate::state::{
     git::GitState, layout::LayoutState, projects::ProjectsState, workspace::WorkspaceState,
 };
 

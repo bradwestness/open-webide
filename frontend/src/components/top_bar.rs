@@ -1,5 +1,5 @@
+use crate::state::auth::AuthState;
 use leptos::prelude::*;
-use openwebide_frontend::state::auth::AuthState;
 
 use crate::api::HealthState;
 

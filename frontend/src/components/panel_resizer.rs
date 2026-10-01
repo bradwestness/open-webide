@@ -2,13 +2,13 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use web_sys::PointerEvent;
 
-use crate::api::BackendApi;
-use openwebide_frontend::state::layout::{ActiveResizer, LayoutState};
+use crate::backend::Api;
+use crate::state::layout::{ActiveResizer, LayoutState};
 
 #[component]
 pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
     let layout = expect_context::<LayoutState>();
-    let api = expect_context::<BackendApi>();
+    let api = expect_context::<Api>();
     let start_x = RwSignal::new(0.0f64);
     let start_width = RwSignal::new(0.0f64);
     let width = match kind {
@@ -56,15 +56,18 @@ pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
         let chat_width = layout.chat_width.get();
         spawn_local(async move {
             let _ = api
+                .with_value(Clone::clone)
                 .set_setting(
                     ActiveResizer::Sidebar.setting_key(),
                     &sidebar_width.to_string(),
                 )
                 .await;
             let _ = api
+                .with_value(Clone::clone)
                 .set_setting(ActiveResizer::Tree.setting_key(), &tree_width.to_string())
                 .await;
             let _ = api
+                .with_value(Clone::clone)
                 .set_setting(ActiveResizer::Chat.setting_key(), &chat_width.to_string())
                 .await;
         });
@@ -103,7 +106,7 @@ pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
                 let default_width = kind.default();
                 width.set(default_width);
                 spawn_local(async move {
-                    let _ = api
+                    let _ = api.with_value(Clone::clone)
                         .set_setting(kind.setting_key(), &default_width.to_string())
                         .await;
                 });

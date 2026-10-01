@@ -1,16 +1,16 @@
+use crate::state::auth::AuthState;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use openwebide_frontend::state::auth::AuthState;
 use web_sys::wasm_bindgen::JsCast;
 
-use crate::api::BackendApi;
+use crate::backend::Api;
 
 /// The sign-in / account-creation gate shown before the app is usable.
 /// Registration is only open while no accounts exist; once the first account
 /// is created the backend rejects further registrations with a 403.
 #[component]
 pub fn AuthGate() -> impl IntoView {
-    let api = expect_context::<BackendApi>();
+    let api = expect_context::<Api>();
     let auth = expect_context::<AuthState>();
     // false = sign in, true = create account.
     let register = RwSignal::new(false);
@@ -32,9 +32,9 @@ pub fn AuthGate() -> impl IntoView {
             busy.set(true);
             spawn_local(async move {
                 let result = if is_register {
-                    api.register(&user, &pass).await
+                    api.with_value(Clone::clone).register(&user, &pass).await
                 } else {
-                    api.login(&user, &pass).await
+                    api.with_value(Clone::clone).login(&user, &pass).await
                 };
                 busy.set(false);
                 match result {

@@ -65,6 +65,11 @@ Instructions, conventions, and architectural principles for AI agents working on
   cargo test -p openwebide-storage -p openwebide-core -p openwebide-llm -p openwebide-auth -p openwebide-agent -p openwebide-bridge -p openwebide-backend
   cargo test -p openwebide-frontend --lib
   ```
+- **Frontend UI Tests** (needs Chrome + chromedriver and `wasm-bindgen-cli` matching
+  `Cargo.lock`'s `wasm-bindgen`):
+  ```bash
+  CHROMEDRIVER=<path> cargo test -p openwebide-frontend --target wasm32-unknown-unknown
+  ```
 - **Execution Bridge**:
   ```bash
   cargo build -p openwebide-bridge

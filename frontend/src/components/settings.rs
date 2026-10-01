@@ -1,5 +1,5 @@
+use crate::state::settings::{SettingsState, Theme};
 use leptos::prelude::*;
-use openwebide_frontend::state::settings::{SettingsState, Theme};
 use web_sys::wasm_bindgen::JsCast;
 
 /// The settings dialog: theme, and the connection / system prompt used as

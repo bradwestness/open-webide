@@ -1,6 +1,6 @@
+pub use crate::state::ui::PromptRequest;
+use crate::state::ui::UiState;
 use leptos::prelude::*;
-pub use openwebide_frontend::state::ui::PromptRequest;
-use openwebide_frontend::state::ui::UiState;
 
 /// A themed single-field input dialog. Shown while `req` is `Some`; clicking
 /// the overlay, the close button, or "Cancel" runs `on_close` (which clears

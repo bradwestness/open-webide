@@ -5,6 +5,7 @@
 //! requests LLM tool calls from the backend via `/api/chat-tools`, and persists
 //! messages and tool steps to the backend store for full session parity.
 
+use leptos::prelude::WithValue;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -21,8 +22,8 @@ use openwebide_core::{
 };
 use openwebide_llm::{LlmProvider, ProviderError, StreamChunk};
 
-use crate::api::{BackendApi, SseEvent};
 use crate::local_fs::{BrowserFsaVfs, ForceSend};
+use crate::{api::SseEvent, backend::Api};
 
 async fn sleep_ms(ms: i32) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
@@ -35,7 +36,7 @@ async fn sleep_ms(ms: i32) {
 
 /// An [`LlmProvider`] adapter that delegates completions to the backend's `/api/chat-tools`.
 pub struct BrowserLlmProvider {
-    api: BackendApi,
+    api: Api,
     kind: ProviderKind,
 }
 
@@ -43,7 +44,7 @@ unsafe impl Send for BrowserLlmProvider {}
 unsafe impl Sync for BrowserLlmProvider {}
 
 impl BrowserLlmProvider {
-    pub fn new(api: BackendApi, kind: ProviderKind) -> Self {
+    pub fn new(api: Api, kind: ProviderKind) -> Self {
         Self { api, kind }
     }
 }
@@ -68,7 +69,7 @@ impl LlmProvider for BrowserLlmProvider {
         let api = self.api;
         let request = request.clone();
         ForceSend(async move {
-            match api.chat_tools(&request).await {
+            match api.with_value(Clone::clone).chat_tools(&request).await {
                 Ok(completion) => match completion.response {
                     ChatResponse::Text(s) => Ok(s),
                     ChatResponse::ToolCalls(_) => Err(ProviderError::Parse("expected text".into())),
@@ -91,7 +92,12 @@ impl LlmProvider for BrowserLlmProvider {
     ) -> impl Future<Output = Result<ChatCompletion, ProviderError>> + Send {
         let api = self.api;
         let request = request.clone();
-        ForceSend(async move { api.chat_tools(&request).await.map_err(ProviderError::Http) })
+        ForceSend(async move {
+            api.with_value(Clone::clone)
+                .chat_tools(&request)
+                .await
+                .map_err(ProviderError::Http)
+        })
     }
 
     fn context_limit(
@@ -105,11 +111,11 @@ impl LlmProvider for BrowserLlmProvider {
 /// Browser web client delegating web search and documentation fetching to the backend API.
 #[derive(Clone)]
 pub struct BrowserWebClient {
-    api: BackendApi,
+    api: Api,
 }
 
 impl BrowserWebClient {
-    pub fn new(api: BackendApi) -> Self {
+    pub fn new(api: Api) -> Self {
         Self { api }
     }
 }
@@ -122,13 +128,13 @@ impl WebClient for BrowserWebClient {
     ) -> impl Future<Output = Result<Vec<WebSearchResult>, String>> + Send {
         let api = self.api;
         let query = query.to_string();
-        ForceSend(async move { api.web_search(&query, limit).await })
+        ForceSend(async move { api.with_value(Clone::clone).web_search(&query, limit).await })
     }
 
     fn fetch_page(&self, url: &str) -> impl Future<Output = Result<String, String>> + Send {
         let api = self.api;
         let url = url.to_string();
-        ForceSend(async move { api.fetch_web_page(&url).await })
+        ForceSend(async move { api.with_value(Clone::clone).fetch_web_page(&url).await })
     }
 }
 
@@ -353,7 +359,7 @@ impl PermissionGate for LocalPermissionGate {
 /// Run the agent loop locally in the browser against a local folder handle.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_local_agent(
-    api: BackendApi,
+    api: Api,
     session_id: i64,
     user_content: String,
     model: Option<String>,
@@ -368,7 +374,11 @@ pub async fn run_local_agent(
     bridge_credentials: crate::bridge::BridgeCredentials,
 ) -> Result<(), String> {
     // 1. Fetch prior conversation history before persisting the new message
-    let history_entries = api.list_messages(session_id).await.unwrap_or_default();
+    let history_entries = api
+        .with_value(Clone::clone)
+        .list_messages(session_id)
+        .await
+        .unwrap_or_default();
     let mut messages: Vec<ChatMessage> = history_entries
         .into_iter()
         .filter_map(|item| match item {
@@ -383,6 +393,7 @@ pub async fn run_local_agent(
         None => user_content,
     };
     let user_message = api
+        .with_value(Clone::clone)
         .persist_message(session_id, Role::User, &full_content, None)
         .await?;
     on_event(SseEvent::Message(user_message.clone()));
@@ -430,12 +441,14 @@ pub async fn run_local_agent(
             }
             AgentEvent::ToolCall { id, name, summary } => {
                 let _ = api
+                    .with_value(Clone::clone)
                     .upsert_tool_step(session_id, anchor, &id, &name, &summary)
                     .await;
                 on_event(SseEvent::ToolCall { id, name, summary });
             }
             AgentEvent::PermissionRequest { id, name, summary } => {
                 let _ = api
+                    .with_value(Clone::clone)
                     .upsert_tool_step(session_id, anchor, &id, &name, &summary)
                     .await;
                 on_event(SseEvent::PermissionRequest { id, name, summary });
@@ -448,6 +461,7 @@ pub async fn run_local_agent(
                 diff,
             } => {
                 let _ = api
+                    .with_value(Clone::clone)
                     .complete_tool_step(session_id, &id, ok, &summary, diff.as_ref())
                     .await;
                 on_event(SseEvent::ToolResult {
@@ -460,6 +474,7 @@ pub async fn run_local_agent(
             }
             AgentEvent::FinalText(text) => {
                 match api
+                    .with_value(Clone::clone)
                     .persist_message(session_id, Role::Assistant, &text, last_usage.as_ref())
                     .await
                 {

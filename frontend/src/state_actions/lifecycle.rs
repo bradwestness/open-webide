@@ -1,7 +1,4 @@
-use leptos::prelude::*;
-use leptos::task::spawn_local;
-use openwebide_core::{WorkspaceMode, tui::EditorContext};
-use openwebide_frontend::state::{
+use crate::state::{
     auth::AuthState,
     chat::ChatState,
     layout::{ActiveResizer, LayoutState},
@@ -9,12 +6,15 @@ use openwebide_frontend::state::{
     settings::{SettingsState, Theme},
     workspace::WorkspaceState,
 };
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use openwebide_core::{WorkspaceMode, tui::EditorContext};
 use wasm_bindgen::JsCast;
 
-use crate::api::{BackendApi, HealthState};
+use crate::{api::HealthState, backend::Api};
 
 pub struct ProjectEffectContext {
-    pub api: BackendApi,
+    pub api: Api,
     pub health: RwSignal<Option<HealthState>>,
     pub auth: AuthState,
     pub settings: SettingsState,
@@ -111,7 +111,7 @@ fn capture_active_editor(open_file: Option<String>, content: &str) -> Option<Edi
     let textarea = textarea.dyn_into::<web_sys::HtmlTextAreaElement>().ok()?;
     let selection_start = textarea.selection_start().ok().flatten().unwrap_or(0) as usize;
     let selection_end = textarea.selection_end().ok().flatten().unwrap_or(0) as usize;
-    Some(openwebide_frontend::text::editor_context(
+    Some(crate::text::editor_context(
         file_path,
         content,
         selection_start,
@@ -135,7 +135,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
             return;
         }
         spawn_local(async move {
-            let backend_ok = match api.health().await {
+            let backend_ok = match api.with_value(Clone::clone).health().await {
                 Ok(health_state) => {
                     health.set(Some(HealthState::Online {
                         version: health_state.version,
@@ -151,6 +151,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 return;
             }
 
+            let backend = api.with_value(Clone::clone);
             let (
                 settings_result,
                 projects_result,
@@ -158,11 +159,11 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 sessions_result,
                 prompts_result,
             ) = futures::join!(
-                api.get_settings(),
-                api.list_projects(),
-                api.list_connections(),
-                api.list_sessions(),
-                api.list_system_prompts(),
+                backend.get_settings(),
+                backend.list_projects(),
+                backend.list_connections(),
+                backend.list_sessions(),
+                backend.list_system_prompts(),
             );
             if let Ok(connections) = connections_result {
                 settings.connections.set(connections);
@@ -298,7 +299,10 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         let ids = projects.open_tab_ids.get();
         if let Ok(json) = serde_json::to_string(&ids) {
             spawn_local(async move {
-                let _ = api.set_setting("open_tabs", &json).await;
+                let _ = api
+                    .with_value(Clone::clone)
+                    .set_setting("open_tabs", &json)
+                    .await;
             });
         }
     });
@@ -310,7 +314,10 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         let active_project = projects.active_project.get();
         let value = active_project.map(|id| id.to_string()).unwrap_or_default();
         spawn_local(async move {
-            let _ = api.set_setting("active_project", &value).await;
+            let _ = api
+                .with_value(Clone::clone)
+                .set_setting("active_project", &value)
+                .await;
         });
     });
 }

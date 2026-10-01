@@ -1,14 +1,7 @@
 use std::sync::atomic::Ordering;
 
-use leptos::prelude::*;
-use leptos::task::spawn_local;
-use openwebide_agent::policy::ApprovalMode;
-use openwebide_core::{
-    ConversationEntry, GitCheckoutRequest, GitCommitRequest, WorkspaceMode,
-    tui::{DEFAULT_CONTEXT_LIMIT, SlashCommand},
-};
-use openwebide_frontend::conversation::{ConversationItem, next_item_nonce};
-use openwebide_frontend::state::{
+use crate::conversation::{ConversationItem, next_item_nonce};
+use crate::state::{
     chat::{ChatEffect, ChatState},
     git::GitState,
     projects::ProjectsState,
@@ -17,14 +10,21 @@ use openwebide_frontend::state::{
     ui::{ConfirmRequest, PromptRequest, UiState},
     workspace::WorkspaceState,
 };
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use openwebide_agent::policy::ApprovalMode;
+use openwebide_core::{
+    ConversationEntry, GitCheckoutRequest, GitCommitRequest, WorkspaceMode,
+    tui::{DEFAULT_CONTEXT_LIMIT, SlashCommand},
+};
 use web_sys::AbortController;
 
 use crate::{
-    api::BackendApi, bridge::BridgeCredentials, components::ToolStepResult, local_agent, local_fs,
+    backend::Api, bridge::BridgeCredentials, components::ToolStepResult, local_agent, local_fs,
 };
 
 pub struct ChatActionContext {
-    pub api: BackendApi,
+    pub api: Api,
     pub chat: ChatState,
     pub projects: ProjectsState,
     pub workspace: WorkspaceState,
@@ -76,7 +76,10 @@ impl ChatActions {
                     && !chat.streaming_is_local.get_untracked()
                 {
                     spawn_local(async move {
-                        let _ = api.cancel_session(session_id).await;
+                        let _ = api
+                            .with_value(Clone::clone)
+                            .cancel_session(session_id)
+                            .await;
                     });
                 }
                 // The abort tears down the stream before the server's Cancelled
@@ -100,7 +103,7 @@ impl ChatActions {
                 // ToolResult (denied) event that follows confirms it.
                 chat.messages.update(|items| {
                     if let Some(awaiting) = items.iter_mut().find_map(|item| match item {
-                        openwebide_frontend::conversation::ConversationItem::ToolStep {
+                        crate::conversation::ConversationItem::ToolStep {
                             id,
                             awaiting_permission,
                             ..
@@ -113,6 +116,7 @@ impl ChatActions {
                 if let Some(session_id) = chat.streaming_session.get() {
                     spawn_local(async move {
                         let _ = api
+                            .with_value(Clone::clone)
                             .set_permission(session_id, &tool_call_id, approved)
                             .await;
                     });
@@ -181,6 +185,7 @@ impl ChatActions {
                             });
                             let prompt_id = settings.default_prompt.get();
                             match api
+                                .with_value(Clone::clone)
                                 .create_session(&name, connection_id, prompt_id, Some(project_id))
                                 .await
                             {
@@ -336,13 +341,14 @@ impl ChatActions {
                         }
                     } else {
                         let result = api
+                            .with_value(Clone::clone)
                             .send_message(
                                 session_id,
                                 &content,
                                 model.as_deref(),
                                 editor_context.as_ref(),
                                 Some(&controller.signal()),
-                                on_event,
+                                Box::new(on_event),
                             )
                             .await;
                         if let Err(error) = result
@@ -390,7 +396,11 @@ impl ChatActions {
                 submit_label: "Rename".to_string(),
                 on_submit: Callback::new(move |name: String| {
                     spawn_local(async move {
-                        match api.rename_session(session_id, &name).await {
+                        match api
+                            .with_value(Clone::clone)
+                            .rename_session(session_id, &name)
+                            .await
+                        {
                             Ok(updated) => chat.sessions.update(|sessions| {
                                 if let Some(session) =
                                     sessions.iter_mut().find(|session| session.id == session_id)
@@ -412,7 +422,11 @@ impl ChatActions {
                 confirm_label: "Delete".to_string(),
                 action: Callback::new(move |_| {
                     spawn_local(async move {
-                        if let Err(error) = api.delete_session(session_id).await {
+                        if let Err(error) = api
+                            .with_value(Clone::clone)
+                            .delete_session(session_id)
+                            .await
+                        {
                             ui.notify(error);
                             return;
                         }
@@ -440,7 +454,11 @@ impl ChatActions {
                     SlashAction::Clear => chat.messages.set(Vec::new()),
                     SlashAction::GitDiff { project_id, path } => {
                         spawn_local(async move {
-                            match api.git_diff(project_id, path.as_deref()).await {
+                            match api
+                                .with_value(Clone::clone)
+                                .git_diff(project_id, path.as_deref())
+                                .await
+                            {
                                 Ok(diff) if !diff.trim().is_empty() => chat.notify(format!(
                                     "**Git Repository Diff:**\n```diff\n{diff}\n```"
                                 )),
@@ -474,7 +492,11 @@ impl ChatActions {
                                 paths: None,
                                 include_untracked: false,
                             };
-                            match api.git_commit(project_id, &request).await {
+                            match api
+                                .with_value(Clone::clone)
+                                .git_commit(project_id, &request)
+                                .await
+                            {
                                 Ok(result) => {
                                     refresh_git.run(());
                                     chat.notify(format!(
@@ -494,7 +516,11 @@ impl ChatActions {
                                 branch: branch.clone(),
                                 create_if_missing: false,
                             };
-                            match api.git_checkout(project_id, &request).await {
+                            match api
+                                .with_value(Clone::clone)
+                                .git_checkout(project_id, &request)
+                                .await
+                            {
                                 Ok(result) => {
                                     refresh_git.run(());
                                     chat.notify(format!(
@@ -515,7 +541,11 @@ impl ChatActions {
                                 branch: branch.clone(),
                                 create_if_missing: true,
                             };
-                            match api.git_checkout(project_id, &request).await {
+                            match api
+                                .with_value(Clone::clone)
+                                .git_checkout(project_id, &request)
+                                .await
+                            {
                                 Ok(result) => {
                                     refresh_git.run(());
                                     chat.notify(format!(
@@ -531,7 +561,7 @@ impl ChatActions {
                     }
                     SlashAction::ListBranches { project_id } => {
                         spawn_local(async move {
-                            match api.git_branches(project_id).await {
+                            match api.with_value(Clone::clone).git_branches(project_id).await {
                                 Ok(branches) => {
                                     let branch_list = if branches.is_empty() {
                                         "No branches found.".to_string()
@@ -581,7 +611,7 @@ impl ChatActions {
     }
 }
 
-fn install_effects(api: BackendApi, chat: ChatState, settings: SettingsState) {
+fn install_effects(api: Api, chat: ChatState, settings: SettingsState) {
     let active_session = chat.active_session;
     let sessions = chat.sessions;
     let connections = settings.connections;
@@ -642,6 +672,7 @@ fn install_effects(api: BackendApi, chat: ChatState, settings: SettingsState) {
         };
         spawn_local(async move {
             let result = api
+                .with_value(Clone::clone)
                 .model_context(connection_id, effective_model.as_deref())
                 .await;
             if ctx_request_gen.get_value() != this_gen {
@@ -672,7 +703,7 @@ fn install_effects(api: BackendApi, chat: ChatState, settings: SettingsState) {
         spawn_local(async move {
             match session_id {
                 Some(id) => {
-                    let result = api.list_messages(id).await;
+                    let result = api.with_value(Clone::clone).list_messages(id).await;
                     if history_gen.get_value() != this_gen
                         || active_session.get_untracked() != Some(id)
                     {
@@ -746,7 +777,11 @@ fn install_effects(api: BackendApi, chat: ChatState, settings: SettingsState) {
             });
         spawn_local(async move {
             let models = match connection_id {
-                Some(id) => api.list_models(id).await.unwrap_or_default(),
+                Some(id) => api
+                    .with_value(Clone::clone)
+                    .list_models(id)
+                    .await
+                    .unwrap_or_default(),
                 None => Vec::new(),
             };
             if active_session.get() == session_id {

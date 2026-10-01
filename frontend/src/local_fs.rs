@@ -531,56 +531,54 @@ impl Vfs for BrowserFsaVfs {
             let (from_parent, from_name) = split_path(&from);
             let from_dir = resolve_dir(&root, &from_parent)
                 .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)?;
+                .map_err(crate::vfs_err::map_vfs_err)?;
             let from_handle = file_handle(&from_dir, &from_name)
                 .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)?;
+                .map_err(crate::vfs_err::map_vfs_err)?;
 
             let file_value = JsFuture::from(from_handle.get_file())
                 .await
-                .map_err(|e| openwebide_frontend::vfs_err::map_vfs_err(js_error(&e)))?;
-            let file: web_sys::File = file_value.dyn_into().map_err(|_| {
-                openwebide_frontend::vfs_err::map_vfs_err(format!("no such file: {from}"))
-            })?;
+                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
+            let file: web_sys::File = file_value
+                .dyn_into()
+                .map_err(|_| crate::vfs_err::map_vfs_err(format!("no such file: {from}")))?;
 
             let (to_parent, to_name) = split_path(&to);
             let to_dir = ensure_dir(&root, &to_parent)
                 .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)?;
+                .map_err(crate::vfs_err::map_vfs_err)?;
             let to_handle = file_handle_create(&to_dir, &to_name)
                 .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)?;
+                .map_err(crate::vfs_err::map_vfs_err)?;
 
             let writable_value = JsFuture::from(to_handle.create_writable())
                 .await
-                .map_err(|e| openwebide_frontend::vfs_err::map_vfs_err(js_error(&e)))?;
+                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
             let writable: FileSystemWritableFileStream =
                 writable_value.dyn_into().map_err(|_| {
-                    openwebide_frontend::vfs_err::map_vfs_err(
-                        "failed to open writable stream".to_string(),
-                    )
+                    crate::vfs_err::map_vfs_err("failed to open writable stream".to_string())
                 })?;
 
             let write_promise = writable
                 .write_with_blob(&file)
-                .map_err(|e| openwebide_frontend::vfs_err::map_vfs_err(js_error(&e)))?;
+                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
             JsFuture::from(write_promise)
                 .await
-                .map_err(|e| openwebide_frontend::vfs_err::map_vfs_err(js_error(&e)))?;
+                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
 
             let writable_js: JsValue = writable.unchecked_into();
             let close_fn_value = js_sys::Reflect::get(&writable_js, &JsValue::from_str("close"))
-                .map_err(|e| openwebide_frontend::vfs_err::map_vfs_err(js_error(&e)))?;
-            let close_fn: js_sys::Function = close_fn_value.dyn_into().map_err(|_| {
-                openwebide_frontend::vfs_err::map_vfs_err("close is not a function".to_string())
-            })?;
+                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
+            let close_fn: js_sys::Function = close_fn_value
+                .dyn_into()
+                .map_err(|_| crate::vfs_err::map_vfs_err("close is not a function".to_string()))?;
             let close_promise_value =
                 js_sys::Reflect::apply(&close_fn, &writable_js, &js_sys::Array::new())
-                    .map_err(|e| openwebide_frontend::vfs_err::map_vfs_err(js_error(&e)))?;
+                    .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
             let close_promise: js_sys::Promise = close_promise_value.unchecked_into();
             JsFuture::from(close_promise)
                 .await
-                .map_err(|e| openwebide_frontend::vfs_err::map_vfs_err(js_error(&e)))?;
+                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
 
             Ok(())
         }))
@@ -592,7 +590,7 @@ impl Vfs for BrowserFsaVfs {
         Box::pin(ForceSend(async move {
             read(&root, &path)
                 .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)
+                .map_err(crate::vfs_err::map_vfs_err)
         }))
     }
 
@@ -603,7 +601,7 @@ impl Vfs for BrowserFsaVfs {
         Box::pin(ForceSend(async move {
             write(&root, &path, &content)
                 .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)
+                .map_err(crate::vfs_err::map_vfs_err)
         }))
     }
 
@@ -611,9 +609,7 @@ impl Vfs for BrowserFsaVfs {
         let root = self.root.clone();
         let dir = dir.to_string();
         Box::pin(ForceSend(async move {
-            list(&root, &dir)
-                .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)
+            list(&root, &dir).await.map_err(crate::vfs_err::map_vfs_err)
         }))
     }
 
@@ -623,7 +619,7 @@ impl Vfs for BrowserFsaVfs {
         Box::pin(ForceSend(async move {
             create(&root, &path, is_dir)
                 .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)
+                .map_err(crate::vfs_err::map_vfs_err)
         }))
     }
 
@@ -633,7 +629,7 @@ impl Vfs for BrowserFsaVfs {
         Box::pin(ForceSend(async move {
             delete(&root, &path)
                 .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)
+                .map_err(crate::vfs_err::map_vfs_err)
         }))
     }
 
@@ -649,7 +645,7 @@ impl Vfs for BrowserFsaVfs {
         Box::pin(ForceSend(async move {
             search_content(&root, &query, &dir, opts)
                 .await
-                .map_err(openwebide_frontend::vfs_err::map_vfs_err)
+                .map_err(crate::vfs_err::map_vfs_err)
         }))
     }
 }

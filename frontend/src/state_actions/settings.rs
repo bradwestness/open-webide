@@ -4,14 +4,14 @@ use openwebide_core::{Connection, ProviderKind};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
-use crate::api::BackendApi;
-use openwebide_frontend::state::{
+use crate::backend::Api;
+use crate::state::{
     settings::{SettingsState, Theme},
     ui::{ConfirmRequest, UiState},
 };
 
 pub struct SettingsActionContext {
-    pub api: BackendApi,
+    pub api: Api,
     pub settings: SettingsState,
     pub ui: UiState,
 }
@@ -76,8 +76,16 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         ui.clear_toast();
         spawn_local(async move {
             let result = match edit_id {
-                Some(id) => api.update_system_prompt(id, &name, &content).await,
-                None => api.create_system_prompt(&name, &content).await,
+                Some(id) => {
+                    api.with_value(Clone::clone)
+                        .update_system_prompt(id, &name, &content)
+                        .await
+                }
+                None => {
+                    api.with_value(Clone::clone)
+                        .create_system_prompt(&name, &content)
+                        .await
+                }
             };
             match result {
                 Ok(prompt) => {
@@ -103,7 +111,8 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
             confirm_label: "Delete".to_string(),
             action: Callback::new(move |_| {
                 spawn_local(async move {
-                    if let Err(error) = api.delete_system_prompt(id).await {
+                    if let Err(error) = api.with_value(Clone::clone).delete_system_prompt(id).await
+                    {
                         ui.notify(error);
                         return;
                     }
@@ -202,10 +211,13 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
                         enabled,
                         context_limit,
                     };
-                    api.update_connection(&updated).await
+                    api.with_value(Clone::clone)
+                        .update_connection(&updated)
+                        .await
                 }
                 None => {
-                    api.create_connection(&name, kind, &base_url, model.as_deref(), context_limit)
+                    api.with_value(Clone::clone)
+                        .create_connection(&name, kind, &base_url, model.as_deref(), context_limit)
                         .await
                 }
             };
@@ -236,7 +248,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
             confirm_label: "Delete".to_string(),
             action: Callback::new(move |_| {
                 spawn_local(async move {
-                    if let Err(error) = api.delete_connection(id).await {
+                    if let Err(error) = api.with_value(Clone::clone).delete_connection(id).await {
                         ui.notify(error);
                         return;
                     }
@@ -257,7 +269,11 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         settings.theme.set(theme);
         write_theme_to_storage(theme);
         spawn_local(async move {
-            if let Err(error) = api.set_setting("theme", theme.as_str()).await {
+            if let Err(error) = api
+                .with_value(Clone::clone)
+                .set_setting("theme", theme.as_str())
+                .await
+            {
                 ui.notify(error);
             }
         });
@@ -267,7 +283,11 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         settings.default_connection.set(value);
         let value = value.map(|id| id.to_string()).unwrap_or_default();
         spawn_local(async move {
-            if let Err(error) = api.set_setting("default_connection", &value).await {
+            if let Err(error) = api
+                .with_value(Clone::clone)
+                .set_setting("default_connection", &value)
+                .await
+            {
                 ui.notify(error);
             }
         });
@@ -277,7 +297,11 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         settings.default_prompt.set(value);
         let value = value.map(|id| id.to_string()).unwrap_or_default();
         spawn_local(async move {
-            if let Err(error) = api.set_setting("default_prompt", &value).await {
+            if let Err(error) = api
+                .with_value(Clone::clone)
+                .set_setting("default_prompt", &value)
+                .await
+            {
                 ui.notify(error);
             }
         });
@@ -286,7 +310,10 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
     let on_set_bridge_url = Callback::new(move |url: String| {
         settings.bridge_url.set(url.clone());
         spawn_local(async move {
-            let _ = api.set_setting("bridge_url", &url).await;
+            let _ = api
+                .with_value(Clone::clone)
+                .set_setting("bridge_url", &url)
+                .await;
         });
     });
 

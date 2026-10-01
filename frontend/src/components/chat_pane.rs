@@ -1,9 +1,9 @@
+use crate::state::{chat::ChatState, layout::LayoutState, projects::ProjectsState};
 use leptos::prelude::*;
 use openwebide_core::{
     FileDiff, ModelInfo, Role, diff_inline_lines,
     tui::{SessionTelemetry, SlashCommand, extract_editor_context_prelude, parse_thinking},
 };
-use openwebide_frontend::state::{chat::ChatState, layout::LayoutState, projects::ProjectsState};
 use web_sys::wasm_bindgen::JsCast;
 
 const PROMPT_HISTORY_KEY: &str = "owide-prompt-history";
@@ -28,9 +28,9 @@ fn save_prompt_history(history: &[String]) {
     }
 }
 
-pub use openwebide_frontend::conversation::{ConversationItem, ToolStepResult, item_key};
+pub use crate::conversation::{ConversationItem, ToolStepResult, item_key};
 
-pub(crate) use openwebide_frontend::markdown::render as render_markdown;
+pub(crate) use crate::markdown::render as render_markdown;
 
 /// Render the diff for a file edit: the changed path and the removed/added lines.
 fn render_diff_view(diff: FileDiff) -> impl IntoView {

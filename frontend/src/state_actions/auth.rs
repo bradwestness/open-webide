@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use openwebide_frontend::state::{
+use crate::state::{
     auth::AuthState,
     chat::ChatState,
     git::GitState,
@@ -11,10 +11,10 @@ use openwebide_frontend::state::{
     workspace::WorkspaceState,
 };
 
-use crate::api::BackendApi;
+use crate::backend::Api;
 
 pub struct AuthActionContext {
-    pub api: BackendApi,
+    pub api: Api,
     pub auth: AuthState,
     pub projects: ProjectsState,
     pub workspace: WorkspaceState,
@@ -52,17 +52,17 @@ impl AuthActions {
                 return;
             }
             spawn_local(async move {
-                let user = api.me().await.ok();
+                let user = api.with_value(Clone::clone).me().await.ok();
                 auth.user.set(user);
                 auth.checked.set(true);
             });
         });
 
         Effect::new(move |_| {
-            if api.session_expired().get() {
+            if api.with_value(Clone::clone).session_expired().get() {
                 reset_user_state.run(());
                 ui.notify("Your session expired. Please sign in again.");
-                api.session_expired.set(false);
+                api.with_value(Clone::clone).session_expired().set(false);
             }
         });
 
@@ -84,7 +84,7 @@ impl AuthActions {
                 confirm_label: "Log out".to_string(),
                 action: Callback::new(move |_| {
                     spawn_local(async move {
-                        let _ = api.logout().await;
+                        let _ = api.with_value(Clone::clone).logout().await;
                     });
                     reset_user_state.run(());
                 }),

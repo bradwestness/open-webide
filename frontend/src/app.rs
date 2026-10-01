@@ -1,14 +1,13 @@
+use crate::state::auth::AuthState;
+use crate::state::chat::ChatState;
+use crate::state::git::GitState;
+use crate::state::layout::{ActiveResizer, LayoutState};
+use crate::state::projects::ProjectsState;
+use crate::state::settings::SettingsState;
+use crate::state::ui::UiState;
+use crate::state::workspace::WorkspaceState;
 use leptos::prelude::*;
-use openwebide_frontend::state::auth::AuthState;
-use openwebide_frontend::state::chat::ChatState;
-use openwebide_frontend::state::git::GitState;
-use openwebide_frontend::state::layout::{ActiveResizer, LayoutState};
-use openwebide_frontend::state::projects::ProjectsState;
-use openwebide_frontend::state::settings::SettingsState;
-use openwebide_frontend::state::ui::UiState;
-use openwebide_frontend::state::workspace::WorkspaceState;
 
-use crate::api::{BackendApi, HealthState};
 use crate::components::{
     AuthGate, ChatPane, ConfirmDialog, Editor, FileBrowser, FileTree, PanelResizer, PromptDialog,
     Settings, Sidebar, StatusBar, TabBar, TerminalPane, TopBar,
@@ -22,10 +21,12 @@ use crate::state_actions::{
     settings::{SettingsActionContext, SettingsActions, build_settings_actions},
     workspace::WorkspaceActions,
 };
+use crate::{api::HealthState, backend::Api};
 
 #[component]
 pub fn App() -> impl IntoView {
-    let api = BackendApi::from_location();
+    let api: Api =
+        StoredValue::new_local(std::rc::Rc::new(crate::api::BackendApi::from_location()));
     provide_context(api);
 
     let ui = UiState::new();
