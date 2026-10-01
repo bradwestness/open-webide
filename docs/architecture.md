@@ -3,8 +3,8 @@
 ## Goals
 
 1. **Full stack in WebAssembly.** The frontend is a Leptos WASM app; the
-   backend is a Spin component (`wasm32-wasip2`). No server-side runtime
-   that isn't WASM.
+   backend is a Spin component (`wasm32-wasip2`). A native Rust bridge
+   runs beside Spin for terminals, host tools, and chat/agent execution.
 2. **Local-LLM first.** Ollama and llama.cpp sit behind one provider
    interface so the UI never cares which engine is serving.
 3. **File-based persistence.** SQLite, the same shape Open WebUI uses,
@@ -21,7 +21,9 @@
 ```
 browser
   └── frontend (Leptos → wasm32-unknown-unknown, built by Trunk)
-        │  fetch /api/...
+        │  REST + SSE /api/...
+        ├── shared WebSocket → native bridge → model HTTP + host tools
+        │                      └── REST → backend (secret + acting user)
         ▼
   Spin (wasm32-wasip2)
         ├── static file server component  → serves frontend/dist at /
@@ -42,21 +44,14 @@ statusline. All `serde`-serializable; no I/O.
 
 ### `crates/llm`
 
-`LlmProvider` is the seam:
-
-```rust
-pub trait LlmProvider: Send + Sync {
-    fn kind(&self) -> ProviderKind;
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError>;
-    async fn chat(&self, request: &ChatRequest) -> Result<String, ProviderError>;
-}
-```
-
-`OllamaProvider` and `LlamaCppProvider` implement it; `registry::Provider::for_connection`
-builds the right one from a stored `Connection`. The HTTP layer (a small
-`HttpClient` trait so tests can fake it) is the next milestone — for now
-the methods return `ProviderError::NotImplemented`, which the API maps to
-HTTP 501.
+`LlmProvider` provides model listing, plain chat, text streaming, tool-call chat,
+streamed tool-call turns, and context-window discovery. `OllamaProvider` uses
+Ollama's native API; `LlamaCppProvider` uses its OpenAI-compatible API.
+`registry::Provider::for_connection` selects the provider for a stored connection.
+A shared `HttpClient` boundary has Spin, native bridge, and test implementations.
+Streams require a provider completion marker; an unexpected EOF is incomplete.
+Older servers that reject streamed tool calls fall back to non-streaming turns,
+and the connection remembers that capability until its URL or provider kind changes.
 
 ### `crates/storage`
 
@@ -95,10 +90,13 @@ so an up-to-date schema costs one read). Handlers:
 | `GET/PUT /api/settings`  | all settings / upsert one        |
 | `GET/POST /api/system-prompts` | list / create              |
 | `DELETE /api/system-prompts/:id` | delete                     |
-| `GET /api/models?connection_id=N` | models from a provider (501 until HTTP lands) |
-| `POST /api/chat`         | one-shot chat (501 until HTTP lands) |
+| `GET /api/models?connection_id=N` | models from the configured provider |
+| `POST /api/chat`         | one-shot provider chat |
 
-JSON and SSE responses share `http::Response<BoxBody>`. Development CORS
+JSON and SSE responses share `http::Response<BoxBody>`. Cookie-authenticated API requests require `x-openwebide: 1` for CSRF protection.
+Session cookies are HttpOnly and SameSite=Strict (Secure on HTTPS); logout rolls the
+user epoch to invalidate sessions on every device. Failed logins trigger a lockout.
+Registration closes after the first account. Development CORS
 allows the frontend on `localhost:8080` and `127.0.0.1:8080`.
 
 ### `frontend`
@@ -110,7 +108,10 @@ and chat runs. Components read the matching store from context instead of receiv
 signal bundles through every intermediate component. Browser and backend actions stay in the
 WASM-only frontend binary; the signals and pure transitions are also available to native tests.
 
-The API base is same-origin by default, overridable with `?api=<url>` for dev.
+The API base is same-origin. `?api=<url>` is a development override accepted only
+on `localhost:8080` or `127.0.0.1:8080`. Preferences, theme, prompt history, and layout
+live in user-scoped database settings. IndexedDB holds only directory handles and
+the local bridge pairing token; legacy localStorage entries are removed on import.
 
 ## Spin wiring (`spin.toml`)
 
@@ -118,7 +119,8 @@ The API base is same-origin by default, overridable with `?api=<url>` for dev.
 - Two HTTP triggers: `/api/...` → backend component, `/...` → static file
   server (prebuilt `spin_static_fs.wasm`) serving `frontend/dist`
 - Backend declares `sqlite_databases = ["default"]` and
-  `allowed_outbound_hosts` for localhost (where Ollama/llama.cpp run)
+  `allowed_outbound_hosts` for localhost and tunnels, plus unchanged HTTP/HTTPS
+  wildcards for LAN model servers, web search, and documentation fetching
 - Backend mounts the host workspace directory via the `files` array (requires
   `--direct-mounts --allow-transient-write` so edits hit the real disk, otherwise
   they go to a temporary copy)
@@ -132,9 +134,13 @@ The API base is same-origin by default, overridable with `?api=<url>` for dev.
 A multi-stage `Dockerfile` makes the whole app one image: the builder stage
 is the Spin image plus Rust and Trunk, and runs `spin build` (so the
 `spin.toml` build commands stay the single source of truth); the runtime
-stage copies `spin.toml`, the backend WASM, and `frontend/dist` into a fresh
-Spin image. One port (3000) serves frontend and API; SQLite lives in
-`/app/.spin` (a `VOLUME`, backed by a named volume in `docker-compose.yml`).
+stage copies `spin.toml`, the backend WASM, `frontend/dist`, and the native bridge
+into a fresh Spin image. Port 3000 serves frontend and API; port 3001 serves the
+bridge. SQLite and the bridge secret live in `/app/.spin`; the host workspace is
+mounted at `/workspace`. A bash supervisor stops both children if either exits and
+forwards shutdown signals. A non-flag command override runs directly.
+`OPENWEBIDE_BRIDGE=0` disables the bridge; chat uses SSE. Old container project
+paths are migrated automatically to the `/workspace` mount.
 
 `docs/podman-quadlet.md` documents running the same image as a systemd
 service on Linux via Podman quadlet (`.image` + `.container` units).
@@ -147,11 +153,9 @@ frontend with one impl per mode.
 
 **Remote mode** — the folder lives on the machine running Open WebIDE / the host:
 
-- Operates on repositories on the host machine, accessed either via Spin's mounted
-  filesystem or dynamically via the host bridge Unix socket (`~/.openwebide/bridge.sock`).
-- Dynamic `~/` Access: Instead of being confined to a single static folder, Remote mode
-  allows opening, browsing, and switching between any repository under the user's home
-  directory (`~/source/...`, `~/projects/...`) in multi-project tabs.
+- Operates on repositories inside Spin's configured filesystem mount. The bridge
+  uses the same workspace root for commands and Git. Multi-project tabs switch
+  between folders under that root. Unix-domain sockets are not implemented.
 - The backend exposes a file API (`/api/files`: list, read, write, search) and git API,
   and the frontend calls it like any other REST/WebSocket endpoint.
 - The agent edits project files and executes commands directly in the native host
@@ -163,11 +167,13 @@ frontend with one impl per mode.
 - File System Access API (`window.showDirectoryPicker()`) via web-sys /
   `wasm_bindgen` interop; the directory handle is persisted in IndexedDB and
   re-authorized on reload
-- File operations stay entirely in the browser; the backend is used only
-  for settings, connections, and system prompts
-- LLM connections point at `http://localhost:11434` and the *frontend*
-  calls the provider directly via gloo-net (mirroring the backend's
-  `HttpClient`); Ollama needs `OLLAMA_ORIGINS` set to the page's origin
+- File operations and the agent loop stay in the browser. The backend persists
+  settings, sessions, messages, and tool steps. Model completions stream through
+  the companion bridge, falling back to backend `/api/chat-tools`.
+- A temporary probe file discovers the picked folder under the bridge root (up
+  to five levels), verifies it at each run, and is removed afterwards. Command
+  and Git tools are hidden if the bridge cannot see it. Interrupted local runs
+  can resume from persisted history without another user message.
 
 Constraints & Device Roles:
 
@@ -223,7 +229,15 @@ the agent interacts with standard POSIX paths without mode-specific branching.
 For process execution and terminal access (Phase 11), a thin native WebSocket
 bridge handles PTY sessions and command execution outside Spin's WASI sandbox,
 providing execution capabilities (`cargo test`, interactive shell) to both the
-agent and the user. The bridge requires a Bearer token (generated at startup and passed via HTTP `POST /secret` on loopback) for Origin-less requests to ensure local network security.
+agent and the user. Origin-less HTTP tool requests require the backend/bridge shared secret. Browser
+HTTP tool requests and WebSocket hello use a short-lived HMAC bridge token or
+local pairing token. Host/Origin allowlists reject foreign origins and DNS
+rebinding; browser tool POSTs require JSON. `POST /secret` bootstraps only on
+loopback. Remote bridges use `SPIN_VARIABLE_BRIDGE_URL` and
+`SPIN_VARIABLE_BRIDGE_SECRET`. Working directories are confined lexically under
+the canonical workspace root; directory symlinks are permitted. Agent file tools
+refuse `.spin/` and `.git` writes. Shell commands still have host access and
+require approval; confinement is not an OS sandbox.
 
 The native bridge separates `server/` (HTTP parsing, routes, WebSocket connections),
 `terminals/` (PTY/headless sessions and replay rings), `exec/` (command and Git execution),
@@ -237,9 +251,8 @@ trait. `BridgeError` maps typed failures to HTTP status codes. Bridge logging us
 
 ## Roadmap
 
-What's left — grouped as Now / Next / Later — lives in
-[roadmap.md](roadmap.md); finished work (scaffold through the TUI telemetry
-meters and per-connection context limit) is in
+What's left — grouped as Next / Later — lives in
+[roadmap.md](roadmap.md); finished work, including hardening and streaming, is in
 [CHANGELOG.md](../CHANGELOG.md).
 
 
@@ -253,8 +266,9 @@ sent back to the model. Tool-call ids use the initiating user message id through
 the run, while the display anchor moves to each persisted interim message.
 History reconstructs tool replies from anchored step summaries; incomplete row sets
 fall back to plain text. Empty interim messages carrying calls are hidden in the UI.
-Local-mode runs use the same loop and persist interim text and calls, but model text still
-arrives per turn through `/api/chat-tools`.
+Local-mode runs use the same loop, persist interim text and calls, and stream
+model turns over bridge completions when available. The `/api/chat-tools` fallback
+delivers a complete turn.
 
 `POST /api/sessions/<id>/run-plan` prepares a run without persisting a message or
 clearing run flags. It checks session ownership and returns the connection, chat

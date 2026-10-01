@@ -43,7 +43,7 @@ allowed_outbound_hosts = [
     "https://*:*",
     "http://*:*",
 ]
-# Remote-mode workspace: the user's `~/source` directory, preopened into the
+# Remote-mode workspace: `../..` relative to this manifest, preopened into the
 # component. Spin mounts `source` directly only with `--direct-mounts --allow-transient-write`,
 # otherwise edits go to a temp copy; Docker rewrites the source to `/workspace`;
 # the bridge's `--workspace` must equal this source.

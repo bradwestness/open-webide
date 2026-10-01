@@ -55,8 +55,8 @@ WantedBy=default.target
 Notes:
 
 - `PublishPort=127.0.0.1:8080:3000` binds to loopback only. Use
-  `8080:3000` to expose it on all interfaces (then put auth/reverse proxy
-  in front — the API has no authentication).
+  `8080:3000` to expose it on all interfaces. The API requires sign-in with
+  an HttpOnly cookie session; logout invalidates sessions on all devices.
 - The volume maps the SQLite data directory (`/app/.spin` inside the
   container) to a host directory. `:Z` relabels it for SELinux; drop the
   suffix on systems without SELinux. The workspace volume maps your

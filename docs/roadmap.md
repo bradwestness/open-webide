@@ -1,47 +1,9 @@
 # Roadmap
 
-What's left, grouped by how soon it's coming: **Now** (in flight), **Next**
-(queued up after it), **Later** (planned, not yet started). Finished work —
-phases 1 through 14, the TUI telemetry meters, and the per-connection context
-limit — moved to [CHANGELOG.md](../CHANGELOG.md).
-
-## Now
-
-### Security hardening, bridge robustness & agent streaming
-
-A sequence of correctness and hardening passes across every crate, plus
-switching the agent loop from one-shot SSE requests to a single multiplexed
-bridge WebSocket connection:
-
-- **Security hardening:** default-deny tool approval policy, bridge
-  Host/Origin/CORS checks, path-confinement and git argument-injection
-  fixes, markdown/SVG XSS closure (safe raw HTML still renders), sandboxed
-  raw-file responses, request/response size bounds, and auth correctness.
-- **Sign-in:** an HttpOnly cookie session instead of a token in
-  localStorage (with a CSRF header), failed-login throttling, and logout
-  that signs out every device.
-- **Bridge robustness & auth:** an HTTP server on `hyper`, process lifecycle
-  (kill/reap/shutdown), output delivery ordering, a shared secret between
-  the backend and the bridge, and a `hello` handshake with short-lived
-  bridge tokens — phone/LAN access keeps working with no extra setup.
-- **Agent streaming over the bridge WebSocket:** provider and agent-loop
-  streaming of tool-call turns, a typed run protocol over one multiplexed
-  bridge connection, and a frontend fallback to SSE when the bridge is
-  unavailable; afterwards one event type for SSE and WebSocket, resumable
-  local-mode runs, and the bridge bundled into the Docker image.
-- **Terminal tests:** `/test [filter]` now runs `cargo test` in the project directory through the authenticated bridge. Project-type detection for default commands remains planned.
-- **Frontend structure & tests:** the `App` component split into
-  per-feature state stores, and a component-test harness running in
-  headless Chrome in CI.
-- **Frontend persistence:** theme and prompt history use per-user database
-  settings, with no localStorage cache; panel widths fit the viewport.
-- **Agent quality:** typed tool arguments, approval cards that show the full
-  diff, Stop that interrupts a running command, search that can opt into
-  ignored folders, truncated or cut-off replies kept with a visible marker,
-  model reasoning surfaced, and diffs that show line-ending changes.
-- **Cleanup:** backend and bridge refactors (typed errors, module
-  structure), dead-code removal, and selected pedantic clippy lints enforced
-  in CI.
+What's left, grouped by how soon it's coming: **Next** (queued up), **Later**
+(planned, not yet started). Finished work —
+phases 1 through 14, telemetry, hardening, streaming, `/test`, and database-backed
+theme and prompt history — moved to [CHANGELOG.md](../CHANGELOG.md).
 
 ## Next
 
@@ -55,9 +17,9 @@ sequence:
   stop re-highlighting the whole file on every keystroke (highlight only the
   visible window, or debounce to the next animation frame); a terminal line
   buffer instead of re-rendering all output.
-- Design tokens and buttons: settle the canonical token names (rename the CSS
-  to match AGENTS.md or amend AGENTS.md), add the missing tokens, move to
-  `color-mix`, and merge `ui::Button` into `.btn`.
+- Design tokens and buttons: settle canonical token names (AGENTS.md currently
+  documents the CSS), add any needed tokens, move to `color-mix`, and merge
+  `ui::Button` into `.btn`.
 - `data-wasm-opt="z"` for a smaller bundle (measure before/after).
 - A 250 ms debounce on search; parallel initial load and a model-refetch
   memo; ANSI and scroll fixes in the terminal; CRLF and multi-line `data:`
@@ -318,8 +280,8 @@ The chat/TUI surface grows into a full agent workspace. In priority order:
     tokens and tool count, runnable in parallel.
 
 Dependencies: the fast model (auto-compaction, session auto-titles,
-sub-agents), WebSocket streaming (sub-agents), and the frontend state-store
-split from the hardening sequence for the UI-heavy items.
+sub-agents), WebSocket streaming (sub-agents), and the existing frontend state
+stores for the UI-heavy items.
 
 ### Mobile support & collapsible tool windows
 
@@ -336,9 +298,8 @@ split from the hardening sequence for the UI-heavy items.
   override; touch-friendly targets; works over the LAN through the bridge
   (the phone/LAN access the hardening sequence keeps working).
 
-Best done after the frontend state-store split (per-feature stores make
-layouts swappable). It subsumes the sequence's viewport clamp for saved panel
-widths.
+The existing per-feature state stores make layouts swappable. Saved panel widths
+already fit the viewport.
 
 ## Later
 

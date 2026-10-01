@@ -26,12 +26,12 @@ any phone, tablet, or laptop into a seamless remote control:
    No binaries, Daemons, or toolchains to install on your client device. Just a
    clean browser tab that feels fast and responsive even on mobile devices.
 3. **100% WebAssembly:**
-   Pure Rust across the entire codebase. No Node.js runtime, no Python daemon,
-   no heavy container orchestration. Instant startup and an image under 50MB.
+   The frontend and backend run on WebAssembly, with a native Rust execution
+   bridge bundled beside Spin. No Node.js runtime or Python daemon is needed.
 4. **Dual Workspace Modes:**
    - **Remote mode (Primary):** The workspace lives on the host machine
-     (your workstation, home lab, or server). Dynamic access to any repository
-     under your home directory with multi-device shared sessions out of the box.
+     (your workstation, home lab, or server). Access to repositories under the configured workspace
+     mount, with multi-device shared sessions out of the box.
    - **Local mode:** The workspace lives on the browser's machine, accessed
      directly via the File System Access API (Chromium). Keep client repositories
      strictly on your laptop's local SSD without mounting them to the host.
@@ -62,13 +62,12 @@ Working:
 - **WebSocket terminal bridge:** a native `openwebide-bridge` daemon giving the UI an interactive terminal and the agent a `run_command` tool, plus host Git operations against the real repository
 - **Git integration:** branch/ahead-behind status bar, file tree status badges, and diff/branch/commit/checkout/sync
 - **Both workspace modes:** Remote host mounts via Spin filesystem preopens, and Local browser mode via the File System Access API (persisted via IndexedDB)
-- **Local user accounts:** Self-hosted user registration and login with argon2id password hashing, session tokens, and user-scoped data
+- **Local user accounts:** Self-hosted user registration and login with argon2id password hashing, HttpOnly cookie sessions, and user-scoped data
 - **Custom dialogs & remote file browser:** Themed confirmation, prompt, and remote host file browser modals replacing browser-native dialogs
-- **Single-container deployment:** Multi-stage Dockerfile and docker-compose packaging frontend, backend, and SQLite into one image
+- **Single-container deployment:** Multi-stage Dockerfile and docker-compose packaging frontend, backend, SQLite, and the execution bridge into one image
 
 See [docs/roadmap.md](docs/roadmap.md) for what's in flight and queued up next
-(security/bridge hardening and agent streaming now; code intelligence,
-approval modes, and a secondary fast model next), and
+(frontend polish, code intelligence, approval modes, and a secondary fast model next), and
 [CHANGELOG.md](CHANGELOG.md) for the full list of finished work.
 
 ## Prerequisites
@@ -144,28 +143,33 @@ On Linux with systemd, it can also run as a Podman quadlet service — see
 ```sh
 curl -s localhost:3000/api/health
 
+# Sign in (register the first account in the UI first). Keep this cookie jar private.
+curl -s -c /tmp/openwebide-cookies -X POST localhost:3000/api/login \
+  -H 'x-openwebide: 1' -H 'content-type: application/json' \
+  -d '{"username":"your-user","password":"your-password"}'
+
 # add a connection
-curl -s -X POST localhost:3000/api/connections \
+curl -s -b /tmp/openwebide-cookies -H 'x-openwebide: 1' -X POST localhost:3000/api/connections \
   -H 'content-type: application/json' \
   -d '{"name":"local-ollama","kind":"ollama","base_url":"http://localhost:11434","model":"qwen2.5-coder:7b"}'
 
-curl -s localhost:3000/api/connections
+curl -s -b /tmp/openwebide-cookies -H 'x-openwebide: 1' localhost:3000/api/connections
 
 # settings
-curl -s -X PUT localhost:3000/api/settings \
+curl -s -b /tmp/openwebide-cookies -H 'x-openwebide: 1' -X PUT localhost:3000/api/settings \
   -H 'content-type: application/json' \
   -d '{"key":"theme","value":"dark"}'
-curl -s localhost:3000/api/settings
+curl -s -b /tmp/openwebide-cookies -H 'x-openwebide: 1' localhost:3000/api/settings
 
 # system prompts
-curl -s -X POST localhost:3000/api/system-prompts \
+curl -s -b /tmp/openwebide-cookies -H 'x-openwebide: 1' -X POST localhost:3000/api/system-prompts \
   -H 'content-type: application/json' \
   -d '{"name":"coder","content":"You are a coding agent."}'
 
 # provider endpoints (need a running engine at the connection's base_url)
-curl -s 'localhost:3000/api/models?connection_id=1'
+curl -s -b /tmp/openwebide-cookies -H 'x-openwebide: 1' 'localhost:3000/api/models?connection_id=1'
 
-curl -s -X POST localhost:3000/api/chat \
+curl -s -b /tmp/openwebide-cookies -H 'x-openwebide: 1' -X POST localhost:3000/api/chat \
   -H 'content-type: application/json' \
   -d '{"connection_id":1,"messages":[{"role":"user","content":"hello"}]}'
 ```
@@ -174,13 +178,14 @@ curl -s -X POST localhost:3000/api/chat \
 
 Outbound network egress from the backend component is open via wildcards (`https://*:*` and `http://*:*` in [spin.toml](spin.toml)). This is needed to connect to LLM providers across local networks (LAN model hosts, loopback, private tunnels) and to support web search and documentation fetching.
 
-To prevent SSRF and unrestricted access:
-- **Approval gate:** The agent's `fetch_web_page` tool requires explicit human approval before any external page is fetched.
+Web-tool protections:
+
+- **Approval gate:** The agent's `fetch_web_page` tool requires explicit human approval before any external page is fetched. `search_web` stays auto-approved.
 - **Cloud metadata protection:** Outbound web fetching explicitly refuses requests to cloud metadata addresses (`169.254.169.254`, `fd00:ec2::254`, their IPv4-mapped representations, and `metadata.google.internal`). Everything else (LAN, loopback, public internet) remains accessible.
 
 ## Agent
 
-When the agent edits files that cannot be read as text (binary or large files), it safely backs up the original contents to the `.openwebide/backups/` directory inside the project root before overwriting. This directory is automatically `git`-ignored and is safe to delete at any time to reclaim disk space.
+When the agent edits files that cannot be read as text (binary or large files), it backs up the original contents to the `.openwebide/backups/` directory inside the project root before overwriting. Backups are git-ignored and retained for Reject to restore the original; delete them only when those edits no longer need restoration.
 
 ## Execution bridge
 
@@ -198,7 +203,8 @@ connections are pinged every 30 s and closed after 90 s without an inbound frame
 
 ```sh
 cargo build -p openwebide-bridge
-./target/debug/openwebide-bridge --port 3001 --workspace /path/to/project
+./target/debug/openwebide-bridge --port 3001 --workspace ../.. --host 127.0.0.1 \
+  --backend-url http://127.0.0.1:3000/api --secret-file /tmp/openwebide-bridge-secret
 ```
 
 Signed-in connections (hello with a bridge token) can run chat and agents over the bridge when it shares the backend's secret. Runs continue after a browser disconnect and can replay their events on reconnect. Otherwise, runs use SSE and completions use `/api/chat-tools`. HTTP-only builds (`cargo build -p openwebide-bridge --no-default-features`) advertise no run support; terminal and Git operations remain available.
@@ -212,11 +218,11 @@ Signed-in connections (hello with a bridge token) can run chat and agents over t
   ```sh
   ./target/debug/openwebide-bridge --host 0.0.0.0 --port 3001
   ```
-- `--secret-file <FILE>` (or env `OPENWEBIDE_BRIDGE_SECRET_FILE`, `OPENWEBIDE_BRIDGE_SECRET`): The secret bearer token required to authorize non-browser API commands. If omitted, a persistent random 32-byte secret is generated and stored in `~/.config/openwebide/bridge_secret` (or `~/.openwebide/bridge_secret`). The backend fetches this secret securely over loopback via `POST /secret` at startup.
+- `--secret-file <FILE>`: persistent shared-secret file for non-browser API commands. `OPENWEBIDE_BRIDGE_SECRET` overrides the file and must contain at least 32 characters. Otherwise a persistent random 32-byte secret is stored at `--secret-file`, `$XDG_CONFIG_HOME/openwebide/bridge-secret`, or `~/.config/openwebide/bridge-secret`. The backend lazily fetches it over loopback via `POST /secret` and caches it in SQLite.
 - `--token <TOKEN>` (or env `OPENWEBIDE_BRIDGE_TOKEN`): Optional pairing token (≥ 16 characters) to authenticate local companion apps without needing the backend's minted session tokens. Allows local-mode execution: `openwebide-bridge --token <16+ chars> --workspace <path>`.
 
 > [!WARNING]
-> Exposing the bridge on a non-loopback interface (like `0.0.0.0`) requires manual configuration for the backend: you must set the `SPIN_VARIABLE_BRIDGE_SECRET` environment variable to the bridge's secret (which it will print at startup), since the backend can only auto-fetch the secret when the bridge is on a loopback address.
+> When the backend reaches a remote bridge through a non-loopback URL, set both `SPIN_VARIABLE_BRIDGE_URL=http://<bridge-host>:3001` and `SPIN_VARIABLE_BRIDGE_SECRET` to the bridge secret from its secret file or `OPENWEBIDE_BRIDGE_SECRET`. The daemon logs the secret source, never the secret itself. Binding to `0.0.0.0` still permits automatic bootstrap when the backend connects over loopback.
 
 ### Host and Origin security baseline
 
@@ -247,7 +253,7 @@ To protect against DNS rebinding and malicious websites opened in the user's bro
 
 ### Process lifecycle
 
-Every command the bridge spawns (`/exec`, `run_command`, PTY shells, Git subprocesses) runs as its own process group, so killing it also kills anything it forked or backgrounded:
+Every command the bridge spawns (`/exec`, `run_command`, PTY shells, Git subprocesses) starts in its own process group. Signals target that group; interactive shells can put background jobs into separate groups, which may survive shell cleanup:
 
 - **Kill semantics:** sending `Kill` with no signal (or `KILL`/`SIGKILL`) terminates the whole process group immediately. `TERM`/`SIGTERM` and `HUP`/`SIGHUP` signal the group directly. `INT`/`SIGINT` on a PTY session instead writes `^C` to the terminal, matching a real Ctrl+C — it interrupts whatever's in the foreground rather than killing the shell itself.
 - **Timeouts:** a `run_command`/`/exec` timeout, or the client disconnecting mid-request, terminates the command's process group (SIGTERM, then SIGKILL after a 2 s grace period) instead of leaving it (and any children) running.
@@ -263,14 +269,19 @@ There is no reliance on localStorage for tokens. Note that logging out clears th
 ## Development
 
 ```sh
-cargo test-native      # native tests for core/llm/storage (rusqlite, in-memory)
+cargo test -p openwebide-storage -p openwebide-core -p openwebide-auth -p openwebide-agent -p openwebide-llm -p openwebide-bridge -p openwebide-backend
+cargo test -p openwebide-frontend --lib
+CHROMEDRIVER=<path> cargo test -p openwebide-frontend --target wasm32-unknown-unknown
 cargo build-backend    # backend component → target/wasm32-wasip2/release
 cargo build-frontend   # frontend → target/wasm32-unknown-unknown/release
 cd frontend && trunk serve   # frontend dev server on :8080
 ```
 
-When developing the frontend against a running `spin up` instance, point it
-at the API with `?api=http://localhost:3000/api`. Note: because sessions use `SameSite=Lax` cookies, cross-origin requests from Trunk (`localhost:8080`) to the backend (`127.0.0.1:3000`) might fail to attach cookies in some browsers; use `localhost` for both to avoid cross-site issues.
+UI tests require Chrome, chromedriver, and `wasm-bindgen-cli` 0.2.128 matching the lockfile.
+
+When developing the frontend against `spin up --direct-mounts --allow-transient-write`,
+point it at the API with `?api=http://localhost:3000/api`. This override is accepted
+only from `localhost:8080` or `127.0.0.1:8080`. Note: because sessions use `SameSite=Strict` cookies, cross-origin requests from Trunk (`localhost:8080`) to the backend (`127.0.0.1:3000`) might fail to attach cookies in some browsers; use `localhost` for both to avoid cross-site issues.
 
 ## Layout
 

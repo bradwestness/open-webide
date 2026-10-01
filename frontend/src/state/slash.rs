@@ -154,18 +154,19 @@ const HELP_TEXT: &str = "**Open WebIDE Terminal Execution & Slash Commands**\n\n
                         * `/diff [path]` — View uncommitted Git diff or pending edits\n\
                         * `/commit <message>` — Stage and commit changes to host Git\n\
                         * `/checkout <branch>` — Switch active Git branch\n\
-                        * `/branch <name>` — Create and switch to new Git branch\n\
+                        * `/branch [name]` — List branches, or create and switch to a new branch\n\
                         * `/sync` — Synchronize upstream commits (pull & push)\n\
                         * `/test [filter]` — run cargo test in the terminal\n\
                         * `/tokens` or `/context` — Show session token accounting\n\
                         * `/stop` — Abort active execution\n\n\
                         **Keybindings:**\n\
                         * `Cmd+L` / `Ctrl+L` — Capture active editor file & selection into context pill\n\
-                        * `Ctrl+` ` — Toggle bottom terminal dock\n\
-                        * `Ctrl+K` — Cycle focus between chat, editor, file explorer, and terminal\n\
+                        * `Ctrl+Backtick` / `Cmd+Backtick` — Toggle bottom terminal dock\n\
+                        * `Ctrl+K` / `Cmd+K` — Cycle focus between chat, editor, file explorer, and terminal\n\
                         * `Up` / `Down` — Readline prompt history navigation\n\
-                        * `Alt+Y` / `Alt+N` / `Alt+A` — Inline permission handshake (approve / deny / always)\n\
-                        * `Ctrl+C` / `Esc` — Cancel streaming generation or detach context pill";
+                        * `Alt+Y` / `Alt+N` / `Alt+A` — Approve / deny / always for this session (always excludes shell commands)\n\
+                        * `Ctrl+C` / `Cmd+C` — Cancel streaming when no composer text is selected\n\
+                        * `Esc` — Detach context when the draft is empty, otherwise cancel streaming";
 
 fn format_tokens(telemetry: &SessionTelemetry) -> String {
     let pct = telemetry.context_percent();

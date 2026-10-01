@@ -9,11 +9,11 @@ Instructions, conventions, and architectural principles for AI agents working on
 ### Always Use the Component System for UI Elements
 - **Consistency First**: Always use unified UI component patterns and shared styling classes across the frontend. Never introduce ad-hoc, isolated button/input styles that clash with the rest of the application.
 - **Design Tokens & Theme Variables**: Rely strictly on the established CSS variables defined in `frontend/styles.css`:
-  - Backgrounds: `var(--bg-main)`, `var(--bg-panel)`, `var(--bg-card)`, `var(--bg-hover)`, `var(--bg-editor)`
-  - Borders: `var(--border)`, `var(--border-subtle)`
-  - Accents & Actions: `var(--accent)`, `var(--accent-hover)`, `var(--online)`, `var(--offline)`, `var(--warn)`
-  - Typography & Code: `var(--font-main)`, `var(--mono)`
-- **Shared Components & Buttons**: Use standard button classes (`.btn`, `.btn.accent`, `.btn.send`, `.btn.stop`, `.btn.approve`, `.btn.deny`, etc.) or reusable Leptos component abstractions. When new interactive controls are added, integrate them into the shared styling system so themes (dark/light) and visual hierarchy remain coherent.
+  - Backgrounds: `var(--bg)`, `var(--bg-panel)`, `var(--bg-hover)`
+  - Borders: `var(--border)`
+  - Accents & Actions: `var(--accent)`, `var(--online)`, `var(--offline)`
+  - Typography & Code: `var(--text)`, `var(--text-muted)`, `var(--mono)`; body text uses the system font stack
+- **Shared Components & Buttons**: Use standard button classes (`.btn`, `.btn.send`, `.btn.stop`, `.btn.approve`, `.btn.deny`, etc.) or reusable Leptos component abstractions. When new interactive controls are added, integrate them into the shared styling system so themes (dark/light) and visual hierarchy remain coherent.
 
 ### Always Use the Database for Persistence (No LocalStorage)
 - **Seamless Multi-Device Continuity**: The core product philosophy is that a user must be able to switch machines, devices, or browsers and immediately pick up right where they left off without losing state.
@@ -31,6 +31,7 @@ Instructions, conventions, and architectural principles for AI agents working on
 
 - **Frontend (`frontend/`)**:
   - Built with **Leptos 0.8** compiling to WebAssembly (`wasm32-unknown-unknown`) via **Trunk**.
+  - Feature stores in `frontend/src/state/*` are created by `App` and provided through Leptos context.
   - Single-page application providing code editing, terminal multiplexing, git status/diff visualization, collapsible file tree, and chat/agent interactions.
 - **Backend (`backend/`)**:
   - WebAssembly microservices running on the **Fermyon Spin** runtime (`wasm32-wasip2`).
@@ -40,10 +41,11 @@ Instructions, conventions, and architectural principles for AI agents working on
   - Supports user isolation, session histories, project metadata, and key-value user settings.
 - **Execution Bridge (`bridge/`)**:
   - Native daemon (`openwebide-bridge`) with separate `terminals` (PTY/headless sessions), `exec` (host command/Git execution), `runs` (agent/chat runs), and `server` (HTTP/WebSocket routing) modules.
+  - Uses a hyper HTTP server, a backend shared secret, and a WebSocket `hello` gate with short-lived bridge tokens (or a local pairing token). Chat/agent runs and completions stream over the shared WebSocket; the daemon is bundled alongside Spin in the Docker image.
   - HTTP tools and agent runs share `Arc<dyn ToolExecution>` on `ServerConfig`; terminals retain full host shell access outside that trait.
 - **Shared Crates (`crates/`)**:
   - `openwebide-core`: Shared domain types, diff algorithms, syntax highlighting, TUI telemetry, and VFS abstractions.
-  - `openwebide-auth`: argon2id hashing and HMAC session tokens (not JWT).
+  - `openwebide-auth`: argon2id hashing and HMAC session/bridge tokens (not JWT).
   - `openwebide-agent`: Tool-calling agent loop, tool execution, and permission gating.
   - `openwebide-llm`: Provider integrations (Ollama, and llama.cpp via its OpenAI-compatible API). There are no OpenAI or Anthropic providers.
 
@@ -64,7 +66,7 @@ Instructions, conventions, and architectural principles for AI agents working on
 - **Unit & Integration Tests**:
   ```bash
   # Run tests across native crates
-  cargo test -p openwebide-storage -p openwebide-core -p openwebide-llm -p openwebide-auth -p openwebide-agent -p openwebide-bridge -p openwebide-backend
+  cargo test -p openwebide-storage -p openwebide-core -p openwebide-auth -p openwebide-agent -p openwebide-llm -p openwebide-bridge -p openwebide-backend
   cargo test -p openwebide-frontend --lib
   ```
 - **Frontend UI Tests** (needs Chrome + chromedriver and `wasm-bindgen-cli` matching
@@ -75,7 +77,8 @@ Instructions, conventions, and architectural principles for AI agents working on
 - **Execution Bridge**:
   ```bash
   cargo build -p openwebide-bridge
-  ./target/debug/openwebide-bridge --port 3001
+  ./target/debug/openwebide-bridge --port 3001 --workspace ../.. --host 127.0.0.1 \
+    --backend-url http://127.0.0.1:3000/api --secret-file /tmp/openwebide-bridge-secret
   ```
 - **Spin Dev Server**:
   ```bash
@@ -91,7 +94,7 @@ Instructions, conventions, and architectural principles for AI agents working on
 3. **Database Migrations**: Append a numbered step in `apply_step` (`crates/storage/src/migrations.rs`), bump `SCHEMA_VERSION`, keep every step idempotent, and never edit a shipped step; update `Store` methods with corresponding unit tests in `crates/storage/src/store.rs`.
 4. **Resilience & Safe Layouts**: When implementing layout resizing, enforce sane minimum and maximum bounds to ensure critical panels (like the code editor or diff viewer) are never crushed.
 
-5. **Lint Policy**: Clippy pedantic picks are enforced via `[workspace.lints]` — add a lint there, not per crate; `#[allow]` needs a reason.
+5. **Lint Policy**: Clippy pedantic picks are enforced via `[workspace.lints]` — every crate inherits it with `[lints] workspace = true`, and CI enforces it with `-D warnings` on native crates, the WASI backend, the WASM frontend, and the bridge. Add a lint there, not per crate; `#[allow]` needs a reason.
 
 ## 5. In-flight work
 
