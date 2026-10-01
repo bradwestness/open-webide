@@ -40,7 +40,7 @@ impl Drop for Viewport {
 fn install(state: &TestState) {
     let auth = expect_context::<AuthState>();
     auth.set_user(User {
-        id: 1,
+        id: openwebide_core::UserId::new(1),
         username: "test".into(),
         role: UserRole::User,
         created_at: 0,
@@ -448,7 +448,7 @@ async fn old_save_loop_cannot_drain_a_later_login_queue() {
         .borrow_mut()
         .push_back(pending_new);
     auth.set_user(User {
-        id: 2,
+        id: openwebide_core::UserId::new(2),
         username: "other".into(),
         role: UserRole::User,
         created_at: 0,
@@ -510,7 +510,7 @@ async fn stale_settings_load_cannot_enable_history_for_a_later_login() {
     );
     *state.fake.settings_load_error.borrow_mut() = Some("unavailable".into());
     auth.set_user(User {
-        id: 2,
+        id: openwebide_core::UserId::new(2),
         username: "other".into(),
         role: UserRole::User,
         created_at: 0,

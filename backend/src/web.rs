@@ -8,6 +8,7 @@
 //! and clean Markdown extraction so developer queries return actionable results
 //! without requiring paid API keys or triggering bot blockers.
 
+use crate::url::url_encode;
 use std::future::Future;
 
 use bytes::{Buf, Bytes};
@@ -482,14 +483,7 @@ pub async fn search_web_internal(
         if results.len() < limit
             && let Ok(so_results) = search_stackoverflow(query, limit).await
         {
-            for res in so_results {
-                if results.len() >= limit {
-                    break;
-                }
-                if !results.iter().any(|r: &WebSearchResult| r.url == res.url) {
-                    results.push(res);
-                }
-            }
+            extend_unique(&mut results, so_results, limit);
         }
 
         // 3. Crates.io (for Rust/crates ecosystem queries)
@@ -497,42 +491,21 @@ pub async fn search_web_internal(
             && is_rust_query
             && let Ok(crate_results) = search_crates(query, limit).await
         {
-            for res in crate_results {
-                if results.len() >= limit {
-                    break;
-                }
-                if !results.iter().any(|r: &WebSearchResult| r.url == res.url) {
-                    results.push(res);
-                }
-            }
+            extend_unique(&mut results, crate_results, limit);
         }
 
         // 4. GitHub Repositories (for finding official packages, libraries, tools)
         if results.len() < limit
             && let Ok(gh_results) = search_github(query, limit).await
         {
-            for res in gh_results {
-                if results.len() >= limit {
-                    break;
-                }
-                if !results.iter().any(|r: &WebSearchResult| r.url == res.url) {
-                    results.push(res);
-                }
-            }
+            extend_unique(&mut results, gh_results, limit);
         }
 
         // 5. Wikipedia Opensearch fallback
         if results.len() < limit
             && let Ok(wiki_results) = search_wikipedia_opensearch(query, limit).await
         {
-            for res in wiki_results {
-                if results.len() >= limit {
-                    break;
-                }
-                if !results.iter().any(|r: &WebSearchResult| r.url == res.url) {
-                    results.push(res);
-                }
-            }
+            extend_unique(&mut results, wiki_results, limit);
         }
     } else {
         // General flow: Wikipedia Opensearch -> StackOverflow -> GitHub -> Wikipedia Full-Text
@@ -541,42 +514,21 @@ pub async fn search_web_internal(
         if results.len() < limit
             && let Ok(wiki_results) = search_wikipedia_opensearch(query, limit).await
         {
-            for res in wiki_results {
-                if results.len() >= limit {
-                    break;
-                }
-                if !results.iter().any(|r: &WebSearchResult| r.url == res.url) {
-                    results.push(res);
-                }
-            }
+            extend_unique(&mut results, wiki_results, limit);
         }
 
         // 3. StackOverflow
         if results.len() < limit
             && let Ok(so_results) = search_stackoverflow(query, limit).await
         {
-            for res in so_results {
-                if results.len() >= limit {
-                    break;
-                }
-                if !results.iter().any(|r: &WebSearchResult| r.url == res.url) {
-                    results.push(res);
-                }
-            }
+            extend_unique(&mut results, so_results, limit);
         }
 
         // 4. GitHub Repositories
         if results.len() < limit
             && let Ok(gh_results) = search_github(query, limit).await
         {
-            for res in gh_results {
-                if results.len() >= limit {
-                    break;
-                }
-                if !results.iter().any(|r: &WebSearchResult| r.url == res.url) {
-                    results.push(res);
-                }
-            }
+            extend_unique(&mut results, gh_results, limit);
         }
     }
 
@@ -584,18 +536,22 @@ pub async fn search_web_internal(
     if results.len() < limit {
         let remaining = limit - results.len();
         if let Ok(wiki_results) = search_wikipedia_fulltext(query, remaining).await {
-            for res in wiki_results {
-                if results.len() >= limit {
-                    break;
-                }
-                if !results.iter().any(|r: &WebSearchResult| r.url == res.url) {
-                    results.push(res);
-                }
-            }
+            extend_unique(&mut results, wiki_results, limit);
         }
     }
 
     Ok(results)
+}
+
+fn extend_unique(results: &mut Vec<WebSearchResult>, incoming: Vec<WebSearchResult>, limit: usize) {
+    for result in incoming {
+        if results.len() >= limit {
+            break;
+        }
+        if !results.iter().any(|existing| existing.url == result.url) {
+            results.push(result);
+        }
+    }
 }
 
 /// Search DuckDuckGo Instant Answer JSON API.
@@ -1008,23 +964,6 @@ fn decode_html_entities(s: &str) -> String {
         .replace("&gt;", ">")
         .replace("&nbsp;", " ")
         .replace("&amp;", "&")
-}
-
-/// URL encode query parameter components.
-pub fn url_encode(input: &str) -> String {
-    let mut encoded = String::with_capacity(input.len() * 2);
-    for byte in input.bytes() {
-        match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char);
-            }
-            b' ' => encoded.push('+'),
-            _ => {
-                encoded.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    encoded
 }
 
 #[cfg(test)]

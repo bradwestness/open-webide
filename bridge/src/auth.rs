@@ -1,5 +1,6 @@
 use crate::ServerConfig;
-use openwebide_auth::{constant_time_eq, verify_token_at};
+use crate::secret::constant_time_eq;
+use openwebide_auth::verify_token_at;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {

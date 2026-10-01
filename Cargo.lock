@@ -1543,6 +1543,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spin-sdk",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

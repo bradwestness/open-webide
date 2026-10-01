@@ -10,9 +10,11 @@ mod error;
 mod files;
 mod git;
 mod http_client;
+mod mime;
 mod router;
 mod sse;
 mod state;
+mod url;
 mod web;
 
 use spin_sdk::http::{IntoResponse, Request};

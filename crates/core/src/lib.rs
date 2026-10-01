@@ -160,7 +160,7 @@ pub struct ChatSession {
     pub project_id: Option<i64>,
     /// The owning user, once accounts exist.
     #[serde(default)]
-    pub user_id: Option<i64>,
+    pub user_id: Option<UserId>,
     pub created_at: i64,
 }
 
@@ -972,11 +972,34 @@ impl UserRole {
     }
 }
 
+/// The identity of a local user account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct UserId(i64);
+
+impl UserId {
+    #[must_use]
+    pub const fn new(id: i64) -> Self {
+        Self(id)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for UserId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// A local user account. The password hash is internal to storage and is
 /// never exposed through this type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
-    pub id: i64,
+    pub id: UserId,
     pub username: String,
     pub role: UserRole,
     pub created_at: i64,
@@ -997,7 +1020,7 @@ pub struct Project {
     /// The owning user, once accounts exist. `None` for projects created
     /// before auth was introduced (reassigned to the first registered user).
     #[serde(default)]
-    pub user_id: Option<i64>,
+    pub user_id: Option<UserId>,
     pub created_at: i64,
 }
 

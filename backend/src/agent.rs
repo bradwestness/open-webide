@@ -74,10 +74,13 @@ impl CancelCheck for CancelFlag {
         let session_id = self.session_id;
         let started_ms = self.started_ms;
         async move {
-            store
-                .cancel_requested_since(session_id, started_ms)
-                .await
-                .unwrap_or(false)
+            match store.cancel_requested_since(session_id, started_ms).await {
+                Ok(cancelled) => cancelled,
+                Err(error) => {
+                    eprintln!("session {session_id}: cancel_requested_since: {error}");
+                    false
+                }
+            }
         }
     }
 }
@@ -121,21 +124,21 @@ impl PermissionGate for PermissionPoller {
         async move {
             let started = Instant::now();
             loop {
-                if let Some(decision) = store
-                    .take_tool_permission(session_id, &tool_call_id)
-                    .await
-                    .unwrap_or(None)
-                {
-                    return decision;
+                match store.take_tool_permission(session_id, &tool_call_id).await {
+                    Ok(Some(decision)) => return decision,
+                    Ok(None) => {}
+                    Err(error) => eprintln!(
+                        "session {session_id}: take_tool_permission {tool_call_id}: {error}"
+                    ),
                 }
                 // A cancel landing while waiting also denies the call; the
                 // loop re-checks the cancel flag and reports `Cancelled`.
-                if store
-                    .cancel_requested_since(session_id, started_ms)
-                    .await
-                    .unwrap_or(false)
-                {
-                    return false;
+                match store.cancel_requested_since(session_id, started_ms).await {
+                    Ok(true) => return false,
+                    Ok(false) => {}
+                    Err(error) => {
+                        eprintln!("session {session_id}: cancel_requested_since: {error}")
+                    }
                 }
                 if started.elapsed() >= timeout {
                     return false;
@@ -205,15 +208,18 @@ fn map_agent_events(
             let (store, session_id, mut display_anchor, mut events, mut last_usage, mut reasoning) =
                 state;
             let Some(event) = events.next().await else {
-                let _ = store
+                if let Err(error) = store
                     .clear_tool_permissions_for_run(session_id, anchor_id)
-                    .await;
+                    .await
+                {
+                    eprintln!("session {session_id}: clear_tool_permissions_for_run: {error}");
+                }
                 return None;
             };
             let sse = match event {
                 AgentEvent::ToolCall { id, name, summary } => {
                     last_usage = None;
-                    let _ = store
+                    if let Err(error) = store
                         .upsert_tool_step(
                             session_id,
                             display_anchor,
@@ -223,7 +229,10 @@ fn map_agent_events(
                             now(),
                             None,
                         )
-                        .await;
+                        .await
+                    {
+                        eprintln!("session {session_id}: upsert_tool_step: {error}");
+                    }
                     RunEvent::ToolCall { id, name, summary }
                 }
                 AgentEvent::PermissionRequest {
@@ -234,7 +243,7 @@ fn map_agent_events(
                     note,
                 } => {
                     last_usage = None;
-                    let _ = store
+                    if let Err(error) = store
                         .upsert_tool_step(
                             session_id,
                             display_anchor,
@@ -244,7 +253,10 @@ fn map_agent_events(
                             now(),
                             diff.as_ref(),
                         )
-                        .await;
+                        .await
+                    {
+                        eprintln!("session {session_id}: upsert_tool_step: {error}");
+                    }
                     RunEvent::PermissionRequest {
                         id,
                         name,
@@ -260,9 +272,12 @@ fn map_agent_events(
                     summary,
                     diff,
                 } => {
-                    let _ = store
+                    if let Err(error) = store
                         .complete_tool_step(session_id, &id, ok, &summary, diff.as_ref())
-                        .await;
+                        .await
+                    {
+                        eprintln!("session {session_id}: complete_tool_step: {error}");
+                    }
                     RunEvent::ToolResult {
                         id,
                         name,
@@ -503,7 +518,14 @@ mod tests {
         futures::executor::block_on(async {
             let (store, session_id) = test_store().await;
             let other = store
-                .create_session("other", None, None, None, 1, 1)
+                .create_session(
+                    "other",
+                    None,
+                    None,
+                    None,
+                    openwebide_core::UserId::new(1),
+                    1,
+                )
                 .await
                 .unwrap();
             for (session, id) in [

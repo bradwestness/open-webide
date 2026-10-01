@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Refactor backend routing and typed errors; hide internal 500 details, surface project lookup failures, and accept raw binary file writes.
+
 - Show streamed model reasoning and mark replies cut off by the output token limit; omit prior reasoning from model context.
 
 - Preserve binary Git HEAD contents and hide Revert with a clear binary-file notice in text diffs.

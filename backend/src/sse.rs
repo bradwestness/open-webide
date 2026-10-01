@@ -80,6 +80,46 @@ struct StreamState {
     reasoning: String,
     usage: Option<TurnTelemetry>,
     done: bool,
+    cancel_poll: CancelPoll,
+}
+
+#[derive(Default)]
+struct CancelPoll {
+    last: Option<std::time::Instant>,
+}
+
+impl CancelPoll {
+    fn due(&mut self, now: std::time::Instant) -> bool {
+        if self.last.is_some_and(|last| {
+            now.saturating_duration_since(last) < std::time::Duration::from_millis(250)
+        }) {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
+impl StreamState {
+    async fn cancelled(&mut self) -> bool {
+        if !self.cancel_poll.due(std::time::Instant::now()) {
+            return false;
+        }
+        match self
+            .store
+            .cancel_requested_since(self.session_id, self.started_ms)
+            .await
+        {
+            Ok(cancelled) => cancelled,
+            Err(error) => {
+                eprintln!(
+                    "session {}: cancel_requested_since: {error}",
+                    self.session_id
+                );
+                false
+            }
+        }
+    }
 }
 
 /// Build the SSE event stream for one sent message: the user message, the
@@ -107,6 +147,7 @@ pub fn message_stream(
         reasoning: String::new(),
         usage: None,
         done: false,
+        cancel_poll: CancelPoll::default(),
     };
     let machine = stream::unfold(state, |mut state| async move {
         if state.done {
@@ -115,15 +156,10 @@ pub fn message_stream(
         loop {
             return match state.chunks.as_mut().next().await {
                 Some(Ok(StreamChunk::Delta(delta))) => {
-                    // Poll the cancel flag as each delta arrives; a cancel
+                    // Poll at most every 250 ms as deltas arrive; a cancel
                     // requested by a separate request ends the stream with
                     // `Cancelled`, and the triggering delta is not sent.
-                    if state
-                        .store
-                        .cancel_requested_since(state.session_id, state.started_ms)
-                        .await
-                        .unwrap_or(false)
-                    {
+                    if state.cancelled().await {
                         state.done = true;
                         Some((RunEvent::Cancelled, state))
                     } else {
@@ -132,12 +168,7 @@ pub fn message_stream(
                     }
                 }
                 Some(Ok(StreamChunk::Reasoning(content))) => {
-                    if state
-                        .store
-                        .cancel_requested_since(state.session_id, state.started_ms)
-                        .await
-                        .unwrap_or(false)
-                    {
+                    if state.cancelled().await {
                         state.done = true;
                         Some((RunEvent::Cancelled, state))
                     } else {
@@ -234,6 +265,18 @@ mod tests {
     use super::*;
     use futures::executor::block_on;
     use openwebide_core::UserRole;
+
+    #[test]
+    fn cancel_poll_is_throttled() {
+        let mut poll = CancelPoll::default();
+        let start = std::time::Instant::now();
+        assert!(poll.due(start));
+        assert!(!poll.due(start));
+        assert!(!poll.due(start + std::time::Duration::from_millis(249)));
+        assert!(poll.due(start + std::time::Duration::from_millis(250)));
+        assert!(!poll.due(start + std::time::Duration::from_millis(499)));
+        assert!(poll.due(start + std::time::Duration::from_millis(500)));
+    }
 
     #[test]
     fn frames_encode_tagged_run_events() {

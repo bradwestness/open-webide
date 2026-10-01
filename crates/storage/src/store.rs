@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, NewConnection, NewProject,
-    Project, ProviderKind, Role, SystemPrompt, ToolCall, ToolStep, TurnTelemetry, User, UserRole,
-    WorkspaceMode,
+    Project, ProviderKind, Role, SystemPrompt, ToolCall, ToolStep, TurnTelemetry, User, UserId,
+    UserRole, WorkspaceMode,
 };
 
 use crate::db::{Db, DbValue, QueryRow};
@@ -19,7 +19,7 @@ pub struct Store<D: Db> {
 /// the API never returns it (it maps to [`User`], which omits it).
 #[derive(Debug, Clone)]
 pub struct UserRecord {
-    pub id: i64,
+    pub id: UserId,
     pub username: String,
     pub password_hash: String,
     pub role: UserRole,
@@ -92,7 +92,7 @@ impl<D: Db> Store<D> {
 
             if let Some(row) = rows.rows.into_iter().next() {
                 Ok(Some(UserRecord {
-                    id: row.get_int(0)?,
+                    id: UserId::new(row.get_int(0)?),
                     username: row.get_text(1)?.into(),
                     password_hash: row.get_text(2)?.into(),
                     role: UserRole::parse(row.get_text(3)?).unwrap_or(UserRole::User),
@@ -147,12 +147,12 @@ impl<D: Db> Store<D> {
         res.rows.first().map(user_from_row).transpose()
     }
 
-    pub async fn get_user(&self, id: i64) -> Result<Option<UserRecord>, StorageError> {
+    pub async fn get_user(&self, id: UserId) -> Result<Option<UserRecord>, StorageError> {
         let res = self
             .db
             .execute(
                 &format!("SELECT {} FROM users WHERE id = ?", Self::USER_COLUMNS),
-                &[DbValue::Int(id)],
+                &[DbValue::Int(id.get())],
             )
             .await?;
         res.rows.first().map(user_from_row).transpose()
@@ -184,12 +184,12 @@ impl<D: Db> Store<D> {
 
     /// Give the first registered user ownership of any projects created
     /// before accounts existed.
-    pub async fn reassign_orphaned_projects(&self, user_id: i64) -> Result<u64, StorageError> {
+    pub async fn reassign_orphaned_projects(&self, user_id: UserId) -> Result<u64, StorageError> {
         let res = self
             .db
             .execute(
                 "UPDATE projects SET user_id = ? WHERE user_id IS NULL",
-                &[DbValue::Int(user_id)],
+                &[DbValue::Int(user_id.get())],
             )
             .await?;
         Ok(res.changes)
@@ -197,12 +197,12 @@ impl<D: Db> Store<D> {
 
     /// Give the first registered user ownership of any sessions created before
     /// accounts existed, so pre-auth chat history isn't lost to scoping.
-    pub async fn reassign_orphaned_sessions(&self, user_id: i64) -> Result<u64, StorageError> {
+    pub async fn reassign_orphaned_sessions(&self, user_id: UserId) -> Result<u64, StorageError> {
         let res = self
             .db
             .execute(
                 "UPDATE sessions SET user_id = ? WHERE user_id IS NULL",
-                &[DbValue::Int(user_id)],
+                &[DbValue::Int(user_id.get())],
             )
             .await?;
         Ok(res.changes)
@@ -280,14 +280,14 @@ impl<D: Db> Store<D> {
 
     pub async fn get_user_setting(
         &self,
-        user_id: i64,
+        user_id: UserId,
         key: &str,
     ) -> Result<Option<String>, StorageError> {
         let res = self
             .db
             .execute(
                 "SELECT value FROM user_settings WHERE user_id = ? AND key = ?",
-                &[DbValue::Int(user_id), DbValue::Text(key.into())],
+                &[DbValue::Int(user_id.get()), DbValue::Text(key.into())],
             )
             .await?;
         Ok(res
@@ -298,7 +298,7 @@ impl<D: Db> Store<D> {
 
     pub async fn set_user_setting(
         &self,
-        user_id: i64,
+        user_id: UserId,
         key: &str,
         value: &str,
     ) -> Result<(), StorageError> {
@@ -307,7 +307,7 @@ impl<D: Db> Store<D> {
                 "INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)
                  ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
                 &[
-                    DbValue::Int(user_id),
+                    DbValue::Int(user_id.get()),
                     DbValue::Text(key.into()),
                     DbValue::Text(value.into()),
                 ],
@@ -318,13 +318,13 @@ impl<D: Db> Store<D> {
 
     pub async fn all_user_settings(
         &self,
-        user_id: i64,
+        user_id: UserId,
     ) -> Result<BTreeMap<String, String>, StorageError> {
         let res = self
             .db
             .execute(
                 "SELECT key, value FROM user_settings WHERE user_id = ? ORDER BY key",
-                &[DbValue::Int(user_id)],
+                &[DbValue::Int(user_id.get())],
             )
             .await?;
         let mut map = BTreeMap::new();
@@ -549,7 +549,7 @@ impl<D: Db> Store<D> {
 
     const PROJECT_COLUMNS: &'static str = "id, name, mode, path, user_id, created_at";
 
-    pub async fn list_projects(&self, user_id: i64) -> Result<Vec<Project>, StorageError> {
+    pub async fn list_projects(&self, user_id: UserId) -> Result<Vec<Project>, StorageError> {
         let res = self
             .db
             .execute(
@@ -557,13 +557,13 @@ impl<D: Db> Store<D> {
                     "SELECT {} FROM projects WHERE user_id = ? ORDER BY id",
                     Self::PROJECT_COLUMNS
                 ),
-                &[DbValue::Int(user_id)],
+                &[DbValue::Int(user_id.get())],
             )
             .await?;
         res.rows.iter().map(project_from_row).collect()
     }
 
-    pub async fn get_project(&self, id: i64, user_id: i64) -> Result<Project, StorageError> {
+    pub async fn get_project(&self, id: i64, user_id: UserId) -> Result<Project, StorageError> {
         let res = self
             .db
             .execute(
@@ -571,7 +571,7 @@ impl<D: Db> Store<D> {
                     "SELECT {} FROM projects WHERE id = ? AND user_id = ?",
                     Self::PROJECT_COLUMNS
                 ),
-                &[DbValue::Int(id), DbValue::Int(user_id)],
+                &[DbValue::Int(id), DbValue::Int(user_id.get())],
             )
             .await?;
         res.rows
@@ -584,7 +584,7 @@ impl<D: Db> Store<D> {
     pub async fn create_project(
         &self,
         new: &NewProject,
-        user_id: i64,
+        user_id: UserId,
         created_at: i64,
     ) -> Result<Project, StorageError> {
         // Re-opening a folder that already has a project returns that
@@ -601,7 +601,7 @@ impl<D: Db> Store<D> {
                         DbValue::Text(new.name.clone()),
                         DbValue::Text(new.mode.as_str().into()),
                         DbValue::Text(path.clone()),
-                        DbValue::Int(user_id),
+                        DbValue::Int(user_id.get()),
                         DbValue::Int(created_at),
                     ],
                 )
@@ -612,7 +612,7 @@ impl<D: Db> Store<D> {
                     "SELECT id FROM projects
                      WHERE user_id = ? AND mode = ? AND path = ?",
                     &[
-                        DbValue::Int(user_id),
+                        DbValue::Int(user_id.get()),
                         DbValue::Text(new.mode.as_str().into()),
                         DbValue::Text(path.clone()),
                     ],
@@ -634,7 +634,7 @@ impl<D: Db> Store<D> {
                     DbValue::Text(new.name.clone()),
                     DbValue::Text(new.mode.as_str().into()),
                     DbValue::Null,
-                    DbValue::Int(user_id),
+                    DbValue::Int(user_id.get()),
                     DbValue::Int(created_at),
                 ],
             )
@@ -646,7 +646,7 @@ impl<D: Db> Store<D> {
         &self,
         id: i64,
         name: &str,
-        user_id: i64,
+        user_id: UserId,
     ) -> Result<Project, StorageError> {
         let res = self
             .db
@@ -655,7 +655,7 @@ impl<D: Db> Store<D> {
                 &[
                     DbValue::Text(name.into()),
                     DbValue::Int(id),
-                    DbValue::Int(user_id),
+                    DbValue::Int(user_id.get()),
                 ],
             )
             .await?;
@@ -665,13 +665,13 @@ impl<D: Db> Store<D> {
         self.get_project(id, user_id).await
     }
 
-    pub async fn delete_project(&self, id: i64, user_id: i64) -> Result<(), StorageError> {
+    pub async fn delete_project(&self, id: i64, user_id: UserId) -> Result<(), StorageError> {
         self.db
             .transaction(|tx| async move {
                 let check = tx
                     .execute(
                         "SELECT 1 FROM projects WHERE id = ? AND user_id = ?",
-                        &[DbValue::Int(id), DbValue::Int(user_id)],
+                        &[DbValue::Int(id), DbValue::Int(user_id.get())],
                     )
                     .await?;
                 if check.rows.is_empty() {
@@ -680,7 +680,7 @@ impl<D: Db> Store<D> {
 
                 tx.execute(
                     "DELETE FROM projects WHERE id = ? AND user_id = ?",
-                    &[DbValue::Int(id), DbValue::Int(user_id)],
+                    &[DbValue::Int(id), DbValue::Int(user_id.get())],
                 )
                 .await?;
 
@@ -697,7 +697,7 @@ impl<D: Db> Store<D> {
     const SESSION_COLUMNS: &'static str =
         "id, name, connection_id, system_prompt_id, project_id, user_id, created_at";
 
-    pub async fn list_sessions(&self, user_id: i64) -> Result<Vec<ChatSession>, StorageError> {
+    pub async fn list_sessions(&self, user_id: UserId) -> Result<Vec<ChatSession>, StorageError> {
         let res = self
             .db
             .execute(
@@ -705,7 +705,7 @@ impl<D: Db> Store<D> {
                     "SELECT {} FROM sessions WHERE user_id = ? ORDER BY id",
                     Self::SESSION_COLUMNS
                 ),
-                &[DbValue::Int(user_id)],
+                &[DbValue::Int(user_id.get())],
             )
             .await?;
         res.rows.iter().map(session_from_row).collect()
@@ -714,7 +714,7 @@ impl<D: Db> Store<D> {
     pub async fn list_sessions_for_project(
         &self,
         project_id: i64,
-        user_id: i64,
+        user_id: UserId,
     ) -> Result<Vec<ChatSession>, StorageError> {
         let res = self
             .db
@@ -723,13 +723,13 @@ impl<D: Db> Store<D> {
                     "SELECT {} FROM sessions WHERE project_id = ? AND user_id = ? ORDER BY id",
                     Self::SESSION_COLUMNS
                 ),
-                &[DbValue::Int(project_id), DbValue::Int(user_id)],
+                &[DbValue::Int(project_id), DbValue::Int(user_id.get())],
             )
             .await?;
         res.rows.iter().map(session_from_row).collect()
     }
 
-    pub async fn get_session(&self, id: i64, user_id: i64) -> Result<ChatSession, StorageError> {
+    pub async fn get_session(&self, id: i64, user_id: UserId) -> Result<ChatSession, StorageError> {
         let res = self
             .db
             .execute(
@@ -737,7 +737,7 @@ impl<D: Db> Store<D> {
                     "SELECT {} FROM sessions WHERE id = ? AND user_id = ?",
                     Self::SESSION_COLUMNS
                 ),
-                &[DbValue::Int(id), DbValue::Int(user_id)],
+                &[DbValue::Int(id), DbValue::Int(user_id.get())],
             )
             .await?;
         res.rows
@@ -753,7 +753,7 @@ impl<D: Db> Store<D> {
         connection_id: Option<i64>,
         system_prompt_id: Option<i64>,
         project_id: Option<i64>,
-        user_id: i64,
+        user_id: UserId,
         created_at: i64,
     ) -> Result<ChatSession, StorageError> {
         if let Some(p) = project_id {
@@ -769,7 +769,7 @@ impl<D: Db> Store<D> {
                     connection_id.map(DbValue::Int).unwrap_or(DbValue::Null),
                     system_prompt_id.map(DbValue::Int).unwrap_or(DbValue::Null),
                     project_id.map(DbValue::Int).unwrap_or(DbValue::Null),
-                    DbValue::Int(user_id),
+                    DbValue::Int(user_id.get()),
                     DbValue::Int(created_at),
                 ],
             )
@@ -781,7 +781,7 @@ impl<D: Db> Store<D> {
         &self,
         id: i64,
         name: &str,
-        user_id: i64,
+        user_id: UserId,
     ) -> Result<ChatSession, StorageError> {
         let res = self
             .db
@@ -790,7 +790,7 @@ impl<D: Db> Store<D> {
                 &[
                     DbValue::Text(name.into()),
                     DbValue::Int(id),
-                    DbValue::Int(user_id),
+                    DbValue::Int(user_id.get()),
                 ],
             )
             .await?;
@@ -800,12 +800,12 @@ impl<D: Db> Store<D> {
         self.get_session(id, user_id).await
     }
 
-    pub async fn delete_session(&self, id: i64, user_id: i64) -> Result<(), StorageError> {
+    pub async fn delete_session(&self, id: i64, user_id: UserId) -> Result<(), StorageError> {
         let res = self
             .db
             .execute(
                 "DELETE FROM sessions WHERE id = ? AND user_id = ?",
-                &[DbValue::Int(id), DbValue::Int(user_id)],
+                &[DbValue::Int(id), DbValue::Int(user_id.get())],
             )
             .await?;
         if res.changes == 0 {
@@ -1182,11 +1182,11 @@ impl<D: Db> Store<D> {
         Ok(())
     }
 
-    pub async fn bump_token_epoch(&self, user_id: i64) -> Result<(), StorageError> {
+    pub async fn bump_token_epoch(&self, user_id: UserId) -> Result<(), StorageError> {
         self.db
             .execute(
                 "UPDATE users SET token_epoch = token_epoch + 1 WHERE id = ?",
-                &[DbValue::Int(user_id)],
+                &[DbValue::Int(user_id.get())],
             )
             .await?;
         Ok(())
@@ -1234,7 +1234,7 @@ fn session_from_row(row: &QueryRow) -> Result<ChatSession, StorageError> {
         connection_id: opt_int(row, 2, "connection_id")?,
         system_prompt_id: opt_int(row, 3, "system_prompt_id")?,
         project_id: opt_int(row, 4, "project_id")?,
-        user_id: opt_int(row, 5, "user_id")?,
+        user_id: opt_int(row, 5, "user_id")?.map(UserId::new),
         created_at: row.get_int(6)?,
     })
 }
@@ -1247,7 +1247,7 @@ fn project_from_row(row: &QueryRow) -> Result<Project, StorageError> {
         mode: WorkspaceMode::parse(mode)
             .ok_or_else(|| StorageError::InvalidValue(format!("unknown workspace mode: {mode}")))?,
         path: row.get_text_opt(3).map(str::to_string),
-        user_id: opt_int(row, 4, "user_id")?,
+        user_id: opt_int(row, 4, "user_id")?.map(UserId::new),
         created_at: row.get_int(5)?,
     })
 }
@@ -1255,7 +1255,7 @@ fn project_from_row(row: &QueryRow) -> Result<Project, StorageError> {
 fn user_from_row(row: &QueryRow) -> Result<UserRecord, StorageError> {
     let role = row.get_text(3)?;
     Ok(UserRecord {
-        id: row.get_int(0)?,
+        id: UserId::new(row.get_int(0)?),
         username: row.get_text(1)?.to_string(),
         password_hash: row.get_text(2)?.to_string(),
         role: UserRole::parse(role)
@@ -1338,7 +1338,7 @@ mod tests {
     /// Create a user and return its id, for tests that need scoped data.
     /// Call this *before* the test's `block_on` block (it runs its own
     /// executor, so it must not be nested inside one).
-    fn test_user(store: &Store<RusqliteDb>, username: &str, role: UserRole) -> i64 {
+    fn test_user(store: &Store<RusqliteDb>, username: &str, role: UserRole) -> UserId {
         block_on(async {
             store
                 .insert_user(username, "hash", role, 1)
@@ -2128,7 +2128,7 @@ mod tests {
                 .unwrap();
 
             let user = UserRecord {
-                id: user,
+                id: UserId::new(user),
                 username: "alice".into(),
                 password_hash: "hash".into(),
                 role: UserRole::Admin,
@@ -2203,7 +2203,7 @@ mod tests {
                 .unwrap();
 
             let user = UserRecord {
-                id: user,
+                id: UserId::new(user),
                 username: "alice".into(),
                 password_hash: "hash".into(),
                 role: UserRole::Admin,
@@ -2218,7 +2218,7 @@ mod tests {
                     DbValue::Text("dup1".into()),
                     DbValue::Text("remote".into()),
                     DbValue::Text("repos/dup".into()),
-                    DbValue::Int(user.id),
+                    DbValue::Int(user.id.get()),
                     DbValue::Int(100),
                 ],
             ).await.unwrap();
@@ -2237,7 +2237,7 @@ mod tests {
                     DbValue::Text("dup2".into()),
                     DbValue::Text("remote".into()),
                     DbValue::Text("repos/dup".into()),
-                    DbValue::Int(user.id),
+                    DbValue::Int(user.id.get()),
                     DbValue::Int(200),
                 ],
             ).await.unwrap();
@@ -2256,7 +2256,7 @@ mod tests {
                 &[
                     DbValue::Text("session-on-dup".into()),
                     DbValue::Int(p2_id),
-                    DbValue::Int(user.id),
+                    DbValue::Int(user.id.get()),
                     DbValue::Int(250),
                 ],
             ).await.unwrap();
@@ -2306,7 +2306,7 @@ mod tests {
                 .unwrap();
 
             let user = UserRecord {
-                id: user,
+                id: UserId::new(user),
                 username: "alice".into(),
                 password_hash: "hash".into(),
                 role: UserRole::Admin,
@@ -2320,7 +2320,7 @@ mod tests {
                     DbValue::Text("app".into()),
                     DbValue::Text("remote".into()),
                     DbValue::Text("workspace/foo".into()),
-                    DbValue::Int(user.id),
+                    DbValue::Int(user.id.get()),
                     DbValue::Int(100),
                 ],
             ).await.unwrap();
@@ -2366,7 +2366,7 @@ mod tests {
                 .unwrap();
 
             let user = UserRecord {
-                id: user,
+                id: UserId::new(user),
                 username: "alice".into(),
                 password_hash: "hash".into(),
                 role: UserRole::Admin,
@@ -2379,7 +2379,7 @@ mod tests {
                     DbValue::Text("app".into()),
                     DbValue::Text("remote".into()),
                     DbValue::Text("workspace/foo".into()),
-                    DbValue::Int(user.id),
+                    DbValue::Int(user.id.get()),
                     DbValue::Int(100),
                 ],
             ).await.unwrap();
@@ -2419,7 +2419,7 @@ mod tests {
                 .unwrap();
 
             let user = UserRecord {
-                id: user,
+                id: UserId::new(user),
                 username: "alice".into(),
                 password_hash: "hash".into(),
                 role: UserRole::Admin,
@@ -2433,7 +2433,7 @@ mod tests {
                     DbValue::Text("app".into()),
                     DbValue::Text("remote".into()),
                     DbValue::Text("foo".into()),
-                    DbValue::Int(user.id),
+                    DbValue::Int(user.id.get()),
                     DbValue::Int(100),
                 ],
             ).await.unwrap();
@@ -2443,7 +2443,7 @@ mod tests {
                     DbValue::Text("app-old".into()),
                     DbValue::Text("remote".into()),
                     DbValue::Text("workspace/foo".into()),
-                    DbValue::Int(user.id),
+                    DbValue::Int(user.id.get()),
                     DbValue::Int(200),
                 ],
             ).await.unwrap();

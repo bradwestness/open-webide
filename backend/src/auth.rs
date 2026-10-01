@@ -7,7 +7,22 @@
 //! components are otherwise stateless).
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use openwebide_core::User;
+use openwebide_core::{User, UserId, UserRole};
+
+#[derive(Debug, Clone, Copy)]
+pub struct AuthedUser {
+    pub id: UserId,
+    pub role: UserRole,
+}
+
+impl From<User> for AuthedUser {
+    fn from(user: User) -> Self {
+        Self {
+            id: user.id,
+            role: user.role,
+        }
+    }
+}
 use rand::Rng;
 use spin_sdk::http::HeaderMap;
 
@@ -98,14 +113,14 @@ async fn get_or_create_secret(state: &AppState) -> Result<String, ApiError> {
 /// Sign a bearer token for `user_id`, valid until `now + TOKEN_TTL_SECS`.
 fn sign_token(
     secret: &str,
-    user_id: i64,
+    user_id: UserId,
     now: Option<i64>,
     epoch: i64,
 ) -> Result<String, ApiError> {
     let now = now.ok_or_else(|| ApiError::internal("system clock unavailable"))?;
     Ok(openwebide_auth::sign_token_expires(
         secret,
-        user_id,
+        user_id.get(),
         now + TOKEN_TTL_SECS,
         epoch,
     ))
@@ -131,19 +146,20 @@ pub async fn issue_token(
     sign_token(&secret, user.id, unix_now_checked(), user.token_epoch)
 }
 
-fn bridge_principal(headers: &HeaderMap, secret: Option<&str>) -> Result<Option<i64>, ApiError> {
+fn bridge_principal(headers: &HeaderMap, secret: Option<&str>) -> Result<Option<UserId>, ApiError> {
     let Some(auth) = headers.get("authorization") else {
         return Ok(None);
     };
     let token = auth.to_str().ok().and_then(|a| a.strip_prefix("Bearer "));
-    if !matches!((token, secret), (Some(token), Some(secret)) if openwebide_auth::constant_time_eq(token.as_bytes(), secret.as_bytes()))
+    if !matches!((token, secret), (Some(token), Some(secret)) if constant_time_eq(token.as_bytes(), secret.as_bytes()))
     {
         return Err(ApiError::unauthorized("invalid bridge secret"));
     }
     let user_id = headers
         .get("x-openwebide-user")
         .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.parse().ok())
+        .and_then(|s| s.parse::<i64>().ok())
+        .map(UserId::new)
         .ok_or_else(|| ApiError::unauthorized("missing acting user"))?;
     Ok(Some(user_id))
 }
@@ -172,7 +188,7 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<User,
 
     let user = state
         .store
-        .get_user(claims.user_id)
+        .get_user(UserId::new(claims.user_id))
         .await?
         .ok_or_else(|| ApiError::unauthorized("unknown user"))?;
 
@@ -187,6 +203,14 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<User,
 mod tests {
     use super::*;
     use spin_sdk::http::HeaderMap;
+
+    #[test]
+    fn shared_secret_comparison() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"Secret"));
+        assert!(!constant_time_eq(b"secret", b"secret-more"));
+        assert!(constant_time_eq(b"", b""));
+    }
 
     #[test]
     fn bridge_authentication_table_and_cookie_path() {
@@ -270,4 +294,11 @@ mod tests {
             "owide_session=t; Path=/api; HttpOnly; SameSite=Strict; Max-Age=2592000; Secure"
         );
     }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

@@ -92,11 +92,22 @@ impl ApiError {
         }
     }
 
+    pub fn log_for_route(&self, method: &str, path: &str) {
+        if self.status == 500 {
+            eprintln!("{method} {path}: {self:#}");
+        }
+    }
+
     /// Build the JSON error response. A plain method (not an `IntoResponse`
     /// impl) so that `Result<T, ApiError>` handlers can convert it
     /// explicitly.
     pub fn into_response(self) -> JsonResp {
-        let body = json!({ "error": self.message }).to_string();
+        let message = if self.status == 500 {
+            "internal error"
+        } else {
+            &self.message
+        };
+        let body = json!({ "error": message }).to_string();
         Response::builder()
             .status(self.status)
             .header("content-type", "application/json")
@@ -105,12 +116,19 @@ impl ApiError {
     }
 }
 
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 impl From<openwebide_storage::StorageError> for ApiError {
     fn from(err: openwebide_storage::StorageError) -> Self {
         match err {
             openwebide_storage::StorageError::NotFound(msg) => Self::not_found(msg),
             openwebide_storage::StorageError::Conflict(msg) => Self::conflict(msg),
-            other => Self::internal(other.to_string()),
+            internal @ (openwebide_storage::StorageError::InvalidValue(_)
+            | openwebide_storage::StorageError::Db(_)) => Self::internal(internal.to_string()),
         }
     }
 }
@@ -125,22 +143,22 @@ impl From<openwebide_llm::ProviderError> for ApiError {
     }
 }
 
+impl From<crate::files::FsError> for ApiError {
+    fn from(err: crate::files::FsError) -> Self {
+        use crate::files::FsError;
+        let status = match &err {
+            FsError::Reserved(_) | FsError::PathEscape(_) | FsError::TooLarge { .. } => 400,
+            FsError::AlreadyExists(_) => 409,
+            FsError::NotFound(_) => 404,
+            FsError::Io(_) => 500,
+        };
+        Self::new(status, err.to_string())
+    }
+}
+
 impl From<anyhow::Error> for ApiError {
     fn from(err: anyhow::Error) -> Self {
-        let msg = err.to_string();
-        if msg.contains("already exists in workspace") {
-            Self::conflict(msg)
-        } else if msg.contains("escapes the workspace root") || msg.contains("is reserved") {
-            Self::bad_request(msg)
-        } else if msg.contains("filesystem error: NoEntry")
-            || msg.contains("not found in workspace")
-        {
-            Self::not_found(msg)
-        } else if msg.contains("not valid UTF-8") || msg.contains("too large to read") {
-            Self::bad_request(msg)
-        } else {
-            Self::internal(msg)
-        }
+        Self::internal(format!("{err:#}"))
     }
 }
 
@@ -174,8 +192,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn filesystem_status_table() {
+        use crate::files::FsError;
+        for (error, status) in [
+            (FsError::Reserved(".spin".into()), 400),
+            (FsError::AlreadyExists("a".into()), 409),
+            (FsError::NotFound("a".into()), 404),
+            (FsError::TooLarge { size: 11, max: 10 }, 400),
+            (FsError::PathEscape("../a".into()), 400),
+            (FsError::Io("disk failed".into()), 500),
+        ] {
+            let error: ApiError = error.into();
+            assert_eq!(error.status, status);
+        }
+    }
+
+    #[test]
+    fn storage_status_table() {
+        use openwebide_storage::StorageError;
+        for (error, status) in [
+            (StorageError::Db("db failed".into()), 500),
+            (StorageError::InvalidValue("invalid row".into()), 500),
+            (StorageError::NotFound("missing".into()), 404),
+            (StorageError::Conflict("duplicate".into()), 409),
+        ] {
+            let error: ApiError = error.into();
+            assert_eq!(error.status, status);
+        }
+    }
+
+    #[test]
+    fn internal_response_hides_detail_retained_for_logging() {
+        use http_body_util::BodyExt;
+        futures::executor::block_on(async {
+            let error = ApiError::internal("database password and query detail");
+            assert_eq!(format!("{error:#}"), "database password and query detail");
+            error.log_for_route("GET", "/api/settings");
+            let response = error.into_response();
+            assert_eq!(response.status().as_u16(), 500);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                json!({"error": "internal error"})
+            );
+        });
+    }
+
+    #[test]
     fn already_exists_in_workspace_maps_to_409() {
-        let err: ApiError = anyhow::anyhow!("already exists in workspace: src/main.rs").into();
+        let err: ApiError = crate::files::FsError::AlreadyExists("src/main.rs".into()).into();
         let resp = err.into_response();
         assert_eq!(resp.status().as_u16(), 409);
     }

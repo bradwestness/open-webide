@@ -137,7 +137,7 @@ mod tests {
         Owner::new().with(|| {
             let auth = AuthState::new();
             auth.set_user(User {
-                id: 1,
+                id: openwebide_core::UserId::new(1),
                 username: "alice".into(),
                 role: UserRole::User,
                 created_at: 0,
@@ -159,7 +159,7 @@ mod tests {
         Owner::new().with(|| {
             let auth = AuthState::new();
             auth.set_user(User {
-                id: 1,
+                id: openwebide_core::UserId::new(1),
                 username: "alice".into(),
                 role: UserRole::User,
                 created_at: 0,
@@ -181,7 +181,7 @@ mod tests {
                 name: "project".into(),
                 mode: WorkspaceMode::Remote,
                 path: None,
-                user_id: Some(1),
+                user_id: Some(openwebide_core::UserId::new(1)),
                 created_at: 0,
             }]);
             projects.open_tab_ids.set(vec![1]);
@@ -243,7 +243,7 @@ mod tests {
                 connection_id: Some(3),
                 system_prompt_id: None,
                 project_id: Some(1),
-                user_id: Some(1),
+                user_id: Some(openwebide_core::UserId::new(1)),
                 created_at: 0,
             }]);
             chat.prompt_history.set(vec!["private prompt".into()]);

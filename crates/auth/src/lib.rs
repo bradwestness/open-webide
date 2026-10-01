@@ -26,6 +26,10 @@ pub enum AuthError {
 pub const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$xD6DXNOs9E1M48yIXKg2kA$x4Fk1NzUT6CR+hHX6OW+KEPpDKgduAl5IicLVX/Au4I";
 
 /// Hash a password with argon2id.
+///
+/// # Errors
+/// Returns an error if the hashing parameters or password hashing fail.
+#[must_use = "password hashing errors must be handled"]
 pub fn hash_password(password: &str) -> Result<String, AuthError> {
     use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version};
     // 16 random bytes as the salt; `hash_password_with_salt` base64-encodes them
@@ -41,6 +45,7 @@ pub fn hash_password(password: &str) -> Result<String, AuthError> {
 }
 
 /// Verify a password against a stored argon2id hash.
+#[must_use]
 pub fn verify_password(password: &str, hash: &str) -> bool {
     use argon2::{Argon2, PasswordVerifier, password_hash::phc::PasswordHash};
     PasswordHash::new(hash)
@@ -54,6 +59,7 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 }
 
 /// Run exactly one argon2 verify. Returns false if `hash` is None, but runs a verify against `DUMMY_HASH` to prevent timing attacks.
+#[must_use]
 pub fn verify_password_or_dummy(password: &str, hash: Option<&str>) -> bool {
     let actual_hash = hash.unwrap_or(DUMMY_HASH);
     let ok = verify_password(password, actual_hash);
@@ -61,6 +67,7 @@ pub fn verify_password_or_dummy(password: &str, hash: Option<&str>) -> bool {
 }
 
 /// Calculate lockout seconds based on consecutive failures.
+#[must_use]
 pub fn lockout_secs(failures: i64) -> i64 {
     if failures < 5 {
         0
@@ -76,6 +83,7 @@ pub struct TokenClaims {
 }
 
 /// Sign a bearer token for `user_id` and `epoch`, valid until `expires_at` (unix seconds).
+#[must_use]
 pub fn sign_token_expires(secret: &str, user_id: i64, expires_at: i64, epoch: i64) -> String {
     let payload = format!("{user_id}.{expires_at}.{epoch}");
     let signature = hmac(secret, payload.as_bytes());
@@ -88,13 +96,15 @@ pub fn sign_token_expires(secret: &str, user_id: i64, expires_at: i64, epoch: i6
 
 /// Verify a bearer token at time `now` (unix seconds), returning the claims
 /// if the signature is valid and the token is unexpired.
+#[must_use]
 pub fn verify_token_at(secret: &str, token: &str, now: i64) -> Option<TokenClaims> {
     let (payload_b64, sig_b64) = token.split_once('.')?;
     let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
     let payload = std::str::from_utf8(&payload_bytes).ok()?;
-    let expected = hmac(secret, payload.as_bytes());
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(payload.as_bytes());
     let actual = URL_SAFE_NO_PAD.decode(sig_b64).ok()?;
-    if !constant_time_eq(&expected, &actual) {
+    if mac.verify_slice(&actual).is_err() {
         return None;
     }
     let parts: Vec<&str> = payload.split('.').collect();
@@ -115,19 +125,31 @@ fn hmac(secret: &str, payload: &[u8]) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-/// Constant-time byte comparison to avoid a timing side-channel.
-pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const NOW: i64 = 1_000_000;
+
+    #[test]
+    fn malformed_tokens_are_rejected() {
+        for token in ["", "no-dot", ".", "***.***", "a.b.c", "eA.", "_w.eA"] {
+            assert!(verify_token_at("secret", token, NOW).is_none(), "{token}");
+        }
+        for payload in [
+            "bad.1000100.2",
+            "7.bad.2",
+            "7.1000100.bad",
+            "7.1000100.2.extra",
+        ] {
+            let token = format!(
+                "{}.{}",
+                URL_SAFE_NO_PAD.encode(payload),
+                URL_SAFE_NO_PAD.encode(hmac("secret", payload.as_bytes()))
+            );
+            assert!(verify_token_at("secret", &token, NOW).is_none());
+        }
+    }
 
     #[test]
     fn token_roundtrip() {

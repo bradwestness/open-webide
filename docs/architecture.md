@@ -76,8 +76,14 @@ All repository logic is tested natively against an in-memory rusqlite DB.
 
 ### `backend`
 
-A single `#[http_service]` entry point; routing is manual on
-`(method, path)`. Each request opens a fresh DB connection (Spin components
+A single `#[http_service]` entry point dispatches through a segment router, matching
+HTTP methods and path slices. Handlers live in `backend/src/api/{auth,connections,
+prompts,settings,projects,files,git,sessions,chat,web,bridge}.rs`; query parameters
+are percent-decoded once per request. The router authenticates once and passes
+`AuthedUser` to protected handlers. Storage and backend use the transparent
+`UserId` type; bridge wire IDs remain integers. Typed filesystem, bridge, and
+storage errors convert explicitly to `ApiError`; 500 responses say "internal error"
+and log the route and full detail. Each request opens a fresh DB connection (Spin components
 are stateless) and checks the schema version (migrations are version-gated,
 so an up-to-date schema costs one read). Handlers:
 
@@ -92,9 +98,8 @@ so an up-to-date schema costs one read). Handlers:
 | `GET /api/models?connection_id=N` | models from a provider (501 until HTTP lands) |
 | `POST /api/chat`         | one-shot chat (501 until HTTP lands) |
 
-Responses are JSON built with `serde_json` into `http::Response<String>`
-(http-body implements `Body` for `String`). CORS is permissive so the
-frontend can be served from a different origin during development.
+JSON and SSE responses share `http::Response<BoxBody>`. Development CORS
+allows the frontend on `localhost:8080` and `127.0.0.1:8080`.
 
 ### `frontend`
 

@@ -1,7 +1,6 @@
 //! Per-request application state.
 
 use anyhow::Context;
-use openwebide_core::User;
 use openwebide_storage::Store;
 
 #[cfg(target_family = "wasm")]
@@ -14,10 +13,6 @@ pub type AppDb = openwebide_storage::rusqlite_db::RusqliteDb;
 /// user_version`, so an up-to-date schema costs a single read per request.
 pub struct AppState {
     pub store: Store<AppDb>,
-    /// The authenticated account for this request, set by the router after
-    /// verifying the bearer token. `None` on public routes (health,
-    /// register, login).
-    pub current_user: Option<User>,
 }
 
 impl AppState {
@@ -33,10 +28,7 @@ impl AppState {
             .migrate_with(&crate::files::dir_exists)
             .await
             .context("apply schema migrations")?;
-        Ok(Self {
-            store,
-            current_user: None,
-        })
+        Ok(Self { store })
     }
 }
 

@@ -4,11 +4,25 @@
 //! in spin.toml). Every path the API receives is resolved against that root;
 //! any path that would escape it is rejected.
 
-use anyhow::{Context, Result};
+type Result<T, E = FsError> = std::result::Result<T, E>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum FsError {
+    #[error("path {0:?} is reserved")]
+    Reserved(String),
+    #[error("already exists in workspace: {0}")]
+    AlreadyExists(String),
+    #[error("not found in workspace: {0}")]
+    NotFound(String),
+    #[error("file is too large to read ({size} bytes, max {max})")]
+    TooLarge { size: u64, max: u64 },
+    #[error("path {0:?} escapes the workspace root")]
+    PathEscape(String),
+    #[error("{0}")]
+    Io(String),
+}
 use openwebide_core::{
-    FileEntry, SearchHit, Vfs, VfsError, VfsFuture,
-    file_type::extension,
-    find_content_matches, normalize_vfs_path,
+    FileEntry, SearchHit, Vfs, VfsError, VfsFuture, find_content_matches, normalize_vfs_path,
     vfs::{SearchOptions, skip_dir},
 };
 
@@ -20,16 +34,19 @@ use crate::wasi::filesystem::types::{
 /// Upper bound on a single file read, so a huge file can't blow up memory.
 pub(crate) const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
 
-fn fs_error(code: ErrorCode) -> anyhow::Error {
-    anyhow::anyhow!("filesystem error: {code:?}")
+fn fs_error(code: ErrorCode) -> FsError {
+    match code {
+        ErrorCode::NoEntry => FsError::NotFound("entry".into()),
+        other => FsError::Io(format!("filesystem error: {other:?}")),
+    }
 }
 
 /// Like [`fs_error`] but names the path, so a missing entry reads as
 /// "not found in workspace: <path>" instead of a bare WASI code.
-fn fs_error_at(code: ErrorCode, path: &str) -> anyhow::Error {
+fn fs_error_at(code: ErrorCode, path: &str) -> FsError {
     match code {
-        ErrorCode::NoEntry => anyhow::anyhow!("not found in workspace: {path}"),
-        other => anyhow::anyhow!("filesystem error: {other:?} (at {path})"),
+        ErrorCode::NoEntry => FsError::NotFound(path.into()),
+        other => FsError::Io(format!("filesystem error: {other:?} (at {path})")),
     }
 }
 
@@ -39,7 +56,9 @@ fn root() -> Result<Descriptor> {
         .into_iter()
         .next()
         .map(|(d, _)| d)
-        .ok_or_else(|| anyhow::anyhow!("no preopened directory; add a `files` mount to spin.toml"))
+        .ok_or_else(|| {
+            FsError::Io("no preopened directory; add a `files` mount to spin.toml".into())
+        })
 }
 
 pub trait PathResolver {
@@ -73,7 +92,7 @@ impl<'a> PathResolver for WasiResolver<'a> {
 /// absolute paths, etc.) or enter a reserved directory like `.spin`.
 pub async fn sanitize(resolver: &impl PathResolver, rel: &str) -> Result<String> {
     if rel.starts_with('/') {
-        return Err(anyhow::anyhow!("path {rel:?} escapes the workspace root"));
+        return Err(FsError::PathEscape(rel.into()));
     }
 
     let mut parts: Vec<String> = rel.split('/').map(|s| s.to_string()).collect();
@@ -89,12 +108,12 @@ pub async fn sanitize(resolver: &impl PathResolver, rel: &str) -> Result<String>
         }
         if comp == ".." {
             if resolved.pop().is_none() {
-                return Err(anyhow::anyhow!("path {rel:?} escapes the workspace root"));
+                return Err(FsError::PathEscape(rel.into()));
             }
             continue;
         }
         if comp == ".spin" {
-            return Err(anyhow::anyhow!("path {rel:?} is reserved"));
+            return Err(FsError::Reserved(rel.into()));
         }
 
         let test_path = if resolved.is_empty() {
@@ -107,10 +126,10 @@ pub async fn sanitize(resolver: &impl PathResolver, rel: &str) -> Result<String>
             Ok(target) => {
                 iterations += 1;
                 if iterations > MAX_SYMLINK_EXPANSIONS {
-                    return Err(anyhow::anyhow!("too many levels of symbolic links"));
+                    return Err(FsError::Io("too many levels of symbolic links".into()));
                 }
                 if target.starts_with('/') {
-                    return Err(anyhow::anyhow!("path {rel:?} escapes the workspace root"));
+                    return Err(FsError::PathEscape(rel.into()));
                 }
                 let mut target_parts: Vec<String> =
                     target.split('/').map(|s| s.to_string()).collect();
@@ -279,10 +298,10 @@ pub async fn read_bytes(rel: &str) -> Result<Vec<u8>> {
         .await
         .map_err(|code| fs_error_at(code, &rel))?;
     if st.size > MAX_READ_BYTES {
-        return Err(anyhow::anyhow!(
-            "file is too large to read ({size} bytes, max {MAX_READ_BYTES})",
-            size = st.size
-        ));
+        return Err(FsError::TooLarge {
+            size: st.size,
+            max: MAX_READ_BYTES,
+        });
     }
     // Note: file_at_read will re-sanitize, which is slightly inefficient but safe.
     let file = file_at_read(&rel).await?;
@@ -295,33 +314,10 @@ pub async fn read_bytes(rel: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Infer MIME content type from file path extension.
-pub fn mime_type_from_path(path: &str) -> &'static str {
-    let ext = extension(path).unwrap_or_default();
-    match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "svg" => "image/svg+xml",
-        "webp" => "image/webp",
-        "ico" => "image/x-icon",
-        "bmp" => "image/bmp",
-        "avif" => "image/avif",
-        "html" | "htm" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "text/javascript; charset=utf-8",
-        "json" => "application/json",
-        "wasm" => "application/wasm",
-        "pdf" => "application/pdf",
-        "txt" | "md" | "rs" | "py" | "toml" | "yaml" | "yml" => "text/plain; charset=utf-8",
-        _ => "application/octet-stream",
-    }
-}
-
 /// Read a file's contents as UTF-8 text.
 pub async fn read(rel: &str) -> Result<String> {
     let bytes = read_bytes(rel).await?;
-    String::from_utf8(bytes).context("file is not valid UTF-8")
+    String::from_utf8(bytes).map_err(|_| FsError::Io("file is not valid UTF-8".into()))
 }
 
 /// Write `bytes` to `file` by streaming them through a component-model
@@ -347,10 +343,10 @@ async fn write_stream(file: &Descriptor, bytes: Vec<u8>) -> Result<()> {
 
     let remaining = writer.write_all(bytes).await;
     if !remaining.is_empty() {
-        return Err(anyhow::anyhow!(
+        return Err(FsError::Io(format!(
             "stream closed before all {total} bytes were written ({} delivered)",
             total - remaining.len()
-        ));
+        )));
     }
 
     drop(writer);
@@ -360,10 +356,10 @@ async fn write_stream(file: &Descriptor, bytes: Vec<u8>) -> Result<()> {
     }
 }
 
-/// Write `content` to a file, creating it (and parent dirs) if needed.
-pub async fn write(rel: &str, content: &str) -> Result<()> {
+/// Write `bytes` to a file, creating it (and parent dirs) if needed.
+pub async fn write(rel: &str, bytes: &[u8]) -> Result<()> {
     let file = file_at_write(rel).await?;
-    write_stream(&file, content.as_bytes().to_vec()).await
+    write_stream(&file, bytes.to_vec()).await
 }
 
 /// Create an empty file or a directory at `rel`.
@@ -391,9 +387,7 @@ pub async fn create(rel: &str, is_dir: bool) -> Result<()> {
             )
             .await
             .map_err(|code| match code {
-                ErrorCode::Exist => {
-                    anyhow::anyhow!("already exists in workspace: {rel}")
-                }
+                ErrorCode::Exist => FsError::AlreadyExists(rel.clone()),
                 other => fs_error_at(other, &rel),
             })?;
         write_stream(&file, Vec::new()).await
@@ -437,10 +431,12 @@ pub async fn delete(rel: &str) -> Result<()> {
         None => ("", rel),
     };
     if leaf.is_empty() || leaf == "." || leaf == ".." {
-        return Err(anyhow::anyhow!("invalid path component: {leaf:?}"));
+        return Err(FsError::Io(format!("invalid path component: {leaf:?}")));
     }
     if leaf.contains('/') {
-        return Err(anyhow::anyhow!("leaf name must not contain '/': {leaf:?}"));
+        return Err(FsError::Io(format!(
+            "leaf name must not contain '/': {leaf:?}"
+        )));
     }
 
     // Resolve the *parent* through sanitize so its `.spin`/escape checks run.
@@ -678,16 +674,12 @@ impl HostFsVfs {
     }
 }
 
-fn map_vfs_err(e: anyhow::Error) -> VfsError {
-    let msg = e.to_string();
-    if msg.contains("already exists") {
-        VfsError::AlreadyExists(msg)
-    } else if msg.contains("not found") {
-        VfsError::NotFound(msg)
-    } else if msg.contains("escapes") {
-        VfsError::PathEscape(msg)
-    } else {
-        VfsError::Io(msg)
+fn map_vfs_err(e: FsError) -> VfsError {
+    match e {
+        FsError::AlreadyExists(path) => VfsError::AlreadyExists(path),
+        FsError::NotFound(path) => VfsError::NotFound(path),
+        FsError::PathEscape(path) | FsError::Reserved(path) => VfsError::PathEscape(path),
+        other => VfsError::Io(other.to_string()),
     }
 }
 
@@ -702,7 +694,7 @@ impl Vfs for HostFsVfs {
     fn write<'a>(&'a self, path: &'a str, content: &'a str) -> VfsFuture<'a, ()> {
         Box::pin(async move {
             let full = self.resolve(path)?;
-            write(&full, content).await.map_err(map_vfs_err)
+            write(&full, content.as_bytes()).await.map_err(map_vfs_err)
         })
     }
 
@@ -768,7 +760,11 @@ impl Vfs for HostFsVfs {
     fn canonicalize<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
         Box::pin(async move {
             let full = self.resolve(path)?;
-            let resolved = canonicalize_path(&full).await.map_err(map_vfs_err)?;
+            let root = root().map_err(map_vfs_err)?;
+            let resolver = WasiResolver::new(&root);
+            let resolved = canonicalize_path(&resolver, &full)
+                .await
+                .map_err(map_vfs_err)?;
             Ok(self.strip_base(&resolved))
         })
     }
@@ -776,10 +772,8 @@ impl Vfs for HostFsVfs {
 
 /// Resolve symbolic links along `rel` (relative to the preopened workspace root)
 /// and return the normalized canonical path.
-pub async fn canonicalize_path(rel: &str) -> Result<String> {
-    let root = root()?;
-    let resolver = WasiResolver::new(&root);
-    sanitize(&resolver, rel).await
+pub async fn canonicalize_path(resolver: &impl PathResolver, rel: &str) -> Result<String> {
+    sanitize(resolver, rel).await
 }
 
 #[cfg(test)]
@@ -799,6 +793,26 @@ mod tests {
                 Err(ErrorCode::Invalid) // treat everything else as not-a-symlink
             }
         }
+    }
+
+    #[test]
+    fn canonicalize_symlink_parent_targets() {
+        futures::executor::block_on(async {
+            let resolver = FakeResolver {
+                symlinks: HashMap::from([
+                    ("dir/safe".into(), "../target".into()),
+                    ("dir/escape".into(), "../../outside".into()),
+                ]),
+            };
+            assert_eq!(
+                canonicalize_path(&resolver, "dir/safe/file").await.unwrap(),
+                "target/file"
+            );
+            assert!(matches!(
+                canonicalize_path(&resolver, "dir/escape/file").await,
+                Err(FsError::PathEscape(_))
+            ));
+        });
     }
 
     #[test]
