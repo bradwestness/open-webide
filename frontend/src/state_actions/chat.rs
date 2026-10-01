@@ -166,8 +166,8 @@ impl ChatActions {
             })
         };
 
-        let apply_stream_event =
-            Callback::new(move |(session_id, event): (i64, crate::sse::SseEvent)| {
+        let apply_stream_event = Callback::new(
+            move |(session_id, event): (i64, openwebide_core::RunEvent)| {
                 let run_project_id = chat
                     .sessions
                     .get_untracked()
@@ -199,7 +199,8 @@ impl ChatActions {
                         }
                     }
                 }
-            });
+            },
+        );
         let runs =
             super::runs::RunActions::new(bridge, chat, api, apply_stream_event, run_controls);
         runs.install_reconnect();

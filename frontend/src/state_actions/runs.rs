@@ -8,7 +8,6 @@ use crate::{
     backend::Api,
     bridge::{BridgeConn, BridgeStatus},
     conversation::{ConversationItem, merge_snapshot, notice},
-    sse::SseEvent,
     state::chat::ChatState,
 };
 
@@ -71,7 +70,7 @@ pub struct RunActions {
     pub bridge: RwSignal<Option<BridgeConn>, LocalStorage>,
     pub chat: ChatState,
     pub api: Api,
-    pub apply: Callback<(i64, SseEvent)>,
+    pub apply: Callback<(i64, RunEvent)>,
     pub history: RwSignal<Option<(i64, u64)>>,
     controls: StoredValue<RunControls, LocalStorage>,
     listing: StoredValue<Option<(BridgeConn, String)>, LocalStorage>,
@@ -82,7 +81,7 @@ impl RunActions {
         bridge: RwSignal<Option<BridgeConn>, LocalStorage>,
         chat: ChatState,
         api: Api,
-        apply: Callback<(i64, SseEvent)>,
+        apply: Callback<(i64, RunEvent)>,
         controls: StoredValue<RunControls, LocalStorage>,
     ) -> Self {
         Self {
@@ -202,7 +201,7 @@ impl RunActions {
                             controls.decisions.insert(id.clone());
                         });
                     }
-                    self.apply.run((session_id, event.into()));
+                    self.apply.run((session_id, event));
                 }
                 BridgeServerMessage::RunSnapshot {
                     session_id: snapshot_session,
@@ -278,7 +277,7 @@ impl RunActions {
                             if let Some(result) = &step.result {
                                 self.apply.run((
                                     session_id,
-                                    SseEvent::ToolResult {
+                                    RunEvent::ToolResult {
                                         id: step.id.clone(),
                                         name: step.name.clone(),
                                         ok: result.ok,
@@ -303,7 +302,7 @@ impl RunActions {
                             {
                                 self.apply.run((
                                     session_id,
-                                    SseEvent::PermissionRequest {
+                                    RunEvent::PermissionRequest {
                                         id: step.id.clone(),
                                         name: step.name.clone(),
                                         summary: step.summary.clone(),
@@ -320,7 +319,7 @@ impl RunActions {
                     }
                     if let Some(event) = snapshot.finished {
                         ended = true;
-                        self.apply.run((session_id, event.into()));
+                        self.apply.run((session_id, event));
                     }
                 }
                 BridgeServerMessage::RunRejected { code, message, .. } => {

@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use openwebide_core::ModelInfo;
-use openwebide_frontend::{sse::SseEvent, testing::fake_backend::Call};
+use openwebide_core::RunEvent;
+use openwebide_frontend::testing::fake_backend::Call;
 use wasm_bindgen_test::*;
 
 use super::support::{chat_view, mount_test, settle};
@@ -23,7 +24,9 @@ async fn model_dropdown_uses_default_and_sends_selected_model() {
             .fake
             .scripted_events
             .borrow_mut()
-            .push_back(vec![SseEvent::Delta("answer".into())]);
+            .push_back(vec![RunEvent::Delta {
+                content: "answer".into(),
+            }]);
         chat_view(state)
     });
     settle().await;

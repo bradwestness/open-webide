@@ -192,6 +192,12 @@ Browser local-mode agent loops still execute against the browser's directory han
 completions stream over the bridge. Without run support, chat executes in the backend over SSE
 and local-mode completions use `/api/chat-tools`.
 
+Chat and agent streams share core's `RunEvent` type across SSE, WebSocket runs, and browser
+local-mode execution. SSE frames use `event: <kind>` and `data: <tagged RunEvent JSON>`, followed
+by a blank line. For example, `event: delta` carries `{"kind":"delta","content":"hi"}`;
+message and done events wrap the persisted message in `message`. The frontend parses the data's
+`kind` tag. Frontend and backend must be deployed together for this frame format.
+
 Sending waits up to about two seconds for a connecting bridge. Unavailable or unauthorized
 bridges fall back silently. A project unavailable to the bridge shows a notice and falls back;
 busy or failed run plans show an error. Stops and approvals address the active WS run. History

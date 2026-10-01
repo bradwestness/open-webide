@@ -9,12 +9,13 @@ use std::time::{Duration, Instant};
 
 use crate::files::HostFsVfs;
 use crate::http_client::SpinHttpClient;
-use crate::sse::SseEvent;
 use crate::state::now;
 use futures::{Stream, StreamExt, stream};
 use openwebide_agent::{AgentConfig, AgentEvent, CancelCheck, PermissionGate};
 use openwebide_agent::{VfsToolExecutor, vfs_tools};
-use openwebide_core::{ChatMessage, ChatRequest, Role, ToolCall, ToolDefinition, TurnTelemetry};
+use openwebide_core::{
+    ChatMessage, ChatRequest, Role, RunEvent, ToolCall, ToolDefinition, TurnTelemetry,
+};
 use openwebide_llm::registry::Provider;
 use openwebide_storage::Store;
 
@@ -113,7 +114,7 @@ pub fn agent_stream(
     config: AgentConfig,
     cancel: CancelFlag,
     gate: PermissionPoller,
-) -> Pin<Box<dyn Stream<Item = SseEvent> + Send + 'static>> {
+) -> Pin<Box<dyn Stream<Item = RunEvent> + Send + 'static>> {
     let executor = VfsToolExecutor::with_web_and_bridge(
         HostFsVfs::new(base.clone()),
         crate::web::SpinWebClient,
@@ -123,7 +124,12 @@ pub fn agent_stream(
     let events =
         openwebide_agent::run(provider, executor, request, config, cancel, gate, anchor_id);
     let tail = map_agent_events(store, session_id, anchor_id, events);
-    Box::pin(stream::iter([SseEvent::Message(user_message)]).chain(tail))
+    Box::pin(
+        stream::iter([RunEvent::Message {
+            message: user_message,
+        }])
+        .chain(tail),
+    )
 }
 
 fn map_agent_events(
@@ -131,7 +137,7 @@ fn map_agent_events(
     session_id: i64,
     anchor_id: i64,
     events: impl Stream<Item = AgentEvent> + Send + 'static,
-) -> impl Stream<Item = SseEvent> + Send {
+) -> impl Stream<Item = RunEvent> + Send {
     let events = Box::pin(events);
     let display_anchor = anchor_id;
     let last_usage: Option<TurnTelemetry> = None;
@@ -153,14 +159,14 @@ fn map_agent_events(
                     let _ = store
                         .upsert_tool_step(session_id, display_anchor, &id, &name, &summary, now())
                         .await;
-                    SseEvent::ToolCall { id, name, summary }
+                    RunEvent::ToolCall { id, name, summary }
                 }
                 AgentEvent::PermissionRequest { id, name, summary } => {
                     last_usage = None;
                     let _ = store
                         .upsert_tool_step(session_id, display_anchor, &id, &name, &summary, now())
                         .await;
-                    SseEvent::PermissionRequest { id, name, summary }
+                    RunEvent::PermissionRequest { id, name, summary }
                 }
                 AgentEvent::ToolResult {
                     id,
@@ -172,7 +178,7 @@ fn map_agent_events(
                     let _ = store
                         .complete_tool_step(session_id, &id, ok, &summary, diff.as_ref())
                         .await;
-                    SseEvent::ToolResult {
+                    RunEvent::ToolResult {
                         id,
                         name,
                         ok,
@@ -180,7 +186,7 @@ fn map_agent_events(
                         diff,
                     }
                 }
-                AgentEvent::TextDelta(delta) => SseEvent::Delta(delta),
+                AgentEvent::TextDelta(delta) => RunEvent::Delta { content: delta },
                 AgentEvent::TurnText(text) => {
                     let usage = last_usage.take();
                     let message = store
@@ -208,11 +214,11 @@ fn map_agent_events(
                             usage,
                         },
                     };
-                    SseEvent::Interim(message)
+                    RunEvent::Interim { message }
                 }
                 AgentEvent::Telemetry(usage) => {
                     last_usage = Some(usage);
-                    SseEvent::Telemetry(usage)
+                    RunEvent::Telemetry { usage }
                 }
                 AgentEvent::FinalText(text) => match store
                     .insert_message_with_usage(
@@ -224,11 +230,13 @@ fn map_agent_events(
                     )
                     .await
                 {
-                    Ok(message) => SseEvent::Done(message),
-                    Err(error) => SseEvent::Error(format!("failed to save reply: {error}")),
+                    Ok(message) => RunEvent::Done { message },
+                    Err(error) => RunEvent::Error {
+                        message: format!("failed to save reply: {error}"),
+                    },
                 },
-                AgentEvent::Cancelled => SseEvent::Cancelled,
-                AgentEvent::Error(message) => SseEvent::Error(message),
+                AgentEvent::Cancelled => RunEvent::Cancelled,
+                AgentEvent::Error(message) => RunEvent::Error { message },
             };
             Some((sse, (store, session_id, display_anchor, events, last_usage)))
         },
@@ -304,21 +312,24 @@ mod tests {
                 map_agent_events(store.clone(), session.id, anchor_id, stream::iter(events))
                     .collect::<Vec<_>>()
                     .await;
-            assert!(matches!(&mapped[1], SseEvent::Delta(text) if text == "checking"));
-            assert!(matches!(&mapped[2], SseEvent::Telemetry(usage) if *usage == first_usage));
-            let SseEvent::Interim(interim) = &mapped[3] else {
+            assert!(matches!(&mapped[1], RunEvent::Delta { content: text } if text == "checking"));
+            assert!(matches!(&mapped[2], RunEvent::Telemetry { usage } if *usage == first_usage));
+            let RunEvent::Interim { message: interim } = &mapped[3] else {
                 panic!("missing interim")
             };
             assert_eq!(interim.content, "checking");
             assert_eq!(interim.usage, Some(first_usage));
-            assert!(matches!(&mapped[4], SseEvent::PermissionRequest { id, .. } if id == &after));
+            assert!(matches!(&mapped[4], RunEvent::PermissionRequest { id, .. } if id == &after));
             let steps = store.list_tool_steps(session.id).await.unwrap();
             assert_eq!(steps[0].tool_call_id, before);
             assert_eq!(steps[0].anchor_message_id, anchor_id);
             assert_eq!(steps[1].tool_call_id, after);
             assert_eq!(steps[1].anchor_message_id, interim.id);
             assert_eq!(steps[1].ok, Some(true));
-            let SseEvent::Done(final_message) = mapped.last().unwrap() else {
+            let RunEvent::Done {
+                message: final_message,
+            } = mapped.last().unwrap()
+            else {
                 panic!("missing final")
             };
             assert_eq!(final_message.usage, Some(last_usage));
@@ -379,7 +390,7 @@ mod tests {
                 let mapped = map_agent_events(store.clone(), session.id, 7, stream::iter(events))
                     .collect::<Vec<_>>()
                     .await;
-                let SseEvent::Done(reply) = mapped.last().unwrap() else {
+                let RunEvent::Done { message: reply } = mapped.last().unwrap() else {
                     panic!("missing final")
                 };
                 assert_eq!(reply.content, partial);
@@ -408,7 +419,7 @@ mod tests {
             .collect::<Vec<_>>()
             .await;
             assert!(
-                matches!(&mapped[0], SseEvent::Interim(message) if message.id == 0 && message.content == "checking")
+                matches!(&mapped[0], RunEvent::Interim { message } if message.id == 0 && message.content == "checking")
             );
         });
     }

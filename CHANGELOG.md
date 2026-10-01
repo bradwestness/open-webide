@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Unify SSE and WebSocket chat events in one shared protocol; deploy frontend and backend together.
+
 - Use the bridge for frontend chat and local completion streaming, with SSE fallback, run resume, and project availability notices.
 
 - Add bridge-hosted chat/agent runs and streamed completions, with reconnect replay, cancellation, approvals, and TLS enabled by default.

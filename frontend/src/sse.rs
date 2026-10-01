@@ -1,124 +1,14 @@
-use openwebide_core::{ChatMessage, FileDiff, TurnTelemetry};
+use openwebide_core::RunEvent;
 
-/// A server-sent event from the message stream.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SseEvent {
-    /// A completed message, emitted immediately for the user message and
-    /// once at the end of a non-streaming run.
-    Message(ChatMessage),
-    /// A token delta appended to the in-progress assistant reply.
-    Delta(String),
-    /// The agent requested a tool call.
-    ToolCall {
-        id: String,
-        name: String,
-        summary: String,
-    },
-    /// A gated tool call is waiting for the user's approval; a
-    /// `ToolResult` follows once the decision is in (either way).
-    PermissionRequest {
-        id: String,
-        name: String,
-        summary: String,
-    },
-    /// A tool call finished.
-    ToolResult {
-        id: String,
-        #[allow(dead_code)]
-        name: String,
-        ok: bool,
-        summary: String,
-        diff: Option<FileDiff>,
-    },
-    /// The final, persisted assistant reply.
-    Done(ChatMessage),
-    /// Persisted text preceding tool calls; the run continues.
-    Interim(ChatMessage),
-    /// Telemetry metrics for the turn.
-    Telemetry(TurnTelemetry),
-    /// The run was cancelled; the stream ends after this.
-    Cancelled,
-    /// A provider or persistence error; the stream ends after this.
-    Error(String),
-}
-
-impl From<openwebide_core::RunEvent> for SseEvent {
-    fn from(event: openwebide_core::RunEvent) -> Self {
-        use openwebide_core::RunEvent;
-        match event {
-            RunEvent::Message { message } => Self::Message(message),
-            RunEvent::Delta { content } => Self::Delta(content),
-            RunEvent::Interim { message } => Self::Interim(message),
-            RunEvent::ToolCall { id, name, summary } => Self::ToolCall { id, name, summary },
-            RunEvent::PermissionRequest { id, name, summary } => {
-                Self::PermissionRequest { id, name, summary }
-            }
-            RunEvent::ToolResult {
-                id,
-                name,
-                ok,
-                summary,
-                diff,
-            } => Self::ToolResult {
-                id,
-                name,
-                ok,
-                summary,
-                diff,
-            },
-            RunEvent::Telemetry { usage } => Self::Telemetry(usage),
-            RunEvent::Done { message } => Self::Done(message),
-            RunEvent::Cancelled => Self::Cancelled,
-            RunEvent::Error { message } => Self::Error(message),
-        }
-    }
-}
-
-/// Parse one SSE frame (`event: <name>\ndata: <json>\n\n`) into an [`SseEvent`].
-pub fn parse_frame(frame: &str) -> Option<SseEvent> {
-    let mut event = "message";
+/// Parse the tagged run event in an SSE frame's data, ignoring the event line.
+pub fn parse_frame(frame: &str) -> Option<RunEvent> {
     let mut data = String::new();
     for line in frame.lines() {
-        if let Some(v) = line.strip_prefix("event: ") {
-            event = v.trim();
-        } else if let Some(v) = line.strip_prefix("data: ") {
-            data.push_str(v.trim());
+        if let Some(value) = line.strip_prefix("data: ") {
+            data.push_str(value.trim());
         }
     }
-    let value: serde_json::Value = serde_json::from_str(&data).ok()?;
-    parse_event(event, value)
-}
-
-pub fn parse_event(event: &str, value: serde_json::Value) -> Option<SseEvent> {
-    Some(match event {
-        "message" => SseEvent::Message(serde_json::from_value(value).ok()?),
-        "delta" => SseEvent::Delta(value.get("content")?.as_str()?.to_string()),
-        "tool_call" => SseEvent::ToolCall {
-            id: value.get("id")?.as_str()?.to_string(),
-            name: value.get("name")?.as_str()?.to_string(),
-            summary: value.get("summary")?.as_str()?.to_string(),
-        },
-        "permission_request" => SseEvent::PermissionRequest {
-            id: value.get("id")?.as_str()?.to_string(),
-            name: value.get("name")?.as_str()?.to_string(),
-            summary: value.get("summary")?.as_str()?.to_string(),
-        },
-        "tool_result" => SseEvent::ToolResult {
-            id: value.get("id")?.as_str()?.to_string(),
-            name: value.get("name")?.as_str()?.to_string(),
-            ok: value.get("ok")?.as_bool().unwrap_or(false),
-            summary: value.get("summary")?.as_str()?.to_string(),
-            diff: value
-                .get("diff")
-                .and_then(|d| serde_json::from_value(d.clone()).ok().flatten()),
-        },
-        "interim" => SseEvent::Interim(serde_json::from_value(value).ok()?),
-        "done" => SseEvent::Done(serde_json::from_value(value).ok()?),
-        "telemetry" => SseEvent::Telemetry(serde_json::from_value(value).ok()?),
-        "cancelled" => SseEvent::Cancelled,
-        "error" => SseEvent::Error(value.get("error")?.as_str()?.to_string()),
-        _ => return None,
-    })
+    serde_json::from_str(&data).ok()
 }
 
 pub struct FrameBuffer {
@@ -153,10 +43,10 @@ impl Default for FrameBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openwebide_core::{Role, RunEvent};
+    use openwebide_core::{ChatMessage, Role, utf8::Utf8Decoder};
 
     #[test]
-    fn typed_run_events_match_sse_events() {
+    fn backend_frames_parse_as_run_events() {
         let message = ChatMessage {
             id: 2,
             session_id: 1,
@@ -167,109 +57,60 @@ mod tests {
             tool_call_id: None,
             usage: None,
         };
-        let pairs = vec![
+        for (frame, expected) in [
             (
-                RunEvent::Message {
-                    message: message.clone(),
-                },
-                SseEvent::Message(message.clone()),
-            ),
-            (
+                "event: delta\ndata: {\"kind\":\"delta\",\"content\":\"hi\"}\n\n",
                 RunEvent::Delta {
-                    content: "a".into(),
-                },
-                SseEvent::Delta("a".into()),
-            ),
-            (
-                RunEvent::Interim {
-                    message: message.clone(),
-                },
-                SseEvent::Interim(message.clone()),
-            ),
-            (
-                RunEvent::Done {
-                    message: message.clone(),
-                },
-                SseEvent::Done(message),
-            ),
-            (
-                RunEvent::ToolCall {
-                    id: "t".into(),
-                    name: "read_file".into(),
-                    summary: "file".into(),
-                },
-                SseEvent::ToolCall {
-                    id: "t".into(),
-                    name: "read_file".into(),
-                    summary: "file".into(),
+                    content: "hi".into(),
                 },
             ),
             (
-                RunEvent::PermissionRequest {
-                    id: "t".into(),
-                    name: "write_file".into(),
-                    summary: "file".into(),
-                },
-                SseEvent::PermissionRequest {
-                    id: "t".into(),
-                    name: "write_file".into(),
-                    summary: "file".into(),
-                },
+                "event: done\ndata: {\"kind\":\"done\",\"message\":{\"id\":2,\"session_id\":1,\"role\":\"assistant\",\"content\":\"reply\",\"created_at\":0}}\n\n",
+                RunEvent::Done { message },
             ),
             (
-                RunEvent::ToolResult {
-                    id: "t".into(),
-                    name: "write_file".into(),
-                    ok: false,
-                    summary: "denied".into(),
-                    diff: Some(FileDiff {
-                        path: "file".into(),
-                        old: None,
-                        new: "text".into(),
-                        old_unavailable: false,
-                        backup_path: None,
-                    }),
-                },
-                SseEvent::ToolResult {
-                    id: "t".into(),
-                    name: "write_file".into(),
-                    ok: false,
-                    summary: "denied".into(),
-                    diff: Some(FileDiff {
-                        path: "file".into(),
-                        old: None,
-                        new: "text".into(),
-                        old_unavailable: false,
-                        backup_path: None,
-                    }),
-                },
-            ),
-            (
-                RunEvent::Telemetry {
-                    usage: TurnTelemetry {
-                        prompt_tokens: 3,
-                        completion_tokens: 4,
-                        estimated: true,
-                        eval_duration_ms: 99,
-                    },
-                },
-                SseEvent::Telemetry(TurnTelemetry {
-                    prompt_tokens: 3,
-                    completion_tokens: 4,
-                    estimated: true,
-                    eval_duration_ms: 99,
-                }),
-            ),
-            (RunEvent::Cancelled, SseEvent::Cancelled),
-            (
+                "event: error\ndata: {\"kind\":\"error\",\"message\":\"failed\"}\n\n",
                 RunEvent::Error {
-                    message: "error".into(),
+                    message: "failed".into(),
                 },
-                SseEvent::Error("error".into()),
             ),
+        ] {
+            assert_eq!(parse_frame(frame), Some(expected));
+        }
+    }
+
+    #[test]
+    fn tagged_data_determines_event_kind() {
+        assert_eq!(
+            parse_frame("event: ignored\ndata: {\"kind\":\"cancelled\"}\n\n"),
+            Some(RunEvent::Cancelled),
+        );
+        assert_eq!(parse_frame("data: {\"kind\":\"unknown\"}\n\n"), None);
+        assert_eq!(parse_frame("data: not json\n\n"), None);
+    }
+
+    #[test]
+    fn every_byte_split_preserves_utf8_and_frame_boundaries() {
+        let wire = "event: delta\ndata: {\"kind\":\"delta\",\"content\":\"café 🦀\"}\n\nevent: cancelled\ndata: {\"kind\":\"cancelled\"}\n\n";
+        let expected = vec![
+            RunEvent::Delta {
+                content: "café 🦀".into(),
+            },
+            RunEvent::Cancelled,
         ];
-        for (event, expected) in pairs {
-            assert_eq!(SseEvent::from(event), expected);
+        for split in 0..=wire.len() {
+            let mut decoder = Utf8Decoder::new();
+            let mut buffer = FrameBuffer::new();
+            let mut events = Vec::new();
+            for chunk in [&wire.as_bytes()[..split], &wire.as_bytes()[split..]] {
+                for frame in buffer.push(&decoder.push(chunk)) {
+                    events.push(parse_frame(&frame).unwrap());
+                }
+            }
+            for frame in buffer.push(&decoder.finish()) {
+                events.push(parse_frame(&frame).unwrap());
+            }
+            assert_eq!(events, expected, "split at byte {split}");
         }
     }
 }

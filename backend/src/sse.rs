@@ -17,95 +17,26 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 use http_body::{Frame, SizeHint};
-use openwebide_core::{ChatMessage, FileDiff, REPLY_TRUNCATED_MARKER, Role, TurnTelemetry};
+use openwebide_core::{ChatMessage, REPLY_TRUNCATED_MARKER, Role, RunEvent, TurnTelemetry};
 use openwebide_llm::{ProviderError, StreamChunk};
 use openwebide_storage::Store;
-use serde_json::json;
 
 use crate::state::{AppDb, now};
 
-/// One event on a chat SSE stream.
-pub enum SseEvent {
-    /// The user message that was persisted before the provider call.
-    Message(ChatMessage),
-    /// A content delta from the provider.
-    Delta(String),
-    /// The agent requested a tool call.
-    ToolCall {
-        id: String,
-        name: String,
-        summary: String,
-    },
-    /// A gated tool call is waiting for the user's approval; a
-    /// `ToolResult` follows once the decision is in (either way).
-    PermissionRequest {
-        id: String,
-        name: String,
-        summary: String,
-    },
-    /// A tool call finished.
-    ToolResult {
-        id: String,
-        name: String,
-        ok: bool,
-        summary: String,
-        diff: Option<FileDiff>,
-    },
-    /// The persisted assistant message; the stream ends after this.
-    Done(ChatMessage),
-    /// Persisted text preceding tool calls; the run continues.
-    Interim(ChatMessage),
-    /// Telemetry metrics for the turn.
-    Telemetry(TurnTelemetry),
-    /// The user cancelled the run; the stream ends after this.
-    Cancelled,
-    /// A failure; the stream ends after this.
-    Error(String),
-}
-
 /// Encode one event as an SSE frame.
-fn frame(event: &SseEvent) -> Bytes {
-    let (name, data) = match event {
-        SseEvent::Message(message) => ("message", serde_json::to_string(message).unwrap()),
-        SseEvent::Delta(delta) => ("delta", json!({ "content": delta }).to_string()),
-        SseEvent::ToolCall { id, name, summary } => (
-            "tool_call",
-            json!({ "id": id, "name": name, "summary": summary }).to_string(),
-        ),
-        SseEvent::PermissionRequest { id, name, summary } => (
-            "permission_request",
-            json!({ "id": id, "name": name, "summary": summary }).to_string(),
-        ),
-        SseEvent::ToolResult {
-            id,
-            name,
-            ok,
-            summary,
-            diff,
-        } => (
-            "tool_result",
-            json!({ "id": id, "name": name, "ok": ok, "summary": summary, "diff": diff })
-                .to_string(),
-        ),
-        SseEvent::Interim(message) => ("interim", serde_json::to_string(message).unwrap()),
-        SseEvent::Done(message) => ("done", serde_json::to_string(message).unwrap()),
-        SseEvent::Telemetry(telem) => (
-            "telemetry",
-            serde_json::to_string(telem).unwrap_or_default(),
-        ),
-        SseEvent::Cancelled => ("cancelled", "{}".to_string()),
-        SseEvent::Error(error) => ("error", json!({ "error": error }).to_string()),
-    };
+fn frame(event: &RunEvent) -> Bytes {
+    let name = event.kind_str();
+    let data = serde_json::to_string(event).unwrap();
     Bytes::from(format!("event: {name}\ndata: {data}\n\n"))
 }
 
 /// An `http_body::Body` that writes SSE frames as they are produced.
 pub struct SseBody {
-    stream: Pin<Box<dyn Stream<Item = SseEvent> + Send>>,
+    stream: Pin<Box<dyn Stream<Item = RunEvent> + Send>>,
 }
 
 impl SseBody {
-    pub fn new(stream: Pin<Box<dyn Stream<Item = SseEvent> + Send + 'static>>) -> Self {
+    pub fn new(stream: Pin<Box<dyn Stream<Item = RunEvent> + Send + 'static>>) -> Self {
         Self { stream }
     }
 }
@@ -120,7 +51,7 @@ impl http_body::Body for SseBody {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.get_mut();
         // Provider and persistence failures already surface as
-        // `SseEvent::Error` inside the stream, so every item is a frame.
+        // `RunEvent::Error` inside the stream, so every item is a frame.
         match Stream::poll_next(this.stream.as_mut(), cx) {
             Poll::Ready(Some(event)) => Poll::Ready(Some(Ok(Frame::data(frame(&event))))),
             Poll::Ready(None) => Poll::Ready(None),
@@ -163,7 +94,7 @@ pub fn message_stream(
     session_id: i64,
     user_message: ChatMessage,
     chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
-) -> Pin<Box<dyn Stream<Item = SseEvent> + Send + 'static>> {
+) -> Pin<Box<dyn Stream<Item = RunEvent> + Send + 'static>> {
     let state = StreamState {
         store,
         session_id,
@@ -189,15 +120,15 @@ pub fn message_stream(
                 {
                     state.done = true;
                     let _ = state.store.clear_cancel(state.session_id).await;
-                    Some((SseEvent::Cancelled, state))
+                    Some((RunEvent::Cancelled, state))
                 } else {
                     state.buffer.push_str(&delta);
-                    Some((SseEvent::Delta(delta), state))
+                    Some((RunEvent::Delta { content: delta }, state))
                 }
             }
             Some(Ok(StreamChunk::Usage(usage))) => {
                 state.usage = Some(usage);
-                Some((SseEvent::Telemetry(usage), state))
+                Some((RunEvent::Telemetry { usage }, state))
             }
             Some(Err(ProviderError::Incomplete)) if !state.buffer.is_empty() => {
                 // The provider cut the reply short: keep what arrived,
@@ -217,9 +148,11 @@ pub fn message_stream(
                     )
                     .await
                 {
-                    Ok(message) => Some((SseEvent::Done(message), state)),
+                    Ok(message) => Some((RunEvent::Done { message }, state)),
                     Err(error) => Some((
-                        SseEvent::Error(format!("failed to save reply: {error}")),
+                        RunEvent::Error {
+                            message: format!("failed to save reply: {error}"),
+                        },
                         state,
                     )),
                 }
@@ -227,7 +160,12 @@ pub fn message_stream(
             Some(Err(error)) => {
                 state.done = true;
                 let _ = state.store.clear_cancel(state.session_id).await;
-                Some((SseEvent::Error(error.to_string()), state))
+                Some((
+                    RunEvent::Error {
+                        message: error.to_string(),
+                    },
+                    state,
+                ))
             }
             None => {
                 // The run is over: drop the flag so a late or stale cancel
@@ -248,16 +186,23 @@ pub fn message_stream(
                     )
                     .await
                 {
-                    Ok(message) => Some((SseEvent::Done(message), state)),
+                    Ok(message) => Some((RunEvent::Done { message }, state)),
                     Err(error) => Some((
-                        SseEvent::Error(format!("failed to save reply: {error}")),
+                        RunEvent::Error {
+                            message: format!("failed to save reply: {error}"),
+                        },
                         state,
                     )),
                 }
             }
         }
     });
-    Box::pin(stream::iter([SseEvent::Message(user_message)]).chain(machine))
+    Box::pin(
+        stream::iter([RunEvent::Message {
+            message: user_message,
+        }])
+        .chain(machine),
+    )
 }
 
 #[cfg(test)]
@@ -265,6 +210,40 @@ mod tests {
     use super::*;
     use futures::executor::block_on;
     use openwebide_core::UserRole;
+
+    #[test]
+    fn frames_encode_tagged_run_events() {
+        let message = ChatMessage {
+            id: 2,
+            session_id: 1,
+            role: Role::Assistant,
+            content: "reply".into(),
+            created_at: 0,
+            tool_calls: None,
+            tool_call_id: None,
+            usage: None,
+        };
+        for (event, expected) in [
+            (
+                RunEvent::Delta {
+                    content: "hi".into(),
+                },
+                "event: delta\ndata: {\"kind\":\"delta\",\"content\":\"hi\"}\n\n",
+            ),
+            (
+                RunEvent::Done { message },
+                "event: done\ndata: {\"kind\":\"done\",\"message\":{\"id\":2,\"session_id\":1,\"role\":\"assistant\",\"content\":\"reply\",\"created_at\":0}}\n\n",
+            ),
+            (
+                RunEvent::Error {
+                    message: "failed".into(),
+                },
+                "event: error\ndata: {\"kind\":\"error\",\"message\":\"failed\"}\n\n",
+            ),
+        ] {
+            assert_eq!(frame(&event).as_ref(), expected.as_bytes());
+        }
+    }
 
     /// An in-memory store with a user and a session, for stream tests.
     async fn test_store() -> (Arc<Store<AppDb>>, i64) {
@@ -304,18 +283,18 @@ mod tests {
         Error(String),
     }
 
-    fn kind(event: &SseEvent) -> Kind {
+    fn kind(event: &RunEvent) -> Kind {
         match event {
-            SseEvent::Message(_) => Kind::Message,
-            SseEvent::Delta(d) => Kind::Delta(d.clone()),
-            SseEvent::Interim(_) => panic!("unexpected interim"),
-            SseEvent::ToolCall { .. } => panic!("unexpected tool_call"),
-            SseEvent::PermissionRequest { .. } => panic!("unexpected permission_request"),
-            SseEvent::ToolResult { .. } => panic!("unexpected tool_result"),
-            SseEvent::Done(m) => Kind::Done(m.content.clone()),
-            SseEvent::Telemetry(t) => Kind::Telemetry(*t),
-            SseEvent::Cancelled => Kind::Cancelled,
-            SseEvent::Error(e) => Kind::Error(e.clone()),
+            RunEvent::Message { .. } => Kind::Message,
+            RunEvent::Delta { content: d } => Kind::Delta(d.clone()),
+            RunEvent::Interim { .. } => panic!("unexpected interim"),
+            RunEvent::ToolCall { .. } => panic!("unexpected tool_call"),
+            RunEvent::PermissionRequest { .. } => panic!("unexpected permission_request"),
+            RunEvent::ToolResult { .. } => panic!("unexpected tool_result"),
+            RunEvent::Done { message: m } => Kind::Done(m.content.clone()),
+            RunEvent::Telemetry { usage: t } => Kind::Telemetry(*t),
+            RunEvent::Cancelled => Kind::Cancelled,
+            RunEvent::Error { message: e } => Kind::Error(e.clone()),
         }
     }
 

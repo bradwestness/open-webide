@@ -6,6 +6,7 @@ pub mod file_type;
 pub mod git;
 pub mod highlight;
 pub mod html;
+pub mod run;
 pub mod tui;
 pub mod utf8;
 pub mod vfs;
@@ -15,6 +16,7 @@ pub use diff::*;
 pub use file_type::*;
 pub use git::*;
 pub use html::html_to_markdown;
+pub use run::*;
 pub use tui::*;
 pub use vfs::{MemoryVfs, Vfs, VfsError, VfsFuture, format_utc_timestamp, normalize_vfs_path};
 

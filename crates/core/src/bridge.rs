@@ -2,7 +2,7 @@
 //!
 //! Shared across the native bridge daemon, the agent executor, and the frontend terminal.
 
-use crate::{ChatMessage, ChatRequest, EditorContext, FileDiff, ToolStreamChunk, TurnTelemetry};
+use crate::{ChatRequest, EditorContext, RunEvent, RunSnapshot, ToolStreamChunk};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -188,145 +188,6 @@ pub struct RunInfo {
     pub started_at: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RunEvent {
-    Message {
-        message: ChatMessage,
-    },
-    Delta {
-        content: String,
-    },
-    Interim {
-        message: ChatMessage,
-    },
-    ToolCall {
-        id: String,
-        name: String,
-        summary: String,
-    },
-    PermissionRequest {
-        id: String,
-        name: String,
-        summary: String,
-    },
-    ToolResult {
-        id: String,
-        name: String,
-        ok: bool,
-        summary: String,
-        diff: Option<FileDiff>,
-    },
-    Telemetry {
-        usage: TurnTelemetry,
-    },
-    Done {
-        message: ChatMessage,
-    },
-    Cancelled,
-    Error {
-        message: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RunSnapshot {
-    pub items: Vec<RunItem>,
-    pub text: String,
-    pub telemetry: Option<TurnTelemetry>,
-    #[serde(default)]
-    pub telemetry_after_message_id: Option<i64>,
-    pub finished: Option<RunEvent>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RunItem {
-    Message(ChatMessage),
-    Step(RunStep),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunStep {
-    pub id: String,
-    pub name: String,
-    pub summary: String,
-    pub awaiting_permission: bool,
-    pub result: Option<ToolStepResultWire>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolStepResultWire {
-    pub ok: bool,
-    pub summary: String,
-    pub diff: Option<FileDiff>,
-}
-
-impl RunSnapshot {
-    pub fn apply(&mut self, event: &RunEvent) {
-        match event {
-            RunEvent::Message { message } | RunEvent::Interim { message } => {
-                self.items.push(RunItem::Message(message.clone()));
-                if matches!(event, RunEvent::Interim { .. }) {
-                    self.text.clear();
-                }
-            }
-            RunEvent::Delta { content } => self.text.push_str(content),
-            RunEvent::ToolCall { id, name, summary }
-            | RunEvent::PermissionRequest { id, name, summary }
-            | RunEvent::ToolResult {
-                id, name, summary, ..
-            } => {
-                self.text.clear();
-                let index = self
-                    .items
-                    .iter()
-                    .position(|item| matches!(item, RunItem::Step(step) if step.id == *id));
-                let index = index.unwrap_or_else(|| {
-                    self.items.push(RunItem::Step(RunStep {
-                        id: id.clone(),
-                        name: name.clone(),
-                        summary: summary.clone(),
-                        awaiting_permission: false,
-                        result: None,
-                    }));
-                    self.items.len() - 1
-                });
-                if let RunItem::Step(step) = &mut self.items[index] {
-                    step.name.clone_from(name);
-                    match event {
-                        RunEvent::ToolResult {
-                            ok, summary, diff, ..
-                        } => {
-                            step.awaiting_permission = false;
-                            step.result = Some(ToolStepResultWire {
-                                ok: *ok,
-                                summary: summary.clone(),
-                                diff: diff.clone(),
-                            });
-                        }
-                        _ => {
-                            step.summary.clone_from(summary);
-                            step.awaiting_permission =
-                                matches!(event, RunEvent::PermissionRequest { .. });
-                        }
-                    }
-                }
-            }
-            RunEvent::Telemetry { usage } => {
-                self.telemetry = Some(*usage);
-                self.telemetry_after_message_id =
-                    self.items.iter().rev().find_map(|item| match item {
-                        RunItem::Message(message) => Some(message.id),
-                        _ => None,
-                    });
-            }
-            RunEvent::Done { .. } | RunEvent::Cancelled | RunEvent::Error { .. } => {
-                self.finished = Some(event.clone())
-            }
-        }
-    }
-}
-
 /// Summary info for an active or recently terminated process session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BridgeSessionInfo {
@@ -379,6 +240,7 @@ impl CommandOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ChatMessage, RunItem, TurnTelemetry};
 
     #[test]
     fn snapshot_telemetry_tracks_message_order_for_equal_turn_usage() {
@@ -662,6 +524,7 @@ mod tests {
         for (tag, event) in events() {
             let json = serde_json::to_value(&event).unwrap();
             assert_eq!(json["kind"], tag);
+            assert_eq!(event.kind_str(), tag);
             assert_eq!(serde_json::from_value::<RunEvent>(json).unwrap(), event);
         }
     }

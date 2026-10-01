@@ -1,7 +1,7 @@
 #![cfg(target_arch = "wasm32")]
 
-use openwebide_core::{ChatMessage, ConversationEntry, Role};
-use openwebide_frontend::{backend::Backend, sse::SseEvent, testing::fake_backend::FakeBackend};
+use openwebide_core::{ChatMessage, ConversationEntry, Role, RunEvent};
+use openwebide_frontend::{backend::Backend, testing::fake_backend::FakeBackend};
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -57,8 +57,12 @@ async fn creating_existing_file_preserves_contents() {
 async fn sent_prompts_and_delta_replies_survive_history_reload() {
     let fake = FakeBackend::default();
     fake.scripted_events.borrow_mut().push_back(vec![
-        SseEvent::Delta("hello ".into()),
-        SseEvent::Delta("world".into()),
+        RunEvent::Delta {
+            content: "hello ".into(),
+        },
+        RunEvent::Delta {
+            content: "world".into(),
+        },
     ]);
     fake.send_message(1, "question", None, None, None, Box::new(|_| {}))
         .await
@@ -101,10 +105,18 @@ async fn scripted_messages_are_persisted_once_with_final_metadata() {
         ..user.clone()
     };
     fake.scripted_events.borrow_mut().push_back(vec![
-        SseEvent::Message(user.clone()),
-        SseEvent::Delta("partial".into()),
-        SseEvent::Message(assistant.clone()),
-        SseEvent::Done(assistant.clone()),
+        RunEvent::Message {
+            message: user.clone(),
+        },
+        RunEvent::Delta {
+            content: "partial".into(),
+        },
+        RunEvent::Message {
+            message: assistant.clone(),
+        },
+        RunEvent::Done {
+            message: assistant.clone(),
+        },
     ]);
     let mut events = Vec::new();
     fake.send_message(

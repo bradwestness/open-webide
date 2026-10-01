@@ -1,5 +1,4 @@
-use openwebide_core::{ChatMessage, Role};
-use openwebide_frontend::sse::SseEvent;
+use openwebide_core::{ChatMessage, Role, RunEvent};
 use wasm_bindgen_test::*;
 
 use super::support::{chat_view, mount_test, settle};
@@ -24,23 +23,33 @@ async fn interim_text_renders_above_tool_and_final_reply_below() {
         state.seed_connection();
         state.seed_session();
         state.fake.scripted_events.borrow_mut().push_back(vec![
-            SseEvent::Message(message(7, Role::User, "check")),
-            SseEvent::Delta("Checking the file".into()),
-            SseEvent::Interim(message(8, Role::Assistant, "Checking the file")),
-            SseEvent::ToolCall {
+            RunEvent::Message {
+                message: message(7, Role::User, "check"),
+            },
+            RunEvent::Delta {
+                content: "Checking the file".into(),
+            },
+            RunEvent::Interim {
+                message: message(8, Role::Assistant, "Checking the file"),
+            },
+            RunEvent::ToolCall {
                 id: "a7t1c0".into(),
                 name: "read_file".into(),
                 summary: "read src/main.rs".into(),
             },
-            SseEvent::ToolResult {
+            RunEvent::ToolResult {
                 id: "a7t1c0".into(),
                 name: "read_file".into(),
                 ok: true,
                 summary: "read src/main.rs".into(),
                 diff: None,
             },
-            SseEvent::Delta("Everything is ready".into()),
-            SseEvent::Done(message(9, Role::Assistant, "Everything is ready")),
+            RunEvent::Delta {
+                content: "Everything is ready".into(),
+            },
+            RunEvent::Done {
+                message: message(9, Role::Assistant, "Everything is ready"),
+            },
         ]);
         chat_view(state)
     });

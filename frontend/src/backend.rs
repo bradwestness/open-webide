@@ -1,11 +1,11 @@
-use crate::{api::BackendApi, sse::SseEvent};
+use crate::api::BackendApi;
 use futures::future::LocalBoxFuture;
 use leptos::prelude::{LocalStorage, RwSignal, StoredValue};
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
     GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest, GitSyncResult, Health,
-    ModelInfo, Project, ProviderKind, Role, SearchHit, SystemPrompt, TurnTelemetry, User,
+    ModelInfo, Project, ProviderKind, Role, RunEvent, SearchHit, SystemPrompt, TurnTelemetry, User,
     WebSearchResult, WorkspaceMode, vfs::SearchOptions,
 };
 use std::rc::Rc;
@@ -238,7 +238,7 @@ pub trait Backend {
         model: Option<&'a str>,
         editor_context: Option<&'a EditorContext>,
         signal: Option<&'a AbortSignal>,
-        on_event: Box<dyn FnMut(SseEvent) + 'a>,
+        on_event: Box<dyn FnMut(RunEvent) + 'a>,
     ) -> LocalBoxFuture<'a, Result<(), String>>;
 }
 
@@ -609,7 +609,7 @@ impl Backend for BackendApi {
         model: Option<&'a str>,
         editor_context: Option<&'a EditorContext>,
         signal: Option<&'a AbortSignal>,
-        on_event: Box<dyn FnMut(SseEvent) + 'a>,
+        on_event: Box<dyn FnMut(RunEvent) + 'a>,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(BackendApi::send_message(
             self,

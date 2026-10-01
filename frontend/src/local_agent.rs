@@ -18,12 +18,13 @@ use openwebide_agent::{
 };
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatResponse, CommandOutcome, ConversationEntry,
-    EditorContext, ModelInfo, ProviderKind, Role, ToolCall, TurnTelemetry, WebSearchResult,
+    EditorContext, ModelInfo, ProviderKind, Role, RunEvent, ToolCall, TurnTelemetry,
+    WebSearchResult,
 };
 use openwebide_llm::{LlmProvider, ProviderError, StreamChunk, ToolStreamChunk, completion_chunks};
 
+use crate::backend::Api;
 use crate::local_fs::{BrowserFsaVfs, ForceSend};
-use crate::{api::SseEvent, backend::Api};
 
 use crate::util::sleep_ms;
 
@@ -464,7 +465,7 @@ pub async fn run_local_agent(
     vfs: BrowserFsaVfs,
     cancel_flag: Arc<AtomicBool>,
     local_decisions: Arc<Mutex<HashMap<String, bool>>>,
-    mut on_event: impl FnMut(SseEvent),
+    mut on_event: impl FnMut(RunEvent),
     bridge_config: crate::bridge::BridgeConfig,
     bridge_credentials: crate::bridge::BridgeCredentials,
     bridge_connection: Option<crate::bridge::BridgeConn>,
@@ -492,7 +493,9 @@ pub async fn run_local_agent(
         .with_value(Clone::clone)
         .persist_message(session_id, Role::User, &full_content, None)
         .await?;
-    on_event(SseEvent::Message(user_message.clone()));
+    on_event(RunEvent::Message {
+        message: user_message.clone(),
+    });
     messages.push(user_message.clone());
 
     // 3. Assemble chat request with standard workspace tools
@@ -532,7 +535,7 @@ pub async fn run_local_agent(
     let mut last_usage: Option<TurnTelemetry> = None;
     while let Some(event) = stream.next().await {
         match event {
-            AgentEvent::TextDelta(delta) => on_event(SseEvent::Delta(delta)),
+            AgentEvent::TextDelta(delta) => on_event(RunEvent::Delta { content: delta }),
             AgentEvent::TurnText(text) => {
                 let usage = last_usage.take();
                 let message = api
@@ -555,11 +558,11 @@ pub async fn run_local_agent(
                         usage,
                     },
                 };
-                on_event(SseEvent::Interim(message));
+                on_event(RunEvent::Interim { message });
             }
             AgentEvent::Telemetry(usage) => {
                 last_usage = Some(usage);
-                on_event(SseEvent::Telemetry(usage));
+                on_event(RunEvent::Telemetry { usage });
             }
             AgentEvent::ToolCall { id, name, summary } => {
                 last_usage = None;
@@ -567,7 +570,7 @@ pub async fn run_local_agent(
                     .with_value(Clone::clone)
                     .upsert_tool_step(session_id, display_anchor, &id, &name, &summary)
                     .await;
-                on_event(SseEvent::ToolCall { id, name, summary });
+                on_event(RunEvent::ToolCall { id, name, summary });
             }
             AgentEvent::PermissionRequest { id, name, summary } => {
                 last_usage = None;
@@ -575,7 +578,7 @@ pub async fn run_local_agent(
                     .with_value(Clone::clone)
                     .upsert_tool_step(session_id, display_anchor, &id, &name, &summary)
                     .await;
-                on_event(SseEvent::PermissionRequest { id, name, summary });
+                on_event(RunEvent::PermissionRequest { id, name, summary });
             }
             AgentEvent::ToolResult {
                 id,
@@ -588,7 +591,7 @@ pub async fn run_local_agent(
                     .with_value(Clone::clone)
                     .complete_tool_step(session_id, &id, ok, &summary, diff.as_ref())
                     .await;
-                on_event(SseEvent::ToolResult {
+                on_event(RunEvent::ToolResult {
                     id,
                     name,
                     ok,
@@ -607,15 +610,17 @@ pub async fn run_local_agent(
                     )
                     .await
                 {
-                    Ok(msg) => on_event(SseEvent::Done(msg)),
-                    Err(e) => on_event(SseEvent::Error(format!("failed to save reply: {e}"))),
+                    Ok(msg) => on_event(RunEvent::Done { message: msg }),
+                    Err(e) => on_event(RunEvent::Error {
+                        message: format!("failed to save reply: {e}"),
+                    }),
                 }
             }
             AgentEvent::Cancelled => {
-                on_event(SseEvent::Cancelled);
+                on_event(RunEvent::Cancelled);
             }
             AgentEvent::Error(message) => {
-                on_event(SseEvent::Error(message));
+                on_event(RunEvent::Error { message });
             }
         }
     }

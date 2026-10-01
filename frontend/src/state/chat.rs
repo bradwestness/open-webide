@@ -5,13 +5,10 @@ use std::{
 
 use leptos::prelude::*;
 use openwebide_agent::policy::ApprovalMode;
-use openwebide_core::{ChatSession, FileDiff, ModelInfo, SessionTelemetry};
+use openwebide_core::{ChatSession, FileDiff, ModelInfo, RunEvent, SessionTelemetry};
 
-use crate::{
-    conversation::{
-        ConversationItem, ToolStepResult, local_message, next_item_nonce, notice, stopped_marker,
-    },
-    sse::SseEvent,
+use crate::conversation::{
+    ConversationItem, ToolStepResult, local_message, next_item_nonce, notice, stopped_marker,
 };
 
 /// Side effects that need a browser or another feature store to execute.
@@ -149,19 +146,19 @@ impl ChatState {
 
     /// Apply one stream event to chat state and return effects owned by the
     /// browser or another feature store.
-    pub fn apply_event(&self, event: SseEvent) -> Vec<ChatEffect> {
+    pub fn apply_event(&self, event: RunEvent) -> Vec<ChatEffect> {
         self.apply_event_for_run(self.streaming_session.get_untracked(), event)
     }
 
     /// Apply an event from a specific stream run, dropping state changes once
     /// the user has switched sessions while the request was in flight.
-    pub fn apply_event_for_session(&self, session_id: i64, event: SseEvent) -> Vec<ChatEffect> {
+    pub fn apply_event_for_session(&self, session_id: i64, event: RunEvent) -> Vec<ChatEffect> {
         self.apply_event_for_run(Some(session_id), event)
     }
 
-    fn apply_event_for_run(&self, run_session: Option<i64>, event: SseEvent) -> Vec<ChatEffect> {
+    fn apply_event_for_run(&self, run_session: Option<i64>, event: RunEvent) -> Vec<ChatEffect> {
         let mut effects = Vec::new();
-        if let SseEvent::ToolResult {
+        if let RunEvent::ToolResult {
             diff: Some(diff), ..
         } = &event
         {
@@ -176,7 +173,7 @@ impl ChatState {
             .unwrap_or_default();
 
         match event {
-            SseEvent::Message(msg) => {
+            RunEvent::Message { message: msg } => {
                 if msg.role == openwebide_core::Role::User {
                     self.current_run_anchor.set(Some(msg.id));
                 }
@@ -188,7 +185,7 @@ impl ChatState {
                     }
                 });
             }
-            SseEvent::Delta(delta) => self.messages.update(|items| {
+            RunEvent::Delta { content: delta } => self.messages.update(|items| {
                 let extends_assistant = items.last().is_some_and(|item| {
                     matches!(
                         item,
@@ -204,7 +201,7 @@ impl ChatState {
                     items.push(local_message(session_id, delta));
                 }
             }),
-            SseEvent::PermissionRequest { id, name, summary } => {
+            RunEvent::PermissionRequest { id, name, summary } => {
                 let mode = self
                     .approval_mode
                     .get_untracked()
@@ -226,7 +223,7 @@ impl ChatState {
                     });
                 }
             }
-            SseEvent::ToolCall { id, name, summary } => {
+            RunEvent::ToolCall { id, name, summary } => {
                 self.session_telemetry
                     .update(|telemetry| telemetry.tool_calls_count += 1);
                 self.messages.update(|items| {
@@ -256,7 +253,7 @@ impl ChatState {
                     }
                 });
             }
-            SseEvent::ToolResult {
+            RunEvent::ToolResult {
                 id,
                 name: _,
                 ok,
@@ -292,7 +289,7 @@ impl ChatState {
                     }),
                 }
             }),
-            SseEvent::Interim(message) | SseEvent::Done(message) => self.messages.update(|items| {
+            RunEvent::Interim { message } | RunEvent::Done { message } => self.messages.update(|items| {
                 if message.id > 0
                     && let Some(ConversationItem::Message(existing)) = items.iter_mut().find(|item| {
                         matches!(item, ConversationItem::Message(existing) if existing.id == message.id)
@@ -323,11 +320,11 @@ impl ChatState {
                     items.push(ConversationItem::Message(message));
                 }
             }),
-            SseEvent::Telemetry(telemetry) => {
+            RunEvent::Telemetry { usage: telemetry } => {
                 self.session_telemetry
                     .update(|session| session.record_turn(&telemetry));
             }
-            SseEvent::Cancelled => {
+            RunEvent::Cancelled => {
                 self.messages.update(|items| {
                     if let Some(anchor) = self.current_run_anchor.get_untracked() {
                         cancel_run_prompts(items, anchor);
@@ -337,7 +334,7 @@ impl ChatState {
                     }
                 });
             }
-            SseEvent::Error(error) => {
+            RunEvent::Error { message: error } => {
                 if let Some(anchor) = self.current_run_anchor.get_untracked() {
                     self.cancel_run_prompts(anchor);
                 }
@@ -404,11 +401,11 @@ mod tests {
         Owner::new().with(|| {
             let chat = ChatState::new();
             chat.active_session.set(Some(7));
-            chat.apply_event(SseEvent::Message(message(90, Role::User, "go")));
-            chat.apply_event(SseEvent::Delta("checking".into()));
-            chat.apply_event(SseEvent::Interim(message(91, Role::Assistant, "checking")));
-            chat.apply_event(SseEvent::Delta("finished".into()));
-            chat.apply_event(SseEvent::Done(message(92, Role::Assistant, "finished")));
+            chat.apply_event(RunEvent::Message { message: message(90, Role::User, "go") });
+            chat.apply_event(RunEvent::Delta { content: "checking".into() });
+            chat.apply_event(RunEvent::Interim { message: message(91, Role::Assistant, "checking") });
+            chat.apply_event(RunEvent::Delta { content: "finished".into() });
+            chat.apply_event(RunEvent::Done { message: message(92, Role::Assistant, "finished") });
             let items = chat.messages.get_untracked();
             assert_eq!(items.len(), 3);
             for (item, (id, text)) in items.iter().zip([(90, "go"), (91, "checking"), (92, "finished")]) {
@@ -438,13 +435,21 @@ mod tests {
                     ..Default::default()
                 });
                 if queued_delta {
-                    chat.apply_event(SseEvent::Delta("check".into()));
-                    chat.apply_event(SseEvent::Delta("ing".into()));
+                    chat.apply_event(RunEvent::Delta {
+                        content: "check".into(),
+                    });
+                    chat.apply_event(RunEvent::Delta {
+                        content: "ing".into(),
+                    });
                 }
                 chat.apply_event(if interim {
-                    SseEvent::Interim(incoming.clone())
+                    RunEvent::Interim {
+                        message: incoming.clone(),
+                    }
                 } else {
-                    SseEvent::Done(incoming.clone())
+                    RunEvent::Done {
+                        message: incoming.clone(),
+                    }
                 });
                 let items = chat.messages.get_untracked();
                 assert_eq!(items.len(), 3);
@@ -460,19 +465,19 @@ mod tests {
             let chat = ChatState::new();
             chat.active_session.set(Some(7));
             chat.streaming_session.set(Some(7));
-            chat.apply_event(SseEvent::Message(message(90, Role::User, "edit this")));
-            chat.apply_event(SseEvent::Delta("working".into()));
-            chat.apply_event(SseEvent::ToolCall {
+            chat.apply_event(RunEvent::Message { message: message(90, Role::User, "edit this") });
+            chat.apply_event(RunEvent::Delta { content: "working".into() });
+            chat.apply_event(RunEvent::ToolCall {
                 id: "a90t0c0".into(),
                 name: "write_file".into(),
                 summary: "draft.txt".into(),
             });
-            chat.apply_event(SseEvent::PermissionRequest {
+            chat.apply_event(RunEvent::PermissionRequest {
                 id: "a90t1c0".into(),
                 name: "write_file".into(),
                 summary: "draft.txt".into(),
             });
-            chat.apply_event(SseEvent::ToolResult {
+            chat.apply_event(RunEvent::ToolResult {
                 id: "a90t1c0".into(),
                 name: "write_file".into(),
                 ok: true,
@@ -485,7 +490,7 @@ mod tests {
                     backup_path: None,
                 }),
             });
-            chat.apply_event(SseEvent::Done(message(91, Role::Assistant, "finished")));
+            chat.apply_event(RunEvent::Done { message: message(91, Role::Assistant, "finished") });
 
             let items = chat.messages.get_untracked();
             assert_eq!(items.len(), 5);
@@ -514,8 +519,8 @@ mod tests {
                 awaiting_permission: true,
             }]);
 
-            chat.apply_event(SseEvent::Cancelled);
-            chat.apply_event(SseEvent::Cancelled);
+            chat.apply_event(RunEvent::Cancelled);
+            chat.apply_event(RunEvent::Cancelled);
 
             let items = chat.messages.get_untracked();
             assert_eq!(items.len(), 2);
@@ -530,7 +535,7 @@ mod tests {
             let chat = ChatState::new();
             let effects = chat.apply_event_for_session(
                 7,
-                SseEvent::ToolResult {
+                RunEvent::ToolResult {
                     id: "a90t0c0".into(),
                     name: "write_file".into(),
                     ok: true,
@@ -572,7 +577,7 @@ mod tests {
             chat.streaming_session.set(Some(7));
             chat.set_approval_mode(7, ApprovalMode::AlwaysForSession);
 
-            let effects = chat.apply_event(SseEvent::PermissionRequest {
+            let effects = chat.apply_event(RunEvent::PermissionRequest {
                 id: "a90t0c0".into(),
                 name: "write_file".into(),
                 summary: "draft.txt".into(),
@@ -593,12 +598,14 @@ mod tests {
         Owner::new().with(|| {
             let chat = ChatState::new();
             chat.active_session.set(Some(7));
-            chat.apply_event(SseEvent::Telemetry(TurnTelemetry {
-                prompt_tokens: 3,
-                completion_tokens: 2,
-                estimated: false,
-                eval_duration_ms: 1000,
-            }));
+            chat.apply_event(RunEvent::Telemetry {
+                usage: TurnTelemetry {
+                    prompt_tokens: 3,
+                    completion_tokens: 2,
+                    estimated: false,
+                    eval_duration_ms: 1000,
+                },
+            });
 
             let telemetry = chat.session_telemetry.get_untracked();
             assert_eq!(telemetry.total_prompt_tokens, 3);

@@ -2,14 +2,14 @@
 
 use gloo_net::http::{Method, RequestBuilder};
 
-pub use crate::sse::SseEvent;
 use leptos::prelude::{GetUntracked, Set, WithValue};
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
     GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest, GitSyncResult, Health,
-    ModelInfo, NewConnection, NewProject, NewSession, Project, ProviderKind, Role, SearchHit,
-    SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode, vfs::SearchOptions,
+    ModelInfo, NewConnection, NewProject, NewSession, Project, ProviderKind, Role, RunEvent,
+    SearchHit, SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode,
+    vfs::SearchOptions,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -691,7 +691,7 @@ impl BackendApi {
         model: Option<&str>,
         editor_context: Option<&EditorContext>,
         signal: Option<&AbortSignal>,
-        mut on_event: impl FnMut(SseEvent),
+        mut on_event: impl FnMut(RunEvent),
     ) -> Result<(), String> {
         let url = format!("{}/sessions/{session_id}/messages", self.base());
         let builder = self.builder(&url, Method::POST);

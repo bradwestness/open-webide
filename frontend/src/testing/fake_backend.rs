@@ -1,11 +1,11 @@
-use crate::{backend::Backend, sse::SseEvent};
+use crate::backend::Backend;
 use futures::future::LocalBoxFuture;
 use leptos::prelude::RwSignal;
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
     GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest, GitSyncResult, Health,
-    ModelInfo, Project, ProviderKind, Role, SearchHit, SystemPrompt, TurnTelemetry, User,
+    ModelInfo, Project, ProviderKind, Role, RunEvent, SearchHit, SystemPrompt, TurnTelemetry, User,
     WebSearchResult, WorkspaceMode, vfs::SearchOptions,
 };
 use std::{
@@ -56,7 +56,7 @@ pub struct FakeBackend {
     pub connections: RefCell<Vec<Connection>>,
     pub system_prompts: RefCell<Vec<SystemPrompt>>,
     pub settings: RefCell<BTreeMap<String, String>>,
-    pub scripted_events: RefCell<VecDeque<Vec<SseEvent>>>,
+    pub scripted_events: RefCell<VecDeque<Vec<RunEvent>>>,
     pub calls: RefCell<Vec<Call>>,
     pub session_expired: RwSignal<bool>,
 }
@@ -843,7 +843,7 @@ impl Backend for FakeBackend {
         model: Option<&'a str>,
         _editor_context: Option<&'a EditorContext>,
         signal: Option<&'a AbortSignal>,
-        mut on_event: Box<dyn FnMut(SseEvent) + 'a>,
+        mut on_event: Box<dyn FnMut(RunEvent) + 'a>,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::SendMessage {
@@ -857,7 +857,7 @@ impl Backend for FakeBackend {
                 .pop_front()
                 .unwrap_or_default();
             if let Some(message) = events.iter().find_map(|event| match event {
-                SseEvent::Message(message) if message.role == Role::User => Some(message),
+                RunEvent::Message { message } if message.role == Role::User => Some(message),
                 _ => None,
             }) {
                 self.messages
@@ -877,13 +877,13 @@ impl Backend for FakeBackend {
                     return Err("aborted".into());
                 }
                 match &event {
-                    SseEvent::Delta(delta) => deltas.push_str(delta),
-                    SseEvent::Message(message) | SseEvent::Done(message)
+                    RunEvent::Delta { content: delta } => deltas.push_str(delta),
+                    RunEvent::Message { message } | RunEvent::Done { message }
                         if message.role == Role::Assistant =>
                     {
                         assistant = Some(message.clone());
                     }
-                    SseEvent::Cancelled | SseEvent::Error(_) => interrupted = true,
+                    RunEvent::Cancelled | RunEvent::Error { .. } => interrupted = true,
                     _ => {}
                 }
                 on_event(event);
