@@ -1,23 +1,24 @@
 use leptos::prelude::*;
-use openwebide_core::{Connection, SystemPrompt};
+use openwebide_frontend::state::settings::{SettingsState, Theme};
 use web_sys::wasm_bindgen::JsCast;
 
 /// The settings dialog: theme, and the connection / system prompt used as
 /// defaults for new sessions.
 #[component]
 pub fn Settings(
-    theme: ReadSignal<String>,
-    default_connection: ReadSignal<Option<i64>>,
-    default_prompt: ReadSignal<Option<i64>>,
-    connections: ReadSignal<Vec<Connection>>,
-    system_prompts: ReadSignal<Vec<SystemPrompt>>,
-    bridge_url: ReadSignal<String>,
-    on_close: Callback<()>,
     on_set_theme: Callback<String>,
     on_set_default_connection: Callback<Option<i64>>,
     on_set_default_prompt: Callback<Option<i64>>,
     on_set_bridge_url: Callback<String>,
 ) -> impl IntoView {
+    let settings = expect_context::<SettingsState>();
+    let theme = settings.theme.read_only();
+    let default_connection = settings.default_connection.read_only();
+    let default_prompt = settings.default_prompt.read_only();
+    let connections = settings.connections.read_only();
+    let system_prompts = settings.system_prompts.read_only();
+    let bridge_url = settings.bridge_url.read_only();
+    let on_close = Callback::new(move |_| settings.show_settings.set(false));
     let conn_ref = NodeRef::<leptos::html::Select>::new();
     let prompt_ref = NodeRef::<leptos::html::Select>::new();
 
@@ -72,7 +73,7 @@ pub fn Settings(
                         <div class="mode-picker">
                             <label
                                 class=move || {
-                                    if theme.get() == "system" {
+                                    if theme.get() == Theme::System {
                                         "mode-opt active".to_string()
                                     } else {
                                         "mode-opt".to_string()
@@ -82,14 +83,14 @@ pub fn Settings(
                                 <input
                                     type="radio"
                                     name="theme"
-                                    checked=move || theme.get() == "system"
+                                    checked=move || theme.get() == Theme::System
                                     on:click=move |_| on_set_theme.run("system".to_string())
                                 />
                                 "System"
                             </label>
                             <label
                                 class=move || {
-                                    if theme.get() == "dark" {
+                                    if theme.get() == Theme::Dark {
                                         "mode-opt active".to_string()
                                     } else {
                                         "mode-opt".to_string()
@@ -99,14 +100,14 @@ pub fn Settings(
                                 <input
                                     type="radio"
                                     name="theme"
-                                    checked=move || theme.get() == "dark"
+                                    checked=move || theme.get() == Theme::Dark
                                     on:click=move |_| on_set_theme.run("dark".to_string())
                                 />
                                 "Dark"
                             </label>
                             <label
                                 class=move || {
-                                    if theme.get() == "light" {
+                                    if theme.get() == Theme::Light {
                                         "mode-opt active".to_string()
                                     } else {
                                         "mode-opt".to_string()
@@ -116,7 +117,7 @@ pub fn Settings(
                                 <input
                                     type="radio"
                                     name="theme"
-                                    checked=move || theme.get() == "light"
+                                    checked=move || theme.get() == Theme::Light
                                     on:click=move |_| on_set_theme.run("light".to_string())
                                 />
                                 "Light"

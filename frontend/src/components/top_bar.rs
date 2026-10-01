@@ -1,14 +1,16 @@
 use leptos::prelude::*;
+use openwebide_frontend::state::auth::AuthState;
 
 use crate::api::HealthState;
 
 #[component]
 pub fn TopBar(
     health: ReadSignal<Option<HealthState>>,
-    username: ReadSignal<Option<String>>,
     on_open_settings: Callback<()>,
     on_logout: Callback<()>,
 ) -> impl IntoView {
+    let auth = expect_context::<AuthState>();
+    let username = Signal::derive(move || auth.username.get());
     view! {
         <header class="topbar">
             <span class="logo">"open-webide"</span>

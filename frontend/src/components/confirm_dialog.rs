@@ -1,23 +1,14 @@
 use leptos::prelude::*;
-
-/// A pending confirmation request. `action` runs when the user confirms.
-#[derive(Clone)]
-pub struct ConfirmRequest {
-    pub title: String,
-    pub message: String,
-    /// Label for the confirm button (e.g. "Delete", "Log out").
-    pub confirm_label: String,
-    pub action: Callback<()>,
-}
+use openwebide_frontend::state::ui::UiState;
 
 /// A themed confirmation dialog. Shown while `req` is `Some`; clicking the
 /// overlay, the close button, or "Cancel" runs `on_close` (which clears the
 /// request), while "Confirm" runs the request's `action` and then closes.
 #[component]
-pub fn ConfirmDialog(
-    req: ReadSignal<Option<ConfirmRequest>>,
-    on_close: Callback<()>,
-) -> impl IntoView {
+pub fn ConfirmDialog() -> impl IntoView {
+    let ui = expect_context::<UiState>();
+    let req = ui.confirm.read_only();
+    let on_close = Callback::new(move |_| ui.clear_confirm());
     view! {
         <Show when=move || req.get().is_some() fallback=|| ()>
             <div class="modal-overlay" on:click=move |_| on_close.run(())>

@@ -29,6 +29,8 @@ pub enum ConversationItem {
     /// A marker that the user stopped the run. The nonce keeps the item key
     /// unique when a conversation has several stops.
     Stopped { nonce: u64 },
+    /// A transient notice generated locally by the frontend.
+    Notice { nonce: u64, text: String },
 }
 
 /// A fresh "stopped" marker for the conversation list.
@@ -39,6 +41,16 @@ pub fn stopped_marker() -> ConversationItem {
         nonce: STOP_NONCE.fetch_add(1, Ordering::Relaxed),
     }
 }
+
+/// A fresh local notice for the conversation list.
+pub fn notice(text: impl Into<String>) -> ConversationItem {
+    ConversationItem::Notice {
+        nonce: NEXT_NOTICE_NONCE.fetch_add(1, Ordering::Relaxed),
+        text: text.into(),
+    }
+}
+
+static NEXT_NOTICE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// A fresh per-item nonce for a new `ToolStep`, unique within the process.
 static NEXT_ITEM_NONCE: AtomicU64 = AtomicU64::new(0);
@@ -95,6 +107,7 @@ pub fn item_key(item: &ConversationItem) -> String {
             if *awaiting_permission { 1 } else { 0 }
         ),
         ConversationItem::Stopped { nonce } => format!("s-{nonce}"),
+        ConversationItem::Notice { nonce, .. } => format!("n-{nonce}"),
     }
 }
 
@@ -150,5 +163,12 @@ mod tests {
             unreachable!("local_message returns a Message");
         }
         assert_ne!(before, item_key(&item));
+    }
+
+    #[test]
+    fn notice_items_have_distinct_keys() {
+        let a = notice("Saved.");
+        let b = notice("Saved.");
+        assert_ne!(item_key(&a), item_key(&b));
     }
 }

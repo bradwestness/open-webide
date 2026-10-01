@@ -2,7 +2,7 @@
 
 use gloo_net::http::{Method, RequestBuilder};
 
-use leptos::prelude::{GetUntracked, Set};
+use leptos::prelude::{GetUntracked, Set, WithValue};
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
@@ -18,9 +18,9 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::wasm_bindgen::JsCast;
 use web_sys::{AbortSignal, ReadableStreamDefaultReader, ReadableStreamReadResult};
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct BackendApi {
-    base: String,
+    base: leptos::prelude::StoredValue<String>,
     pub signed_in: leptos::prelude::RwSignal<bool>,
     pub session_expired: leptos::prelude::RwSignal<bool>,
     cross_origin: bool,
@@ -39,6 +39,10 @@ pub enum HealthState {
 }
 
 impl BackendApi {
+    fn base(&self) -> String {
+        self.base.with_value(String::clone)
+    }
+
     pub fn session_expired(&self) -> leptos::prelude::ReadSignal<bool> {
         self.session_expired.read_only()
     }
@@ -67,7 +71,7 @@ impl BackendApi {
         }
 
         Self {
-            base,
+            base: leptos::prelude::StoredValue::new(base),
             signed_in: leptos::prelude::RwSignal::new(false),
             session_expired: leptos::prelude::RwSignal::new(false),
             cross_origin,
@@ -286,7 +290,7 @@ impl BackendApi {
     ) -> Result<String, String> {
         let url = format!(
             "{}/projects/{project_id}/files/raw?path={}",
-            self.base,
+            self.base(),
             urlenc(path)
         );
         let builder = self.builder(&url, Method::GET);
@@ -324,7 +328,7 @@ impl BackendApi {
     pub async fn read_file_lossy(&self, project_id: i64, path: &str) -> Result<String, String> {
         let url = format!(
             "{}/projects/{project_id}/files/raw?path={}",
-            self.base,
+            self.base(),
             urlenc(path)
         );
         let builder = self.builder(&url, Method::GET);
@@ -352,7 +356,7 @@ impl BackendApi {
     ) -> Result<(), String> {
         let url = format!(
             "{}/projects/{project_id}/files/write?path={}",
-            self.base,
+            self.base(),
             urlenc(path)
         );
         let builder = self
@@ -689,7 +693,7 @@ impl BackendApi {
         signal: Option<&AbortSignal>,
         mut on_event: impl FnMut(SseEvent),
     ) -> Result<(), String> {
-        let url = format!("{}/sessions/{session_id}/messages", self.base);
+        let url = format!("{}/sessions/{session_id}/messages", self.base());
         let builder = self.builder(&url, Method::POST);
         let req = builder
             .abort_signal(signal)
@@ -785,7 +789,7 @@ impl BackendApi {
         T: Serialize,
         R: DeserializeOwned,
     {
-        let url = format!("{}{path}", self.base);
+        let url = format!("{}{path}", self.base());
         let is_delete = method == Method::DELETE;
         let builder = self.builder(&url, method);
         let req = match body {

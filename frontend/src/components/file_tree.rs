@@ -1,18 +1,18 @@
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
-use openwebide_core::{FileEntry, SearchHit, vfs::SearchOptions};
+use openwebide_core::{FileEntry, vfs::SearchOptions};
 use web_sys::wasm_bindgen::JsCast;
+
+use openwebide_frontend::state::{
+    git::GitState, layout::LayoutState, projects::ProjectsState, workspace::WorkspaceState,
+};
 
 /// The project file explorer: a collapsible directory tree with create and
 /// search actions. Directory contents are loaded lazily and cached in
 /// `entries` (keyed by directory path, root = "").
 #[component]
 pub fn FileTree(
-    entries: ReadSignal<HashMap<String, Vec<FileEntry>>>,
-    expanded: ReadSignal<HashSet<String>>,
-    open_file: ReadSignal<Option<String>>,
-    search_results: ReadSignal<Option<Vec<SearchHit>>>,
     on_toggle: Callback<String>,
     on_open: Callback<String>,
     on_new_file: Callback<()>,
@@ -21,13 +21,26 @@ pub fn FileTree(
     include_ignored: ReadSignal<bool>,
     on_toggle_include_ignored: Callback<()>,
     on_clear_search: Callback<()>,
-    #[prop(default = Signal::derive(|| false))] needs_grant: Signal<bool>,
     #[prop(optional)] on_grant_access: Option<Callback<()>>,
-    #[prop(default = Signal::derive(|| None))] git_status: Signal<
-        Option<openwebide_core::GitRepoStatus>,
-    >,
-    #[prop(into, optional)] width: Option<Signal<f64>>,
 ) -> impl IntoView {
+    let workspace = expect_context::<WorkspaceState>();
+    let projects = expect_context::<ProjectsState>();
+    let git = expect_context::<GitState>();
+    let layout = expect_context::<LayoutState>();
+
+    let entries = workspace.entries.read_only();
+    let expanded = workspace.expanded.read_only();
+    let open_file = workspace.open_file.read_only();
+    let search_results = workspace.search.read_only();
+    let tree_width = layout.tree_width.read_only();
+    let git_status: Signal<Option<openwebide_core::GitRepoStatus>> =
+        Signal::derive(move || git.status.get());
+    let needs_grant = Signal::derive(move || {
+        projects
+            .active_project
+            .get()
+            .is_some_and(|id| projects.needs_grant.with(|ids| ids.contains(&id)))
+    });
     let search_input = NodeRef::<leptos::html::Input>::new();
 
     // Flatten the (lazily loaded) tree into a list of (entry, depth) pairs,
@@ -62,7 +75,7 @@ pub fn FileTree(
     view! {
         <div
             class="file-tree"
-            style=move || width.map(|w| format!("width: {}px; flex: none;", w.get())).unwrap_or_default()
+            style=move || format!("width: {}px; flex: none;", tree_width.get())
         >
             <div class="file-tree-header">
                 <h2>"Explorer"</h2>

@@ -1,48 +1,58 @@
 use leptos::prelude::*;
-use openwebide_core::{ChatSession, Connection, ProviderKind, SystemPrompt};
+use openwebide_core::ProviderKind;
 use web_sys::wasm_bindgen::JsCast;
+
+use openwebide_frontend::state::{
+    chat::ChatState, layout::LayoutState, projects::ProjectsState, settings::SettingsState,
+};
 
 #[component]
 pub fn Sidebar(
-    connections: ReadSignal<Vec<Connection>>,
-    show_conn_form: ReadSignal<bool>,
-    conn_edit_id: ReadSignal<Option<i64>>,
-    conn_name: ReadSignal<String>,
-    set_conn_name: WriteSignal<String>,
-    conn_kind: ReadSignal<ProviderKind>,
-    set_conn_kind: WriteSignal<ProviderKind>,
-    conn_base_url: ReadSignal<String>,
-    set_conn_base_url: WriteSignal<String>,
-    conn_model: ReadSignal<String>,
-    set_conn_model: WriteSignal<String>,
-    conn_context_limit: ReadSignal<String>,
-    set_conn_context_limit: WriteSignal<String>,
     on_new_connection: Callback<()>,
     on_edit_connection: Callback<i64>,
     on_save_connection: Callback<()>,
     on_cancel_connection: Callback<()>,
     on_delete_connection: Callback<i64>,
-    sessions: ReadSignal<Vec<ChatSession>>,
-    active_project: ReadSignal<Option<i64>>,
-    active_session: ReadSignal<Option<i64>>,
     on_select_session: Callback<i64>,
     on_new_session: Callback<()>,
     on_rename_session: Callback<i64>,
     on_delete_session: Callback<i64>,
-    system_prompts: ReadSignal<Vec<SystemPrompt>>,
-    show_prompt_form: ReadSignal<bool>,
-    prompt_edit_id: ReadSignal<Option<i64>>,
-    prompt_name: ReadSignal<String>,
-    set_prompt_name: WriteSignal<String>,
-    prompt_content: ReadSignal<String>,
-    set_prompt_content: WriteSignal<String>,
     on_new_prompt: Callback<()>,
     on_edit_prompt: Callback<i64>,
     on_save_prompt: Callback<()>,
     on_cancel_prompt: Callback<()>,
     on_delete_prompt: Callback<i64>,
-    #[prop(into, optional)] width: Option<Signal<f64>>,
 ) -> impl IntoView {
+    let settings = expect_context::<SettingsState>();
+    let projects = expect_context::<ProjectsState>();
+    let chat = expect_context::<ChatState>();
+    let layout = expect_context::<LayoutState>();
+
+    let connections = settings.connections.read_only();
+    let show_conn_form = settings.show_conn_form.read_only();
+    let conn_edit_id = settings.conn_edit_id.read_only();
+    let conn_name = settings.conn_name.read_only();
+    let set_conn_name = settings.conn_name.write_only();
+    let conn_kind = settings.conn_kind.read_only();
+    let set_conn_kind = settings.conn_kind.write_only();
+    let conn_base_url = settings.conn_base_url.read_only();
+    let set_conn_base_url = settings.conn_base_url.write_only();
+    let conn_model = settings.conn_model.read_only();
+    let set_conn_model = settings.conn_model.write_only();
+    let conn_context_limit = settings.conn_context_limit.read_only();
+    let set_conn_context_limit = settings.conn_context_limit.write_only();
+    let sessions = chat.sessions.read_only();
+    let active_project = projects.active_project.read_only();
+    let active_session = chat.active_session.read_only();
+    let system_prompts = settings.system_prompts.read_only();
+    let show_prompt_form = settings.show_prompt_form.read_only();
+    let prompt_edit_id = settings.prompt_edit_id.read_only();
+    let prompt_name = settings.prompt_name.read_only();
+    let set_prompt_name = settings.prompt_name.write_only();
+    let prompt_content = settings.prompt_content.read_only();
+    let set_prompt_content = settings.prompt_content.write_only();
+    let sidebar_width = layout.sidebar_width.read_only();
+
     // Leptos has no `value` attribute for <textarea>, so the form's content is
     // synced into the DOM node when the form appears.
     let prompt_ta = NodeRef::<leptos::html::Textarea>::new();
@@ -57,7 +67,7 @@ pub fn Sidebar(
     view! {
         <aside
             class="sidebar"
-            style=move || width.map(|w| format!("width: {}px; flex: none;", w.get())).unwrap_or_default()
+            style=move || format!("width: {}px; flex: none;", sidebar_width.get())
         >
             // -- sessions (scoped to the active project) ---------------------
             <div class="sidebar-section">

@@ -9,11 +9,8 @@ use crate::api::BackendApi;
 /// "Select folder" button runs `on_select` with the current directory's path
 /// (relative to the mount root). Local-mode projects keep the system picker.
 #[component]
-pub fn FileBrowser(
-    api: BackendApi,
-    on_close: Callback<()>,
-    on_select: Callback<String>,
-) -> impl IntoView {
+pub fn FileBrowser(on_close: Callback<()>, on_select: Callback<String>) -> impl IntoView {
+    let api = expect_context::<BackendApi>();
     let current = RwSignal::new(String::new());
     let entries = RwSignal::new(Vec::<FileEntry>::new());
     let error = RwSignal::new(Option::<String>::None);
@@ -22,7 +19,7 @@ pub fn FileBrowser(
     // Load the directory at `current` whenever it changes (and once at start).
     Effect::new(move || {
         let dir = current.get();
-        let api = api.clone();
+        let api = api;
         loading.set(true);
         spawn_local(async move {
             let result = api.browse(&dir).await;

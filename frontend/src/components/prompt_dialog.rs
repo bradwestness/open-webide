@@ -1,28 +1,16 @@
 use leptos::prelude::*;
-
-/// A pending single-field input request. `on_submit` runs with the entered
-/// text (trimmed) when the user submits via Enter or the submit button.
-#[derive(Clone)]
-pub struct PromptRequest {
-    pub title: String,
-    /// The field's initial value (pre-filled; empty for a fresh input).
-    pub value: String,
-    /// Hint shown when the field is empty.
-    pub placeholder: String,
-    /// Label for the submit button (e.g. "Create").
-    pub submit_label: String,
-    pub on_submit: Callback<String>,
-}
+pub use openwebide_frontend::state::ui::PromptRequest;
+use openwebide_frontend::state::ui::UiState;
 
 /// A themed single-field input dialog. Shown while `req` is `Some`; clicking
 /// the overlay, the close button, or "Cancel" runs `on_close` (which clears
 /// the request), while submitting runs the request's `on_submit` with the
 /// entered text and then closes.
 #[component]
-pub fn PromptDialog(
-    req: ReadSignal<Option<PromptRequest>>,
-    on_close: Callback<()>,
-) -> impl IntoView {
+pub fn PromptDialog() -> impl IntoView {
+    let ui = expect_context::<UiState>();
+    let req = ui.prompt.read_only();
+    let on_close = Callback::new(move |_| ui.clear_prompt());
     let input_ref = NodeRef::<leptos::html::Input>::new();
     // Pre-fill the field's initial value and focus it when the dialog opens.
     Effect::new(move || {

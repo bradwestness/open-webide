@@ -1,11 +1,9 @@
 use leptos::prelude::*;
 use openwebide_core::{
     FileDiff, ModelInfo, Role, diff_inline_lines,
-    tui::{
-        EditorContext, SessionTelemetry, SlashCommand, extract_editor_context_prelude,
-        parse_thinking,
-    },
+    tui::{SessionTelemetry, SlashCommand, extract_editor_context_prelude, parse_thinking},
 };
+use openwebide_frontend::state::{chat::ChatState, layout::LayoutState, projects::ProjectsState};
 use web_sys::wasm_bindgen::JsCast;
 
 const PROMPT_HISTORY_KEY: &str = "owide-prompt-history";
@@ -30,9 +28,7 @@ fn save_prompt_history(history: &[String]) {
     }
 }
 
-pub use openwebide_frontend::conversation::{
-    ConversationItem, ToolStepResult, item_key, stopped_marker,
-};
+pub use openwebide_frontend::conversation::{ConversationItem, ToolStepResult, item_key};
 
 pub(crate) use openwebide_frontend::markdown::render as render_markdown;
 
@@ -298,7 +294,7 @@ fn TuiStatusLine(
     streaming: ReadSignal<bool>,
     has_awaiting: Signal<bool>,
     session_telemetry: ReadSignal<SessionTelemetry>,
-    local_mode: ReadSignal<bool>,
+    local_mode: Signal<bool>,
     models: ReadSignal<Vec<ModelInfo>>,
     on_select_model: Callback<Option<String>>,
 ) -> impl IntoView {
@@ -419,27 +415,28 @@ fn TuiStatusLine(
 
 #[component]
 pub fn ChatPane(
-    messages: ReadSignal<Vec<ConversationItem>>,
-    streaming: ReadSignal<bool>,
-    draft: ReadSignal<String>,
-    set_draft: WriteSignal<String>,
-    has_session: ReadSignal<bool>,
-    local_mode: ReadSignal<bool>,
-    models: ReadSignal<Vec<ModelInfo>>,
-    selected_model: ReadSignal<Option<String>>,
     on_select_model: Callback<Option<String>>,
     on_send: Callback<()>,
     on_stop: Callback<()>,
     /// Approve or deny a gated tool call: `(tool_call_id, approved)`.
     on_permission: Callback<(String, bool)>,
     on_permission_always: Callback<String>,
-    active_context: ReadSignal<Option<EditorContext>>,
-    set_active_context: WriteSignal<Option<EditorContext>>,
-    session_telemetry: ReadSignal<SessionTelemetry>,
     on_slash_command: Callback<SlashCommand>,
-    current_run_anchor: Signal<Option<i64>>,
-    #[prop(into, optional)] width: Option<Signal<f64>>,
 ) -> impl IntoView {
+    let chat = expect_context::<ChatState>();
+    let layout = expect_context::<LayoutState>();
+    let projects = expect_context::<ProjectsState>();
+    let messages = chat.messages.read_only();
+    let streaming = chat.streaming.read_only();
+    let draft = chat.draft.read_only();
+    let set_draft = chat.draft.write_only();
+    let models = chat.models.read_only();
+    let selected_model = chat.selected_model.read_only();
+    let active_context = chat.active_editor_context.read_only();
+    let set_active_context = chat.active_editor_context.write_only();
+    let session_telemetry = chat.session_telemetry.read_only();
+    let has_session = chat.has_session;
+    let local_mode = Signal::from(projects.local_mode);
     let scroll_ref = NodeRef::<leptos::html::Div>::new();
     let input_ref = NodeRef::<leptos::html::Textarea>::new();
     let model_ref = NodeRef::<leptos::html::Select>::new();
@@ -450,9 +447,9 @@ pub fn ChatPane(
     let draft_backup = RwSignal::new(String::new());
 
     // Check if any tool step is currently awaiting permission
+    let awaiting_step_id = chat.awaiting_step_id;
     let awaiting_step = Memo::new(move |_| {
-        let anchor = current_run_anchor.get()?;
-        let prefix = openwebide_agent::step_id_prefix(anchor);
+        let awaiting_id = awaiting_step_id.get()?;
         messages.get().into_iter().rev().find_map(|item| {
             if let ConversationItem::ToolStep {
                 id,
@@ -461,7 +458,7 @@ pub fn ChatPane(
                 result: None,
                 ..
             } = item
-                && id.starts_with(&prefix)
+                && id == awaiting_id
             {
                 return Some((id, name));
             }
@@ -528,7 +525,7 @@ pub fn ChatPane(
     view! {
         <main
             class="chat-pane tui-pane"
-            style=move || width.map(|w| format!("width: {}px; flex: none;", w.get())).unwrap_or_default()
+            style=move || format!("width: {}px; flex: none;", layout.chat_width.get())
         >
             <Show
                 when=move || !messages.get().is_empty()
@@ -567,7 +564,10 @@ pub fn ChatPane(
                             let (item_sig, _set_item) = signal(item);
                             let is_stopped = matches!(item_sig.get(), ConversationItem::Stopped { .. });
                             let (stopped, _set_stopped) = signal(is_stopped);
-                            let is_message = matches!(item_sig.get(), ConversationItem::Message(_));
+                            let is_message = matches!(
+                                item_sig.get(),
+                                ConversationItem::Message(_) | ConversationItem::Notice { .. }
+                            );
                             let (is_msg, _set_is_msg) = signal(is_message);
 
                             view! {
@@ -612,14 +612,15 @@ pub fn ChatPane(
                                                 }
                                             >
                                                 {move || {
-                                                    let m = match item_sig.get() {
-                                                        ConversationItem::Message(m) => m,
-                                                        _ => unreachable!("not a message"),
+                                                    let (role, content) = match item_sig.get() {
+                                                        ConversationItem::Message(message) => (message.role, message.content),
+                                                        ConversationItem::Notice { text, .. } => (Role::Assistant, text),
+                                                        _ => unreachable!("not a message or notice"),
                                                     };
-                                                    if m.role == Role::Assistant {
-                                                        render_assistant_message(m.content)
+                                                    if role == Role::Assistant {
+                                                        render_assistant_message(content)
                                                     } else {
-                                                        render_user_message(m.content)
+                                                        render_user_message(content)
                                                     }
                                                 }}
                                             </Show>

@@ -1,15 +1,14 @@
 use leptos::prelude::*;
 use openwebide_core::Project;
 
+use openwebide_frontend::state::projects::ProjectsState;
+
 /// Rider-style project tabs: each open project is a tab; the active one is
 /// highlighted. The left side holds the "Open local" / "Open remote" buttons
 /// and a "Recent" dropdown listing saved projects that are not currently
 /// open (click a row to re-open it as a tab, ✕ to delete it).
 #[component]
 pub fn TabBar(
-    open_tabs: ReadSignal<Vec<Project>>,
-    projects: ReadSignal<Vec<Project>>,
-    active_project: ReadSignal<Option<i64>>,
     on_select: Callback<i64>,
     on_close: Callback<i64>,
     on_open_local: Callback<()>,
@@ -17,6 +16,10 @@ pub fn TabBar(
     on_open_project: Callback<i64>,
     on_delete_project: Callback<i64>,
 ) -> impl IntoView {
+    let projects = expect_context::<ProjectsState>();
+    let open_tabs = Signal::derive(move || projects.open_tabs());
+    let all_projects = projects.projects.read_only();
+    let active_project = projects.active_project.read_only();
     let show_recent = RwSignal::new(false);
     view! {
         <div class="tabbar-wrap">
@@ -89,7 +92,7 @@ pub fn TabBar(
                             let mut seen_keys = std::collections::HashSet::new();
                             let mut recent = Vec::new();
 
-                            for p in projects.get().into_iter().rev() {
+                            for p in all_projects.get().into_iter().rev() {
                                 let key = project_workspace_key(&p);
                                 if open.iter().any(|t| t.id == p.id) || open_keys.contains(&key) {
                                     continue;
@@ -138,7 +141,7 @@ pub fn TabBar(
                                 .collect();
                             let mut seen_keys = std::collections::HashSet::new();
                             let mut count = 0;
-                            for p in projects.get().into_iter().rev() {
+                            for p in all_projects.get().into_iter().rev() {
                                 let key = project_workspace_key(&p);
                                 if open.iter().any(|t| t.id == p.id) || open_keys.contains(&key) {
                                     continue;

@@ -7,6 +7,9 @@ use web_sys::wasm_bindgen::JsCast;
 
 use crate::components::chat_pane::render_markdown;
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SegmentOption, SegmentedControl};
+use openwebide_frontend::state::{
+    git::GitState, projects::ProjectsState, workspace::WorkspaceState,
+};
 
 /// How the open file is displayed in the editor pane.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -332,23 +335,54 @@ fn render_preview_view(
 /// with informative placeholders for non-previewable files.
 #[component]
 pub fn Editor(
-    open_file: ReadSignal<Option<String>>,
-    content: ReadSignal<String>,
-    set_content: WriteSignal<String>,
-    dirty: ReadSignal<bool>,
-    set_dirty: WriteSignal<bool>,
-    pending_diff: ReadSignal<Option<FileDiff>>,
-    #[prop(default = None.into())] media_url: Signal<Option<String>>,
-    #[prop(default = Signal::derive(|| None))] git_head_diff: Signal<Option<FileDiff>>,
     #[prop(optional)] on_load_git_diff: Option<Callback<()>>,
     #[prop(optional)] on_discard_git_diff: Option<Callback<()>>,
-    #[prop(into, default = Signal::derive(|| false))] can_revert: Signal<bool>,
     read_only: Signal<bool>,
     on_open_lossy: Callback<()>,
     on_save: Callback<()>,
     on_accept: Callback<()>,
     on_reject: Callback<()>,
 ) -> impl IntoView {
+    let workspace = expect_context::<WorkspaceState>();
+    let projects = expect_context::<ProjectsState>();
+    let git = expect_context::<GitState>();
+
+    let open_file = workspace.open_file.read_only();
+    let content = workspace.content.read_only();
+    let set_content = workspace.content.write_only();
+    let dirty = workspace.dirty.read_only();
+    let set_dirty = workspace.dirty.write_only();
+    let pending_diff: Signal<Option<FileDiff>> = Signal::from(workspace.pending_diff);
+    let media_url = workspace.media_url.read_only();
+    let git_head_diff = Signal::derive(move || {
+        let open_file = workspace.open_file.get()?;
+        let project_id = projects.active_project.get();
+        let head = git.head_content.get()?;
+        if head.project_id != project_id || head.path != open_file || head.content.is_err() {
+            return None;
+        }
+        let old = head.content.ok();
+        let new = workspace.content.get();
+        if old.is_none() && new.is_empty() {
+            return None;
+        }
+        Some(FileDiff {
+            path: open_file,
+            old,
+            new,
+            old_unavailable: false,
+            backup_path: None,
+        })
+    });
+    let can_revert = Signal::derive(move || {
+        let Some(open_file) = workspace.open_file.get() else {
+            return false;
+        };
+        let project_id = projects.active_project.get();
+        git.head_content.get().is_some_and(|head| {
+            head.project_id == project_id && head.path == open_file && head.content.is_ok()
+        })
+    });
     let ta = NodeRef::<leptos::html::Textarea>::new();
     let hl = NodeRef::<leptos::html::Div>::new();
     let view_mode = RwSignal::new(ViewMode::Code);

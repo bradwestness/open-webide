@@ -1,19 +1,29 @@
 use leptos::prelude::*;
-use openwebide_core::GitRepoStatus;
 
 use crate::api::HealthState;
+use openwebide_frontend::state::{chat::ChatState, git::GitState};
 
 #[component]
 pub fn StatusBar(
     health: ReadSignal<Option<HealthState>>,
-    show_terminal: ReadSignal<bool>,
     on_toggle_terminal: impl Fn() + Copy + 'static,
-    #[prop(default = Signal::derive(|| None))] git_status: Signal<Option<GitRepoStatus>>,
     #[prop(default = Callback::new(|_| ()))] on_branch_click: Callback<()>,
     #[prop(default = Callback::new(|_| ()))] on_sync_click: Callback<()>,
-    #[prop(default = Signal::derive(|| openwebide_agent::policy::ApprovalMode::Default))]
-    approval_mode: Signal<openwebide_agent::policy::ApprovalMode>,
 ) -> impl IntoView {
+    let chat = expect_context::<ChatState>();
+    let git = expect_context::<GitState>();
+    let show_terminal = chat.show_terminal.read_only();
+    let git_status: Signal<Option<openwebide_core::GitRepoStatus>> =
+        Signal::derive(move || git.status.get());
+    let approval_mode = Signal::derive(move || {
+        chat.active_session
+            .get()
+            .and_then(|session_id| {
+                chat.approval_mode
+                    .with(|modes| modes.get(&session_id).copied())
+            })
+            .unwrap_or_default()
+    });
     view! {
         <footer class="statusbar">
             <Show

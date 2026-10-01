@@ -5,6 +5,7 @@ mod components;
 mod idb;
 mod local_agent;
 mod local_fs;
+mod state_actions;
 mod workspace;
 
 fn main() {

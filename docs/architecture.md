@@ -98,10 +98,14 @@ frontend can be served from a different origin during development.
 
 ### `frontend`
 
-Leptos (CSR) app: `App` fetches `/api/health` on mount, then
-`/api/connections`, and renders the shell — top bar (health dot), sidebar
-(connections list), empty chat pane, status bar. The API base is
-same-origin by default, overridable with `?api=<url>` for dev.
+Leptos (CSR) app. `App` creates the feature stores, provides them through Leptos context, checks
+the session, and renders the layout shell. The stores in `frontend/src/state/` own UI notices and
+dialogs, panel layout, settings and authentication, projects and per-project workspaces, Git state,
+and chat runs. Components read the matching store from context instead of receiving app-wide
+signal bundles through every intermediate component. Browser and backend actions stay in the
+WASM-only frontend binary; the signals and pure transitions are also available to native tests.
+
+The API base is same-origin by default, overridable with `?api=<url>` for dev.
 
 ## Spin wiring (`spin.toml`)
 

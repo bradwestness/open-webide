@@ -65,7 +65,7 @@ impl LlmProvider for BrowserLlmProvider {
         &self,
         request: &ChatRequest,
     ) -> impl Future<Output = Result<String, ProviderError>> + Send {
-        let api = self.api.clone();
+        let api = self.api;
         let request = request.clone();
         ForceSend(async move {
             match api.chat_tools(&request).await {
@@ -89,7 +89,7 @@ impl LlmProvider for BrowserLlmProvider {
         &self,
         request: &ChatRequest,
     ) -> impl Future<Output = Result<ChatCompletion, ProviderError>> + Send {
-        let api = self.api.clone();
+        let api = self.api;
         let request = request.clone();
         ForceSend(async move { api.chat_tools(&request).await.map_err(ProviderError::Http) })
     }
@@ -120,13 +120,13 @@ impl WebClient for BrowserWebClient {
         query: &str,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<WebSearchResult>, String>> + Send {
-        let api = self.api.clone();
+        let api = self.api;
         let query = query.to_string();
         ForceSend(async move { api.web_search(&query, limit).await })
     }
 
     fn fetch_page(&self, url: &str) -> impl Future<Output = Result<String, String>> + Send {
-        let api = self.api.clone();
+        let api = self.api;
         let url = url.to_string();
         ForceSend(async move { api.fetch_web_page(&url).await })
     }
@@ -397,10 +397,10 @@ pub async fn run_local_agent(
         tools: openwebide_agent::vfs_tools(),
     };
 
-    let web = BrowserWebClient::new(api.clone());
+    let web = BrowserWebClient::new(api);
     let bridge = BrowserBridgeClient::new(bridge_config.http_url, bridge_credentials);
     let executor = VfsToolExecutor::with_web_and_bridge(vfs, web, bridge);
-    let provider = BrowserLlmProvider::new(api.clone(), ProviderKind::Ollama);
+    let provider = BrowserLlmProvider::new(api, ProviderKind::Ollama);
     let cancel = LocalCancelCheck {
         flag: cancel_flag.clone(),
     };
