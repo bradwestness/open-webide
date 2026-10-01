@@ -970,3 +970,63 @@ async fn permission_snapshot_restores_retry(auto_approve: bool) {
     );
     close(&mounted);
 }
+
+#[wasm_bindgen_test]
+async fn stop_running_tool_renders_cancelled_and_one_marker() {
+    let (mounted, fake) = fixture();
+    ready(&fake).await;
+    no_runs(&fake);
+    let run_id = send(&mounted, &fake).await;
+    event(
+        &fake,
+        &run_id,
+        1,
+        RunEvent::Message {
+            message: message(7, Role::User, "hello"),
+        },
+    );
+    event(
+        &fake,
+        &run_id,
+        2,
+        RunEvent::ToolCall {
+            id: "a7t1c0".into(),
+            name: "run_command".into(),
+            summary: "sleep 30".into(),
+        },
+    );
+    settle().await;
+    mounted.click(".btn.stop");
+    settle().await;
+    assert!(fake.sent().contains(&BridgeClientMessage::RunCancel {
+        run_id: run_id.clone()
+    }));
+    event(
+        &fake,
+        &run_id,
+        3,
+        RunEvent::ToolResult {
+            id: "a7t1c0".into(),
+            name: "run_command".into(),
+            ok: false,
+            summary: "cancelled".into(),
+            diff: None,
+        },
+    );
+    event(&fake, &run_id, 4, RunEvent::Cancelled);
+    event(&fake, &run_id, 4, RunEvent::Cancelled);
+    settle().await;
+    assert!(mounted.root.text_content().unwrap().contains("cancelled"));
+    assert_eq!(
+        mounted
+            .state
+            .chat
+            .messages
+            .get_untracked()
+            .iter()
+            .filter(|item| matches!(item, ConversationItem::Stopped { .. }))
+            .count(),
+        1
+    );
+    close(&mounted);
+}

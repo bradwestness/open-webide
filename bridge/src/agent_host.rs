@@ -16,6 +16,7 @@ use crate::backend_client::RunBackend;
 
 pub struct InProcessBridgeClient {
     pub dir: PathBuf,
+    pub cancel: BridgeCancel,
 }
 
 impl BridgeClient for InProcessBridgeClient {
@@ -28,7 +29,7 @@ impl BridgeClient for InProcessBridgeClient {
             command,
             &self.dir,
             timeout_seconds,
-            std::future::pending(),
+            self.cancel.cancelled(),
         )
         .await
     }
@@ -93,6 +94,9 @@ impl BridgeCancel {
 }
 
 impl CancelCheck for BridgeCancel {
+    async fn cancelled(&self) {
+        BridgeCancel::cancelled(self).await;
+    }
     async fn check(&self) -> bool {
         self.is_cancelled()
     }

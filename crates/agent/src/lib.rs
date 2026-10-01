@@ -121,7 +121,8 @@ pub trait ToolExecutor: Send {
 /// Decides whether the current run should stop.
 ///
 /// The loop checks before each model call, stream chunk, and tool execution.
-/// Cancellation drops the model stream at the next chunk boundary.
+/// Cancellation drops the model stream at the next chunk boundary and interrupts
+/// cancellable tools while they are running.
 pub trait CancelCheck: Send {
     /// Returns `true` when the run should stop.
     ///
@@ -130,6 +131,8 @@ pub trait CancelCheck: Send {
     /// is an explicit `impl Future` (and impls allow the lint that suggests
     /// the `async fn` form).
     fn check(&self) -> impl Future<Output = bool> + Send;
+    /// Resolves once cancellation is requested.
+    fn cancelled(&self) -> impl Future<Output = ()> + Send;
 }
 
 /// A cancel check that never fires; for hosts without cancellation.
@@ -137,6 +140,9 @@ pub trait CancelCheck: Send {
 pub struct NoopCancel;
 
 impl CancelCheck for NoopCancel {
+    fn cancelled(&self) -> impl Future<Output = ()> + Send {
+        std::future::pending()
+    }
     #[allow(clippy::manual_async_fn)]
     fn check(&self) -> impl Future<Output = bool> + Send {
         async { false }
@@ -234,6 +240,10 @@ where
             loop {
                 match state.next {
                     Next::Stop => return None,
+                    Next::Cancelled => {
+                        state.next = Next::Stop;
+                        return Some((AgentEvent::Cancelled, state));
+                    }
                     Next::CallModel => {
                         if state.cancel.check().await {
                             state.next = Next::Stop;
@@ -457,7 +467,33 @@ where
                             .take()
                             .expect("RunTool without a current call");
                         state.tool_calls += 1;
-                        let outcome = state.executor.execute(&call).await;
+                        let interrupted;
+                        let outcome = if call
+                            .name
+                            .parse::<tools::ToolName>()
+                            .is_ok_and(|name| name.cancellable())
+                        {
+                            let execute = Box::pin(state.executor.execute(&call));
+                            let cancel = Box::pin(state.cancel.cancelled());
+                            match futures::future::select(execute, cancel).await {
+                                futures::future::Either::Left((outcome, _)) => {
+                                    interrupted = false;
+                                    outcome
+                                }
+                                futures::future::Either::Right(((), _)) => {
+                                    interrupted = true;
+                                    ToolOutcome {
+                                        ok: false,
+                                        content: "cancelled".into(),
+                                        summary: "cancelled".into(),
+                                        diff: None,
+                                    }
+                                }
+                            }
+                        } else {
+                            interrupted = false;
+                            state.executor.execute(&call).await
+                        };
                         state.messages.push(ChatMessage {
                             id: 0,
                             session_id: 0,
@@ -468,7 +504,11 @@ where
                             tool_call_id: Some(wire_id),
                             usage: None,
                         });
-                        state.next = Next::EmitToolCall;
+                        state.next = if interrupted {
+                            Next::Cancelled
+                        } else {
+                            Next::EmitToolCall
+                        };
                         return Some((
                             AgentEvent::ToolResult {
                                 id: call.id,
@@ -580,6 +620,7 @@ enum Next {
     EmitToolCall,
     AwaitPermission,
     RunTool,
+    Cancelled,
     Stop,
 }
 
@@ -1067,6 +1108,9 @@ mod tests {
     }
 
     impl CancelCheck for FlippingCancel {
+        fn cancelled(&self) -> impl Future<Output = ()> + Send {
+            std::future::pending()
+        }
         fn check(&self) -> impl Future<Output = bool> + Send {
             let calls = self.calls.clone();
             async move {
@@ -1762,6 +1806,9 @@ mod tests {
     struct AtomicCancel(Arc<std::sync::atomic::AtomicBool>);
 
     impl CancelCheck for AtomicCancel {
+        fn cancelled(&self) -> impl Future<Output = ()> + Send {
+            std::future::pending()
+        }
         async fn check(&self) -> bool {
             self.0.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -1795,5 +1842,133 @@ mod tests {
             assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
             assert_eq!(events.next().await, None);
         });
+    }
+    struct TimedCancel {
+        flag: Arc<std::sync::atomic::AtomicBool>,
+        receiver: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
+    }
+    impl CancelCheck for TimedCancel {
+        async fn check(&self) -> bool {
+            self.flag.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn cancelled(&self) -> impl Future<Output = ()> + Send {
+            let receiver = self.receiver.lock().unwrap().take().unwrap();
+            async move {
+                let _ = receiver.await;
+            }
+        }
+    }
+    struct SlowExecutor(bool);
+    impl ToolExecutor for SlowExecutor {
+        fn describe(&self, call: &ToolCall) -> String {
+            call.name.clone()
+        }
+        async fn execute(&self, _: &ToolCall) -> ToolOutcome {
+            if self.0 {
+                std::future::pending::<()>().await;
+            }
+            let (sender, receiver) = futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                let _ = sender.send(());
+            });
+            receiver.await.unwrap();
+            outcome("written", "written")
+        }
+    }
+    fn timed_cancel() -> TimedCancel {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_flag = flag.clone();
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            thread_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = sender.send(());
+        });
+        TimedCancel {
+            flag,
+            receiver: Mutex::new(Some(receiver)),
+        }
+    }
+    #[test]
+    fn running_command_is_interrupted() {
+        let started = std::time::Instant::now();
+        let (provider, _) =
+            FakeProvider::new(vec![Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "p",
+                "run_command",
+                "{}",
+            )])))]);
+        let events = futures::executor::block_on(
+            run(
+                provider,
+                SlowExecutor(true),
+                request(),
+                AgentConfig::default(),
+                timed_cancel(),
+                NoopGate,
+                7,
+            )
+            .collect::<Vec<_>>(),
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(
+            matches!(&events[events.len()-2], AgentEvent::ToolResult { ok: false, summary, .. } if summary == "cancelled")
+        );
+        assert_eq!(events.last(), Some(&AgentEvent::Cancelled));
+    }
+    #[test]
+    fn running_write_completes_before_cancellation() {
+        let (provider, _) =
+            FakeProvider::new(vec![Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "p",
+                "write_file",
+                "{}",
+            )])))]);
+        let events = futures::executor::block_on(
+            run(
+                provider,
+                SlowExecutor(false),
+                request(),
+                AgentConfig::default(),
+                timed_cancel(),
+                NoopGate,
+                7,
+            )
+            .collect::<Vec<_>>(),
+        );
+        assert!(
+            matches!(&events[events.len()-2], AgentEvent::ToolResult { ok: true, summary, .. } if summary == "written")
+        );
+        assert_eq!(events.last(), Some(&AgentEvent::Cancelled));
+    }
+    #[test]
+    fn never_cancel_allows_slow_command_to_finish() {
+        let (provider, _) = FakeProvider::new(vec![
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "p",
+                "run_command",
+                "{}",
+            )]))),
+            Ok(no_usage(ChatResponse::Text("done".into()))),
+        ]);
+        let events = futures::executor::block_on(
+            run(
+                provider,
+                SlowExecutor(false),
+                request(),
+                AgentConfig::default(),
+                NoopCancel,
+                NoopGate,
+                7,
+            )
+            .collect::<Vec<_>>(),
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ToolResult { ok: true, .. }))
+        );
+        assert!(!events.contains(&AgentEvent::Cancelled));
     }
 }

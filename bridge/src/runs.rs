@@ -366,7 +366,10 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                     backend: backend.clone(),
                     user_id: run.owner,
                 },
-                InProcessBridgeClient { dir },
+                InProcessBridgeClient {
+                    dir,
+                    cancel: run.cancel.clone(),
+                },
             );
             let memo = provider.tool_stream_memo();
             let connection_id = plan.connection.id;

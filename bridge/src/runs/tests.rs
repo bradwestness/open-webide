@@ -894,3 +894,51 @@ async fn empty_interim_persists_wire_calls_before_step_rows() {
         vec!["message:10", "step:10:a7t1c0"]
     );
 }
+
+#[tokio::test]
+async fn cancel_running_command_kills_group_before_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(FakeBackend::default());
+    *backend.kind.lock().unwrap() = Some(RunKind::Agent {
+        project_path: "".into(),
+    });
+    let provider = FakeProvider {
+        tools: Mutex::new(vec![vec![Ok(ToolStreamChunk::Response(ChatResponse::ToolCalls(vec![ToolCall {
+            id: "p".into(), name: "run_command".into(),
+            arguments: serde_json::json!({"command": "touch started; sleep 30; touch marker", "timeout_seconds": 60}).to_string(),
+        }])) )]]), ..Default::default()
+    };
+    let registry = RunRegistry::default();
+    let run = registry
+        .start(&user(1), start("r"), dir.path(), backend, |_| provider)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(RunEvent::PermissionRequest { id, .. }) = events(&run)
+                .iter()
+                .find(|e| matches!(e, RunEvent::PermissionRequest { .. }))
+            {
+                run.gate.decide(id, true).unwrap();
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        while !dir.path().join("started").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let started = Instant::now();
+    registry.get(&user(1), "r").unwrap().cancel.cancel();
+    finished(&run).await;
+    assert!(started.elapsed() < Duration::from_secs(2));
+    let emitted = events(&run);
+    assert!(
+        matches!(&emitted[emitted.len()-2], RunEvent::ToolResult { ok: false, summary, .. } if summary == "cancelled")
+    );
+    assert_eq!(emitted.last(), Some(&RunEvent::Cancelled));
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    assert!(!dir.path().join("marker").exists());
+}

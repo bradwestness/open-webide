@@ -18,6 +18,15 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::wasm_bindgen::JsCast;
 use web_sys::{AbortSignal, ReadableStreamDefaultReader, ReadableStreamReadResult};
 
+pub(crate) struct CommandFetchGuard(pub(crate) web_sys::AbortController);
+
+impl Drop for CommandFetchGuard {
+    fn drop(&mut self) {
+        // Dropping a fetch future alone leaves the browser's HTTP connection occupied.
+        self.0.abort();
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct BackendApi {
     base: leptos::prelude::StoredValue<String>,
@@ -163,7 +172,7 @@ impl BackendApi {
     }
 
     pub async fn delete_connection(&self, id: i64) -> Result<(), String> {
-        self.request::<(), _>(Method::DELETE, &format!("/connections/{id}"), None)
+        self.request::<(), _>(Method::DELETE, &format!("/connections/{id}"), None, false)
             .await
     }
 
@@ -209,8 +218,13 @@ impl BackendApi {
     }
 
     pub async fn delete_system_prompt(&self, id: i64) -> Result<(), String> {
-        self.request::<(), _>(Method::DELETE, &format!("/system-prompts/{id}"), None)
-            .await
+        self.request::<(), _>(
+            Method::DELETE,
+            &format!("/system-prompts/{id}"),
+            None,
+            false,
+        )
+        .await
     }
 
     // -- settings ----------------------------------------------------------
@@ -269,7 +283,7 @@ impl BackendApi {
     }
 
     pub async fn delete_project(&self, id: i64) -> Result<(), String> {
-        self.request::<(), _>(Method::DELETE, &format!("/projects/{id}"), None)
+        self.request::<(), _>(Method::DELETE, &format!("/projects/{id}"), None, false)
             .await
     }
 
@@ -387,6 +401,7 @@ impl BackendApi {
             Method::POST,
             &format!("/projects/{project_id}/files/copy"),
             Some(&body),
+            false,
         )
         .await?;
         Ok(())
@@ -418,6 +433,7 @@ impl BackendApi {
             Method::DELETE,
             &format!("/projects/{project_id}/files/delete?path={}", urlenc(path)),
             None,
+            false,
         )
         .await
     }
@@ -527,7 +543,7 @@ impl BackendApi {
     }
 
     pub async fn delete_session(&self, id: i64) -> Result<(), String> {
-        self.request::<(), _>(Method::DELETE, &format!("/sessions/{id}"), None)
+        self.request::<(), _>(Method::DELETE, &format!("/sessions/{id}"), None, false)
             .await
     }
 
@@ -539,6 +555,7 @@ impl BackendApi {
                 Method::POST,
                 &format!("/sessions/{session_id}/cancel"),
                 None,
+                false,
             )
             .await?;
         Ok(())
@@ -662,18 +679,24 @@ impl BackendApi {
         query: &str,
         limit: usize,
     ) -> Result<Vec<WebSearchResult>, String> {
-        self.get(&format!(
-            "/web/search?query={}&limit={}",
-            urlenc(query),
-            limit
-        ))
+        self.request::<(), _>(
+            Method::GET,
+            &format!("/web/search?query={}&limit={}", urlenc(query), limit),
+            None,
+            true,
+        )
         .await
     }
 
     /// Fetch a web page and return sanitized Markdown.
     pub async fn fetch_web_page(&self, target_url: &str) -> Result<String, String> {
         let resp: serde_json::Value = self
-            .get(&format!("/web/fetch?url={}", urlenc(target_url)))
+            .request::<(), _>(
+                Method::GET,
+                &format!("/web/fetch?url={}", urlenc(target_url)),
+                None,
+                true,
+            )
             .await?;
         resp.get("content")
             .and_then(|v| v.as_str())
@@ -756,7 +779,7 @@ impl BackendApi {
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
-        self.request::<(), T>(Method::GET, path, None).await
+        self.request::<(), T>(Method::GET, path, None, false).await
     }
 
     async fn post<T: Serialize, R: DeserializeOwned>(
@@ -764,7 +787,7 @@ impl BackendApi {
         path: &str,
         body: &T,
     ) -> Result<R, String> {
-        self.request(Method::POST, path, Some(body)).await
+        self.request(Method::POST, path, Some(body), false).await
     }
 
     async fn put<T: Serialize, R: DeserializeOwned>(
@@ -772,7 +795,7 @@ impl BackendApi {
         path: &str,
         body: &T,
     ) -> Result<R, String> {
-        self.request(Method::PUT, path, Some(body)).await
+        self.request(Method::PUT, path, Some(body), false).await
     }
 
     fn builder(&self, url: &str, method: Method) -> RequestBuilder {
@@ -785,14 +808,29 @@ impl BackendApi {
         builder
     }
 
-    async fn request<T, R>(&self, method: Method, path: &str, body: Option<&T>) -> Result<R, String>
+    async fn request<T, R>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&T>,
+        abort_on_drop: bool,
+    ) -> Result<R, String>
     where
         T: Serialize,
         R: DeserializeOwned,
     {
         let url = format!("{}{path}", self.base());
         let is_delete = method == Method::DELETE;
-        let builder = self.builder(&url, method);
+        let guard = if abort_on_drop {
+            Some(CommandFetchGuard(
+                web_sys::AbortController::new()
+                    .map_err(|e| format!("request cancellation error: {e:?}"))?,
+            ))
+        } else {
+            None
+        };
+        let signal = guard.as_ref().map(|guard| guard.0.signal());
+        let builder = self.builder(&url, method).abort_signal(signal.as_ref());
         let req = match body {
             Some(body) => builder.json(body),
             None => builder.build(),
@@ -838,3 +876,44 @@ fn query_param(query: &str, key: &str) -> Option<String> {
 }
 
 pub use crate::text::urlenc;
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_test::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen(
+        inline_js = "let original; let signal; export function captureFetch() { original = window.fetch; window.fetch = request => { signal = request.signal; return new Promise(() => {}); }; } export function capturedSignal() { return signal; } export function restoreFetch() { window.fetch = original; }"
+    )]
+    extern "C" {
+        #[wasm_bindgen(js_name = captureFetch)]
+        fn capture_fetch();
+        #[wasm_bindgen(js_name = capturedSignal)]
+        fn captured_signal() -> AbortSignal;
+        #[wasm_bindgen(js_name = restoreFetch)]
+        fn restore_fetch();
+    }
+    #[wasm_bindgen_test]
+    async fn dropping_web_tool_requests_aborts_fetch() {
+        let owner = leptos::prelude::Owner::new();
+        let api = owner.with(BackendApi::from_location);
+        capture_fetch();
+        let mut fetch = Box::pin(api.fetch_web_page("https://example.com"));
+        assert!(futures::poll!(&mut fetch).is_pending());
+        let signal = captured_signal();
+        assert!(!signal.aborted());
+        drop(fetch);
+        assert!(signal.aborted());
+        let mut search = Box::pin(api.web_search("example", 1));
+        assert!(futures::poll!(&mut search).is_pending());
+        let signal = captured_signal();
+        assert!(!signal.aborted());
+        drop(search);
+        assert!(signal.aborted());
+        restore_fetch();
+        owner.cleanup();
+    }
+}

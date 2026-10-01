@@ -51,7 +51,7 @@ any phone, tablet, or laptop into a seamless remote control:
 
 Working:
 - **Agentic coding loop (`crates/agent`):** Model → tool calls (`read_file`, `write_file`, `list_dir`, `search`, `run_command`, `git_status`/`git_diff`/`git_commit`/`git_branch`) → execute → review cycle with turn and tool call budgets
-- **Permission handshake & cancellation:** Gated tool approval before destructive file writes and shell commands, and server-side run cancellation
+- **Permission handshake & cancellation:** Gated tool approval before destructive file writes and shell commands, and server-side run cancellation. Stop interrupts running commands, web requests, and workspace searches. File writes, commits, and branch changes finish before the run stops. Bridge commands stop immediately; SSE and local runs check during tools every 250 ms and 100 ms respectively.
 - **Core IDE surface:**
   - In-browser code editor with a pure-Rust syntax-highlighter overlay (16 languages; zero JS dependencies), cursor/selection tracking, and diff viewing against Git HEAD
   - Diff-first file viewer with toggleable display modes: inline diff, side-by-side diff, updated content, and markdown/image preview

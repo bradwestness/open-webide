@@ -262,15 +262,6 @@ impl BrowserBridgeClient {
     }
 }
 
-struct CommandFetchGuard(web_sys::AbortController);
-
-impl Drop for CommandFetchGuard {
-    fn drop(&mut self) {
-        // Dropping a fetch future alone leaves the browser's HTTP connection occupied.
-        self.0.abort();
-    }
-}
-
 impl BridgeClient for BrowserBridgeClient {
     fn execute_command(
         &self,
@@ -297,7 +288,7 @@ impl BridgeClient for BrowserBridgeClient {
                 .credential()
                 .await
                 .map_err(|e| format!("auth error: {e}"))?;
-            let guard = CommandFetchGuard(
+            let guard = crate::api::CommandFetchGuard(
                 web_sys::AbortController::new()
                     .map_err(|e| format!("request cancellation error: {e:?}"))?,
             );
@@ -601,6 +592,15 @@ pub struct LocalCancelCheck {
 }
 
 impl CancelCheck for LocalCancelCheck {
+    fn cancelled(&self) -> impl Future<Output = ()> + Send {
+        let flag = self.flag.clone();
+        ForceSend(async move {
+            while !flag.load(Ordering::Relaxed) {
+                crate::util::sleep_ms(100).await;
+            }
+        })
+    }
+
     fn check(&self) -> impl Future<Output = bool> + Send {
         let flag = self.flag.clone();
         ForceSend(async move { flag.load(Ordering::Relaxed) })

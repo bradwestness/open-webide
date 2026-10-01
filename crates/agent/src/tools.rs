@@ -164,6 +164,18 @@ pub enum ToolName {
 }
 
 impl ToolName {
+    /// Whether execution can safely be interrupted before it finishes.
+    pub fn cancellable(self) -> bool {
+        matches!(
+            self,
+            Self::RunCommand
+                | Self::FetchWebPage
+                | Self::SearchWeb
+                | Self::Search
+                | Self::GrepSearch
+        )
+    }
+
     /// Every built-in tool, in the order `vfs_tools()` advertises it to the
     /// model.
     pub const ALL: &[ToolName] = &[

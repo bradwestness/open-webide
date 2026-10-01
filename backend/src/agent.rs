@@ -29,11 +29,12 @@ pub fn workspace_tools() -> Vec<ToolDefinition> {
 /// A per-session cancel flag backed by SQLite. The cancel POST arrives as a
 /// separate Spin request (stateless, possibly another component instance),
 /// so the flag lives in the database; the in-flight stream polls it at step
-/// boundaries.
+/// boundaries and during interruptible tools.
 pub struct CancelFlag {
     store: Arc<Store<AppDb>>,
     session_id: i64,
     started_ms: i64,
+    poll_interval: Duration,
 }
 
 impl CancelFlag {
@@ -42,11 +43,32 @@ impl CancelFlag {
             store,
             session_id,
             started_ms,
+            poll_interval: Duration::from_millis(250),
         }
     }
 }
 
 impl CancelCheck for CancelFlag {
+    async fn cancelled(&self) {
+        while !self.check().await {
+            if self.poll_interval.is_zero() {
+                let mut yielded = false;
+                futures::future::poll_fn(|cx| {
+                    if yielded {
+                        std::task::Poll::Ready(())
+                    } else {
+                        yielded = true;
+                        cx.waker().wake_by_ref();
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+            } else {
+                spin_sdk::time::sleep(self.poll_interval).await;
+            }
+        }
+    }
+
     fn check(&self) -> impl Future<Output = bool> + Send {
         let store = self.store.clone();
         let session_id = self.session_id;
@@ -750,6 +772,19 @@ mod tests {
             assert!(
                 matches!(&mapped[0], RunEvent::Interim { message } if message.id == 0 && message.content == "checking")
             );
+        });
+    }
+    #[test]
+    fn cancellation_waiter_observes_request() {
+        futures::executor::block_on(async {
+            let (store, session_id) = test_store().await;
+            let mut cancel = CancelFlag::new(store.clone(), session_id, 2000);
+            cancel.poll_interval = Duration::ZERO;
+            store.request_cancel(session_id, 1000).await.unwrap();
+            let mut waiter = Box::pin(cancel.cancelled());
+            assert!(futures::poll!(&mut waiter).is_pending());
+            store.request_cancel(session_id, 3000).await.unwrap();
+            waiter.await;
         });
     }
 }

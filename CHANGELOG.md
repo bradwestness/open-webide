@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Stop interrupts running commands, web requests, and searches while allowing file writes and Git mutations to finish.
+
 - Sync prompt history and theme through user settings, import legacy history once, and fit panel widths to the viewport.
 
 - Run `/test [filter]` in the terminal with shell-quoted filters and the project directory.
