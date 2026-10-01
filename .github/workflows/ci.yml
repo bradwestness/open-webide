@@ -83,6 +83,15 @@ jobs:
         with:
           install-chromedriver: true
 
+      # ChromeDriver otherwise launches the runner's preinstalled Chrome, whose
+      # version needn't match the driver setup-chrome installed.
+      - name: Point ChromeDriver at the installed Chrome
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          printf '{"goog:chromeOptions":{"binary":"%s"}}\n' "$CHROME_PATH" \
+            | tee webdriver.json > frontend/webdriver.json
+
       - name: Install wasm-bindgen test runner
         run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
 
