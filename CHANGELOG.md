@@ -11,6 +11,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add bridge-hosted chat/agent runs and streamed completions, with reconnect replay, cancellation, approvals, and TLS enabled by default.
+
 - Share one authenticated bridge connection across terminal, run, and completion traffic; reconnect terminals automatically and open a fresh shell after a bridge restart.
 
 - Stream server-side agent replies token by token, retain text before tool calls in conversation history, and add a run-plan API.
@@ -49,6 +51,8 @@ for what's still ahead.
 
 
 ### Fixed
+
+- Allow the server-side agent to back up unreadable files before overwriting them.
 
 - **Web fetch HTML→Markdown conversion:** the converter is now built on the `html5ever` tokenizer (same version `ammonia` already uses, so no second copy in the dependency tree), so fetched pages keep text the old hand-written scanner dropped — an unescaped `<` no longer swallows the rest of the line, bare `&` in text (`Q&A`, `AT&T`) survives, HTML5 entities are decoded fully, self-closing skip tags (`<svg/>`) no longer swallow everything after them, and `<head>` content (e.g. `<title>`) no longer leaks into the output. Links with unsafe `href` schemes (`javascript:`, `data:`, …) are now removed (link text is kept), relative/fragment links are kept, and `data-href` is no longer mistaken for `href`.
 - **Line-ending and final-newline diffs:** the inline and side-by-side diffs now align lines with a line-level LCS that compares each line including its ending, so a CRLF→LF conversion or an added/removed trailing newline shows up as a change (with a small "⏎ CRLF → LF" / "no newline at end of file" note) instead of being invisible, and an inserted line no longer marks every line below it as changed. A whole-file line-ending change collapses to a single summary line.

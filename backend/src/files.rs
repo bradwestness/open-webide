@@ -735,6 +735,14 @@ impl Vfs for HostFsVfs {
         })
     }
 
+    fn copy<'a>(&'a self, from: &'a str, to: &'a str) -> VfsFuture<'a, ()> {
+        Box::pin(async move {
+            let from = self.resolve(from)?;
+            let to = self.resolve(to)?;
+            copy(&from, &to).await.map_err(map_vfs_err)
+        })
+    }
+
     fn search_content<'a>(
         &'a self,
         query: &'a str,

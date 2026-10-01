@@ -181,6 +181,9 @@ cargo build -p openwebide-bridge
 ./target/debug/openwebide-bridge --port 3001 --workspace /path/to/project
 ```
 
+Signed-in connections (hello with a bridge token) can run chat and agents over the bridge when it shares the backend's secret. Runs continue after a browser disconnect and can replay their events on reconnect. Otherwise, runs use SSE and completions use `/api/chat-tools`. HTTP-only builds (`cargo build -p openwebide-bridge --no-default-features`) advertise no run support; terminal and Git operations remain available.
+
+- `--backend-url <URL>` (or env `OPENWEBIDE_BRIDGE_BACKEND_URL`): backend API URL for run plans and persistence (default: `http://127.0.0.1:3000/api`); set it on the daemon, never in a client request. A frontend `?api=` development override needs a matching `--backend-url`.
 - `--workspace <DIR>` (or env `OPENWEBIDE_BRIDGE_WORKSPACE`): sets the workspace root directory for command execution and repository operations (defaults to the current working directory). This directory must match the `files` source mount used by the Spin backend (e.g. `~/source` locally or `/workspace` in Docker). All `cwd` arguments passed to the bridge are evaluated relative to this root, and requests escaping the root are rejected (lexical confinement).
 - `-p, --port <PORT>` (or env `OPENWEBIDE_BRIDGE_PORT`): port to bind on (default: `3001`).
 - `--host <HOST>` (or env `OPENWEBIDE_BRIDGE_HOST`): host address to bind on (default: `127.0.0.1`). To expose the bridge to your local network (e.g. phone/tablet use over LAN or Tailscale), bind to `0.0.0.0` or a specific LAN IP:

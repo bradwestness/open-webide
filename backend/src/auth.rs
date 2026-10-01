@@ -131,8 +131,36 @@ pub async fn issue_token(
     sign_token(&secret, user.id, unix_now_checked(), user.token_epoch)
 }
 
+fn bridge_principal(headers: &HeaderMap, secret: Option<&str>) -> Result<Option<i64>, ApiError> {
+    let Some(auth) = headers.get("authorization") else {
+        return Ok(None);
+    };
+    let token = auth.to_str().ok().and_then(|a| a.strip_prefix("Bearer "));
+    if !matches!((token, secret), (Some(token), Some(secret)) if openwebide_auth::constant_time_eq(token.as_bytes(), secret.as_bytes()))
+    {
+        return Err(ApiError::unauthorized("invalid bridge secret"));
+    }
+    let user_id = headers
+        .get("x-openwebide-user")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| ApiError::unauthorized("missing acting user"))?;
+    Ok(Some(user_id))
+}
+
 /// Authenticate a request from its headers, returning the account.
 pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<User, ApiError> {
+    if headers.contains_key("authorization") {
+        let secret = crate::bridge::bridge_secret(&state.store).await?;
+        if let Some(id) = bridge_principal(headers, secret.as_deref())? {
+            return state
+                .store
+                .get_user(id)
+                .await?
+                .map(|user| user.public())
+                .ok_or_else(|| ApiError::unauthorized("unknown user"));
+        }
+    }
     let token = session_cookie(headers).ok_or_else(|| ApiError::unauthorized("not signed in"))?;
     if !csrf_header_ok(headers) {
         return Err(ApiError::unauthorized("not signed in"));
@@ -159,6 +187,49 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<User,
 mod tests {
     use super::*;
     use spin_sdk::http::HeaderMap;
+
+    #[test]
+    fn bridge_authentication_table_and_cookie_path() {
+        futures::executor::block_on(async {
+            let state = AppState::new().await.unwrap();
+            let user = state
+                .store
+                .insert_user("alice", "hash", openwebide_core::UserRole::Admin, 1)
+                .await
+                .unwrap();
+            state
+                .store
+                .set_setting("bridge_secret_cache", "secret")
+                .await
+                .unwrap();
+            for (token, acting_user, expected) in [
+                ("secret", Some(user.id.to_string()), true),
+                ("wrong", Some(user.id.to_string()), false),
+                ("secret", None, false),
+                ("secret", Some("999".into()), false),
+                ("secret", Some("bad".into()), false),
+            ] {
+                let mut headers = HeaderMap::new();
+                headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+                if let Some(id) = acting_user {
+                    headers.insert("x-openwebide-user", id.parse().unwrap());
+                }
+                let result = authenticate(&state, &headers).await;
+                if expected {
+                    assert_eq!(result.unwrap().id, user.id);
+                } else {
+                    assert_eq!(result.unwrap_err().into_response().status().as_u16(), 401);
+                }
+            }
+            let mut headers = HeaderMap::new();
+            assert_eq!(bridge_principal(&headers, Some("secret")).unwrap(), None);
+            let token = issue_token(&state, &user).await.unwrap();
+            headers.insert("cookie", format!("owide_session={token}").parse().unwrap());
+            assert!(authenticate(&state, &headers).await.is_err());
+            headers.insert("x-openwebide", "1".parse().unwrap());
+            assert_eq!(authenticate(&state, &headers).await.unwrap().id, user.id);
+        });
+    }
 
     #[test]
     fn verify_token_rejects_expired_token() {

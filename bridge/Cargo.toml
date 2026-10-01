@@ -11,15 +11,22 @@ authors.workspace = true
 name = "openwebide-bridge"
 path = "src/main.rs"
 
+[features]
+default = ["tls"]
+tls = ["dep:hyper-rustls"]
+
 [dependencies]
 anyhow = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { version = "1", features = ["server", "http1", "client"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
 libc = "0.2"
 openwebide-core = { workspace = true }
+openwebide-agent = { workspace = true }
+openwebide-llm = { workspace = true }
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["ring", "webpki-roots", "http1"], optional = true }
 portable-pty = "0.9"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,5 +37,6 @@ base64 = { workspace = true }
 openwebide-auth = { workspace = true }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"
 

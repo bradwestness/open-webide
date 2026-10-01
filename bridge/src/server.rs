@@ -38,7 +38,7 @@ const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Bridge server configuration.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ServerConfig {
     pub workspace_root: PathBuf,
     pub allowed_origins: Vec<String>,
@@ -49,6 +49,9 @@ pub struct ServerConfig {
     pub session_ttl: Duration,
     pub secret: Arc<str>,
     pub pairing_token: Option<String>,
+    pub backend_url: String,
+    pub tool_stream_memos: Arc<openwebide_llm::ToolStreamMemos>,
+    pub runs: Arc<crate::runs::RunRegistry>,
 }
 
 impl ServerConfig {
@@ -61,6 +64,9 @@ impl ServerConfig {
             session_ttl: DEFAULT_SESSION_TTL,
             secret,
             pairing_token,
+            backend_url: "http://127.0.0.1:3000/api".into(),
+            tool_stream_memos: Arc::new(openwebide_llm::ToolStreamMemos::default()),
+            runs: Arc::new(crate::runs::RunRegistry::default()),
         }
     }
 }
@@ -235,6 +241,7 @@ pub async fn run_server_until(
     let session_manager = SessionManager::new();
 
     let reap_sessions = session_manager.clone();
+    let reap_runs = config.runs.clone();
     let session_ttl = config.session_ttl;
     let reaper = tokio::spawn(async move {
         let mut interval = tokio::time::interval(SESSION_REAP_INTERVAL);
@@ -242,6 +249,7 @@ pub async fn run_server_until(
         loop {
             interval.tick().await;
             reap_sessions.reap(session_ttl);
+            reap_runs.reap();
         }
     });
 
@@ -802,7 +810,7 @@ async fn handle_git(
     }
 }
 
-enum WriterCmd {
+pub(crate) enum WriterCmd {
     Send(Box<BridgeServerMessage>),
     Attach {
         session: std::sync::Arc<crate::session::Session>,
@@ -811,7 +819,7 @@ enum WriterCmd {
 }
 
 impl WriterCmd {
-    fn send(message: BridgeServerMessage) -> Self {
+    pub(crate) fn send(message: BridgeServerMessage) -> Self {
         Self::Send(Box::new(message))
     }
 }
@@ -925,6 +933,19 @@ async fn handle_websocket<S>(
         }
     });
 
+    let http = crate::http_client::ReqwestHttpClient::default();
+    let backend = Arc::new(crate::backend_client::BackendClient::new(
+        config.backend_url.clone(),
+        config.secret.clone(),
+        http.clone(),
+    ));
+    let forwarders = Arc::new(Mutex::new(std::collections::HashMap::<
+        String,
+        tokio::task::JoinHandle<()>,
+    >::new()));
+    let mut completions: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
+        std::collections::HashMap::new();
+    let mut starts = tokio::task::JoinSet::new();
     let mut attached_id: Option<String> = None;
     let mut principal: Option<crate::auth::Principal> = None;
     let start_time = std::time::Instant::now();
@@ -981,8 +1002,54 @@ async fn handle_websocket<S>(
             }
         };
 
+        while starts.try_join_next().is_some() {}
+        completions.retain(|_, task| !task.is_finished());
+        forwarders
+            .lock()
+            .unwrap()
+            .retain(|_, task| !task.is_finished());
+        if !cfg!(feature = "tls") || !matches!(principal, Some(crate::auth::Principal::User { .. }))
+        {
+            let rejection = match &client_msg {
+                BridgeClientMessage::RunStart { run_id, .. }
+                | BridgeClientMessage::RunAttach { run_id, .. }
+                | BridgeClientMessage::RunCancel { run_id }
+                | BridgeClientMessage::RunPermission { run_id, .. } => {
+                    Some(BridgeServerMessage::RunRejected {
+                        run_id: run_id.clone(),
+                        code: openwebide_core::RunRejectCode::Unauthorized,
+                        message: "unauthorized: runs unavailable for this principal".into(),
+                    })
+                }
+                BridgeClientMessage::RunList { .. } => Some(BridgeServerMessage::RunRejected {
+                    run_id: String::new(),
+                    code: openwebide_core::RunRejectCode::Unauthorized,
+                    message: "unauthorized: runs unavailable for this principal".into(),
+                }),
+                BridgeClientMessage::CompletionStart { id, .. }
+                | BridgeClientMessage::CompletionCancel { id } => {
+                    Some(BridgeServerMessage::CompletionEnd {
+                        id: id.clone(),
+                        error: Some("unauthorized".into()),
+                    })
+                }
+                _ => None,
+            };
+            if let Some(rejection) = rejection {
+                let _ = cmd_tx.send(WriterCmd::send(rejection)).await;
+                continue;
+            }
+        }
         match client_msg {
             BridgeClientMessage::Hello { token } => {
+                if principal.is_some() {
+                    let _ = cmd_tx
+                        .send(WriterCmd::send(BridgeServerMessage::HelloError {
+                            message: "already authenticated".into(),
+                        }))
+                        .await;
+                    continue;
+                }
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -998,7 +1065,7 @@ async fn handle_websocket<S>(
                             .send(WriterCmd::send(BridgeServerMessage::HelloOk {
                                 user_id,
                                 protocol: 1,
-                                runs: false,
+                                runs: cfg!(feature = "tls") && user_id.is_some(),
                             }))
                             .await;
                     }
@@ -1012,62 +1079,202 @@ async fn handle_websocket<S>(
                 }
                 continue;
             }
-            BridgeClientMessage::RunStart { run_id, .. }
-            | BridgeClientMessage::RunAttach { run_id, .. }
-            | BridgeClientMessage::RunCancel { run_id }
-            | BridgeClientMessage::RunPermission { run_id, .. } => {
-                let (code, message) = if principal.is_none() {
-                    (
-                        openwebide_core::RunRejectCode::Unauthorized,
-                        "unauthorized: send hello first",
-                    )
-                } else {
-                    (
-                        openwebide_core::RunRejectCode::Unavailable,
-                        "runs are not available on this bridge",
-                    )
+            BridgeClientMessage::RunStart {
+                run_id,
+                session_id,
+                content,
+                model,
+                editor_context,
+            } => {
+                if !cfg!(feature = "tls")
+                    || !matches!(principal, Some(crate::auth::Principal::User { .. }))
+                {
+                    let _ = cmd_tx
+                        .send(WriterCmd::send(BridgeServerMessage::RunRejected {
+                            run_id,
+                            code: openwebide_core::RunRejectCode::Unauthorized,
+                            message: "unauthorized".into(),
+                        }))
+                        .await;
+                    continue;
+                }
+                let principal = principal.clone().unwrap();
+                let config = config.clone();
+                let backend = backend.clone();
+                let http = http.clone();
+                let sender = cmd_tx.clone();
+                let forwarders = forwarders.clone();
+                let start = crate::runs::StartRun {
+                    run_id: run_id.clone(),
+                    session_id,
+                    content,
+                    model,
+                    editor_context,
                 };
-                let _ = cmd_tx
-                    .send(WriterCmd::send(BridgeServerMessage::RunRejected {
-                        run_id,
-                        code,
-                        message: message.into(),
-                    }))
-                    .await;
+                let run = match config.runs.reserve(&principal, &start) {
+                    Ok(run) => run,
+                    Err((code, message)) => {
+                        let _ = sender
+                            .send(WriterCmd::send(BridgeServerMessage::RunRejected {
+                                run_id,
+                                code,
+                                message,
+                            }))
+                            .await;
+                        continue;
+                    }
+                };
+                starts.spawn(async move {
+                    match config
+                        .runs
+                        .prepare(run, start, &config.workspace_root, backend, |plan| {
+                            let memo = config
+                                .tool_stream_memos
+                                .get_or_insert(plan.connection.id, &plan.connection.base_url);
+                            openwebide_llm::registry::Provider::for_connection_with_memo(
+                                &plan.connection,
+                                http,
+                                memo,
+                            )
+                        })
+                        .await
+                    {
+                        Ok(run) => {
+                            let mut tasks = forwarders.lock().unwrap();
+                            if let Some(old) = tasks.remove(&run_id) {
+                                old.abort();
+                            }
+                            tasks.insert(run_id, tokio::spawn(run.forward(Some(0), sender)));
+                        }
+                        Err((code, message)) => {
+                            let _ = sender
+                                .send(WriterCmd::send(BridgeServerMessage::RunRejected {
+                                    run_id,
+                                    code,
+                                    message,
+                                }))
+                                .await;
+                        }
+                    }
+                });
             }
-            BridgeClientMessage::RunList { .. } => {
-                let (code, message) = if principal.is_none() {
-                    (
-                        openwebide_core::RunRejectCode::Unauthorized,
-                        "unauthorized: send hello first",
-                    )
-                } else {
-                    (
-                        openwebide_core::RunRejectCode::Unavailable,
-                        "runs are not available on this bridge",
-                    )
-                };
-                let _ = cmd_tx
-                    .send(WriterCmd::send(BridgeServerMessage::RunRejected {
-                        run_id: String::new(),
-                        code,
-                        message: message.into(),
-                    }))
-                    .await;
+            BridgeClientMessage::RunAttach { run_id, last_seq } => {
+                let run = principal
+                    .as_ref()
+                    .filter(|_| cfg!(feature = "tls"))
+                    .ok_or_else(|| "run not found".to_string())
+                    .and_then(|p| config.runs.get(p, &run_id));
+                match run {
+                    Ok(run) => {
+                        if let Some(old) = forwarders.lock().unwrap().remove(&run_id) {
+                            old.abort();
+                        }
+                        forwarders
+                            .lock()
+                            .unwrap()
+                            .insert(run_id, tokio::spawn(run.forward(last_seq, cmd_tx.clone())));
+                    }
+                    Err(message) => {
+                        let _ = cmd_tx
+                            .send(WriterCmd::send(BridgeServerMessage::Error {
+                                id: run_id,
+                                message,
+                            }))
+                            .await;
+                    }
+                }
             }
-            BridgeClientMessage::CompletionStart { id, .. }
-            | BridgeClientMessage::CompletionCancel { id } => {
-                let error = if principal.is_none() {
-                    "unauthorized"
-                } else {
-                    "completions are not available on this bridge"
-                };
-                let _ = cmd_tx
-                    .send(WriterCmd::send(BridgeServerMessage::CompletionEnd {
+            BridgeClientMessage::RunCancel { run_id } => {
+                match principal
+                    .as_ref()
+                    .filter(|_| cfg!(feature = "tls"))
+                    .ok_or_else(|| "run not found".to_string())
+                    .and_then(|p| config.runs.get(p, &run_id))
+                {
+                    Ok(run) => run.cancel.cancel(),
+                    Err(message) => {
+                        let _ = cmd_tx
+                            .send(WriterCmd::send(BridgeServerMessage::Error {
+                                id: run_id,
+                                message,
+                            }))
+                            .await;
+                    }
+                }
+            }
+            BridgeClientMessage::RunPermission {
+                run_id,
+                tool_call_id,
+                approved,
+            } => {
+                let result = principal
+                    .as_ref()
+                    .filter(|_| cfg!(feature = "tls"))
+                    .ok_or_else(|| "run not found".to_string())
+                    .and_then(|p| config.runs.get(p, &run_id))
+                    .and_then(|run| run.gate.decide(&tool_call_id, approved));
+                if let Err(message) = result {
+                    let _ = cmd_tx
+                        .send(WriterCmd::send(BridgeServerMessage::Error {
+                            id: run_id,
+                            message,
+                        }))
+                        .await;
+                }
+            }
+            BridgeClientMessage::RunList { session_id } => {
+                match principal.as_ref().filter(|_| cfg!(feature = "tls")) {
+                    Some(p @ crate::auth::Principal::User { .. }) => {
+                        let _ = cmd_tx
+                            .send(WriterCmd::send(BridgeServerMessage::Runs {
+                                session_id,
+                                runs: config.runs.list(p, session_id),
+                            }))
+                            .await;
+                    }
+                    _ => {
+                        let _ = cmd_tx
+                            .send(WriterCmd::send(BridgeServerMessage::RunRejected {
+                                run_id: String::new(),
+                                code: openwebide_core::RunRejectCode::Unauthorized,
+                                message: "unauthorized".into(),
+                            }))
+                            .await;
+                    }
+                }
+            }
+            BridgeClientMessage::CompletionStart { id, request } => {
+                if !cfg!(feature = "tls")
+                    || !matches!(principal, Some(crate::auth::Principal::User { .. }))
+                {
+                    let _ = cmd_tx
+                        .send(WriterCmd::send(BridgeServerMessage::CompletionEnd {
+                            id,
+                            error: Some("unauthorized".into()),
+                        }))
+                        .await;
+                    continue;
+                }
+                if let Some(old) = completions.remove(&id) {
+                    old.abort();
+                }
+                completions.insert(
+                    id.clone(),
+                    tokio::spawn(crate::completions::complete(
+                        principal.clone().unwrap(),
                         id,
-                        error: Some(error.into()),
-                    }))
-                    .await;
+                        request,
+                        backend.clone(),
+                        http.clone(),
+                        config.tool_stream_memos.clone(),
+                        cmd_tx.clone(),
+                    )),
+                );
+            }
+            BridgeClientMessage::CompletionCancel { id } => {
+                if let Some(task) = completions.remove(&id) {
+                    task.abort();
+                }
             }
             _ if principal.is_none() => {
                 let id = match &client_msg {
@@ -1218,5 +1425,13 @@ async fn handle_websocket<S>(
             }
         }
     }
+    for (_, task) in forwarders.lock().unwrap().drain() {
+        task.abort();
+    }
+    for task in completions.into_values() {
+        task.abort();
+    }
+    // Planning may already have persisted the user message; let accepted starts finish.
+    starts.detach_all();
     writer_task.abort();
 }

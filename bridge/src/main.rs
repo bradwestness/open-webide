@@ -31,6 +31,7 @@ struct Args {
     allowed_origins: Vec<String>,
     allowed_hosts: Vec<String>,
     secret_file: Option<PathBuf>,
+    backend_url: String,
     pairing_token: Option<String>,
 }
 
@@ -44,6 +45,8 @@ fn parse_args() -> Result<Args, String> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let mut secret_file = None;
+    let mut backend_url = std::env::var("OPENWEBIDE_BRIDGE_BACKEND_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:3000/api".into());
 
     let mut pairing_token = None;
     if let Ok(pt) = std::env::var("OPENWEBIDE_BRIDGE_TOKEN") {
@@ -88,6 +91,7 @@ fn parse_args() -> Result<Args, String> {
                        -w, --workspace <DIR>     Workspace root directory (default: current dir, env: OPENWEBIDE_BRIDGE_WORKSPACE)\n\
                        --allowed-origin <ORIGIN> Allowed CORS Origin (repeatable, env: OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS)\n\
                        --allowed-host <HOSTNAME> Allowed Host header (repeatable, env: OPENWEBIDE_BRIDGE_ALLOWED_HOSTS)\n\
+                       --backend-url <URL>       Backend API URL (default: http://127.0.0.1:3000/api, env: OPENWEBIDE_BRIDGE_BACKEND_URL)\n\
                        --secret-file <PATH>      Path to secret file (default: $XDG_CONFIG_HOME/openwebide/bridge-secret)\n\
                        --token <TOKEN>           Pairing token (min 16 chars, env: OPENWEBIDE_BRIDGE_TOKEN)\n\
                        --help                    Show this help message\n"
@@ -112,6 +116,11 @@ fn parse_args() -> Result<Args, String> {
                     .next()
                     .ok_or_else(|| "missing value for --workspace".to_string())?;
                 workspace = PathBuf::from(w_str);
+            }
+            "--backend-url" => {
+                backend_url = args
+                    .next()
+                    .ok_or_else(|| "missing value for --backend-url".to_string())?;
             }
             "--secret-file" => {
                 let w_str = args
@@ -153,6 +162,7 @@ fn parse_args() -> Result<Args, String> {
         allowed_origins,
         allowed_hosts,
         secret_file,
+        backend_url,
         pairing_token,
     })
 }
@@ -190,6 +200,7 @@ async fn main() -> anyhow::Result<()> {
     let secret: std::sync::Arc<str> = std::sync::Arc::from(secret.as_str());
 
     let mut config = ServerConfig::new(workspace_root, secret.clone(), args.pairing_token);
+    config.backend_url = args.backend_url;
     for orig in args.allowed_origins {
         if !config
             .allowed_origins

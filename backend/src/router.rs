@@ -28,8 +28,8 @@ pub async fn route(req: Request) -> JsonResp {
             }
         };
 
-        // Every non-public route requires a valid bearer token. Public routes
-        // (health, register, login, logout) run without one; a valid token on
+        // Every non-public route requires a session cookie or bridge principal. Public routes
+        // (health, register, login, logout) run without one; authentication on
         // any other route sets `state.current_user` for the handlers.
         if !is_public(&path) {
             match crate::auth::authenticate(&state, req.headers()).await {

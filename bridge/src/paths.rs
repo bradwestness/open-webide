@@ -19,18 +19,7 @@ pub fn resolve_in_root(root: &Path, requested: Option<&str>) -> Result<PathBuf, 
         return Ok(root.to_path_buf());
     }
 
-    let joined = root.join(req);
-    let mut normalized = PathBuf::new();
-
-    for comp in joined.components() {
-        match comp {
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::CurDir => {}
-            _ => normalized.push(comp),
-        }
-    }
+    let normalized = normalize_joined(root, req);
 
     if !normalized.starts_with(root) {
         return Err(format!("cwd escapes workspace root: {}", req));
@@ -40,6 +29,37 @@ pub fn resolve_in_root(root: &Path, requested: Option<&str>) -> Result<PathBuf, 
         Ok(m) if m.is_dir() => Ok(normalized),
         _ => Err(format!("cwd does not exist: {}", req)),
     }
+}
+
+fn normalize_joined(root: &Path, rel: &str) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for comp in root.join(rel).components() {
+        match comp {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            _ => normalized.push(comp),
+        }
+    }
+    normalized
+}
+
+pub fn resolve_file_in_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    if rel.is_empty() || Path::new(rel).is_absolute() {
+        return Err(format!("invalid relative file path: {rel}"));
+    }
+    if Path::new(rel)
+        .components()
+        .any(|c| c == Component::Normal(".spin".as_ref()))
+    {
+        return Err(".spin is not accessible".into());
+    }
+    let normalized = normalize_joined(root, rel);
+    if !normalized.starts_with(root) {
+        return Err(format!("path escapes workspace root: {rel}"));
+    }
+    Ok(normalized)
 }
 
 #[cfg(test)]
@@ -142,5 +162,37 @@ mod tests {
                 .unwrap_err()
                 .contains("does not exist")
         );
+    }
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    #[test]
+    fn file_paths_resolve_without_existence_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("exists"), "x").unwrap();
+        for rel in [
+            "exists",
+            "missing",
+            "missing-parent/leaf",
+            "a/../leaf",
+            "./leaf",
+        ] {
+            let result = resolve_file_in_root(&root, rel).unwrap();
+            assert!(result.starts_with(&root));
+        }
+        for rel in [
+            "",
+            "/etc/passwd",
+            "../leaf",
+            "a/../../leaf",
+            ".spin/db",
+            "a/.spin/../leaf",
+        ] {
+            assert!(resolve_file_in_root(&root, rel).is_err(), "{rel}");
+        }
     }
 }

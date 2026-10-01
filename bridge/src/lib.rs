@@ -14,3 +14,10 @@ pub mod session;
 pub use server::{ServerConfig, check_request, run_server, run_server_until};
 pub use session::SessionManager;
 pub mod seq_ring;
+
+pub mod agent_host;
+pub mod backend_client;
+mod completions;
+pub mod http_client;
+pub mod native_vfs;
+pub mod runs;

@@ -43,8 +43,10 @@ async fn hello_with_valid_token_ok() {
         let msg: BridgeServerMessage = serde_json::from_str(&txt).unwrap();
         match msg {
             BridgeServerMessage::HelloOk {
-                user_id: Some(42), ..
-            } => {}
+                user_id: Some(42),
+                runs,
+                ..
+            } => assert_eq!(runs, cfg!(feature = "tls")),
             _ => panic!("Expected HelloOk with user_id 42, got: {:?}", msg),
         }
     } else {
@@ -149,7 +151,11 @@ async fn pairing_token_accepted() {
     if let Message::Text(txt) = response {
         let msg: BridgeServerMessage = serde_json::from_str(&txt).unwrap();
         match msg {
-            BridgeServerMessage::HelloOk { user_id: None, .. } => {}
+            BridgeServerMessage::HelloOk {
+                user_id: None,
+                runs,
+                ..
+            } => assert!(!runs),
             _ => panic!("Expected HelloOk with None user_id, got: {:?}", msg),
         }
     } else {
@@ -377,18 +383,15 @@ async fn multiplexed_commands_require_hello_and_terminal_still_streams() {
                 },
             ) => {
                 assert_eq!(actual, run_id);
-                assert_eq!(code, RunRejectCode::Unavailable);
-                assert_eq!(message, "runs are not available on this bridge");
+                assert_eq!(code, RunRejectCode::Unauthorized);
+                assert!(message.contains("unauthorized"));
             }
             (
                 BridgeClientMessage::CompletionStart { id, .. },
                 BridgeServerMessage::CompletionEnd { id: actual, error },
             ) => {
                 assert_eq!(actual, id);
-                assert_eq!(
-                    error.as_deref(),
-                    Some("completions are not available on this bridge")
-                );
+                assert_eq!(error.as_deref(), Some("unauthorized"));
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -418,4 +421,55 @@ async fn multiplexed_commands_require_hello_and_terminal_still_streams() {
     }
     assert!(spawned);
     assert_eq!(output, "terminal-ok");
+}
+
+#[cfg(not(feature = "tls"))]
+#[tokio::test]
+async fn http_only_signed_in_user_cannot_start_runs_or_completions() {
+    let port = start_with_config(ServerConfig::new(
+        std::env::temp_dir(),
+        "secret".into(),
+        None,
+    ))
+    .await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let token = openwebide_auth::sign_token_expires("secret", 1, now + 120, 0);
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/"))
+        .await
+        .unwrap();
+    ws.send(Message::Text(
+        serde_json::to_string(&BridgeClientMessage::Hello { token })
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    let hello: BridgeServerMessage =
+        serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert!(matches!(
+        hello,
+        BridgeServerMessage::HelloOk {
+            runs: false,
+            user_id: Some(1),
+            ..
+        }
+    ));
+    for request in [
+        r#"{"type":"run_start","run_id":"r","session_id":1,"content":"go","model":null,"editor_context":null}"#,
+        r#"{"type":"completion_start","id":"c","request":{"connection_id":1,"system_prompt":null,"messages":[]}}"#,
+    ] {
+        ws.send(Message::Text(request.into())).await.unwrap();
+        let response: BridgeServerMessage =
+            serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        assert!(matches!(
+            response,
+            BridgeServerMessage::RunRejected {
+                code: openwebide_core::RunRejectCode::Unauthorized,
+                ..
+            } | BridgeServerMessage::CompletionEnd { error: Some(_), .. }
+        ));
+    }
 }
