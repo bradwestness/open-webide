@@ -74,12 +74,11 @@ Small items the review rounds left open, plus the manual checks nobody has run y
   half-closing clients get no response; the 16 MiB WebSocket message limit is untested;
   `respond` copies every body; unbounded fallback error-body length in
   `parse_bridge_response`.
-- **Frontend:** `diff_side_by_side_detailed` still marks every line as inserted; the
-  terminal buffer doesn't cap a single unterminated line; the composer's keydown
-  ignores IME composition (`isComposing`); rejecting a background edit restored from a
-  backup doesn't restore the editor; `/model` with no argument doesn't mark the active
-  model and `/model default` doesn't reset the override; inline styles on the model
-  dropdown; an orphaned `model_ref` sync effect.
+- **Frontend:** the terminal buffer doesn't cap a single unterminated line; the
+  composer's keydown ignores IME composition (`isComposing`); rejecting a background
+  edit restored from a backup doesn't restore the editor; `/model` with no argument
+  doesn't mark the active model and `/model default` doesn't reset the override;
+  inline styles on the model dropdown; an orphaned `model_ref` sync effect.
 - **Providers:** base URLs with a query string or fragment break endpoint joining.
 - **Structure:** `openwebide-storage` depends on `openwebide-agent` only for
   `step_id_prefix`; move the helper down.

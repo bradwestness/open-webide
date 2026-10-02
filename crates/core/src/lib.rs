@@ -870,68 +870,50 @@ pub fn diff_side_by_side(diff: &FileDiff) -> Vec<(Option<String>, Option<String>
 }
 
 /// Compute the changed middle of a file edit as side-by-side rows with intra-line chunks.
+///
+/// Built on [`line_lcs`], so every row is returned — prefix context, the
+/// changed middle, and suffix context — and a line is only unchanged when both
+/// its text and its ending match. Within each edit region the removed and
+/// added lines are paired positionally for word-level highlighting, with an
+/// `ending_note` on a pair whose ending differs; the unpaired remainder of the
+/// longer run is plain.
 pub fn diff_side_by_side_detailed(diff: &FileDiff) -> Vec<(Option<DiffLine>, Option<DiffLine>)> {
-    let old_lines: Vec<&str> = diff.old.as_deref().unwrap_or_default().lines().collect();
-    let new_lines: Vec<&str> = diff.new.lines().collect();
-
-    let mut prefix = 0;
-    while prefix < old_lines.len()
-        && prefix < new_lines.len()
-        && old_lines[prefix] == new_lines[prefix]
-    {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < old_lines.len() - prefix
-        && suffix < new_lines.len() - prefix
-        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
+    let old = diff.old.as_deref().unwrap_or_default();
+    let ops = line_lcs(old, &diff.new);
 
     let mut rows = Vec::new();
-    for i in 0..prefix {
-        rows.push((
-            Some(DiffLine::new_plain(' ', old_lines[i].to_string())),
-            Some(DiffLine::new_plain(' ', new_lines[i].to_string())),
-        ));
-    }
-    let old_mid = &old_lines[prefix..old_lines.len() - suffix];
-    let new_mid = &new_lines[prefix..new_lines.len() - suffix];
-
-    let max_len = old_mid.len().max(new_mid.len());
-    for i in 0..max_len {
-        let old_item = old_mid.get(i);
-        let new_item = new_mid.get(i);
-
-        match (old_item, new_item) {
-            (Some(&o), Some(&n)) => {
-                let (old_chunks, new_chunks) = compute_word_diff(o, n);
+    for segment in diff_segments(&ops) {
+        match segment {
+            DiffSegment::Equal(l) => {
                 rows.push((
-                    Some(DiffLine::new_with_chunks('-', o.to_string(), old_chunks)),
-                    Some(DiffLine::new_with_chunks('+', n.to_string(), new_chunks)),
+                    Some(DiffLine::new_plain(' ', l.text.to_string())),
+                    Some(DiffLine::new_plain(' ', l.text.to_string())),
                 ));
             }
-            (Some(&o), None) => {
-                rows.push((Some(DiffLine::new_plain('-', o.to_string())), None));
+            DiffSegment::Cluster { dels, inss } => {
+                let min_len = dels.len().min(inss.len());
+                for k in 0..min_len {
+                    let (old_chunks, new_chunks) = compute_word_diff(dels[k].text, inss[k].text);
+                    let note = ending_note_for(dels[k].ending, inss[k].ending);
+                    rows.push((
+                        Some(
+                            DiffLine::new_with_chunks('-', dels[k].text.to_string(), old_chunks)
+                                .with_ending_note(note),
+                        ),
+                        Some(
+                            DiffLine::new_with_chunks('+', inss[k].text.to_string(), new_chunks)
+                                .with_ending_note(note),
+                        ),
+                    ));
+                }
+                for line in dels.iter().skip(min_len) {
+                    rows.push((Some(DiffLine::new_plain('-', line.text.to_string())), None));
+                }
+                for line in inss.iter().skip(min_len) {
+                    rows.push((None, Some(DiffLine::new_plain('+', line.text.to_string()))));
+                }
             }
-            (None, Some(&n)) => {
-                rows.push((None, Some(DiffLine::new_plain('+', n.to_string()))));
-            }
-            (None, None) => {}
         }
-    }
-    for i in 0..suffix {
-        rows.push((
-            Some(DiffLine::new_plain(
-                ' ',
-                old_lines[old_lines.len() - suffix + i].to_string(),
-            )),
-            Some(DiffLine::new_plain(
-                ' ',
-                new_lines[new_lines.len() - suffix + i].to_string(),
-            )),
-        ));
     }
     rows
 }
@@ -1271,6 +1253,113 @@ mod tests {
                 (Some("b".into()), None),
                 (Some("c".into()), Some("c".into()))
             ]
+        );
+    }
+
+    #[test]
+    fn diff_side_by_side_detailed_inserted_line_keeps_rest_context() {
+        let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
+            path: "a.txt".into(),
+            old: Some("a\nb\nc".into()),
+            new: "x\na\nb\nc".into(),
+        };
+        let rows = diff_side_by_side_detailed(&diff);
+        assert_eq!(rows.len(), 4);
+        // The inserted line is the only change; everything below stays
+        // aligned context instead of shifting into false pairs.
+        assert!(rows[0].0.is_none());
+        assert_eq!(rows[0].1.as_ref().unwrap().marker, '+');
+        for (left, right) in &rows[1..] {
+            let (l, r) = (left.as_ref().unwrap(), right.as_ref().unwrap());
+            assert_eq!(l.marker, ' ');
+            assert_eq!(r.marker, ' ');
+            assert_eq!(l.content, r.content);
+        }
+    }
+
+    #[test]
+    fn diff_side_by_side_detailed_pairs_changed_line_with_word_chunks() {
+        let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
+            path: "a.txt".into(),
+            old: Some("a\nlet user_id = 42;\nc".into()),
+            new: "a\nlet account_id = 42;\nc".into(),
+        };
+        let rows = diff_side_by_side_detailed(&diff);
+        assert_eq!(rows.len(), 3);
+        let (l, r) = (rows[1].0.as_ref().unwrap(), rows[1].1.as_ref().unwrap());
+        assert_eq!(l.marker, '-');
+        assert_eq!(r.marker, '+');
+        assert_eq!(
+            l.chunks,
+            vec![
+                DiffChunk::Unchanged("let ".into()),
+                DiffChunk::Deleted("user_id".into()),
+                DiffChunk::Unchanged(" = 42;".into()),
+            ]
+        );
+        assert_eq!(
+            r.chunks,
+            vec![
+                DiffChunk::Unchanged("let ".into()),
+                DiffChunk::Inserted("account_id".into()),
+                DiffChunk::Unchanged(" = 42;".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_side_by_side_detailed_pads_unpaired_sides() {
+        // New file: every left cell is None.
+        let new_file = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
+            path: "new.txt".into(),
+            old: None,
+            new: "a\nb".into(),
+        };
+        let rows = diff_side_by_side_detailed(&new_file);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|(l, r)| l.is_none() && r.is_some()));
+
+        // Deletion: the removed line's right cell is None; context below
+        // stays aligned.
+        let del = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
+            path: "a.txt".into(),
+            old: Some("a\nb\nc".into()),
+            new: "a\nc".into(),
+        };
+        let rows = diff_side_by_side_detailed(&del);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[1].1.is_none());
+        assert_eq!(rows[1].0.as_ref().unwrap().marker, '-');
+        assert_eq!(rows[2].0.as_ref().unwrap().content, "c");
+        assert_eq!(rows[2].1.as_ref().unwrap().marker, ' ');
+    }
+
+    #[test]
+    fn diff_side_by_side_detailed_ending_flip_carries_note() {
+        let diff = FileDiff {
+            old_unavailable: false,
+            backup_path: None,
+            path: "a.txt".into(),
+            old: Some("a\r\n".into()),
+            new: "a\n".into(),
+        };
+        let rows = diff_side_by_side_detailed(&diff);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].0.as_ref().unwrap().ending_note,
+            Some("⏎ CRLF → LF")
+        );
+        assert_eq!(
+            rows[0].1.as_ref().unwrap().ending_note,
+            Some("⏎ CRLF → LF")
         );
     }
 

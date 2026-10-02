@@ -170,6 +170,8 @@ for what's still ahead.
 
 ### Fixed
 
+- **Side-by-side diff alignment:** the detailed side-by-side diff is now built on the same line-level LCS as the inline diff, so an inserted or deleted line no longer shifts every line below it into a false pair (previously the whole changed middle rendered as insertions); unchanged lines stay aligned as context, and paired changed lines keep intra-line word highlighting and line-ending notes.
+
 - Disable the agent chat composer until a project is open, with shortcuts to open a local or remote project.
 
 - Accept llama.cpp base URLs with or without a trailing `/v1` for model discovery, chat completions, and context limits.
