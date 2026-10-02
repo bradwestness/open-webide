@@ -127,6 +127,7 @@ for what's still ahead.
 
 ### Changed
 
+- Keep assistant thinking blocks collapsed while the model is thinking (click the header to expand the live trace), move the spinner after the "Thinking..." label with a live elapsed-time counter, and show the final elapsed time in the collapsed "Thought" summary; the spinner now cycles proper braille frames. Elapsed time scales with the run (e.g. `42s`, `2m05s`, `1h03m20s`), and aborting a turn clears the "Thinking..." state so the partial trace collapses into the summary.
 - Raise the agent run budget from 12 turns / 24 tool calls to 256 turns / 512 tool calls; the budget is a runaway-loop guard (runs stay cancellable), so nontrivial tasks no longer exhaust it mid-task.
 - Enforce selected pedantic Clippy lints across the workspace, remove unused code, and trim bridge Tokio features.
 - Split bridge terminals, tool execution, and agent runs into modules; share an executor trait for host tools and add structured logs with `RUST_LOG` filtering.
