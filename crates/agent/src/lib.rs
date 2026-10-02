@@ -45,9 +45,9 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_turns: 12,
+            max_turns: 256,
             first_turn: 1,
-            max_tool_calls: 24,
+            max_tool_calls: 512,
         }
     }
 }

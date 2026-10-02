@@ -127,6 +127,7 @@ for what's still ahead.
 
 ### Changed
 
+- Raise the agent run budget from 12 turns / 24 tool calls to 256 turns / 512 tool calls; the budget is a runaway-loop guard (runs stay cancellable), so nontrivial tasks no longer exhaust it mid-task.
 - Enforce selected pedantic Clippy lints across the workspace, remove unused code, and trim bridge Tokio features.
 - Split bridge terminals, tool execution, and agent runs into modules; share an executor trait for host tools and add structured logs with `RUST_LOG` filtering.
 - Refactor backend routing and typed errors; hide internal 500 details, surface project lookup failures, and accept raw binary file writes.
