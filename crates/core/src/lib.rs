@@ -343,6 +343,31 @@ pub struct FileDiff {
     pub backup_path: Option<String>,
 }
 
+/// Current review state of a persisted project edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditDecision {
+    Pending,
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedEdit {
+    pub project_id: i64,
+    pub path: String,
+    pub revision: i64,
+    pub decision: EditDecision,
+    pub diff: FileDiff,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolveEditRequest {
+    pub path: String,
+    pub revision: i64,
+    pub decision: EditDecision,
+}
+
 /// A web search result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebSearchResult {

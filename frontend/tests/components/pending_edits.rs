@@ -210,3 +210,70 @@ async fn accept_unavailable_original_only_deletes_backup() {
             .is_empty()
     );
 }
+
+#[wasm_bindgen_test]
+async fn persisted_edit_backend_contract_survives_replay_and_checks_revisions() {
+    use openwebide_core::{EditDecision, ResolveEditRequest};
+    use openwebide_frontend::backend::Backend;
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_session();
+        view! { <div /> }
+    });
+    let fake = &mounted.state.fake;
+    let diff = FileDiff {
+        path: "a.txt".into(),
+        old: Some("a".into()),
+        new: "b".into(),
+        old_unavailable: false,
+        backup_path: None,
+    };
+    fake.upsert_tool_step(1, 1, "one", "write_file", "preview", Some(&diff))
+        .await
+        .unwrap();
+    assert!(fake.list_pending_edits(1).await.unwrap().is_empty());
+    fake.complete_tool_step(1, "one", true, "written", Some(&diff))
+        .await
+        .unwrap();
+    assert_eq!(fake.list_pending_edits(1).await.unwrap()[0].diff, diff);
+    assert!(fake.list_pending_edits(2).await.unwrap().is_empty());
+    let mut request = ResolveEditRequest {
+        path: "a.txt".into(),
+        revision: 1,
+        decision: EditDecision::Accepted,
+    };
+    *fake.resolution_error.borrow_mut() = Some("offline".into());
+    assert!(fake.resolve_pending_edit(1, &request).await.is_err());
+    assert_eq!(fake.list_pending_edits(1).await.unwrap().len(), 1);
+    *fake.resolution_error.borrow_mut() = None;
+    fake.resolve_pending_edit(1, &request).await.unwrap();
+    fake.resolve_pending_edit(1, &request).await.unwrap();
+    fake.complete_tool_step(1, "one", true, "replay", Some(&diff))
+        .await
+        .unwrap();
+    assert!(fake.list_pending_edits(1).await.unwrap().is_empty());
+    let newer = FileDiff {
+        old: Some("b".into()),
+        new: "c".into(),
+        ..diff.clone()
+    };
+    fake.upsert_tool_step(1, 1, "two", "write_file", "write", None)
+        .await
+        .unwrap();
+    fake.complete_tool_step(1, "two", true, "written", Some(&newer))
+        .await
+        .unwrap();
+    assert!(fake.resolve_pending_edit(1, &request).await.is_err());
+    assert_eq!(fake.list_pending_edits(1).await.unwrap()[0].revision, 2);
+    request.revision = 2;
+    request.decision = EditDecision::Rejected;
+    fake.resolve_pending_edit(1, &request).await.unwrap();
+    assert!(fake.list_pending_edits(1).await.unwrap().is_empty());
+    fake.upsert_tool_step(1, 1, "failed", "write_file", "preview", Some(&diff))
+        .await
+        .unwrap();
+    fake.complete_tool_step(1, "failed", false, "failed", Some(&diff))
+        .await
+        .unwrap();
+    assert!(fake.list_pending_edits(1).await.unwrap().is_empty());
+}

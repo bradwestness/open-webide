@@ -160,6 +160,7 @@ impl PermissionGate for PermissionPoller {
 #[allow(clippy::too_many_arguments)]
 pub fn agent_stream(
     store: Arc<Store<AppDb>>,
+    user_id: openwebide_core::UserId,
     session_id: i64,
     user_message: ChatMessage,
     request: ChatRequest,
@@ -177,7 +178,7 @@ pub fn agent_stream(
     let anchor_id = user_message.id;
     let events =
         openwebide_agent::run(provider, executor, request, config, cancel, gate, anchor_id);
-    let tail = map_agent_events(store, session_id, anchor_id, events);
+    let tail = map_agent_events(store, user_id, session_id, anchor_id, events);
     Box::pin(
         stream::iter([RunEvent::Message {
             message: user_message,
@@ -188,6 +189,7 @@ pub fn agent_stream(
 
 fn map_agent_events(
     store: Arc<Store<AppDb>>,
+    user_id: openwebide_core::UserId,
     session_id: i64,
     anchor_id: i64,
     events: impl Stream<Item = AgentEvent> + Send + 'static,
@@ -273,17 +275,21 @@ fn map_agent_events(
                     diff,
                 } => {
                     if let Err(error) = store
-                        .complete_tool_step(session_id, &id, ok, &summary, diff.as_ref())
+                        .complete_tool_step(user_id, session_id, &id, ok, &summary, diff.as_ref())
                         .await
                     {
                         eprintln!("session {session_id}: complete_tool_step: {error}");
-                    }
-                    RunEvent::ToolResult {
-                        id,
-                        name,
-                        ok,
-                        summary,
-                        diff,
+                        RunEvent::Error {
+                            message: "failed to save tool result".into(),
+                        }
+                    } else {
+                        RunEvent::ToolResult {
+                            id,
+                            name,
+                            ok,
+                            summary,
+                            diff,
+                        }
                     }
                 }
                 AgentEvent::ReasoningDelta(content) => {
@@ -543,9 +549,15 @@ mod tests {
                 },
                 AgentEvent::Cancelled,
             ];
-            map_agent_events(store.clone(), session_id, 7, stream::iter(events))
-                .collect::<Vec<_>>()
-                .await;
+            map_agent_events(
+                store.clone(),
+                openwebide_core::UserId::new(1),
+                session_id,
+                7,
+                stream::iter(events),
+            )
+            .collect::<Vec<_>>()
+            .await;
             for id in ["a7t1c0", "a7t2c0"] {
                 assert_eq!(
                     store.take_tool_permission(session_id, id).await.unwrap(),
@@ -646,6 +658,7 @@ mod tests {
             }];
             let events = map_agent_events(
                 store.clone(),
+                openwebide_core::UserId::new(1),
                 session.id,
                 7,
                 stream::iter([AgentEvent::TurnCalls {
@@ -708,6 +721,7 @@ mod tests {
             };
             let events = map_agent_events(
                 store.clone(),
+                openwebide_core::UserId::new(1),
                 session.id,
                 anchor.id,
                 stream::iter([permission, result]),
@@ -798,10 +812,15 @@ mod tests {
                 AgentEvent::Telemetry(last_usage),
                 AgentEvent::FinalText("done".into()),
             ];
-            let mapped =
-                map_agent_events(store.clone(), session.id, anchor_id, stream::iter(events))
-                    .collect::<Vec<_>>()
-                    .await;
+            let mapped = map_agent_events(
+                store.clone(),
+                openwebide_core::UserId::new(1),
+                session.id,
+                anchor_id,
+                stream::iter(events),
+            )
+            .collect::<Vec<_>>()
+            .await;
             assert!(matches!(&mapped[1], RunEvent::Delta { content: text } if text == "checking"));
             assert!(matches!(&mapped[2], RunEvent::Telemetry { usage } if *usage == first_usage));
             let RunEvent::Interim { message: interim } = &mapped[3] else {
@@ -882,9 +901,15 @@ mod tests {
                 let partial = format!("partial{}", openwebide_core::REPLY_TRUNCATED_MARKER);
                 events.push(AgentEvent::TextDelta("partial".into()));
                 events.push(AgentEvent::FinalText(partial.clone()));
-                let mapped = map_agent_events(store.clone(), session.id, 7, stream::iter(events))
-                    .collect::<Vec<_>>()
-                    .await;
+                let mapped = map_agent_events(
+                    store.clone(),
+                    openwebide_core::UserId::new(1),
+                    session.id,
+                    7,
+                    stream::iter(events),
+                )
+                .collect::<Vec<_>>()
+                .await;
                 let RunEvent::Done { message: reply } = mapped.last().unwrap() else {
                     panic!("missing final")
                 };
@@ -901,12 +926,38 @@ mod tests {
     }
 
     #[test]
+    fn completion_persistence_failure_is_reported() {
+        futures::executor::block_on(async {
+            let (store, session_id) = test_store().await;
+            let mapped = map_agent_events(
+                store,
+                openwebide_core::UserId::new(1),
+                session_id,
+                7,
+                stream::iter([AgentEvent::ToolResult {
+                    id: "missing".into(),
+                    name: "write_file".into(),
+                    ok: true,
+                    summary: "written".into(),
+                    diff: None,
+                }]),
+            )
+            .collect::<Vec<_>>()
+            .await;
+            assert!(
+                matches!(&mapped[0], RunEvent::Error { message } if message == "failed to save tool result")
+            );
+        });
+    }
+
+    #[test]
     fn interim_persistence_failure_still_forwards_text() {
         futures::executor::block_on(async {
             let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
             store.migrate_with(&|_| true).await.unwrap();
             let mapped = map_agent_events(
                 store,
+                openwebide_core::UserId::new(1),
                 999,
                 7,
                 stream::iter([AgentEvent::TurnCalls {
@@ -950,6 +1001,7 @@ mod tests {
             let answer = format!("answer{}", openwebide_core::REPLY_CUT_OFF_MARKER);
             let events = map_agent_events(
                 store.clone(),
+                openwebide_core::UserId::new(1),
                 session.id,
                 7,
                 stream::iter([

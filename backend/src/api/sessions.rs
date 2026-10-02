@@ -257,6 +257,7 @@ pub(crate) async fn send_session_message(
     let stream = if let RunKind::Agent { project_path } = plan.kind {
         agent_stream(
             store.clone(),
+            user_id,
             session_id,
             user_message,
             request,
@@ -398,6 +399,7 @@ pub(crate) async fn complete_tool_step(
     state
         .store
         .complete_tool_step(
+            user_id,
             id,
             &step.tool_call_id,
             step.ok,

@@ -898,10 +898,15 @@ pub async fn run_local_agent(
                 summary,
                 diff,
             } => {
-                let _ = api
+                if let Err(error) = api
                     .with_value(Clone::clone)
                     .complete_tool_step(session_id, &id, ok, &summary, diff.as_ref())
-                    .await;
+                    .await
+                {
+                    on_event(RunEvent::Error {
+                        message: format!("failed to save tool result: {error}"),
+                    });
+                }
                 on_event(RunEvent::ToolResult {
                     id,
                     name,

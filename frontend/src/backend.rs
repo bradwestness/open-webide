@@ -5,8 +5,8 @@ use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
     GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest, GitSyncResult, Health,
-    ModelInfo, Project, ProviderKind, Role, RunEvent, SearchHit, SystemPrompt, TurnTelemetry, User,
-    WebSearchResult, WorkspaceMode, vfs::SearchOptions,
+    ModelInfo, PersistedEdit, Project, ProviderKind, ResolveEditRequest, Role, RunEvent, SearchHit,
+    SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode, vfs::SearchOptions,
 };
 use std::rc::Rc;
 use web_sys::AbortSignal;
@@ -225,6 +225,15 @@ pub trait Backend {
         result_summary: &'a str,
         diff: Option<&'a FileDiff>,
     ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn list_pending_edits(
+        &self,
+        project_id: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<PersistedEdit>, String>>;
+    fn resolve_pending_edit<'a>(
+        &'a self,
+        project_id: i64,
+        request: &'a ResolveEditRequest,
+    ) -> LocalBoxFuture<'a, Result<PersistedEdit, String>>;
     fn web_search<'a>(
         &'a self,
         query: &'a str,
@@ -595,6 +604,19 @@ impl Backend for BackendApi {
             result_summary,
             diff,
         ))
+    }
+    fn list_pending_edits(
+        &self,
+        project_id: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<PersistedEdit>, String>> {
+        Box::pin(BackendApi::list_pending_edits(self, project_id))
+    }
+    fn resolve_pending_edit<'a>(
+        &'a self,
+        project_id: i64,
+        request: &'a ResolveEditRequest,
+    ) -> LocalBoxFuture<'a, Result<PersistedEdit, String>> {
+        Box::pin(BackendApi::resolve_pending_edit(self, project_id, request))
     }
     fn web_search<'a>(
         &'a self,

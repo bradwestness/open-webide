@@ -3,10 +3,11 @@ use futures::future::LocalBoxFuture;
 use leptos::prelude::RwSignal;
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
-    EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
-    GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest, GitSyncResult, Health,
-    ModelInfo, Project, ProviderKind, Role, RunEvent, SearchHit, SystemPrompt, TurnTelemetry, User,
-    WebSearchResult, WorkspaceMode, vfs::SearchOptions,
+    EditDecision, EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest,
+    GitCheckoutResult, GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest,
+    GitSyncResult, Health, ModelInfo, PersistedEdit, Project, ProviderKind, ResolveEditRequest,
+    Role, RunEvent, SearchHit, SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode,
+    vfs::SearchOptions,
 };
 use std::{
     cell::RefCell,
@@ -66,6 +67,10 @@ pub struct FakeBackend {
     pub search_requests: RefCell<Vec<(i64, String, SearchOptions)>>,
     pub model_requests: RefCell<Vec<i64>>,
     pub context_requests: RefCell<Vec<(i64, Option<String>)>>,
+    pub tool_sources: RefCell<BTreeMap<(i64, String), bool>>,
+    pub completion_error: RefCell<Option<String>>,
+    pub persisted_edits: RefCell<BTreeMap<(i64, String), PersistedEdit>>,
+    pub resolution_error: RefCell<Option<String>>,
     pub sessions: RefCell<Vec<ChatSession>>,
     pub messages: RefCell<BTreeMap<i64, Vec<ConversationEntry>>>,
     pub projects: RefCell<Vec<Project>>,
@@ -497,6 +502,9 @@ impl Backend for FakeBackend {
                 return Err(error);
             }
             self.projects.borrow_mut().retain(|item| item.id != id);
+            self.persisted_edits
+                .borrow_mut()
+                .retain(|(project, _), _| *project != id);
             Ok(())
         })
     }
@@ -920,9 +928,9 @@ impl Backend for FakeBackend {
     }
     fn upsert_tool_step<'a>(
         &'a self,
-        _session_id: i64,
+        session_id: i64,
         _anchor_message_id: i64,
-        _tool_call_id: &'a str,
+        tool_call_id: &'a str,
         _name: &'a str,
         _summary: &'a str,
         _diff: Option<&'a FileDiff>,
@@ -931,22 +939,113 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "upsert_tool_step",
             });
+            self.tool_sources
+                .borrow_mut()
+                .entry((session_id, tool_call_id.into()))
+                .or_insert(false);
             Ok(())
         })
     }
     fn complete_tool_step<'a>(
         &'a self,
-        _session_id: i64,
-        _tool_call_id: &'a str,
-        _ok: bool,
+        session_id: i64,
+        tool_call_id: &'a str,
+        ok: bool,
         _result_summary: &'a str,
-        _diff: Option<&'a FileDiff>,
+        diff: Option<&'a FileDiff>,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {
                 method: "complete_tool_step",
             });
+            if let Some(error) = self.completion_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
+            let session = self
+                .sessions
+                .borrow()
+                .iter()
+                .find(|session| session.id == session_id)
+                .cloned()
+                .ok_or("session not found")?;
+            let mut sources = self.tool_sources.borrow_mut();
+            let applied = sources
+                .get_mut(&(session_id, tool_call_id.into()))
+                .ok_or("tool step not found")?;
+            if *applied {
+                return Ok(());
+            }
+            if let (true, Some(project_id), Some(diff)) = (ok, session.project_id, diff) {
+                let mut edits = self.persisted_edits.borrow_mut();
+                let key = (project_id, diff.path.clone());
+                let previous = edits.get(&key);
+                let revision = previous.map_or(1, |edit| edit.revision + 1);
+                let mut merged = diff.clone();
+                let mut decision = EditDecision::Pending;
+                if let Some(previous) =
+                    previous.filter(|edit| edit.decision == EditDecision::Pending)
+                {
+                    merged = previous.diff.clone();
+                    merged.new.clone_from(&diff.new);
+                    if !merged.old_unavailable && merged.old.as_deref() == Some(merged.new.as_str())
+                    {
+                        decision = EditDecision::Accepted;
+                    }
+                }
+                edits.insert(
+                    key,
+                    PersistedEdit {
+                        project_id,
+                        path: diff.path.clone(),
+                        revision,
+                        decision,
+                        diff: merged,
+                    },
+                );
+            }
+            *applied = true;
             Ok(())
+        })
+    }
+    fn list_pending_edits(
+        &self,
+        project_id: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<PersistedEdit>, String>> {
+        Box::pin(async move {
+            Ok(self
+                .persisted_edits
+                .borrow()
+                .values()
+                .filter(|edit| {
+                    edit.project_id == project_id && edit.decision == EditDecision::Pending
+                })
+                .cloned()
+                .collect())
+        })
+    }
+    fn resolve_pending_edit<'a>(
+        &'a self,
+        project_id: i64,
+        request: &'a ResolveEditRequest,
+    ) -> LocalBoxFuture<'a, Result<PersistedEdit, String>> {
+        Box::pin(async move {
+            if let Some(error) = self.resolution_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
+            if request.decision == EditDecision::Pending || request.revision <= 0 {
+                return Err("invalid edit resolution".into());
+            }
+            let mut edits = self.persisted_edits.borrow_mut();
+            let edit = edits
+                .get_mut(&(project_id, request.path.clone()))
+                .ok_or("pending edit not found")?;
+            if edit.revision != request.revision
+                || (edit.decision != EditDecision::Pending && edit.decision != request.decision)
+            {
+                return Err("edit revision or decision changed".into());
+            }
+            edit.decision = request.decision;
+            Ok(edit.clone())
         })
     }
     fn web_search<'a>(

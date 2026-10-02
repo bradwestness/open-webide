@@ -27,6 +27,8 @@ enum Route {
     DeleteSystemPrompt,
     ListProjects,
     CreateProject,
+    ListPendingEdits,
+    ResolvePendingEdit,
     RenameProject,
     DeleteProject,
     Browse,
@@ -95,6 +97,12 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("POST", ["projects"]) => Some(Route::CreateProject),
         ("PUT", ["projects", _]) => Some(Route::RenameProject),
         ("DELETE", ["projects", _]) => Some(Route::DeleteProject),
+        ("GET", ["projects", id, "pending-edits"]) if numeric_id(id) => {
+            Some(Route::ListPendingEdits)
+        }
+        ("POST", ["projects", id, "pending-edits", "resolve"]) if numeric_id(id) => {
+            Some(Route::ResolvePendingEdit)
+        }
         ("GET", ["browse"]) => Some(Route::Browse),
         ("GET", ["sessions"]) => Some(Route::ListSessions),
         ("POST", ["sessions"]) => Some(Route::CreateSession),
@@ -236,6 +244,12 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::DeleteProject), Some(user)) => {
             api::projects::delete_project(&state, &path, user).await
+        }
+        (Some(Route::ListPendingEdits), Some(user)) => {
+            api::projects::list_pending_edits(&state, &path, user).await
+        }
+        (Some(Route::ResolvePendingEdit), Some(user)) => {
+            api::projects::resolve_pending_edit(req, &state, &path, user).await
         }
         (Some(Route::Browse), Some(user)) => api::projects::browse(req, &state, user).await,
         (Some(Route::ListSessions), Some(user)) => api::sessions::list_sessions(&state, user).await,
@@ -574,6 +588,12 @@ mod tests {
             ("DELETE", "system-prompts/5", Route::DeleteSystemPrompt),
             ("GET", "projects", Route::ListProjects),
             ("POST", "projects", Route::CreateProject),
+            ("GET", "projects/5/pending-edits", Route::ListPendingEdits),
+            (
+                "POST",
+                "projects/5/pending-edits/resolve",
+                Route::ResolvePendingEdit,
+            ),
             ("PUT", "projects/5", Route::RenameProject),
             ("DELETE", "projects/5", Route::DeleteProject),
             ("GET", "browse", Route::Browse),
@@ -663,6 +683,11 @@ mod tests {
         for (method, path) in [
             ("DELETE", "sessions/5/anything"),
             ("GET", "unknown"),
+            ("GET", "projects/5/pending-edits/extra"),
+            ("GET", "projects/no/pending-edits"),
+            ("GET", "projects/5/pending-edits/resolve"),
+            ("POST", "projects/5/pending-edits/resolve/extra"),
+            ("PUT", "projects/5/pending-edits/resolve"),
             ("PUT", "projects/5/files/wrong"),
             ("POST", "sessions/5/permissions/x/anything"),
         ] {

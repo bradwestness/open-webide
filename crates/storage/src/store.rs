@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use openwebide_core::{
-    ChatMessage, ChatSession, Connection, ConversationEntry, FileDiff, NewConnection, NewProject,
-    Project, ProviderKind, Role, SystemPrompt, ToolCall, ToolStep, TurnTelemetry, User, UserId,
-    UserRole, WorkspaceMode,
+    ChatMessage, ChatSession, Connection, ConversationEntry, EditDecision, FileDiff, NewConnection,
+    NewProject, PersistedEdit, Project, ProviderKind, ResolveEditRequest, Role, SystemPrompt,
+    ToolCall, ToolStep, TurnTelemetry, User, UserId, UserRole, WorkspaceMode,
 };
 
 use crate::db::{Db, DbValue, QueryRow};
@@ -938,7 +938,8 @@ impl<D: Db> Store<D> {
                      (session_id, anchor_message_id, tool_call_id, name, summary, created_at, diff)
                  VALUES (?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT (session_id, tool_call_id)
-                 DO UPDATE SET name = excluded.name, summary = excluded.summary, diff = excluded.diff",
+                 DO UPDATE SET name = excluded.name, summary = excluded.summary, diff = excluded.diff
+                 WHERE tool_steps.completion_applied = 0",
                 &[
                     DbValue::Int(session_id),
                     DbValue::Int(anchor_message_id),
@@ -953,33 +954,129 @@ impl<D: Db> Store<D> {
         Ok(())
     }
 
-    /// Fill in a tool step's outcome once it finishes.
-    pub async fn complete_tool_step(
-        &self,
+    /// Complete and apply a source exactly once, in the same transaction.
+    /// Boxing keeps the transaction future usable in Send event streams.
+    pub fn complete_tool_step<'a>(
+        &'a self,
+        user_id: UserId,
         session_id: i64,
-        tool_call_id: &str,
+        tool_call_id: &'a str,
         ok: bool,
-        result_summary: &str,
-        diff: Option<&FileDiff>,
+        result_summary: &'a str,
+        diff: Option<&'a FileDiff>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            self.db
+                .transaction(|tx| async move {
+                    let store = Store::new(tx);
+                    let session = store.get_session(session_id, user_id).await?;
+                    if let Some(project) = session.project_id {
+                        store.get_project(project, user_id).await?;
+                    }
+                    let source = store.db.execute(
+                        "SELECT completion_applied FROM tool_steps WHERE session_id = ? AND tool_call_id = ?",
+                        &[DbValue::Int(session_id), DbValue::Text(tool_call_id.into())],
+                    ).await?;
+                    let row = source.rows.first().ok_or_else(|| StorageError::NotFound("tool step".into()))?;
+                    if row.get_int(0)? != 0 {
+                        return Ok(());
+                    }
+                    let diff_json = diff.map(serde_json::to_string).transpose()
+                        .map_err(|e| StorageError::Db(e.to_string()))?;
+                    store.db.execute(
+                        "UPDATE tool_steps SET ok = ?, result_summary = ?, diff = ?, completion_applied = 1
+                         WHERE session_id = ? AND tool_call_id = ?",
+                        &[DbValue::Int(i64::from(ok)), DbValue::Text(result_summary.into()),
+                          diff_json.map(DbValue::Text).unwrap_or(DbValue::Null),
+                          DbValue::Int(session_id), DbValue::Text(tool_call_id.into())],
+                    ).await?;
+                    if let (true, Some(project_id), Some(diff)) = (ok, session.project_id, diff) {
+                        store.merge_completed_edit(user_id, project_id, diff).await?;
+                    }
+                    Ok(())
+                })
+                .await
+        })
+    }
+
+    async fn merge_completed_edit(
+        &self,
+        user_id: UserId,
+        project_id: i64,
+        diff: &FileDiff,
     ) -> Result<(), StorageError> {
-        let diff_json = diff
-            .map(|d| serde_json::to_string(d).map_err(|e| StorageError::Db(e.to_string())))
+        let previous = self.db.execute(
+            "SELECT project_id, path, revision, decision, diff FROM pending_edits WHERE project_id = ? AND path = ? AND user_id = ?",
+            &[DbValue::Int(project_id), DbValue::Text(diff.path.clone()), DbValue::Int(user_id.get())],
+        ).await?;
+        let previous = previous
+            .rows
+            .first()
+            .map(persisted_edit_from_row)
             .transpose()?;
-        self.db
-            .execute(
-                "UPDATE tool_steps
-                 SET ok = ?, result_summary = ?, diff = ?
-                 WHERE session_id = ? AND tool_call_id = ?",
-                &[
-                    DbValue::Int(i64::from(ok)),
-                    DbValue::Text(result_summary.into()),
-                    diff_json.map(DbValue::Text).unwrap_or(DbValue::Null),
-                    DbValue::Int(session_id),
-                    DbValue::Text(tool_call_id.into()),
-                ],
-            )
-            .await?;
+        let revision = previous.as_ref().map_or(1, |edit| edit.revision + 1);
+        let mut merged = diff.clone();
+        let mut decision = EditDecision::Pending;
+        if let Some(previous) = previous.filter(|edit| edit.decision == EditDecision::Pending) {
+            merged = previous.diff;
+            merged.new.clone_from(&diff.new);
+            if !merged.old_unavailable && merged.old.as_deref() == Some(merged.new.as_str()) {
+                decision = EditDecision::Accepted;
+            }
+        }
+        let json = serde_json::to_string(&merged).map_err(|e| StorageError::Db(e.to_string()))?;
+        self.db.execute(
+            "INSERT INTO pending_edits (user_id, project_id, path, diff, revision, decision) VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT (project_id, path) DO UPDATE SET diff = excluded.diff, revision = excluded.revision, decision = excluded.decision",
+            &[DbValue::Int(user_id.get()), DbValue::Int(project_id), DbValue::Text(diff.path.clone()),
+              DbValue::Text(json), DbValue::Int(revision), DbValue::Text(edit_decision_text(decision).into())],
+        ).await?;
         Ok(())
+    }
+
+    pub async fn list_pending_edits(
+        &self,
+        user_id: UserId,
+        project_id: i64,
+    ) -> Result<Vec<PersistedEdit>, StorageError> {
+        self.get_project(project_id, user_id).await?;
+        let rows = self.db.execute(
+            "SELECT project_id, path, revision, decision, diff FROM pending_edits WHERE project_id = ? AND user_id = ? AND decision = 'pending' ORDER BY path",
+            &[DbValue::Int(project_id), DbValue::Int(user_id.get())],
+        ).await?;
+        rows.rows.iter().map(persisted_edit_from_row).collect()
+    }
+
+    pub async fn resolve_pending_edit(
+        &self,
+        user_id: UserId,
+        project_id: i64,
+        request: &ResolveEditRequest,
+    ) -> Result<PersistedEdit, StorageError> {
+        if request.decision == EditDecision::Pending || request.revision <= 0 {
+            return Err(StorageError::InvalidValue("invalid edit resolution".into()));
+        }
+        self.db.transaction(|tx| async move {
+            let store = Store::new(tx);
+            store.get_project(project_id, user_id).await?;
+            let rows = store.db.execute(
+                "SELECT project_id, path, revision, decision, diff FROM pending_edits WHERE project_id = ? AND path = ? AND user_id = ?",
+                &[DbValue::Int(project_id), DbValue::Text(request.path.clone()), DbValue::Int(user_id.get())],
+            ).await?;
+            let mut edit = rows.rows.first().map(persisted_edit_from_row).transpose()?
+                .ok_or_else(|| StorageError::NotFound("pending edit".into()))?;
+            if edit.revision != request.revision || (edit.decision != EditDecision::Pending && edit.decision != request.decision) {
+                return Err(StorageError::Conflict("edit revision or decision changed".into()));
+            }
+            store.db.execute(
+                "UPDATE pending_edits SET decision = ? WHERE project_id = ? AND path = ? AND user_id = ? AND revision = ?",
+                &[DbValue::Text(edit_decision_text(request.decision).into()), DbValue::Int(project_id),
+                  DbValue::Text(request.path.clone()), DbValue::Int(user_id.get()), DbValue::Int(request.revision)],
+            ).await?;
+            edit.decision = request.decision;
+            Ok(edit)
+        }).await
     }
 
     /// The session's tool steps in the order they were recorded.
@@ -1326,6 +1423,31 @@ fn tool_step_from_row(row: &QueryRow) -> Result<ToolStep, StorageError> {
     })
 }
 
+fn edit_decision_text(decision: EditDecision) -> &'static str {
+    match decision {
+        EditDecision::Pending => "pending",
+        EditDecision::Accepted => "accepted",
+        EditDecision::Rejected => "rejected",
+    }
+}
+
+fn persisted_edit_from_row(row: &QueryRow) -> Result<PersistedEdit, StorageError> {
+    let decision = match row.get_text(3)? {
+        "pending" => EditDecision::Pending,
+        "accepted" => EditDecision::Accepted,
+        "rejected" => EditDecision::Rejected,
+        _ => return Err(StorageError::InvalidValue("invalid edit decision".into())),
+    };
+    Ok(PersistedEdit {
+        project_id: row.get_int(0)?,
+        path: row.get_text(1)?.into(),
+        revision: row.get_int(2)?,
+        decision,
+        diff: serde_json::from_str(row.get_text(4)?)
+            .map_err(|e| StorageError::InvalidValue(e.to_string()))?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1350,6 +1472,323 @@ mod tests {
                 .unwrap()
                 .id
         })
+    }
+
+    fn edit(old: Option<&str>, new: &str) -> FileDiff {
+        FileDiff {
+            path: "a.txt".into(),
+            old: old.map(str::to_string),
+            new: new.into(),
+            old_unavailable: false,
+            backup_path: None,
+        }
+    }
+
+    async fn edit_project(store: &Store<RusqliteDb>, user: UserId) -> Project {
+        store
+            .create_project(
+                &NewProject {
+                    name: "p".into(),
+                    mode: WorkspaceMode::Remote,
+                    path: Some("p".into()),
+                },
+                user,
+                1,
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn complete_edit(
+        store: &Store<RusqliteDb>,
+        user: UserId,
+        session: i64,
+        source: &str,
+        diff: &FileDiff,
+    ) {
+        store
+            .upsert_tool_step(session, 1, source, "write_file", "write", 1, Some(diff))
+            .await
+            .unwrap();
+        store
+            .complete_tool_step(user, session, source, true, "written", Some(diff))
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn pending_edits_merge_once_across_sessions_and_keep_resolutions() {
+        let store = test_store();
+        let user = test_user(&store, "u", UserRole::User);
+        block_on(async {
+            let project = edit_project(&store, user).await;
+            let first = store
+                .create_session("s1", None, None, Some(project.id), user, 1)
+                .await
+                .unwrap();
+            let second = store
+                .create_session("s2", None, None, Some(project.id), user, 1)
+                .await
+                .unwrap();
+            let original = edit(Some("a"), "b");
+            complete_edit(&store, user, first.id, "one", &original).await;
+            complete_edit(&store, user, second.id, "two", &edit(Some("b"), "c")).await;
+            let edits = store.list_pending_edits(user, project.id).await.unwrap();
+            assert_eq!(edits.len(), 1);
+            assert_eq!(edits[0].diff, edit(Some("a"), "c"));
+            assert_eq!(edits[0].revision, 2);
+            store
+                .complete_tool_step(user, first.id, "one", true, "replay", Some(&original))
+                .await
+                .unwrap();
+            assert_eq!(
+                store.list_pending_edits(user, project.id).await.unwrap(),
+                edits
+            );
+            let mut request = ResolveEditRequest {
+                path: "a.txt".into(),
+                revision: 1,
+                decision: EditDecision::Accepted,
+            };
+            assert!(matches!(
+                store.resolve_pending_edit(user, project.id, &request).await,
+                Err(StorageError::Conflict(_))
+            ));
+            request.revision = 2;
+            let resolved = store
+                .resolve_pending_edit(user, project.id, &request)
+                .await
+                .unwrap();
+            assert_eq!(
+                store
+                    .resolve_pending_edit(user, project.id, &request)
+                    .await
+                    .unwrap(),
+                resolved
+            );
+            assert!(
+                store
+                    .list_pending_edits(user, project.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            // Neither completion nor a late preview can resurrect a resolved source.
+            complete_edit(&store, user, first.id, "one", &original).await;
+            assert!(
+                store
+                    .list_pending_edits(user, project.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                store.list_tool_steps(first.id).await.unwrap()[0].diff,
+                Some(original)
+            );
+            complete_edit(&store, user, first.id, "three", &edit(Some("c"), "d")).await;
+            let fresh = store.list_pending_edits(user, project.id).await.unwrap();
+            assert_eq!(fresh[0].revision, 3);
+            assert_eq!(fresh[0].diff, edit(Some("c"), "d"));
+            assert!(matches!(
+                store.resolve_pending_edit(user, project.id, &request).await,
+                Err(StorageError::Conflict(_))
+            ));
+            request.revision = 3;
+            request.decision = EditDecision::Rejected;
+            store
+                .resolve_pending_edit(user, project.id, &request)
+                .await
+                .unwrap();
+            complete_edit(&store, user, second.id, "four", &edit(Some("c"), "e")).await;
+            let fresh = store.list_pending_edits(user, project.id).await.unwrap();
+            assert_eq!(fresh[0].revision, 4);
+            assert_eq!(fresh[0].diff, edit(Some("c"), "e"));
+            complete_edit(&store, user, first.id, "five", &edit(Some("e"), "c")).await;
+            assert!(
+                store
+                    .list_pending_edits(user, project.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            complete_edit(&store, user, first.id, "six", &edit(None, "new")).await;
+            assert_eq!(
+                store.list_pending_edits(user, project.id).await.unwrap()[0].revision,
+                6
+            );
+        });
+    }
+
+    #[test]
+    fn pending_completion_is_atomic_and_requires_owned_existing_source() {
+        let store = test_store();
+        let user = test_user(&store, "u", UserRole::User);
+        let other = test_user(&store, "other", UserRole::User);
+        block_on(async {
+            let project = edit_project(&store, user).await;
+            let session = store
+                .create_session("s", None, None, Some(project.id), user, 1)
+                .await
+                .unwrap();
+            let diff = edit(Some("a"), "b");
+            assert!(matches!(
+                store
+                    .complete_tool_step(user, session.id, "missing", true, "written", Some(&diff))
+                    .await,
+                Err(StorageError::NotFound(_))
+            ));
+            store
+                .upsert_tool_step(
+                    session.id,
+                    1,
+                    "source",
+                    "write_file",
+                    "preview",
+                    1,
+                    Some(&diff),
+                )
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .list_pending_edits(user, project.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .complete_tool_step(other, session.id, "source", true, "written", Some(&diff))
+                    .await
+                    .is_err()
+            );
+            assert!(store.list_pending_edits(other, project.id).await.is_err());
+            let request = ResolveEditRequest {
+                path: diff.path.clone(),
+                revision: 1,
+                decision: EditDecision::Rejected,
+            };
+            assert!(
+                store
+                    .resolve_pending_edit(other, project.id, &request)
+                    .await
+                    .is_err()
+            );
+            store.db.execute("CREATE TRIGGER fail_pending BEFORE INSERT ON pending_edits BEGIN SELECT RAISE(ABORT, 'test failure'); END", &[]).await.unwrap();
+            assert!(
+                store
+                    .complete_tool_step(user, session.id, "source", true, "written", Some(&diff))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(store.list_tool_steps(session.id).await.unwrap()[0].ok, None);
+            store
+                .db
+                .execute("DROP TRIGGER fail_pending", &[])
+                .await
+                .unwrap();
+            store
+                .complete_tool_step(user, session.id, "source", false, "failed", Some(&diff))
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .list_pending_edits(user, project.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let mut unavailable = edit(None, "binary changed");
+            unavailable.old_unavailable = true;
+            unavailable.backup_path = Some("backup".into());
+            complete_edit(&store, user, session.id, "unreadable", &unavailable).await;
+            complete_edit(
+                &store,
+                user,
+                session.id,
+                "later",
+                &edit(Some("binary changed"), "last"),
+            )
+            .await;
+            let merged = store.list_pending_edits(user, project.id).await.unwrap();
+            assert!(merged[0].diff.old_unavailable);
+            assert_eq!(merged[0].diff.backup_path.as_deref(), Some("backup"));
+            assert_eq!(merged[0].diff.old, None);
+            assert_eq!(merged[0].diff.new, "last");
+            store.delete_session(session.id, user).await.unwrap();
+            assert_eq!(
+                store.list_pending_edits(user, project.id).await.unwrap(),
+                merged
+            );
+            store.delete_project(project.id, user).await.unwrap();
+            assert!(
+                store
+                    .db
+                    .execute("SELECT 1 FROM pending_edits", &[])
+                    .await
+                    .unwrap()
+                    .rows
+                    .is_empty()
+            );
+        });
+    }
+
+    #[test]
+    fn upgrade_17_keeps_history_and_step_18_replays_without_backfill() {
+        block_on(async {
+            let db = RusqliteDb::open_in_memory().unwrap();
+            migrations::apply_through(&db, 17).await.unwrap();
+            db.execute("PRAGMA user_version = 17", &[]).await.unwrap();
+            let store = Store::new(db);
+            let user = store
+                .insert_user("u", "hash", UserRole::User, 1)
+                .await
+                .unwrap()
+                .id;
+            let project = edit_project(&store, user).await;
+            let session = store
+                .create_session("s", None, None, Some(project.id), user, 1)
+                .await
+                .unwrap();
+            let diff = edit(Some("a"), "b");
+            // Old builds stored completed history and permission previews in the same diff column.
+            store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, ok, diff, created_at) VALUES (?, 1, 'history', 'write_file', 'write', 1, ?, 1)", &[DbValue::Int(session.id), DbValue::Text(serde_json::to_string(&diff).unwrap())]).await.unwrap();
+            store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, diff, created_at) VALUES (?, 1, 'preview', 'write_file', 'write', ?, 1)", &[DbValue::Int(session.id), DbValue::Text(serde_json::to_string(&diff).unwrap())]).await.unwrap();
+            store.migrate().await.unwrap();
+            assert_eq!(schema_version(&store.db).await, 18);
+            store
+                .complete_tool_step(user, session.id, "history", true, "replay", Some(&diff))
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .list_pending_edits(user, project.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            store
+                .complete_tool_step(user, session.id, "preview", true, "written", Some(&diff))
+                .await
+                .unwrap();
+            let pending = store.list_pending_edits(user, project.id).await.unwrap();
+            migrations::apply_through(&store.db, 18).await.unwrap();
+            migrations::apply_through(&store.db, 18).await.unwrap();
+            assert_eq!(
+                store.list_pending_edits(user, project.id).await.unwrap(),
+                pending
+            );
+            let request = ResolveEditRequest {
+                path: "a.txt".into(),
+                revision: 1,
+                decision: EditDecision::Pending,
+            };
+            assert!(matches!(
+                store.resolve_pending_edit(user, project.id, &request).await,
+                Err(StorageError::InvalidValue(_))
+            ));
+        });
     }
 
     #[test]
@@ -1878,7 +2317,14 @@ mod tests {
                 backup_path: None,
             };
             store
-                .complete_tool_step(session.id, "call-1", true, "wrote a.txt", Some(&diff))
+                .complete_tool_step(
+                    user_id,
+                    session.id,
+                    "call-1",
+                    true,
+                    "wrote a.txt",
+                    Some(&diff),
+                )
                 .await
                 .unwrap();
             store
@@ -1904,7 +2350,7 @@ mod tests {
                 .await
                 .unwrap();
             store
-                .complete_tool_step(session.id, "call-2", true, "read a.txt", None)
+                .complete_tool_step(user_id, session.id, "call-2", true, "read a.txt", None)
                 .await
                 .unwrap();
             store
@@ -2642,7 +3088,7 @@ mod tests {
                 .await
                 .unwrap();
             store.migrate().await.unwrap();
-            assert_eq!(schema_version(&store.db).await, 17);
+            assert_eq!(schema_version(&store.db).await, migrations::SCHEMA_VERSION);
             assert!(!store.cancel_requested_since(session.id, 0).await.unwrap());
             store.request_cancel(session.id, 1000).await.unwrap();
             migrations::apply_through(&store.db, 17).await.unwrap();

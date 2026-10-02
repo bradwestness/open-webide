@@ -7,9 +7,9 @@ use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
     GitCommitRequest, GitCommitResult, GitRepoStatus, GitSyncRequest, GitSyncResult, Health,
-    ModelInfo, NewConnection, NewProject, NewSession, Project, ProviderKind, Role, RunEvent,
-    SearchHit, SystemPrompt, TurnTelemetry, User, WebSearchResult, WorkspaceMode,
-    vfs::SearchOptions,
+    ModelInfo, NewConnection, NewProject, NewSession, PersistedEdit, Project, ProviderKind,
+    ResolveEditRequest, Role, RunEvent, SearchHit, SystemPrompt, TurnTelemetry, User,
+    WebSearchResult, WorkspaceMode, vfs::SearchOptions,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -680,6 +680,23 @@ impl BackendApi {
             )
             .await?;
         Ok(())
+    }
+
+    pub async fn list_pending_edits(&self, project_id: i64) -> Result<Vec<PersistedEdit>, String> {
+        self.get(&format!("/projects/{project_id}/pending-edits"))
+            .await
+    }
+
+    pub async fn resolve_pending_edit(
+        &self,
+        project_id: i64,
+        request: &ResolveEditRequest,
+    ) -> Result<PersistedEdit, String> {
+        self.post(
+            &format!("/projects/{project_id}/pending-edits/resolve"),
+            request,
+        )
+        .await
     }
 
     /// Search the web for documentation, API references, or solutions.

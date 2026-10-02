@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Store pending agent edits and review decisions per project in the database, with replay protection and revision checks; review UI integration follows separately.
+
 - Keep terminal shells and output when hiding the dock, and start new shells in the active project folder with a visible workspace-root fallback notice, including when a remote folder no longer exists.
 
 - Guard local browser file operations and agent completions with originating-thread checks, including cancellation when a completion stream is dropped.
@@ -165,6 +167,8 @@ for what's still ahead.
 - Reconcile setup, architecture, bridge protocol, roadmap, changelog, and `/help` documentation with current behavior.
 
 ### Fixed
+
+- Stop bridge agent runs when a tool result cannot be saved, delivering the completed result before the error and preventing overlapping runs in the same session.
 
 - Keep split terminal controls intact when busy or recoverable-error notices appear during a running process.
 

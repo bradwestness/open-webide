@@ -1,4 +1,5 @@
 use super::*;
+use openwebide_core::{EditDecision, ResolveEditRequest};
 // -- projects --------------------------------------------------------------------
 
 pub(crate) async fn list_projects(
@@ -89,4 +90,49 @@ pub(crate) async fn browse(
     let rel = params.get("path").cloned().unwrap_or_default();
     let entries = crate::files::list(&rel).await?;
     Ok(json_response(200, &entries))
+}
+
+pub(crate) async fn list_pending_edits(
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let id = path_id(
+        path.strip_suffix("/pending-edits")
+            .ok_or_else(|| ApiError::bad_request("expected pending-edits path"))?,
+        "/api/projects",
+    )?;
+    state.store.get_project(id, user.id).await?;
+    let edits = state.store.list_pending_edits(user.id, id).await?;
+    Ok(json_response(200, &edits))
+}
+
+pub(crate) async fn resolve_pending_edit(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let id = path_id(
+        path.strip_suffix("/pending-edits/resolve")
+            .ok_or_else(|| ApiError::bad_request("expected edit resolution path"))?,
+        "/api/projects",
+    )?;
+    state.store.get_project(id, user.id).await?;
+    let request: ResolveEditRequest = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
+    validate_edit_resolution(&request)?;
+    let edit = state
+        .store
+        .resolve_pending_edit(user.id, id, &request)
+        .await?;
+    Ok(json_response(200, &edit))
+}
+
+pub(super) fn validate_edit_resolution(request: &ResolveEditRequest) -> Result<(), ApiError> {
+    if request.revision <= 0 || request.decision == EditDecision::Pending {
+        return Err(ApiError::bad_request(
+            "expected a positive revision and accepted or rejected decision",
+        ));
+    }
+    Ok(())
 }

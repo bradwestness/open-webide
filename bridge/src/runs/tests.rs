@@ -14,6 +14,7 @@ struct FakeBackend {
     operations: Mutex<Vec<String>>,
     kind: Mutex<Option<RunKind>>,
     fail_final: AtomicBool,
+    fail_completion: AtomicBool,
     fail_interim: AtomicBool,
     fail_plan: AtomicBool,
 }
@@ -96,6 +97,9 @@ impl RunBackend for FakeBackend {
             .lock()
             .unwrap()
             .push(format!("complete:{id}"));
+        if self.fail_completion.load(Ordering::SeqCst) {
+            return Err("offline".into());
+        }
         Ok(())
     }
     async fn set_tool_stream_unsupported(
@@ -356,6 +360,81 @@ async fn agent_mapping_persists_in_order_and_reanchors_with_last_usage() {
     assert!(
         matches!(events(&run).last(), Some(RunEvent::Done { message }) if message.usage == Some(last))
     );
+}
+
+#[tokio::test]
+async fn completion_persistence_failure_stops_agent_before_releasing_run() {
+    struct StreamGuard<'a> {
+        registry: &'a RunRegistry,
+        run: &'a Run,
+        dropped: &'a AtomicBool,
+    }
+
+    impl Drop for StreamGuard<'_> {
+        fn drop(&mut self) {
+            assert!(self.run.running.load(Ordering::SeqCst));
+            assert_eq!(
+                self.registry.reserve(&user(1), &start("r2")).unwrap_err().0,
+                RunRejectCode::Busy
+            );
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let backend = FakeBackend::default();
+    backend.fail_completion.store(true, Ordering::SeqCst);
+    let registry = RunRegistry::default();
+    let run = registry.reserve(&user(1), &start("r")).unwrap();
+    let dropped = AtomicBool::new(false);
+    let guard = StreamGuard {
+        registry: &registry,
+        run: &run,
+        dropped: &dropped,
+    };
+    let mut result = Some(AgentEvent::ToolResult {
+        id: "t".into(),
+        name: "write_file".into(),
+        ok: true,
+        summary: "written".into(),
+        diff: None,
+    });
+    let stream = stream::poll_fn(move |_| {
+        let _ = &guard;
+        match result.take() {
+            Some(event) => std::task::Poll::Ready(Some(event)),
+            None => std::task::Poll::Pending,
+        }
+    });
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        map_agent_events(&run, &backend, 7, stream),
+    )
+    .await
+    .unwrap();
+    assert!(dropped.load(Ordering::SeqCst));
+    assert!(!run.running.load(Ordering::SeqCst));
+    assert!(registry.reserve(&user(1), &start("r2")).is_ok());
+    assert_eq!(*backend.operations.lock().unwrap(), ["complete:t"]);
+
+    let (sender, mut receiver) = mpsc::channel(8);
+    run.clone().forward(Some(0), sender).await;
+    assert!(matches!(
+        recv(&mut receiver).await,
+        BridgeServerMessage::RunEvent {
+            seq: 1,
+            event: RunEvent::ToolResult { id, .. },
+            ..
+        } if id == "t"
+    ));
+    assert!(matches!(
+        recv(&mut receiver).await,
+        BridgeServerMessage::RunEvent {
+            seq: 2,
+            event: RunEvent::Error { message },
+            ..
+        } if message == "failed to save tool result: offline"
+    ));
+    assert!(receiver.recv().await.is_none());
 }
 
 #[tokio::test]

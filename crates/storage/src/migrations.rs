@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -135,6 +135,7 @@ async fn apply_step<D: Db>(
         15 => add_connection_tool_stream_unsupported(db).await,
         16 => add_connection_tool_stream_revision(db).await,
         17 => add_cancel_requested_at_ms(db).await,
+        18 => create_pending_edits(db).await,
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),
     }
 }
@@ -529,6 +530,42 @@ async fn add_cancel_requested_at_ms<D: Db>(db: &D) -> Result<(), StorageError> {
     if res.rows.is_empty() {
         db.execute(
             "ALTER TABLE run_cancels ADD COLUMN requested_at_ms INTEGER NOT NULL DEFAULT 0",
+            &[],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn create_pending_edits<D: Db>(db: &D) -> Result<(), StorageError> {
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS pending_edits (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            diff TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            decision TEXT NOT NULL CHECK (decision IN ('pending', 'accepted', 'rejected')),
+            PRIMARY KEY (project_id, path)
+        )",
+        &[],
+    )
+    .await?;
+    let columns = db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('tool_steps') WHERE name = 'completion_applied'",
+            &[],
+        )
+        .await?;
+    if columns.rows.is_empty() {
+        db.execute(
+            "ALTER TABLE tool_steps ADD COLUMN completion_applied INTEGER NOT NULL DEFAULT 0",
+            &[],
+        )
+        .await?;
+        // Historical completions remain history even if a client replays them.
+        db.execute(
+            "UPDATE tool_steps SET completion_applied = 1 WHERE ok IS NOT NULL",
             &[],
         )
         .await?;

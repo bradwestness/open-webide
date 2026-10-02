@@ -79,7 +79,14 @@ fn run_plan_rebuilds_tool_history_and_falls_back_across_gaps() {
                 if i == 0 || complete_second {
                     state
                         .store
-                        .complete_tool_step(session.id, &id, true, &format!("result-{i}"), None)
+                        .complete_tool_step(
+                            user.id,
+                            session.id,
+                            &id,
+                            true,
+                            &format!("result-{i}"),
+                            None,
+                        )
                         .await
                         .unwrap();
                 }
@@ -550,4 +557,125 @@ fn project_database_error_does_not_downgrade_to_chat() {
         assert!(error.to_string().contains("projects"));
         assert_eq!(error.into_response().status().as_u16(), 500);
     });
+}
+
+#[test]
+fn pending_edit_handlers_and_resolution_body_contract() {
+    futures::executor::block_on(async {
+        let state = AppState::new().await.unwrap();
+        let user = state
+            .store
+            .insert_user("owner", "hash", openwebide_core::UserRole::User, 1)
+            .await
+            .unwrap()
+            .public();
+        let other = state
+            .store
+            .insert_user("other", "hash", openwebide_core::UserRole::User, 1)
+            .await
+            .unwrap()
+            .public();
+        let project = state
+            .store
+            .create_project(
+                &NewProject {
+                    name: "p".into(),
+                    mode: WorkspaceMode::Remote,
+                    path: None,
+                },
+                user.id,
+                1,
+            )
+            .await
+            .unwrap();
+        let session = state
+            .store
+            .create_session("s", None, None, Some(project.id), user.id, 1)
+            .await
+            .unwrap();
+        let diff = FileDiff {
+            path: "nested/a.txt".into(),
+            old: None,
+            new: "new".into(),
+            old_unavailable: false,
+            backup_path: None,
+        };
+        state
+            .store
+            .upsert_tool_step(session.id, 1, "source", "write_file", "write", 1, None)
+            .await
+            .unwrap();
+        state
+            .store
+            .complete_tool_step(user.id, session.id, "source", true, "written", Some(&diff))
+            .await
+            .unwrap();
+        let path = format!("/api/projects/{}/pending-edits", project.id);
+        let response = list_pending_edits(&state, &path, AuthedUser::from(user.clone()))
+            .await
+            .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let edits: Vec<openwebide_core::PersistedEdit> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(edits[0].diff, diff);
+        assert!(
+            list_pending_edits(&state, &path, AuthedUser::from(other))
+                .await
+                .is_err()
+        );
+        assert!(
+            list_pending_edits(
+                &state,
+                &(path.clone() + "/extra"),
+                AuthedUser::from(user.clone())
+            )
+            .await
+            .is_err()
+        );
+        for body in [
+            r#"{"path":"a","revision":"bad","decision":"accepted"}"#,
+            r#"{"path":"a","revision":1,"decision":"unknown"}"#,
+            r#"{"path":"a","decision":"rejected"}"#,
+        ] {
+            assert!(parse_json::<openwebide_core::ResolveEditRequest>(body.into()).is_err());
+        }
+        let request: openwebide_core::ResolveEditRequest =
+            parse_json(r#"{"path":"nested/a.txt","revision":1,"decision":"rejected"}"#.into())
+                .unwrap();
+        let resolved = state
+            .store
+            .resolve_pending_edit(user.id, project.id, &request)
+            .await
+            .unwrap();
+        assert_eq!(resolved.decision, openwebide_core::EditDecision::Rejected);
+        assert!(
+            state
+                .store
+                .list_pending_edits(user.id, project.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    });
+}
+
+#[test]
+fn resolution_validation_rejects_pending_and_nonpositive_revisions() {
+    use openwebide_core::{EditDecision, ResolveEditRequest};
+    for revision in [-1, 0, 1] {
+        for decision in [
+            EditDecision::Pending,
+            EditDecision::Accepted,
+            EditDecision::Rejected,
+        ] {
+            let request = ResolveEditRequest {
+                path: "a".into(),
+                revision,
+                decision,
+            };
+            assert_eq!(
+                validate_edit_resolution(&request).is_ok(),
+                revision > 0 && decision != EditDecision::Pending
+            );
+        }
+    }
 }

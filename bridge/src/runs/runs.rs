@@ -571,9 +571,24 @@ async fn map_agent_events<B: RunBackend>(
                 summary,
                 diff,
             } => {
-                let _ = backend
+                if let Err(error) = backend
                     .complete_tool_step(run.owner, run.session_id, &id, ok, &summary, diff.as_ref())
-                    .await;
+                    .await
+                {
+                    run.emit(RunEvent::ToolResult {
+                        id,
+                        name,
+                        ok,
+                        summary,
+                        diff,
+                    });
+                    // Stop the agent before the terminal event releases its session reservation.
+                    drop(events);
+                    run.emit(RunEvent::Error {
+                        message: format!("failed to save tool result: {error}"),
+                    });
+                    return;
+                }
                 RunEvent::ToolResult {
                     id,
                     name,
