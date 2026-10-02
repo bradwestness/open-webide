@@ -2,37 +2,31 @@
 
 What's left, grouped by how soon it's coming: **Next** (queued up), **Later**
 (planned, not yet started). Finished work —
-phases 1 through 14, telemetry, hardening, streaming, `/test`, and database-backed
-theme and prompt history — moved to [CHANGELOG.md](../CHANGELOG.md).
+phases 1 through 14, telemetry, hardening, streaming, `/test`, database-backed
+theme and prompt history, and frontend performance & polish — moved to [CHANGELOG.md](../CHANGELOG.md).
 
 ## Next
 
-### Frontend performance & polish
+### Project instruction files (AGENTS.md / CLAUDE.md)
 
-Follow-ups that build on the per-feature state stores from the hardening
-sequence:
+Load a project's agent instructions the way a TUI agent launched in the project
+directory does, so the agent follows the repo's own rules. Today no host reads them.
 
-- **Performance first:** stop re-rendering the whole conversation on every
-  streamed token (per-message signals / a keyed `reactive_stores` store) and
-  stop re-highlighting the whole file on every keystroke (highlight only the
-  visible window, or debounce to the next animation frame); a terminal line
-  buffer instead of re-rendering all output.
-- Design tokens and buttons: settle canonical token names (AGENTS.md currently
-  documents the CSS), add any needed tokens, move to `color-mix`, and merge
-  `ui::Button` into `.btn`.
-- `data-wasm-opt="z"` for a smaller bundle (measure before/after).
-- A 250 ms debounce on search; parallel initial load and a model-refetch
-  memo; ANSI and scroll fixes in the terminal; CRLF and multi-line `data:`
-  handling in the SSE reader.
-- IndexedDB connection caching, and deleting a local project's directory
-  handle when the project is deleted.
-- Keyboard accessibility for modals; smaller duplications (recent-projects
-  filter, telemetry formatting on `SessionTelemetry`) and idiom cleanups
-  (`.with()` instead of cloning `.get()`, typed enums for stringly values,
-  one guarded `Send` wrapper).
-- Keep the terminal dock mounted so shells survive a toggle; default the
-  terminal's working directory to the project folder.
-- Persist accept/reject on agent edits so pending edits survive a reload.
+- **AGENTS.md** at the project root, the cross-tool standard (Codex, Gemini, Copilot).
+- **CLAUDE.md**, following `@path` imports as Claude Code does, deduplicated so a
+  `CLAUDE.md` that is just `@AGENTS.md` doesn't include it twice.
+- **Nested per-directory files:** also load `AGENTS.md` / `CLAUDE.md` from a
+  subdirectory when the agent reads or edits files under it.
+- Read through each host's VFS at the start of every run (SSE backend, bridge-hosted
+  runs, local mode) and add them to the system prompt as project instructions, after
+  the user's default system prompt. Size-capped, with a visible note when a file is
+  truncated, and shown in the session so it's clear which files were loaded.
+
+### Ephemeral chat without a project
+
+With no project open the composer is disabled today ("Open a project to start a
+session"). Later: allow a plain, non-coding chat there — no tools and no file
+access — in a session that isn't tied to a project, kept or discarded on close.
 
 ### Secondary "fast model" per connection
 
