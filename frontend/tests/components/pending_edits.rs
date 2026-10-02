@@ -67,6 +67,30 @@ fn file_calls(mounted: &Mounted) -> Vec<Call> {
 }
 
 #[wasm_bindgen_test]
+async fn split_diff_highlights_line_ending_changes_and_displays_notes() {
+    for (old, new, note) in [
+        ("a\r\n", "a\n", "⏎ CRLF → LF"),
+        ("a", "a\n", "no newline at end of file"),
+    ] {
+        let mounted = mount_diff(FileDiff {
+            path: "file.txt".into(),
+            old: Some(old.into()),
+            new: new.into(),
+            old_unavailable: false,
+            backup_path: None,
+        });
+        settle().await;
+        mounted.click_text("Split");
+        settle().await;
+        for selector in [".sbs-del", ".sbs-add"] {
+            let cell = mounted.element(selector);
+            assert!(cell.text_content().unwrap().contains(note));
+            assert!(cell.query_selector(".form-hint").unwrap().is_some());
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn reject_restores_original_across_multiple_edits() {
     let mounted = mount_diff(FileDiff {
         path: "file.rs".into(),

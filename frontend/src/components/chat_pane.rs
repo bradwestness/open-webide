@@ -92,34 +92,37 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
     // model streams reasoning, then the last value is frozen for the summary.
     // `std::time::Instant` is unimplemented on wasm32, so track the start as
     // `Date::now()` milliseconds instead.
-    let started: RwSignal<Option<f64>> = RwSignal::new(None);
+    let started: StoredValue<Option<f64>> = StoredValue::new(None);
     let elapsed_secs = RwSignal::new(0u32);
-    let timer: RwSignal<Option<IntervalHandle>> = RwSignal::new(None);
-    // The interval runs for the lifetime of the view; the callback is a no-op
-    // until thinking is active, so no separate start/stop effect is needed.
-    if let Ok(handle) = set_interval_with_handle(
-        move || {
-            if is_thinking_active.get() {
-                if started.get().is_none() {
-                    started.set(Some(Date::now()));
+    let timer: StoredValue<Option<IntervalHandle>> = StoredValue::new(None);
+    let update_elapsed = move || {
+        if let Some(started_at) = started.get_value() {
+            // Elapsed time is non-negative and far below u32::MAX seconds,
+            // so the float-to-int cast is safe.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let secs = ((Date::now() - started_at) / 1000.0) as u32;
+            elapsed_secs.set(secs);
+        }
+    };
+    Effect::new(move |_| {
+        if is_thinking_active.get() {
+            started.set_value(Some(Date::now()));
+            elapsed_secs.set(0);
+            timer.set_value(
+                set_interval_with_handle(update_elapsed, Duration::from_millis(500)).ok(),
+            );
+        } else {
+            update_elapsed();
+            started.set_value(None);
+            timer.update_value(|timer| {
+                if let Some(handle) = timer.take() {
+                    handle.clear();
                 }
-                if let Some(started_at) = started.get() {
-                    // Elapsed time is non-negative and far below u32::MAX seconds,
-                    // so the float-to-int cast is safe.
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let secs = ((Date::now() - started_at) / 1000.0) as u32;
-                    elapsed_secs.set(secs);
-                }
-            } else {
-                started.set(None);
-            }
-        },
-        Duration::from_millis(500),
-    ) {
-        timer.set(Some(handle));
-    }
+            });
+        }
+    });
     on_cleanup(move || {
-        if let Some(handle) = timer.get() {
+        if let Some(handle) = timer.get_value() {
             handle.clear();
         }
     });

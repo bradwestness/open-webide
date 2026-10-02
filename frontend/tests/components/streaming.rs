@@ -385,6 +385,74 @@ async fn failed_model_resume_keeps_recovery_available() {
 }
 
 #[wasm_bindgen_test]
+async fn cancelled_reasoning_freezes_elapsed_time_and_collapses_trace() {
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_connection();
+        state.seed_session();
+        chat_view(state)
+    });
+    settle().await;
+    let chat = mounted.state.chat;
+    chat.apply_event(RunEvent::ReasoningDelta {
+        content: "checking".into(),
+    });
+    settle().await;
+    openwebide_frontend::util::sleep_ms(1_100).await;
+    assert_ne!(
+        mounted.element(".tui-think-meta").text_content().as_deref(),
+        Some("0s")
+    );
+    chat.apply_event(RunEvent::ReasoningDelta {
+        content: " again".into(),
+    });
+    settle().await;
+    assert_ne!(
+        mounted.element(".tui-think-meta").text_content().as_deref(),
+        Some("0s")
+    );
+    chat.apply_event(RunEvent::Cancelled);
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-thinking-summary.active")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-thinking-pre")
+            .unwrap()
+            .is_none()
+    );
+    let summary = mounted
+        .element(".tui-thinking-summary")
+        .text_content()
+        .unwrap();
+    assert!(summary.contains("Thought"));
+    assert!(summary.contains(" · "));
+    openwebide_frontend::util::sleep_ms(1_100).await;
+    assert_eq!(
+        mounted
+            .element(".tui-thinking-summary")
+            .text_content()
+            .unwrap(),
+        summary
+    );
+    mounted.click(".tui-thinking-summary");
+    settle().await;
+    assert_eq!(
+        mounted
+            .element(".tui-thinking-pre")
+            .text_content()
+            .as_deref(),
+        Some("checking again")
+    );
+}
+
+#[wasm_bindgen_test]
 async fn resumed_reasoning_deltas_render_literal_text() {
     use leptos::prelude::*;
     use openwebide_frontend::conversation::merge_snapshot;
@@ -410,6 +478,8 @@ async fn resumed_reasoning_deltas_render_literal_text() {
         content: "next <tag> & </think>".into(),
     });
     settle().await;
+    mounted.click(".tui-thinking-summary");
+    settle().await;
     assert_eq!(
         mounted
             .root
@@ -423,7 +493,7 @@ async fn resumed_reasoning_deltas_render_literal_text() {
 }
 
 #[wasm_bindgen_test]
-async fn reasoning_stream_expands_then_collapses_and_shows_cutoff() {
+async fn reasoning_stream_stays_collapsed_until_expanded_and_shows_cutoff() {
     let mounted = mount_test(|state| {
         state.seed_project();
         state.seed_connection();
@@ -438,6 +508,15 @@ async fn reasoning_stream_expands_then_collapses_and_shows_cutoff() {
         });
         settle().await;
     }
+    assert!(
+        mounted
+            .root
+            .query_selector(".tui-thinking-pre")
+            .unwrap()
+            .is_none()
+    );
+    mounted.click(".tui-thinking-summary");
+    settle().await;
     let trace = mounted
         .root
         .query_selector(".tui-thinking-pre")
@@ -454,6 +533,8 @@ async fn reasoning_stream_expands_then_collapses_and_shows_cutoff() {
             .unwrap()
             .is_some()
     );
+    mounted.click(".tui-thinking-summary");
+    settle().await;
     chat.apply_event(RunEvent::Delta {
         content: "answer".into(),
     });

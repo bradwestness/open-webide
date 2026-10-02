@@ -507,6 +507,7 @@ impl ChatState {
             self.cancel_run_prompts(anchor);
         }
         self.close_open_reasoning();
+        self.reasoning_active.set(false);
         self.ensure_stopped_marker();
         self.current_run_anchor.set(None);
     }
@@ -530,10 +531,7 @@ impl ChatState {
         if let Some(handle) = handle {
             self.messages.update_item(handle, |item| {
                 if let ConversationItem::Message(message) = item {
-                    message.content.push_str("
-</think>
-
-");
+                    message.content.push_str("\n</think>\n\n");
                 }
             });
         }
@@ -714,10 +712,7 @@ impl ChatState {
                     .update(|session| session.record_turn(&telemetry));
             }
             RunEvent::Cancelled => {
-                if let Some(anchor) = self.current_run_anchor.get_untracked() {
-                    self.cancel_run_prompts(anchor);
-                }
-                self.ensure_stopped_marker();
+                self.mark_stopped();
             }
             RunEvent::Error { message: error } => {
                 if let Some(anchor) = self.current_run_anchor.get_untracked() {
@@ -1144,6 +1139,38 @@ mod tests {
             assert!(matches!(&items[3], ConversationItem::ToolStep { id, result: Some(result), awaiting_permission: false, .. } if id == "a90t1c0" && result.ok));
             assert!(matches!(&items[4], ConversationItem::Message(msg) if msg.id == 91));
             assert_eq!(chat.session_telemetry.get_untracked().tool_calls_count, 1);
+        });
+    }
+
+    #[test]
+    fn cancelled_reasoning_closes_the_trace_and_resets_run_state() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            chat.active_session.set(Some(7));
+            chat.current_run_anchor.set(Some(90));
+            chat.apply_event(RunEvent::ReasoningDelta {
+                content: "checking </think> carefully".into(),
+            });
+            assert!(chat.reasoning_active.get_untracked());
+
+            chat.apply_event(RunEvent::Cancelled);
+            chat.apply_event(RunEvent::Cancelled);
+
+            let items = chat.messages.get_untracked();
+            let ConversationItem::Message(message) = &items[0] else {
+                panic!("expected the partial assistant message");
+            };
+            let parsed = openwebide_core::tui::parse_thinking(&message.content);
+            assert!(!parsed.is_thinking);
+            assert_eq!(
+                parsed.thinking.as_deref(),
+                Some("checking </think> carefully")
+            );
+            assert!(parsed.answer.is_empty());
+            assert!(!chat.reasoning_active.get_untracked());
+            assert_eq!(chat.current_run_anchor.get_untracked(), None);
+            assert_eq!(items.len(), 2);
+            assert!(matches!(items[1], ConversationItem::Stopped { .. }));
         });
     }
 

@@ -1353,14 +1353,8 @@ mod tests {
         };
         let rows = diff_side_by_side_detailed(&diff);
         assert_eq!(rows.len(), 1);
-        assert_eq!(
-            rows[0].0.as_ref().unwrap().ending_note,
-            Some("⏎ CRLF → LF")
-        );
-        assert_eq!(
-            rows[0].1.as_ref().unwrap().ending_note,
-            Some("⏎ CRLF → LF")
-        );
+        assert_eq!(rows[0].0.as_ref().unwrap().ending_note, Some("⏎ CRLF → LF"));
+        assert_eq!(rows[0].1.as_ref().unwrap().ending_note, Some("⏎ CRLF → LF"));
     }
 
     #[test]

@@ -193,6 +193,16 @@ body {
   color: var(--text);
 }
 
+.icon-btn[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.icon-btn[aria-pressed="true"]:hover {
+  color: var(--accent);
+}
+
 .session {
   display: flex;
   align-items: center;
@@ -933,6 +943,17 @@ body {
 
 .search-input:focus {
   outline: none;
+  border-color: var(--accent);
+}
+
+/* Match the search input's padding and border so the toggle aligns with it. */
+.file-tree-search .icon-btn {
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.file-tree-search .icon-btn[aria-pressed="true"] {
   border-color: var(--accent);
 }
 

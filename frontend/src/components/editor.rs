@@ -272,7 +272,7 @@ fn render_side_by_side(diff: FileDiff) -> impl IntoView {
                 .into_iter()
                 .map(|(left, right)| {
                     let (left_class, right_class) = match (&left, &right) {
-                        (Some(l), Some(r)) if l.content == r.content => ("sbs-cell", "sbs-cell"),
+                        (Some(l), Some(r)) if l.marker == ' ' && r.marker == ' ' => ("sbs-cell", "sbs-cell"),
                         (Some(_), Some(_)) => ("sbs-cell sbs-del", "sbs-cell sbs-add"),
                         (Some(_), None) => ("sbs-cell sbs-del", "sbs-cell sbs-empty"),
                         (None, Some(_)) => ("sbs-cell sbs-empty", "sbs-cell sbs-add"),
@@ -281,10 +281,16 @@ fn render_side_by_side(diff: FileDiff) -> impl IntoView {
                     view! {
                         <div class="sbs-row">
                             <div class=left_class>
-                                {left.map(|l| render_diff_chunks(l.chunks).into_any()).unwrap_or_else(|| ().into_any())}
+                                {left.map(|l| view! {
+                                    {render_diff_chunks(l.chunks)}
+                                    {l.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
+                                }.into_any()).unwrap_or_else(|| ().into_any())}
                             </div>
                             <div class=right_class>
-                                {right.map(|r| render_diff_chunks(r.chunks).into_any()).unwrap_or_else(|| ().into_any())}
+                                {right.map(|r| view! {
+                                    {render_diff_chunks(r.chunks)}
+                                    {r.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
+                                }.into_any()).unwrap_or_else(|| ().into_any())}
                             </div>
                         </div>
                     }
