@@ -34,7 +34,7 @@ pub fn App() -> impl IntoView {
     let auth = AuthState::new();
     provide_context(auth);
     let settings = SettingsState::new(
-        crate::state::settings::Theme::Dark,
+        crate::state::settings::Theme::from_root(),
         crate::bridge::default_bridge_url(),
     );
     provide_context(settings);

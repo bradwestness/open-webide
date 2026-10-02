@@ -24,11 +24,11 @@ pub enum ButtonSize {
 impl ButtonVariant {
     pub fn class_name(&self) -> &'static str {
         match self {
-            Self::Default => "ui-btn-default",
-            Self::Primary => "ui-btn-primary",
-            Self::Success => "ui-btn-success",
-            Self::Danger => "ui-btn-danger",
-            Self::Ghost => "ui-btn-ghost",
+            Self::Default => "",
+            Self::Primary => "send",
+            Self::Success => "approve",
+            Self::Danger => "danger",
+            Self::Ghost => "ghost",
         }
     }
 }
@@ -36,8 +36,8 @@ impl ButtonVariant {
 impl ButtonSize {
     pub fn class_name(&self) -> &'static str {
         match self {
-            Self::Sm => "ui-btn-sm",
-            Self::Md => "ui-btn-md",
+            Self::Sm => "sm",
+            Self::Md => "md",
         }
     }
 }
@@ -57,7 +57,7 @@ pub fn Button(
 
     view! {
         <button
-            class=format!("ui-btn {} {} {}", variant.class_name(), size.class_name(), extra_class)
+            class=format!("btn {} {} {}", variant.class_name(), size.class_name(), extra_class)
             disabled=is_disabled
             on:click=move |e| {
                 if let Some(cb) = &on_click {

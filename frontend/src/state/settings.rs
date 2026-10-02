@@ -10,6 +10,15 @@ pub enum Theme {
 }
 
 impl Theme {
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_root() -> Self {
+        web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.document_element())
+            .and_then(|root| root.get_attribute("data-theme"))
+            .map_or(Self::System, |value| Self::parse(&value))
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Dark => "dark",

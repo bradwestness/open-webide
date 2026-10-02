@@ -183,20 +183,37 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<User,
     }
 
     let secret = get_or_create_secret(state).await?;
-    let claims = verify_token(&secret, &token, unix_now_checked())?
-        .ok_or_else(|| ApiError::unauthorized("invalid or expired token"))?;
-
-    let user = state
-        .store
-        .get_user(UserId::new(claims.user_id))
+    session_user(state, &secret, &token)
         .await?
-        .ok_or_else(|| ApiError::unauthorized("unknown user"))?;
+        .ok_or_else(|| ApiError::unauthorized("invalid or expired token"))
+}
 
-    if user.token_epoch != claims.epoch {
-        return Err(ApiError::unauthorized("invalid or expired token"));
-    }
+/// Validate only the session cookie for the read-only prepaint theme endpoint.
+pub(crate) async fn theme_user(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<User>, ApiError> {
+    let Some(token) = session_cookie(headers) else {
+        return Ok(None);
+    };
+    let Some(secret) = state.store.get_setting(SECRET_KEY).await? else {
+        return Ok(None);
+    };
+    session_user(state, &secret, &token).await
+}
 
-    Ok(user.public())
+async fn session_user(
+    state: &AppState,
+    secret: &str,
+    token: &str,
+) -> Result<Option<User>, ApiError> {
+    let Some(claims) = verify_token(secret, token, unix_now_checked())? else {
+        return Ok(None);
+    };
+    let Some(user) = state.store.get_user(UserId::new(claims.user_id)).await? else {
+        return Ok(None);
+    };
+    Ok((user.token_epoch == claims.epoch).then(|| user.public()))
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

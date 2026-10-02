@@ -33,3 +33,6 @@ mod search;
 
 #[path = "components/idb.rs"]
 mod idb;
+
+#[path = "components/ui.rs"]
+mod ui;

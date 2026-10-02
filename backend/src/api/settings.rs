@@ -27,3 +27,28 @@ pub(crate) async fn set_setting(
         .await?;
     Ok(json_response(200, &json!({ "key": setting.key })))
 }
+
+const SYSTEM_THEME: &str = "matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'";
+
+pub(crate) async fn theme_script(
+    state: &AppState,
+    user: Option<AuthedUser>,
+) -> Result<JsonResp, ApiError> {
+    let theme = match user {
+        Some(user) => state.store.get_user_setting(user.id, "theme").await?,
+        None => None,
+    };
+    let value = match theme.as_deref() {
+        Some("dark") => "'dark'",
+        Some("light") => "'light'",
+        _ => SYSTEM_THEME,
+    };
+    Ok(Response::builder()
+        .status(200)
+        .header("content-type", "application/javascript")
+        .header("cache-control", "no-store")
+        .body(box_body(FullBody::new(Bytes::from(format!(
+            "document.documentElement.setAttribute('data-theme',{value});\n"
+        )))))
+        .expect("valid status and headers"))
+}

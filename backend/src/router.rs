@@ -8,6 +8,7 @@ use spin_sdk::http::{FullBody, Request, Response, box_body};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
     Health,
+    ThemeScript,
     Register,
     Login,
     Me,
@@ -70,6 +71,7 @@ fn numeric_id(id: &str) -> bool {
 
 fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
     match (method, segments) {
+        ("GET", ["theme.js"]) => Some(Route::ThemeScript),
         ("GET", ["health"]) => Some(Route::Health),
         ("POST", ["auth", "register"]) => Some(Route::Register),
         ("POST", ["auth", "login"]) => Some(Route::Login),
@@ -178,7 +180,16 @@ pub async fn route(req: Request) -> JsonResp {
             return with_cors(e.into_response(), origin);
         }
     };
+    // Native bridge requests already passed shared-secret authentication above.
+    let bridge_authenticated = req.headers().contains_key("authorization") && user.is_some();
+    if !csrf_allowed(method.as_str(), &path, req.headers()) && !bridge_authenticated {
+        return with_cors(
+            ApiError::unauthorized("not signed in").into_response(),
+            origin,
+        );
+    }
     let result = match (route, user) {
+        (Some(Route::ThemeScript), user) => api::settings::theme_script(&state, user).await,
         (Some(Route::Health), None) => Ok(api::auth::health()),
         (Some(Route::Register), None) => api::auth::register(req, &state).await,
         (Some(Route::Login), None) => api::auth::login(req, &state).await,
@@ -295,12 +306,21 @@ pub async fn route(req: Request) -> JsonResp {
     with_cors(resp, origin)
 }
 
+fn csrf_allowed(method: &str, path: &str, headers: &spin_sdk::http::HeaderMap) -> bool {
+    (method == "GET" && path == "/api/theme.js") || crate::auth::csrf_header_ok(headers)
+}
+
 async fn authenticate_route(
     state: &AppState,
     headers: &spin_sdk::http::HeaderMap,
     route: Option<Route>,
     path: &str,
 ) -> Result<Option<crate::auth::AuthedUser>, ApiError> {
+    if route == Some(Route::ThemeScript) {
+        return crate::auth::theme_user(state, headers)
+            .await
+            .map(|user| user.map(Into::into));
+    }
     if route.is_some_and(Route::is_public)
         || (route.is_none()
             && matches!(
@@ -348,6 +368,129 @@ fn with_cors(mut resp: JsonResp, origin: Option<&str>) -> JsonResp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_exact_theme_get_skips_csrf_header() {
+        let mut headers = spin_sdk::http::HeaderMap::new();
+        assert!(csrf_allowed("GET", "/api/theme.js", &headers));
+        for method in ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH"] {
+            for path in [
+                "/api/theme.js",
+                "/api/theme.js/",
+                "/api/theme.js/extra",
+                "/api/settings",
+                "/api/health",
+                "/api/auth/login",
+                "/api/unknown",
+            ] {
+                if method == "GET" && path == "/api/theme.js" {
+                    continue;
+                }
+                assert!(!csrf_allowed(method, path, &headers), "{method} {path}");
+            }
+        }
+        headers.insert("x-openwebide", "1".parse().unwrap());
+        assert!(csrf_allowed("POST", "/api/theme.js", &headers));
+        assert!(csrf_allowed("GET", "/api/settings", &headers));
+    }
+
+    #[test]
+    fn theme_route_uses_only_valid_session_cookie_and_owned_setting() {
+        futures::executor::block_on(async {
+            use http_body_util::BodyExt;
+            let state = AppState::new().await.unwrap();
+            let mut invalid_cookie = spin_sdk::http::HeaderMap::new();
+            invalid_cookie.insert("cookie", "owide_session=invalid".parse().unwrap());
+            assert!(
+                crate::auth::theme_user(&state, &invalid_cookie)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                state
+                    .store
+                    .get_setting("auth_secret")
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let alice = state
+                .store
+                .insert_user("alice", "hash", openwebide_core::UserRole::User, 1)
+                .await
+                .unwrap();
+            let bob = state
+                .store
+                .insert_user("bob", "hash", openwebide_core::UserRole::User, 1)
+                .await
+                .unwrap();
+            state
+                .store
+                .set_user_setting(bob.id, "theme", "dark")
+                .await
+                .unwrap();
+            let no_theme = state
+                .store
+                .insert_user("no-theme", "hash", openwebide_core::UserRole::User, 1)
+                .await
+                .unwrap();
+            let no_theme_token = crate::auth::issue_token(&state, &no_theme).await.unwrap();
+            let token = crate::auth::issue_token(&state, &alice).await.unwrap();
+            let mut headers = spin_sdk::http::HeaderMap::new();
+            for (cookie, saved, expected) in [
+                (Some(token.as_str()), Some("light"), "'light'"),
+                (Some(token.as_str()), Some("dark"), "'dark'"),
+                (Some(token.as_str()), Some("system"), "matchMedia"),
+                (
+                    Some(token.as_str()),
+                    Some("invalid';alert(1)"),
+                    "matchMedia",
+                ),
+                (None, Some("light"), "matchMedia"),
+                (Some("invalid"), Some("dark"), "matchMedia"),
+                (Some(no_theme_token.as_str()), None, "matchMedia"),
+            ] {
+                headers.remove("cookie");
+                if let Some(cookie) = cookie {
+                    headers.insert("cookie", format!("owide_session={cookie}").parse().unwrap());
+                }
+                state
+                    .store
+                    .set_user_setting(alice.id, "theme", saved.unwrap_or(""))
+                    .await
+                    .unwrap();
+                let route = resolve("GET", &["theme.js"]);
+                assert_eq!(route, Some(Route::ThemeScript));
+                assert!(csrf_allowed("GET", "/api/theme.js", &headers));
+                let user = authenticate_route(&state, &headers, route, "/api/theme.js")
+                    .await
+                    .unwrap();
+                let response = api::settings::theme_script(&state, user).await.unwrap();
+                assert_eq!(response.headers()["content-type"], "application/javascript");
+                assert_eq!(response.headers()["cache-control"], "no-store");
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let body = std::str::from_utf8(&body).unwrap();
+                assert!(body.contains(expected), "{body}");
+                assert_eq!(body.lines().count(), 1);
+                assert!(!body.contains("alert"));
+            }
+            headers.insert("cookie", format!("owide_session={token}").parse().unwrap());
+            for (method, path) in [
+                ("GET", "/api/settings"),
+                ("POST", "/api/theme.js"),
+                ("HEAD", "/api/theme.js"),
+                ("GET", "/api/theme.js/"),
+            ] {
+                let segments: Vec<_> = path.strip_prefix("/api/").unwrap().split('/').collect();
+                assert!(
+                    authenticate_route(&state, &headers, resolve(method, &segments), path)
+                        .await
+                        .is_err()
+                );
+            }
+        });
+    }
+
     #[test]
     fn unsupported_methods_on_public_paths_skip_authentication() {
         futures::executor::block_on(async {
@@ -407,6 +550,7 @@ mod tests {
     #[test]
     fn route_table() {
         for (method, path, expected) in [
+            ("GET", "theme.js", Route::ThemeScript),
             ("GET", "health", Route::Health),
             ("POST", "auth/register", Route::Register),
             ("POST", "auth/login", Route::Login),
@@ -497,6 +641,15 @@ mod tests {
             assert_eq!(
                 resolve(method, &segments),
                 Some(expected),
+                "{method} {path}"
+            );
+            assert_eq!(
+                csrf_allowed(
+                    method,
+                    &format!("/api/{path}"),
+                    &spin_sdk::http::HeaderMap::new()
+                ),
+                expected == Route::ThemeScript,
                 "{method} {path}"
             );
             assert_eq!(

@@ -547,21 +547,21 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                 </div>
                 <div class="terminal-actions">
                     <button
-                        class="term-btn"
+                        class="btn ghost sm term-btn"
                         title="New interactive shell"
                         on:click=move |_| spawn_shell_btn()
                     >
                         "+ Shell"
                     </button>
                     <button
-                        class="term-btn"
+                        class="btn ghost sm term-btn"
                         title="Interrupt active process (Ctrl+C)"
                         on:click=move |_| kill_current_btn()
                     >
                         "■ Kill"
                     </button>
                     <button
-                        class="term-btn"
+                        class="btn ghost sm term-btn"
                         title="Clear output (Ctrl+L)"
                         on:click=move |_| clear_output()
                     >
@@ -604,7 +604,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     on:keydown=on_keydown
                 />
                 <button
-                    class="term-send-btn"
+                    class="btn send sm term-send-btn"
                     title="Send command"
                     on:click=move |_| on_submit_btn()
                 >

@@ -264,14 +264,14 @@ fn render_tool_step(
                         </div>
                         <div class="tui-perm-buttons">
                             <button
-                                class="tui-perm-btn btn-y"
+                                class="btn approve tui-perm-btn btn-y"
                                 title="Approve this call [Alt+Y]"
                                 on:click=move |_| on_permission.run((id_sig.get(), true))
                             >
                                 "[Alt+Y]es"
                             </button>
                             <button
-                                class="tui-perm-btn btn-n"
+                                class="btn deny tui-perm-btn btn-n"
                                 title="Deny this call [Alt+N]"
                                 on:click=move |_| on_permission.run((id_sig.get(), false))
                             >
@@ -282,7 +282,7 @@ fn render_tool_step(
                                 fallback=|| ()
                             >
                                 <button
-                                    class="tui-perm-btn btn-a"
+                                    class="btn send tui-perm-btn btn-a"
                                     title="Always approve for this session [Alt+A]"
                                     on:click=move |_| on_permission_always.run(id_sig.get())
                                 >
@@ -290,7 +290,7 @@ fn render_tool_step(
                                 </button>
                             </Show>
                             <button
-                                class="tui-perm-btn btn-d"
+                                class="btn ghost tui-perm-btn btn-d"
                                 title="Toggle diff inspection [Alt+D]"
                                 on:click=move |_| show_diff.update(|v| *v = !*v)
                             >

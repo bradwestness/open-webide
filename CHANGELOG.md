@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Apply the saved database theme before first paint without browser preference storage, and unify action buttons and theme-aware warning/diff colors.
+
 - Reuse the browser database connection and remove saved local folder handles when projects are deleted, including stale handles owned by the signed-in account found at startup; preserve other accounts’ folders and handles saved during startup, including when the system clock changes.
 
 - Handle CRLF and CR fallback chat streams and multi-line SSE data fields correctly.

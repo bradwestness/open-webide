@@ -11,7 +11,7 @@ Instructions, conventions, and architectural principles for AI agents working on
 - **Design Tokens & Theme Variables**: Rely strictly on the established CSS variables defined in `frontend/styles.css`:
   - Backgrounds: `var(--bg)`, `var(--bg-panel)`, `var(--bg-hover)`
   - Borders: `var(--border)`
-  - Accents & Actions: `var(--accent)`, `var(--online)`, `var(--offline)`
+  - Accents & Actions: `var(--accent)`, `var(--online)`, `var(--offline)`, `var(--warn)`, `var(--git-modified)`, `var(--on-accent)`
   - Typography & Code: `var(--text)`, `var(--text-muted)`, `var(--mono)`; body text uses the system font stack
 - **Shared Components & Buttons**: Use standard button classes (`.btn`, `.btn.send`, `.btn.stop`, `.btn.approve`, `.btn.deny`, etc.) or reusable Leptos component abstractions. When new interactive controls are added, integrate them into the shared styling system so themes (dark/light) and visual hierarchy remain coherent.
 

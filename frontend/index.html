@@ -5,19 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Open WebIDE</title>
     <script>
-      // Apply the cached theme before first paint to avoid a flash. "system"
-      // (the default) follows the OS light/dark preference.
-      (function () {
-        try {
-          var t = localStorage.getItem("owide-theme");
-          if (t !== "light" && t !== "dark") t = "system";
-          if (t === "system") {
-            t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-          }
-          document.documentElement.setAttribute("data-theme", t);
-        } catch (e) {}
-      })();
+      document.documentElement.setAttribute("data-theme", matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     </script>
+    <script src="/api/theme.js"></script>
     <link data-trunk rel="css" href="styles.css" />
   </head>
   <body>
