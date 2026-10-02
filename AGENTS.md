@@ -111,9 +111,11 @@ of GB, and agents running several copies at once have filled the disk before.
 
 5. **Lint Policy**: Clippy pedantic picks are enforced via `[workspace.lints]` — every crate inherits it with `[lints] workspace = true`, and CI enforces it with `-D warnings` on native crates, the WASI backend, the WASM frontend, and the bridge. Add a lint there, not per crate; `#[allow]` needs a reason.
 
-## 5. In-flight work
+## 5. Threat model
 
-A numbered implementation sequence lives in `ai_docs/sequence/` (git-excluded). Read
-`ai_docs/sequence/RESUME.md` first: it has status, the batch-launch prompt, and the step driver.
-Threat model is a single-user home lab on a trusted LAN, so security fixes must not remove
-features.
+Single-user home lab on a trusted LAN. Keep what bites at home (a malicious website in a
+browser tab, including another port on the same host; prompt-injected model output; data loss;
+crashes; broken contracts), but security fixes must not remove features. Deliberately not done
+for that reason: bridge commands inherit the user's environment (no env allow-list), and the
+backend may reach any LAN host (no private-address egress block; only cloud-metadata addresses
+are blocked and `fetch_web_page` needs approval).

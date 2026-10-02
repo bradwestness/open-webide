@@ -60,6 +60,44 @@ SSH config. Make it work there without private keys ever entering the container:
 - README: git over SSH for native vs Docker, plus HTTPS with a credential helper or
   token as the alternative.
 
+### Follow-ups from the hardening sequence
+
+Small items the review rounds left open, plus the manual checks nobody has run yet.
+
+- **Bridge process cleanup:** kill detached PTY sessions after an idle timeout (a lost
+  `Kill` after logout or on a dying socket otherwise leaves a shell until bridge restart);
+  SIGHUP first for PTY sessions, SIGKILL after a grace period (on bash hosts a closed
+  dock or bridge shutdown leaves the shell's background jobs running); shutdown should
+  honour the guard's delayed SIGKILL. Windows code paths have never been compiled.
+- **Bridge HTTP edges:** no body-read / response-write timeout (a stalled client holds
+  a connection permit); HTTP/1.0 `keep-alive` clients bypass `Connection: close`;
+  half-closing clients get no response; the 16 MiB WebSocket message limit is untested;
+  `respond` copies every body; unbounded fallback error-body length in
+  `parse_bridge_response`.
+- **Frontend:** `diff_side_by_side_detailed` still marks every line as inserted; the
+  terminal buffer doesn't cap a single unterminated line; the composer's keydown
+  ignores IME composition (`isComposing`); rejecting a background edit restored from a
+  backup doesn't restore the editor; `/model` with no argument doesn't mark the active
+  model and `/model default` doesn't reset the override; inline styles on the model
+  dropdown; an orphaned `model_ref` sync effect.
+- **Providers:** base URLs with a query string or fragment break endpoint joining.
+- **Structure:** `openwebide-storage` depends on `openwebide-agent` only for
+  `step_id_prefix`; move the helper down.
+- **Tests:** missing-header rejection on register/login/logout; the
+  `get_or_create_secret` race; a valid-token case in the backend expiry test;
+  empty search query → 400; component-test helper `click_text` matches `class_name`
+  exactly; fake-backend deletes don't cascade; `cargo test -p openwebide-frontend`
+  without `--lib` doesn't build natively; a test-only dead-code warning in
+  `backend/src/git.rs`.
+- **Bundle:** `data-wasm-opt="z"` cut the raw WASM ~3% but gzip only ~0.2% and cold
+  load didn't improve — keep or revert.
+- **Manual verification pass:** first-paint theme and both themes visually; the
+  terminal against a real PTY (colours, `\r` progress, dock hide/show, cwd); streaming
+  and reconnect against a real model; resume after a mid-run reload with a slow model;
+  pending edits across two browsers; the Docker image end to end (browser terminal, git
+  panel, WebSocket chat with no SSE, `OPENWEBIDE_BRIDGE=0` fallback); a phone on the
+  LAN; podman/systemd; editor IME, paste and caret behaviour.
+
 ### Secondary "fast model" per connection
 
 A second, smaller/faster model configurable per user or per connection
@@ -438,6 +476,11 @@ landed — before sharing the repo publicly.
 Ideas without a phase yet:
 
 - Multi-model comparison for a single prompt (an Open WebUI classic).
+- Bridge child-process environment allow-list with `--pass-env` — parked until the bridge
+  is shared; commands inherit the user's environment on purpose (cloud creds, toolchains).
+- Private-address egress blocking / an explicit outbound allow-list for the backend —
+  parked; conflicts with LAN model hosts and LAN web fetch. Would also need resolve-then-pin
+  to stop a hostname rebinding to the metadata address.
 
 ## Explicitly out of scope
 
