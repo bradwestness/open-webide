@@ -527,6 +527,17 @@ pub async fn resolve_bridge_cwd(
     bridge_cfg: &crate::bridge::BridgeConfig,
     credentials: &crate::bridge::BridgeCredentials,
 ) -> Option<String> {
+    resolve_bridge_cwd_guarded(api, handle, pid, bridge_cfg, credentials, || true).await
+}
+
+pub async fn resolve_bridge_cwd_guarded(
+    api: Api,
+    handle: web_sys::FileSystemDirectoryHandle,
+    pid: i64,
+    bridge_cfg: &crate::bridge::BridgeConfig,
+    credentials: &crate::bridge::BridgeCredentials,
+    current: impl Fn() -> bool,
+) -> Option<String> {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     // Math.random is in [0, 1), scaled values fit u32; fractional bits are discarded.
     let nonce = format!(
@@ -534,9 +545,16 @@ pub async fn resolve_bridge_cwd(
         (js_sys::Math::random() * 4294967296.0) as u32,
         (js_sys::Math::random() * 4294967296.0) as u32
     );
-    resolve_bridge_cwd_with(api, &BrowserFsaVfs::new(handle), pid, &nonce, |cwd| {
-        BrowserBridgeClient::for_project(bridge_cfg.http_url.clone(), cwd, credentials.clone())
-    })
+    resolve_bridge_cwd_with_guard(
+        api,
+        &BrowserFsaVfs::new(handle),
+        pid,
+        &nonce,
+        |cwd| {
+            BrowserBridgeClient::for_project(bridge_cfg.http_url.clone(), cwd, credentials.clone())
+        },
+        current,
+    )
     .await
 }
 
@@ -547,32 +565,50 @@ pub async fn resolve_bridge_cwd_with<V: openwebide_core::Vfs, B: BridgeClient>(
     nonce: &str,
     bridge: impl Fn(String) -> B,
 ) -> Option<String> {
+    resolve_bridge_cwd_with_guard(api, vfs, pid, nonce, bridge, || true).await
+}
+
+async fn resolve_bridge_cwd_with_guard<V: openwebide_core::Vfs, B: BridgeClient>(
+    api: Api,
+    vfs: &V,
+    pid: i64,
+    nonce: &str,
+    bridge: impl Fn(String) -> B,
+    current: impl Fn() -> bool,
+) -> Option<String> {
+    if !current() {
+        return None;
+    }
+    // The pane may be disposed while awaiting a probe; marker cleanup still has to finish.
+    let backend = api.with_value(Clone::clone);
     let probe = format!(".openwebide-probe-{nonce}");
     let written = vfs.write(&probe, "").await;
-    let result = if written.is_ok() {
+    let result = if written.is_ok() && current() {
         let key = format!("local_bridge_cwd.{pid}");
-        let candidate = api
-            .with_value(Clone::clone)
+        let candidate = backend
             .get_settings()
             .await
             .ok()
             .and_then(|settings| settings.get(&key).cloned());
         let mut found = None;
         if let Some(candidate) = candidate
+            && current()
             && probe_command(bridge(candidate.clone()), &format!("test -f {probe}"), 5)
                 .await
                 .is_ok_and(|out| out.is_success())
         {
             found = Some(candidate);
         }
-        if found.is_none() {
+        if found.is_none() && current() {
             let command = format!(
                 r"find . -maxdepth 5 \( -name .git -o -name node_modules -o -name target -o -name .spin \) -prune -o -name {probe} -print -quit"
             );
             if let Ok(out) = probe_command(bridge(String::new()), &command, 10).await {
                 found = crate::parse_probe_output(&out.stdout, nonce);
-                if let Some(cwd) = &found {
-                    let _ = api.with_value(Clone::clone).set_setting(&key, cwd).await;
+                if let Some(cwd) = &found
+                    && current()
+                {
+                    let _ = backend.set_setting(&key, cwd).await;
                 }
             }
         }

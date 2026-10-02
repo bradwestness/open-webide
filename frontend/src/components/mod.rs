@@ -29,6 +29,6 @@ pub use settings::Settings;
 pub use sidebar::Sidebar;
 pub use status_bar::StatusBar;
 pub use tab_bar::TabBar;
-pub use terminal_pane::TerminalPane;
+pub use terminal_pane::{TerminalDock, TerminalPane};
 pub use top_bar::TopBar;
 pub use ui::{Button, ButtonSize, ButtonVariant};

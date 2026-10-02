@@ -2489,3 +2489,11 @@ button.browser-item {
 
 
 .toast.toast-info { border-color: var(--accent); bottom: 76px; }
+
+.terminal-visibility {
+  display: contents;
+}
+
+.terminal-visibility.hidden {
+  display: none;
+}

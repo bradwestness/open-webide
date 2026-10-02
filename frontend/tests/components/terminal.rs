@@ -3,7 +3,7 @@ use leptos::prelude::*;
 use openwebide_core::{BridgeClientMessage, BridgeServerMessage, RunEvent, ToolStreamChunk};
 use openwebide_frontend::{
     bridge::{BridgeConfig, BridgeConn, BridgeStatus},
-    components::TerminalPane,
+    components::{TerminalDock, TerminalPane},
     testing::fake_transport::FakeTransport,
     util::sleep_ms,
 };
@@ -24,7 +24,7 @@ fn mount_terminal() -> TerminalFixture {
     let fake = transport.clone();
     let calls = credentials.clone();
     let connection_slot = slot.clone();
-    let mounted = mount_test(move |_| {
+    let mounted = mount_test(move |state| {
         let bridge = BridgeConn::with_transport(
             BridgeConfig::new("ws://test"),
             fake,
@@ -35,7 +35,8 @@ fn mount_terminal() -> TerminalFixture {
             }),
         );
         *connection_slot.borrow_mut() = Some(bridge.clone());
-        view! { <TerminalPane bridge=bridge on_close=|| () /> }
+        state.chat.show_terminal.set(true);
+        view! { <TerminalDock bridge=bridge visible=state.chat.show_terminal /> }
     });
     (mounted, transport, credentials, slot)
 }
@@ -397,9 +398,7 @@ fn mount_test_command() -> TerminalFixture {
         let bridge = StoredValue::new_local(bridge);
         view! {
             {super::support::chat_view(state.clone())}
-            <Show when=move || state.chat.show_terminal.get()>
-                <TerminalPane bridge=bridge.get_value() on_close=|| () />
-            </Show>
+            <TerminalDock bridge=bridge.get_value() visible=state.chat.show_terminal />
         }
     });
     (mounted, fake, Rc::new(Cell::new(0)), slot)
@@ -903,6 +902,351 @@ async fn busy_and_recoverable_error_notices_preserve_running_process_controls() 
     assert!(!text.contains("second half"));
     drop(mounted);
     slot.borrow_mut().take().unwrap().close();
+}
+
+#[wasm_bindgen_test]
+async fn visibility_retains_shell_output_and_hidden_reconnect_sequence() {
+    let (mounted, fake, _, slot) = mount_test_command();
+    settle().await;
+    ready(&fake);
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".terminal-dock")
+            .unwrap()
+            .is_none()
+    );
+    mounted.state.chat.show_terminal.set(true);
+    settle().await;
+    assert!(
+        !fake
+            .sent()
+            .iter()
+            .any(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+    );
+    mounted.click_text("+ Shell");
+    let id = fake
+        .sent()
+        .into_iter()
+        .find_map(|message| match message {
+            BridgeClientMessage::Spawn { id, cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some("test"));
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    fake.reply(BridgeServerMessage::Spawned {
+        id: id.clone(),
+        pid: 1,
+        pty: true,
+    });
+    let dock = mounted
+        .root
+        .query_selector(".terminal-dock")
+        .unwrap()
+        .unwrap();
+    mounted.click_text("✕");
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".terminal-visibility.hidden")
+            .unwrap()
+            .is_some()
+    );
+    fake.reply(BridgeServerMessage::Output {
+        id: id.clone(),
+        seq: 7,
+        stream: "pty".into(),
+        data: "hidden output".into(),
+    });
+    settle().await;
+    assert!(dock.text_content().unwrap().contains("hidden output"));
+    fake.disconnect();
+    sleep_ms(1100).await;
+    ready(&fake);
+    settle().await;
+    assert!(fake.sent().contains(&BridgeClientMessage::Attach {
+        id: id.clone(),
+        last_seq: 7
+    }));
+    mounted.input("/test busy");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    assert!(dock.text_content().unwrap().contains("Terminal is busy"));
+    assert!(
+        dock.is_same_node(Some(
+            mounted
+                .root
+                .query_selector(".terminal-dock")
+                .unwrap()
+                .unwrap()
+                .as_ref()
+        ))
+    );
+    assert_eq!(
+        fake.sent()
+            .iter()
+            .filter(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        !fake
+            .sent()
+            .iter()
+            .any(|message| matches!(message, BridgeClientMessage::Kill { .. }))
+    );
+    drop(mounted);
+    assert!(
+        fake.sent()
+            .contains(&BridgeClientMessage::Kill { id, signal: None })
+    );
+    slot.borrow_mut().take().unwrap().close();
+}
+
+#[wasm_bindgen_test]
+async fn every_remote_spawn_uses_request_project_and_existing_shell_stays_put() {
+    use wasm_bindgen::JsCast;
+    let (mounted, fake, _, slot) = mount_terminal();
+    mounted.state.seed_project();
+    settle().await;
+    ready(&fake);
+    settle().await;
+    let submit = |text: &str| {
+        let input = mounted
+            .root
+            .query_selector(".terminal-input")
+            .unwrap()
+            .unwrap()
+            .unchecked_into::<web_sys::HtmlInputElement>();
+        input.set_value(text);
+        input
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        mounted.click_text("Send");
+    };
+    submit("");
+    let id = fake
+        .sent()
+        .into_iter()
+        .find_map(|message| match message {
+            BridgeClientMessage::Spawn { id, cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some("test"));
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    fake.reply(BridgeServerMessage::Spawned {
+        id: id.clone(),
+        pid: 1,
+        pty: true,
+    });
+    mounted
+        .state
+        .projects
+        .projects
+        .update(|projects| projects[0].path = Some("other".into()));
+    submit("pwd");
+    assert!(fake.sent().contains(&BridgeClientMessage::Input {
+        id: id.clone(),
+        data: "pwd\n".into()
+    }));
+    fake.disconnect();
+    sleep_ms(1100).await;
+    ready(&fake);
+    settle().await;
+    fake.reply(BridgeServerMessage::Error {
+        id,
+        message: "session not found".into(),
+    });
+    assert!(
+        matches!(fake.sent().last(), Some(BridgeClientMessage::Spawn { cwd, args, .. }) if cwd.as_deref() == Some("other") && args == &["-i"])
+    );
+    submit("echo typed");
+    assert!(
+        matches!(fake.sent().last(), Some(BridgeClientMessage::Spawn { cwd, args, .. }) if cwd.as_deref() == Some("other") && args == &["-lc", "--", "echo typed"])
+    );
+    mounted
+        .state
+        .projects
+        .projects
+        .update(|projects| projects[0].path = Some(String::new()));
+    mounted.click_text("+ Shell");
+    assert!(
+        matches!(fake.sent().last(), Some(BridgeClientMessage::Spawn { cwd, .. }) if cwd.as_deref() == Some("."))
+    );
+    mounted.state.projects.active_project.set(None);
+    mounted.click_text("+ Shell");
+    assert!(matches!(
+        fake.sent().last(),
+        Some(BridgeClientMessage::Spawn { cwd: None, .. })
+    ));
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("starting in the bridge workspace root")
+    );
+    drop(mounted);
+    slot.borrow_mut().take().unwrap().close();
+}
+
+#[wasm_bindgen_test]
+async fn remote_cwd_failure_retries_original_spawn_at_root_once() {
+    use wasm_bindgen::JsCast;
+    for action in ["shell", "empty", "typed", "test", "escape"] {
+        let (mounted, fake, _, slot) = if action == "test" {
+            mount_test_command()
+        } else {
+            mount_terminal()
+        };
+        mounted.state.seed_project();
+        settle().await;
+        ready(&fake);
+        settle().await;
+        match action {
+            "shell" | "escape" => mounted.click_text("+ Shell"),
+            "test" => {
+                mounted.input("/test");
+                mounted.key("Enter", "Enter", false);
+            }
+            _ => {
+                let input = mounted
+                    .root
+                    .query_selector(".terminal-input")
+                    .unwrap()
+                    .unwrap()
+                    .unchecked_into::<web_sys::HtmlInputElement>();
+                input.set_value(if action == "typed" { "echo typed" } else { "" });
+                input
+                    .dispatch_event(&web_sys::Event::new("input").unwrap())
+                    .unwrap();
+                mounted.click_text("Send");
+            }
+        }
+        settle().await;
+        let mut expected = fake
+            .sent()
+            .into_iter()
+            .find(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+            .unwrap();
+        let BridgeClientMessage::Spawn { id, cwd, .. } = &mut expected else {
+            unreachable!()
+        };
+        let id = id.clone();
+        assert_eq!(cwd.as_deref(), Some("test"));
+        *cwd = None;
+        mounted
+            .state
+            .projects
+            .projects
+            .update(|projects| projects[0].path = Some("other".into()));
+        fake.reply(BridgeServerMessage::Error {
+            id: id.clone(),
+            message: if action == "escape" {
+                "cwd escapes workspace root: test"
+            } else {
+                "cwd does not exist: test"
+            }
+            .into(),
+        });
+        assert_eq!(fake.sent().last(), Some(&expected));
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Project folder unavailable; starting in the bridge workspace root.")
+        );
+        let count = fake.sent().len();
+        fake.reply(BridgeServerMessage::Error {
+            id,
+            message: "cwd does not exist: test".into(),
+        });
+        assert_eq!(fake.sent().len(), count, "root failure must not retry");
+        drop(mounted);
+        slot.borrow_mut().take().unwrap().close();
+    }
+}
+
+#[wasm_bindgen_test]
+async fn remote_cwd_fallback_ignores_unrelated_errors_and_stale_requests() {
+    for case in ["launch", "wrong-path", "account", "connection", "spawned"] {
+        let fake = Rc::new(FakeTransport::default());
+        let transport = fake.clone();
+        let slot = Rc::new(std::cell::RefCell::new(None::<BridgeConn>));
+        let connection_slot = slot.clone();
+        let auth_slot = Rc::new(Cell::new(None));
+        let auth_capture = auth_slot.clone();
+        let mounted = mount_test(move |state| {
+            auth_capture.set(Some(expect_context::<
+                openwebide_frontend::state::auth::AuthState,
+            >()));
+            let bridge = BridgeConn::with_transport(
+                BridgeConfig::new("ws://test"),
+                transport,
+                Rc::new(|| Box::pin(async { Ok("token".into()) })),
+            );
+            *connection_slot.borrow_mut() = Some(bridge.clone());
+            state.chat.show_terminal.set(true);
+            view! { <TerminalDock bridge=bridge visible=state.chat.show_terminal /> }
+        });
+        mounted.state.seed_project();
+        settle().await;
+        ready(&fake);
+        settle().await;
+        mounted.click_text("+ Shell");
+        let id = fake
+            .sent()
+            .into_iter()
+            .find_map(|message| match message {
+                BridgeClientMessage::Spawn { id, .. } => Some(id),
+                _ => None,
+            })
+            .unwrap();
+        match case {
+            "account" => auth_slot
+                .get()
+                .unwrap()
+                .generation
+                .update(|generation| *generation += 1),
+            "connection" => mounted.state.settings.bridge_url.set("ws://other".into()),
+            "spawned" => fake.reply(BridgeServerMessage::Spawned {
+                id: id.clone(),
+                pid: 1,
+                pty: true,
+            }),
+            _ => {}
+        }
+        let count = fake.sent().len();
+        fake.reply(BridgeServerMessage::Error {
+            id,
+            message: match case {
+                "launch" => "failed to spawn process: cwd does not exist: test",
+                "wrong-path" => "cwd does not exist: unrelated",
+                _ => "cwd does not exist: test",
+            }
+            .into(),
+        });
+        assert_eq!(fake.sent().len(), count, "{case}");
+        settle().await;
+        assert!(
+            !mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("starting in the bridge workspace root")
+        );
+        drop(mounted);
+        slot.borrow_mut().take().unwrap().close();
+    }
 }
 
 async fn settle() {

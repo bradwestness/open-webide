@@ -12,6 +12,11 @@ use leptos::prelude::*;
 use openwebide_core::{BridgeClientMessage, BridgeServerMessage};
 use web_sys::wasm_bindgen::JsCast;
 
+struct RemoteSpawnFallback {
+    message: BridgeClientMessage,
+    current: std::rc::Rc<dyn Fn() -> bool>,
+}
+
 static COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_session_id() -> String {
@@ -20,6 +25,21 @@ fn next_session_id() -> String {
     let now = js_sys::Date::now().max(0.0) as u64;
     let count = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("term-{now}-{count}")
+}
+
+#[component]
+pub fn TerminalDock(bridge: BridgeConn, visible: RwSignal<bool>) -> impl IntoView {
+    let opened = Memo::new(move |previous: Option<&bool>| {
+        visible.get() || previous.copied().unwrap_or(false)
+    });
+    let bridge = StoredValue::new_local(bridge);
+    view! {
+        <Show when=move || opened.get()>
+            <div class="terminal-visibility" class:hidden=move || !visible.get()>
+                <TerminalPane bridge=bridge.get_value() on_close=move || visible.set(false) />
+            </div>
+        </Show>
+    }
 }
 
 #[component]
@@ -99,37 +119,148 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
 
     let tx_outbound = bridge;
     let spawned_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let spawned_ids_for_conn = spawned_ids.clone();
     let reconnecting = RwSignal::new(false);
     let pending_spawn_ids = RwSignal::new(Vec::<String>::new());
-    let spawn_fresh = move || {
-        if !status.get_untracked().terminal_ready() {
-            return;
-        }
-        let id = next_session_id();
-        if bridge
-            .with_value(|bridge| {
-                bridge.send(BridgeClientMessage::Spawn {
+    let projects = expect_context::<crate::state::projects::ProjectsState>();
+    let auth = expect_context::<crate::state::auth::AuthState>();
+    let api = expect_context::<crate::backend::Api>();
+    let settings = expect_context::<crate::state::settings::SettingsState>();
+    let pending_spawns = RwSignal::new(0usize);
+    let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let alive_for_cleanup = alive.clone();
+    on_cleanup(move || alive_for_cleanup.store(false, Ordering::Relaxed));
+    let remote_fallbacks =
+        StoredValue::new_local(std::collections::HashMap::<String, RemoteSpawnFallback>::new());
+    let ids_for_spawn = spawned_ids.clone();
+    let spawn = StoredValue::new_local(
+        move |args: Vec<String>, notice: Option<String>, exclusive: bool| {
+            if !status.get_untracked().terminal_ready() {
+                return;
+            }
+            let project = projects
+                .active_project
+                .get_untracked()
+                .and_then(|id| projects.project(id));
+            let generation = auth.generation.get_untracked();
+            let url = settings.bridge_url.get_untracked();
+            let sender = bridge.get_value();
+            let ids = ids_for_spawn.clone();
+            let alive = alive.clone();
+            let project_id = project.as_ref().map(|project| project.id);
+            let resolving_remote = project
+                .as_ref()
+                .is_some_and(|project| project.mode == openwebide_core::WorkspaceMode::Remote);
+            let resolving_local = project
+                .as_ref()
+                .is_some_and(|project| project.mode == openwebide_core::WorkspaceMode::Local);
+            let current = std::rc::Rc::new(move || {
+                alive.load(Ordering::Relaxed)
+                    && auth.generation.try_get_untracked() == Some(generation)
+                    && settings.bridge_url.try_get_untracked().as_ref() == Some(&url)
+            });
+            let current_for_finish = current.clone();
+            let finish = move |cwd: Option<String>| {
+                if !current_for_finish() {
+                    return;
+                }
+                if resolving_local {
+                    pending_spawns.update(|pending| *pending -= 1);
+                }
+                if exclusive
+                    && (active_session.get_untracked().is_some() || !ids.lock().unwrap().is_empty())
+                {
+                    append_notice(
+                        "Terminal is busy; wait for the current process to finish before running /test again.\n",
+                    );
+                    return;
+                }
+                let cwd = if project_id.is_some_and(|id| projects.project(id).is_none()) {
+                    None
+                } else {
+                    cwd
+                };
+                let fallback = cwd.is_none();
+                let id = next_session_id();
+                let message = BridgeClientMessage::Spawn {
                     id: id.clone(),
                     command: "sh".into(),
-                    args: vec!["-i".into()],
-                    cwd: None,
+                    args,
+                    cwd,
                     env: std::collections::HashMap::new(),
                     pty: true,
                     cols: 120,
                     rows: 30,
-                })
-            })
-            .is_ok()
-        {
-            spawned_ids_for_conn.lock().unwrap().push(id);
-        }
-    };
-    let spawn_fresh = StoredValue::new_local(spawn_fresh);
+                };
+                if sender.send(message.clone()).is_ok() {
+                    if resolving_remote && !fallback {
+                        remote_fallbacks.update_value(|fallbacks| {
+                            fallbacks.insert(
+                                id.clone(),
+                                RemoteSpawnFallback {
+                                    message,
+                                    current: current_for_finish.clone(),
+                                },
+                            );
+                        });
+                    }
+                    ids.lock().unwrap().push(id);
+                    if fallback {
+                        append_notice(
+                            "Project folder unavailable; starting in the bridge workspace root.\n",
+                        );
+                    }
+                    if let Some(notice) = notice {
+                        append_process_notice(&notice);
+                    }
+                }
+            };
+            match project {
+                Some(project) if project.mode == openwebide_core::WorkspaceMode::Remote => {
+                    finish(
+                        project
+                            .path
+                            .map(|path| if path.is_empty() { ".".into() } else { path }),
+                    );
+                }
+                Some(project) => {
+                    let handle = projects
+                        .local_handles
+                        .with_untracked(|handles| handles.get(&project.id).cloned());
+                    let config =
+                        crate::bridge::BridgeConfig::new(&settings.bridge_url.get_untracked());
+                    pending_spawns.update(|pending| *pending += 1);
+                    leptos::task::spawn_local(async move {
+                        let cwd = match handle {
+                            Some(handle) => {
+                                crate::local_agent::resolve_bridge_cwd_guarded(
+                                    api,
+                                    handle,
+                                    project.id,
+                                    &config,
+                                    &crate::bridge::BridgeCredentials::new(api),
+                                    move || current(),
+                                )
+                                .await
+                            }
+                            None => None,
+                        };
+                        finish(cwd);
+                    });
+                }
+                None => finish(None),
+            }
+        },
+    );
+    let spawn_fresh = StoredValue::new_local(move || {
+        spawn.with_value(|spawn| spawn(vec!["-i".into()], None, false));
+    });
     let ids_for_messages = spawned_ids.clone();
     bridge.with_value(|bridge| {
         bridge.register_terminal(std::rc::Rc::new(move |message| match message {
             BridgeServerMessage::Spawned { id, pid, .. } => {
+                remote_fallbacks.update_value(|fallbacks| {
+                    fallbacks.remove(&id);
+                });
                 active_session.set(Some(id));
                 last_seq.set(0);
                 append_process_notice(&format!("\x1b[90m[Process spawned (PID: {pid})]\x1b[0m\n"));
@@ -161,6 +292,28 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                 append_process_notice(&format!("\x1b[90m[Process finished with {code}]\x1b[0m\n"));
             }
             BridgeServerMessage::Error { id, message } => {
+                let mut fallback = None;
+                remote_fallbacks.update_value(|fallbacks| fallback = fallbacks.remove(&id));
+                if let Some(mut fallback) = fallback
+                    && let BridgeClientMessage::Spawn { cwd, .. } = &mut fallback.message
+                    && let Some(path) = cwd.as_ref()
+                    // These are the bridge resolver's exact errors, not process-launch failures.
+                    && (message == format!("cwd does not exist: {path}")
+                        || message == format!("cwd escapes workspace root: {path}"))
+                    && (fallback.current)()
+                {
+                    *cwd = None;
+                    if tx_outbound
+                        .with_value(|bridge| bridge.send(fallback.message))
+                        .is_ok()
+                    {
+                        append_notice(
+                            "Project folder unavailable; starting in the bridge workspace root.\n",
+                        );
+                        return;
+                    }
+                }
+
                 if reconnecting.get_untracked()
                     && active_session.get_untracked().as_ref() == Some(&id)
                     && message.contains("session not found")
@@ -241,21 +394,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
     });
 
     let terminal_cmd = expect_context::<crate::state::layout::LayoutState>().terminal_cmd;
-    let projects = expect_context::<crate::state::projects::ProjectsState>();
     let command_ids = spawned_ids.clone();
-    let command_pending = RwSignal::new(false);
-    let reject_busy_command = move || {
-        append_notice(
-            "Terminal is busy; wait for the current process to finish before running /test again.\n",
-        );
-    };
-    let command_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let alive_for_cleanup = command_alive.clone();
-    on_cleanup(move || alive_for_cleanup.store(false, Ordering::Relaxed));
-    #[cfg(target_arch = "wasm32")]
-    let api = expect_context::<crate::backend::Api>();
-    #[cfg(target_arch = "wasm32")]
-    let settings = expect_context::<crate::state::settings::SettingsState>();
     Effect::new(move |_| {
         if terminal_cmd.get().is_none() {
             return;
@@ -266,111 +405,24 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
         if !status.get_untracked().terminal_ready() {
             return;
         }
-        if command_pending.get_untracked()
+        if pending_spawns.get_untracked() != 0
             || active_session.get_untracked().is_some()
             || !command_ids.lock().unwrap().is_empty()
         {
-            reject_busy_command();
+            append_notice(
+                "Terminal is busy; wait for the current process to finish before running /test again.\n",
+            );
             return;
         }
-        command_pending.set(true);
-        let project = projects
-            .active_project
-            .get_untracked()
-            .and_then(|id| projects.project(id));
-        let ids = command_ids.clone();
-        let alive = command_alive.clone();
-        let sender = bridge.get_value();
-        #[cfg(target_arch = "wasm32")]
-        let handle = project.as_ref().and_then(|project| {
-            projects
-                .local_handles
-                .with_untracked(|handles| handles.get(&project.id).cloned())
-        });
-        #[cfg(target_arch = "wasm32")]
-        let config = crate::bridge::BridgeConfig::new(&settings.bridge_url.get_untracked());
-        leptos::task::spawn_local(async move {
-            let cwd = match project {
-                Some(project) if project.mode == openwebide_core::WorkspaceMode::Remote => {
-                    project.path
-                }
-                Some(project) => {
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        match handle {
-                            Some(handle) => {
-                                crate::local_agent::resolve_bridge_cwd(
-                                    api,
-                                    handle,
-                                    project.id,
-                                    &config,
-                                    &crate::bridge::BridgeCredentials::new(api),
-                                )
-                                .await
-                            }
-                            None => None,
-                        }
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        let _ = project;
-                        None
-                    }
-                }
-                None => None,
-            };
-            if !alive.load(Ordering::Relaxed) {
-                return;
-            }
-            command_pending.set(false);
-            if active_session.get_untracked().is_some() || !ids.lock().unwrap().is_empty() {
-                reject_busy_command();
-                return;
-            }
-            let id = next_session_id();
-            if sender
-                .send(BridgeClientMessage::Spawn {
-                    id: id.clone(),
-                    command: "sh".into(),
-                    args: vec!["-lc".into(), cmd.clone()],
-                    cwd,
-                    env: std::collections::HashMap::new(),
-                    pty: true,
-                    cols: 120,
-                    rows: 30,
-                })
-                .is_ok()
-            {
-                ids.lock().unwrap().push(id);
-                append_process_notice(&format!("\x1b[36m❯ {cmd}\x1b[0m\n"));
-            }
+        spawn.with_value(|spawn| {
+            spawn(
+                vec!["-lc".into(), cmd.clone()],
+                Some(format!("\x1b[36m❯ {cmd}\x1b[0m\n")),
+                true,
+            );
         });
     });
-
-    let tx_for_shell = tx_outbound;
-    let spawned_ids_for_shell = spawned_ids.clone();
-    let spawn_shell = move || {
-        if !status.get_untracked().terminal_ready() {
-            return;
-        }
-        let id = next_session_id();
-        {
-            let sender = tx_for_shell.get_value();
-            if let Ok(mut ids) = spawned_ids_for_shell.lock() {
-                ids.push(id.clone());
-            }
-            let _ = sender.send(BridgeClientMessage::Spawn {
-                id,
-                command: "sh".into(),
-                args: vec!["-i".into()],
-                cwd: None,
-                env: std::collections::HashMap::new(),
-                pty: true,
-                cols: 120,
-                rows: 30,
-            });
-        }
-    };
+    let spawn_shell = move || spawn_fresh.with_value(|spawn| spawn());
 
     let tx_for_kill = tx_outbound;
     let kill_current = move || {
@@ -389,7 +441,6 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
     };
 
     let tx_for_submit = tx_outbound;
-    let spawned_ids_for_submit = spawned_ids.clone();
     let on_submit_command = move || {
         if !status.get_untracked().terminal_ready() {
             return;
@@ -405,23 +456,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     });
                 }
             } else {
-                let id = next_session_id();
-                {
-                    let sender = tx_for_submit.get_value();
-                    if let Ok(mut ids) = spawned_ids_for_submit.lock() {
-                        ids.push(id.clone());
-                    }
-                    let _ = sender.send(BridgeClientMessage::Spawn {
-                        id,
-                        command: "sh".into(),
-                        args: vec!["-i".into()],
-                        cwd: None,
-                        env: std::collections::HashMap::new(),
-                        pty: true,
-                        cols: 120,
-                        rows: 30,
-                    });
-                }
+                spawn_shell();
             }
             return;
         }
@@ -441,29 +476,21 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     });
                 }
                 None => {
-                    let id = next_session_id();
-                    append_process_notice(&format!("\x1b[36m❯ {cmd}\x1b[0m\n"));
-                    if let Ok(mut ids) = spawned_ids_for_submit.lock() {
-                        ids.push(id.clone());
-                    }
-                    let _ = sender.send(BridgeClientMessage::Spawn {
-                        id,
-                        command: "sh".into(),
-                        args: vec!["-lc".into(), "--".into(), cmd],
-                        cwd: None,
-                        env: std::collections::HashMap::new(),
-                        pty: true,
-                        cols: 120,
-                        rows: 30,
+                    spawn.with_value(|spawn| {
+                        spawn(
+                            vec!["-lc".into(), "--".into(), cmd.clone()],
+                            Some(format!("\x1b[36m❯ {cmd}\x1b[0m\n")),
+                            false,
+                        );
                     });
                 }
             }
         }
     };
 
-    let spawn_shell_btn = spawn_shell.clone();
+    let spawn_shell_btn = spawn_shell;
     let kill_current_btn = kill_current;
-    let on_submit_btn = on_submit_command.clone();
+    let on_submit_btn = on_submit_command;
 
     let on_keydown = move |ev: web_sys::KeyboardEvent| match ev.key().as_str() {
         "Enter" => {

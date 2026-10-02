@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Keep terminal shells and output when hiding the dock, and start new shells in the active project folder with a visible workspace-root fallback notice, including when a remote folder no longer exists.
+
 - Guard local browser file operations and agent completions with originating-thread checks, including cancellation when a completion stream is dropped.
 
 - Reduce repeated recent-project filtering and statusline formatting work while preserving project order, telemetry text, and saved themes.

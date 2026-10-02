@@ -64,6 +64,9 @@ export function bridgeFound(mock, found) { mock.found = found; }
 export function bridgeHanging(mock, hanging) { mock.hanging = hanging; }
 export function bridgeAborted(mock) { return mock.aborted; }
 export function bridgeInvalid(mock) { mock.invalid = true; }
+export function denyFolder(folder) {
+    folder.getFileHandle = async () => { throw new DOMException('denied', 'NotAllowedError'); };
+}
 export function folderEmpty(folder) { return folder.files.size === 0 && folder.deleted.length > 0; }
 export function probeDeleted(folder, name) {
     return folder.deleted.includes(name) && !folder.files.has(name);
@@ -84,6 +87,8 @@ extern "C" {
     fn bridge_aborted(mock: &JsValue) -> u32;
     #[wasm_bindgen(js_name = bridgeInvalid)]
     fn bridge_invalid(mock: &JsValue);
+    #[wasm_bindgen(js_name = denyFolder)]
+    fn deny_folder(folder: &JsValue);
     #[wasm_bindgen(js_name = folderEmpty)]
     fn folder_empty(folder: &JsValue) -> bool;
     #[wasm_bindgen(js_name = probeFolder)]
@@ -445,6 +450,268 @@ async fn local_runs_use_discovered_tools_and_hide_them_when_bridge_cannot_see_fo
     assert_eq!(bridge_calls(&http.0), before);
     if let Some(token) = previous {
         openwebide_frontend::idb::set_bridge_pairing_token(&token)
+            .await
+            .unwrap();
+    } else {
+        openwebide_frontend::idb::delete_bridge_pairing_token()
+            .await
+            .unwrap();
+    }
+}
+
+#[wasm_bindgen_test]
+async fn terminal_local_spawns_resolve_cwd_and_refuse_stale_probes() {
+    use openwebide_core::{BridgeClientMessage, BridgeServerMessage};
+    use openwebide_frontend::{
+        bridge::BridgeConn, components::TerminalPane, testing::fake_transport::FakeTransport,
+    };
+    use std::{cell::RefCell, rc::Rc};
+    let previous = openwebide_frontend::idb::get_bridge_pairing_token()
+        .await
+        .unwrap();
+    openwebide_frontend::idb::set_bridge_pairing_token("probe-token")
+        .await
+        .unwrap();
+    for scenario in [
+        "shell",
+        "parallel",
+        "empty",
+        "typed",
+        "test",
+        "restart",
+        "denied",
+        "missing",
+        "unresolved",
+        "switch",
+        "deleted",
+        "logout",
+        "url",
+        "unmount",
+    ] {
+        let http = HttpGuard(fake_bridge_http());
+        let folder = probe_folder();
+        if scenario == "denied" {
+            deny_folder(&folder);
+        }
+        let handle = folder.clone();
+        let fake = Rc::new(FakeTransport::default());
+        let transport = fake.clone();
+        let slot = Rc::new(RefCell::new(None));
+        let connection_slot = slot.clone();
+        let auth_slot = Rc::new(RefCell::new(None));
+        let auth_context = auth_slot.clone();
+        let command_slot = Rc::new(RefCell::new(None));
+        let command_context = command_slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|projects| {
+                projects[0].mode = if scenario == "restart" {
+                    openwebide_core::WorkspaceMode::Remote
+                } else {
+                    openwebide_core::WorkspaceMode::Local
+                };
+            });
+            if scenario != "missing" {
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+            }
+            state
+                .settings
+                .bridge_url
+                .set("ws://bridge.test:3001".into());
+            *command_context.borrow_mut() = Some(
+                expect_context::<openwebide_frontend::state::layout::LayoutState>().terminal_cmd,
+            );
+            *auth_context.borrow_mut() =
+                Some(expect_context::<openwebide_frontend::state::auth::AuthState>());
+            let bridge = BridgeConn::with_transport(
+                BridgeConfig::new("ws://bridge.test:3001"),
+                transport,
+                Rc::new(|| Box::pin(async { Ok("token".into()) })),
+            );
+            *connection_slot.borrow_mut() = Some(bridge.clone());
+            view! { <TerminalPane bridge=bridge on_close=|| () /> }
+        });
+        settle().await;
+        fake.reply(BridgeServerMessage::HelloOk {
+            user_id: Some(1),
+            protocol: 1,
+            runs: false,
+        });
+        settle().await;
+        if scenario == "unresolved" {
+            bridge_found(&http.0, false);
+        }
+        let deferred = matches!(
+            scenario,
+            "switch" | "deleted" | "logout" | "url" | "unmount"
+        );
+        let (tx, rx) = futures::channel::oneshot::channel();
+        if deferred {
+            mounted
+                .state
+                .fake
+                .settings_load_results
+                .borrow_mut()
+                .push_back(rx);
+        }
+        match scenario {
+            "empty" | "typed" => {
+                let input = mounted
+                    .root
+                    .query_selector(".terminal-input")
+                    .unwrap()
+                    .unwrap()
+                    .unchecked_into::<web_sys::HtmlInputElement>();
+                input.set_value(if scenario == "typed" {
+                    "echo local"
+                } else {
+                    ""
+                });
+                input
+                    .dispatch_event(&web_sys::Event::new("input").unwrap())
+                    .unwrap();
+                mounted.click_text("Send");
+            }
+            "restart" => {
+                mounted.click_text("+ Shell");
+                let id = fake
+                    .sent()
+                    .into_iter()
+                    .find_map(|message| match message {
+                        BridgeClientMessage::Spawn { id, .. } => Some(id),
+                        _ => None,
+                    })
+                    .unwrap();
+                fake.reply(BridgeServerMessage::Spawned {
+                    id: id.clone(),
+                    pid: 1,
+                    pty: true,
+                });
+                mounted
+                    .state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = openwebide_core::WorkspaceMode::Local);
+                fake.disconnect();
+                sleep_ms(1100).await;
+                fake.reply(BridgeServerMessage::HelloOk {
+                    user_id: Some(1),
+                    protocol: 1,
+                    runs: false,
+                });
+                settle().await;
+                fake.reply(BridgeServerMessage::Error {
+                    id,
+                    message: "session not found".into(),
+                });
+            }
+            "test" => command_slot
+                .borrow()
+                .unwrap()
+                .set(Some("cargo test".into())),
+            "parallel" => {
+                mounted.click_text("+ Shell");
+                mounted.click_text("+ Shell");
+            }
+            _ => mounted.click_text("+ Shell"),
+        }
+        settle().await;
+        match scenario {
+            "switch" => mounted.state.projects.active_project.set(None),
+            "deleted" => mounted.state.projects.projects.set(Vec::new()),
+            "logout" => auth_slot.borrow().unwrap().logout(),
+            "url" => mounted.state.settings.bridge_url.set("ws://other".into()),
+            "unmount" => {
+                drop(mounted);
+                tx.send(Ok(Default::default())).unwrap();
+                for _ in 0..200 {
+                    sleep_ms(5).await;
+                    settle().await;
+                    if folder_empty(&folder) {
+                        break;
+                    }
+                }
+                assert!(
+                    !fake
+                        .sent()
+                        .iter()
+                        .any(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+                );
+                slot.borrow_mut().take().unwrap().close();
+                continue;
+            }
+            _ => {}
+        }
+        if deferred {
+            tx.send(Ok(Default::default())).unwrap();
+        }
+        for _ in 0..200 {
+            sleep_ms(5).await;
+            settle().await;
+            if fake
+                .sent()
+                .iter()
+                .filter(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
+                .count()
+                > usize::from(matches!(scenario, "restart" | "parallel"))
+                || (matches!(scenario, "logout" | "url") && folder_empty(&folder))
+            {
+                break;
+            }
+        }
+        let frame = js_sys::Promise::new(&mut |resolve, _| {
+            web_sys::window()
+                .unwrap()
+                .request_animation_frame(&resolve)
+                .unwrap();
+        });
+        wasm_bindgen_futures::JsFuture::from(frame).await.unwrap();
+        settle().await;
+        let spawns = fake
+            .sent()
+            .into_iter()
+            .filter_map(|message| match message {
+                BridgeClientMessage::Spawn { cwd, .. } => Some(cwd),
+                _ => None,
+            })
+            .skip(usize::from(scenario == "restart"))
+            .collect::<Vec<_>>();
+        if matches!(scenario, "logout" | "url") {
+            assert!(spawns.is_empty(), "{scenario}");
+        } else {
+            let fallback = matches!(scenario, "missing" | "unresolved" | "deleted" | "denied");
+            assert_eq!(
+                spawns,
+                vec![
+                    if fallback {
+                        None
+                    } else {
+                        Some("repos/x".into())
+                    };
+                    if scenario == "parallel" { 2 } else { 1 }
+                ],
+                "{scenario}"
+            );
+            assert_eq!(
+                mounted
+                    .root
+                    .text_content()
+                    .unwrap()
+                    .contains("starting in the bridge workspace root"),
+                fallback,
+                "{scenario}"
+            );
+        }
+        if scenario != "missing" {
+            assert!(folder_empty(&folder), "{scenario}");
+        }
+        drop(mounted);
+        slot.borrow_mut().take().unwrap().close();
+    }
+    if let Some(previous) = previous {
+        openwebide_frontend::idb::set_bridge_pairing_token(&previous)
             .await
             .unwrap();
     } else {

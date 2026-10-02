@@ -10,7 +10,7 @@ use leptos::prelude::*;
 
 use crate::components::{
     AuthGate, ChatPane, ConfirmDialog, Editor, FileBrowser, FileTree, PanelResizer, PromptDialog,
-    Settings, Sidebar, StatusBar, TabBar, TerminalPane, TopBar,
+    Settings, Sidebar, StatusBar, TabBar, TerminalDock, TopBar,
 };
 use crate::state_actions::{
     auth::{AuthActionContext, AuthActions},
@@ -327,11 +327,9 @@ pub fn App() -> impl IntoView {
                         on_accept=on_accept
                         on_reject=on_reject
                     />
-                    <Show when=move || show_terminal.get() fallback=|| ()>
-                        {move || bridge_connection.get().map(|bridge| view! {
-                            <TerminalPane bridge=bridge on_close=move || show_terminal.set(false) />
-                        })}
-                    </Show>
+                    {move || bridge_connection.get().map(|bridge| view! {
+                        <TerminalDock bridge=bridge visible=show_terminal />
+                    })}
                 </div>
                 <PanelResizer kind=ActiveResizer::Chat />
                 <ChatPane
