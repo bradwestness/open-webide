@@ -7,7 +7,7 @@ use web_sys::wasm_bindgen::JsCast;
 /// defaults for new sessions.
 #[component]
 pub fn Settings(
-    on_set_theme: Callback<String>,
+    on_set_theme: Callback<Theme>,
     on_set_default_connection: Callback<Option<i64>>,
     on_set_default_prompt: Callback<Option<i64>>,
     on_set_bridge_url: Callback<String>,
@@ -30,7 +30,7 @@ pub fn Settings(
             .get()
             .map(|id| id.to_string())
             .unwrap_or_default();
-        let _ = connections.get();
+        connections.track();
         if let Some(el) = conn_ref.get() {
             el.set_value(&value);
         }
@@ -40,7 +40,7 @@ pub fn Settings(
             .get()
             .map(|id| id.to_string())
             .unwrap_or_default();
-        let _ = system_prompts.get();
+        system_prompts.track();
         if let Some(el) = prompt_ref.get() {
             el.set_value(&value);
         }
@@ -74,7 +74,7 @@ pub fn Settings(
                                 type="radio"
                                 name="theme"
                                 checked=move || theme.get() == Theme::System
-                                on:click=move |_| on_set_theme.run("system".to_string())
+                                on:click=move |_| on_set_theme.run(Theme::System)
                             />
                             "System"
                         </label>
@@ -91,7 +91,7 @@ pub fn Settings(
                                 type="radio"
                                 name="theme"
                                 checked=move || theme.get() == Theme::Dark
-                                on:click=move |_| on_set_theme.run("dark".to_string())
+                                on:click=move |_| on_set_theme.run(Theme::Dark)
                             />
                             "Dark"
                         </label>
@@ -108,7 +108,7 @@ pub fn Settings(
                                 type="radio"
                                 name="theme"
                                 checked=move || theme.get() == Theme::Light
-                                on:click=move |_| on_set_theme.run("light".to_string())
+                                on:click=move |_| on_set_theme.run(Theme::Light)
                             />
                             "Light"
                         </label>

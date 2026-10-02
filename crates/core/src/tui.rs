@@ -178,6 +178,67 @@ impl Default for SessionTelemetry {
 }
 
 impl SessionTelemetry {
+    /// Generation speed shared by the statusline and token report.
+    pub fn speed_text(&self) -> String {
+        self.current_speed_tps
+            .map(|speed| format!("{}{speed:.1} t/s", Self::approx(self.speed_estimated)))
+            .unwrap_or_else(|| "-- t/s".into())
+    }
+
+    /// Compact context usage in thousands for the statusline.
+    pub fn compact_context_tokens(&self) -> String {
+        format!(
+            "{}{:.1}k",
+            Self::approx(self.context_estimated),
+            self.context_tokens as f64 / 1000.0
+        )
+    }
+
+    /// Compact context capacity in thousands for the statusline.
+    pub fn compact_context_limit(&self) -> String {
+        format!(
+            "{}{:.0}k",
+            Self::approx(self.context_limit_estimated),
+            self.context_limit as f64 / 1000.0
+        )
+    }
+
+    /// Full session accounting with exact token totals and context counts.
+    pub fn tokens_report(&self) -> String {
+        let telemetry = self;
+        let pct = telemetry.context_percent();
+        let bar = telemetry.gauge_bar();
+        let totals_approx = SessionTelemetry::approx(telemetry.totals_estimated);
+        let context_approx = SessionTelemetry::approx(telemetry.context_estimated);
+        let limit_approx = SessionTelemetry::approx(telemetry.context_limit_estimated);
+        let speed = telemetry.speed_text();
+        let input_tokens = format!("{totals_approx}{}", telemetry.total_prompt_tokens);
+        let output_tokens = format!("{totals_approx}{}", telemetry.total_completion_tokens);
+        let context_tokens = format!("{context_approx}{}", telemetry.context_tokens);
+        let context_limit = format!("{limit_approx}{}", telemetry.context_limit);
+
+        format!(
+            "```text\n\
+         ┌─ Session Token Accounting ────────────────────────────────────┐\n\
+         │ Model:             {:<42} │\n\
+         │ Input Tokens:      {:<42} │\n\
+         │ Output Tokens:     {:<42} │\n\
+         │ Context:           {} / {} ({:.1}%) {} │\n\
+         │ Current Speed:     {:<42} │\n\
+         │ Tool Calls:        {:<42} │\n\
+         └───────────────────────────────────────────────────────────────┘\n```",
+            telemetry.model,
+            input_tokens,
+            output_tokens,
+            context_tokens,
+            context_limit,
+            pct,
+            bar,
+            speed,
+            telemetry.tool_calls_count,
+        )
+    }
+
     /// Calculate current context window utilization percentage (0.0 to 100.0).
     pub fn context_percent(&self) -> f64 {
         if self.context_limit == 0 {
@@ -472,6 +533,49 @@ pub fn calculate_conversation_telemetry(
 mod tests {
     use super::*;
     use crate::{ChatMessage, ConversationEntry, Role, ToolStep};
+
+    #[test]
+    fn telemetry_text_preserves_precision_estimates_and_missing_speed() {
+        let mut telemetry = SessionTelemetry {
+            model: "café".into(),
+            context_tokens: 12345,
+            context_limit: 65536,
+            total_prompt_tokens: 12345,
+            total_completion_tokens: 42,
+            current_speed_tps: Some(12.345),
+            context_estimated: true,
+            context_limit_estimated: true,
+            totals_estimated: true,
+            speed_estimated: true,
+            ..SessionTelemetry::default()
+        };
+        assert_eq!(telemetry.compact_context_tokens(), "~12.3k");
+        assert_eq!(telemetry.compact_context_limit(), "~66k");
+        assert_eq!(telemetry.speed_text(), "~12.3 t/s");
+        let report = telemetry.tokens_report();
+        assert!(report.contains("│ Context:           ~12345 / ~65536 (18.8%) [==········] │"));
+        assert!(report.contains("│ Input Tokens:      ~12345"));
+        assert!(report.contains("│ Output Tokens:     ~42"));
+        telemetry.context_estimated = false;
+        telemetry.context_limit_estimated = false;
+        telemetry.speed_estimated = false;
+        telemetry.totals_estimated = false;
+        assert_eq!(telemetry.compact_context_tokens(), "12.3k");
+        assert_eq!(telemetry.compact_context_limit(), "66k");
+        assert_eq!(telemetry.speed_text(), "12.3 t/s");
+        assert!(!telemetry.tokens_report().contains('~'));
+        telemetry.context_tokens = 0;
+        telemetry.context_limit = 0;
+        telemetry.current_speed_tps = None;
+        assert_eq!(telemetry.compact_context_tokens(), "0.0k");
+        assert_eq!(telemetry.compact_context_limit(), "0k");
+        assert_eq!(telemetry.speed_text(), "-- t/s");
+        assert!(
+            telemetry
+                .tokens_report()
+                .contains("0 / 0 (0.0%) [··········]")
+        );
+    }
 
     #[test]
     fn test_editor_context_format() {

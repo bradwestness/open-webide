@@ -39,3 +39,6 @@ mod ui;
 
 #[path = "components/modals.rs"]
 mod modals;
+
+#[path = "components/recent_projects.rs"]
+mod recent_projects;

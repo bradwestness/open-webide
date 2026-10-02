@@ -55,8 +55,7 @@ pub fn dispatch(
 
     match cmd {
         SlashCommand::Help => SlashAction::Notify(HELP_TEXT.into()),
-        SlashCommand::Model(Some(target)) => {
-            let models = chat.models.get_untracked();
+        SlashCommand::Model(Some(target)) => chat.models.with_untracked(|models| {
             match models
                 .iter()
                 .find(|model| model.name.eq_ignore_ascii_case(&target))
@@ -66,23 +65,24 @@ pub fn dispatch(
                     SlashAction::Notify(format!("Model `{target}` not found in available models."))
                 }
             }
-        }
+        }),
         SlashCommand::Model(None) => {
-            let names = chat
-                .models
-                .get_untracked()
-                .into_iter()
-                .map(|model| format!("* `{}`", model.name))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let current = chat.session_telemetry.get_untracked().model;
+            let names = chat.models.with_untracked(|models| {
+                models
+                    .iter()
+                    .map(|model| format!("* `{}`", model.name))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+            let current = chat
+                .session_telemetry
+                .with_untracked(|telemetry| telemetry.model.clone());
             SlashAction::Notify(format!(
                 "Current model: `{current}`\n\nAvailable models:\n{names}\n\nUse `/model <name>` to switch."
             ))
         }
         SlashCommand::Clear => SlashAction::Clear,
-        SlashCommand::Diff(path) => {
-            let pending = workspace.pending_edits.get_untracked();
+        SlashCommand::Diff(path) => workspace.pending_edits.with_untracked(|pending| {
             if pending.is_empty() {
                 SlashAction::GitDiff { project_id, path }
             } else if let Some(path) = path {
@@ -104,14 +104,15 @@ pub fn dispatch(
                     pending.len()
                 ))
             }
-        }
+        }),
         SlashCommand::Test(filter) => SlashAction::RunTests {
             project_id,
             filter: filter.unwrap_or_default(),
         },
-        SlashCommand::Tokens => {
-            SlashAction::Notify(format_tokens(&chat.session_telemetry.get_untracked()))
-        }
+        SlashCommand::Tokens => SlashAction::Notify(
+            chat.session_telemetry
+                .with_untracked(SessionTelemetry::tokens_report),
+        ),
         SlashCommand::Stop => SlashAction::Stop,
         SlashCommand::Commit(message) => {
             let Some(message) = message.filter(|message| !message.trim().is_empty()) else {
@@ -168,44 +169,6 @@ const HELP_TEXT: &str = "**Open WebIDE Terminal Execution & Slash Commands**\n\n
                         * `Ctrl+C` / `Cmd+C` — Cancel streaming when no composer text is selected\n\
                         * `Esc` — Detach context when the draft is empty, otherwise cancel streaming";
 
-fn format_tokens(telemetry: &SessionTelemetry) -> String {
-    let pct = telemetry.context_percent();
-    let bar = telemetry.gauge_bar();
-    let totals_approx = SessionTelemetry::approx(telemetry.totals_estimated);
-    let context_approx = SessionTelemetry::approx(telemetry.context_estimated);
-    let limit_approx = SessionTelemetry::approx(telemetry.context_limit_estimated);
-    let speed_approx = SessionTelemetry::approx(telemetry.speed_estimated);
-    let speed = telemetry
-        .current_speed_tps
-        .map(|speed| format!("{speed_approx}{speed:.1} t/s"))
-        .unwrap_or_else(|| "-- t/s".into());
-    let input_tokens = format!("{totals_approx}{}", telemetry.total_prompt_tokens);
-    let output_tokens = format!("{totals_approx}{}", telemetry.total_completion_tokens);
-    let context_tokens = format!("{context_approx}{}", telemetry.context_tokens);
-    let context_limit = format!("{limit_approx}{}", telemetry.context_limit);
-
-    format!(
-        "```text\n\
-         ┌─ Session Token Accounting ────────────────────────────────────┐\n\
-         │ Model:             {:<42} │\n\
-         │ Input Tokens:      {:<42} │\n\
-         │ Output Tokens:     {:<42} │\n\
-         │ Context:           {} / {} ({:.1}%) {} │\n\
-         │ Current Speed:     {:<42} │\n\
-         │ Tool Calls:        {:<42} │\n\
-         └───────────────────────────────────────────────────────────────┘\n```",
-        telemetry.model,
-        input_tokens,
-        output_tokens,
-        context_tokens,
-        context_limit,
-        pct,
-        bar,
-        speed,
-        telemetry.tool_calls_count,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -214,6 +177,28 @@ mod tests {
     use openwebide_core::{FileDiff, ModelInfo, SlashCommand};
 
     use super::*;
+
+    #[test]
+    fn tokens_command_preserves_full_accounting_text() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            chat.session_telemetry.set(SessionTelemetry {
+                model: "café".into(),
+                context_tokens: 12345,
+                context_limit: 65536,
+                total_prompt_tokens: 12345,
+                total_completion_tokens: 42,
+                current_speed_tps: Some(12.345),
+                context_estimated: true,
+                context_limit_estimated: true,
+                totals_estimated: true,
+                speed_estimated: true,
+                tool_calls_count: 7,
+            });
+            assert_eq!(dispatch(SlashCommand::Tokens, &chat, &GitState::new(), &WorkspaceState::new()),
+                SlashAction::Notify("```text\n┌─ Session Token Accounting ────────────────────────────────────┐\n│ Model:             café                                       │\n│ Input Tokens:      ~12345                                     │\n│ Output Tokens:     ~42                                        │\n│ Context:           ~12345 / ~65536 (18.8%) [==········] │\n│ Current Speed:     ~12.3 t/s                                  │\n│ Tool Calls:        7                                          │\n└───────────────────────────────────────────────────────────────┘\n```".into()));
+        });
+    }
 
     #[test]
     fn model_command_selects_a_case_insensitive_match() {
@@ -339,7 +324,7 @@ mod tests {
                 ),
                 (
                     SlashCommand::Tokens,
-                    SlashAction::Notify(format_tokens(&SessionTelemetry::default())),
+                    SlashAction::Notify(SessionTelemetry::default().tokens_report()),
                 ),
                 (SlashCommand::Stop, SlashAction::Stop),
                 (

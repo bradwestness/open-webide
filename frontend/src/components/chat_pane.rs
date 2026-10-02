@@ -372,7 +372,7 @@ fn TuiStatusLine(
     };
 
     let gauge_color_class = move || {
-        let pct = session_telemetry.get().context_percent();
+        let pct = session_telemetry.with(SessionTelemetry::context_percent);
         if pct >= 85.0 {
             "ctx-danger"
         } else if pct >= 70.0 {
@@ -391,7 +391,7 @@ fn TuiStatusLine(
             </span>
             <span class="tui-sep">"│"</span>
             <span class="tui-model-name" title="Active Model" style="cursor: pointer; position: relative;" on:click=move |_| show_model_menu.set(!show_model_menu.get())>
-                {move || session_telemetry.get().model}
+                {move || session_telemetry.with(|telemetry| telemetry.model.clone())}
                 <Show when=move || show_model_menu.get() fallback=|| ()>
                     <div class="recent-backdrop" on:click=move |e| { e.stop_propagation(); show_model_menu.set(false); } />
                     <div class="recent-menu" style="bottom: 100%; top: auto; min-width: 200px;" on:click=move |e| e.stop_propagation()>
@@ -429,40 +429,17 @@ fn TuiStatusLine(
             <span class="tui-sep">"│"</span>
             <span class=move || format!("tui-ctx-gauge {}", gauge_color_class()) title="Context Window Utilization">
                 "Ctx: "
-                {move || {
-                    let t = session_telemetry.get();
-                    format!(
-                        "{}{:.1}k",
-                        SessionTelemetry::approx(t.context_estimated),
-                        t.context_tokens as f64 / 1000.0
-                    )
-                }}
+                {move || session_telemetry.with(SessionTelemetry::compact_context_tokens)}
                 "/"
-                {move || {
-                    let t = session_telemetry.get();
-                    format!(
-                        "{}{:.0}k",
-                        SessionTelemetry::approx(t.context_limit_estimated),
-                        t.context_limit as f64 / 1000.0
-                    )
-                }}
+                {move || session_telemetry.with(SessionTelemetry::compact_context_limit)}
                 " ("
-                {move || format!("{:.0}%", session_telemetry.get().context_percent())}
+                {move || format!("{:.0}%", session_telemetry.with(SessionTelemetry::context_percent))}
                 ") "
-                {move || session_telemetry.get().gauge_bar()}
+                {move || session_telemetry.with(SessionTelemetry::gauge_bar)}
             </span>
             <span class="tui-sep">"│"</span>
             <span class="tui-speed" title="Generation Speed">
-                {move || {
-                    let t = session_telemetry.get();
-                    match t.current_speed_tps {
-                        Some(speed) => format!(
-                            "{}{speed:.1} t/s",
-                            SessionTelemetry::approx(t.speed_estimated)
-                        ),
-                        None => "-- t/s".to_string(),
-                    }
-                }}
+                {move || session_telemetry.with(SessionTelemetry::speed_text)}
             </span>
             <span class="tui-sep">"│"</span>
             <span class="tui-workspace-mode">
@@ -470,7 +447,7 @@ fn TuiStatusLine(
             </span>
             <span class="tui-sep">"│"</span>
             <span class="tui-tools-count">
-                {move || format!("{} tools", session_telemetry.get().tool_calls_count)}
+                {move || format!("{} tools", session_telemetry.with(|telemetry| telemetry.tool_calls_count))}
             </span>
         </div>
     }

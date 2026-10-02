@@ -1,5 +1,4 @@
 use leptos::prelude::*;
-use openwebide_core::Project;
 
 use crate::state::projects::ProjectsState;
 
@@ -18,7 +17,7 @@ pub fn TabBar(
 ) -> impl IntoView {
     let projects = expect_context::<ProjectsState>();
     let open_tabs = Signal::derive(move || projects.open_tabs());
-    let all_projects = projects.projects.read_only();
+    let recent_projects = projects.recent_projects;
     let active_project = projects.active_project.read_only();
     let show_recent = RwSignal::new(false);
     view! {
@@ -91,26 +90,7 @@ pub fn TabBar(
                 <div class="recent-backdrop" on:click=move |_| show_recent.set(false) />
                 <div class="recent-menu">
                     <For
-                        each=move || {
-                            let open = open_tabs.get();
-                            let open_keys: std::collections::HashSet<String> = open
-                                .iter()
-                                .map(project_workspace_key)
-                                .collect();
-                            let mut seen_keys = std::collections::HashSet::new();
-                            let mut recent = Vec::new();
-
-                            for p in all_projects.get().into_iter().rev() {
-                                let key = project_workspace_key(&p);
-                                if open.iter().any(|t| t.id == p.id) || open_keys.contains(&key) {
-                                    continue;
-                                }
-                                if seen_keys.insert(key) {
-                                    recent.push(p);
-                                }
-                            }
-                            recent
-                        }
+                        each=move || recent_projects.get()
                         key=|p| p.id
                         children=move |p| {
                             let id = p.id;
@@ -141,25 +121,7 @@ pub fn TabBar(
                         }
                     />
                     <Show
-                        when=move || {
-                            let open = open_tabs.get();
-                            let open_keys: std::collections::HashSet<String> = open
-                                .iter()
-                                .map(project_workspace_key)
-                                .collect();
-                            let mut seen_keys = std::collections::HashSet::new();
-                            let mut count = 0;
-                            for p in all_projects.get().into_iter().rev() {
-                                let key = project_workspace_key(&p);
-                                if open.iter().any(|t| t.id == p.id) || open_keys.contains(&key) {
-                                    continue;
-                                }
-                                if seen_keys.insert(key) {
-                                    count += 1;
-                                }
-                            }
-                            count == 0
-                        }
+                        when=move || recent_projects.with(Vec::is_empty)
                         fallback=|| ()
                     >
                         <p class="empty">"No other saved projects."</p>
@@ -167,14 +129,5 @@ pub fn TabBar(
                 </div>
             </Show>
         </div>
-    }
-}
-
-fn project_workspace_key(p: &Project) -> String {
-    let mode_str = p.mode.as_str();
-    if let Some(path) = &p.path {
-        format!("{}:{}", mode_str, path.trim_matches('/'))
-    } else {
-        format!("{}:name:{}", mode_str, p.name.trim())
     }
 }

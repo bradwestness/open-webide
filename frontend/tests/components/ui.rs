@@ -124,3 +124,112 @@ async fn startup_retains_prepaint_theme_until_database_settings_arrive() {
         root.remove_attribute("data-theme").unwrap();
     }
 }
+
+#[wasm_bindgen_test]
+async fn typed_theme_controls_update_and_save_the_same_database_values() {
+    use openwebide_frontend::components::Settings;
+    let root = document().document_element().unwrap();
+    let original = root.get_attribute("data-theme");
+    let mounted = mount_test(|state| {
+        let actions = build_settings_actions(SettingsActionContext {
+            api: state.api,
+            settings: state.settings,
+            ui: state.ui,
+        });
+        view! {
+            <Settings on_set_theme=actions.on_set_theme
+                on_set_default_connection=actions.on_set_default_connection
+                on_set_default_prompt=actions.on_set_default_prompt
+                on_set_bridge_url=actions.on_set_bridge_url />
+        }
+    });
+    for (index, theme) in [Theme::System, Theme::Dark, Theme::Light]
+        .into_iter()
+        .enumerate()
+    {
+        mounted.click(&format!(
+            ".mode-picker label:nth-child({}) input[name=theme]",
+            index + 1
+        ));
+        settle().await;
+        assert_eq!(mounted.state.settings.theme.get_untracked(), theme);
+        assert_eq!(
+            mounted.state.fake.settings.borrow()["theme"],
+            theme.as_str()
+        );
+        let effective = if theme == Theme::System {
+            if web_sys::window()
+                .unwrap()
+                .match_media("(prefers-color-scheme: dark)")
+                .unwrap()
+                .unwrap()
+                .matches()
+            {
+                "dark"
+            } else {
+                "light"
+            }
+        } else {
+            theme.as_str()
+        };
+        assert_eq!(root.get_attribute("data-theme").as_deref(), Some(effective));
+    }
+    drop(mounted);
+    if let Some(original) = original {
+        root.set_attribute("data-theme", &original).unwrap();
+    } else {
+        root.remove_attribute("data-theme").unwrap();
+    }
+}
+
+#[wasm_bindgen_test]
+async fn statusline_preserves_compact_telemetry_text() {
+    use openwebide_core::SessionTelemetry;
+    let mounted = mount_test(super::support::chat_view);
+    settle().await;
+    mounted.state.chat.session_telemetry.set(SessionTelemetry {
+        model: "café".into(),
+        context_tokens: 12345,
+        context_limit: 65536,
+        current_speed_tps: Some(12.345),
+        context_estimated: true,
+        context_limit_estimated: true,
+        speed_estimated: true,
+        tool_calls_count: 7,
+        ..SessionTelemetry::default()
+    });
+    settle().await;
+    assert_eq!(
+        mounted.element(".tui-model-name").text_content().as_deref(),
+        Some("café")
+    );
+    assert_eq!(
+        mounted.element(".tui-ctx-gauge").text_content().as_deref(),
+        Some("Ctx: ~12.3k/~66k (19%) [==········]")
+    );
+    assert_eq!(
+        mounted.element(".tui-speed").text_content().as_deref(),
+        Some("~12.3 t/s")
+    );
+    assert_eq!(
+        mounted
+            .element(".tui-tools-count")
+            .text_content()
+            .as_deref(),
+        Some("7 tools")
+    );
+    mounted.state.chat.session_telemetry.set(SessionTelemetry {
+        context_limit: 0,
+        context_limit_estimated: false,
+        ..SessionTelemetry::default()
+    });
+    settle().await;
+    assert_eq!(
+        mounted.element(".tui-ctx-gauge").text_content().as_deref(),
+        Some("Ctx: 0.0k/0k (0%) [··········]")
+    );
+    assert_eq!(
+        mounted.element(".tui-speed").text_content().as_deref(),
+        Some("-- t/s")
+    );
+}

@@ -29,7 +29,7 @@ pub struct SettingsActions {
     pub on_save_connection: Callback<()>,
     pub on_delete_connection: Callback<i64>,
     pub on_open_settings: Callback<()>,
-    pub on_set_theme: Callback<String>,
+    pub on_set_theme: Callback<Theme>,
     pub on_set_default_connection: Callback<Option<i64>>,
     pub on_set_default_prompt: Callback<Option<i64>>,
     pub on_set_bridge_url: Callback<String>,
@@ -49,9 +49,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
     let on_edit_prompt = Callback::new(move |id: i64| {
         let Some(prompt) = settings
             .system_prompts
-            .get()
-            .into_iter()
-            .find(|prompt| prompt.id == id)
+            .with(|items| items.iter().find(|prompt| prompt.id == id).cloned())
         else {
             return;
         };
@@ -137,9 +135,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
     let on_edit_connection = Callback::new(move |id: i64| {
         let Some(connection) = settings
             .connections
-            .get()
-            .into_iter()
-            .find(|connection| connection.id == id)
+            .with(|items| items.iter().find(|connection| connection.id == id).cloned())
         else {
             return;
         };
@@ -195,13 +191,13 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
             let result = match edit_id {
                 Some(id) => {
                     // Preserve the existing connection's enabled flag.
-                    let enabled = settings
-                        .connections
-                        .get()
-                        .into_iter()
-                        .find(|connection| connection.id == id)
-                        .map(|connection| connection.enabled)
-                        .unwrap_or(true);
+                    let enabled = settings.connections.with(|connections| {
+                        connections
+                            .iter()
+                            .find(|connection| connection.id == id)
+                            .map(|connection| connection.enabled)
+                            .unwrap_or(true)
+                    });
                     let updated = Connection {
                         id,
                         name: name.clone(),
@@ -266,8 +262,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         settings.show_settings.set(true);
     });
 
-    let on_set_theme = Callback::new(move |value: String| {
-        let theme = Theme::parse(&value);
+    let on_set_theme = Callback::new(move |theme: Theme| {
         settings.theme.set(theme);
         spawn_local(async move {
             if let Err(error) = api

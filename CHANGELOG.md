@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Reduce repeated recent-project filtering and statusline formatting work while preserving project order, telemetry text, and saved themes.
+
 - Make dialogs keyboard accessible with focus containment, stacked Escape handling, focus restoration, and keyboard folder navigation.
 
 - Apply the saved database theme before first paint without browser preference storage, and unify action buttons and theme-aware warning/diff colors.

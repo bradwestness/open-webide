@@ -397,11 +397,12 @@ impl ChatState {
             let prefix = openwebide_agent::step_id_prefix(anchor);
             messages.handles.with(|handles| {
                 handles.iter().rev().find_map(|handle| {
-                    handle
-                        .permission
-                        .get()
-                        .filter(|(id, _)| id.starts_with(&prefix))
-                        .map(|(id, _)| id)
+                    handle.permission.with(|permission| {
+                        permission
+                            .as_ref()
+                            .filter(|(id, _)| id.starts_with(&prefix))
+                            .map(|(id, _)| id.clone())
+                    })
                 })
             })
         });
@@ -584,10 +585,7 @@ impl ChatState {
             } => {
                 let mode = self
                     .approval_mode
-                    .get_untracked()
-                    .get(&session_id)
-                    .copied()
-                    .unwrap_or_default();
+                    .with_untracked(|modes| modes.get(&session_id).copied().unwrap_or_default());
                 if mode.auto_approves(&name) {
                     effects.push(ChatEffect::ApprovePermission { id });
                 } else {
