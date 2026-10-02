@@ -256,7 +256,7 @@ pub fn Sidebar(
                                     "Sent to Ollama as num_ctx on every request. Leave blank to use the model's default."
                                 }
                                 ProviderKind::LlamaCpp => {
-                                    "Display only: llama.cpp's context size is fixed when llama-server starts (-c / --ctx-size). Set this to match it, or leave blank to read it from the server."
+                                    "Base URL works with or without /v1. Display only: llama.cpp's context size is fixed when llama-server starts (-c / --ctx-size). Set this to match it, or leave blank to read it from the server."
                                 }
                             }}
                         </div>

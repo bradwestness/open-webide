@@ -26,8 +26,11 @@ pub struct LlamaCppProvider<C: HttpClient> {
 
 impl<C: HttpClient> LlamaCppProvider<C> {
     pub fn new(base_url: impl Into<String>, model: Option<String>, http: C) -> Self {
+        let base_url = base_url.into();
+        let base_url = base_url.trim_end_matches('/');
+        let base_url = base_url.strip_suffix("/v1").unwrap_or(base_url);
         Self {
-            base_url: base_url.into(),
+            base_url: base_url.to_string(),
             model,
             http: Arc::new(http),
             tool_stream_memo: ToolStreamMemo::default(),
@@ -804,6 +807,55 @@ mod tests {
                 "properties": { "path": { "type": "string" } },
                 "required": ["path"]
             }),
+        }
+    }
+
+    #[test]
+    fn base_url_normalization_applies_to_all_endpoints() {
+        for (base_url, root) in [
+            ("http://h", "http://h"),
+            ("http://h/", "http://h"),
+            ("http://h/v1", "http://h"),
+            ("http://h/v1/", "http://h"),
+            ("http://h/proxy/v1", "http://h/proxy"),
+            ("http://h/v10", "http://h/v10"),
+            ("http://h/api/v1x", "http://h/api/v1x"),
+            ("http://h/v1/v1", "http://h/v1"),
+        ] {
+            let http = FakeHttpClient::new();
+            let state = http.state();
+            let provider = LlamaCppProvider::new(base_url, Some("model".into()), http);
+            let request = request(None, None);
+            state.push(Ok(json!({"data": []})));
+            block_on(provider.list_models()).unwrap();
+            for _ in 0..2 {
+                state.push(Ok(json!({"choices": [{"message": {"content": "hello"}}]})));
+            }
+            block_on(provider.chat(&request)).unwrap();
+            block_on(provider.chat_tools(&request)).unwrap();
+            state.push_stream(vec!["data: [DONE]\n"]);
+            let chunks: Vec<_> = block_on(provider.chat_stream(&request).collect());
+            assert!(chunks.iter().all(Result::is_ok));
+            state.push_stream(vec!["data: [DONE]\n"]);
+            let chunks: Vec<_> = block_on(provider.chat_tools_stream(&request).collect());
+            assert!(chunks.iter().all(Result::is_ok));
+            state.push(Ok(json!({"default_generation_settings": {"n_ctx": 4096}})));
+            assert_eq!(block_on(provider.context_limit(None)).unwrap(), Some(4096));
+
+            let calls = state.calls.lock().unwrap();
+            let urls: Vec<_> = calls.iter().map(|call| call.url.as_str()).collect();
+            assert_eq!(
+                urls,
+                vec![
+                    format!("{root}/v1/models"),
+                    format!("{root}/v1/chat/completions"),
+                    format!("{root}/v1/chat/completions"),
+                    format!("{root}/v1/chat/completions"),
+                    format!("{root}/v1/chat/completions"),
+                    format!("{root}/props"),
+                ],
+                "base URL: {base_url}"
+            );
         }
     }
 

@@ -170,6 +170,8 @@ for what's still ahead.
 
 ### Fixed
 
+- Accept llama.cpp base URLs with or without a trailing `/v1` for model discovery, chat completions, and context limits.
+
 - Stop bridge agent runs when a tool result cannot be saved, delivering the completed result before the error and preventing overlapping runs in the same session.
 
 - Keep split terminal controls intact when busy or recoverable-error notices appear during a running process.
