@@ -57,6 +57,30 @@ fn install(state: &TestState) {
     });
 }
 
+async fn wait_for_startup_reads(state: &TestState, count: usize) {
+    for _ in 0..100 {
+        if state
+            .fake
+            .calls
+            .borrow()
+            .iter()
+            .filter(|call| {
+                **call
+                    == Call::Request {
+                        method: "list_system_prompts",
+                    }
+            })
+            .count()
+            >= count
+        {
+            settle().await;
+            return;
+        }
+        openwebide_frontend::util::sleep_ms(5).await;
+    }
+    panic!("startup reads did not start after the directory snapshot");
+}
+
 #[wasm_bindgen_test]
 async fn stored_history_is_recalled_and_submissions_are_persisted() {
     let mounted = mount_test(|state| {
@@ -70,7 +94,7 @@ async fn stored_history_is_recalled_and_submissions_are_persisted() {
         install(&state);
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     mounted.key("ArrowUp", "ArrowUp", false);
     settle().await;
     assert_eq!(mounted.state.chat.draft.get_untracked(), "b");
@@ -133,7 +157,7 @@ async fn resize_shrinks_chat_first_without_persisting_fitted_widths() {
         install(&state);
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     assert!(
         mounted
             .element(".chat-pane")
@@ -171,7 +195,7 @@ async fn legacy_history_is_imported_once_and_legacy_keys_are_removed() {
         install(&state);
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     assert_eq!(
         mounted.state.chat.prompt_history.get_untracked(),
         ["a", "b"]
@@ -195,7 +219,7 @@ async fn legacy_history_is_imported_once_and_legacy_keys_are_removed() {
         install(&state);
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     assert_eq!(
         mounted.state.chat.prompt_history.get_untracked(),
         ["server"]
@@ -215,7 +239,7 @@ async fn failed_settings_load_does_not_overwrite_history() {
         install(&state);
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     assert!(mounted.state.projects.projects_loaded.get_untracked());
     mounted.state.chat.prompt_history.set(vec!["new".into()]);
     settle().await;
@@ -251,7 +275,7 @@ async fn legacy_history_survives_a_failed_save_and_remount() {
         install(&state);
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     assert_eq!(
         storage.get_item("owide-prompt-history").unwrap().as_deref(),
         Some(r#"["only copy"]"#)
@@ -267,7 +291,7 @@ async fn legacy_history_survives_a_failed_save_and_remount() {
         install(&state);
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     assert_eq!(
         mounted.state.fake.settings.borrow()["prompt_history"],
         r#"["only copy"]"#
@@ -281,7 +305,7 @@ async fn history_saves_wait_for_older_writes_and_coalesce_changes() {
         install(&state);
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     mounted.state.fake.calls.borrow_mut().clear();
     let (release, pending) = futures::channel::oneshot::channel();
     mounted
@@ -352,7 +376,7 @@ async fn sidebar_drag_does_not_save_fitted_chat_width() {
             }>"Drag sidebar"</button>
         }
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     let _small = Viewport::new(900.0);
     web_sys::window()
         .unwrap()
@@ -385,7 +409,7 @@ async fn logout_preserves_saved_history() {
         slot.set(Some(expect_context::<AuthState>()));
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     mounted.state.fake.calls.borrow_mut().clear();
     let state = &mounted.state;
     auth_slot.get().unwrap().reset_user_state(
@@ -414,7 +438,7 @@ async fn old_save_loop_cannot_drain_a_later_login_queue() {
         slot.set(Some(expect_context::<AuthState>()));
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     let state = &mounted.state;
     state.fake.calls.borrow_mut().clear();
     let (release_old, pending_old) = futures::channel::oneshot::channel();
@@ -453,7 +477,7 @@ async fn old_save_loop_cannot_drain_a_later_login_queue() {
         role: UserRole::User,
         created_at: 0,
     });
-    settle().await;
+    wait_for_startup_reads(state, 1).await;
     state
         .chat
         .prompt_history
@@ -497,7 +521,7 @@ async fn stale_settings_load_cannot_enable_history_for_a_later_login() {
         slot.set(Some(expect_context::<AuthState>()));
         chat_view(state)
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     let state = &mounted.state;
     let auth = auth_slot.get().unwrap();
     auth.reset_user_state(
@@ -515,7 +539,7 @@ async fn stale_settings_load_cannot_enable_history_for_a_later_login() {
         role: UserRole::User,
         created_at: 0,
     });
-    settle().await;
+    wait_for_startup_reads(state, 2).await;
     release
         .send(Ok(std::collections::BTreeMap::from([(
             "prompt_history".into(),
@@ -597,7 +621,7 @@ async fn startup_reads_start_together_and_wait_for_settings_and_projects() {
         install(&state);
         view! { <div /> }
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     for method in [
         "get_settings",
         "list_projects",
@@ -650,7 +674,7 @@ async fn logout_discards_deferred_startup_lists() {
         slot.set(Some(expect_context::<AuthState>()));
         view! { <div /> }
     });
-    settle().await;
+    wait_for_startup_reads(&mounted.state, 1).await;
     auth_slot.get().unwrap().logout();
     release
         .send(Ok(vec![openwebide_core::Project {

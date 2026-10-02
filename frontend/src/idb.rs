@@ -1,18 +1,22 @@
 //! IndexedDB helpers for persisting File System Access API directory handles
 //! so local-mode projects survive a page reload.
 
+use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::task::{Context, Poll};
 
 use futures::FutureExt;
 use futures::channel::oneshot;
+use futures::future::{LocalBoxFuture, Shared};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use web_sys::{
     FileSystemDirectoryHandle, FileSystemHandle, FileSystemHandlePermissionDescriptor,
-    FileSystemPermissionMode, IdbDatabase, IdbObjectStore, IdbRequest, IdbTransactionMode,
+    FileSystemPermissionMode, IdbDatabase, IdbObjectStore, IdbRequest, IdbTransaction,
+    IdbTransactionMode,
 };
 
 use crate::local_fs::js_error;
@@ -24,9 +28,19 @@ const STORE: &str = "directories";
 /// event. It owns the event-handler closures (so they stay alive until the
 /// request settles) and the request itself.
 struct IdbRequestFuture {
-    _request: Option<IdbRequest>,
+    request: IdbRequest,
     rx: Option<oneshot::Receiver<Result<JsValue, String>>>,
     _closures: Vec<Closure<dyn FnMut()>>,
+}
+
+impl Drop for IdbRequestFuture {
+    fn drop(&mut self) {
+        self.request.set_onsuccess(None);
+        self.request.set_onerror(None);
+        if let Some(open) = self.request.dyn_ref::<web_sys::IdbOpenDbRequest>() {
+            open.set_onupgradeneeded(None);
+        }
+    }
 }
 
 impl Future for IdbRequestFuture {
@@ -77,8 +91,106 @@ fn attach(
     closures.push(error);
 }
 
-/// Open the database, creating the `directories` store on first use.
+type PendingOpen = Shared<LocalBoxFuture<'static, Result<IdbDatabase, String>>>;
+
+#[derive(Default)]
+struct DatabaseCache {
+    connection: Option<Connection>,
+    pending: Option<PendingOpen>,
+}
+
+struct Connection {
+    db: IdbDatabase,
+    _handlers: Vec<Closure<dyn FnMut()>>,
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.db.set_onversionchange(None);
+        self.db.set_onclose(None);
+        self.db.set_onerror(None);
+        self.db.close();
+    }
+}
+
+thread_local! {
+    static CACHE: RefCell<DatabaseCache> = RefCell::default();
+}
+
+fn connection(db: IdbDatabase) -> Connection {
+    let mut handlers = Vec::new();
+    for event in ["versionchange", "close", "error"] {
+        let database = db.clone();
+        let handler = Closure::<dyn FnMut()>::new(move || {
+            database.close();
+            let database = database.clone();
+            // Detach handlers after this callback returns, not while it is executing.
+            wasm_bindgen_futures::spawn_local(async move {
+                CACHE.with_borrow_mut(|cache| {
+                    if cache.connection.as_ref().is_some_and(|c| c.db == database) {
+                        cache.connection = None;
+                    }
+                });
+            });
+        });
+        let callback = Some(handler.as_ref().unchecked_ref());
+        match event {
+            "versionchange" => db.set_onversionchange(callback),
+            "close" => db.set_onclose(callback),
+            _ => db.set_onerror(callback),
+        }
+        handlers.push(handler);
+    }
+    Connection {
+        db,
+        _handlers: handlers,
+    }
+}
+
+/// Reuse the live connection and share concurrent opens in browser memory.
 pub async fn open_db() -> Result<IdbDatabase, String> {
+    if let Some(db) = CACHE.with_borrow(|cache| {
+        cache
+            .connection
+            .as_ref()
+            .map(|connection| connection.db.clone())
+    }) {
+        return Ok(db);
+    }
+    let pending = CACHE.with_borrow_mut(|cache| {
+        if let Some(pending) = &cache.pending {
+            return pending.clone();
+        }
+        let pending = async {
+            let result = open_uncached().await;
+            CACHE.with_borrow_mut(|cache| {
+                cache.pending = None;
+                if let Ok(db) = &result {
+                    cache.connection = Some(connection(db.clone()));
+                }
+            });
+            result
+        }
+        .boxed_local()
+        .shared();
+        cache.pending = Some(pending.clone());
+        // An abandoned caller must not leave an unpolled open or event handlers behind.
+        let driver = pending.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = driver.await;
+        });
+        pending
+    });
+    pending.await
+}
+
+#[cfg(feature = "test-support")]
+pub fn reset_connection() {
+    CACHE.with_borrow_mut(|cache| cache.connection = None);
+}
+
+/// Open the database, creating the `directories` store on first use.
+async fn open_uncached() -> Result<IdbDatabase, String> {
     let idb = web_sys::window()
         .and_then(|w| w.indexed_db().ok().flatten())
         .ok_or_else(|| "IndexedDB is not available".to_string())?;
@@ -103,7 +215,7 @@ pub async fn open_db() -> Result<IdbDatabase, String> {
     let request: IdbRequest = request.into();
     attach(&request, &mut closures, tx, "open");
     let result = IdbRequestFuture {
-        _request: Some(request),
+        request,
         rx: Some(rx),
         _closures: closures,
     }
@@ -111,6 +223,74 @@ pub async fn open_db() -> Result<IdbDatabase, String> {
     result
         .dyn_into::<IdbDatabase>()
         .map_err(|_| "IndexedDB open did not return a database".to_string())
+}
+
+struct TransactionFuture {
+    transaction: IdbTransaction,
+    rx: oneshot::Receiver<Result<(), String>>,
+    _handlers: Vec<Closure<dyn FnMut()>>,
+}
+
+impl TransactionFuture {
+    fn new(transaction: IdbTransaction) -> Self {
+        let (tx, rx) = oneshot::channel();
+        let tx = Rc::new(RefCell::new(Some(tx)));
+        let mut handlers = Vec::new();
+        for event in ["complete", "abort", "error"] {
+            let tx = Rc::clone(&tx);
+            let handler = Closure::<dyn FnMut()>::new(move || {
+                if let Some(tx) = tx.borrow_mut().take() {
+                    let result = if event == "complete" {
+                        Ok(())
+                    } else {
+                        Err(format!("IndexedDB transaction {event}"))
+                    };
+                    let _ = tx.send(result);
+                }
+            });
+            let callback = Some(handler.as_ref().unchecked_ref());
+            match event {
+                "complete" => transaction.set_oncomplete(callback),
+                "abort" => transaction.set_onabort(callback),
+                _ => transaction.set_onerror(callback),
+            }
+            handlers.push(handler);
+        }
+        Self {
+            transaction,
+            rx,
+            _handlers: handlers,
+        }
+    }
+}
+
+impl Future for TransactionFuture {
+    type Output = Result<(), String>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.rx.poll_unpin(cx).map(|result| {
+            result.unwrap_or_else(|_| Err("IndexedDB transaction failed".to_string()))
+        })
+    }
+}
+
+impl Drop for TransactionFuture {
+    fn drop(&mut self) {
+        self.transaction.set_oncomplete(None);
+        self.transaction.set_onabort(None);
+        self.transaction.set_onerror(None);
+    }
+}
+
+async fn read(request: IdbRequest) -> Result<JsValue, String> {
+    let (tx, rx) = oneshot::channel();
+    let mut closures = Vec::new();
+    attach(&request, &mut closures, tx, "request");
+    IdbRequestFuture {
+        request,
+        rx: Some(rx),
+        _closures: closures,
+    }
+    .await
 }
 
 fn get_store(db: &IdbDatabase, mode: IdbTransactionMode) -> Result<IdbObjectStore, String> {
@@ -135,28 +315,38 @@ fn key(project_id: i64) -> JsValue {
 /// Persist a directory handle keyed by project id.
 pub async fn save_handle(
     project_id: i64,
+    user_id: Option<openwebide_core::UserId>,
     handle: &FileSystemDirectoryHandle,
 ) -> Result<(), String> {
     let db = open_db().await?;
     let store = get_store(&db, IdbTransactionMode::Readwrite)?;
+    let completion = TransactionFuture::new(store.transaction());
     let record = js_sys::Object::new();
     js_sys::Reflect::set(&record, &JsValue::from_str("projectId"), &key(project_id))
         .map_err(|e| js_error(&e))?;
     js_sys::Reflect::set(&record, &JsValue::from_str("handle"), handle)
         .map_err(|e| js_error(&e))?;
+    if let Some(user_id) = user_id {
+        js_sys::Reflect::set(&record, &JsValue::from_str("userId"), &key(user_id.get()))
+            .map_err(|e| js_error(&e))?;
+    }
+    let revision = format!(
+        "{}-{}-{}",
+        js_sys::Date::now(),
+        js_sys::Math::random(),
+        js_sys::Math::random()
+    );
+    js_sys::Reflect::set(
+        &record,
+        &JsValue::from_str("revision"),
+        &JsValue::from_str(&revision),
+    )
+    .map_err(|e| js_error(&e))?;
     let request = store
         .put_with_key(&record, &key(project_id))
         .map_err(|e| js_error(&e))?;
-    let (tx, rx) = oneshot::channel();
-    let mut closures = Vec::new();
-    attach(&request, &mut closures, tx, "put");
-    let _ = IdbRequestFuture {
-        _request: Some(request),
-        rx: Some(rx),
-        _closures: closures,
-    }
-    .await?;
-    Ok(())
+    let _ = read(request).await?;
+    completion.await
 }
 
 /// Load a previously persisted directory handle for a project.
@@ -164,15 +354,7 @@ pub async fn load_handle(project_id: i64) -> Result<Option<FileSystemDirectoryHa
     let db = open_db().await?;
     let store = get_store(&db, IdbTransactionMode::Readonly)?;
     let request = store.get(&key(project_id)).map_err(|e| js_error(&e))?;
-    let (tx, rx) = oneshot::channel();
-    let mut closures = Vec::new();
-    attach(&request, &mut closures, tx, "get");
-    let result = IdbRequestFuture {
-        _request: Some(request),
-        rx: Some(rx),
-        _closures: closures,
-    }
-    .await?;
+    let result = read(request).await?;
     if result.is_null() || result.is_undefined() {
         return Ok(None);
     }
@@ -206,22 +388,15 @@ pub async fn request_permission(handle: &FileSystemDirectoryHandle) -> Result<bo
 pub async fn set_bridge_pairing_token(token: &str) -> Result<(), String> {
     let db = open_db().await?;
     let store = get_store(&db, IdbTransactionMode::Readwrite)?;
+    let completion = TransactionFuture::new(store.transaction());
     let request = store
         .put_with_key(
             &JsValue::from_str(token),
             &JsValue::from_str("bridge_pairing_token"),
         )
         .map_err(|e| js_error(&e))?;
-    let (tx, rx) = oneshot::channel();
-    let mut closures = Vec::new();
-    attach(&request, &mut closures, tx, "put");
-    let _ = IdbRequestFuture {
-        _request: Some(request),
-        rx: Some(rx),
-        _closures: closures,
-    }
-    .await?;
-    Ok(())
+    let _ = read(request).await?;
+    completion.await
 }
 
 pub async fn get_bridge_pairing_token() -> Result<Option<String>, String> {
@@ -230,15 +405,7 @@ pub async fn get_bridge_pairing_token() -> Result<Option<String>, String> {
     let request = store
         .get(&JsValue::from_str("bridge_pairing_token"))
         .map_err(|e| js_error(&e))?;
-    let (tx, rx) = oneshot::channel();
-    let mut closures = Vec::new();
-    attach(&request, &mut closures, tx, "get");
-    let result = IdbRequestFuture {
-        _request: Some(request),
-        rx: Some(rx),
-        _closures: closures,
-    }
-    .await?;
+    let result = read(request).await?;
     if result.is_null() || result.is_undefined() {
         return Ok(None);
     }
@@ -248,17 +415,94 @@ pub async fn get_bridge_pairing_token() -> Result<Option<String>, String> {
 pub async fn delete_bridge_pairing_token() -> Result<(), String> {
     let db = open_db().await?;
     let store = get_store(&db, IdbTransactionMode::Readwrite)?;
+    let completion = TransactionFuture::new(store.transaction());
     let request = store
         .delete(&JsValue::from_str("bridge_pairing_token"))
         .map_err(|e| js_error(&e))?;
-    let (tx, rx) = oneshot::channel();
-    let mut closures = Vec::new();
-    attach(&request, &mut closures, tx, "delete");
-    let _ = IdbRequestFuture {
-        _request: Some(request),
-        rx: Some(rx),
-        _closures: closures,
+    let _ = read(request).await?;
+    completion.await
+}
+
+/// Remove only the numeric directory key, leaving the pairing token intact.
+pub async fn delete_handle(project_id: i64) -> Result<(), String> {
+    delete_key(&key(project_id)).await
+}
+
+async fn delete_key(key: &JsValue) -> Result<(), String> {
+    let db = open_db().await?;
+    let store = get_store(&db, IdbTransactionMode::Readwrite)?;
+    let completion = TransactionFuture::new(store.transaction());
+    let request = store.delete(key).map_err(|e| js_error(&e))?;
+    read(request).await?;
+    completion.await
+}
+
+/// Snapshot owned directory revisions before starting the account's project-list request.
+/// Legacy records have unknown ownership and must survive another account's startup.
+pub async fn orphan_candidates(
+    user_id: openwebide_core::UserId,
+) -> Result<Vec<(JsValue, JsValue)>, String> {
+    let db = open_db().await?;
+    let store = get_store(&db, IdbTransactionMode::Readonly)?;
+    let records = read(store.get_all().map_err(|e| js_error(&e))?).await?;
+    let mut candidates = Vec::new();
+    for record in js_sys::Array::from(&records).iter() {
+        if !record.is_object() {
+            continue;
+        }
+        let owner = js_sys::Reflect::get(&record, &JsValue::from_str("userId"))
+            .map_err(|e| js_error(&e))?;
+        let project = js_sys::Reflect::get(&record, &JsValue::from_str("projectId"))
+            .map_err(|e| js_error(&e))?;
+        let revision = js_sys::Reflect::get(&record, &JsValue::from_str("revision"))
+            .map_err(|e| js_error(&e))?;
+        if owner == key(user_id.get())
+            && project.as_f64().is_some()
+            && revision.as_string().is_some()
+        {
+            candidates.push((project, revision));
+        }
     }
-    .await?;
+    Ok(candidates)
+}
+
+/// Delete only unchanged owned records saved before the project-list request.
+pub async fn delete_orphan_handles(
+    user_id: openwebide_core::UserId,
+    candidates: &[(JsValue, JsValue)],
+    project_ids: &[i64],
+    is_current: impl Fn() -> bool,
+) -> Result<(), String> {
+    let db = open_db().await?;
+    for (stored_key, revision) in candidates {
+        if !is_current() {
+            return Ok(());
+        }
+        if project_ids
+            .iter()
+            .any(|project_id| key(*project_id) == *stored_key)
+        {
+            continue;
+        }
+        // Read and conditional deletion share a transaction, excluding concurrent tab writes.
+        let store = get_store(&db, IdbTransactionMode::Readwrite)?;
+        let completion = TransactionFuture::new(store.transaction());
+        let record = read(store.get(stored_key).map_err(|e| js_error(&e))?).await?;
+        if !is_current() {
+            return Ok(());
+        }
+        if !record.is_undefined()
+            && !record.is_null()
+            && js_sys::Reflect::get(&record, &JsValue::from_str("userId"))
+                .map_err(|e| js_error(&e))?
+                == key(user_id.get())
+            && js_sys::Reflect::get(&record, &JsValue::from_str("revision"))
+                .map_err(|e| js_error(&e))?
+                == *revision
+        {
+            read(store.delete(stored_key).map_err(|e| js_error(&e))?).await?;
+        }
+        completion.await?;
+    }
     Ok(())
 }

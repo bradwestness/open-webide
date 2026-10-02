@@ -154,9 +154,9 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         history_pending.set(None);
         history_saving.set(false);
         history_imported.set(false);
-        if auth.user.get().is_none() {
+        let Some(user) = auth.user.get() else {
             return;
-        }
+        };
         spawn_local(async move {
             let health_result = api.with_value(Clone::clone).health().await;
             if auth.generation.get_untracked() != generation {
@@ -178,6 +178,11 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 return;
             }
 
+            // Snapshot before the request so later saves survive even if the wall clock moves back.
+            let candidates = crate::idb::orphan_candidates(user.id).await;
+            if auth.generation.get_untracked() != generation {
+                return;
+            }
             let backend = api.with_value(Clone::clone);
             let (
                 settings_result,
@@ -285,7 +290,28 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 settings.connections.set(connections);
             }
             if let Ok(project_list) = projects_result {
+                let project_ids = project_list
+                    .iter()
+                    .map(|project| project.id)
+                    .collect::<Vec<_>>();
                 projects.projects.set(project_list);
+                spawn_local(async move {
+                    let result = match candidates {
+                        Ok(candidates) => {
+                            crate::idb::delete_orphan_handles(
+                                user.id,
+                                &candidates,
+                                &project_ids,
+                                move || auth.generation.try_get_untracked() == Some(generation),
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = result {
+                        leptos::logging::warn!("Local folder cleanup failed: {error}");
+                    }
+                });
             }
             for project in projects
                 .projects

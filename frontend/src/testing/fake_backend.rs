@@ -69,6 +69,7 @@ pub struct FakeBackend {
     pub sessions: RefCell<Vec<ChatSession>>,
     pub messages: RefCell<BTreeMap<i64, Vec<ConversationEntry>>>,
     pub projects: RefCell<Vec<Project>>,
+    pub project_delete_error: RefCell<Option<String>>,
     pub files: RefCell<BTreeMap<(i64, String), String>>,
     pub directories: RefCell<BTreeSet<(i64, String)>>,
     pub models: RefCell<Vec<ModelInfo>>,
@@ -491,6 +492,9 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "delete_project",
             });
+            if let Some(error) = self.project_delete_error.borrow().clone() {
+                return Err(error);
+            }
             self.projects.borrow_mut().retain(|item| item.id != id);
             Ok(())
         })

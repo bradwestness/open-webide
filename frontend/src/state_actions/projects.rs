@@ -129,7 +129,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                 .get()
                 .iter()
                 .any(|existing| existing.id == project.id);
-            if let Err(error) = idb::save_handle(project.id, &handle).await {
+            if let Err(error) = idb::save_handle(project.id, project.user_id, &handle).await {
                 if !preexisting {
                     let _ = api
                         .with_value(Clone::clone)
@@ -201,6 +201,11 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                     });
                     close_project.run(id);
                     git.forget_project(id);
+                    if let Err(error) = idb::delete_handle(id).await {
+                        ui.notify(format!(
+                            "Project deleted, but local folder cleanup failed: {error}"
+                        ));
+                    }
                 });
             }),
         });

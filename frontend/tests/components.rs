@@ -30,3 +30,6 @@ mod editor;
 
 #[path = "components/search.rs"]
 mod search;
+
+#[path = "components/idb.rs"]
+mod idb;
