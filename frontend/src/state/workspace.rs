@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
-use openwebide_core::{FileDiff, FileEntry, SearchHit};
+use openwebide_core::{EditDecision, FileDiff, FileEntry, PersistedEdit, SearchHit};
 
 /// Workspace data preserved while a project is not the active tab.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -14,6 +14,7 @@ pub struct WorkspaceSnapshot {
     pub search: Option<Vec<SearchHit>>,
     pub active_session: Option<i64>,
     pub pending_edits: HashMap<String, FileDiff>,
+    pub persisted_edits: HashMap<String, PersistedEdit>,
     pub media_url: Option<String>,
 }
 
@@ -30,6 +31,10 @@ pub struct WorkspaceState {
     pub active_session: RwSignal<Option<i64>>,
     pub pending_edits: RwSignal<HashMap<String, FileDiff>>,
     pub pending_diff: Memo<Option<FileDiff>>,
+    pub persisted_edits: RwSignal<HashMap<String, PersistedEdit>>,
+    pub resolving_edits: RwSignal<HashSet<(i64, String)>>,
+    pub pending_generation: RwSignal<HashMap<i64, u64>>,
+    pub pending_epoch: RwSignal<u64>,
     pub media_url: RwSignal<Option<String>>,
     pub snapshots: RwSignal<HashMap<i64, WorkspaceSnapshot>>,
 }
@@ -57,6 +62,10 @@ impl WorkspaceState {
             active_session: RwSignal::new(None),
             pending_edits,
             pending_diff,
+            persisted_edits: RwSignal::new(HashMap::new()),
+            resolving_edits: RwSignal::new(HashSet::new()),
+            pending_generation: RwSignal::new(HashMap::new()),
+            pending_epoch: RwSignal::new(0),
             media_url: RwSignal::new(None),
             snapshots: RwSignal::new(HashMap::new()),
         }
@@ -72,6 +81,7 @@ impl WorkspaceState {
             search: self.search.get_untracked(),
             active_session: self.active_session.get_untracked(),
             pending_edits: self.pending_edits.get_untracked(),
+            persisted_edits: self.persisted_edits.get_untracked(),
             media_url: self.media_url.get_untracked(),
         }
     }
@@ -109,6 +119,9 @@ impl WorkspaceState {
     }
 
     pub fn reset(&self) {
+        self.pending_epoch.update(|epoch| *epoch += 1);
+        self.pending_generation.set(HashMap::new());
+        self.resolving_edits.set(HashSet::new());
         self.clear_active();
         self.snapshots.set(HashMap::new());
     }
@@ -126,6 +139,86 @@ impl WorkspaceState {
         }
     }
 
+    pub fn begin_pending_refresh(&self, project_id: i64) -> (u64, u64) {
+        let mut generation = 0;
+        self.pending_generation.update(|generations| {
+            let current = generations.entry(project_id).or_default();
+            *current += 1;
+            generation = *current;
+        });
+        (self.pending_epoch.get_untracked(), generation)
+    }
+
+    pub fn pending_refresh_current(&self, project_id: i64, token: (u64, u64)) -> bool {
+        self.pending_epoch.try_get_untracked() == Some(token.0)
+            && self.pending_generation.try_with_untracked(|generations| {
+                generations.get(&project_id).copied() == Some(token.1)
+            }) == Some(true)
+    }
+
+    pub fn set_persisted_edits(&self, project_id: i64, edits: Vec<PersistedEdit>) {
+        let records: HashMap<_, _> = edits
+            .into_iter()
+            .filter(|edit| edit.project_id == project_id && edit.decision == EditDecision::Pending)
+            .map(|edit| (edit.path.clone(), edit))
+            .collect();
+        let diffs = records
+            .iter()
+            .map(|(path, edit)| (path.clone(), edit.diff.clone()))
+            .collect();
+        if self.active_project.get_untracked() == Some(project_id) {
+            self.persisted_edits.set(records);
+            self.pending_edits.set(diffs);
+        } else {
+            self.snapshots.update(|snapshots| {
+                let snapshot = snapshots.entry(project_id).or_default();
+                snapshot.persisted_edits = records;
+                snapshot.pending_edits = diffs;
+            });
+        }
+    }
+
+    pub fn clear_resolved_edit(&self, edit: &PersistedEdit) {
+        self.begin_pending_refresh(edit.project_id);
+        if self.active_project.get_untracked() == Some(edit.project_id) {
+            if self.persisted_edits.with_untracked(|edits| {
+                edits
+                    .get(&edit.path)
+                    .is_some_and(|current| current.revision == edit.revision)
+            }) {
+                self.persisted_edits.update(|edits| {
+                    edits.remove(&edit.path);
+                });
+                self.pending_edits.update(|edits| {
+                    edits.remove(&edit.path);
+                });
+            }
+        } else {
+            self.snapshots.update(|snapshots| {
+                if let Some(snapshot) = snapshots.get_mut(&edit.project_id)
+                    && snapshot
+                        .persisted_edits
+                        .get(&edit.path)
+                        .is_some_and(|current| current.revision == edit.revision)
+                {
+                    snapshot.persisted_edits.remove(&edit.path);
+                    snapshot.pending_edits.remove(&edit.path);
+                }
+            });
+        }
+    }
+
+    pub fn is_resolving(&self) -> bool {
+        let Some(project_id) = self.active_project.get() else {
+            return false;
+        };
+        let Some(path) = self.open_file.get() else {
+            return false;
+        };
+        self.resolving_edits
+            .with(|edits| edits.contains(&(project_id, path)))
+    }
+
     fn apply_snapshot(&self, snapshot: WorkspaceSnapshot) {
         self.entries.set(snapshot.entries);
         self.expanded.set(snapshot.expanded);
@@ -135,6 +228,7 @@ impl WorkspaceState {
         self.search.set(snapshot.search);
         self.active_session.set(snapshot.active_session);
         self.pending_edits.set(snapshot.pending_edits);
+        self.persisted_edits.set(snapshot.persisted_edits);
         self.media_url.set(snapshot.media_url);
     }
 }
@@ -198,6 +292,51 @@ mod tests {
             let merged = &pending["main.rs"];
             assert_eq!(merged.old.as_deref(), Some("v0"));
             assert_eq!(merged.new, "v2");
+        });
+    }
+    fn record(project_id: i64, revision: i64) -> PersistedEdit {
+        PersistedEdit {
+            project_id,
+            path: "main.rs".into(),
+            revision,
+            decision: EditDecision::Pending,
+            diff: diff("original", "new"),
+        }
+    }
+
+    #[test]
+    fn persisted_snapshots_isolate_projects_and_old_resolution_cannot_clear_new_revision() {
+        Owner::new().with(|| {
+            let workspace = WorkspaceState::with_active_project(RwSignal::new(Some(1)));
+            workspace.set_persisted_edits(1, vec![record(1, 2)]);
+            workspace.set_persisted_edits(2, vec![record(2, 1)]);
+            workspace.clear_resolved_edit(&record(1, 1));
+            assert_eq!(
+                workspace.persisted_edits.get_untracked()["main.rs"].revision,
+                2
+            );
+            workspace.switch_project(Some(1), 2);
+            assert_eq!(
+                workspace.persisted_edits.get_untracked()["main.rs"].project_id,
+                2
+            );
+            workspace.clear_resolved_edit(&record(1, 2));
+            workspace.switch_project(Some(2), 1);
+            assert!(workspace.pending_edits.get_untracked().is_empty());
+        });
+    }
+
+    #[test]
+    fn refresh_tokens_reject_older_responses_and_reset() {
+        Owner::new().with(|| {
+            let workspace = WorkspaceState::new();
+            let old = workspace.begin_pending_refresh(1);
+            let latest = workspace.begin_pending_refresh(1);
+            assert!(!workspace.pending_refresh_current(1, old));
+            assert!(workspace.pending_refresh_current(1, latest));
+            workspace.reset();
+            workspace.begin_pending_refresh(1);
+            assert!(!workspace.pending_refresh_current(1, latest));
         });
     }
 }

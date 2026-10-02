@@ -654,6 +654,7 @@ pub fn Editor(
                         <Button
                             variant=ButtonVariant::Success
                             size=ButtonSize::Sm
+                            disabled=Signal::derive(move || workspace.is_resolving())
                             on_click=Callback::new(move |_| on_accept.run(()))
                         >
                             "✓ Accept"
@@ -661,6 +662,7 @@ pub fn Editor(
                         <Button
                             variant=ButtonVariant::Danger
                             size=ButtonSize::Sm
+                            disabled=Signal::derive(move || workspace.is_resolving())
                             on_click=Callback::new(move |_| on_reject.run(()))
                         >
                             "✕ Reject"

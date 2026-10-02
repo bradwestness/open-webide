@@ -71,6 +71,11 @@ pub struct FakeBackend {
     pub completion_error: RefCell<Option<String>>,
     pub persisted_edits: RefCell<BTreeMap<(i64, String), PersistedEdit>>,
     pub resolution_error: RefCell<Option<String>>,
+    pub file_list_results: RefCell<VecDeque<Deferred<Vec<FileEntry>>>>,
+    pub pending_results: RefCell<VecDeque<Deferred<Vec<PersistedEdit>>>>,
+    pub resolution_results: RefCell<VecDeque<Deferred<()>>>,
+    pub resolution_requests: RefCell<Vec<(i64, ResolveEditRequest)>>,
+    pub file_error: RefCell<Option<String>>,
     pub sessions: RefCell<Vec<ChatSession>>,
     pub messages: RefCell<BTreeMap<i64, Vec<ConversationEntry>>>,
     pub projects: RefCell<Vec<Project>>,
@@ -517,6 +522,12 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "list_files",
             });
+            let pending = self.file_list_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into()));
+            }
             let prefix = if path.is_empty() {
                 String::new()
             } else {
@@ -600,6 +611,9 @@ impl Backend for FakeBackend {
         content: &'a str,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            if let Some(error) = self.file_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
             self.calls.borrow_mut().push(Call::WriteFile {
                 path: path.into(),
                 content: content.into(),
@@ -617,6 +631,9 @@ impl Backend for FakeBackend {
         to: &'a str,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            if let Some(error) = self.file_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
             self.calls.borrow_mut().push(Call::CopyFile {
                 from: from.into(),
                 to: to.into(),
@@ -658,6 +675,9 @@ impl Backend for FakeBackend {
         path: &'a str,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            if let Some(error) = self.file_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
             self.calls
                 .borrow_mut()
                 .push(Call::DeleteFile { path: path.into() });
@@ -1012,6 +1032,15 @@ impl Backend for FakeBackend {
         project_id: i64,
     ) -> LocalBoxFuture<'_, Result<Vec<PersistedEdit>, String>> {
         Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "list_pending_edits",
+            });
+            let pending = self.pending_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .map_err(|_| "pending edit request cancelled".to_string())?;
+            }
             Ok(self
                 .persisted_edits
                 .borrow()
@@ -1029,6 +1058,15 @@ impl Backend for FakeBackend {
         request: &'a ResolveEditRequest,
     ) -> LocalBoxFuture<'a, Result<PersistedEdit, String>> {
         Box::pin(async move {
+            self.resolution_requests
+                .borrow_mut()
+                .push((project_id, request.clone()));
+            let pending = self.resolution_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                pending
+                    .await
+                    .map_err(|_| "resolution cancelled".to_string())??;
+            }
             if let Some(error) = self.resolution_error.borrow().as_ref() {
                 return Err(error.clone());
             }

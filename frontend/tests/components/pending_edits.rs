@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use openwebide_core::FileDiff;
+use openwebide_core::{EditDecision, FileDiff, PersistedEdit};
 use openwebide_frontend::testing::fake_backend::Call;
 use wasm_bindgen_test::*;
 
@@ -22,29 +22,29 @@ fn mount_diff(diff: FileDiff) -> Mounted {
         }
         state.workspace.open_file.set(Some(diff.path.clone()));
         state.workspace.content.set(diff.new.clone());
-        state.workspace.pending_edits.update(|pending| {
-            pending.insert(diff.path.clone(), diff);
-        });
+        let edit = PersistedEdit {
+            project_id: 1,
+            path: diff.path.clone(),
+            revision: 1,
+            decision: EditDecision::Pending,
+            diff,
+        };
+        state
+            .fake
+            .persisted_edits
+            .borrow_mut()
+            .insert((1, edit.path.clone()), edit.clone());
+        state.workspace.set_persisted_edits(1, vec![edit]);
         editor_view(state)
     })
 }
 
 async fn reject(mounted: &Mounted) {
+    let before = file_calls(mounted);
     settle().await;
     mounted.click_text("✕ Reject");
     settle().await;
-    assert!(
-        mounted
-            .state
-            .fake
-            .calls
-            .borrow()
-            .iter()
-            .all(|call| !matches!(
-                call,
-                Call::WriteFile { .. } | Call::CopyFile { .. } | Call::DeleteFile { .. }
-            ))
-    );
+    assert_eq!(file_calls(mounted), before);
     mounted.click(".modal-footer .danger");
     settle().await;
 }
@@ -75,16 +75,16 @@ async fn reject_restores_original_across_multiple_edits() {
         old_unavailable: false,
         backup_path: None,
     });
-    mounted.state.workspace.merge_pending(
-        1,
-        FileDiff {
-            path: "file.rs".into(),
-            old: Some("v1".into()),
-            new: "v2".into(),
-            old_unavailable: false,
-            backup_path: None,
-        },
-    );
+    let mut edit = mounted.state.fake.persisted_edits.borrow()[&(1, "file.rs".into())].clone();
+    edit.revision = 2;
+    edit.diff.new = "v2".into();
+    mounted
+        .state
+        .fake
+        .persisted_edits
+        .borrow_mut()
+        .insert((1, edit.path.clone()), edit.clone());
+    mounted.state.workspace.set_persisted_edits(1, vec![edit]);
     reject(&mounted).await;
     assert_eq!(
         file_calls(&mounted),
@@ -276,4 +276,514 @@ async fn persisted_edit_backend_contract_survives_replay_and_checks_revisions() 
         .await
         .unwrap();
     assert!(fake.list_pending_edits(1).await.unwrap().is_empty());
+}
+
+fn original_diff() -> FileDiff {
+    FileDiff {
+        path: "file.rs".into(),
+        old: Some("original".into()),
+        new: "changed".into(),
+        old_unavailable: false,
+        backup_path: None,
+    }
+}
+
+#[wasm_bindgen_test]
+async fn failed_restore_keeps_edit_actionable() {
+    let mounted = mount_diff(original_diff());
+    *mounted.state.fake.file_error.borrow_mut() = Some("permission denied".into());
+    reject(&mounted).await;
+    assert_eq!(
+        mounted.state.workspace.pending_edits.get_untracked().len(),
+        1
+    );
+    assert_eq!(
+        mounted.state.ui.toast.get_untracked().as_deref(),
+        Some("permission denied")
+    );
+    *mounted.state.fake.file_error.borrow_mut() = None;
+    reject(&mounted).await;
+    assert!(
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .get_untracked()
+            .is_empty()
+    );
+}
+
+#[wasm_bindgen_test]
+async fn failed_decision_retries_same_revision_and_preserves_backup() {
+    let mounted = mount_diff(FileDiff {
+        old: None,
+        old_unavailable: true,
+        backup_path: Some("backup.rs".into()),
+        ..original_diff()
+    });
+    *mounted.state.fake.resolution_error.borrow_mut() = Some("offline".into());
+    reject(&mounted).await;
+    assert_eq!(
+        mounted.state.workspace.pending_edits.get_untracked().len(),
+        1
+    );
+    assert!(
+        mounted
+            .state
+            .fake
+            .files
+            .borrow()
+            .contains_key(&(1, "backup.rs".into()))
+    );
+    {
+        let requests = mounted.state.fake.resolution_requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0], requests[1]);
+    }
+    assert_eq!(
+        mounted.state.ui.toast.get_untracked().as_deref(),
+        Some("offline")
+    );
+    *mounted.state.fake.resolution_error.borrow_mut() = None;
+    reject(&mounted).await;
+    assert!(
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .get_untracked()
+            .is_empty()
+    );
+    assert!(
+        !mounted
+            .state
+            .fake
+            .files
+            .borrow()
+            .contains_key(&(1, "backup.rs".into()))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn duplicate_accept_is_disabled_and_stale_resolution_keeps_newer_edit() {
+    let mounted = mount_diff(original_diff());
+    let (release, pending) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .resolution_results
+        .borrow_mut()
+        .push_back(pending);
+    settle().await;
+    mounted.click_text("✓ Accept");
+    settle().await;
+    assert!(mounted.element(".btn.approve").has_attribute("disabled"));
+    mounted.click_text("✓ Accept");
+    assert_eq!(mounted.state.fake.resolution_requests.borrow().len(), 1);
+    let mut edit = mounted.state.fake.persisted_edits.borrow()[&(1, "file.rs".into())].clone();
+    edit.revision += 1;
+    edit.diff.new = "newer".into();
+    mounted
+        .state
+        .fake
+        .persisted_edits
+        .borrow_mut()
+        .insert((1, edit.path.clone()), edit);
+    release.send(Ok(())).unwrap();
+    settle().await;
+    assert_eq!(
+        mounted.state.workspace.persisted_edits.get_untracked()["file.rs"].revision,
+        2
+    );
+    assert!(!mounted.element(".btn.approve").has_attribute("disabled"));
+}
+
+#[wasm_bindgen_test]
+async fn missing_backup_and_unavailable_original_remain_pending() {
+    for backup_path in [Some("missing.rs".into()), None] {
+        let mounted = mount_diff(FileDiff {
+            old: None,
+            old_unavailable: true,
+            backup_path,
+            ..original_diff()
+        });
+        mounted
+            .state
+            .fake
+            .files
+            .borrow_mut()
+            .remove(&(1, "missing.rs".into()));
+        settle().await;
+        mounted.click_text("✕ Reject");
+        settle().await;
+        mounted.click(".modal-footer .danger");
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.pending_edits.get_untracked().len(),
+            1
+        );
+        assert!(mounted.state.fake.resolution_requests.borrow().is_empty());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn deleted_file_retry_after_failed_save_is_idempotent() {
+    let mounted = mount_diff(FileDiff {
+        old: None,
+        ..original_diff()
+    });
+    *mounted.state.fake.resolution_error.borrow_mut() = Some("offline".into());
+    reject(&mounted).await;
+    assert!(
+        !mounted
+            .state
+            .fake
+            .files
+            .borrow()
+            .contains_key(&(1, "file.rs".into()))
+    );
+    assert_eq!(
+        mounted.state.workspace.pending_edits.get_untracked().len(),
+        1
+    );
+    *mounted.state.fake.resolution_error.borrow_mut() = None;
+    // The first file action is expected; retry must not delete it a second time.
+    mounted.state.fake.calls.borrow_mut().clear();
+    reject(&mounted).await;
+    assert!(file_calls(&mounted).is_empty());
+    assert!(
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .get_untracked()
+            .is_empty()
+    );
+}
+
+#[wasm_bindgen_test]
+async fn local_folder_unavailable_keeps_rejection_pending_but_allows_acceptance() {
+    let mounted = mount_diff(original_diff());
+    mounted
+        .state
+        .projects
+        .projects
+        .update(|projects| projects[0].mode = openwebide_core::WorkspaceMode::Local);
+    reject(&mounted).await;
+    assert_eq!(
+        mounted.state.workspace.pending_edits.get_untracked().len(),
+        1
+    );
+    assert!(
+        mounted
+            .state
+            .ui
+            .toast
+            .get_untracked()
+            .unwrap()
+            .contains("Folder not available")
+    );
+    assert!(file_calls(&mounted).is_empty());
+    mounted.click_text("✓ Accept");
+    settle().await;
+    assert!(
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .get_untracked()
+            .is_empty()
+    );
+}
+
+#[wasm_bindgen_test]
+async fn resolution_refresh_preserves_new_editor_input() {
+    use wasm_bindgen::JsCast;
+    for reject_edit in [false, true] {
+        let mounted = mount_diff(original_diff());
+        let (save, saving) = futures::channel::oneshot::channel();
+        mounted
+            .state
+            .fake
+            .resolution_results
+            .borrow_mut()
+            .push_back(saving);
+        settle().await;
+        if reject_edit {
+            mounted.click_text("✕ Reject");
+            settle().await;
+            mounted.click(".modal-footer .danger");
+        } else {
+            mounted.click_text("✓ Accept");
+        }
+        settle().await;
+        let (refresh, refreshing) = futures::channel::oneshot::channel();
+        mounted
+            .state
+            .fake
+            .pending_results
+            .borrow_mut()
+            .push_back(refreshing);
+        save.send(Ok(())).unwrap();
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            if reject_edit { "original" } else { "changed" }
+        );
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        textarea.set_value("new unsaved input");
+        textarea
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        refresh.send(Ok(vec![])).unwrap();
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "new unsaved input"
+        );
+        assert!(mounted.state.workspace.dirty.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn accept_finishes_editor_transition_after_early_authoritative_refresh() {
+    use openwebide_frontend::{state::auth::AuthState, state_actions::workspace::refresh_pending};
+
+    for background in [false, true] {
+        for intervening_edit in [false, true] {
+            let auth_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+            let slot = auth_slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                slot.set(Some(expect_context::<AuthState>()));
+                let edit = PersistedEdit {
+                    project_id: 1,
+                    path: "file.rs".into(),
+                    revision: 1,
+                    decision: EditDecision::Pending,
+                    diff: original_diff(),
+                };
+                state
+                    .fake
+                    .persisted_edits
+                    .borrow_mut()
+                    .insert((1, edit.path.clone()), edit.clone());
+                state.workspace.set_persisted_edits(1, vec![edit]);
+                state.workspace.open_file.set(Some("file.rs".into()));
+                state.workspace.content.set("dirty draft".into());
+                state.workspace.dirty.set(true);
+                editor_view(state)
+            });
+            let (release, pending) = futures::channel::oneshot::channel();
+            mounted
+                .state
+                .fake
+                .resolution_results
+                .borrow_mut()
+                .push_back(pending);
+            settle().await;
+            mounted.click_text("✓ Accept");
+            settle().await;
+            assert_eq!(mounted.state.fake.resolution_requests.borrow().len(), 1);
+            // Simulate a committed decision whose response has not arrived yet.
+            mounted
+                .state
+                .fake
+                .persisted_edits
+                .borrow_mut()
+                .get_mut(&(1, "file.rs".into()))
+                .unwrap()
+                .decision = EditDecision::Accepted;
+            if intervening_edit {
+                mounted.state.workspace.content.set("newer draft".into());
+            }
+            if background {
+                mounted.state.workspace.switch_project(Some(1), 2);
+                mounted.state.workspace.content.set("other project".into());
+            }
+            refresh_pending(
+                mounted.state.api,
+                mounted.state.projects,
+                mounted.state.workspace,
+                mounted.state.ui,
+                auth_slot.get().unwrap(),
+                1,
+            )
+            .await;
+            if !background {
+                assert!(
+                    mounted
+                        .state
+                        .workspace
+                        .persisted_edits
+                        .get_untracked()
+                        .is_empty()
+                );
+            }
+            release.send(Ok(())).unwrap();
+            settle().await;
+            if background {
+                assert_eq!(
+                    mounted.state.workspace.content.get_untracked(),
+                    "other project"
+                );
+                mounted.state.workspace.switch_project(Some(2), 1);
+            }
+            assert_eq!(
+                mounted.state.workspace.content.get_untracked(),
+                if intervening_edit {
+                    "newer draft"
+                } else {
+                    "changed"
+                }
+            );
+            assert_eq!(
+                mounted.state.workspace.dirty.get_untracked(),
+                intervening_edit
+            );
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .pending_edits
+                    .get_untracked()
+                    .is_empty()
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn background_accept_updates_snapshot_and_preserves_intervening_changes() {
+    for intervening_edit in [false, true] {
+        let mounted = mount_diff(original_diff());
+        mounted.state.workspace.content.set("dirty draft".into());
+        mounted.state.workspace.dirty.set(true);
+        let (release, pending) = futures::channel::oneshot::channel();
+        mounted
+            .state
+            .fake
+            .resolution_results
+            .borrow_mut()
+            .push_back(pending);
+        settle().await;
+        mounted.click_text("✓ Accept");
+        settle().await;
+        if intervening_edit {
+            mounted.state.workspace.content.set("newer draft".into());
+        }
+        mounted.state.workspace.switch_project(Some(1), 2);
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        mounted.state.workspace.content.set("other project".into());
+        release.send(Ok(())).unwrap();
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "other project"
+        );
+        mounted.state.workspace.switch_project(Some(2), 1);
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            if intervening_edit {
+                "newer draft"
+            } else {
+                "changed"
+            }
+        );
+        assert_eq!(
+            mounted.state.workspace.dirty.get_untracked(),
+            intervening_edit
+        );
+        assert!(
+            mounted
+                .state
+                .workspace
+                .pending_edits
+                .get_untracked()
+                .is_empty()
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn interrupted_delete_listing_does_not_mutate_files() {
+    use openwebide_frontend::state::auth::AuthState;
+    for delete_project in [false, true] {
+        let auth_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let slot = auth_slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            slot.set(Some(expect_context::<AuthState>()));
+            let diff = FileDiff {
+                old: None,
+                ..original_diff()
+            };
+            let edit = PersistedEdit {
+                project_id: 1,
+                path: diff.path.clone(),
+                revision: 1,
+                decision: EditDecision::Pending,
+                diff,
+            };
+            state
+                .fake
+                .files
+                .borrow_mut()
+                .insert((1, edit.path.clone()), edit.diff.new.clone());
+            state
+                .fake
+                .persisted_edits
+                .borrow_mut()
+                .insert((1, edit.path.clone()), edit.clone());
+            state.workspace.open_file.set(Some(edit.path.clone()));
+            state.workspace.content.set(edit.diff.new.clone());
+            state.workspace.set_persisted_edits(1, vec![edit]);
+            editor_view(state)
+        });
+        settle().await;
+        let (release, pending) = futures::channel::oneshot::channel();
+        mounted
+            .state
+            .fake
+            .file_list_results
+            .borrow_mut()
+            .push_back(pending);
+        mounted.click_text("✕ Reject");
+        settle().await;
+        mounted.click(".modal-footer .danger");
+        settle().await;
+        if delete_project {
+            mounted.state.projects.projects.set(vec![]);
+            mounted.state.workspace.clear_active();
+        } else {
+            auth_slot.get().unwrap().logout();
+            mounted.state.workspace.reset();
+            mounted.state.projects.projects.set(vec![]);
+        }
+        release
+            .send(Ok(vec![openwebide_core::FileEntry {
+                name: "file.rs".into(),
+                path: "file.rs".into(),
+                is_dir: false,
+                size: 0,
+            }]))
+            .unwrap();
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .fake
+                .files
+                .borrow()
+                .contains_key(&(1, "file.rs".into()))
+        );
+        assert!(file_calls(&mounted).is_empty());
+        assert!(mounted.state.fake.resolution_requests.borrow().is_empty());
+    }
 }

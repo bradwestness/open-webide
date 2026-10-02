@@ -40,7 +40,10 @@ pub struct TestState {
 
 impl TestState {
     fn new() -> Self {
-        let fake = Rc::new(FakeBackend::default());
+        Self::with_backend(Rc::new(FakeBackend::default()))
+    }
+
+    fn with_backend(fake: Rc<FakeBackend>) -> Self {
         let api: Api = StoredValue::new_local(fake.clone());
         let ui = UiState::new();
         let projects = ProjectsState::new();
@@ -131,13 +134,27 @@ impl Drop for Mounted {
 }
 
 pub fn mount_test<N: IntoView + 'static>(view: impl FnOnce(TestState) -> N + 'static) -> Mounted {
+    mount_backend(None, view)
+}
+
+pub fn mount_test_with_backend<N: IntoView + 'static>(
+    fake: Rc<FakeBackend>,
+    view: impl FnOnce(TestState) -> N + 'static,
+) -> Mounted {
+    mount_backend(Some(fake), view)
+}
+
+fn mount_backend<N: IntoView + 'static>(
+    fake: Option<Rc<FakeBackend>>,
+    view: impl FnOnce(TestState) -> N + 'static,
+) -> Mounted {
     let document = web_sys::window().unwrap().document().unwrap();
     let root: web_sys::HtmlElement = document.create_element("div").unwrap().unchecked_into();
     document.body().unwrap().append_child(&root).unwrap();
     let state = Rc::new(RefCell::new(None));
     let slot = state.clone();
     let handle = leptos::mount::mount_to(root.clone(), move || {
-        let state = TestState::new();
+        let state = fake.map_or_else(TestState::new, TestState::with_backend);
         *slot.borrow_mut() = Some(state.clone());
         view(state)
     });

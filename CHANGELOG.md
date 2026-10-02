@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Reload pending agent edits per project from the database and persist Accept/Reject decisions, retaining failed reviews and backups for retry.
+
 - Store pending agent edits and review decisions per project in the database, with replay protection and revision checks; review UI integration follows separately.
 
 - Keep terminal shells and output when hiding the dock, and start new shells in the active project folder with a visible workspace-root fallback notice, including when a remote folder no longer exists.

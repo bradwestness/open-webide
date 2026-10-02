@@ -1079,3 +1079,81 @@ async fn stop_running_tool_renders_cancelled_and_one_marker() {
     );
     close(&mounted);
 }
+
+#[wasm_bindgen_test]
+async fn completed_snapshots_refresh_db_state_without_resurrecting_resolved_edits() {
+    use openwebide_core::{EditDecision, FileDiff, PersistedEdit};
+    let (mounted, fake) = fixture();
+    ready(&fake).await;
+    no_runs(&fake);
+    let run_id = send(&mounted, &fake).await;
+    let diff = FileDiff {
+        path: "file.rs".into(),
+        old: Some("old".into()),
+        new: "new".into(),
+        old_unavailable: false,
+        backup_path: None,
+    };
+    let result = RunEvent::ToolResult {
+        id: "a7t0c0".into(),
+        name: "write_file".into(),
+        ok: true,
+        summary: "written".into(),
+        diff: Some(diff.clone()),
+    };
+    let mut snapshot = RunSnapshot::default();
+    snapshot.apply(&RunEvent::Message {
+        message: message(7, Role::User, "hello"),
+    });
+    snapshot.apply(&RunEvent::ToolCall {
+        id: "a7t0c0".into(),
+        name: "write_file".into(),
+        summary: "file".into(),
+    });
+    snapshot.apply(&result);
+    for decision in [
+        EditDecision::Accepted,
+        EditDecision::Rejected,
+        EditDecision::Pending,
+    ] {
+        mounted.state.fake.persisted_edits.borrow_mut().insert(
+            (1, "file.rs".into()),
+            PersistedEdit {
+                project_id: 1,
+                path: "file.rs".into(),
+                revision: 2,
+                decision,
+                diff: diff.clone(),
+            },
+        );
+        for _ in 0..2 {
+            fake.reply(BridgeServerMessage::RunSnapshot {
+                run_id: run_id.clone(),
+                session_id: 1,
+                seq: 4,
+                snapshot: snapshot.clone(),
+            });
+            settle().await;
+            assert_eq!(
+                mounted.state.workspace.pending_edits.get_untracked().len(),
+                usize::from(decision == EditDecision::Pending)
+            );
+        }
+    }
+    mounted.state.workspace.switch_project(Some(1), 2);
+    event(&fake, &run_id, 5, result);
+    settle().await;
+    assert!(
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .get_untracked()
+            .is_empty()
+    );
+    assert_eq!(
+        mounted.state.workspace.snapshots.get_untracked()[&1].persisted_edits["file.rs"].revision,
+        2
+    );
+    close(&mounted);
+}

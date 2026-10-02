@@ -698,3 +698,165 @@ async fn logout_discards_deferred_startup_lists() {
             .is_empty()
     );
 }
+
+fn pending_editor(state: TestState) -> impl IntoView {
+    use openwebide_frontend::state_actions::projects::{
+        ProjectsActionContext, build_projects_actions,
+    };
+    state.seed_project();
+    state.projects.active_project.set(None);
+    let actions = build_projects_actions(ProjectsActionContext {
+        api: state.api,
+        projects: state.projects,
+        workspace: state.workspace,
+        git: state.git,
+        chat: state.chat,
+        ui: state.ui,
+        ensure_root: Callback::new(|_| ()),
+        refresh_git: Callback::new(|()| ()),
+    });
+    actions.select_project.run(1);
+    state.workspace.open_file.set(Some("file.rs".into()));
+    super::support::editor_view(state)
+}
+
+#[wasm_bindgen_test]
+async fn pending_reload_and_decisions_survive_remount_with_shared_backend() {
+    use openwebide_core::{EditDecision, FileDiff, PersistedEdit};
+    let mounted = mount_test(|state| {
+        let edit = PersistedEdit {
+            project_id: 1,
+            path: "file.rs".into(),
+            revision: 1,
+            decision: EditDecision::Pending,
+            diff: FileDiff {
+                path: "file.rs".into(),
+                old: Some("old".into()),
+                new: "new".into(),
+                old_unavailable: false,
+                backup_path: None,
+            },
+        };
+        state
+            .fake
+            .persisted_edits
+            .borrow_mut()
+            .insert((1, edit.path.clone()), edit);
+        state
+            .fake
+            .files
+            .borrow_mut()
+            .insert((1, "file.rs".into()), "new".into());
+        pending_editor(state)
+    });
+    settle().await;
+    assert_eq!(
+        mounted.state.workspace.persisted_edits.get_untracked()["file.rs"].revision,
+        1
+    );
+    let fake = mounted.state.fake.clone();
+    drop(mounted);
+    let mounted = super::support::mount_test_with_backend(fake.clone(), pending_editor);
+    settle().await;
+    assert!(mounted.root.text_content().unwrap().contains("✓ Accept"));
+    mounted.click_text("✓ Accept");
+    settle().await;
+    drop(mounted);
+    let mounted = super::support::mount_test_with_backend(fake.clone(), pending_editor);
+    settle().await;
+    assert!(
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .get_untracked()
+            .is_empty()
+    );
+    let mut edit = fake.persisted_edits.borrow()[&(1, "file.rs".into())].clone();
+    edit.revision += 1;
+    edit.decision = EditDecision::Pending;
+    edit.diff.old = Some("new".into());
+    edit.diff.new = "later".into();
+    fake.persisted_edits
+        .borrow_mut()
+        .insert((1, edit.path.clone()), edit);
+    drop(mounted);
+    let mounted = super::support::mount_test_with_backend(fake.clone(), pending_editor);
+    settle().await;
+    assert_eq!(
+        mounted.state.workspace.persisted_edits.get_untracked()["file.rs"].revision,
+        2
+    );
+    mounted.click_text("✕ Reject");
+    settle().await;
+    mounted.click(".modal-footer .danger");
+    settle().await;
+    assert!(
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .get_untracked()
+            .is_empty()
+    );
+    drop(mounted);
+    let mounted = super::support::mount_test_with_backend(fake, pending_editor);
+    settle().await;
+    assert!(
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .get_untracked()
+            .is_empty()
+    );
+}
+
+#[wasm_bindgen_test]
+async fn pending_refresh_discards_stale_results_after_logout_and_project_deletion() {
+    use openwebide_frontend::state_actions::workspace::pending_refresh;
+    for delete in [false, true] {
+        let (release, pending) = futures::channel::oneshot::channel();
+        let auth_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let slot = auth_slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            slot.set(Some(expect_context::<AuthState>()));
+            state.fake.pending_results.borrow_mut().push_back(pending);
+            pending_refresh(state.api, state.projects, state.workspace, state.ui).run(1);
+            view! { <div /> }
+        });
+        settle().await;
+        if delete {
+            mounted.state.projects.projects.set(vec![]);
+            mounted.state.workspace.clear_active();
+        } else {
+            auth_slot.get().unwrap().logout();
+        }
+        release
+            .send(Ok(vec![openwebide_core::PersistedEdit {
+                project_id: 1,
+                path: "file.rs".into(),
+                revision: 1,
+                decision: openwebide_core::EditDecision::Pending,
+                diff: openwebide_core::FileDiff {
+                    path: "file.rs".into(),
+                    old: None,
+                    new: "new".into(),
+                    old_unavailable: false,
+                    backup_path: None,
+                },
+            }]))
+            .unwrap();
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .workspace
+                .pending_edits
+                .get_untracked()
+                .is_empty()
+        );
+        assert!(mounted.state.workspace.snapshots.get_untracked().is_empty());
+    }
+}

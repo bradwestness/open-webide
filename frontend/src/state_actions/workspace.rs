@@ -1,13 +1,86 @@
 use crate::state::{
+    auth::AuthState,
     projects::ProjectsState,
     ui::{ConfirmRequest, PromptRequest, UiState},
     workspace::WorkspaceState,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use openwebide_core::{FileKind, vfs::SearchOptions};
+use openwebide_core::{
+    EditDecision, FileKind, PersistedEdit, ResolveEditRequest, vfs::SearchOptions,
+};
 
 use crate::{backend::Api, local_fs, workspace::Workspace};
+
+pub async fn refresh_pending(
+    api: Api,
+    projects: ProjectsState,
+    workspace: WorkspaceState,
+    ui: UiState,
+    auth: AuthState,
+    project_id: i64,
+) {
+    let auth_generation = auth.generation.get_untracked();
+    let token = workspace.begin_pending_refresh(project_id);
+    let result = api
+        .with_value(Clone::clone)
+        .list_pending_edits(project_id)
+        .await;
+    if auth.generation.try_get_untracked() != Some(auth_generation)
+        || !workspace.pending_refresh_current(project_id, token)
+        || projects
+            .projects
+            .try_with_untracked(|projects| projects.iter().any(|p| p.id == project_id))
+            != Some(true)
+    {
+        return;
+    }
+    match result {
+        Ok(edits) => workspace.set_persisted_edits(project_id, edits),
+        Err(error) => ui.notify(error),
+    }
+}
+
+pub fn pending_refresh(
+    api: Api,
+    projects: ProjectsState,
+    workspace: WorkspaceState,
+    ui: UiState,
+) -> Callback<i64> {
+    let auth = expect_context::<AuthState>();
+    Callback::new(move |project_id| {
+        let generation = auth.generation.get_untracked();
+        spawn_local(async move {
+            if auth.generation.try_get_untracked() == Some(generation) {
+                refresh_pending(api, projects, workspace, ui, auth, project_id).await;
+            }
+        });
+    })
+}
+
+async fn save_resolution(
+    api: Api,
+    project_id: i64,
+    edit: &PersistedEdit,
+    decision: EditDecision,
+    current: impl Fn() -> bool,
+) -> Result<PersistedEdit, String> {
+    let request = ResolveEditRequest {
+        path: edit.path.clone(),
+        revision: edit.revision,
+        decision,
+    };
+    let backend = api.with_value(Clone::clone);
+    match backend.resolve_pending_edit(project_id, &request).await {
+        Ok(edit) => Ok(edit),
+        Err(error) => {
+            if !current() {
+                return Err(error);
+            }
+            backend.resolve_pending_edit(project_id, &request).await
+        }
+    }
+}
 
 /// Browser and backend actions for opening, editing, and searching files.
 #[derive(Clone, Copy)]
@@ -39,6 +112,7 @@ impl WorkspaceActions {
         refresh_git: Callback<()>,
     ) -> Self {
         let active_project = projects.active_project;
+        let auth = expect_context::<AuthState>();
         let workspace_for = Callback::new(move |project_id: i64| -> Option<Workspace> {
             let project = projects.project(project_id)?;
             match project.mode {
@@ -279,127 +353,224 @@ impl WorkspaceActions {
             });
         });
 
-        let on_accept = Callback::new(move |()| {
-            let Some(project_id) = active_project.get() else {
+        let resolve = Callback::new(move |(edit, decision): (PersistedEdit, EditDecision)| {
+            let project_id = edit.project_id;
+            let path = edit.path.clone();
+            let key = (project_id, path.clone());
+            if workspace
+                .resolving_edits
+                .with_untracked(|edits| edits.contains(&key))
+            {
                 return;
-            };
-            let Some(path) = workspace.open_file.get() else {
-                return;
-            };
-            let Some(diff) = workspace
-                .pending_edits
-                .with(|pending| pending.get(&path).cloned())
-            else {
-                return;
-            };
-            workspace.pending_edits.update(|pending| {
-                pending.remove(&path);
-            });
-
-            if let Some(backup_path) = diff.backup_path {
-                spawn_local(async move {
-                    if let Some(ws) = workspace_for.run(project_id) {
-                        let _ = ws.delete(&backup_path).await;
-                    }
-                });
             }
+            workspace.resolving_edits.update(|edits| {
+                edits.insert(key.clone());
+            });
+            let editor_before = (
+                workspace.open_file.get_untracked(),
+                workspace.content.get_untracked(),
+                workspace.dirty.get_untracked(),
+            );
+            let auth_generation = auth.generation.get_untracked();
+            let epoch = workspace.pending_epoch.get_untracked();
+            ui.clear_toast();
+            spawn_local(async move {
+                let current = || {
+                    auth.generation.try_get_untracked() == Some(auth_generation)
+                        && workspace.pending_epoch.try_get_untracked() == Some(epoch)
+                        && projects.projects.try_with_untracked(|projects| {
+                            projects.iter().any(|p| p.id == project_id)
+                        }) == Some(true)
+                };
+                if !current() {
+                    return;
+                }
+                let action = crate::pending::reject_action(&edit.diff);
+                let result = async {
+                    if decision == EditDecision::Rejected {
+                        let ws = workspace_for.run(project_id).ok_or_else(|| {
+                            "Folder not available. Re-open the project to pick it again."
+                                .to_string()
+                        })?;
+                        // Check the revision before mutating files as well as when saving the decision.
+                        let edits = api
+                            .with_value(Clone::clone)
+                            .list_pending_edits(project_id)
+                            .await?;
+                        if !current() {
+                            return Err("Review was interrupted.".into());
+                        }
+                        if !edits
+                            .iter()
+                            .any(|record| record.path == path && record.revision == edit.revision)
+                        {
+                            // A previous save may have committed even if its response was lost.
+                            save_resolution(api, project_id, &edit, decision, current).await?;
+                            return Ok(());
+                        }
+                        match &action {
+                            crate::pending::RejectAction::Restore(previous) => {
+                                ws.write(&path, previous).await?;
+                            }
+                            crate::pending::RejectAction::RestoreFromBackup(backup) => {
+                                ws.copy(backup, &path).await?;
+                            }
+                            crate::pending::RejectAction::Delete => {
+                                // A retry after a successful delete may find the file already absent.
+                                let parent = parent_dir(&path);
+                                let name = path.rsplit('/').next().unwrap_or(&path);
+                                let entries = ws.list(&parent).await?;
+                                if !current() {
+                                    return Err("Review was interrupted.".into());
+                                }
+                                if entries.iter().any(|entry| entry.name == name) {
+                                    ws.delete(&path).await?;
+                                }
+                            }
+                            crate::pending::RejectAction::Unavailable => {
+                                return Err("Original contents are unavailable.".into());
+                            }
+                        }
+                    }
+                    if !current() {
+                        return Err("Review was interrupted.".into());
+                    }
+                    save_resolution(api, project_id, &edit, decision, current).await?;
+                    Ok::<_, String>(())
+                }
+                .await;
+                if !current() {
+                    return;
+                }
+                if result.is_ok() {
+                    // Finish the editor transition before clearing review exposes an editable buffer.
+                    let transition = |snapshot: &mut crate::state::workspace::WorkspaceSnapshot| {
+                        if snapshot.open_file.as_deref() != Some(path.as_str())
+                            || snapshot.open_file != editor_before.0
+                            || snapshot.content != editor_before.1
+                            || snapshot.dirty != editor_before.2
+                            || snapshot
+                                .persisted_edits
+                                .get(&path)
+                                .is_some_and(|record| record.revision != edit.revision)
+                        {
+                            return false;
+                        }
+                        if decision == EditDecision::Accepted {
+                            snapshot.content.clone_from(&edit.diff.new);
+                        } else {
+                            match &action {
+                                crate::pending::RejectAction::Restore(previous) => {
+                                    snapshot.content.clone_from(previous);
+                                }
+                                crate::pending::RejectAction::RestoreFromBackup(_) => {}
+                                crate::pending::RejectAction::Delete => snapshot.open_file = None,
+                                crate::pending::RejectAction::Unavailable => unreachable!(),
+                            }
+                        }
+                        snapshot.dirty = false;
+                        true
+                    };
+                    if active_project.get_untracked() == Some(project_id) {
+                        let mut snapshot = workspace.active_snapshot();
+                        if transition(&mut snapshot) {
+                            workspace.content.set(snapshot.content);
+                            if decision == EditDecision::Rejected
+                                && matches!(
+                                    action,
+                                    crate::pending::RejectAction::RestoreFromBackup(_)
+                                )
+                            {
+                                workspace.open_file.set(None);
+                            }
+                            workspace.open_file.set(snapshot.open_file);
+                            workspace.dirty.set(snapshot.dirty);
+                            load_dir.run((project_id, parent_dir(&path)));
+                            refresh_git.run(());
+                        }
+                    } else {
+                        workspace.snapshots.update(|snapshots| {
+                            if let Some(snapshot) = snapshots.get_mut(&project_id) {
+                                transition(snapshot);
+                            }
+                        });
+                    }
+                    workspace.clear_resolved_edit(&edit);
+                }
+                // Invalidate older list responses and verify authoritative state after either outcome.
+                refresh_pending(api, projects, workspace, ui, auth, project_id).await;
+                if !current() {
+                    return;
+                }
+                workspace.resolving_edits.update(|edits| {
+                    edits.remove(&key);
+                });
+                match result {
+                    Ok(()) => {
+                        let still_pending = if active_project.get_untracked() == Some(project_id) {
+                            workspace
+                                .pending_edits
+                                .with_untracked(|edits| edits.contains_key(&path))
+                        } else {
+                            workspace.snapshots.with_untracked(|snapshots| {
+                                snapshots.get(&project_id).is_some_and(|snapshot| {
+                                    snapshot.pending_edits.contains_key(&path)
+                                })
+                            })
+                        };
+                        if still_pending {
+                            return;
+                        }
+                        if let Some(backup) = &edit.diff.backup_path
+                            && let Some(ws) = workspace_for.run(project_id)
+                        {
+                            let _ = ws.delete(backup).await;
+                        }
+                    }
+                    Err(error) => ui.notify(error),
+                }
+            });
+        });
 
-            workspace.content.set(diff.new);
-            workspace.dirty.set(false);
-            load_dir.run((project_id, parent_dir(&path)));
-            refresh_git.run(());
+        let on_accept = Callback::new(move |()| {
+            let Some(path) = workspace.open_file.get_untracked() else {
+                return;
+            };
+            if let Some(edit) = workspace
+                .persisted_edits
+                .with_untracked(|edits| edits.get(&path).cloned())
+            {
+                resolve.run((edit, EditDecision::Accepted));
+            }
         });
 
         let on_reject = Callback::new(move |()| {
-            let Some(project_id) = active_project.get() else {
+            let Some(path) = workspace.open_file.get_untracked() else {
                 return;
             };
-            let Some(path) = workspace.open_file.get() else {
-                return;
-            };
-            let Some(diff) = workspace
-                .pending_edits
-                .with(|pending| pending.get(&path).cloned())
+            let Some(edit) = workspace
+                .persisted_edits
+                .with_untracked(|edits| edits.get(&path).cloned())
             else {
                 return;
             };
-            let action = crate::pending::reject_action(&diff);
-            let action_clone = action.clone();
-            let load_dir = load_dir;
+            if workspace.is_resolving() {
+                return;
+            }
+            let action = crate::pending::reject_action(&edit.diff);
             ui.confirm.set(Some(ConfirmRequest {
                 title: "Reject edit".to_string(),
                 message: match &action {
-                    crate::pending::RejectAction::Restore(_) => {
-                        "Reject this edit? The file will be restored to its previous contents."
-                            .to_string()
-                    }
-                    crate::pending::RejectAction::RestoreFromBackup(_) => {
-                        "Reject this edit? The file will be restored from backup.".to_string()
-                    }
-                    crate::pending::RejectAction::Delete => {
-                        "Reject this edit? The newly created file will be deleted.".to_string()
-                    }
+                    crate::pending::RejectAction::Restore(_) => "Reject this edit? The file will be restored to its previous contents.".to_string(),
+                    crate::pending::RejectAction::RestoreFromBackup(_) => "Reject this edit? The file will be restored from backup.".to_string(),
+                    crate::pending::RejectAction::Delete => "Reject this edit? The newly created file will be deleted.".to_string(),
                     crate::pending::RejectAction::Unavailable => "Cannot reject this edit because the file's previous contents were too large to back up and no copy exists.".to_string(),
                 },
-                confirm_label: match &action {
-                    crate::pending::RejectAction::Unavailable => "Ok".to_string(),
-                    _ => "Reject".to_string(),
-                },
+                confirm_label: if matches!(action, crate::pending::RejectAction::Unavailable) { "Ok" } else { "Reject" }.to_string(),
                 action: Callback::new(move |()| {
-                    let action = action_clone.clone();
-                    if matches!(action, crate::pending::RejectAction::Unavailable) {
-                        return;
+                    if !matches!(action, crate::pending::RejectAction::Unavailable) {
+                        resolve.run((edit.clone(), EditDecision::Rejected));
                     }
-                    let path = path.clone();
-                    workspace.pending_edits.update(|pending| {
-                        pending.remove(&path);
-                    });
-                    ui.toast.set(None);
-                    spawn_local(async move {
-                        let Some(ws) = workspace_for.run(project_id) else {
-                            return;
-                        };
-                        let result = match &action {
-                            crate::pending::RejectAction::Restore(previous) => {
-                                ws.write(&path, previous)
-                                    .await
-                                    .map(|()| previous.clone())
-                            }
-                            crate::pending::RejectAction::RestoreFromBackup(backup) => {
-                                let result = ws.copy(backup, &path).await;
-                                if result.is_ok() {
-                                    let _ = ws.delete(backup).await;
-                                }
-                                result.map(|()| String::new())
-                            }
-                            crate::pending::RejectAction::Delete => {
-                                ws.delete(&path).await.map(|()| String::new())
-                            }
-                            crate::pending::RejectAction::Unavailable => unreachable!(),
-                        };
-                        match result {
-                            Ok(content) => {
-                                if active_project.get() == Some(project_id) {
-                                    if matches!(action, crate::pending::RejectAction::Delete) {
-                                        workspace.open_file.set(None);
-                                    } else if matches!(action, crate::pending::RejectAction::RestoreFromBackup(_)) {
-                                        workspace.open_file.set(None);
-                                        workspace.open_file.set(Some(path.clone()));
-                                    } else {
-                                        workspace.content.set(content);
-                                    }
-                                    workspace.dirty.set(false);
-                                    load_dir.run((project_id, parent_dir(&path)));
-                                    refresh_git.run(());
-                                }
-                            }
-                            Err(error) => {
-                                if active_project.get() == Some(project_id) {
-                                    ui.toast.set(Some(error));
-                                }
-                            }
-                        }
-                    });
                 }),
             }));
         });

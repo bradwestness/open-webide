@@ -44,10 +44,12 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
         refresh_git,
     } = context;
     let active_project = projects.active_project;
+    let refresh_pending = super::workspace::pending_refresh(api, projects, workspace, ui);
 
     let select_project = Callback::new(move |id: i64| {
         let current = active_project.get();
         if current == Some(id) {
+            refresh_pending.run(id);
             return;
         }
         workspace.switch_project(current, id);
@@ -56,6 +58,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
             .set(workspace.active_session.get_untracked());
         ui.clear_toast();
         ensure_root.run(id);
+        refresh_pending.run(id);
         refresh_git.run(());
     });
 
@@ -77,6 +80,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                         .set(workspace.active_session.get_untracked());
                     ui.clear_toast();
                     ensure_root.run(next_id);
+                    refresh_pending.run(next_id);
                     refresh_git.run(());
                 }
                 None => {
@@ -183,6 +187,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                         ui.notify(error);
                         return;
                     }
+                    workspace.begin_pending_refresh(id);
                     workspace.snapshots.update(|snapshots| {
                         if let Some(snapshot) = snapshots.remove(&id)
                             && let Some(url) = snapshot.media_url
@@ -200,6 +205,9 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                         sessions.retain(|session| session.project_id != Some(id));
                     });
                     close_project.run(id);
+                    workspace.snapshots.update(|snapshots| {
+                        snapshots.remove(&id);
+                    });
                     git.forget_project(id);
                     if let Err(error) = idb::delete_handle(id).await {
                         ui.notify(format!(

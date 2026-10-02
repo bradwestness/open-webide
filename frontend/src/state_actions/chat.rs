@@ -154,6 +154,7 @@ impl ChatActions {
             })
         };
 
+        let refresh_pending = super::workspace::pending_refresh(api, projects, workspace, ui);
         let apply_stream_event = Callback::new(
             move |(session_id, event): (i64, openwebide_core::RunEvent)| {
                 let run_project_id = chat
@@ -162,14 +163,21 @@ impl ChatActions {
                     .into_iter()
                     .find(|session| session.id == session_id)
                     .and_then(|session| session.project_id);
+                let successful_write = matches!(
+                    &event,
+                    openwebide_core::RunEvent::ToolResult { ok: true, .. }
+                );
                 for effect in chat.apply_event_for_session(session_id, event) {
                     match effect {
                         ChatEffect::ApprovePermission { id } => {
                             permission.run((id, true));
                         }
                         ChatEffect::ToolDiff(diff) => {
+                            if !successful_write {
+                                continue;
+                            }
                             if let Some(project_id) = run_project_id {
-                                workspace.merge_pending(project_id, diff.clone());
+                                refresh_pending.run(project_id);
                             }
                             if chat.active_session.get_untracked() != Some(session_id) {
                                 continue;
