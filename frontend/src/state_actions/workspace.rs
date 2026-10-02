@@ -366,6 +366,9 @@ impl WorkspaceActions {
             workspace.resolving_edits.update(|edits| {
                 edits.insert(key.clone());
             });
+            let agent_writes_before = workspace
+                .agent_writes
+                .with_untracked(|writes| writes.get(&key).copied().unwrap_or_default());
             let editor_before = (
                 workspace.open_file.get_untracked(),
                 workspace.content.get_untracked(),
@@ -449,6 +452,9 @@ impl WorkspaceActions {
                             || snapshot.open_file != editor_before.0
                             || snapshot.content != editor_before.1
                             || snapshot.dirty != editor_before.2
+                            || workspace.agent_writes.with_untracked(|writes| {
+                                writes.get(&key).copied().unwrap_or_default()
+                            }) != agent_writes_before
                             || snapshot
                                 .persisted_edits
                                 .get(&path)

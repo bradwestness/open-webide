@@ -35,6 +35,8 @@ pub struct WorkspaceState {
     pub resolving_edits: RwSignal<HashSet<(i64, String)>>,
     pub pending_generation: RwSignal<HashMap<i64, u64>>,
     pub pending_epoch: RwSignal<u64>,
+    pub agent_writes: RwSignal<HashMap<(i64, String), u64>>,
+    pub counted_agent_writes: RwSignal<HashSet<(i64, String)>>,
     pub media_url: RwSignal<Option<String>>,
     pub snapshots: RwSignal<HashMap<i64, WorkspaceSnapshot>>,
 }
@@ -66,6 +68,8 @@ impl WorkspaceState {
             resolving_edits: RwSignal::new(HashSet::new()),
             pending_generation: RwSignal::new(HashMap::new()),
             pending_epoch: RwSignal::new(0),
+            agent_writes: RwSignal::new(HashMap::new()),
+            counted_agent_writes: RwSignal::new(HashSet::new()),
             media_url: RwSignal::new(None),
             snapshots: RwSignal::new(HashMap::new()),
         }
@@ -121,6 +125,8 @@ impl WorkspaceState {
     pub fn reset(&self) {
         self.pending_epoch.update(|epoch| *epoch += 1);
         self.pending_generation.set(HashMap::new());
+        self.agent_writes.set(HashMap::new());
+        self.counted_agent_writes.set(HashSet::new());
         self.resolving_edits.set(HashSet::new());
         self.clear_active();
         self.snapshots.set(HashMap::new());

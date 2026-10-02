@@ -1157,3 +1157,178 @@ async fn completed_snapshots_refresh_db_state_without_resurrecting_resolved_edit
     );
     close(&mounted);
 }
+
+async fn replay_during_resolution(rejected: bool, seen_live: bool) -> (String, bool, bool) {
+    use openwebide_core::{EditDecision, FileDiff, PersistedEdit};
+    let fake = Rc::new(FakeTransport::default());
+    let transport = fake.clone();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        state.seed_connection();
+        state.seed_session();
+        state.bridge.set(Some(BridgeConn::with_transport(
+            BridgeConfig::new("ws://test"),
+            transport,
+            Rc::new(|| Box::pin(async { Ok("token".into()) })),
+        )));
+        let pane = chat_view(state.clone());
+        let editor = super::support::editor_view(state);
+        view! { {pane} {editor} }
+    });
+    ready(&fake).await;
+    no_runs(&fake);
+    let run_id = send(&mounted, &fake).await;
+    let diff = FileDiff {
+        path: "file.rs".into(),
+        old: Some("original".into()),
+        new: "changed".into(),
+        old_unavailable: false,
+        backup_path: None,
+    };
+    let result = RunEvent::ToolResult {
+        id: "a7t0c0".into(),
+        name: "write_file".into(),
+        ok: true,
+        summary: "written".into(),
+        diff: Some(diff.clone()),
+    };
+    if seen_live {
+        event(
+            &fake,
+            &run_id,
+            1,
+            RunEvent::ToolCall {
+                id: "a7t0c0".into(),
+                name: "write_file".into(),
+                summary: "file".into(),
+            },
+        );
+        event(&fake, &run_id, 2, result.clone());
+        settle().await;
+    }
+    assert_eq!(
+        mounted
+            .state
+            .workspace
+            .agent_writes
+            .get_untracked()
+            .get(&(1, "file.rs".into()))
+            .copied()
+            .unwrap_or_default(),
+        u64::from(seen_live)
+    );
+    let edit = PersistedEdit {
+        project_id: 1,
+        path: "file.rs".into(),
+        revision: 1,
+        decision: EditDecision::Pending,
+        diff: diff.clone(),
+    };
+    mounted
+        .state
+        .fake
+        .persisted_edits
+        .borrow_mut()
+        .insert((1, "file.rs".into()), edit.clone());
+    mounted
+        .state
+        .fake
+        .files
+        .borrow_mut()
+        .insert((1, "file.rs".into()), "changed".into());
+    mounted.state.workspace.set_persisted_edits(1, vec![edit]);
+    mounted
+        .state
+        .workspace
+        .open_file
+        .set(Some("file.rs".into()));
+    if rejected {
+        mounted.state.workspace.content.set("changed".into());
+        mounted.state.workspace.dirty.set(false);
+    } else {
+        mounted.state.workspace.content.set("dirty draft".into());
+        mounted.state.workspace.dirty.set(true);
+    }
+    let (release, pending) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .resolution_response_results
+        .borrow_mut()
+        .push_back(pending);
+    settle().await;
+    if rejected {
+        mounted.click_text("✕ Reject");
+        settle().await;
+        mounted.click(".modal-footer .danger");
+    } else {
+        mounted.click_text("✓ Accept");
+    }
+    settle().await;
+    if !seen_live {
+        mounted
+            .state
+            .fake
+            .files
+            .borrow_mut()
+            .insert((1, "file.rs".into()), "changed".into());
+    }
+    let mut snapshot = RunSnapshot::default();
+    snapshot.apply(&RunEvent::Message {
+        message: message(7, Role::User, "hello"),
+    });
+    snapshot.apply(&RunEvent::ToolCall {
+        id: "a7t0c0".into(),
+        name: "write_file".into(),
+        summary: "file".into(),
+    });
+    snapshot.apply(&result);
+    fake.reply(BridgeServerMessage::RunSnapshot {
+        run_id: run_id.clone(),
+        session_id: 1,
+        seq: 2,
+        snapshot,
+    });
+    settle().await;
+    if !seen_live {
+        assert_eq!(
+            mounted.state.workspace.agent_writes.get_untracked()[&(1, "file.rs".into())],
+            1
+        );
+    }
+    release.send(Ok(())).unwrap();
+    settle().await;
+    let out = (
+        mounted.state.workspace.content.get_untracked(),
+        mounted.state.workspace.dirty.get_untracked(),
+        mounted
+            .state
+            .workspace
+            .persisted_edits
+            .get_untracked()
+            .is_empty(),
+    );
+    close(&mounted);
+    out
+}
+
+#[wasm_bindgen_test]
+async fn snapshot_replay_does_not_block_accept() {
+    let (content, dirty, cleared) = replay_during_resolution(false, true).await;
+    assert!(cleared);
+    assert_eq!((content.as_str(), dirty), ("changed", false));
+}
+
+#[wasm_bindgen_test]
+async fn snapshot_replay_does_not_block_reject() {
+    let (content, dirty, cleared) = replay_during_resolution(true, true).await;
+    assert!(cleared);
+    assert_eq!((content.as_str(), dirty), ("original", false));
+}
+
+#[wasm_bindgen_test]
+async fn snapshot_with_unseen_write_blocks_stale_accept_update() {
+    let (content, dirty, cleared) = replay_during_resolution(false, false).await;
+    assert!(cleared);
+    assert_eq!((content.as_str(), dirty), ("dirty draft", true));
+}

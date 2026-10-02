@@ -70,7 +70,7 @@ pub struct RunActions {
     pub bridge: RwSignal<Option<BridgeConn>, LocalStorage>,
     pub chat: ChatState,
     pub api: Api,
-    pub apply: Callback<(i64, RunEvent)>,
+    pub apply: Callback<(i64, RunEvent, bool)>,
     pub history: RwSignal<Option<(i64, u64)>>,
     controls: StoredValue<RunControls, LocalStorage>,
     listing: StoredValue<Option<(BridgeConn, String)>, LocalStorage>,
@@ -81,7 +81,7 @@ impl RunActions {
         bridge: RwSignal<Option<BridgeConn>, LocalStorage>,
         chat: ChatState,
         api: Api,
-        apply: Callback<(i64, RunEvent)>,
+        apply: Callback<(i64, RunEvent, bool)>,
         controls: StoredValue<RunControls, LocalStorage>,
     ) -> Self {
         Self {
@@ -201,7 +201,7 @@ impl RunActions {
                             controls.decisions.insert(id.clone());
                         });
                     }
-                    self.apply.run((session_id, event));
+                    self.apply.run((session_id, event, false));
                 }
                 BridgeServerMessage::RunSnapshot {
                     session_id: snapshot_session,
@@ -287,6 +287,7 @@ impl RunActions {
                                         summary: result.summary.clone(),
                                         diff: result.diff.clone(),
                                     },
+                                    true,
                                 ));
                             } else if self.chat.active_session.get_untracked() == Some(session_id)
                                 && step.awaiting_permission
@@ -312,6 +313,7 @@ impl RunActions {
                                         diff: step.diff.as_deref().cloned(),
                                         note: step.note.clone(),
                                     },
+                                    true,
                                 ));
                             }
                         }
@@ -324,7 +326,7 @@ impl RunActions {
                     }
                     if let Some(event) = snapshot.finished {
                         ended = true;
-                        self.apply.run((session_id, event));
+                        self.apply.run((session_id, event, true));
                     }
                 }
                 BridgeServerMessage::RunRejected { code, message, .. } => {

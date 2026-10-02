@@ -720,3 +720,180 @@ async fn terminal_local_spawns_resolve_cwd_and_refuse_stale_probes() {
             .unwrap();
     }
 }
+
+#[wasm_bindgen_test]
+async fn resume_after_failed_history_persistence_reuses_write_id() {
+    use super::support::editor_view;
+    use openwebide_core::{
+        ChatCompletion, ChatResponse, EditDecision, FileDiff, PersistedEdit, StopReason, ToolCall,
+        WorkspaceMode,
+    };
+
+    let http = HttpGuard(fake_bridge_http());
+    bridge_found(&http.0, false);
+    let folder = probe_folder();
+    let vfs = BrowserFsaVfs::new(folder.clone().unchecked_into());
+    vfs.write("file.rs", "original").await.unwrap();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        state.seed_connection();
+        state.seed_session();
+        state
+            .projects
+            .projects
+            .update(|projects| projects[0].mode = WorkspaceMode::Local);
+        state.projects.local_handles.update(|handles| {
+            handles.insert(1, folder.unchecked_into());
+        });
+        state
+            .settings
+            .bridge_url
+            .set("ws://bridge.test:3001".into());
+        let mut second = state.chat.sessions.get_untracked()[0].clone();
+        second.id = 2;
+        state.fake.sessions.borrow_mut().push(second.clone());
+        state.chat.sessions.update(|sessions| sessions.push(second));
+        state
+            .chat
+            .set_approval_mode(1, openwebide_agent::policy::ApprovalMode::AlwaysForSession);
+        state.workspace.open_file.set(Some("file.rs".into()));
+        state.workspace.content.set("dirty draft".into());
+        state.workspace.dirty.set(true);
+        let edit = PersistedEdit {
+            project_id: 1,
+            path: "file.rs".into(),
+            revision: 1,
+            decision: EditDecision::Pending,
+            diff: FileDiff {
+                path: "file.rs".into(),
+                old: Some("original".into()),
+                new: "changed".into(),
+                old_unavailable: false,
+                backup_path: None,
+            },
+        };
+        state
+            .fake
+            .persisted_edits
+            .borrow_mut()
+            .insert((1, edit.path.clone()), edit.clone());
+        state.workspace.set_persisted_edits(1, vec![edit]);
+        view! { {chat_view(state.clone())} {editor_view(state)} }
+    });
+    settle().await;
+    mounted
+        .state
+        .fake
+        .message_save_results
+        .borrow_mut()
+        .extend([Ok(()), Err("offline".into()), Err("offline".into())]);
+    *mounted.state.fake.step_save_error.borrow_mut() = Some("offline".into());
+    for content in ["first write", "resumed write"] {
+        mounted
+            .state
+            .fake
+            .scripted_completions
+            .borrow_mut()
+            .extend([
+                ChatCompletion {
+                    reasoning: String::new(),
+                    stop_reason: StopReason::Complete,
+                    response: ChatResponse::ToolCalls(vec![ToolCall {
+                        id: "wire".into(),
+                        name: "write_file".into(),
+                        arguments: serde_json::json!({"path": "file.rs", "content": content})
+                            .to_string(),
+                    }]),
+                    preamble: String::new(),
+                    usage: None,
+                },
+                ChatCompletion {
+                    reasoning: String::new(),
+                    stop_reason: StopReason::Complete,
+                    response: ChatResponse::Text("done".into()),
+                    preamble: String::new(),
+                    usage: None,
+                },
+            ]);
+    }
+    mounted.input("edit file");
+    mounted.key("Enter", "Enter", false);
+    for _ in 0..1000 {
+        sleep_ms(5).await;
+        settle().await;
+        if !mounted.state.chat.streaming.get_untracked() {
+            break;
+        }
+    }
+    assert!(!mounted.state.chat.streaming.get_untracked());
+    assert_eq!(vfs.read("file.rs").await.unwrap(), "first write");
+    assert_eq!(
+        mounted.state.workspace.agent_writes.get_untracked()[&(1, "file.rs".into())],
+        1
+    );
+    assert!(
+        mounted
+            .state
+            .workspace
+            .counted_agent_writes
+            .get_untracked()
+            .contains(&(1, "a1t1c0".into()))
+    );
+    assert_eq!(mounted.state.fake.messages.borrow()[&1].len(), 1);
+    assert!(mounted.state.fake.tool_sources.borrow().is_empty());
+    assert!(mounted.state.fake.message_save_results.borrow().is_empty());
+    mounted.state.chat.active_session.set(Some(2));
+    settle().await;
+    mounted.state.chat.active_session.set(Some(1));
+    settle().await;
+    let resume = mounted.state.chat.interrupted_run.get_untracked().unwrap();
+    assert_eq!((resume.anchor_id, resume.first_turn), (1, 1));
+    let (release, response) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .resolution_response_results
+        .borrow_mut()
+        .push_back(response);
+    mounted.click_text("✓ Accept");
+    settle().await;
+    assert_eq!(
+        mounted.state.fake.persisted_edits.borrow()[&(1, "file.rs".into())].decision,
+        EditDecision::Accepted
+    );
+    *mounted.state.fake.step_save_error.borrow_mut() = None;
+    mounted.click_text("Resume");
+    for _ in 0..1000 {
+        sleep_ms(5).await;
+        settle().await;
+        if !mounted.state.chat.streaming.get_untracked() {
+            break;
+        }
+    }
+    assert!(!mounted.state.chat.streaming.get_untracked());
+    assert_eq!(vfs.read("file.rs").await.unwrap(), "resumed write");
+    assert_eq!(
+        mounted
+            .state
+            .fake
+            .tool_sources
+            .borrow()
+            .get(&(1, "a1t1c0".into())),
+        Some(&true)
+    );
+    assert_eq!(
+        mounted.state.fake.persisted_edits.borrow()[&(1, "file.rs".into())].revision,
+        2
+    );
+    release.send(Ok(())).unwrap();
+    settle().await;
+    assert_eq!(
+        mounted.state.workspace.agent_writes.get_untracked()[&(1, "file.rs".into())],
+        2
+    );
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        "dirty draft"
+    );
+    assert!(mounted.state.workspace.dirty.get_untracked());
+}

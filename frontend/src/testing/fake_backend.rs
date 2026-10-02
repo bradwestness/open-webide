@@ -68,12 +68,15 @@ pub struct FakeBackend {
     pub model_requests: RefCell<Vec<i64>>,
     pub context_requests: RefCell<Vec<(i64, Option<String>)>>,
     pub tool_sources: RefCell<BTreeMap<(i64, String), bool>>,
+    pub message_save_results: RefCell<VecDeque<Result<(), String>>>,
+    pub step_save_error: RefCell<Option<String>>,
     pub completion_error: RefCell<Option<String>>,
     pub persisted_edits: RefCell<BTreeMap<(i64, String), PersistedEdit>>,
     pub resolution_error: RefCell<Option<String>>,
     pub file_list_results: RefCell<VecDeque<Deferred<Vec<FileEntry>>>>,
     pub pending_results: RefCell<VecDeque<Deferred<Vec<PersistedEdit>>>>,
     pub resolution_results: RefCell<VecDeque<Deferred<()>>>,
+    pub resolution_response_results: RefCell<VecDeque<Deferred<()>>>,
     pub resolution_requests: RefCell<Vec<(i64, ResolveEditRequest)>>,
     pub file_error: RefCell<Option<String>>,
     pub sessions: RefCell<Vec<ChatSession>>,
@@ -896,6 +899,9 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "persist_message",
             });
+            if let Some(result) = self.message_save_results.borrow_mut().pop_front() {
+                result?;
+            }
             let message = ChatMessage {
                 id: i64::try_from(self.messages.borrow().values().map(Vec::len).sum::<usize>())
                     .expect("test message count fits i64")
@@ -959,6 +965,9 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "upsert_tool_step",
             });
+            if let Some(error) = self.step_save_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
             self.tool_sources
                 .borrow_mut()
                 .entry((session_id, tool_call_id.into()))
@@ -1083,7 +1092,15 @@ impl Backend for FakeBackend {
                 return Err("edit revision or decision changed".into());
             }
             edit.decision = request.decision;
-            Ok(edit.clone())
+            let committed = edit.clone();
+            drop(edits);
+            let response = self.resolution_response_results.borrow_mut().pop_front();
+            if let Some(response) = response {
+                response
+                    .await
+                    .map_err(|_| "response cancelled".to_string())??;
+            }
+            Ok(committed)
         })
     }
     fn web_search<'a>(

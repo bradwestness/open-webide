@@ -156,27 +156,38 @@ impl ChatActions {
 
         let refresh_pending = super::workspace::pending_refresh(api, projects, workspace, ui);
         let apply_stream_event = Callback::new(
-            move |(session_id, event): (i64, openwebide_core::RunEvent)| {
+            move |(session_id, event, replayed): (i64, openwebide_core::RunEvent, bool)| {
                 let run_project_id = chat
                     .sessions
                     .get_untracked()
                     .into_iter()
                     .find(|session| session.id == session_id)
                     .and_then(|session| session.project_id);
-                let successful_write = matches!(
-                    &event,
-                    openwebide_core::RunEvent::ToolResult { ok: true, .. }
-                );
+                let write_id = match &event {
+                    openwebide_core::RunEvent::ToolResult { id, ok: true, .. } => Some(id.clone()),
+                    _ => None,
+                };
                 for effect in chat.apply_event_for_session(session_id, event) {
                     match effect {
                         ChatEffect::ApprovePermission { id } => {
                             permission.run((id, true));
                         }
                         ChatEffect::ToolDiff(diff) => {
-                            if !successful_write {
+                            let Some(id) = &write_id else {
                                 continue;
-                            }
+                            };
                             if let Some(project_id) = run_project_id {
+                                let mut first_write = false;
+                                workspace.counted_agent_writes.update(|counted| {
+                                    first_write = counted.insert((session_id, id.clone()));
+                                });
+                                if !replayed || first_write {
+                                    workspace.agent_writes.update(|writes| {
+                                        *writes
+                                            .entry((project_id, diff.path.clone()))
+                                            .or_default() += 1;
+                                    });
+                                }
                                 refresh_pending.run(project_id);
                             }
                             if chat.active_session.get_untracked() != Some(session_id) {
@@ -315,7 +326,7 @@ impl ChatActions {
                         {
                             chat.interrupted_run.set(None);
                         }
-                        apply_stream_event.run((session_id, event));
+                        apply_stream_event.run((session_id, event, false));
                     };
 
                     let editor_context = if resume.is_none() {

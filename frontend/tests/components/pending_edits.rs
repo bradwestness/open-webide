@@ -787,3 +787,333 @@ async fn interrupted_delete_listing_does_not_mutate_files() {
         assert!(mounted.state.fake.resolution_requests.borrow().is_empty());
     }
 }
+
+async fn delayed_resolution_after_agent_write(dirty: bool, rejected: bool) {
+    use openwebide_core::{ChatMessage, Role, RunEvent};
+    use openwebide_frontend::{
+        backend::Backend,
+        bridge::BridgeCredentials,
+        components::{ConfirmDialog, Editor},
+        state::auth::AuthState,
+        state_actions::{
+            chat::{ChatActionContext, ChatActions},
+            workspace::{WorkspaceActions, refresh_pending},
+        },
+    };
+    let clean_content = if rejected { "changed" } else { "original" };
+    let auth_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let send_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let auth_copy = auth_slot.clone();
+    let send_copy = send_slot.clone();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        state.seed_session();
+        state.seed_connection();
+        auth_copy.set(Some(expect_context::<AuthState>()));
+        let edit = PersistedEdit {
+            project_id: 1,
+            path: "file.rs".into(),
+            revision: 1,
+            decision: EditDecision::Pending,
+            diff: original_diff(),
+        };
+        state
+            .fake
+            .persisted_edits
+            .borrow_mut()
+            .insert((1, edit.path.clone()), edit.clone());
+        state
+            .fake
+            .files
+            .borrow_mut()
+            .insert((1, edit.path.clone()), edit.diff.new.clone());
+        state.workspace.set_persisted_edits(1, vec![edit]);
+        state.workspace.open_file.set(Some("file.rs".into()));
+        state
+            .workspace
+            .content
+            .set(if dirty { "dirty draft" } else { clean_content }.into());
+        state.workspace.dirty.set(dirty);
+        let read_only = RwSignal::new(false);
+        let actions = WorkspaceActions::new(
+            state.api,
+            state.projects,
+            state.workspace,
+            state.ui,
+            read_only,
+            Callback::new(|()| ()),
+        );
+        let chat_actions = ChatActions::new(ChatActionContext {
+            api: state.api,
+            chat: state.chat,
+            projects: state.projects,
+            workspace: state.workspace,
+            settings: state.settings,
+            ui: state.ui,
+            git: state.git,
+            bridge_credentials: StoredValue::new(BridgeCredentials::new(state.api)),
+            bridge: state.bridge,
+            request_open: actions.request_open,
+            refresh_git: Callback::new(|()| ()),
+            on_sync_click: Callback::new(|()| ()),
+        });
+        send_copy.set(Some(chat_actions.send));
+        view! {
+            <Editor read_only=read_only.into() on_open_lossy=actions.on_open_lossy
+                on_save=actions.on_save on_accept=actions.on_accept on_reject=actions.on_reject />
+            <ConfirmDialog />
+        }
+    });
+    // Hold the reply after the decision commits so a later write can precede delivery.
+    let (old_response, old_response_pending) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .resolution_response_results
+        .borrow_mut()
+        .push_back(old_response_pending);
+    settle().await;
+    if rejected {
+        reject(&mounted).await;
+    } else {
+        mounted.click_text("✓ Accept");
+        settle().await;
+    }
+    assert_eq!(
+        mounted.state.fake.persisted_edits.borrow()[&(1, "file.rs".into())].decision,
+        if rejected {
+            EditDecision::Rejected
+        } else {
+            EditDecision::Accepted
+        }
+    );
+    refresh_pending(
+        mounted.state.api,
+        mounted.state.projects,
+        mounted.state.workspace,
+        mounted.state.ui,
+        auth_slot.get().unwrap(),
+        1,
+    )
+    .await;
+    assert!(
+        mounted
+            .state
+            .workspace
+            .persisted_edits
+            .get_untracked()
+            .is_empty()
+    );
+
+    // Keep hydration behind the tool event to exercise the editor before the record loads.
+    let newer = FileDiff {
+        old: Some("changed".into()),
+        new: if dirty {
+            "newer agent content"
+        } else {
+            clean_content
+        }
+        .into(),
+        ..original_diff()
+    };
+    mounted
+        .state
+        .fake
+        .files
+        .borrow_mut()
+        .insert((1, "file.rs".into()), newer.new.clone());
+    mounted
+        .state
+        .fake
+        .upsert_tool_step(1, 1, "new-agent", "write_file", "written", None)
+        .await
+        .unwrap();
+    mounted
+        .state
+        .fake
+        .complete_tool_step(1, "new-agent", true, "written", Some(&newer))
+        .await
+        .unwrap();
+    let (new_list, new_list_pending) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .pending_results
+        .borrow_mut()
+        .push_back(new_list_pending);
+    mounted
+        .state
+        .fake
+        .scripted_events
+        .borrow_mut()
+        .push_back(vec![
+            RunEvent::ToolCall {
+                id: "new-agent".into(),
+                name: "write_file".into(),
+                summary: "write".into(),
+            },
+            RunEvent::ToolResult {
+                id: "new-agent".into(),
+                name: "write_file".into(),
+                ok: true,
+                summary: "written".into(),
+                diff: Some(newer),
+            },
+            RunEvent::Done {
+                message: ChatMessage {
+                    id: 3,
+                    session_id: 1,
+                    role: Role::Assistant,
+                    content: "done".into(),
+                    created_at: 0,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    usage: None,
+                },
+            },
+        ]);
+    mounted.state.chat.draft.set("edit again".into());
+    send_slot.get().unwrap().run(());
+    settle().await;
+    assert!(
+        mounted
+            .state
+            .workspace
+            .persisted_edits
+            .get_untracked()
+            .is_empty()
+    );
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        if dirty { "dirty draft" } else { clean_content }
+    );
+    assert!(
+        mounted
+            .state
+            .fake
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| matches!(call, Call::SendMessage { .. }))
+    );
+    old_response.send(Ok(())).unwrap();
+    settle().await;
+    // The final resolution refresh can see revision 2; the transition has already run.
+    assert_eq!(
+        mounted.state.workspace.persisted_edits.get_untracked()["file.rs"].revision,
+        2
+    );
+    assert_eq!(
+        mounted.state.fake.files.borrow()[&(1, "file.rs".into())],
+        if dirty {
+            "newer agent content"
+        } else {
+            clean_content
+        }
+    );
+    new_list.send(Ok(vec![])).unwrap();
+    settle().await;
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        if dirty { "dirty draft" } else { clean_content },
+        "a delayed resolution must preserve the buffer after a newer agent write"
+    );
+    assert_eq!(mounted.state.workspace.dirty.get_untracked(), dirty);
+}
+
+#[wasm_bindgen_test]
+async fn delayed_accept_preserves_dirty_buffer_after_agent_write() {
+    delayed_resolution_after_agent_write(true, false).await;
+}
+
+#[wasm_bindgen_test]
+async fn delayed_accept_preserves_clean_buffer_after_agent_write() {
+    delayed_resolution_after_agent_write(false, false).await;
+}
+
+#[wasm_bindgen_test]
+async fn delayed_reject_preserves_dirty_buffer_after_agent_write() {
+    delayed_resolution_after_agent_write(true, true).await;
+}
+
+#[wasm_bindgen_test]
+async fn delayed_reject_preserves_clean_buffer_after_agent_write() {
+    delayed_resolution_after_agent_write(false, true).await;
+}
+
+#[wasm_bindgen_test]
+async fn delayed_accept_preserves_editor_after_newer_revision_hydrates() {
+    use openwebide_frontend::{state::auth::AuthState, state_actions::workspace::refresh_pending};
+
+    let auth_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let slot = auth_slot.clone();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        slot.set(Some(expect_context::<AuthState>()));
+        let edit = PersistedEdit {
+            project_id: 1,
+            path: "file.rs".into(),
+            revision: 1,
+            decision: EditDecision::Pending,
+            diff: original_diff(),
+        };
+        state
+            .fake
+            .persisted_edits
+            .borrow_mut()
+            .insert((1, edit.path.clone()), edit.clone());
+        state.workspace.set_persisted_edits(1, vec![edit]);
+        state.workspace.open_file.set(Some("file.rs".into()));
+        state.workspace.content.set("dirty draft".into());
+        state.workspace.dirty.set(true);
+        editor_view(state)
+    });
+    let (release, pending) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .resolution_response_results
+        .borrow_mut()
+        .push_back(pending);
+    settle().await;
+    mounted.click_text("✓ Accept");
+    settle().await;
+    assert_eq!(
+        mounted.state.fake.persisted_edits.borrow()[&(1, "file.rs".into())].decision,
+        EditDecision::Accepted
+    );
+    let mut newer = mounted.state.fake.persisted_edits.borrow()[&(1, "file.rs".into())].clone();
+    newer.revision = 2;
+    newer.decision = EditDecision::Pending;
+    newer.diff.new = "newer agent content".into();
+    mounted
+        .state
+        .fake
+        .persisted_edits
+        .borrow_mut()
+        .insert((1, newer.path.clone()), newer.clone());
+    refresh_pending(
+        mounted.state.api,
+        mounted.state.projects,
+        mounted.state.workspace,
+        mounted.state.ui,
+        auth_slot.get().unwrap(),
+        1,
+    )
+    .await;
+    assert_eq!(
+        mounted.state.workspace.persisted_edits.get_untracked()["file.rs"],
+        newer
+    );
+    release.send(Ok(())).unwrap();
+    settle().await;
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        "dirty draft"
+    );
+    assert!(mounted.state.workspace.dirty.get_untracked());
+    assert_eq!(
+        mounted.state.workspace.persisted_edits.get_untracked()["file.rs"],
+        newer
+    );
+}
