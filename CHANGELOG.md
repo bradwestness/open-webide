@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Reduce the release WebAssembly download size with size-focused optimization.
+
 - Debounce file-search typing by 250 ms while keeping clearing and ignored-folder toggles immediate.
 
 - Load workspace settings and lists in parallel, and avoid redundant model requests when switching or renaming sessions on the same connection.
