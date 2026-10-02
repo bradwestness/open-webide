@@ -98,6 +98,14 @@ web-sys = { version = "0.3", features = [
 opt-level = "s"
 lto = true
 
+# Keep `target/` small: line tables are enough for backtraces, and dependencies
+# need no debug info. See AGENTS.md "Build disk usage".
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.lints.clippy]
 # Leave off documentation/attribute churn: missing_errors_doc, missing_panics_doc,
 # must_use_candidate, return_self_not_must_use, doc_markdown.

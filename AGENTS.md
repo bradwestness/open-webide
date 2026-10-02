@@ -85,6 +85,21 @@ Instructions, conventions, and architectural principles for AI agents working on
   spin up --direct-mounts --allow-transient-write
   ```
 
+### Build disk usage
+
+`target/` grows fast here: native, `wasm32-unknown-unknown` and `wasm32-wasip2` builds, each
+with its own test and clippy artifacts. A full repo copy that builds its own `target/` adds tens
+of GB, and agents running several copies at once have filled the disk before.
+
+- Experiments, review copies and worktrees reuse the repo's build directory: set
+  `CARGO_TARGET_DIR=<repo>/target` (cargo locks it, so concurrent builds are safe). Never let a
+  scratch copy create its own `target/`.
+- Prefer `git worktree add` over copying the repo, and remove copies and worktrees when done.
+- Dev builds keep only line tables (`[profile.dev] debug = "line-tables-only"`, and no debug info
+  for dependencies) — don't turn full debug info back on in the workspace profile.
+- Run `cargo clean` after finishing a feature, once it's pushed, and also whenever free space
+  drops under ~50 GB between batches. Never run it while a build is running.
+
 ---
 
 ## 4. Code Conventions for Agents
