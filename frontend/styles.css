@@ -2005,6 +2005,10 @@ textarea.form-input {
   font-family: var(--mono);
 }
 
+.terminal-line {
+  min-height: 1lh;
+}
+
 .terminal-input-bar {
   display: flex;
   align-items: center;

@@ -22,127 +22,15 @@ fn next_session_id() -> String {
     format!("term-{now}-{count}")
 }
 
-/// Convert basic ANSI escape codes into HTML spans for colorized terminal rendering.
-fn ansi_to_html(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    let mut in_span = false;
-
-    while let Some(ch) = chars.next() {
-        if ch == '\x1b' && chars.peek() == Some(&'[') {
-            chars.next(); // consume '['
-            let mut code = String::new();
-            while let Some(&c) = chars.peek() {
-                if c.is_ascii_digit() || c == ';' {
-                    code.push(c);
-                    chars.next();
-                } else {
-                    chars.next(); // consume ending char (usually 'm')
-                    break;
-                }
-            }
-
-            if in_span {
-                out.push_str("</span>");
-                in_span = false;
-            }
-
-            match code.as_str() {
-                "0" | "" => {}
-                "1" => {
-                    out.push_str("<span class=\"term-bold\">");
-                    in_span = true;
-                }
-                "30" => {
-                    out.push_str("<span class=\"term-black\">");
-                    in_span = true;
-                }
-                "31" => {
-                    out.push_str("<span class=\"term-red\">");
-                    in_span = true;
-                }
-                "32" => {
-                    out.push_str("<span class=\"term-green\">");
-                    in_span = true;
-                }
-                "33" => {
-                    out.push_str("<span class=\"term-yellow\">");
-                    in_span = true;
-                }
-                "34" => {
-                    out.push_str("<span class=\"term-blue\">");
-                    in_span = true;
-                }
-                "35" => {
-                    out.push_str("<span class=\"term-magenta\">");
-                    in_span = true;
-                }
-                "36" => {
-                    out.push_str("<span class=\"term-cyan\">");
-                    in_span = true;
-                }
-                "37" => {
-                    out.push_str("<span class=\"term-white\">");
-                    in_span = true;
-                }
-                "90" => {
-                    out.push_str("<span class=\"term-bright-black\">");
-                    in_span = true;
-                }
-                "91" => {
-                    out.push_str("<span class=\"term-bright-red\">");
-                    in_span = true;
-                }
-                "92" => {
-                    out.push_str("<span class=\"term-bright-green\">");
-                    in_span = true;
-                }
-                "93" => {
-                    out.push_str("<span class=\"term-bright-yellow\">");
-                    in_span = true;
-                }
-                "94" => {
-                    out.push_str("<span class=\"term-bright-blue\">");
-                    in_span = true;
-                }
-                "95" => {
-                    out.push_str("<span class=\"term-bright-magenta\">");
-                    in_span = true;
-                }
-                "96" => {
-                    out.push_str("<span class=\"term-bright-cyan\">");
-                    in_span = true;
-                }
-                "97" => {
-                    out.push_str("<span class=\"term-bright-white\">");
-                    in_span = true;
-                }
-                _ => {}
-            }
-        } else {
-            match ch {
-                '&' => out.push_str("&amp;"),
-                '<' => out.push_str("&lt;"),
-                '>' => out.push_str("&gt;"),
-                '"' => out.push_str("&quot;"),
-                '\r' => {}
-                _ => out.push(ch),
-            }
-        }
-    }
-
-    if in_span {
-        out.push_str("</span>");
-    }
-
-    out
-}
-
 #[component]
 pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) -> impl IntoView {
     let status = RwSignal::from(bridge.status());
     let bridge = StoredValue::new_local(bridge);
-    let raw_output = RwSignal::new(String::new());
+    let output = StoredValue::new(crate::terminal_output::TerminalOutput::default());
+    let lines = RwSignal::new(Vec::<Arc<crate::terminal_output::Line>>::new());
+    let current_html = RwSignal::new(String::new());
+    let request = StoredValue::new(None::<i32>);
+    let following = RwSignal::new(true);
     let active_session = RwSignal::new(Option::<String>::None);
     let input_text = RwSignal::new(String::new());
     let history = RwSignal::new(Vec::<String>::new());
@@ -150,6 +38,64 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
     let last_seq = RwSignal::new(0u64);
 
     let output_ref = NodeRef::<Div>::new();
+    let callback = StoredValue::new_local(wasm_bindgen::closure::Closure::<dyn FnMut()>::new(
+        move || {
+            request.set_value(None);
+            output.update_value(|output| {
+                if output.take_structure_changed() {
+                    lines.set(output.completed().cloned().collect());
+                }
+                current_html.set(output.current_html());
+            });
+            // Reactive subscribers publish the new DOM before this scroll measurement.
+            leptos::leptos_dom::helpers::queue_microtask(move || {
+                if following.try_get_untracked() == Some(true)
+                    && let Some(Some(element)) = output_ref.try_get_untracked()
+                {
+                    element.set_scroll_top(f64::from(element.scroll_height()));
+                }
+            });
+        },
+    ));
+    let schedule = move || {
+        if request.get_value().is_none() {
+            let id = callback.with_value(|callback| {
+                window().request_animation_frame(callback.as_ref().unchecked_ref())
+            });
+            if let Ok(id) = id {
+                request.set_value(Some(id));
+            }
+        }
+    };
+    let append = move |text: &str| {
+        if let Some(Some(element)) = output_ref.try_get_untracked() {
+            following.set(
+                f64::from(element.scroll_height() - element.client_height()) - element.scroll_top()
+                    <= 32.0,
+            );
+        }
+        output.update_value(|output| output.push(text));
+        schedule();
+    };
+    let append_notice = move |text: &str| {
+        if let Some(Some(element)) = output_ref.try_get_untracked() {
+            following.set(
+                f64::from(element.scroll_height() - element.client_height()) - element.scroll_top()
+                    <= 32.0,
+            );
+        }
+        output.update_value(|output| output.push_notice(text));
+        schedule();
+    };
+    let append_process_notice = move |text: &str| {
+        output.update_value(crate::terminal_output::TerminalOutput::discard_pending_escape);
+        append_notice(text);
+    };
+    on_cleanup(move || {
+        if let Some(id) = request.get_value() {
+            let _ = window().cancel_animation_frame(id);
+        }
+    });
 
     let tx_outbound = bridge;
     let spawned_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -186,20 +132,14 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
             BridgeServerMessage::Spawned { id, pid, .. } => {
                 active_session.set(Some(id));
                 last_seq.set(0);
-                raw_output.update(|text| {
-                    text.push_str(&format!("\x1b[90m[Process spawned (PID: {pid})]\x1b[0m\n"));
-                });
+                append_process_notice(&format!("\x1b[90m[Process spawned (PID: {pid})]\x1b[0m\n"));
             }
             BridgeServerMessage::Output { id, seq, data, .. } => {
                 if active_session.get_untracked().as_ref() != Some(&id) {
                     return;
                 }
                 last_seq.set(seq);
-                raw_output.update(|text| text.push_str(&data));
-                if let Some(Some(el)) = output_ref.try_get_untracked() {
-                    let div: &web_sys::HtmlElement = el.as_ref();
-                    div.set_scroll_top(f64::from(div.scroll_height()));
-                }
+                append(&data);
             }
             BridgeServerMessage::Exited {
                 id,
@@ -218,16 +158,14 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     (_, Some(signal)) => format!("signal {signal}"),
                     _ => "unknown status".into(),
                 };
-                raw_output.update(|text| {
-                    text.push_str(&format!("\x1b[90m[Process finished with {code}]\x1b[0m\n"));
-                });
+                append_process_notice(&format!("\x1b[90m[Process finished with {code}]\x1b[0m\n"));
             }
             BridgeServerMessage::Error { id, message } => {
                 if reconnecting.get_untracked()
                     && active_session.get_untracked().as_ref() == Some(&id)
                     && message.contains("session not found")
                 {
-                    raw_output.update(|text| text.push_str("Terminal ended (bridge restarted)\n"));
+                    append_process_notice("Terminal ended (bridge restarted)\n");
                     ids_for_messages
                         .lock()
                         .unwrap()
@@ -243,9 +181,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                             .unwrap()
                             .retain(|tracked| tracked != &id);
                     }
-                    raw_output.update(|text| {
-                        text.push_str(&format!("\x1b[31m[Bridge error: {message}]\x1b[0m\n"));
-                    });
+                    append_notice(&format!("\x1b[31m[Bridge error: {message}]\x1b[0m\n"));
                 }
             }
             BridgeServerMessage::Sessions { sessions: active } => {
@@ -258,6 +194,9 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     && let Some(session) =
                         active.iter().find(|session| pending.contains(&session.id))
                 {
+                    output.update_value(
+                        crate::terminal_output::TerminalOutput::discard_pending_escape,
+                    );
                     active_session.set(Some(session.id.clone()));
                     last_seq.set(0);
                     reconnecting.set(true);
@@ -306,9 +245,9 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
     let command_ids = spawned_ids.clone();
     let command_pending = RwSignal::new(false);
     let reject_busy_command = move || {
-        raw_output.update(|text| {
-            text.push_str("Terminal is busy; wait for the current process to finish before running /test again.\n");
-        });
+        append_notice(
+            "Terminal is busy; wait for the current process to finish before running /test again.\n",
+        );
     };
     let command_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let alive_for_cleanup = command_alive.clone();
@@ -403,7 +342,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                 .is_ok()
             {
                 ids.lock().unwrap().push(id);
-                raw_output.update(|text| text.push_str(&format!("\x1b[36m❯ {cmd}\x1b[0m\n")));
+                append_process_notice(&format!("\x1b[36m❯ {cmd}\x1b[0m\n"));
             }
         });
     });
@@ -445,7 +384,8 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
     };
 
     let clear_output = move || {
-        raw_output.set(String::new());
+        output.update_value(crate::terminal_output::TerminalOutput::clear);
+        schedule();
     };
 
     let tx_for_submit = tx_outbound;
@@ -502,9 +442,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                 }
                 None => {
                     let id = next_session_id();
-                    raw_output.update(|s| {
-                        s.push_str(&format!("\x1b[36m❯ {cmd}\x1b[0m\n"));
-                    });
+                    append_process_notice(&format!("\x1b[36m❯ {cmd}\x1b[0m\n"));
                     if let Ok(mut ids) = spawned_ids_for_submit.lock() {
                         ids.push(id.clone());
                     }
@@ -575,6 +513,18 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
         _ => {}
     };
 
+    // The keyed list captures its owner; keep that owner separate from shell cleanup.
+    let line_owner = Owner::new();
+    let completed_lines = line_owner.with(|| {
+        view! {
+            <For each=move || lines.get() key=|line| line.id children=move |line| {
+                view! { <div class="terminal-line" inner_html=line.html.clone() /> }
+            } />
+        }
+    });
+    let completed_lines =
+        leptos::tachys::reactive_graph::OwnedView::new_with_owner(completed_lines, line_owner);
+
     view! {
         <div class="terminal-dock">
             <div class="terminal-header">
@@ -630,8 +580,15 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
             <div
                 class="terminal-output"
                 node_ref=output_ref
-                inner_html=move || ansi_to_html(&raw_output.get())
-            />
+                on:scroll=move |_| {
+                    if let Some(element) = output_ref.get_untracked() {
+                        following.set(f64::from(element.scroll_height() - element.client_height()) - element.scroll_top() <= 32.0);
+                    }
+                }
+            >
+                {completed_lines}
+                <div class="terminal-line terminal-current" inner_html=move || current_html.get() />
+            </div>
 
             <div class="terminal-input-bar">
                 <span class="terminal-prompt">"❯"</span>

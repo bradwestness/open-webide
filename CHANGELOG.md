@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Render terminal output incrementally with 10,000 lines of scrollback, split ANSI colour support, recovery from unfinished controls when processes exit or restart, progress-line updates, and scrolling that follows only near the bottom.
+
 - Coalesce editor syntax highlighting to one animation frame while keeping typing and saving immediate.
 
 - Keep conversation rows mounted while replies stream, reducing chat update work and preserving expanded reasoning and diff previews.
@@ -141,6 +143,8 @@ for what's still ahead.
 - Reconcile setup, architecture, bridge protocol, roadmap, changelog, and `/help` documentation with current behavior.
 
 ### Fixed
+
+- Keep split terminal controls intact when busy or recoverable-error notices appear during a running process.
 
 - Preview SVG files with uppercase extensions.
 - Preserve binary Git HEAD contents and hide Revert with a clear binary-file notice in text diffs.

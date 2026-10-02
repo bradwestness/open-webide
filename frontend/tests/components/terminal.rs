@@ -1,4 +1,4 @@
-use super::support::{Mounted, mount_test, settle};
+use super::support::{Mounted, mount_test};
 use leptos::prelude::*;
 use openwebide_core::{BridgeClientMessage, BridgeServerMessage, RunEvent, ToolStreamChunk};
 use openwebide_frontend::{
@@ -75,7 +75,9 @@ async fn hello_precedes_list_and_unmount_kills_shells() {
     drop(mounted);
     assert!(
         fake.sent()
-            .contains(&BridgeClientMessage::Kill { id, signal: None })
+            .contains(&BridgeClientMessage::Kill { id, signal: None }),
+        "sent on cleanup: {:?}",
+        fake.sent()
     );
     slot.borrow_mut().take().unwrap().close();
 }
@@ -662,4 +664,255 @@ async fn reconnect_reconciles_test_spawn_without_acknowledgement() {
         drop(mounted);
         slot.borrow_mut().take().unwrap().close();
     }
+}
+
+#[wasm_bindgen_test]
+async fn incremental_lines_batch_clear_scroll_and_cleanup() {
+    use wasm_bindgen::JsCast;
+    let (mounted, fake, _, slot) = mount_terminal();
+    settle().await;
+    ready(&fake);
+    fake.reply(BridgeServerMessage::Spawned {
+        id: "lines".into(),
+        pid: 1,
+        pty: true,
+    });
+    settle().await;
+    mounted.click_text("Clear");
+    settle().await;
+    let output = mounted
+        .root
+        .query_selector(".terminal-output")
+        .unwrap()
+        .unwrap()
+        .unchecked_into::<web_sys::HtmlElement>();
+    output
+        .set_attribute(
+            "style",
+            "height:80px;overflow:auto;white-space:pre-wrap;line-height:18px",
+        )
+        .unwrap();
+    let style = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("style")
+        .unwrap();
+    style.set_text_content(Some(".terminal-line{min-height:18px}"));
+    mounted.root.append_child(&style).unwrap();
+    let send = |seq, data: &str| {
+        fake.reply(BridgeServerMessage::Output {
+            id: "lines".into(),
+            seq,
+            stream: "pty".into(),
+            data: data.into(),
+        });
+    };
+    send(1, "\x1b[1;31mold\n\x1b[0mcurrent");
+    settle().await;
+    let old = output.query_selector(".terminal-line").unwrap().unwrap();
+    let current = output.query_selector(".terminal-current").unwrap().unwrap();
+    assert_eq!(old.text_content().unwrap(), "old");
+    assert!(old.inner_html().contains("term-bold term-red"));
+    send(2, "-one");
+    send(3, "-two");
+    super::support::settle().await;
+    assert_eq!(current.text_content().unwrap(), "current");
+    settle().await;
+    assert_eq!(current.text_content().unwrap(), "current-one-two");
+    send(4, "\nnext\n");
+    settle().await;
+    assert!(
+        old.is_same_node(Some(
+            output
+                .query_selector(".terminal-line")
+                .unwrap()
+                .unwrap()
+                .as_ref()
+        ))
+    );
+    send(5, &"long output\n".repeat(100));
+    settle().await;
+    assert!(
+        f64::from(output.scroll_height() - output.client_height()) - output.scroll_top() <= 1.0
+    );
+    output.set_scroll_top(0.0);
+    output
+        .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+        .unwrap();
+    send(6, "while reading\n");
+    settle().await;
+    assert!(output.scroll_top().abs() < 1.0);
+    output.set_scroll_top(f64::from(output.scroll_height()));
+    output
+        .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+        .unwrap();
+    send(7, "following again\n");
+    settle().await;
+    assert!(
+        f64::from(output.scroll_height() - output.client_height()) - output.scroll_top() <= 1.0
+    );
+    send(8, "\x1b[31mred\x1b[");
+    mounted.click_text("Clear");
+    send(9, "safe<>&");
+    settle().await;
+    assert_eq!(output.text_content().unwrap(), "safe<>&");
+    assert!(!output.inner_html().contains("term-red"));
+    send(10, &"retained\n".repeat(10_050));
+    settle().await;
+    assert_eq!(output.child_element_count(), 10_000);
+    send(11, "pending\n");
+    let html = output.inner_html();
+    drop(mounted);
+    settle().await;
+    assert_eq!(output.inner_html(), html);
+    slot.borrow_mut().take().unwrap().close();
+}
+
+#[wasm_bindgen_test]
+async fn unfinished_controls_do_not_hide_notices_or_next_process_output() {
+    let (mounted, fake, _, slot) = mount_terminal();
+    settle().await;
+    ready(&fake);
+    fake.reply(BridgeServerMessage::Spawned {
+        id: "old".into(),
+        pid: 1,
+        pty: true,
+    });
+    fake.reply(BridgeServerMessage::Output {
+        id: "old".into(),
+        seq: 1,
+        stream: "pty".into(),
+        data: "visible\n\x1b]0;title".into(),
+    });
+    fake.reply(BridgeServerMessage::Exited {
+        id: "old".into(),
+        exit_code: Some(0),
+        signal: None,
+    });
+    settle().await;
+    let output = mounted
+        .root
+        .query_selector(".terminal-output")
+        .unwrap()
+        .unwrap();
+    assert!(output.text_content().unwrap().contains("visible"));
+    assert!(
+        output
+            .text_content()
+            .unwrap()
+            .contains("Process finished with exit code 0")
+    );
+    fake.reply(BridgeServerMessage::Spawned {
+        id: "next".into(),
+        pid: 2,
+        pty: true,
+    });
+    fake.reply(BridgeServerMessage::Output {
+        id: "next".into(),
+        seq: 1,
+        stream: "pty".into(),
+        data: "next shell output\n\x1b]split title".into(),
+    });
+    fake.reply(BridgeServerMessage::Output {
+        id: "next".into(),
+        seq: 2,
+        stream: "pty".into(),
+        data: " hidden\x07after split control\n\x1b]unfinished".into(),
+    });
+    settle().await;
+    let text = output.text_content().unwrap();
+    assert!(text.contains("Process spawned (PID: 2)"));
+    assert!(text.contains("next shell output"));
+    assert!(text.contains("after split control"));
+    assert!(!text.contains("hidden"));
+    fake.reply(BridgeServerMessage::Spawned {
+        id: "replacement".into(),
+        pid: 3,
+        pty: true,
+    });
+    fake.reply(BridgeServerMessage::Output {
+        id: "replacement".into(),
+        seq: 1,
+        stream: "pty".into(),
+        data: "replacement output\n\x1b[".into(),
+    });
+    fake.reply(BridgeServerMessage::Error {
+        id: "replacement".into(),
+        message: "local notice".into(),
+    });
+    settle().await;
+    let text = output.text_content().unwrap();
+    assert!(text.contains("Process spawned (PID: 3)"));
+    assert!(text.contains("replacement output"));
+    assert!(text.contains("Bridge error: local notice"));
+    assert!(text.contains("visible"));
+    drop(mounted);
+    slot.borrow_mut().take().unwrap().close();
+}
+
+#[wasm_bindgen_test]
+async fn busy_and_recoverable_error_notices_preserve_running_process_controls() {
+    let (mounted, fake, _, slot) = mount_test_command();
+    settle().await;
+    ready(&fake);
+    mounted.state.chat.show_terminal.set(true);
+    settle().await;
+    fake.reply(BridgeServerMessage::Spawned {
+        id: "running".into(),
+        pid: 1,
+        pty: true,
+    });
+    fake.reply(BridgeServerMessage::Output {
+        id: "running".into(),
+        seq: 1,
+        stream: "pty".into(),
+        data: "visible\n\x1b]0;first half".into(),
+    });
+    mounted.input("/test parser");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    let output = mounted
+        .root
+        .query_selector(".terminal-output")
+        .unwrap()
+        .unwrap();
+    assert!(output.text_content().unwrap().contains("Terminal is busy"));
+    fake.reply(BridgeServerMessage::Error {
+        id: "running".into(),
+        message: "recoverable error".into(),
+    });
+    settle().await;
+    assert!(
+        output
+            .text_content()
+            .unwrap()
+            .contains("Bridge error: recoverable error")
+    );
+    fake.reply(BridgeServerMessage::Output {
+        id: "running".into(),
+        seq: 2,
+        stream: "pty".into(),
+        data: " second half\x07after title\n".into(),
+    });
+    settle().await;
+    let text = output.text_content().unwrap();
+    assert!(text.contains("visible"));
+    assert!(text.contains("after title"));
+    assert!(!text.contains("first half"));
+    assert!(!text.contains("second half"));
+    drop(mounted);
+    slot.borrow_mut().take().unwrap().close();
+}
+
+async fn settle() {
+    super::support::settle().await;
+    let frame = js_sys::Promise::new(&mut |resolve, _| {
+        web_sys::window()
+            .unwrap()
+            .request_animation_frame(&resolve)
+            .unwrap();
+    });
+    wasm_bindgen_futures::JsFuture::from(frame).await.unwrap();
+    super::support::settle().await;
 }
