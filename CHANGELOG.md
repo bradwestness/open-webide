@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Load workspace settings and lists in parallel, and avoid redundant model requests when switching or renaming sessions on the same connection.
+
 - Render terminal output incrementally with 10,000 lines of scrollback, split ANSI colour support, recovery from unfinished controls when processes exit or restart, progress-line updates, and scrolling that follows only near the bottom.
 
 - Coalesce editor syntax highlighting to one animation frame while keeping typing and saving immediate.

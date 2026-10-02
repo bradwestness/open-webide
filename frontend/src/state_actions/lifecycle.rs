@@ -158,7 +158,11 @@ pub fn install_project_effects(context: ProjectEffectContext) {
             return;
         }
         spawn_local(async move {
-            let backend_ok = match api.with_value(Clone::clone).health().await {
+            let health_result = api.with_value(Clone::clone).health().await;
+            if auth.generation.get_untracked() != generation {
+                return;
+            }
+            let backend_ok = match health_result {
                 Ok(health_state) => {
                     health.set(Some(HealthState::Online {
                         version: health_state.version,
@@ -175,7 +179,19 @@ pub fn install_project_effects(context: ProjectEffectContext) {
             }
 
             let backend = api.with_value(Clone::clone);
-            let settings_result = backend.get_settings().await;
+            let (
+                settings_result,
+                projects_result,
+                connections_result,
+                sessions_result,
+                prompts_result,
+            ) = futures::join!(
+                backend.get_settings(),
+                backend.list_projects(),
+                backend.list_connections(),
+                backend.list_sessions(),
+                backend.list_system_prompts(),
+            );
             if auth.generation.get_untracked() != generation {
                 return;
             }
@@ -265,12 +281,6 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 history_loaded.set(Some(generation));
             }
 
-            let (projects_result, connections_result, sessions_result, prompts_result) = futures::join!(
-                backend.list_projects(),
-                backend.list_connections(),
-                backend.list_sessions(),
-                backend.list_system_prompts(),
-            );
             if let Ok(connections) = connections_result {
                 settings.connections.set(connections);
             }
@@ -283,7 +293,11 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 .into_iter()
                 .filter(|project| project.mode == WorkspaceMode::Local)
             {
-                if let Ok(Some(handle)) = crate::idb::load_handle(project.id).await {
+                let handle_result = crate::idb::load_handle(project.id).await;
+                if auth.generation.get_untracked() != generation {
+                    return;
+                }
+                if let Ok(Some(handle)) = handle_result {
                     projects.local_handles.update(|handles| {
                         handles.insert(project.id, handle);
                     });

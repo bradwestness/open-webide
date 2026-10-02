@@ -732,51 +732,83 @@ fn install_effects(
     let selected_model = chat.selected_model;
     let session_telemetry = chat.session_telemetry;
 
-    let ctx_request_gen = StoredValue::new(0u64);
-    Effect::new(move |_| {
-        let this_gen = {
-            ctx_request_gen.update_value(|generation| *generation += 1);
-            ctx_request_gen.get_value()
-        };
-        let session_id = active_session.get();
-        let connection_id = session_id
+    let auth = expect_context::<crate::state::auth::AuthState>();
+    let effective_connection = Memo::new(move |_| {
+        let id = active_session
+            .get()
             .and_then(|id| {
-                sessions
-                    .get()
-                    .into_iter()
-                    .find(|session| session.id == id)
-                    .and_then(|session| session.connection_id)
+                sessions.with(|sessions| {
+                    sessions
+                        .iter()
+                        .find(|session| session.id == id)
+                        .and_then(|session| session.connection_id)
+                })
             })
             .or_else(|| {
                 default_connection.get().or_else(|| {
-                    connections
-                        .get()
-                        .into_iter()
-                        .find(|connection| connection.enabled)
-                        .map(|connection| connection.id)
+                    connections.with(|connections| {
+                        connections
+                            .iter()
+                            .find(|connection| connection.enabled)
+                            .map(|connection| connection.id)
+                    })
                 })
             });
-        let connection = connection_id.and_then(|id| {
-            connections
-                .get()
-                .into_iter()
-                .find(|connection| connection.id == id)
+        let connection = id.and_then(|id| {
+            connections.with(|connections| {
+                connections
+                    .iter()
+                    .find(|connection| connection.id == id)
+                    .cloned()
+            })
         });
-        let connection_model = connection
+        (id, connection)
+    });
+    let model_request = Memo::new(move |_| {
+        let (id, connection) = effective_connection.get();
+        (
+            auth.generation.get(),
+            id,
+            connection.map(|connection| (connection.kind, connection.base_url, connection.enabled)),
+        )
+    });
+    let context_request = Memo::new(move |_| {
+        let (_, connection) = effective_connection.get();
+        let model = selected_model.get().or_else(|| {
+            connection
+                .as_ref()
+                .and_then(|connection| connection.model.clone())
+        });
+        let limit = connection
             .as_ref()
-            .and_then(|connection| connection.model.clone());
-        let connection_name = connection
-            .as_ref()
-            .map(|connection| connection.name.clone())
-            .unwrap_or_else(|| "unknown".to_string());
+            .and_then(|connection| connection.context_limit);
+        (model_request.get(), model, limit)
+    });
 
-        let effective_model = selected_model.get().or(connection_model);
-        let display_model = effective_model
-            .clone()
-            .unwrap_or_else(|| format!("Default ({connection_name})"));
+    Effect::new(move |_| {
+        let (_, connection) = effective_connection.get();
+        let effective_model = selected_model.get().or_else(|| {
+            connection
+                .as_ref()
+                .and_then(|connection| connection.model.clone())
+        });
+        let display_model = effective_model.unwrap_or_else(|| {
+            format!(
+                "Default ({})",
+                connection
+                    .as_ref()
+                    .map_or("unknown", |connection| connection.name.as_str())
+            )
+        });
         session_telemetry.update(|telemetry| telemetry.model = display_model);
+    });
 
-        let Some(connection_id) = connection_id else {
+    let ctx_request_gen = StoredValue::new(0u64);
+    Effect::new(move |_| {
+        let request = context_request.get();
+        ctx_request_gen.update_value(|generation| *generation += 1);
+        let this_gen = ctx_request_gen.get_value();
+        let Some(connection_id) = request.0.1 else {
             session_telemetry.update(|telemetry| {
                 telemetry.context_limit = DEFAULT_CONTEXT_LIMIT;
                 telemetry.context_limit_estimated = true;
@@ -786,9 +818,10 @@ fn install_effects(
         spawn_local(async move {
             let result = api
                 .with_value(Clone::clone)
-                .model_context(connection_id, effective_model.as_deref())
+                .model_context(connection_id, request.1.as_deref())
                 .await;
-            if ctx_request_gen.get_value() != this_gen {
+            if ctx_request_gen.get_value() != this_gen || context_request.get_untracked() != request
+            {
                 return;
             }
             let resolved = result.ok().flatten();
@@ -882,27 +915,13 @@ fn install_effects(
         });
     });
 
+    let model_request_gen = StoredValue::new(0u64);
     Effect::new(move |_| {
-        let session_id = active_session.get();
-        let connection_id = session_id
-            .and_then(|id| {
-                sessions
-                    .get()
-                    .into_iter()
-                    .find(|session| session.id == id)
-                    .and_then(|session| session.connection_id)
-            })
-            .or_else(|| {
-                default_connection.get().or_else(|| {
-                    connections
-                        .get()
-                        .into_iter()
-                        .find(|connection| connection.enabled)
-                        .map(|connection| connection.id)
-                })
-            });
+        let request = model_request.get();
+        model_request_gen.update_value(|generation| *generation += 1);
+        let this_gen = model_request_gen.get_value();
         spawn_local(async move {
-            let models = match connection_id {
+            let models = match request.1 {
                 Some(id) => api
                     .with_value(Clone::clone)
                     .list_models(id)
@@ -910,7 +929,8 @@ fn install_effects(
                     .unwrap_or_default(),
                 None => Vec::new(),
             };
-            if active_session.get() == session_id {
+            if model_request_gen.get_value() == this_gen && model_request.get_untracked() == request
+            {
                 chat.models.set(models);
             }
         });

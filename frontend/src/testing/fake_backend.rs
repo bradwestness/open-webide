@@ -49,10 +49,21 @@ pub enum Call {
     },
 }
 
+pub type Deferred<T> = futures::channel::oneshot::Receiver<Result<T, String>>;
+
 type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, String>, String>>;
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub endpoint_latency_ms: RefCell<i32>,
+    pub project_results: RefCell<VecDeque<Deferred<Vec<Project>>>>,
+    pub connection_results: RefCell<VecDeque<Deferred<Vec<Connection>>>>,
+    pub session_results: RefCell<VecDeque<Deferred<Vec<ChatSession>>>>,
+    pub prompt_results: RefCell<VecDeque<Deferred<Vec<SystemPrompt>>>>,
+    pub model_results: RefCell<VecDeque<Deferred<Vec<ModelInfo>>>>,
+    pub context_results: RefCell<VecDeque<Deferred<Option<usize>>>>,
+    pub model_requests: RefCell<Vec<i64>>,
+    pub context_requests: RefCell<Vec<(i64, Option<String>)>>,
     pub sessions: RefCell<Vec<ChatSession>>,
     pub messages: RefCell<BTreeMap<i64, Vec<ConversationEntry>>>,
     pub projects: RefCell<Vec<Project>>,
@@ -149,6 +160,16 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "list_connections",
             });
+            let pending = self.connection_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into()));
+            }
+            let latency = *self.endpoint_latency_ms.borrow();
+            if latency > 0 {
+                crate::util::sleep_ms(latency).await;
+            }
             Ok(self.connections.borrow().clone())
         })
     }
@@ -217,17 +238,38 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "list_sessions",
             });
+            let pending = self.session_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into()));
+            }
+            let latency = *self.endpoint_latency_ms.borrow();
+            if latency > 0 {
+                crate::util::sleep_ms(latency).await;
+            }
             Ok(self.sessions.borrow().clone())
         })
     }
     fn list_models<'a>(
         &'a self,
-        _connection_id: i64,
+        connection_id: i64,
     ) -> LocalBoxFuture<'a, Result<Vec<ModelInfo>, String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {
                 method: "list_models",
             });
+            self.model_requests.borrow_mut().push(connection_id);
+            let pending = self.model_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into()));
+            }
+            let latency = *self.endpoint_latency_ms.borrow();
+            if latency > 0 {
+                crate::util::sleep_ms(latency).await;
+            }
             Ok(self.models.borrow().clone())
         })
     }
@@ -236,6 +278,16 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "list_system_prompts",
             });
+            let pending = self.prompt_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into()));
+            }
+            let latency = *self.endpoint_latency_ms.borrow();
+            if latency > 0 {
+                crate::util::sleep_ms(latency).await;
+            }
             Ok(self.system_prompts.borrow().clone())
         })
     }
@@ -306,6 +358,10 @@ impl Backend for FakeBackend {
             if let Some(result) = result {
                 return result.await.map_err(|error| error.to_string())?;
             }
+            let latency = *self.endpoint_latency_ms.borrow();
+            if latency > 0 {
+                crate::util::sleep_ms(latency).await;
+            }
             if let Some(error) = self.settings_load_error.borrow().clone() {
                 return Err(error);
             }
@@ -368,6 +424,16 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "list_projects",
             });
+            let pending = self.project_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into()));
+            }
+            let latency = *self.endpoint_latency_ms.borrow();
+            if latency > 0 {
+                crate::util::sleep_ms(latency).await;
+            }
             Ok(self.projects.borrow().clone())
         })
     }
@@ -804,12 +870,25 @@ impl Backend for FakeBackend {
     fn model_context<'a>(
         &'a self,
         connection_id: i64,
-        _model: Option<&'a str>,
+        model: Option<&'a str>,
     ) -> LocalBoxFuture<'a, Result<Option<usize>, String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {
                 method: "model_context",
             });
+            self.context_requests
+                .borrow_mut()
+                .push((connection_id, model.map(str::to_string)));
+            let pending = self.context_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into()));
+            }
+            let latency = *self.endpoint_latency_ms.borrow();
+            if latency > 0 {
+                crate::util::sleep_ms(latency).await;
+            }
             Ok(self
                 .connections
                 .borrow()

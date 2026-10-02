@@ -529,3 +529,148 @@ async fn stale_settings_load_cannot_enable_history_for_a_later_login() {
     assert!(!state.fake.calls.borrow().iter().any(|call| matches!(call,
         Call::SetSetting { key, .. } if key == "prompt_history")));
 }
+
+#[wasm_bindgen_test]
+async fn startup_latency_measurement() {
+    for fail in [false, true] {
+        let start = js_sys::Date::now();
+        let mounted = mount_test(move |state| {
+            *state.fake.endpoint_latency_ms.borrow_mut() = 200;
+            state.seed_project();
+            if fail {
+                *state.fake.settings_load_error.borrow_mut() = Some("unavailable".into());
+            }
+            install(&state);
+            view! { <div /> }
+        });
+        for _ in 0..200 {
+            if mounted.state.projects.projects_loaded.get_untracked() {
+                break;
+            }
+            openwebide_frontend::util::sleep_ms(10).await;
+        }
+        assert!(mounted.state.projects.projects_loaded.get_untracked());
+        for method in [
+            "get_settings",
+            "list_projects",
+            "list_connections",
+            "list_sessions",
+            "list_system_prompts",
+        ] {
+            assert_eq!(
+                mounted
+                    .state
+                    .fake
+                    .calls
+                    .borrow()
+                    .iter()
+                    .filter(|call| **call == Call::Request { method })
+                    .count(),
+                1
+            );
+        }
+        wasm_bindgen_test::console_log!(
+            "startup fail={}: {:.0} ms; calls={:?}",
+            fail,
+            js_sys::Date::now() - start,
+            mounted.state.fake.calls.borrow()
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn startup_reads_start_together_and_wait_for_settings_and_projects() {
+    let (settings_release, settings_pending) = futures::channel::oneshot::channel();
+    let (projects_release, projects_pending) = futures::channel::oneshot::channel();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        state
+            .fake
+            .settings_load_results
+            .borrow_mut()
+            .push_back(settings_pending);
+        state
+            .fake
+            .project_results
+            .borrow_mut()
+            .push_back(projects_pending);
+        install(&state);
+        view! { <div /> }
+    });
+    settle().await;
+    for method in [
+        "get_settings",
+        "list_projects",
+        "list_connections",
+        "list_sessions",
+        "list_system_prompts",
+    ] {
+        assert!(
+            mounted
+                .state
+                .fake
+                .calls
+                .borrow()
+                .contains(&Call::Request { method })
+        );
+    }
+    assert!(!mounted.state.projects.projects_loaded.get_untracked());
+    assert!(
+        mounted
+            .state
+            .projects
+            .open_tab_ids
+            .get_untracked()
+            .is_empty()
+    );
+    settings_release
+        .send(Ok(std::collections::BTreeMap::from([
+            ("open_tabs".into(), "[99,1,1]".into()),
+            ("active_project".into(), "99".into()),
+        ])))
+        .unwrap();
+    settle().await;
+    assert!(!mounted.state.projects.projects_loaded.get_untracked());
+    projects_release
+        .send(Ok(mounted.state.fake.projects.borrow().clone()))
+        .unwrap();
+    settle().await;
+    assert!(mounted.state.projects.projects_loaded.get_untracked());
+    assert_eq!(mounted.state.projects.open_tab_ids.get_untracked(), [1]);
+}
+
+#[wasm_bindgen_test]
+async fn logout_discards_deferred_startup_lists() {
+    let auth_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let slot = auth_slot.clone();
+    let (release, pending) = futures::channel::oneshot::channel();
+    let mounted = mount_test(move |state| {
+        state.fake.project_results.borrow_mut().push_back(pending);
+        install(&state);
+        slot.set(Some(expect_context::<AuthState>()));
+        view! { <div /> }
+    });
+    settle().await;
+    auth_slot.get().unwrap().logout();
+    release
+        .send(Ok(vec![openwebide_core::Project {
+            id: 7,
+            name: "stale".into(),
+            mode: openwebide_core::WorkspaceMode::Remote,
+            path: None,
+            user_id: None,
+            created_at: 0,
+        }]))
+        .unwrap();
+    settle().await;
+    assert!(mounted.state.projects.projects.get_untracked().is_empty());
+    assert!(!mounted.state.projects.projects_loaded.get_untracked());
+    assert!(
+        mounted
+            .state
+            .projects
+            .open_tab_ids
+            .get_untracked()
+            .is_empty()
+    );
+}
