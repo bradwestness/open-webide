@@ -22,25 +22,29 @@ use openwebide_core::{
     WebSearchResult,
 };
 use openwebide_llm::{LlmProvider, ProviderError, StreamChunk, ToolStreamChunk, completion_chunks};
+use send_wrapper::SendWrapper;
 
 use crate::backend::Api;
-use crate::local_fs::{BrowserFsaVfs, ForceSend};
+use crate::local_fs::BrowserFsaVfs;
 
 use crate::util::sleep_ms;
 
 /// An [`LlmProvider`] adapter that delegates completions to the backend's `/api/chat-tools`.
 pub struct BrowserLlmProvider {
-    api: Api,
+    // Local fields and futures stay on the browser spawn_local thread.
+    // SendWrapper checks access/poll/drop without changing native provider contracts.
+    api: SendWrapper<Api>,
     kind: ProviderKind,
-    bridge: Option<crate::bridge::BridgeConn>,
+    bridge: SendWrapper<Option<crate::bridge::BridgeConn>>,
 }
-
-unsafe impl Send for BrowserLlmProvider {}
-unsafe impl Sync for BrowserLlmProvider {}
 
 impl BrowserLlmProvider {
     pub fn new(api: Api, kind: ProviderKind, bridge: Option<crate::bridge::BridgeConn>) -> Self {
-        Self { api, kind, bridge }
+        Self {
+            api: SendWrapper::new(api),
+            kind,
+            bridge: SendWrapper::new(bridge),
+        }
     }
 }
 
@@ -50,7 +54,7 @@ impl LlmProvider for BrowserLlmProvider {
     }
 
     fn list_models(&self) -> impl Future<Output = Result<Vec<ModelInfo>, ProviderError>> + Send {
-        ForceSend(async move {
+        SendWrapper::new(async move {
             Err(ProviderError::NotImplemented(
                 "list_models not supported in browser provider".into(),
             ))
@@ -61,9 +65,9 @@ impl LlmProvider for BrowserLlmProvider {
         &self,
         request: &ChatRequest,
     ) -> impl Future<Output = Result<String, ProviderError>> + Send {
-        let api = self.api;
+        let api = *self.api;
         let request = request.clone();
-        ForceSend(async move {
+        SendWrapper::new(async move {
             match api.with_value(Clone::clone).chat_tools(&request).await {
                 Ok(completion) => match completion.response {
                     ChatResponse::Text(s) => Ok(s),
@@ -85,9 +89,9 @@ impl LlmProvider for BrowserLlmProvider {
         &self,
         request: &ChatRequest,
     ) -> impl Future<Output = Result<ChatCompletion, ProviderError>> + Send {
-        let api = self.api;
+        let api = *self.api;
         let request = request.clone();
-        ForceSend(async move {
+        SendWrapper::new(async move {
             api.with_value(Clone::clone)
                 .chat_tools(&request)
                 .await
@@ -99,7 +103,7 @@ impl LlmProvider for BrowserLlmProvider {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
-        if let Some(bridge) = &self.bridge
+        if let Some(bridge) = &*self.bridge
             && bridge.status().get_untracked()
                 == (crate::bridge::BridgeStatus::Ready { runs: true })
         {
@@ -115,17 +119,19 @@ impl LlmProvider for BrowserLlmProvider {
                     request: request.clone(),
                 })
                 .err();
-            return Box::pin(BrowserCompletionStream {
+            // Guard the whole stream so cancellation in CompletionGuard::drop
+            // is also restricted to the thread that created the bridge receiver.
+            return Box::pin(SendWrapper::new(BrowserCompletionStream {
                 receiver,
                 _guard: guard,
                 ended: false,
                 error,
-            });
+            }));
         }
-        let api = self.api;
+        let api = *self.api;
         let request = request.clone();
         Box::pin(
-            futures::stream::once(ForceSend(async move {
+            futures::stream::once(SendWrapper::new(async move {
                 let chunks = match api.with_value(Clone::clone).chat_tools(&request).await {
                     Ok(c) => completion_chunks(c).into_iter().map(Ok).collect::<Vec<_>>(),
                     Err(e) => vec![Err(ProviderError::Http(e))],
@@ -140,7 +146,7 @@ impl LlmProvider for BrowserLlmProvider {
         &self,
         _model: Option<&str>,
     ) -> impl Future<Output = Result<Option<usize>, ProviderError>> + Send {
-        ForceSend(async move { Ok(None) })
+        SendWrapper::new(async move { Ok(None) })
     }
 }
 
@@ -166,9 +172,6 @@ struct BrowserCompletionStream {
     ended: bool,
     error: Option<String>,
 }
-
-// The browser agent polls and drops this stream only on the WASM main thread.
-unsafe impl Send for BrowserCompletionStream {}
 
 impl Stream for BrowserCompletionStream {
     type Item = Result<ToolStreamChunk, ProviderError>;
@@ -224,13 +227,15 @@ impl WebClient for BrowserWebClient {
     ) -> impl Future<Output = Result<Vec<WebSearchResult>, String>> + Send {
         let api = self.api;
         let query = query.to_string();
-        ForceSend(async move { api.with_value(Clone::clone).web_search(&query, limit).await })
+        SendWrapper::new(
+            async move { api.with_value(Clone::clone).web_search(&query, limit).await },
+        )
     }
 
     fn fetch_page(&self, url: &str) -> impl Future<Output = Result<String, String>> + Send {
         let api = self.api;
         let url = url.to_string();
-        ForceSend(async move { api.with_value(Clone::clone).fetch_web_page(&url).await })
+        SendWrapper::new(async move { api.with_value(Clone::clone).fetch_web_page(&url).await })
     }
 }
 
@@ -278,7 +283,7 @@ impl BridgeClient for BrowserBridgeClient {
         })
         .to_string();
 
-        ForceSend(async move {
+        SendWrapper::new(async move {
             if !verified.load(Ordering::Relaxed) {
                 return Err(
                     "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
@@ -325,7 +330,7 @@ impl BridgeClient for BrowserBridgeClient {
         let credentials = self.credentials.clone();
         let verified = self.verified.clone();
         let payload = serde_json::json!({ "cwd": self.git_cwd() }).to_string();
-        ForceSend(async move {
+        SendWrapper::new(async move {
             if !verified.load(Ordering::Relaxed) {
                 return Err(
                     "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
@@ -361,7 +366,7 @@ impl BridgeClient for BrowserBridgeClient {
         let endpoint = format!("{}/git/diff", self.http_url);
         let credentials = self.credentials.clone();
         let verified = self.verified.clone();
-        ForceSend(async move {
+        SendWrapper::new(async move {
             if !verified.load(Ordering::Relaxed) {
                 return Err(
                     "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
@@ -407,7 +412,7 @@ impl BridgeClient for BrowserBridgeClient {
         let endpoint = format!("{}/git/commit", self.http_url);
         let credentials = self.credentials.clone();
         let verified = self.verified.clone();
-        ForceSend(async move {
+        SendWrapper::new(async move {
             if !verified.load(Ordering::Relaxed) {
                 return Err(
                     "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
@@ -448,7 +453,7 @@ impl BridgeClient for BrowserBridgeClient {
         let endpoint = format!("{}/git/checkout", self.http_url);
         let credentials = self.credentials.clone();
         let verified = self.verified.clone();
-        ForceSend(async move {
+        SendWrapper::new(async move {
             if !verified.load(Ordering::Relaxed) {
                 return Err(
                     "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
@@ -599,7 +604,7 @@ pub struct LocalCancelCheck {
 impl CancelCheck for LocalCancelCheck {
     fn cancelled(&self) -> impl Future<Output = ()> + Send {
         let flag = self.flag.clone();
-        ForceSend(async move {
+        SendWrapper::new(async move {
             while !flag.load(Ordering::Relaxed) {
                 crate::util::sleep_ms(100).await;
             }
@@ -608,7 +613,7 @@ impl CancelCheck for LocalCancelCheck {
 
     fn check(&self) -> impl Future<Output = bool> + Send {
         let flag = self.flag.clone();
-        ForceSend(async move { flag.load(Ordering::Relaxed) })
+        SendWrapper::new(async move { flag.load(Ordering::Relaxed) })
     }
 }
 
@@ -623,7 +628,7 @@ impl PermissionGate for LocalPermissionGate {
         let decisions = self.decisions.clone();
         let cancel = self.cancel.clone();
         let id = call.id.clone();
-        ForceSend(async move {
+        SendWrapper::new(async move {
             for _ in 0..3000 {
                 if cancel.load(Ordering::Relaxed) {
                     return false;

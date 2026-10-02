@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use std::sync::{Arc, Mutex};
 
 use openwebide_agent::{BridgeClient, policy::BRIDGE_TOOLS};
-use openwebide_core::CommandOutcome;
+use openwebide_core::{CommandOutcome, Vfs};
 use openwebide_frontend::{
     bridge::{BridgeConfig, BridgeCredentials},
     local_agent::{
@@ -26,7 +26,7 @@ export function probeFolder() {
         getFileHandle: async (name, options) => {
             if (!files.has(name) && !options?.create) throw new DOMException('missing', 'NotFoundError');
             files.set(name, files.get(name) || '');
-            return Object.assign(Object.create(FileSystemFileHandle.prototype), { createWritable: async () => Object.assign(Object.create(FileSystemWritableFileStream.prototype), {
+            return Object.assign(Object.create(FileSystemFileHandle.prototype), { getFile: async () => new File([files.get(name)], name), createWritable: async () => Object.assign(Object.create(FileSystemWritableFileStream.prototype), {
                 write: async value => { files.set(name, value); },
                 close: async () => {}
             }) });
@@ -90,6 +90,25 @@ extern "C" {
     fn probe_folder() -> JsValue;
     #[wasm_bindgen(js_name = probeDeleted)]
     fn probe_deleted(folder: &JsValue, name: &str) -> bool;
+}
+
+#[wasm_bindgen_test]
+async fn local_vfs_clones_read_write_and_drop_unpolled_operations() {
+    let folder = probe_folder();
+    let vfs = BrowserFsaVfs::new(folder.unchecked_into());
+    let clone = vfs.clone();
+    vfs.write("note.txt", "first λ").await.unwrap();
+    assert_eq!(clone.read("note.txt").await.unwrap(), "first λ");
+    drop(clone.write("note.txt", "must not run"));
+    assert_eq!(vfs.read("note.txt").await.unwrap(), "first λ");
+    clone.write("note.txt", "latest").await.unwrap();
+    drop(clone);
+    assert_eq!(vfs.read("note.txt").await.unwrap(), "latest");
+    vfs.delete("note.txt").await.unwrap();
+    assert!(matches!(
+        vfs.read("note.txt").await,
+        Err(openwebide_core::VfsError::NotFound(_))
+    ));
 }
 
 #[derive(Clone)]

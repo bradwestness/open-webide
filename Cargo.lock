@@ -1609,6 +1609,7 @@ dependencies = [
  "openwebide-frontend",
  "openwebide-llm",
  "pulldown-cmark",
+ "send_wrapper",
  "serde",
  "serde_json",
  "wasm-bindgen",

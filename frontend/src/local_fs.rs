@@ -1,9 +1,7 @@
 //! File System Access API helpers for local-mode workspaces. Paths are
 //! project-relative (the picked directory is the project root, path "").
 
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use send_wrapper::SendWrapper;
 
 use openwebide_core::{
     FileEntry, SearchHit, Vfs, VfsFuture, find_content_matches,
@@ -491,34 +489,20 @@ fn split_path(path: &str) -> (String, String) {
     }
 }
 
-/// Wrap a future so it implements Send and Sync in single-threaded WASM environments.
-pub struct ForceSend<F>(pub F);
-unsafe impl<F> Send for ForceSend<F> {}
-unsafe impl<F> Sync for ForceSend<F> {}
-
-impl<F: Future> Future for ForceSend<F> {
-    type Output = F::Output;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: Pinning projection is safe because inner future is pinned as long as ForceSend is pinned.
-        unsafe {
-            let inner = self.map_unchecked_mut(|s| &mut s.0);
-            inner.poll(cx)
-        }
-    }
-}
-
 /// A Vfs implementation backed by the browser File System Access API.
 #[derive(Clone)]
 pub struct BrowserFsaVfs {
-    root: FileSystemDirectoryHandle,
+    // Browser agents create, use and drop this on the spawn_local thread.
+    // SendWrapper checks that invariant for handles and the futures below;
+    // shared native Vfs contracts remain Send + Sync without unchecked claims.
+    root: SendWrapper<FileSystemDirectoryHandle>,
 }
-
-unsafe impl Send for BrowserFsaVfs {}
-unsafe impl Sync for BrowserFsaVfs {}
 
 impl BrowserFsaVfs {
     pub fn new(root: FileSystemDirectoryHandle) -> Self {
-        Self { root }
+        Self {
+            root: SendWrapper::new(root),
+        }
     }
 }
 
@@ -527,7 +511,7 @@ impl Vfs for BrowserFsaVfs {
         let root = self.root.clone();
         let from = from.to_string();
         let to = to.to_string();
-        Box::pin(ForceSend(async move {
+        Box::pin(SendWrapper::new(async move {
             let (from_parent, from_name) = split_path(&from);
             let from_dir = resolve_dir(&root, &from_parent)
                 .await
@@ -587,7 +571,7 @@ impl Vfs for BrowserFsaVfs {
     fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
         let root = self.root.clone();
         let path = path.to_string();
-        Box::pin(ForceSend(async move {
+        Box::pin(SendWrapper::new(async move {
             read(&root, &path)
                 .await
                 .map_err(crate::vfs_err::map_vfs_err)
@@ -598,7 +582,7 @@ impl Vfs for BrowserFsaVfs {
         let root = self.root.clone();
         let path = path.to_string();
         let content = content.to_string();
-        Box::pin(ForceSend(async move {
+        Box::pin(SendWrapper::new(async move {
             write(&root, &path, &content)
                 .await
                 .map_err(crate::vfs_err::map_vfs_err)
@@ -608,7 +592,7 @@ impl Vfs for BrowserFsaVfs {
     fn list<'a>(&'a self, dir: &'a str) -> VfsFuture<'a, Vec<FileEntry>> {
         let root = self.root.clone();
         let dir = dir.to_string();
-        Box::pin(ForceSend(async move {
+        Box::pin(SendWrapper::new(async move {
             list(&root, &dir).await.map_err(crate::vfs_err::map_vfs_err)
         }))
     }
@@ -616,7 +600,7 @@ impl Vfs for BrowserFsaVfs {
     fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
         let root = self.root.clone();
         let path = path.to_string();
-        Box::pin(ForceSend(async move {
+        Box::pin(SendWrapper::new(async move {
             create(&root, &path, is_dir)
                 .await
                 .map_err(crate::vfs_err::map_vfs_err)
@@ -626,7 +610,7 @@ impl Vfs for BrowserFsaVfs {
     fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()> {
         let root = self.root.clone();
         let path = path.to_string();
-        Box::pin(ForceSend(async move {
+        Box::pin(SendWrapper::new(async move {
             delete(&root, &path)
                 .await
                 .map_err(crate::vfs_err::map_vfs_err)
@@ -642,7 +626,7 @@ impl Vfs for BrowserFsaVfs {
         let root = self.root.clone();
         let query = query.to_string();
         let dir = dir.to_string();
-        Box::pin(ForceSend(async move {
+        Box::pin(SendWrapper::new(async move {
             search_content(&root, &query, &dir, opts)
                 .await
                 .map_err(crate::vfs_err::map_vfs_err)

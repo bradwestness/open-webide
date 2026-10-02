@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Guard local browser file operations and agent completions with originating-thread checks, including cancellation when a completion stream is dropped.
+
 - Reduce repeated recent-project filtering and statusline formatting work while preserving project order, telemetry text, and saved themes.
 
 - Make dialogs keyboard accessible with focus containment, stacked Escape handling, focus restoration, and keyboard folder navigation.

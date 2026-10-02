@@ -421,8 +421,8 @@ async fn local_completions_stream_cancel_and_report_disconnect() {
         messages: vec![],
         tools: vec![],
     };
-    let mut stream = provider.chat_tools_stream(&request);
-    let id = fake
+    let unpolled = provider.chat_tools_stream(&request);
+    let unpolled_id = fake
         .sent()
         .into_iter()
         .find_map(|message| match message {
@@ -430,12 +430,40 @@ async fn local_completions_stream_cancel_and_report_disconnect() {
             _ => None,
         })
         .unwrap();
+    drop(unpolled);
+    assert!(
+        fake.sent()
+            .contains(&BridgeClientMessage::CompletionCancel { id: unpolled_id })
+    );
+    let mut stream = provider.chat_tools_stream(&request);
+    let id = fake
+        .sent()
+        .into_iter()
+        .filter_map(|message| match message {
+            BridgeClientMessage::CompletionStart { id, .. } => Some(id),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
     fake.reply(BridgeServerMessage::CompletionChunk {
         id: id.clone(),
         chunk: ToolStreamChunk::Delta("token".into()),
     });
     assert!(
         matches!(stream.next().await, Some(Ok(ToolStreamChunk::Delta(text))) if text == "token")
+    );
+    let response = openwebide_core::ChatResponse::ToolCalls(vec![openwebide_core::ToolCall {
+        id: "read-1".into(),
+        name: "read_file".into(),
+        arguments: serde_json::json!({ "path": "note.txt" }).to_string(),
+    }]);
+    fake.reply(BridgeServerMessage::CompletionChunk {
+        id: id.clone(),
+        chunk: ToolStreamChunk::Response(response.clone()),
+    });
+    assert_eq!(
+        stream.next().await.unwrap().unwrap(),
+        ToolStreamChunk::Response(response)
     );
     drop(stream);
     assert!(
