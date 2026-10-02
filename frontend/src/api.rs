@@ -926,3 +926,90 @@ mod cancellation_tests {
         owner.cleanup();
     }
 }
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen(inline_js = r#"
+        export function streamFetch(wire) {
+            const original = window.fetch;
+            window.fetch = async () => {
+                const bytes = new TextEncoder().encode(wire);
+                let offset = 0;
+                return new Response(new ReadableStream({
+                    pull(controller) {
+                        if (offset < bytes.length) {
+                            controller.enqueue(bytes.slice(offset, ++offset));
+                        } else {
+                            controller.close();
+                        }
+                    }
+                }), {headers: {'Content-Type': 'text/event-stream'}});
+            };
+            return () => { window.fetch = original; };
+        }
+    "#)]
+    extern "C" {
+        #[wasm_bindgen(js_name = streamFetch)]
+        fn stream_fetch(wire: &str) -> js_sys::Function;
+    }
+
+    #[wasm_bindgen_test]
+    async fn fallback_reader_matches_websocket_events() {
+        let owner = leptos::prelude::Owner::new();
+        let api = owner.with(BackendApi::from_location);
+        for delimiter in ["\n", "\r\n", "\r"] {
+            let wire = [
+                ": heartbeat",
+                "",
+                "event: ignored",
+                "data:{\"kind\":\"delta\",",
+                "data: \"content\":\"café 🦀\"}",
+                "",
+                "data: invalid",
+                "",
+                "data:{\"kind\":\"cancelled\"}",
+                "",
+                "data:{\"kind\":\"error\",\"message\":\"unfinished\"}",
+                "",
+            ]
+            .join(delimiter);
+            let restore = stream_fetch(&wire);
+            let mut events = Vec::new();
+            let result = api
+                .send_message(1, "hello", None, None, None, |event| events.push(event))
+                .await;
+            restore.call0(&JsValue::UNDEFINED).unwrap();
+            result.unwrap();
+            let expected = [
+                RunEvent::Delta {
+                    content: "café 🦀".into(),
+                },
+                RunEvent::Cancelled,
+            ];
+            let ws_events: Vec<_> = expected
+                .iter()
+                .enumerate()
+                .map(|(index, event)| {
+                    let message = openwebide_core::BridgeServerMessage::RunEvent {
+                        run_id: "run".into(),
+                        seq: index as u64 + 1,
+                        event: event.clone(),
+                    };
+                    let decoded: openwebide_core::BridgeServerMessage =
+                        serde_json::from_str(&serde_json::to_string(&message).unwrap()).unwrap();
+                    let openwebide_core::BridgeServerMessage::RunEvent { event, .. } = decoded
+                    else {
+                        unreachable!()
+                    };
+                    event
+                })
+                .collect();
+            assert_eq!(events, ws_events);
+        }
+        owner.cleanup();
+    }
+}

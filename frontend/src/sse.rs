@@ -2,33 +2,53 @@ use openwebide_core::RunEvent;
 
 /// Parse the tagged run event in an SSE frame's data, ignoring the event line.
 pub fn parse_frame(frame: &str) -> Option<RunEvent> {
-    let mut data = String::new();
-    for line in frame.lines() {
-        if let Some(value) = line.strip_prefix("data: ") {
-            data.push_str(value.trim());
-        }
-    }
-    serde_json::from_str(&data).ok()
+    serde_json::from_str(&frame_data(frame)).ok()
+}
+
+fn frame_data(frame: &str) -> String {
+    frame
+        .split(['\r', '\n'])
+        .filter_map(|line| {
+            let value = line.strip_prefix("data:")?;
+            Some(value.strip_prefix(' ').unwrap_or(value))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub struct FrameBuffer {
-    pending: String,
+    line: String,
+    frame: String,
+    after_cr: bool,
 }
 
 impl FrameBuffer {
     pub fn new() -> Self {
         Self {
-            pending: String::new(),
+            line: String::new(),
+            frame: String::new(),
+            after_cr: false,
         }
     }
 
     pub fn push(&mut self, data: &str) -> Vec<String> {
-        self.pending.push_str(data);
         let mut frames = Vec::new();
-        while let Some(pos) = self.pending.find("\n\n") {
-            let frame = self.pending[..pos].to_string();
-            self.pending.drain(..pos + 2);
-            frames.push(frame);
+        for ch in data.chars() {
+            let after_cr = std::mem::replace(&mut self.after_cr, ch == '\r');
+            if ch == '\n' && after_cr {
+                continue;
+            }
+            if matches!(ch, '\r' | '\n') {
+                if self.line.is_empty() {
+                    frames.push(std::mem::take(&mut self.frame));
+                } else {
+                    self.frame.push_str(&self.line);
+                    self.frame.push('\n');
+                    self.line.clear();
+                }
+            } else {
+                self.line.push(ch);
+            }
         }
         frames
     }
@@ -91,26 +111,73 @@ mod tests {
 
     #[test]
     fn every_byte_split_preserves_utf8_and_frame_boundaries() {
-        let wire = "event: delta\ndata: {\"kind\":\"delta\",\"content\":\"café 🦀\"}\n\nevent: cancelled\ndata: {\"kind\":\"cancelled\"}\n\n";
+        let lf_wire = "event: delta\ndata:{\"kind\":\"delta\",\ndata: \"content\":\"café 🦀\"}\n\nevent: cancelled\ndata: {\"kind\":\"cancelled\"}\n\n";
         let expected = vec![
             RunEvent::Delta {
                 content: "café 🦀".into(),
             },
             RunEvent::Cancelled,
         ];
-        for split in 0..=wire.len() {
-            let mut decoder = Utf8Decoder::new();
-            let mut buffer = FrameBuffer::new();
-            let mut events = Vec::new();
-            for chunk in [&wire.as_bytes()[..split], &wire.as_bytes()[split..]] {
-                for frame in buffer.push(&decoder.push(chunk)) {
+        for delimiter in ["\n", "\r\n", "\r"] {
+            let wire = lf_wire.replace('\n', delimiter);
+            for split in 0..=wire.len() {
+                let mut decoder = Utf8Decoder::new();
+                let mut buffer = FrameBuffer::new();
+                let mut events = Vec::new();
+                for chunk in [&wire.as_bytes()[..split], &wire.as_bytes()[split..]] {
+                    for frame in buffer.push(&decoder.push(chunk)) {
+                        events.push(parse_frame(&frame).unwrap());
+                    }
+                }
+                for frame in buffer.push(&decoder.finish()) {
                     events.push(parse_frame(&frame).unwrap());
                 }
+                assert_eq!(events, expected, "split at byte {split}");
             }
-            for frame in buffer.push(&decoder.finish()) {
-                events.push(parse_frame(&frame).unwrap());
-            }
-            assert_eq!(events, expected, "split at byte {split}");
+        }
+    }
+    #[test]
+    fn data_fields_preserve_newlines_and_whitespace() {
+        assert_eq!(
+            frame_data(
+                ": comment\ndata:  first  \ndata:second\ndata:\ndata: \nretry: 10\nid: ignored"
+            ),
+            " first  \nsecond\n\n"
+        );
+        for frame in [
+            "",
+            ": comment",
+            "data:",
+            "data: ",
+            "data: not json",
+            "data: {\"kind\":\"unknown\"}",
+            "data: {\"kind\":\"delta\",\"content\":\"split\ndata: string\"}",
+        ] {
+            assert_eq!(parse_frame(frame), None);
+        }
+    }
+
+    #[test]
+    fn only_blank_line_terminated_frames_are_dispatched() {
+        for delimiter in ["\n", "\r\n", "\r"] {
+            let mut buffer = FrameBuffer::new();
+            let wire = [
+                ": comment",
+                "",
+                "",
+                "data:{\"kind\":\"cancelled\"}",
+                "",
+                "data:{\"kind\":\"error\",\"message\":\"unfinished\"}",
+                "",
+            ]
+            .join(delimiter);
+            let events: Vec<_> = buffer
+                .push(&wire)
+                .iter()
+                .filter_map(|frame| parse_frame(frame))
+                .collect();
+            assert_eq!(events, [RunEvent::Cancelled]);
+            assert!(buffer.push("").is_empty());
         }
     }
 }

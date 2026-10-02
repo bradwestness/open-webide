@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Handle CRLF and CR fallback chat streams and multi-line SSE data fields correctly.
+
 - Clarify Open local / Open remote with device-based tooltips, a remote folder-picker subtitle, and matching documentation.
 
 - Reduce the release WebAssembly download size with size-focused optimization.
