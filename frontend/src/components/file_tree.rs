@@ -138,7 +138,7 @@ pub fn FileTree(
                         }
                     }
                 >
-                    "📂"
+                    "👁️"
                 </button>
             </div>
             <Show when=move || needs_grant.get() fallback=|| ()>
