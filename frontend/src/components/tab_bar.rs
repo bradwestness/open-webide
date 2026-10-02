@@ -24,10 +24,18 @@ pub fn TabBar(
     view! {
         <div class="tabbar-wrap">
             <div class="tabbar">
-                <button class="tab-action" on:click=move |_| on_open_local.run(())>
+                <button
+                    class="tab-action"
+                    title="Open a project on this device"
+                    on:click=move |_| on_open_local.run(())
+                >
                     "Open local"
                 </button>
-                <button class="tab-action" on:click=move |_| on_open_remote.run(())>
+                <button
+                    class="tab-action"
+                    title="Open a project on the device hosting Open WebIDE"
+                    on:click=move |_| on_open_remote.run(())
+                >
                     "Open remote"
                 </button>
                 <button

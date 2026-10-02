@@ -151,7 +151,7 @@ The IDE operates on a project folder. Where that folder lives defines two
 modes; the UI is mode-agnostic, sitting behind a `Workspace` trait in the
 frontend with one impl per mode.
 
-**Remote mode** — the folder lives on the machine running Open WebIDE / the host:
+**Remote mode** — remote = a project on the device hosting Open WebIDE:
 
 - Operates on repositories inside Spin's configured filesystem mount. The bridge
   uses the same workspace root for commands and Git. Multi-project tabs switch
@@ -162,7 +162,7 @@ frontend with one impl per mode.
   directory with full access to host Git identity and toolchains.
 - The LLM also runs on the host (outbound HTTP to localhost is already permitted).
 
-**Local mode** — the folder is on the machine running the browser:
+**Local mode** — local = a project on this device (the browser's File System Access API):
 
 - File System Access API (`window.showDirectoryPicker()`) via web-sys /
   `wasm_bindgen` interop; the directory handle is persisted in IndexedDB and
@@ -184,14 +184,16 @@ Constraints & Device Roles:
   exact same projects and chat sessions stored in backend SQLite. You can prompt
   the agent at your desk, walk away, and monitor streaming tool steps and review
   diffs on your mobile device without any session desynchronization.
-- **Local Mode Role:** Local mode is specifically designed for accessing an
-  Open WebIDE deployment from a laptop with private, on-disk repositories that you
+- **Local Mode Role:** local = a project on this device (the browser's File System Access API).
+  Access an Open WebIDE deployment with private, on-disk repositories that you
   do not want to mount or upload to the host.
 - The File System Access API is Chromium-only (Chrome/Edge). Mobile browsers
   (iOS Safari, Android Chrome) do not support directory picking, making mobile
   devices natural Remote-mode control clients.
-- Keep the modes coherent: remote = files + LLM on the host, local = files +
-  LLM on the laptop. A mixed split (remote files, local LLM) is deferred.
+- Keep the modes coherent: remote = a project on the device hosting Open WebIDE;
+  local = a project on this device (the browser's File System Access API).
+  The LLM runs on the hosting device in remote mode and on this device in local mode.
+  A mixed split (remote files, local LLM) is deferred.
 
 ### Chat execution and streaming
 

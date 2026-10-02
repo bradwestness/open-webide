@@ -45,7 +45,10 @@ pub fn FileBrowser(on_close: Callback<()>, on_select: Callback<String>) -> impl 
         <div class="modal-overlay" on:click=move |_| on_close.run(())>
             <div class="modal" on:click=move |e: web_sys::MouseEvent| e.stop_propagation()>
                 <div class="modal-header">
-                    <h2>"Choose a folder"</h2>
+                    <div>
+                        <h2>"Choose a folder"</h2>
+                        <p class="empty">"On the device hosting Open WebIDE"</p>
+                    </div>
                     <button
                         class="icon-btn"
                         title="Close"

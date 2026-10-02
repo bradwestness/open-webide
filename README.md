@@ -29,11 +29,11 @@ any phone, tablet, or laptop into a seamless remote control:
    The frontend and backend run on WebAssembly, with a native Rust execution
    bridge bundled beside Spin. No Node.js runtime or Python daemon is needed.
 4. **Dual Workspace Modes:**
-   - **Remote mode (Primary):** The workspace lives on the host machine
+   - **Remote mode (Primary):** remote = a project on the device hosting Open WebIDE
      (your workstation, home lab, or server). Access to repositories under the configured workspace
      mount, with multi-device shared sessions out of the box.
-   - **Local mode:** The workspace lives on the browser's machine, accessed
-     directly via the File System Access API (Chromium). Keep client repositories
+   - **Local mode:** local = a project on this device (the browser's File System Access API).
+     Requires Chromium. Keep client repositories
      strictly on your laptop's local SSD without mounting them to the host.
      Command and git tools find the picked folder using a temporary probe file,
      verified at each run and removed afterwards. Start the bridge with
@@ -58,12 +58,12 @@ Working:
   - Accept/reject controls for agent file modifications
   - Multi-project tabs (Rider-style) with per-project state preservation
 - **TUI-driven chat surface:** a terminal-native stream layout, slash commands (`/model`, `/tokens`, `/clear`, `/test`, `/diff`, `/commit`, `/checkout`, `/branch`, `/sync`), active-editor-context injection, and a statusline with live token/speed telemetry and a context-window gauge, backed by real per-call provider usage and an optional per-connection **context limit** (sent to Ollama as `options.num_ctx`)
-- **Virtual File System (`Vfs`):** one shared abstraction over Remote (host filesystem) and Local (browser File System Access API) workspaces, including workspace-wide search, live web search, and a documentation-page reader
+- **Virtual File System (`Vfs`):** one shared abstraction over workspaces: remote = a project on the device hosting Open WebIDE; local = a project on this device (the browser's File System Access API). Includes workspace-wide search, live web search, and a documentation-page reader
 - **WebSocket terminal bridge:** a native `openwebide-bridge` daemon giving the UI an interactive terminal and the agent a `run_command` tool, plus host Git operations against the real repository
 - **Git integration:** branch/ahead-behind status bar, file tree status badges, and diff/branch/commit/checkout/sync
-- **Both workspace modes:** Remote host mounts via Spin filesystem preopens, and Local browser mode via the File System Access API (persisted via IndexedDB)
+- **Both workspace modes:** remote = a project on the device hosting Open WebIDE (Spin filesystem preopens); local = a project on this device (the browser's File System Access API), with directory handles persisted via IndexedDB
 - **Local user accounts:** Self-hosted user registration and login with argon2id password hashing, HttpOnly cookie sessions, and user-scoped data
-- **Custom dialogs & remote file browser:** Themed confirmation, prompt, and remote host file browser modals replacing browser-native dialogs
+- **Custom dialogs & remote file browser:** Themed confirmation, prompt, and file browser modals for a project on the device hosting Open WebIDE, replacing browser-native dialogs
 - **Single-container deployment:** Multi-stage Dockerfile and docker-compose packaging frontend, backend, SQLite, and the execution bridge into one image
 
 See [docs/roadmap.md](docs/roadmap.md) for what's in flight and queued up next
