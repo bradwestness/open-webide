@@ -1,3 +1,4 @@
+use super::modal::Modal;
 pub use crate::state::ui::PromptRequest;
 use crate::state::ui::UiState;
 use leptos::prelude::*;
@@ -12,55 +13,42 @@ pub fn PromptDialog() -> impl IntoView {
     let req = ui.prompt.read_only();
     let on_close = Callback::new(move |()| ui.clear_prompt());
     let input_ref = NodeRef::<leptos::html::Input>::new();
-    // Pre-fill the field's initial value and focus it when the dialog opens.
+    // Pre-fill the field's initial value when the dialog opens.
     Effect::new(move || {
         if req.get().is_some()
             && let Some(el) = input_ref.get()
         {
             let value = req.with(|r| r.as_ref().map(|r| r.value.clone()).unwrap_or_default());
             el.set_value(&value);
-            let _ = el.focus();
         }
     });
     view! {
         <Show when=move || req.get().is_some() fallback=|| ()>
-            <div class="modal-overlay" on:click=move |_| on_close.run(())>
-                <div class="modal modal-sm" on:click=move |e: web_sys::MouseEvent| e.stop_propagation()>
-                    <div class="modal-header">
-                        <h2>{move || req.with(|r| r.as_ref().map(|r| r.title.clone()).unwrap_or_default())}</h2>
-                        <button
-                            class="icon-btn"
-                            title="Close"
-                            on:click=move |_| on_close.run(())
-                        >
-                            "✕"
-                        </button>
-                    </div>
-                    <div class="modal-body">
-                        <input
-                            type="text"
-                            class="form-input"
-                            placeholder=move || req.with(|r| r.as_ref().map(|r| r.placeholder.clone()).unwrap_or_default())
-                            node_ref=input_ref
-                            on:keydown=move |e: leptos::ev::KeyboardEvent| {
-                                if e.key() == "Enter" {
-                                    e.prevent_default();
-                                    submit_prompt(&req, &input_ref, &on_close);
-                                }
+            <Modal title=Signal::derive(move || req.with(|r| r.as_ref().map(|r| r.title.clone()).unwrap_or_default())) on_close=on_close class="modal modal-sm">
+                <div class="modal-body">
+                    <input
+                        type="text"
+                        class="form-input"
+                        placeholder=move || req.with(|r| r.as_ref().map(|r| r.placeholder.clone()).unwrap_or_default())
+                        node_ref=input_ref
+                        on:keydown=move |e: leptos::ev::KeyboardEvent| {
+                            if e.key() == "Enter" {
+                                e.prevent_default();
+                                submit_prompt(&req, &input_ref, &on_close);
                             }
-                        />
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn" on:click=move |_| on_close.run(())>"Cancel"</button>
-                        <button
-                            class="btn send"
-                            on:click=move |_| submit_prompt(&req, &input_ref, &on_close)
-                        >
-                            {move || req.with(|r| r.as_ref().map(|r| r.submit_label.clone()).unwrap_or_else(|| "Create".to_string()))}
-                        </button>
-                    </div>
+                        }
+                    />
                 </div>
-            </div>
+                <div class="modal-footer">
+                    <button class="btn" on:click=move |_| on_close.run(())>"Cancel"</button>
+                    <button
+                        class="btn send"
+                        on:click=move |_| submit_prompt(&req, &input_ref, &on_close)
+                    >
+                        {move || req.with(|r| r.as_ref().map(|r| r.submit_label.clone()).unwrap_or_else(|| "Create".to_string()))}
+                    </button>
+                </div>
+            </Modal>
         </Show>
     }
 }

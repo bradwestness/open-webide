@@ -4,6 +4,7 @@ mod confirm_dialog;
 mod editor;
 mod file_browser;
 mod file_tree;
+pub(crate) mod modal;
 mod panel_resizer;
 mod prompt_dialog;
 mod settings;

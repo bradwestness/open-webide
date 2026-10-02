@@ -36,3 +36,6 @@ mod idb;
 
 #[path = "components/ui.rs"]
 mod ui;
+
+#[path = "components/modals.rs"]
+mod modals;

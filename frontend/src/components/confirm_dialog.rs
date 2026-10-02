@@ -1,3 +1,4 @@
+use super::modal::Modal;
 use crate::state::ui::UiState;
 use leptos::prelude::*;
 
@@ -11,39 +12,27 @@ pub fn ConfirmDialog() -> impl IntoView {
     let on_close = Callback::new(move |()| ui.clear_confirm());
     view! {
         <Show when=move || req.get().is_some() fallback=|| ()>
-            <div class="modal-overlay" on:click=move |_| on_close.run(())>
-                <div class="modal modal-sm" on:click=move |e: web_sys::MouseEvent| e.stop_propagation()>
-                    <div class="modal-header">
-                        <h2>{move || req.with(|r| r.as_ref().map(|r| r.title.clone()).unwrap_or_default())}</h2>
-                        <button
-                            class="icon-btn"
-                            title="Close"
-                            on:click=move |_| on_close.run(())
-                        >
-                            "✕"
-                        </button>
-                    </div>
-                    <div class="modal-body">
-                        <p class="confirm-message">
-                            {move || req.with(|r| r.as_ref().map(|r| r.message.clone()).unwrap_or_default())}
-                        </p>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn" on:click=move |_| on_close.run(())>"Cancel"</button>
-                        <button
-                            class="btn danger"
-                            on:click=move |_| {
-                                if let Some(r) = req.get() {
-                                    r.action.run(());
-                                }
-                                on_close.run(());
-                            }
-                        >
-                            {move || req.with(|r| r.as_ref().map(|r| r.confirm_label.clone()).unwrap_or_else(|| "Confirm".to_string()))}
-                        </button>
-                    </div>
+            <Modal title=Signal::derive(move || req.with(|r| r.as_ref().map(|r| r.title.clone()).unwrap_or_default())) on_close=on_close class="modal modal-sm" describedby="confirm-description">
+                <div class="modal-body">
+                    <p class="confirm-message" id="confirm-description">
+                        {move || req.with(|r| r.as_ref().map(|r| r.message.clone()).unwrap_or_default())}
+                    </p>
                 </div>
-            </div>
+                <div class="modal-footer">
+                    <button class="btn" on:click=move |_| on_close.run(())>"Cancel"</button>
+                    <button
+                        class="btn danger"
+                        on:click=move |_| {
+                            if let Some(r) = req.get() {
+                                r.action.run(());
+                            }
+                            on_close.run(());
+                        }
+                    >
+                        {move || req.with(|r| r.as_ref().map(|r| r.confirm_label.clone()).unwrap_or_else(|| "Confirm".to_string()))}
+                    </button>
+                </div>
+            </Modal>
         </Show>
     }
 }

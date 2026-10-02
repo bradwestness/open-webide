@@ -1,3 +1,4 @@
+use super::modal::Modal;
 use crate::state::settings::{SettingsState, Theme};
 use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
@@ -55,183 +56,171 @@ pub fn Settings(
     });
 
     view! {
-        <div class="modal-overlay" on:click=move |_| on_close.run(())>
-            <div class="modal" on:click=move |e: web_sys::MouseEvent| e.stop_propagation()>
-                <div class="modal-header">
-                    <h2>"Settings"</h2>
-                    <button
-                        class="icon-btn"
-                        title="Close"
-                        on:click=move |_| on_close.run(())
-                    >
-                        "✕"
-                    </button>
+        <Modal title=Signal::derive(|| "Settings".to_string()) on_close=on_close>
+            <div class="modal-body">
+                <div class="setting-row">
+                    <span class="setting-label">"Theme"</span>
+                    <div class="mode-picker">
+                        <label
+                            class=move || {
+                                if theme.get() == Theme::System {
+                                    "mode-opt active".to_string()
+                                } else {
+                                    "mode-opt".to_string()
+                                }
+                            }
+                        >
+                            <input
+                                type="radio"
+                                name="theme"
+                                checked=move || theme.get() == Theme::System
+                                on:click=move |_| on_set_theme.run("system".to_string())
+                            />
+                            "System"
+                        </label>
+                        <label
+                            class=move || {
+                                if theme.get() == Theme::Dark {
+                                    "mode-opt active".to_string()
+                                } else {
+                                    "mode-opt".to_string()
+                                }
+                            }
+                        >
+                            <input
+                                type="radio"
+                                name="theme"
+                                checked=move || theme.get() == Theme::Dark
+                                on:click=move |_| on_set_theme.run("dark".to_string())
+                            />
+                            "Dark"
+                        </label>
+                        <label
+                            class=move || {
+                                if theme.get() == Theme::Light {
+                                    "mode-opt active".to_string()
+                                } else {
+                                    "mode-opt".to_string()
+                                }
+                            }
+                        >
+                            <input
+                                type="radio"
+                                name="theme"
+                                checked=move || theme.get() == Theme::Light
+                                on:click=move |_| on_set_theme.run("light".to_string())
+                            />
+                            "Light"
+                        </label>
+                    </div>
                 </div>
-                <div class="modal-body">
-                    <div class="setting-row">
-                        <span class="setting-label">"Theme"</span>
-                        <div class="mode-picker">
-                            <label
-                                class=move || {
-                                    if theme.get() == Theme::System {
-                                        "mode-opt active".to_string()
-                                    } else {
-                                        "mode-opt".to_string()
-                                    }
-                                }
-                            >
-                                <input
-                                    type="radio"
-                                    name="theme"
-                                    checked=move || theme.get() == Theme::System
-                                    on:click=move |_| on_set_theme.run("system".to_string())
-                                />
-                                "System"
-                            </label>
-                            <label
-                                class=move || {
-                                    if theme.get() == Theme::Dark {
-                                        "mode-opt active".to_string()
-                                    } else {
-                                        "mode-opt".to_string()
-                                    }
-                                }
-                            >
-                                <input
-                                    type="radio"
-                                    name="theme"
-                                    checked=move || theme.get() == Theme::Dark
-                                    on:click=move |_| on_set_theme.run("dark".to_string())
-                                />
-                                "Dark"
-                            </label>
-                            <label
-                                class=move || {
-                                    if theme.get() == Theme::Light {
-                                        "mode-opt active".to_string()
-                                    } else {
-                                        "mode-opt".to_string()
-                                    }
-                                }
-                            >
-                                <input
-                                    type="radio"
-                                    name="theme"
-                                    checked=move || theme.get() == Theme::Light
-                                    on:click=move |_| on_set_theme.run("light".to_string())
-                                />
-                                "Light"
-                            </label>
-                        </div>
-                    </div>
 
-                    <div class="setting-row">
-                        <span class="setting-label">"Default connection"</span>
-                        <select
-                            class="form-input"
-                            node_ref=conn_ref
-                            on:change=move |e: web_sys::Event| {
-                                if let Some(target) = e.target()
-                                    && let Some(sel) = target.dyn_ref::<web_sys::HtmlSelectElement>()
-                                {
-                                    on_set_default_connection.run(sel.value().parse::<i64>().ok());
-                                }
+                <div class="setting-row">
+                    <span class="setting-label">"Default connection"</span>
+                    <select
+                        class="form-input"
+                        node_ref=conn_ref
+                        on:change=move |e: web_sys::Event| {
+                            if let Some(target) = e.target()
+                                && let Some(sel) = target.dyn_ref::<web_sys::HtmlSelectElement>()
+                            {
+                                on_set_default_connection.run(sel.value().parse::<i64>().ok());
                             }
-                        >
-                            <option value="">"(none)"</option>
-                            {connections
-                                .get()
-                                .into_iter()
-                                .map(|c| {
-                                    let name = c.name.clone();
-                                    let value = c.id.to_string();
-                                    view! { <option value=value>{name}</option> }
-                                })
-                                .collect::<Vec<_>>()}
-                        </select>
-                    </div>
+                        }
+                    >
+                        <option value="">"(none)"</option>
+                        {connections
+                            .get()
+                            .into_iter()
+                            .map(|c| {
+                                let name = c.name.clone();
+                                let value = c.id.to_string();
+                                view! { <option value=value>{name}</option> }
+                            })
+                            .collect::<Vec<_>>()}
+                    </select>
+                </div>
 
-                    <div class="setting-row">
-                        <span class="setting-label">"Default system prompt"</span>
-                        <select
-                            class="form-input"
-                            node_ref=prompt_ref
-                            on:change=move |e: web_sys::Event| {
-                                if let Some(target) = e.target()
-                                    && let Some(sel) = target.dyn_ref::<web_sys::HtmlSelectElement>()
-                                {
-                                    on_set_default_prompt.run(sel.value().parse::<i64>().ok());
-                                }
+                <div class="setting-row">
+                    <span class="setting-label">"Default system prompt"</span>
+                    <select
+                        class="form-input"
+                        node_ref=prompt_ref
+                        on:change=move |e: web_sys::Event| {
+                            if let Some(target) = e.target()
+                                && let Some(sel) = target.dyn_ref::<web_sys::HtmlSelectElement>()
+                            {
+                                on_set_default_prompt.run(sel.value().parse::<i64>().ok());
                             }
-                        >
-                            <option value="">"(none)"</option>
-                            {system_prompts
-                                .get()
-                                .into_iter()
-                                .map(|p| {
-                                    let name = p.name.clone();
-                                    let value = p.id.to_string();
-                                    view! { <option value=value>{name}</option> }
-                                })
-                                .collect::<Vec<_>>()}
-                        </select>
-                    </div>
+                        }
+                    >
+                        <option value="">"(none)"</option>
+                        {system_prompts
+                            .get()
+                            .into_iter()
+                            .map(|p| {
+                                let name = p.name.clone();
+                                let value = p.id.to_string();
+                                view! { <option value=value>{name}</option> }
+                            })
+                            .collect::<Vec<_>>()}
+                    </select>
+                </div>
 
-                    <div class="setting-row">
-                        <span class="setting-label">"Bridge URL"</span>
+                <div class="setting-row">
+                    <span class="setting-label">"Bridge URL"</span>
+                    <input
+                        type="text"
+                        class="form-input"
+                        value=bridge_url
+                        on:change=move |e: web_sys::Event| {
+                            if let Some(target) = e.target()
+                                && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
+                            {
+                                on_set_bridge_url.run(input.value());
+                            }
+                        }
+                    />
+                </div>
+
+                <div class="setting-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
+                    <span class="setting-label">"Bridge pairing token"</span>
+                    <div style="display: flex; gap: 0.5rem; width: 100%;">
                         <input
-                            type="text"
+                            type="password"
                             class="form-input"
-                            value=bridge_url
+                            style="flex: 1;"
+                            value=pairing_token
                             on:change=move |e: web_sys::Event| {
                                 if let Some(target) = e.target()
                                     && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
                                 {
-                                    on_set_bridge_url.run(input.value());
+                                    let val = input.value();
+                                    set_pairing_token.set(val.clone());
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        let _ = crate::idb::set_bridge_pairing_token(&val).await;
+                                    });
                                 }
                             }
                         />
+                        <button
+                            class="btn stop"
+                            on:click=move |_| {
+                                set_pairing_token.set(String::new());
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let _ = crate::idb::delete_bridge_pairing_token().await;
+                                });
+                            }
+                        >
+                            "Clear"
+                        </button>
                     </div>
-
-                    <div class="setting-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
-                        <span class="setting-label">"Bridge pairing token"</span>
-                        <div style="display: flex; gap: 0.5rem; width: 100%;">
-                            <input
-                                type="password"
-                                class="form-input"
-                                style="flex: 1;"
-                                value=pairing_token
-                                on:change=move |e: web_sys::Event| {
-                                    if let Some(target) = e.target()
-                                        && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
-                                    {
-                                        let val = input.value();
-                                        set_pairing_token.set(val.clone());
-                                        wasm_bindgen_futures::spawn_local(async move {
-                                            let _ = crate::idb::set_bridge_pairing_token(&val).await;
-                                        });
-                                    }
-                                }
-                            />
-                            <button
-                                class="btn stop"
-                                on:click=move |_| {
-                                    set_pairing_token.set(String::new());
-                                    wasm_bindgen_futures::spawn_local(async move {
-                                        let _ = crate::idb::delete_bridge_pairing_token().await;
-                                    });
-                                }
-                            >
-                                "Clear"
-                            </button>
-                        </div>
-                        <div class="form-hint" style="color: var(--border-subtle); font-size: 0.85rem;">
-                            "Required only if your bridge daemon was started with OPENWEBIDE_BRIDGE_TOKEN to allow local execution (the laptop-companion case)."
-                        </div>
+                    <div class="form-hint" style="color: var(--border-subtle); font-size: 0.85rem;">
+                        "Required only if your bridge daemon was started with OPENWEBIDE_BRIDGE_TOKEN to allow local execution (the laptop-companion case)."
                     </div>
-
                 </div>
+
             </div>
-        </div>
+        </Modal>
     }
 }

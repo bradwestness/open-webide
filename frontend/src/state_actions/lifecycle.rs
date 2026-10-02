@@ -34,6 +34,9 @@ pub fn install_keyboard_shortcuts(workspace: WorkspaceState, chat: ChatState) {
     let _ = leptos::prelude::window_event_listener(
         leptos::ev::keydown,
         move |event: web_sys::KeyboardEvent| {
+            if crate::components::modal::modal_is_open() {
+                return;
+            }
             if (event.ctrl_key() || event.meta_key()) && event.key() == "`" {
                 event.prevent_default();
                 on_toggle_terminal();

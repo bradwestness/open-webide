@@ -1708,6 +1708,14 @@ textarea.form-input {
   user-select: none;
 }
 
+button.browser-item {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+}
+
 .browser-item.dir {
   cursor: pointer;
 }

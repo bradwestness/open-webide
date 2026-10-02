@@ -70,6 +70,7 @@ pub struct FakeBackend {
     pub messages: RefCell<BTreeMap<i64, Vec<ConversationEntry>>>,
     pub projects: RefCell<Vec<Project>>,
     pub project_delete_error: RefCell<Option<String>>,
+    pub browse_entries: RefCell<BTreeMap<String, Vec<FileEntry>>>,
     pub files: RefCell<BTreeMap<(i64, String), String>>,
     pub directories: RefCell<BTreeSet<(i64, String)>>,
     pub models: RefCell<Vec<ModelInfo>>,
@@ -656,12 +657,17 @@ impl Backend for FakeBackend {
             Ok(())
         })
     }
-    fn browse<'a>(&'a self, _path: &'a str) -> LocalBoxFuture<'a, Result<Vec<FileEntry>, String>> {
+    fn browse<'a>(&'a self, path: &'a str) -> LocalBoxFuture<'a, Result<Vec<FileEntry>, String>> {
         Box::pin(async move {
             self.calls
                 .borrow_mut()
                 .push(Call::Request { method: "browse" });
-            Ok(Vec::new())
+            Ok(self
+                .browse_entries
+                .borrow()
+                .get(path)
+                .cloned()
+                .unwrap_or_default())
         })
     }
     fn search_content<'a>(
