@@ -7,20 +7,30 @@ theme and prompt history, and frontend performance & polish — moved to [CHANGE
 
 ## Next
 
-### Project instruction files (AGENTS.md / CLAUDE.md)
+### Agent startup context: environment, tools, project instructions
 
-Load a project's agent instructions the way a TUI agent launched in the project
-directory does, so the agent follows the repo's own rules. Today no host reads them.
+Give every run a generated startup prompt, so the agent knows where it is and what
+it can do the way a TUI agent launched in a project directory does. Today the system
+prompt is only the user's chosen prompt plus the date (`with_temporal_context`).
+Built mechanically at the start of each run, in every host (SSE backend,
+bridge-hosted runs, local mode), and appended after the user's system prompt:
 
-- **AGENTS.md** at the project root, the cross-tool standard (Codex, Gemini, Copilot).
-- **CLAUDE.md**, following `@path` imports as Claude Code does, deduplicated so a
-  `CLAUDE.md` that is just `@AGENTS.md` doesn't include it twice.
-- **Nested per-directory files:** also load `AGENTS.md` / `CLAUDE.md` from a
-  subdirectory when the agent reads or edits files under it.
-- Read through each host's VFS at the start of every run (SSE backend, bridge-hosted
-  runs, local mode) and add them to the system prompt as project instructions, after
-  the user's default system prompt. Size-capped, with a visible note when a file is
-  truncated, and shown in the session so it's clear which files were loaded.
+- **Environment:** project name and root, local or remote mode, whether the bridge is
+  connected, whether the project is a git repository (and its branch), the host OS
+  and shell where commands run, and the date.
+- **Tools:** one line per tool actually sent in this run's `tools`, with a short
+  when-to-use note (e.g. `run_command` only when a bridge can run it), generated from
+  the same list as the schemas so the two can't drift. No `list_tools` tool — the
+  schemas already reach the model; discovery waits for deferred loading
+  (`tool_search`, under the MCP client entry).
+- **Project instructions**, discovered through the host's VFS:
+  - `AGENTS.md` at the project root, the cross-tool standard (Codex, Gemini, Copilot);
+  - `CLAUDE.md`, following `@path` imports as Claude Code does, deduplicated so a
+    `CLAUDE.md` that is just `@AGENTS.md` doesn't include it twice;
+  - nested per-directory `AGENTS.md` / `CLAUDE.md`, added when the agent reads or
+    edits files under that directory.
+- Size-capped, with a visible note when something is truncated, and shown in the
+  session so it's clear what the agent was told.
 
 ### Ephemeral chat without a project
 
