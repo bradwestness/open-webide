@@ -23,6 +23,8 @@ pub struct WorkspaceActions {
     pub on_reject: Callback<()>,
     pub on_new_file: Callback<()>,
     pub on_new_dir: Callback<()>,
+    pub on_search_input: Callback<(String, SearchOptions)>,
+    pub on_cancel_search: Callback<()>,
     pub on_search: Callback<(String, SearchOptions)>,
     pub on_clear_search: Callback<()>,
 }
@@ -485,39 +487,74 @@ impl WorkspaceActions {
         });
 
         let search_gen = StoredValue::new(0u64);
-        let on_search = Callback::new(move |(query, options): (String, SearchOptions)| {
-            let this_generation = {
-                search_gen.update_value(|generation| *generation += 1);
-                search_gen.get_value()
-            };
-            let Some(project_id) = active_project.get() else {
-                return;
-            };
-            spawn_local(async move {
-                let Some(ws) = workspace_for.run(project_id) else {
-                    return;
-                };
-                match ws.search_content(&query, "", options).await {
-                    Ok(results) => {
-                        if active_project.get() == Some(project_id)
-                            && search_gen.get_value() == this_generation
-                        {
-                            workspace.search.set(Some(results));
-                        }
-                    }
-                    Err(error) => {
-                        if active_project.get() == Some(project_id)
-                            && search_gen.get_value() == this_generation
-                        {
-                            ui.toast.set(Some(error));
-                        }
-                    }
+        let search_timer = StoredValue::new(None::<leptos::leptos_dom::helpers::TimeoutHandle>);
+        let on_cancel_search = Callback::new(move |()| {
+            search_gen.try_update_value(|generation| *generation += 1);
+            search_timer.try_update_value(|timer| {
+                if let Some(timer) = timer.take() {
+                    timer.clear();
                 }
             });
         });
+        on_cleanup(move || on_cancel_search.run(()));
+        StoredValue::new_local(RenderEffect::new(move |_| {
+            active_project.get();
+            on_cancel_search.run(());
+        }));
 
+        let dispatch_search = Callback::new(
+            move |(project_id, query, options, generation): (i64, String, SearchOptions, u64)| {
+                spawn_local(async move {
+                    if active_project.try_get_untracked() != Some(Some(project_id))
+                        || search_gen.try_get_value() != Some(generation)
+                    {
+                        return;
+                    }
+                    let Some(ws) = workspace_for.run(project_id) else {
+                        return;
+                    };
+                    let result = ws.search_content(&query, "", options).await;
+                    if active_project.try_get_untracked() != Some(Some(project_id))
+                        || search_gen.try_get_value() != Some(generation)
+                    {
+                        return;
+                    }
+                    match result {
+                        Ok(results) => workspace.search.set(Some(results)),
+                        Err(error) => ui.toast.set(Some(error)),
+                    }
+                });
+            },
+        );
+        let on_search = Callback::new(move |(query, options): (String, SearchOptions)| {
+            on_cancel_search.run(());
+            if let Some(project_id) = active_project.get_untracked() {
+                dispatch_search.run((project_id, query, options, search_gen.get_value()));
+            }
+        });
+        let on_search_input = Callback::new(move |(query, options): (String, SearchOptions)| {
+            // Invalidate in-flight responses before the debounce interval starts.
+            on_cancel_search.run(());
+            if query.is_empty() {
+                workspace.search.set(None);
+                return;
+            }
+            let Some(project_id) = active_project.get_untracked() else {
+                return;
+            };
+            let generation = search_gen.get_value();
+            if let Ok(timer) = leptos::leptos_dom::helpers::set_timeout_with_handle(
+                move || {
+                    search_timer.set_value(None);
+                    dispatch_search.run((project_id, query, options, generation));
+                },
+                std::time::Duration::from_millis(250),
+            ) {
+                search_timer.set_value(Some(timer));
+            }
+        });
         let on_clear_search = Callback::new(move |()| {
-            search_gen.update_value(|generation| *generation += 1);
+            on_cancel_search.run(());
             workspace.search.set(None);
         });
 
@@ -533,6 +570,8 @@ impl WorkspaceActions {
             on_reject,
             on_new_file,
             on_new_dir,
+            on_search_input,
+            on_cancel_search,
             on_search,
             on_clear_search,
         }

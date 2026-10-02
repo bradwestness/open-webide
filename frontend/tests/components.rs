@@ -27,3 +27,6 @@ mod persistence;
 
 #[path = "components/editor.rs"]
 mod editor;
+
+#[path = "components/search.rs"]
+mod search;

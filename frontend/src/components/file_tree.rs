@@ -17,12 +17,15 @@ pub fn FileTree(
     on_open: Callback<String>,
     on_new_file: Callback<()>,
     on_new_dir: Callback<()>,
+    on_search_input: Callback<(String, SearchOptions)>,
+    on_cancel_search: Callback<()>,
     on_search: Callback<(String, SearchOptions)>,
     include_ignored: ReadSignal<bool>,
     on_toggle_include_ignored: Callback<()>,
     on_clear_search: Callback<()>,
     #[prop(optional)] on_grant_access: Option<Callback<()>>,
 ) -> impl IntoView {
+    on_cleanup(move || on_cancel_search.run(()));
     let workspace = expect_context::<WorkspaceState>();
     let projects = expect_context::<ProjectsState>();
     let git = expect_context::<GitState>();
@@ -106,7 +109,7 @@ pub fn FileTree(
                             if q.is_empty() {
                                 on_clear_search.run(());
                             } else {
-                                on_search.run((
+                                on_search_input.run((
                                     q,
                                     SearchOptions {
                                         include_ignored: include_ignored.get(),

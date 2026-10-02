@@ -62,6 +62,8 @@ pub struct FakeBackend {
     pub prompt_results: RefCell<VecDeque<Deferred<Vec<SystemPrompt>>>>,
     pub model_results: RefCell<VecDeque<Deferred<Vec<ModelInfo>>>>,
     pub context_results: RefCell<VecDeque<Deferred<Option<usize>>>>,
+    pub search_results: RefCell<VecDeque<Deferred<Vec<SearchHit>>>>,
+    pub search_requests: RefCell<Vec<(i64, String, SearchOptions)>>,
     pub model_requests: RefCell<Vec<i64>>,
     pub context_requests: RefCell<Vec<(i64, Option<String>)>>,
     pub sessions: RefCell<Vec<ChatSession>>,
@@ -660,15 +662,24 @@ impl Backend for FakeBackend {
     }
     fn search_content<'a>(
         &'a self,
-        _project_id: i64,
-        _query: &'a str,
+        project_id: i64,
+        query: &'a str,
         _path: &'a str,
-        _opts: SearchOptions,
+        opts: SearchOptions,
     ) -> LocalBoxFuture<'a, Result<Vec<SearchHit>, String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {
                 method: "search_content",
             });
+            self.search_requests
+                .borrow_mut()
+                .push((project_id, query.into(), opts));
+            let result = self.search_results.borrow_mut().pop_front();
+            if let Some(result) = result {
+                return result
+                    .await
+                    .map_err(|_| "search response dropped".to_string())?;
+            }
             Ok(Vec::new())
         })
     }

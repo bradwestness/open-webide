@@ -154,6 +154,8 @@ pub fn App() -> impl IntoView {
         on_reject,
         on_new_file,
         on_new_dir,
+        on_search_input,
+        on_cancel_search,
         on_search,
         on_clear_search,
         ..
@@ -306,6 +308,8 @@ pub fn App() -> impl IntoView {
                     on_open=request_open
                     on_new_file=on_new_file
                     on_new_dir=on_new_dir
+                    on_search_input=on_search_input
+                    on_cancel_search=on_cancel_search
                     on_search=on_search
                     on_clear_search=on_clear_search
                     include_ignored=include_ignored_search.read_only()

@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Added
 
+- Debounce file-search typing by 250 ms while keeping clearing and ignored-folder toggles immediate.
+
 - Load workspace settings and lists in parallel, and avoid redundant model requests when switching or renaming sessions on the same connection.
 
 - Render terminal output incrementally with 10,000 lines of scrollback, split ANSI colour support, recovery from unfinished controls when processes exit or restart, progress-line updates, and scrolling that follows only near the bottom.
