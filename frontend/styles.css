@@ -2156,13 +2156,26 @@ button.browser-item {
 
 .tui-spinner {
   display: inline-block;
-  animation: tui-spin 1s steps(8) infinite;
+  min-width: 1ch;
   color: var(--accent);
 }
 
+/* Braille frame cycling; browsers without animatable `content` show the
+   static base frame. */
+.tui-spinner::after {
+  content: "⠋";
+  animation: tui-spin 1s step-end infinite;
+}
+
 @keyframes tui-spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  0% { content: "⠋"; }
+  12.5% { content: "⠙"; }
+  25% { content: "⠹"; }
+  37.5% { content: "⠸"; }
+  50% { content: "⠼"; }
+  62.5% { content: "⠴"; }
+  75% { content: "⠦"; }
+  87.5% { content: "⠧"; }
 }
 
 .tui-think-badge {

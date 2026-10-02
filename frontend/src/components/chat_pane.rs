@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use js_sys::Date;
+
 use crate::state::{chat::ChatState, layout::LayoutState, projects::ProjectsState};
 use leptos::prelude::*;
 use openwebide_core::{
@@ -9,6 +13,17 @@ use web_sys::wasm_bindgen::JsCast;
 pub use crate::conversation::{ConversationItem, ToolStepResult};
 
 pub(crate) use crate::markdown::render as render_markdown;
+
+/// Format elapsed seconds as `Xs`, `YmXs`, or `ZhYmXs` depending on magnitude.
+fn format_elapsed(secs: u32) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{}m{}s", secs / 3600, (secs % 3600) / 60, secs % 60)
+    }
+}
 
 /// Render the diff for a file edit: the changed path and the removed/added lines.
 fn render_diff_view(diff: FileDiff) -> impl IntoView {
@@ -73,6 +88,42 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
     let is_thinking_active = Memo::new(move |_| parsed.with(|parsed| parsed.is_thinking));
     let thinking_expanded = RwSignal::new(false);
 
+    // Elapsed time of the live thinking phase: the timer runs only while the
+    // model streams reasoning, then the last value is frozen for the summary.
+    // `std::time::Instant` is unimplemented on wasm32, so track the start as
+    // `Date::now()` milliseconds instead.
+    let started: RwSignal<Option<f64>> = RwSignal::new(None);
+    let elapsed_secs = RwSignal::new(0u32);
+    let timer: RwSignal<Option<IntervalHandle>> = RwSignal::new(None);
+    // The interval runs for the lifetime of the view; the callback is a no-op
+    // until thinking is active, so no separate start/stop effect is needed.
+    if let Ok(handle) = set_interval_with_handle(
+        move || {
+            if is_thinking_active.get() {
+                if started.get().is_none() {
+                    started.set(Some(Date::now()));
+                }
+                if let Some(started_at) = started.get() {
+                    // Elapsed time is non-negative and far below u32::MAX seconds,
+                    // so the float-to-int cast is safe.
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let secs = ((Date::now() - started_at) / 1000.0) as u32;
+                    elapsed_secs.set(secs);
+                }
+            } else {
+                started.set(None);
+            }
+        },
+        Duration::from_millis(500),
+    ) {
+        timer.set(Some(handle));
+    }
+    on_cleanup(move || {
+        if let Some(handle) = timer.get() {
+            handle.clear();
+        }
+    });
+
     view! {
         <div class="tui-stream-line tui-assistant">
             <div class="tui-glyph-header">
@@ -97,19 +148,37 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
                                     </span>
                                     <span class="tui-think-badge">"💭 Thought"</span>
                                     <span class="tui-think-meta">
-                                        {move || format!("(~{} tokens)", tok_approx())}
+                                        {move || {
+                                            let tokens = tok_approx();
+                                            let secs = elapsed_secs.get();
+                                            if secs > 0 {
+                                                format!("(~{tokens} tokens · {})", format_elapsed(secs))
+                                            } else {
+                                                format!("(~{tokens} tokens)")
+                                            }
+                                        }}
                                     </span>
                                 </div>
                             }
                         }
                     >
-                        <div class="tui-thinking-summary active">
-                            <span class="tui-spinner">"⠋"</span>
+                        <div
+                            class="tui-thinking-summary active"
+                            on:click=move |_| thinking_expanded.update(|e| *e = !*e)
+                            title="Click to toggle reasoning trace"
+                        >
+                            <span class="tui-think-caret">
+                                {move || if thinking_expanded.get() { "▼" } else { "▶" }}
+                            </span>
                             <span class="tui-think-badge">"💭 Thinking..."</span>
+                            <span class="tui-spinner"/>
+                            <span class="tui-think-meta">
+                                {move || format_elapsed(elapsed_secs.get())}
+                            </span>
                         </div>
                     </Show>
 
-                    <Show when=move || thinking_expanded.get() || is_thinking_active.get() fallback=|| ()>
+                    <Show when=move || thinking_expanded.get() fallback=|| ()>
                         <div class="tui-thinking-trace">
                             <pre class="tui-thinking-pre">{move || thinking_sig.get()}</pre>
                         </div>
@@ -314,7 +383,7 @@ fn render_tool_step(
                     fallback=|| ()
                 >
                     <div class="tui-tool-pending">
-                        <span class="tui-spinner">"⠋"</span>
+                        <span class="tui-spinner"/>
                         " executing tool call on host..."
                     </div>
                 </Show>

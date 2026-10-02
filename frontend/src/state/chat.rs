@@ -506,8 +506,37 @@ impl ChatState {
         if let Some(anchor) = self.current_run_anchor.get_untracked() {
             self.cancel_run_prompts(anchor);
         }
+        self.close_open_reasoning();
         self.ensure_stopped_marker();
         self.current_run_anchor.set(None);
+    }
+
+    /// Close a reasoning tag left open by the abort so the "Thinking..."
+    /// state clears and the partial trace renders as a collapsed summary.
+    fn close_open_reasoning(&self) {
+        let handle = self
+            .messages
+            .handles
+            .with_untracked(|handles| {
+                handles.iter().rev().copied().find(|handle| {
+                    handle.item.with_untracked(|item| {
+                        matches!(item, ConversationItem::Message(message)
+                            if message.role == openwebide_core::Role::Assistant
+                                && message.id <= 0
+                                && openwebide_core::tui::parse_thinking(&message.content).is_thinking)
+                    })
+                })
+            });
+        if let Some(handle) = handle {
+            self.messages.update_item(handle, |item| {
+                if let ConversationItem::Message(message) = item {
+                    message.content.push_str("
+</think>
+
+");
+                }
+            });
+        }
     }
 
     fn ensure_stopped_marker(&self) {
