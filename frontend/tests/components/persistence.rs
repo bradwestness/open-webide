@@ -95,6 +95,8 @@ async fn stored_history_is_recalled_and_submissions_are_persisted() {
         chat_view(state)
     });
     wait_for_startup_reads(&mounted.state, 1).await;
+    mounted.state.seed_project();
+    settle().await;
     mounted.key("ArrowUp", "ArrowUp", false);
     settle().await;
     assert_eq!(mounted.state.chat.draft.get_untracked(), "b");

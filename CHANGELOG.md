@@ -170,6 +170,8 @@ for what's still ahead.
 
 ### Fixed
 
+- Disable the agent chat composer until a project is open, with shortcuts to open a local or remote project.
+
 - Accept llama.cpp base URLs with or without a trailing `/v1` for model discovery, chat completions, and context limits.
 
 - Stop bridge agent runs when a tool result cannot be saved, delivering the completed result before the error and preventing overlapping runs in the same session.

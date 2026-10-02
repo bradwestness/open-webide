@@ -42,3 +42,6 @@ mod modals;
 
 #[path = "components/recent_projects.rs"]
 mod recent_projects;
+
+#[path = "components/composer.rs"]
+mod composer;

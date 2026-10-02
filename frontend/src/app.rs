@@ -335,6 +335,8 @@ pub fn App() -> impl IntoView {
                 <ChatPane
                     on_select_model=on_select_model
                     on_send=on_send
+                    on_open_local=on_open_local
+                    on_open_remote=on_open_remote
                     on_resume_local_run=chat_actions.resume_local_run
                     on_stop=on_stop
                     on_permission=on_permission
