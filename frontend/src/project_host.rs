@@ -141,14 +141,11 @@ impl ProjectHost {
         };
         let mut context = openwebide_agent::context::RunContext::new(environment);
         let vfs = crate::local_fs::BrowserFsaVfs::new(handle);
-        match host {
-            Some(ProjectExecution::Local(bridge)) => {
-                Ok(context.startup(&vfs, &bridge, &tools).await)
-            }
-            _ => Ok(context
-                .startup(&vfs, &openwebide_agent::NoopBridgeClient, &tools)
-                .await),
-        }
+        let bridge = host.and_then(|host| match host {
+            ProjectExecution::Local(bridge) => Some(bridge),
+            ProjectExecution::Remote { .. } => None,
+        });
+        Ok(context.startup(&vfs, &bridge, &tools).await)
     }
 
     pub fn revision(self) -> Option<u64> {

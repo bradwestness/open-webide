@@ -1,17 +1,16 @@
-use std::collections::VecDeque;
 use std::pin::Pin;
 
-use futures::{Stream, StreamExt, stream};
+use futures::{Stream, stream};
 use openwebide_core::{
-    ChatCompletion, ChatRequest, ChatResponse, ModelInfo, ProviderKind, Role, StopReason, ToolCall,
+    ChatCompletion, ChatRequest, ChatResponse, ModelInfo, ProviderKind, StopReason, ToolCall,
 };
 use serde_json::{Value, json};
 
 use crate::sse::{SseField, sse_field};
 use crate::{
     HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, ToolStreamChunk,
-    UsageAcc, chat_messages, clock_now, round_ns_to_ms, stream_error, tool_call_values, tools_wire,
-    url_for,
+    UsageAcc, chat_messages, clock_now, round_ns_to_ms, stream_error, tool_call_values,
+    tool_messages, tools_wire, url_for,
 };
 
 /// Provider for [Ollama](https://ollama.com).
@@ -90,11 +89,7 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
     }
 
     async fn chat(&self, request: &ChatRequest) -> Result<String, ProviderError> {
-        let model = request
-            .model
-            .clone()
-            .or_else(|| self.model.clone())
-            .ok_or(ProviderError::NoModel)?;
+        let model = crate::request_model(request.model.as_deref(), self.model.as_deref())?;
         let mut body = json!({
             "model": model,
             "messages": chat_messages(request),
@@ -122,8 +117,9 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
-        let Some(model) = request.model.clone().or_else(|| self.model.clone()) else {
-            return Box::pin(stream::once(async { Err(ProviderError::NoModel) }));
+        let model = match crate::request_model(request.model.as_deref(), self.model.as_deref()) {
+            Ok(model) => model,
+            Err(error) => return Box::pin(stream::once(async move { Err(error) })),
         };
         let mut body = json!({
             "model": model,
@@ -136,98 +132,14 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         crate::apply_model_settings(&mut body, request, ProviderKind::Ollama);
         let url = url_for(&self.base_url, "/api/chat");
         let lines = LineStream::new(self.http.post_stream(&url, &body));
-        Box::pin(stream::unfold(
-            (
-                lines,
-                UsageAcc::new(request),
-                VecDeque::new(),
-                false,
-                false,
-                StopReason::Complete,
-            ),
-            |(mut lines, mut acc, mut pending, mut complete, mut ended, mut stop_reason)| async move {
-                loop {
-                    if let Some(chunk) = pending.pop_front() {
-                        return Some((
-                            Ok(chunk),
-                            (lines, acc, pending, complete, ended, stop_reason),
-                        ));
-                    }
-                    if ended {
-                        return None;
-                    }
-                    let result = match lines.next().await {
-                        None if !complete => Err(ProviderError::Incomplete),
-                        Some(Err(e)) => Err(e),
-                        line => (|| {
-                            let mut done = line.is_none();
-                            if let Some(Ok(line)) = line {
-                                let parsed = parse_stream_line(&line)?;
-                                if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                                    usage_fields(&value, &mut acc);
-                                    if value["done_reason"] == "length" {
-                                        stop_reason = StopReason::Length;
-                                    }
-                                    if let Some(reasoning) = value["message"]["thinking"]
-                                        .as_str()
-                                        .filter(|s| !s.is_empty())
-                                    {
-                                        if acc.started.is_none() {
-                                            acc.started = clock_now();
-                                        }
-                                        acc.text.push_str(reasoning);
-                                        pending.push_back(StreamChunk::Reasoning(
-                                            reasoning.to_string(),
-                                        ));
-                                    }
-                                }
-                                let delta = match parsed {
-                                    StreamLine::Delta(delta) => Some(delta),
-                                    StreamLine::Finished(delta) => {
-                                        complete = true;
-                                        delta
-                                    }
-                                    StreamLine::Done => {
-                                        done = true;
-                                        None
-                                    }
-                                    StreamLine::Skip => None,
-                                };
-                                if let Some(delta) = delta {
-                                    if acc.started.is_none() {
-                                        acc.started = clock_now();
-                                    }
-                                    acc.text.push_str(&delta);
-                                    pending.push_back(StreamChunk::Delta(delta));
-                                }
-                            }
-                            if done {
-                                acc.ended = clock_now();
-                                pending.push_back(StreamChunk::Stop(stop_reason));
-                                pending.push_back(StreamChunk::Usage(acc.finish()));
-                                ended = true;
-                            }
-                            Ok(())
-                        })(),
-                    };
-                    if let Err(e) = result {
-                        pending.clear();
-                        return Some((Err(e), (lines, acc, pending, complete, true, stop_reason)));
-                    }
-                }
-            },
-        ))
+        crate::streaming::chat_stream(lines, request, parse_chat_line)
     }
 
     async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
-        let model = request
-            .model
-            .clone()
-            .or_else(|| self.model.clone())
-            .ok_or(ProviderError::NoModel)?;
+        let model = crate::request_model(request.model.as_deref(), self.model.as_deref())?;
         let mut body = json!({
             "model": model,
-            "messages": ollama_tool_messages(request),
+            "messages": tool_messages(request, ProviderKind::Ollama),
             "stream": false,
             "tools": tools_wire(&request.tools),
         });
@@ -301,12 +213,13 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
-        let Some(model) = request.model.clone().or_else(|| self.model.clone()) else {
-            return Box::pin(stream::once(async { Err(ProviderError::NoModel) }));
+        let model = match crate::request_model(request.model.as_deref(), self.model.as_deref()) {
+            Ok(model) => model,
+            Err(error) => return Box::pin(stream::once(async move { Err(error) })),
         };
         let mut body = json!({
             "model": model,
-            "messages": ollama_tool_messages(request),
+            "messages": tool_messages(request, ProviderKind::Ollama),
             "stream": true,
             "tools": tools_wire(&request.tools),
         });
@@ -318,104 +231,11 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
             self.http
                 .post_stream(&url_for(&self.base_url, "/api/chat"), &body),
         );
-        Box::pin(stream::unfold(
-            (
-                lines,
-                UsageAcc::new(request),
-                String::new(),
-                Vec::<ToolCall>::new(),
-                VecDeque::new(),
-                false,
-            ),
-            |(mut lines, mut acc, mut content, mut calls, mut pending, mut ended)| async move {
-                loop {
-                    if let Some(chunk) = pending.pop_front() {
-                        return Some((Ok(chunk), (lines, acc, content, calls, pending, ended)));
-                    }
-                    if ended {
-                        return None;
-                    }
-                    let result = match lines.next().await {
-                        None => Err(ProviderError::Incomplete),
-                        Some(Err(e)) => Err(e),
-                        Some(Ok(line)) => (|| {
-                            // Use the plain-chat parser for identical error and terminal handling.
-                            let parsed = parse_stream_line(&line)?;
-                            let SseField::Data(data) = sse_field(&line) else {
-                                return Ok(());
-                            };
-                            let value: Value = serde_json::from_str(data)
-                                .map_err(|e| ProviderError::Parse(e.to_string()))?;
-                            if let Some(reasoning) = value["message"]
-                                .get("thinking")
-                                .and_then(Value::as_str)
-                                .filter(|s| !s.is_empty())
-                            {
-                                if acc.started.is_none() {
-                                    acc.started = clock_now();
-                                }
-                                acc.text.push_str(reasoning);
-                                pending
-                                    .push_back(ToolStreamChunk::Reasoning(reasoning.to_string()));
-                            }
-                            if let Some(values) = value.get("message").and_then(tool_call_values) {
-                                if acc.started.is_none() {
-                                    acc.started = clock_now();
-                                }
-                                let new_calls = parse_tool_calls(values, calls.len())?;
-                                for call in &new_calls {
-                                    acc.text.push_str(&call.name);
-                                    acc.text.push_str(&call.arguments);
-                                }
-                                calls.extend(new_calls);
-                            }
-                            let (delta, done) = match parsed {
-                                StreamLine::Delta(delta) => (Some(delta), false),
-                                StreamLine::Finished(delta) => (delta, true),
-                                StreamLine::Done => (None, true),
-                                StreamLine::Skip => (None, false),
-                            };
-                            if let Some(delta) = delta {
-                                if acc.started.is_none() {
-                                    acc.started = clock_now();
-                                }
-                                content.push_str(&delta);
-                                acc.text.push_str(&delta);
-                                pending.push_back(ToolStreamChunk::Delta(delta));
-                            }
-                            if done {
-                                acc.ended = clock_now();
-                                usage_fields(&value, &mut acc);
-                                pending.push_back(ToolStreamChunk::Stop(
-                                    if value["done_reason"] == "length" {
-                                        StopReason::Length
-                                    } else {
-                                        StopReason::Complete
-                                    },
-                                ));
-                                pending.push_back(ToolStreamChunk::Usage(acc.finish()));
-                                let response = if calls.is_empty() {
-                                    ChatResponse::Text(std::mem::take(&mut content))
-                                } else {
-                                    ChatResponse::ToolCalls(std::mem::take(&mut calls))
-                                };
-                                pending.push_back(ToolStreamChunk::Response(response));
-                                ended = true;
-                            }
-                            Ok(())
-                        })(),
-                    };
-                    if let Err(e) = result {
-                        pending.clear();
-                        return Some((Err(e), (lines, acc, content, calls, pending, true)));
-                    }
-                }
-            },
-        ))
+        crate::streaming::tool_stream(lines, request, OllamaToolParser::default())
     }
 
     async fn context_limit(&self, model: Option<&str>) -> Result<Option<usize>, ProviderError> {
-        let Some(model) = model.map(str::to_string).or_else(|| self.model.clone()) else {
+        let Ok(model) = crate::request_model(model, self.model.as_deref()) else {
             return Ok(None);
         };
         let value = self
@@ -473,51 +293,6 @@ fn parse_tool_calls(values: &[Value], start: usize) -> Result<Vec<ToolCall>, Pro
         .collect()
 }
 
-/// Ollama wire format for messages, including tool calls and tool results.
-///
-/// Unlike the OpenAI-compatible API, Ollama's tool calls carry no `id` and
-/// their `arguments` is a JSON object, and tool results carry no
-/// `tool_call_id`.
-fn ollama_tool_messages(request: &ChatRequest) -> Vec<Value> {
-    let mut messages = Vec::new();
-    if let Some(system) = &request.system_prompt
-        && !system.is_empty()
-    {
-        messages.push(json!({ "role": "system", "content": system }));
-    }
-    for message in &request.messages {
-        match message.role {
-            Role::Tool => {
-                messages.push(json!({ "role": "tool", "content": message.content }));
-            }
-            Role::Assistant if message.tool_calls.is_some() => {
-                let calls: Vec<Value> = message
-                    .tool_calls
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .map(|call| {
-                        let args: Value =
-                            serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
-                        json!({ "function": { "name": call.name, "arguments": args } })
-                    })
-                    .collect();
-                let content = if message.content.is_empty() {
-                    Value::Null
-                } else {
-                    Value::String(message.content.clone())
-                };
-                messages
-                    .push(json!({ "role": "assistant", "content": content, "tool_calls": calls }));
-            }
-            _ => {
-                messages.push(json!({ "role": message.role.as_str(), "content": message.content }));
-            }
-        }
-    }
-    messages
-}
-
 /// Parse one NDJSON line of Ollama's streaming `/api/chat` response.
 fn parse_stream_line(line: &str) -> Result<StreamLine, ProviderError> {
     match sse_field(line) {
@@ -556,13 +331,78 @@ fn parse_stream_line(line: &str) -> Result<StreamLine, ProviderError> {
     }
 }
 
+fn parse_chat_line(
+    line: &str,
+    acc: &mut UsageAcc,
+) -> Result<crate::streaming::ParsedLine, ProviderError> {
+    let event = parse_stream_line(line)?;
+    let mut parsed = crate::streaming::ParsedLine {
+        event,
+        reasoning: None,
+        stop: None,
+    };
+    if let Ok(value) = serde_json::from_str::<Value>(line) {
+        usage_fields(&value, acc);
+        parsed.reasoning = value["message"]["thinking"].as_str().map(str::to_string);
+        if value["done_reason"] == "length" {
+            parsed.stop = Some(StopReason::Length);
+        }
+    }
+    Ok(parsed)
+}
+
+#[derive(Default)]
+struct OllamaToolParser {
+    calls: Vec<ToolCall>,
+}
+impl crate::streaming::ToolParser for OllamaToolParser {
+    fn parse(
+        &mut self,
+        line: &str,
+        usage: &mut UsageAcc,
+    ) -> Result<crate::streaming::ToolLine, ProviderError> {
+        let event = parse_stream_line(line)?;
+        let mut result = crate::streaming::ToolLine {
+            end: matches!(&event, StreamLine::Finished(_) | StreamLine::Done),
+            parsed: crate::streaming::ParsedLine {
+                event,
+                reasoning: None,
+                stop: None,
+            },
+            tool_activity: false,
+        };
+        if let SseField::Data(data) = sse_field(line) {
+            let value: Value = serde_json::from_str(data)
+                .map_err(|error| ProviderError::Parse(error.to_string()))?;
+            result.parsed.reasoning = value["message"]["thinking"].as_str().map(str::to_string);
+            if let Some(values) = value.get("message").and_then(tool_call_values) {
+                result.tool_activity = true;
+                self.calls
+                    .extend(parse_tool_calls(values, self.calls.len())?);
+            }
+            if result.end {
+                usage_fields(&value, usage);
+                result.parsed.stop = Some(if value["done_reason"] == "length" {
+                    StopReason::Length
+                } else {
+                    StopReason::Complete
+                });
+            }
+        }
+        Ok(result)
+    }
+    fn finish(&mut self) -> Result<Vec<ToolCall>, ProviderError> {
+        Ok(std::mem::take(&mut self.calls))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use super::*;
     use crate::fake::{FakeHttpClient, FakeState};
-    use futures::executor::block_on;
+    use futures::{StreamExt, executor::block_on};
     use openwebide_core::{ChatMessage, Role, ToolDefinition, TurnTelemetry};
 
     #[test]

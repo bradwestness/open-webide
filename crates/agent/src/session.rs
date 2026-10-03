@@ -1,4 +1,7 @@
 //! Shared run planning and persisted event lifecycle. Hosts supply storage and transport primitives.
+mod chat;
+pub use chat::{ChatPersistence, chat_events};
+
 use crate::AgentEvent;
 use openwebide_core::{
     ChatMessage, ChatRequest, EditorContext, FileDiff, ModelRuntime, Role, RunEvent, ToolCall,
@@ -35,18 +38,68 @@ pub fn request(
     messages: Vec<ChatMessage>,
     tools: Vec<ToolDefinition>,
 ) -> ChatRequest {
-    ChatRequest {
+    let mut request = ChatRequest {
         connection_id: runtime.connection.id,
-        model: runtime.connection.model.clone(),
+        model: None,
         system_prompt,
         messages,
-        tools: if runtime.settings.tools == Some(false) {
-            Vec::new()
-        } else {
-            tools
+        tools,
+        model_settings: Default::default(),
+    };
+    runtime.apply_to(&mut request);
+    request
+}
+
+/// Add the same chat-only context to the request and return its persisted representation.
+pub fn chat_context(
+    request: &mut ChatRequest,
+    environment: &openwebide_core::RunEnvironment,
+) -> String {
+    let content = crate::context::chat_context(environment);
+    request
+        .system_prompt
+        .get_or_insert_with(String::new)
+        .push_str(&format!("\n\n{content}"));
+    format!("{}{content}", openwebide_core::RUN_CONTEXT_PREFIX)
+}
+
+/// Inputs supplied by the host; run policy and shaping are shared across every adapter.
+pub struct PlanInput {
+    pub environment: openwebide_core::RunEnvironment,
+    pub system_prompt: Option<String>,
+    pub messages: Vec<ChatMessage>,
+    pub tools: Vec<ToolDefinition>,
+    pub content: String,
+    pub editor: Option<EditorContext>,
+}
+
+pub fn plan(runtime: &ModelRuntime, input: PlanInput) -> openwebide_core::RunPlan {
+    let request = request(runtime, input.system_prompt, input.messages, input.tools);
+    let kind = match input.environment.project_root.as_ref() {
+        Some(root) if !request.tools.is_empty() => openwebide_core::RunKind::Agent {
+            project_path: root.clone(),
         },
-        model_settings: runtime.settings.clone(),
+        _ => openwebide_core::RunKind::Chat,
+    };
+    openwebide_core::RunPlan {
+        connection: runtime.connection.clone(),
+        transport: runtime.transport.clone(),
+        request,
+        environment: input.environment,
+        user_content: user_content(input.content, input.editor.as_ref()),
+        kind,
     }
+}
+
+pub fn conversation_history(entries: Vec<openwebide_core::ConversationEntry>) -> Vec<ChatMessage> {
+    let (mut messages, mut steps) = (Vec::new(), Vec::new());
+    for entry in entries {
+        match entry {
+            openwebide_core::ConversationEntry::Message(message) => messages.push(message),
+            openwebide_core::ConversationEntry::ToolStep(step) => steps.push(step),
+        }
+    }
+    history(messages, &steps)
 }
 
 pub trait RunPersistence: Send + Sync {

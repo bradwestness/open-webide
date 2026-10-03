@@ -1634,7 +1634,6 @@ name = "openwebide-storage"
 version = "0.1.0"
 dependencies = [
  "futures",
- "openwebide-agent",
  "openwebide-core",
  "rusqlite",
  "serde",

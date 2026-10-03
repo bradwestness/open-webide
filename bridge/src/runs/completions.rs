@@ -27,11 +27,7 @@ pub(crate) async fn complete(
         let runtime = backend
             .model_runtime(user_id, request.connection_id, request.model.as_deref())
             .await?;
-        request.model = runtime.connection.model.clone();
-        request.model_settings = runtime.settings;
-        if request.model_settings.tools == Some(false) {
-            request.tools.clear();
-        }
+        runtime.apply_to(&mut request);
         let connection = runtime.connection;
         let http = http.with_transport(runtime.transport);
         let now = i64::try_from(

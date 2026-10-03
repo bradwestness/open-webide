@@ -154,6 +154,17 @@ pub struct ModelRuntime {
     pub transport: ServerTransport,
 }
 
+impl ModelRuntime {
+    /// Apply the resolved model and capability policy at every completion entry point.
+    pub fn apply_to(&self, request: &mut crate::ChatRequest) {
+        request.model = self.connection.model.clone();
+        request.model_settings = self.settings.clone();
+        if self.settings.tools == Some(false) {
+            request.tools.clear();
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelDetection {
     pub context_limit: Option<usize>,

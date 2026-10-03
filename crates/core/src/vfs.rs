@@ -18,6 +18,7 @@ use crate::{FileEntry, SearchHit};
 pub enum VfsError {
     NotFound(String),
     PermissionDenied(String),
+    PermissionRequired(String),
     AlreadyExists(String),
     PathEscape(String),
     Io(String),
@@ -27,6 +28,7 @@ impl std::fmt::Display for VfsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound(p) => write!(f, "path not found: {p}"),
+            Self::PermissionRequired(detail) => f.write_str(detail),
             Self::PermissionDenied(p) => write!(f, "permission denied: {p}"),
             Self::AlreadyExists(p) => write!(f, "already exists: {p}"),
             Self::PathEscape(p) => write!(f, "path escapes workspace root: {p}"),
@@ -200,6 +202,19 @@ pub fn skip_dir(name: &str, opts: SearchOptions) -> bool {
     !opts.include_ignored && SEARCH_SKIP_DIRS.contains(&name)
 }
 
+/// The workspace entry to create. Transport adapters retain the legacy `is_dir` wire field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VfsEntryKind {
+    File,
+    Directory,
+}
+
+impl VfsEntryKind {
+    pub fn is_dir(self) -> bool {
+        self == Self::Directory
+    }
+}
+
 /// The core asynchronous Virtual File System trait.
 pub trait Vfs: Send + Sync {
     /// Read the full UTF-8 contents of a workspace file.
@@ -217,7 +232,7 @@ pub trait Vfs: Send + Sync {
     /// a file already exists at `path`; content is left untouched.
     /// For directories (`is_dir = true`): idempotent — returns `Ok(())` if the
     /// directory already exists.
-    fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()>;
+    fn create<'a>(&'a self, path: &'a str, kind: VfsEntryKind) -> VfsFuture<'a, ()>;
 
     /// Delete a file or recursively delete a directory.
     fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()>;
@@ -264,8 +279,8 @@ impl<V: Vfs + ?Sized> Vfs for &V {
         (**self).list(dir)
     }
 
-    fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
-        (**self).create(path, is_dir)
+    fn create<'a>(&'a self, path: &'a str, kind: VfsEntryKind) -> VfsFuture<'a, ()> {
+        (**self).create(path, kind)
     }
 
     fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()> {
@@ -303,8 +318,8 @@ impl<V: Vfs + ?Sized> Vfs for Arc<V> {
         (**self).list(dir)
     }
 
-    fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
-        (**self).create(path, is_dir)
+    fn create<'a>(&'a self, path: &'a str, kind: VfsEntryKind) -> VfsFuture<'a, ()> {
+        (**self).create(path, kind)
     }
 
     fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()> {
@@ -566,14 +581,14 @@ impl Vfs for MemoryVfs {
         })
     }
 
-    fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
+    fn create<'a>(&'a self, path: &'a str, kind: VfsEntryKind) -> VfsFuture<'a, ()> {
         Box::pin(async move {
             let norm = normalize_vfs_path(path)?;
             if norm.is_empty() {
                 return Ok(());
             }
 
-            if is_dir {
+            if kind.is_dir() {
                 let mut dirs = self.dirs.write().map_err(|e| VfsError::Io(e.to_string()))?;
                 dirs.insert(norm);
             } else {
@@ -780,18 +795,21 @@ mod tests {
             let vfs = MemoryVfs::new();
 
             // create on a new path succeeds and leaves an empty file
-            vfs.create("src/new.rs", false).await.unwrap();
+            vfs.create("src/new.rs", VfsEntryKind::File).await.unwrap();
             assert_eq!(vfs.read("src/new.rs").await.unwrap(), "");
 
             // write some content, then create again → AlreadyExists, content unchanged
             vfs.write("src/existing.rs", "hello").await.unwrap();
-            let err = vfs.create("src/existing.rs", false).await.unwrap_err();
+            let err = vfs
+                .create("src/existing.rs", VfsEntryKind::File)
+                .await
+                .unwrap_err();
             assert!(matches!(err, VfsError::AlreadyExists(_)));
             assert_eq!(vfs.read("src/existing.rs").await.unwrap(), "hello");
 
             // create on an existing directory is idempotent
-            vfs.create("src", true).await.unwrap();
-            vfs.create("src", true).await.unwrap();
+            vfs.create("src", VfsEntryKind::Directory).await.unwrap();
+            vfs.create("src", VfsEntryKind::Directory).await.unwrap();
         });
     }
 }
@@ -845,5 +863,15 @@ mod ordering_tests {
         entries.reverse();
         sort_file_entries(&mut entries);
         assert_eq!(entries, expected);
+    }
+}
+
+#[cfg(test)]
+mod creation_contract {
+    #[test]
+    fn memory() {
+        futures::executor::block_on(crate::testing::vfs_creation_contract(
+            &super::MemoryVfs::new(),
+        ));
     }
 }

@@ -99,3 +99,60 @@ impl BridgeClient for NoopBridgeClient {
         Err("Process execution is not available (bridge daemon not connected). Start 'openwebide-bridge' to enable shell commands.".into())
     }
 }
+
+/// Optional execution-host capability. Missing hosts use the same failure contract everywhere.
+impl<B: BridgeClient> BridgeClient for Option<B> {
+    async fn context_status(&self) -> ContextStatus {
+        match self {
+            Some(host) => host.context_status().await,
+            None => NoopBridgeClient.context_status().await,
+        }
+    }
+    async fn environment(&self) -> Result<openwebide_core::ExecutionEnvironment, String> {
+        match self {
+            Some(host) => host.environment().await,
+            None => NoopBridgeClient.environment().await,
+        }
+    }
+    async fn execute_command(
+        &self,
+        command: &str,
+        timeout_seconds: u64,
+    ) -> Result<CommandOutcome, String> {
+        match self {
+            Some(host) => host.execute_command(command, timeout_seconds).await,
+            None => {
+                NoopBridgeClient
+                    .execute_command(command, timeout_seconds)
+                    .await
+            }
+        }
+    }
+    async fn git_status(&self) -> Result<GitRepoStatus, String> {
+        match self {
+            Some(host) => host.git_status().await,
+            None => NoopBridgeClient.git_status().await,
+        }
+    }
+    async fn git_diff(&self, path: Option<&str>) -> Result<String, String> {
+        match self {
+            Some(host) => host.git_diff(path).await,
+            None => NoopBridgeClient.git_diff(path).await,
+        }
+    }
+    async fn git_commit(&self, request: &GitCommitRequest) -> Result<GitCommitResult, String> {
+        match self {
+            Some(host) => host.git_commit(request).await,
+            None => NoopBridgeClient.git_commit(request).await,
+        }
+    }
+    async fn git_checkout(
+        &self,
+        request: &GitCheckoutRequest,
+    ) -> Result<GitCheckoutResult, String> {
+        match self {
+            Some(host) => host.git_checkout(request).await,
+            None => NoopBridgeClient.git_checkout(request).await,
+        }
+    }
+}

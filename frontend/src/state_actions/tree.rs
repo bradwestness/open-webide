@@ -11,7 +11,6 @@ use futures::future::{AbortHandle, Either, abortable, select};
 use leptos::{prelude::*, task::spawn_local};
 
 use crate::{
-    local_fs,
     state::{auth::AuthState, projects::ProjectsState, workspace::WorkspaceState},
     workspace::Workspace,
 };
@@ -187,7 +186,7 @@ async fn refresh_tree(
                 if !current() {
                     return;
                 }
-                if error == local_fs::PERMISSION_NEEDED {
+                if error.needs_folder_access() {
                     projects.needs_grant.update(|ids| {
                         ids.insert(project_id);
                     });

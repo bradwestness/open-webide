@@ -92,8 +92,18 @@ pub enum GitOperation {
     Sync(GitSyncRequest),
 }
 
-// The existing routes have different JSON shapes (including a bare string for /git/show).
-pub type GitResponse = serde_json::Value;
+/// Typed execution results; serialization preserves each existing HTTP route's JSON shape.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+pub enum GitResponse {
+    Status(openwebide_core::GitRepoStatus),
+    Diff(openwebide_core::GitDiff),
+    Show(openwebide_core::GitFileContent),
+    Branches(Vec<openwebide_core::GitBranchInfo>),
+    Commit(openwebide_core::GitCommitResult),
+    Checkout(openwebide_core::GitCheckoutResult),
+    Sync(openwebide_core::GitSyncResult),
+}
 
 pub trait ToolExecution: Send + Sync {
     fn run_command(&self, spec: SpawnSpec) -> ExecutionFuture<ExecOutput>;
@@ -111,26 +121,23 @@ impl ToolExecution for HostExecution {
     fn git(&self, request: GitRequest) -> ExecutionFuture<GitResponse> {
         Box::pin(async move {
             let dir = &request.cwd;
-            let value = match request.operation {
-                GitOperation::Status => serde_json::to_value(git::get_repo_status(dir).await?),
-                GitOperation::Diff(path) => {
-                    return Ok(
-                        serde_json::json!({"diff": git::get_repo_diff(dir, path.as_deref()).await?}),
-                    );
-                }
+            Ok(match request.operation {
+                GitOperation::Status => GitResponse::Status(git::get_repo_status(dir).await?),
+                GitOperation::Diff(path) => GitResponse::Diff(openwebide_core::GitDiff {
+                    diff: git::get_repo_diff(dir, path.as_deref()).await?,
+                }),
                 GitOperation::Show(path) => {
-                    serde_json::to_value(git::get_file_at_head(dir, &path).await?)
+                    GitResponse::Show(git::get_file_at_head(dir, &path).await?)
                 }
-                GitOperation::Branches => serde_json::to_value(git::get_repo_branches(dir).await?),
+                GitOperation::Branches => GitResponse::Branches(git::get_repo_branches(dir).await?),
                 GitOperation::Commit(req) => {
-                    serde_json::to_value(git::commit_changes(dir, &req).await?)
+                    GitResponse::Commit(git::commit_changes(dir, &req).await?)
                 }
                 GitOperation::Checkout(req) => {
-                    serde_json::to_value(git::checkout_branch(dir, &req).await?)
+                    GitResponse::Checkout(git::checkout_branch(dir, &req).await?)
                 }
-                GitOperation::Sync(req) => serde_json::to_value(git::sync_repo(dir, &req).await?),
-            };
-            value.map_err(|error| BridgeError::Execution(error.to_string()))
+                GitOperation::Sync(req) => GitResponse::Sync(git::sync_repo(dir, &req).await?),
+            })
         })
     }
 }

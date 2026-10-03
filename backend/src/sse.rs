@@ -17,11 +17,11 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 use http_body::{Frame, SizeHint};
-use openwebide_core::{ChatMessage, REPLY_TRUNCATED_MARKER, Role, RunEvent, TurnTelemetry};
+use openwebide_core::{ChatMessage, RunEvent};
 use openwebide_llm::{ProviderError, StreamChunk};
 use openwebide_storage::Store;
 
-use crate::state::{AppDb, now};
+use crate::state::AppDb;
 
 /// Encode one event as an SSE frame.
 fn frame(event: &RunEvent) -> Bytes {
@@ -68,21 +68,6 @@ impl http_body::Body for SseBody {
     }
 }
 
-/// Plain-chat stream state: accumulates the reply, remembers the turn's
-/// usage, and ends after the first terminal outcome (cancel, provider
-/// error, or provider end-of-stream).
-struct StreamState {
-    store: Arc<Store<AppDb>>,
-    session_id: i64,
-    started_ms: i64,
-    chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
-    buffer: String,
-    reasoning: String,
-    usage: Option<TurnTelemetry>,
-    done: bool,
-    cancel_poll: CancelPoll,
-}
-
 #[derive(Default)]
 struct CancelPoll {
     last: Option<std::time::Instant>,
@@ -100,9 +85,15 @@ impl CancelPoll {
     }
 }
 
-impl StreamState {
-    async fn cancelled(&mut self) -> bool {
-        if !self.cancel_poll.due(std::time::Instant::now()) {
+struct ChatCancel {
+    store: Arc<Store<AppDb>>,
+    session_id: i64,
+    started_ms: i64,
+    poll: std::sync::Mutex<CancelPoll>,
+}
+impl openwebide_agent::CancelCheck for ChatCancel {
+    async fn check(&self) -> bool {
+        if !self.poll.lock().unwrap().due(std::time::Instant::now()) {
             return false;
         }
         match self
@@ -120,6 +111,10 @@ impl StreamState {
             }
         }
     }
+    fn cancelled(&self) -> impl std::future::Future<Output = ()> + Send {
+        // Spin's database cancel flag is polled at stream boundaries; it has no push notification.
+        std::future::pending()
+    }
 }
 
 /// Build the SSE event stream for one sent message: the user message, the
@@ -131,6 +126,29 @@ impl StreamState {
 /// The store is shared: the cancel gate polls the database for a cancel
 /// request (arriving as a separate Spin request) and the tail persists the
 /// reply, so the response body outlives the request handler.
+struct ChatPersistence {
+    store: Arc<Store<AppDb>>,
+    session: i64,
+}
+impl openwebide_agent::session::ChatPersistence for ChatPersistence {
+    async fn save_reply(
+        &self,
+        content: &str,
+        usage: Option<&openwebide_core::TurnTelemetry>,
+    ) -> Result<ChatMessage, String> {
+        self.store
+            .insert_message_with_usage(
+                self.session,
+                openwebide_core::Role::Assistant,
+                content,
+                crate::state::now(),
+                usage,
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
 pub fn message_stream(
     store: Arc<Store<AppDb>>,
     session_id: i64,
@@ -138,120 +156,20 @@ pub fn message_stream(
     chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
     started_ms: i64,
 ) -> Pin<Box<dyn Stream<Item = RunEvent> + Send + 'static>> {
-    let state = StreamState {
-        store,
+    let cancel = ChatCancel {
+        store: store.clone(),
         session_id,
         started_ms,
-        chunks,
-        buffer: String::new(),
-        reasoning: String::new(),
-        usage: None,
-        done: false,
-        cancel_poll: CancelPoll::default(),
+        poll: Default::default(),
     };
-    let machine = stream::unfold(state, |mut state| async move {
-        if state.done {
-            return None;
-        }
-        loop {
-            return match state.chunks.as_mut().next().await {
-                Some(Ok(StreamChunk::Delta(delta))) => {
-                    // Poll at most every 250 ms as deltas arrive; a cancel
-                    // requested by a separate request ends the stream with
-                    // `Cancelled`, and the triggering delta is not sent.
-                    if state.cancelled().await {
-                        state.done = true;
-                        Some((RunEvent::Cancelled, state))
-                    } else {
-                        state.buffer.push_str(&delta);
-                        Some((RunEvent::Delta { content: delta }, state))
-                    }
-                }
-                Some(Ok(StreamChunk::Reasoning(content))) => {
-                    if state.cancelled().await {
-                        state.done = true;
-                        Some((RunEvent::Cancelled, state))
-                    } else {
-                        state.reasoning.push_str(&content);
-                        Some((RunEvent::ReasoningDelta { content }, state))
-                    }
-                }
-                Some(Ok(StreamChunk::Stop(reason))) => {
-                    if reason == openwebide_core::StopReason::Length {
-                        state.buffer.push_str(openwebide_core::REPLY_CUT_OFF_MARKER);
-                    }
-                    continue;
-                }
-                Some(Ok(StreamChunk::Usage(usage))) => {
-                    state.usage = Some(usage);
-                    Some((RunEvent::Telemetry { usage }, state))
-                }
-                Some(Err(ProviderError::Incomplete))
-                    if !state.buffer.is_empty() || !state.reasoning.is_empty() =>
-                {
-                    // The provider cut the reply short: keep what arrived,
-                    // marked, rather than dropping it or saving it as complete.
-                    state.done = true;
-                    let mut content =
-                        openwebide_core::with_reasoning(&state.reasoning, &state.buffer);
-                    content.push_str(REPLY_TRUNCATED_MARKER);
-                    match state
-                        .store
-                        .insert_message_with_usage(
-                            state.session_id,
-                            Role::Assistant,
-                            &content,
-                            now(),
-                            None,
-                        )
-                        .await
-                    {
-                        Ok(message) => Some((RunEvent::Done { message }, state)),
-                        Err(error) => Some((
-                            RunEvent::Error {
-                                message: format!("failed to save reply: {error}"),
-                            },
-                            state,
-                        )),
-                    }
-                }
-                Some(Err(error)) => {
-                    state.done = true;
-                    Some((
-                        RunEvent::Error {
-                            message: error.to_string(),
-                        },
-                        state,
-                    ))
-                }
-                None => {
-                    state.done = true;
-                    // Persist the accumulated reply. On failure the partial
-                    // reply is not saved, so history never contains a
-                    // truncated assistant message.
-                    match state
-                        .store
-                        .insert_message_with_usage(
-                            state.session_id,
-                            Role::Assistant,
-                            &openwebide_core::with_reasoning(&state.reasoning, &state.buffer),
-                            now(),
-                            state.usage.as_ref(),
-                        )
-                        .await
-                    {
-                        Ok(message) => Some((RunEvent::Done { message }, state)),
-                        Err(error) => Some((
-                            RunEvent::Error {
-                                message: format!("failed to save reply: {error}"),
-                            },
-                            state,
-                        )),
-                    }
-                }
-            };
-        }
-    });
+    let machine = openwebide_agent::session::chat_events(
+        ChatPersistence {
+            store,
+            session: session_id,
+        },
+        chunks,
+        cancel,
+    );
     Box::pin(
         stream::iter([RunEvent::Message {
             message: user_message,
@@ -263,8 +181,10 @@ pub fn message_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::now;
     use futures::executor::block_on;
     use openwebide_core::UserRole;
+    use openwebide_core::{REPLY_TRUNCATED_MARKER, Role, TurnTelemetry};
 
     #[test]
     fn cancel_poll_is_throttled() {

@@ -17,9 +17,8 @@ use openwebide_agent::{
     AgentConfig, BridgeClient, CancelCheck, PermissionGate, VfsToolExecutor, WebClient,
 };
 use openwebide_core::{
-    ChatCompletion, ChatMessage, ChatRequest, ChatResponse, CommandOutcome, ConversationEntry,
-    EditorContext, ModelInfo, ProviderKind, Role, RunEvent, ToolCall, TurnTelemetry,
-    WebSearchResult,
+    ChatCompletion, ChatMessage, ChatRequest, ChatResponse, CommandOutcome, EditorContext,
+    ModelInfo, ProviderKind, Role, RunEvent, ToolCall, TurnTelemetry, WebSearchResult,
 };
 use openwebide_llm::{LlmProvider, ProviderError, StreamChunk, ToolStreamChunk, completion_chunks};
 use send_wrapper::SendWrapper;
@@ -80,9 +79,26 @@ impl LlmProvider for BrowserLlmProvider {
 
     fn chat_stream(
         &self,
-        _request: &ChatRequest,
+        request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
-        Box::pin(futures::stream::empty())
+        Box::pin(
+            self.chat_tools_stream(request)
+                .filter_map(|chunk| async move {
+                    match chunk {
+                        Ok(ToolStreamChunk::Delta(text)) => Some(Ok(StreamChunk::Delta(text))),
+                        Ok(ToolStreamChunk::Reasoning(text)) => {
+                            Some(Ok(StreamChunk::Reasoning(text)))
+                        }
+                        Ok(ToolStreamChunk::Stop(reason)) => Some(Ok(StreamChunk::Stop(reason))),
+                        Ok(ToolStreamChunk::Usage(usage)) => Some(Ok(StreamChunk::Usage(usage))),
+                        Ok(ToolStreamChunk::Response(ChatResponse::Text(_))) => None,
+                        Ok(ToolStreamChunk::Response(ChatResponse::ToolCalls(_))) => {
+                            Some(Err(ProviderError::Parse("expected text".into())))
+                        }
+                        Err(error) => Some(Err(error)),
+                    }
+                }),
+        )
     }
 
     fn chat_tools(
@@ -423,8 +439,8 @@ impl BridgeClient for BrowserBridgeClient {
     fn git_diff(&self, path: Option<&str>) -> impl Future<Output = Result<String, String>> + Send {
         let payload = serde_json::json!({ "path": path });
         SendWrapper::new(async move {
-            let response: serde_json::Value = self.git_request("diff", payload).await?;
-            Ok(response["diff"].as_str().unwrap_or_default().to_owned())
+            let response: openwebide_core::GitDiff = self.git_request("diff", payload).await?;
+            Ok(response.diff)
         })
     }
 
@@ -678,11 +694,15 @@ pub async fn run_local_agent(
     project_host: crate::project_host::ProjectHost,
     bridge_connection: Option<crate::bridge::BridgeConn>,
     resume: Option<crate::state::chat::InterruptedRun>,
+    current: impl Fn() -> bool + Clone + 'static,
 ) -> Result<(), String> {
     let host = project_host
-        .resolve_guarded(Some(project.id), true, || true)
+        .resolve_guarded(Some(project.id), true, current.clone())
         .await
         .ok();
+    if !current() {
+        return Err("Project access changed".into());
+    }
     let cwd = host
         .as_ref()
         .and_then(crate::project_host::ProjectExecution::cwd);
@@ -714,50 +734,68 @@ pub async fn run_local_agent(
     } else {
         None
     };
-    let mut history_messages = Vec::new();
-    let mut steps = Vec::new();
-    for entry in history_entries {
-        match entry {
-            ConversationEntry::Message(message) => history_messages.push(message),
-            ConversationEntry::ToolStep(step) => steps.push(step),
-        }
+    let runtime = api
+        .with_value(Clone::clone)
+        .model_runtime(connection_id, model.as_deref())
+        .await?;
+    let plan = openwebide_agent::session::plan(
+        &runtime,
+        openwebide_agent::session::PlanInput {
+            environment: environment.clone(),
+            system_prompt,
+            messages: openwebide_agent::session::conversation_history(history_entries),
+            tools: local_tools(cwd.as_deref()),
+            content: user_content,
+            editor: editor_context,
+        },
+    );
+    if !current() {
+        return Err("Project access changed".into());
     }
-    let mut messages = openwebide_agent::session::history(history_messages, &steps);
-
+    let mut request = plan.request;
     let (anchor_id, first_turn) = if let Some(resume) = resume {
         (resume.anchor_id, resume.first_turn)
     } else {
-        let full_content =
-            openwebide_agent::session::user_content(user_content, editor_context.as_ref());
         let user_message = api
             .with_value(Clone::clone)
-            .persist_message(session_id, Role::User, &full_content, None, None)
+            .persist_message(session_id, Role::User, &plan.user_content, None, None)
             .await?;
         let anchor_id = user_message.id;
         on_event(RunEvent::Message {
             message: user_message.clone(),
         });
-        messages.push(user_message);
+        request.messages.push(user_message);
         (anchor_id, 1)
     };
-
-    // 3. Assemble chat request with standard workspace tools
-    let runtime = api
-        .with_value(Clone::clone)
-        .model_runtime(connection_id, model.as_deref())
-        .await?;
-    let request = openwebide_agent::session::request(
-        &runtime,
-        system_prompt,
-        messages,
-        local_tools(cwd.as_deref()),
-    );
 
     let web = BrowserWebClient::new(api);
     let provider = BrowserLlmProvider::new(api, ProviderKind::Ollama, bridge_connection);
     let cancel = LocalCancelCheck {
         flag: cancel_flag.clone(),
     };
+    if matches!(plan.kind, openwebide_core::RunKind::Chat) {
+        let content = openwebide_agent::session::chat_context(&mut request, &environment);
+        let message = api
+            .with_value(Clone::clone)
+            .persist_message(session_id, Role::System, &content, None, None)
+            .await?;
+        if !current() {
+            return Err("Project access changed".into());
+        }
+        on_event(RunEvent::Message { message });
+        let mut events = Box::pin(openwebide_agent::session::chat_events(
+            SessionPersistence {
+                api: SendWrapper::new(api),
+                session: session_id,
+            },
+            provider.chat_stream(&request),
+            cancel,
+        ));
+        while let Some(event) = events.next().await {
+            on_event(event);
+        }
+        return Ok(());
+    }
     let gate = openwebide_agent::policy::PolicyGate {
         manual: LocalPermissionGate {
             decisions: local_decisions,
@@ -776,32 +814,19 @@ pub async fn run_local_agent(
         first_turn,
         ..AgentConfig::default()
     };
-    let stream = if let Some(cwd) = cwd {
-        let Some(crate::project_host::ProjectExecution::Local(bridge)) = host else {
-            return Err("Local project requires its verified execution host".into());
-        };
-        let _ = cwd;
-        openwebide_agent::run(
-            provider,
-            VfsToolExecutor::with_web_and_bridge(vfs, web, bridge).with_context(environment),
-            request,
-            config,
-            cancel,
-            gate,
-            anchor_id,
-        )
-    } else {
-        openwebide_agent::run(
-            provider,
-            VfsToolExecutor::with_web_and_bridge(vfs, web, openwebide_agent::NoopBridgeClient)
-                .with_context(environment),
-            request,
-            config,
-            cancel,
-            gate,
-            anchor_id,
-        )
-    };
+    let bridge = host.and_then(|host| match host {
+        crate::project_host::ProjectExecution::Local(bridge) => Some(bridge),
+        crate::project_host::ProjectExecution::Remote { .. } => None,
+    });
+    let stream = openwebide_agent::run(
+        provider,
+        VfsToolExecutor::with_web_and_bridge(vfs, web, bridge).with_context(environment),
+        request,
+        config,
+        cancel,
+        gate,
+        anchor_id,
+    );
 
     let mut stream = Box::pin(openwebide_agent::session::events(
         SessionPersistence {

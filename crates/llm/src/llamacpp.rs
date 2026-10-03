@@ -1,10 +1,10 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::{Stream, StreamExt, stream};
 use openwebide_core::{
-    ChatCompletion, ChatRequest, ChatResponse, ModelInfo, ProviderKind, Role, StopReason, ToolCall,
+    ChatCompletion, ChatRequest, ChatResponse, ModelInfo, ProviderKind, StopReason, ToolCall,
 };
 use serde_json::{Value, json};
 
@@ -12,7 +12,7 @@ use crate::sse::{SseField, sse_field};
 use crate::{
     HttpClient, LineStream, LlmProvider, ProviderError, StreamChunk, StreamLine, ToolStreamChunk,
     ToolStreamMemo, UsageAcc, chat_messages, clock_now, completion_chunks, stream_error,
-    tool_call_values, tools_wire, url_for,
+    tool_call_values, tool_messages, tools_wire, url_for,
 };
 
 /// Provider for a [llama.cpp](https://github.com/ggml-org/llama.cpp) server
@@ -45,12 +45,13 @@ impl<C: HttpClient> LlamaCppProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
-        let Some(model) = request.model.clone().or_else(|| self.model.clone()) else {
-            return Box::pin(stream::once(async { Err(ProviderError::NoModel) }));
+        let model = match crate::request_model(request.model.as_deref(), self.model.as_deref()) {
+            Ok(model) => model,
+            Err(error) => return Box::pin(stream::once(async move { Err(error) })),
         };
         let mut body = json!({
             "model": model,
-            "messages": llamacpp_tool_messages(request),
+            "messages": tool_messages(request, ProviderKind::LlamaCpp),
             "stream": true,
             "tools": tools_wire(&request.tools),
             "stream_options": { "include_usage": true },
@@ -60,221 +61,7 @@ impl<C: HttpClient> LlamaCppProvider<C> {
             self.http
                 .post_stream(&url_for(&self.base_url, "/v1/chat/completions"), &body),
         );
-        Box::pin(stream::unfold(
-            (
-                lines,
-                UsageAcc::new(request),
-                String::new(),
-                BTreeMap::<usize, PartialToolCall>::new(),
-                StopReason::Complete,
-                VecDeque::new(),
-                false,
-                false,
-            ),
-            |(
-                mut lines,
-                mut acc,
-                mut content,
-                mut calls,
-                mut stop_reason,
-                mut pending,
-                mut complete,
-                mut ended,
-            )| async move {
-                loop {
-                    if let Some(chunk) = pending.pop_front() {
-                        return Some((
-                            Ok(chunk),
-                            (
-                                lines,
-                                acc,
-                                content,
-                                calls,
-                                stop_reason,
-                                pending,
-                                complete,
-                                ended,
-                            ),
-                        ));
-                    }
-                    if ended {
-                        return None;
-                    }
-                    let result = match lines.next().await {
-                        None if !complete => Err(ProviderError::Incomplete),
-                        Some(Err(e)) => Err(e),
-                        line => (|| {
-                            let mut done = line.is_none();
-                            if let Some(Ok(line)) = line {
-                                match sse_field(&line) {
-                                    SseField::Ignore => return Ok(()),
-                                    SseField::Error(value) => {
-                                        let parsed =
-                                            serde_json::from_str(value).unwrap_or(Value::Null);
-                                        return Err(ProviderError::Http(
-                                            stream_error(&parsed)
-                                                .unwrap_or_else(|| value.to_string()),
-                                        ));
-                                    }
-                                    SseField::Data(data) if data.trim() == "[DONE]" => {
-                                        done = true;
-                                    }
-                                    SseField::Data(data) => {
-                                        let value: Value =
-                                            serde_json::from_str(data).map_err(|e| {
-                                                ProviderError::Parse(format!(
-                                                    "llama.cpp stream: invalid JSON: {e}"
-                                                ))
-                                            })?;
-                                        if let Some(error) = stream_error(&value) {
-                                            return Err(ProviderError::Http(error));
-                                        }
-                                        usage_fields(&value, &mut acc);
-                                        if let Some(choice) = value
-                                            .get("choices")
-                                            .and_then(Value::as_array)
-                                            .and_then(|v| v.first())
-                                        {
-                                            if choice
-                                                .get("finish_reason")
-                                                .is_some_and(|v| !v.is_null())
-                                            {
-                                                complete = true;
-                                                stop_reason = if choice["finish_reason"] == "length"
-                                                {
-                                                    StopReason::Length
-                                                } else {
-                                                    StopReason::Complete
-                                                };
-                                            }
-                                            if let Some(delta) = choice.get("delta") {
-                                                if let Some(reasoning) = delta
-                                                    .get("reasoning_content")
-                                                    .and_then(Value::as_str)
-                                                    .filter(|s| !s.is_empty())
-                                                {
-                                                    if acc.started.is_none() {
-                                                        acc.started = clock_now();
-                                                    }
-                                                    acc.text.push_str(reasoning);
-                                                    pending.push_back(ToolStreamChunk::Reasoning(
-                                                        reasoning.to_string(),
-                                                    ));
-                                                }
-                                                if let Some(text) = delta
-                                                    .get("content")
-                                                    .and_then(Value::as_str)
-                                                    .filter(|s| !s.is_empty())
-                                                {
-                                                    if acc.started.is_none() {
-                                                        acc.started = clock_now();
-                                                    }
-                                                    content.push_str(text);
-                                                    acc.text.push_str(text);
-                                                    pending.push_back(ToolStreamChunk::Delta(
-                                                        text.to_string(),
-                                                    ));
-                                                }
-                                                if let Some(values) = delta
-                                                    .get("tool_calls")
-                                                    .and_then(Value::as_array)
-                                                    .filter(|v| !v.is_empty())
-                                                {
-                                                    if acc.started.is_none() {
-                                                        acc.started = clock_now();
-                                                    }
-                                                    for (position, value) in
-                                                        values.iter().enumerate()
-                                                    {
-                                                        let index = value
-                                                            .get("index")
-                                                            .and_then(Value::as_u64)
-                                                            .map(|n| {
-                                                                usize::try_from(n)
-                                                                    .unwrap_or(usize::MAX)
-                                                            })
-                                                            .unwrap_or(position);
-                                                        let call = calls.entry(index).or_default();
-                                                        if call.id.is_empty() {
-                                                            call.id = value
-                                                                .get("id")
-                                                                .and_then(Value::as_str)
-                                                                .unwrap_or_default()
-                                                                .to_string();
-                                                        }
-                                                        if let Some(function) =
-                                                            value.get("function")
-                                                        {
-                                                            if call.name.is_empty() {
-                                                                call.name = function
-                                                                    .get("name")
-                                                                    .and_then(Value::as_str)
-                                                                    .unwrap_or_default()
-                                                                    .to_string();
-                                                            }
-                                                            if let Some(args) = function
-                                                                .get("arguments")
-                                                                .and_then(Value::as_str)
-                                                            {
-                                                                call.arguments.push_str(args);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if done {
-                                let mut tool_calls = Vec::new();
-                                for call in std::mem::take(&mut calls).into_values() {
-                                    if call.name.is_empty() {
-                                        return Err(ProviderError::Parse(
-                                            "llama.cpp tool call missing `name`".into(),
-                                        ));
-                                    }
-                                    acc.text.push_str(&call.name);
-                                    acc.text.push_str(&call.arguments);
-                                    tool_calls.push(ToolCall {
-                                        id: call.id,
-                                        name: call.name,
-                                        arguments: call.arguments,
-                                    });
-                                }
-                                acc.ended = clock_now();
-                                pending.push_back(ToolStreamChunk::Stop(stop_reason));
-                                pending.push_back(ToolStreamChunk::Usage(acc.finish()));
-                                let response = if tool_calls.is_empty() {
-                                    ChatResponse::Text(std::mem::take(&mut content))
-                                } else {
-                                    ChatResponse::ToolCalls(tool_calls)
-                                };
-                                pending.push_back(ToolStreamChunk::Response(response));
-                                ended = true;
-                            }
-                            Ok(())
-                        })(),
-                    };
-                    if let Err(e) = result {
-                        pending.clear();
-                        return Some((
-                            Err(e),
-                            (
-                                lines,
-                                acc,
-                                content,
-                                calls,
-                                stop_reason,
-                                pending,
-                                complete,
-                                true,
-                            ),
-                        ));
-                    }
-                }
-            },
-        ))
+        crate::streaming::tool_stream(lines, request, LlamaCppToolParser::default())
     }
 }
 
@@ -359,11 +146,7 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
     }
 
     async fn chat(&self, request: &ChatRequest) -> Result<String, ProviderError> {
-        let model = request
-            .model
-            .clone()
-            .or_else(|| self.model.clone())
-            .ok_or(ProviderError::NoModel)?;
+        let model = crate::request_model(request.model.as_deref(), self.model.as_deref())?;
         let mut body = json!({
             "model": model,
             "messages": chat_messages(request),
@@ -393,8 +176,9 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
-        let Some(model) = request.model.clone().or_else(|| self.model.clone()) else {
-            return Box::pin(stream::once(async { Err(ProviderError::NoModel) }));
+        let model = match crate::request_model(request.model.as_deref(), self.model.as_deref()) {
+            Ok(model) => model,
+            Err(error) => return Box::pin(stream::once(async move { Err(error) })),
         };
         let mut body = json!({
             "model": model,
@@ -405,101 +189,14 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
         crate::apply_model_settings(&mut body, request, ProviderKind::LlamaCpp);
         let url = url_for(&self.base_url, "/v1/chat/completions");
         let lines = LineStream::new(self.http.post_stream(&url, &body));
-        Box::pin(stream::unfold(
-            (
-                lines,
-                UsageAcc::new(request),
-                VecDeque::new(),
-                false,
-                false,
-                StopReason::Complete,
-            ),
-            |(mut lines, mut acc, mut pending, mut complete, mut ended, mut stop_reason)| async move {
-                loop {
-                    if let Some(chunk) = pending.pop_front() {
-                        return Some((
-                            Ok(chunk),
-                            (lines, acc, pending, complete, ended, stop_reason),
-                        ));
-                    }
-                    if ended {
-                        return None;
-                    }
-                    let result = match lines.next().await {
-                        None if !complete => Err(ProviderError::Incomplete),
-                        Some(Err(e)) => Err(e),
-                        line => (|| {
-                            let mut done = line.is_none();
-                            if let Some(Ok(line)) = line {
-                                let parsed = parse_stream_line(&line)?;
-                                if let Ok(value) = serde_json::from_str::<Value>(
-                                    line.strip_prefix("data:").unwrap_or(&line).trim(),
-                                ) {
-                                    usage_fields(&value, &mut acc);
-                                    if value["choices"][0]["finish_reason"] == "length" {
-                                        stop_reason = StopReason::Length;
-                                    }
-                                    if let Some(reasoning) =
-                                        value["choices"][0]["delta"]["reasoning_content"]
-                                            .as_str()
-                                            .filter(|s| !s.is_empty())
-                                    {
-                                        if acc.started.is_none() {
-                                            acc.started = clock_now();
-                                        }
-                                        acc.text.push_str(reasoning);
-                                        pending.push_back(StreamChunk::Reasoning(
-                                            reasoning.to_string(),
-                                        ));
-                                    }
-                                }
-                                let delta = match parsed {
-                                    StreamLine::Delta(delta) => Some(delta),
-                                    StreamLine::Finished(delta) => {
-                                        complete = true;
-                                        delta
-                                    }
-                                    StreamLine::Done => {
-                                        done = true;
-                                        None
-                                    }
-                                    StreamLine::Skip => None,
-                                };
-                                if let Some(delta) = delta {
-                                    if acc.started.is_none() {
-                                        acc.started = clock_now();
-                                    }
-                                    acc.text.push_str(&delta);
-                                    pending.push_back(StreamChunk::Delta(delta));
-                                }
-                            }
-                            if done {
-                                acc.ended = clock_now();
-                                pending.push_back(StreamChunk::Stop(stop_reason));
-                                pending.push_back(StreamChunk::Usage(acc.finish()));
-                                ended = true;
-                            }
-                            Ok(())
-                        })(),
-                    };
-                    if let Err(e) = result {
-                        pending.clear();
-                        return Some((Err(e), (lines, acc, pending, complete, true, stop_reason)));
-                    }
-                }
-            },
-        ))
+        crate::streaming::chat_stream(lines, request, parse_chat_line)
     }
 
     async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
-        let model = request
-            .model
-            .clone()
-            .or_else(|| self.model.clone())
-            .ok_or(ProviderError::NoModel)?;
+        let model = crate::request_model(request.model.as_deref(), self.model.as_deref())?;
         let mut body = json!({
             "model": model,
-            "messages": llamacpp_tool_messages(request),
+            "messages": tool_messages(request, ProviderKind::LlamaCpp),
             "stream": false,
             "tools": tools_wire(&request.tools),
         });
@@ -648,55 +345,6 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
     }
 }
 
-/// OpenAI-compatible wire format for messages, including tool calls and tool
-/// results. Tool calls carry an `id` and a string `arguments`; tool results
-/// carry a `tool_call_id`.
-fn llamacpp_tool_messages(request: &ChatRequest) -> Vec<Value> {
-    let mut messages = Vec::new();
-    if let Some(system) = &request.system_prompt
-        && !system.is_empty()
-    {
-        messages.push(json!({ "role": "system", "content": system }));
-    }
-    for message in &request.messages {
-        match message.role {
-            Role::Tool => {
-                messages.push(json!({
-                    "role": "tool",
-                    "tool_call_id": message.tool_call_id.clone().unwrap_or_default(),
-                    "content": message.content,
-                }));
-            }
-            Role::Assistant if message.tool_calls.is_some() => {
-                let calls: Vec<Value> = message
-                    .tool_calls
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .map(|call| {
-                        json!({
-                            "id": call.id,
-                            "type": "function",
-                            "function": { "name": call.name, "arguments": call.arguments }
-                        })
-                    })
-                    .collect();
-                let content = if message.content.is_empty() {
-                    Value::Null
-                } else {
-                    Value::String(message.content.clone())
-                };
-                messages
-                    .push(json!({ "role": "assistant", "content": content, "tool_calls": calls }));
-            }
-            _ => {
-                messages.push(json!({ "role": message.role.as_str(), "content": message.content }));
-            }
-        }
-    }
-    messages
-}
-
 /// Parse one SSE line of llama.cpp's streaming `/v1/chat/completions`
 /// response.
 fn parse_stream_line(line: &str) -> Result<StreamLine, ProviderError> {
@@ -741,6 +389,99 @@ fn parse_stream_line(line: &str) -> Result<StreamLine, ProviderError> {
                 (false, None) => Ok(StreamLine::Skip),
             }
         }
+    }
+}
+
+fn parse_chat_line(
+    line: &str,
+    acc: &mut UsageAcc,
+) -> Result<crate::streaming::ParsedLine, ProviderError> {
+    let event = parse_stream_line(line)?;
+    let mut parsed = crate::streaming::ParsedLine {
+        event,
+        reasoning: None,
+        stop: None,
+    };
+    if let Ok(value) =
+        serde_json::from_str::<Value>(line.strip_prefix("data:").unwrap_or(line).trim())
+    {
+        usage_fields(&value, acc);
+        parsed.reasoning = value["choices"][0]["delta"]["reasoning_content"]
+            .as_str()
+            .map(str::to_string);
+        if value["choices"][0]["finish_reason"] == "length" {
+            parsed.stop = Some(StopReason::Length);
+        }
+    }
+    Ok(parsed)
+}
+
+#[derive(Default)]
+struct LlamaCppToolParser {
+    calls: BTreeMap<usize, PartialToolCall>,
+}
+impl crate::streaming::ToolParser for LlamaCppToolParser {
+    fn parse(
+        &mut self,
+        line: &str,
+        usage: &mut UsageAcc,
+    ) -> Result<crate::streaming::ToolLine, ProviderError> {
+        let parsed = parse_chat_line(line, usage)?;
+        let mut result = crate::streaming::ToolLine {
+            parsed,
+            end: false,
+            tool_activity: false,
+        };
+        if let SseField::Data(data) = sse_field(line) {
+            if data.trim() == "[DONE]" {
+                return Ok(result);
+            }
+            let value: Value = serde_json::from_str(data).map_err(|error| {
+                ProviderError::Parse(format!("llama.cpp stream: invalid JSON: {error}"))
+            })?;
+            if let Some(values) = value["choices"][0]["delta"]["tool_calls"]
+                .as_array()
+                .filter(|values| !values.is_empty())
+            {
+                result.tool_activity = true;
+                for (position, value) in values.iter().enumerate() {
+                    let index = value["index"]
+                        .as_u64()
+                        .map(|index| usize::try_from(index).unwrap_or(usize::MAX))
+                        .unwrap_or(position);
+                    let call = self.calls.entry(index).or_default();
+                    if call.id.is_empty() {
+                        call.id = value["id"].as_str().unwrap_or_default().to_string();
+                    }
+                    if let Some(function) = value.get("function") {
+                        if call.name.is_empty() {
+                            call.name = function["name"].as_str().unwrap_or_default().to_string();
+                        }
+                        if let Some(arguments) = function["arguments"].as_str() {
+                            call.arguments.push_str(arguments);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+    fn finish(&mut self) -> Result<Vec<ToolCall>, ProviderError> {
+        std::mem::take(&mut self.calls)
+            .into_values()
+            .map(|call| {
+                if call.name.is_empty() {
+                    return Err(ProviderError::Parse(
+                        "llama.cpp tool call missing `name`".into(),
+                    ));
+                }
+                Ok(ToolCall {
+                    id: call.id,
+                    name: call.name,
+                    arguments: call.arguments,
+                })
+            })
+            .collect()
     }
 }
 

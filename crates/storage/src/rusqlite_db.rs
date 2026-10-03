@@ -56,6 +56,59 @@ fn to_db_value(v: SqliteValue) -> DbValue {
     }
 }
 
+fn execute_connection(
+    conn: &SqliteConnection,
+    sql: &str,
+    params: &[DbValue],
+) -> Result<ExecResult, StorageError> {
+    let values: Vec<SqliteValue> = params.iter().map(to_sqlite_value).collect();
+
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| StorageError::Db(e.to_string()))?;
+    let column_count = stmt.column_count();
+
+    let rows = stmt
+        .query_map(params_from_iter(values.iter()), |row| {
+            let mut values = Vec::with_capacity(column_count);
+            for i in 0..column_count {
+                let v = row.get::<usize, SqliteValue>(i)?;
+                values.push(to_db_value(v));
+            }
+            Ok(QueryRow { values })
+        })
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, Some(msg))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation
+                    && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                        || err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
+            {
+                StorageError::Conflict(msg)
+            }
+            _ => StorageError::Db(e.to_string()),
+        })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, Some(msg))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation
+                    && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                        || err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
+            {
+                StorageError::Conflict(msg)
+            }
+            _ => StorageError::Db(e.to_string()),
+        })?);
+    }
+
+    Ok(ExecResult {
+        last_insert_rowid: conn.last_insert_rowid(),
+        changes: conn.changes(),
+        rows: out,
+    })
+}
+
 impl Db for RusqliteDb {
     type Tx<'a> = RusqliteTx;
 
@@ -67,54 +120,7 @@ impl Db for RusqliteDb {
         let conn = conn_guard
             .as_mut()
             .ok_or_else(|| StorageError::Db("Connection in use by transaction".to_string()))?;
-        let values: Vec<SqliteValue> = params.iter().map(to_sqlite_value).collect();
-
-        let mut stmt = conn
-            .prepare(sql)
-            .map_err(|e| StorageError::Db(e.to_string()))?;
-        let column_count = stmt.column_count();
-
-        let rows = stmt
-            .query_map(params_from_iter(values.iter()), |row| {
-                let mut values = Vec::with_capacity(column_count);
-                for i in 0..column_count {
-                    let v = row.get::<usize, SqliteValue>(i)?;
-                    values.push(to_db_value(v));
-                }
-                Ok(QueryRow { values })
-            })
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, Some(msg))
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation
-                        && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                            || err.extended_code
-                                == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
-                {
-                    StorageError::Conflict(msg)
-                }
-                _ => StorageError::Db(e.to_string()),
-            })?;
-
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, Some(msg))
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation
-                        && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                            || err.extended_code
-                                == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
-                {
-                    StorageError::Conflict(msg)
-                }
-                _ => StorageError::Db(e.to_string()),
-            })?);
-        }
-
-        Ok(ExecResult {
-            last_insert_rowid: conn.last_insert_rowid(),
-            changes: conn.changes(),
-            rows: out,
-        })
+        execute_connection(conn, sql, params)
     }
 
     async fn transaction<'a, F, Fut, T: 'a + Send>(&'a self, body: F) -> Result<T, StorageError>
@@ -203,54 +209,7 @@ impl Db for RusqliteTx {
         let conn = conn_guard
             .as_mut()
             .ok_or_else(|| StorageError::Db("Connection in use by transaction".to_string()))?;
-        let values: Vec<SqliteValue> = params.iter().map(to_sqlite_value).collect();
-
-        let mut stmt = conn
-            .prepare(sql)
-            .map_err(|e| StorageError::Db(e.to_string()))?;
-        let column_count = stmt.column_count();
-
-        let rows = stmt
-            .query_map(params_from_iter(values.iter()), |row| {
-                let mut values = Vec::with_capacity(column_count);
-                for i in 0..column_count {
-                    let v = row.get::<usize, SqliteValue>(i)?;
-                    values.push(to_db_value(v));
-                }
-                Ok(QueryRow { values })
-            })
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, Some(msg))
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation
-                        && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                            || err.extended_code
-                                == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
-                {
-                    StorageError::Conflict(msg)
-                }
-                _ => StorageError::Db(e.to_string()),
-            })?;
-
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, Some(msg))
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation
-                        && (err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                            || err.extended_code
-                                == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) =>
-                {
-                    StorageError::Conflict(msg)
-                }
-                _ => StorageError::Db(e.to_string()),
-            })?);
-        }
-
-        Ok(ExecResult {
-            last_insert_rowid: conn.last_insert_rowid(),
-            changes: conn.changes(),
-            rows: out,
-        })
+        execute_connection(conn, sql, params)
     }
 
     async fn transaction<'b, F, Fut, T: 'b>(&'b self, _body: F) -> Result<T, StorageError>

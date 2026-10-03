@@ -74,10 +74,10 @@ impl GitRepository {
                     .await
             }
             Self::Local(client) => {
-                let value: serde_json::Value = client
+                let value: openwebide_core::GitFileContent = client
                     .git_request("show", serde_json::json!({ "path": path }))
                     .await?;
-                Ok(value["content"].as_str().unwrap_or_default().into())
+                value.into_text()
             }
         }
     }

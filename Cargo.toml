@@ -73,6 +73,7 @@ web-sys = { version = "0.3", features = [
     "TextDecodeOptions",
     "FileSystemFileHandle",
     "FileSystemDirectoryHandle",
+    "FileSystemRemoveOptions",
     "FileSystemHandle",
     "FileSystemHandleKind",
     "DirectoryPickerOptions",

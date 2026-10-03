@@ -29,6 +29,7 @@ web-sys = { workspace = true, features = ["RequestCredentials", "MutationObserve
 test-support = []
 
 [dev-dependencies]
+openwebide-core = { workspace = true, features = ["test-support"] }
 wasm-bindgen-test = "0.3.78"
 openwebide-frontend = { path = ".", features = ["test-support"] }
 

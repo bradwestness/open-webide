@@ -106,3 +106,6 @@ impl<C: HttpClient + 'static> LlmProvider for Provider<C> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

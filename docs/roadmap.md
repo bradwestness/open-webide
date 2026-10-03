@@ -32,13 +32,6 @@ Finish the setup experience through shared logic and thin local/remote adapters:
 - Detect project type to suggest the default `/test` command and linters.
 - Show only the model name unless duplicate names need an `@ host` suffix.
 
-### Shared code refactoring
-
-Deduplicate provider model resolution, delta streaming and wire messages; split
-large core modules and deduplicate diff helpers; share storage row mapping; use
-typed VFS and git status values. Preserve the checked browser `SendWrapper`
-boundary when adjusting shared async contracts.
-
 ### Auto-compaction engine
 
 Activate the saved threshold (85% by default, with per-model overrides and
@@ -105,14 +98,11 @@ Small items the review rounds left open, plus the manual checks nobody has run y
   doesn't mark the active model and `/model default` doesn't reset the override;
   remaining model-picker polish.
 - **Providers:** base URLs with a query string or fragment break endpoint joining.
-- **Structure:** `openwebide-storage` depends on `openwebide-agent` only for
-  `step_id_prefix`; move the helper down.
 - **Tests:** missing-header rejection on register/login/logout; the
   `get_or_create_secret` race; a valid-token case in the backend expiry test;
   empty search query → 400; component-test helper `click_text` matches `class_name`
   exactly; fake-backend deletes don't cascade; `cargo test -p openwebide-frontend`
-  without `--lib` doesn't build natively; a test-only dead-code warning in
-  `backend/src/git.rs`.
+  without `--lib` doesn't build natively.
 - **Bundle:** `data-wasm-opt="z"` cut the raw WASM ~3% but gzip only ~0.2% and cold
   load didn't improve — keep or revert.
 - **Manual verification pass:** first-paint theme and both themes visually; the

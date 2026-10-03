@@ -95,6 +95,14 @@ impl RunActions {
         }
     }
 
+    pub(crate) fn control(self, message: BridgeClientMessage) -> bool {
+        let mut sent = false;
+        self.controls.update_value(|controls| {
+            sent = controls.send(self.bridge.get_untracked().as_ref(), message);
+        });
+        sent
+    }
+
     pub async fn ready(self) -> Option<BridgeConn> {
         let bridge = self.bridge.get_untracked()?;
         for _ in 0..HELLO_WAIT_MS / 20 {

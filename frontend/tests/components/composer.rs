@@ -156,7 +156,7 @@ async fn project_open_buttons_call_their_callbacks_and_alt_shortcuts_are_blocked
                 on_send=Callback::new(|()| panic!("sent without a project"))
                 on_open_local=Callback::new(move |()| local.update(|n| *n += 1))
                 on_open_remote=Callback::new(move |()| remote.update(|n| *n += 1))
-                on_resume_local_run=Callback::new(|()| ())
+                on_resume_run=Callback::new(|()| ())
                 on_stop=Callback::new(|()| ())
                 on_permission=Callback::new(move |_| permissions.update(|n| *n += 1))
                 on_permission_always=Callback::new(move |_| permissions.update(|n| *n += 1))

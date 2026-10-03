@@ -50,7 +50,7 @@ fn js_vfs_error(error: JsValue) -> VfsError {
 
 pub fn display_error(error: VfsError) -> String {
     match error {
-        VfsError::PermissionDenied(ref detail) if detail == PERMISSION_NEEDED => detail.clone(),
+        VfsError::PermissionRequired(detail) => detail,
         error => error.to_string(),
     }
 }
@@ -91,7 +91,7 @@ async fn ensure_permission(handle: &FileSystemDirectoryHandle) -> Result<(), Vfs
     if query.as_string().as_deref() == Some("granted") {
         return Ok(());
     }
-    Err(VfsError::PermissionDenied(PERMISSION_NEEDED.to_string()))
+    Err(VfsError::PermissionRequired(PERMISSION_NEEDED.to_string()))
 }
 
 /// List a directory's entries, returning project-relative paths.
@@ -115,7 +115,7 @@ async fn read_typed(root: &FileSystemDirectoryHandle, path: &str) -> Result<Stri
     file_handle_text(&file_handle).await
 }
 
-async fn read_lossy_typed(
+pub(crate) async fn read_lossy_typed(
     root: &FileSystemDirectoryHandle,
     path: &str,
 ) -> Result<String, VfsError> {
@@ -140,7 +140,7 @@ async fn read_lossy_typed(
 }
 
 /// Create an object URL (blob:...) for a local file to display media assets.
-async fn read_blob_url_typed(
+pub(crate) async fn read_blob_url_typed(
     root: &FileSystemDirectoryHandle,
     path: &str,
 ) -> Result<String, VfsError> {
@@ -199,15 +199,19 @@ async fn create_typed(
     write_file_handle(&fh, "").await
 }
 
-/// Delete the file at `path`.
+/// Delete an entry and its descendants, matching the shared VFS contract.
 async fn delete_typed(root: &FileSystemDirectoryHandle, path: &str) -> Result<(), VfsError> {
     let path = openwebide_core::vfs::workspace_path(path)?;
     ensure_permission(root).await?;
     let (parent, name) = split_path(&path);
     let parent_dir = resolve_dir(root, &parent).await?;
-    JsFuture::from(parent_dir.remove_entry(&name))
-        .await
-        .map_err(js_vfs_error)?;
+    JsFuture::from(parent_dir.remove_entry_with_options(&name, &{
+        let options = web_sys::FileSystemRemoveOptions::new();
+        options.set_recursive(true);
+        options
+    }))
+    .await
+    .map_err(js_vfs_error)?;
     Ok(())
 }
 
@@ -309,10 +313,10 @@ pub async fn write(
 pub async fn create(
     root: &FileSystemDirectoryHandle,
     path: &str,
-    is_dir: bool,
+    kind: openwebide_core::vfs::VfsEntryKind,
 ) -> Result<(), String> {
     BrowserFsaVfs::new(root.clone())
-        .create(path, is_dir)
+        .create(path, kind)
         .await
         .map_err(display_error)
 }
@@ -631,11 +635,15 @@ impl Vfs for BrowserFsaVfs {
         ))
     }
 
-    fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
+    fn create<'a>(
+        &'a self,
+        path: &'a str,
+        kind: openwebide_core::vfs::VfsEntryKind,
+    ) -> VfsFuture<'a, ()> {
         let root = self.root.clone();
         let path = path.to_string();
         Box::pin(SendWrapper::new(async move {
-            create_typed(&root, &path, is_dir).await
+            create_typed(&root, &path, kind.is_dir()).await
         }))
     }
 

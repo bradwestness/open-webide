@@ -12,6 +12,9 @@ html5ever = "0.40"
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[features]
+test-support = []
+
 [dev-dependencies]
 futures = { workspace = true }
 proptest = "1.11"

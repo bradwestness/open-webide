@@ -4,9 +4,13 @@
 //! (`\n`, `\r\n`, or none), so a CRLF→LF conversion or an added/removed
 //! trailing newline shows up as a change even when the visible text is
 //! identical. The middle is aligned with a standard LCS table + backtrack
-//! (the same DP/backtrack shape as `compute_word_diff`'s token LCS in
-//! `lib.rs`, at line granularity), with a cell budget that falls back to
+//! (shared with [`compute_word_diff`]'s token LCS), with a cell budget that falls back to
 //! delete-all/insert-all for very large middles.
+
+use serde::{Deserialize, Serialize};
+
+mod render;
+pub use render::*;
 
 /// How a line ends: `\n`, `\r\n`, or nothing (the file's last line, if it
 /// has no trailing newline).
@@ -120,45 +124,28 @@ pub fn line_lcs<'a>(old: &'a str, new: &'a str) -> Vec<LineOp<'a>> {
     } else if mid_m == 0 && mid_n == 0 {
         Vec::new()
     } else {
-        // dp[i * stride + j] stores the LCS length of mid_old[..i] and mid_new[..j].
-        let stride = mid_n + 1;
-        let mut dp = vec![0u32; (mid_m + 1) * stride];
-        for i in 1..=mid_m {
-            for j in 1..=mid_n {
-                dp[i * stride + j] = if mid_old[i - 1] == mid_new[j - 1] {
-                    dp[(i - 1) * stride + (j - 1)] + 1
-                } else {
-                    dp[(i - 1) * stride + j].max(dp[i * stride + (j - 1)])
-                };
-            }
-        }
-
-        // Backtrack from (mid_m, mid_n) to (0, 0), pushing ops in reverse.
         let mut ops = Vec::with_capacity(mid_m + mid_n);
-        let (mut i, mut j) = (mid_m, mid_n);
-        while i > 0 && j > 0 {
-            if mid_old[i - 1] == mid_new[j - 1] {
-                ops.push(LineOp::Equal(mid_old[i - 1]));
-                i -= 1;
-                j -= 1;
-            } else if dp[(i - 1) * stride + j] >= dp[i * stride + (j - 1)] {
-                ops.push(LineOp::Delete(mid_old[i - 1]));
-                i -= 1;
-            } else {
-                ops.push(LineOp::Insert(mid_new[j - 1]));
-                j -= 1;
-            }
+        let (mut old_index, mut new_index) = (0, 0);
+        for (old_match, new_match) in lcs_matches(mid_old, mid_new) {
+            ops.extend(
+                mid_old[old_index..old_match]
+                    .iter()
+                    .copied()
+                    .map(LineOp::Delete),
+            );
+            ops.extend(
+                mid_new[new_index..new_match]
+                    .iter()
+                    .copied()
+                    .map(LineOp::Insert),
+            );
+            ops.push(LineOp::Equal(mid_old[old_match]));
+            old_index = old_match + 1;
+            new_index = new_match + 1;
         }
-        while i > 0 {
-            ops.push(LineOp::Delete(mid_old[i - 1]));
-            i -= 1;
-        }
-        while j > 0 {
-            ops.push(LineOp::Insert(mid_new[j - 1]));
-            j -= 1;
-        }
-        ops.reverse();
-        normalize_middle_ops(&ops)
+        ops.extend(mid_old[old_index..].iter().copied().map(LineOp::Delete));
+        ops.extend(mid_new[new_index..].iter().copied().map(LineOp::Insert));
+        ops
     };
 
     let mut ops = Vec::with_capacity(prefix + mid_ops.len() + suffix);
@@ -172,37 +159,35 @@ pub fn line_lcs<'a>(old: &'a str, new: &'a str) -> Vec<LineOp<'a>> {
     ops
 }
 
-/// Reorder each maximal run of non-`Equal` ops so all `Delete`s precede all
-/// `Insert`s, keeping the relative order within each kind. The backtrack can
-/// emit an `Insert` before a `Delete` within one region (e.g. a plain
-/// single-line replacement); reordering is semantically a no-op for the
-/// round-trip invariant but gives consumers a stable "dels then inss" shape.
-fn normalize_middle_ops<'a>(ops: &[LineOp<'a>]) -> Vec<LineOp<'a>> {
-    let mut out = Vec::with_capacity(ops.len());
-    let mut i = 0;
-    while i < ops.len() {
-        if matches!(ops[i], LineOp::Equal(_)) {
-            out.push(ops[i]);
-            i += 1;
-        } else {
-            let start = i;
-            while i < ops.len() && !matches!(ops[i], LineOp::Equal(_)) {
-                i += 1;
-            }
-            let run = &ops[start..i];
-            for op in run {
-                if matches!(op, LineOp::Delete(_)) {
-                    out.push(*op);
-                }
-            }
-            for op in run {
-                if matches!(op, LineOp::Insert(_)) {
-                    out.push(*op);
-                }
-            }
+/// Matching indices in source order. Callers trim common edges and enforce their own cell budget.
+/// Prefer deleting from the old side on ties, preserving the existing line/word alignment.
+fn lcs_matches<T: PartialEq>(old: &[T], new: &[T]) -> Vec<(usize, usize)> {
+    let stride = new.len() + 1;
+    let mut dp = vec![0u32; (old.len() + 1) * stride];
+    for i in 1..=old.len() {
+        for j in 1..=new.len() {
+            dp[i * stride + j] = if old[i - 1] == new[j - 1] {
+                dp[(i - 1) * stride + j - 1] + 1
+            } else {
+                dp[(i - 1) * stride + j].max(dp[i * stride + j - 1])
+            };
         }
     }
-    out
+    let (mut i, mut j) = (old.len(), new.len());
+    let mut matches = Vec::new();
+    while i > 0 && j > 0 {
+        if old[i - 1] == new[j - 1] {
+            matches.push((i - 1, j - 1));
+            i -= 1;
+            j -= 1;
+        } else if dp[(i - 1) * stride + j] >= dp[i * stride + j - 1] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    matches.reverse();
+    matches
 }
 
 /// A note for a paired line whose ending differs between old and new, or
@@ -219,6 +204,47 @@ pub fn ending_note_for(old: Ending, new: Ending) -> Option<&'static str> {
         (Ending::Lf, Ending::CrLf) => Some("⏎ LF → CRLF"),
         _ => None,
     }
+}
+
+/// A file edit produced by the agent, for diff rendering in the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub path: String,
+    /// Previous contents; `None` when the file is new.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old: Option<String>,
+    pub new: String,
+    /// Whether an existing file was overwritten but could not be read as text; `old` is `None`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub old_unavailable: bool,
+    /// Backup path of the original file, if overwritten while unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<String>,
+}
+
+/// Current review state of a persisted project edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditDecision {
+    Pending,
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedEdit {
+    pub project_id: i64,
+    pub path: String,
+    pub revision: i64,
+    pub decision: EditDecision,
+    pub diff: FileDiff,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolveEditRequest {
+    pub path: String,
+    pub revision: i64,
+    pub decision: EditDecision,
 }
 
 #[cfg(test)]

@@ -725,22 +725,7 @@ struct PendingCall {
     wire_id: String,
 }
 
-pub fn step_id_prefix(anchor_id: i64) -> String {
-    format!("a{anchor_id}t")
-}
-
-pub fn parse_step_id(id: &str) -> Option<(i64, usize, usize)> {
-    let (anchor, rest) = id.strip_prefix('a')?.split_once('t')?;
-    let (turn, index) = rest.split_once('c')?;
-    if !turn.bytes().all(|b| b.is_ascii_digit()) || !index.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    Some((
-        anchor.parse().ok()?,
-        turn.parse().ok()?,
-        index.parse().ok()?,
-    ))
-}
+pub use openwebide_core::{parse_step_id, step_id_prefix};
 
 /// Assign step ids and wire ids to one response's tool calls.
 fn pending_calls(anchor_id: i64, turn: usize, calls: Vec<ToolCall>) -> Vec<PendingCall> {

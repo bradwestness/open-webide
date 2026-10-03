@@ -297,9 +297,55 @@ pub fn parse_diff_stat(output: &str) -> GitLineStats {
     }
 }
 
+/// Diff payload shared by bridge HTTP and in-process Git adapters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiff {
+    pub diff: String,
+}
+
+/// A file's contents at HEAD. Missing encoding preserves legacy UTF-8 responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitFileContent {
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+}
+
+impl GitFileContent {
+    /// Text previews share binary and unknown-encoding behavior across transports.
+    pub fn into_text(self) -> Result<String, String> {
+        match self.encoding.as_deref().unwrap_or("utf8") {
+            "utf8" => Ok(self.content),
+            "base64" => Err("binary file".into()),
+            encoding => Err(format!("unknown blob encoding: {encoding}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_text_preview_contract() {
+        for encoding in [None, Some("utf8")] {
+            let value = GitFileContent {
+                content: "世界\n".into(),
+                encoding: encoding.map(str::to_string),
+            };
+            assert_eq!(value.into_text().unwrap(), "世界\n");
+        }
+        let binary = GitFileContent {
+            content: "/w==".into(),
+            encoding: Some("base64".into()),
+        };
+        assert_eq!(binary.into_text().unwrap_err(), "binary file");
+        let unknown = GitFileContent {
+            content: "text".into(),
+            encoding: Some("unknown".into()),
+        };
+        assert!(unknown.into_text().is_err());
+    }
 
     #[test]
     fn test_parse_porcelain_v1_full() {

@@ -762,8 +762,12 @@ mod tests {
         fn list<'a>(&'a self, path: &'a str) -> VfsFuture<'a, Vec<FileEntry>> {
             self.inner.list(path)
         }
-        fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
-            self.inner.create(path, is_dir)
+        fn create<'a>(
+            &'a self,
+            path: &'a str,
+            kind: openwebide_core::vfs::VfsEntryKind,
+        ) -> VfsFuture<'a, ()> {
+            self.inner.create(path, kind)
         }
         fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()> {
             self.inner.delete(path)
@@ -1787,7 +1791,11 @@ mod tests {
             Box::pin(async { Ok(Vec::new()) })
         }
 
-        fn create<'a>(&'a self, _path: &'a str, _is_dir: bool) -> VfsFuture<'a, ()> {
+        fn create<'a>(
+            &'a self,
+            _path: &'a str,
+            _kind: openwebide_core::vfs::VfsEntryKind,
+        ) -> VfsFuture<'a, ()> {
             Box::pin(async { Ok(()) })
         }
 

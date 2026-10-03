@@ -1072,7 +1072,8 @@ async fn browser_vfs_uses_shared_paths_read_limits_and_search_contract() {
         "Needle\nsecond needle"
     );
     assert!(matches!(
-        vfs.create("src/a.txt", false).await,
+        vfs.create("src/a.txt", openwebide_core::vfs::VfsEntryKind::File)
+            .await,
         Err(openwebide_core::VfsError::AlreadyExists(_))
     ));
     for path in ["../outside", ".spin/db", "a/.spin/db"] {
@@ -1109,4 +1110,103 @@ async fn browser_vfs_uses_shared_paths_read_limits_and_search_contract() {
     assert_eq!(hits.len(), 500);
     assert!(hits.iter().all(|hit| hit.text.chars().count() == 400));
     contractCleanup(&fixture).await;
+}
+
+#[wasm_bindgen_test]
+async fn browser_vfs_creation_contract() {
+    let fixture = contractFolder().await;
+    let vfs = BrowserFsaVfs::new(contractHandle(&fixture).unchecked_into());
+    openwebide_core::testing::vfs_creation_contract(&vfs).await;
+    contractCleanup(&fixture).await;
+}
+
+#[wasm_bindgen_test]
+async fn browser_chat_only_run_uses_shared_reply_lifecycle() {
+    let mounted =
+        mount_test(|state| {
+            state.seed_project();
+            state.seed_connection();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = openwebide_core::WorkspaceMode::Local);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, empty_read_folder().unchecked_into());
+            });
+            state
+                .fake
+                .model_setup
+                .borrow_mut()
+                .profiles
+                .push(openwebide_core::ModelProfile {
+                    selection: openwebide_core::ModelSelection {
+                        server_id: 1,
+                        model: "qwen3:8b".into(),
+                    },
+                    settings: openwebide_core::ModelSettings {
+                        tools: Some(false),
+                        ..Default::default()
+                    },
+                });
+            state.fake.scripted_completions.borrow_mut().push_back(
+                openwebide_core::ChatCompletion {
+                    reasoning: "thinking".into(),
+                    preamble: String::new(),
+                    response: openwebide_core::ChatResponse::Text("reply".into()),
+                    stop_reason: openwebide_core::StopReason::Length,
+                    usage: Some(openwebide_core::TurnTelemetry {
+                        prompt_tokens: 10,
+                        ..Default::default()
+                    }),
+                },
+            );
+            chat_view(state)
+        });
+    settle().await;
+    mounted.input("hello");
+    mounted.key("Enter", "Enter", false);
+    for _ in 0..1000 {
+        sleep_ms(5).await;
+        settle().await;
+        if !mounted.state.chat.streaming.get_untracked() {
+            break;
+        }
+    }
+    assert!(
+        mounted.state.chat.error.get_untracked().is_none(),
+        "{:?}",
+        mounted.state.chat.error.get_untracked()
+    );
+    assert!(!mounted.state.chat.streaming.get_untracked());
+    let requests = mounted.state.fake.completion_requests.borrow();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].tools.is_empty());
+    assert!(
+        requests[0]
+            .system_prompt
+            .as_ref()
+            .unwrap()
+            .contains("chat-only run")
+    );
+    let entries = mounted.state.fake.messages.borrow();
+    let reply = entries[&1]
+        .iter()
+        .rev()
+        .find_map(|entry| match entry {
+            openwebide_core::ConversationEntry::Message(message)
+                if message.role == openwebide_core::Role::Assistant =>
+            {
+                Some(message)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(reply.content.contains("thinking") && reply.content.contains("reply"));
+    assert!(
+        reply
+            .content
+            .ends_with(openwebide_core::REPLY_CUT_OFF_MARKER)
+    );
+    assert_eq!(reply.usage.unwrap().prompt_tokens, 10);
 }

@@ -114,16 +114,7 @@ impl WorkspaceActions {
         let active_project = projects.active_project;
         let auth = expect_context::<AuthState>();
         let workspace_for = Callback::new(move |project_id: i64| -> Option<Workspace> {
-            let project = projects.project(project_id)?;
-            match project.mode {
-                openwebide_core::WorkspaceMode::Remote => {
-                    Some(Workspace::Remote { api, project_id })
-                }
-                openwebide_core::WorkspaceMode::Local => projects
-                    .local_handles
-                    .with(|handles| handles.get(&project_id).cloned())
-                    .map(|handle| Workspace::Local { handle }),
-            }
+            Workspace::for_project(api, projects, project_id)
         });
 
         super::tree::watch_tree(projects, workspace, auth, workspace_for, refresh_git);
@@ -158,12 +149,12 @@ impl WorkspaceActions {
                         if !current() {
                             return;
                         }
-                        if error == local_fs::PERMISSION_NEEDED {
+                        if error.needs_folder_access() {
                             projects.needs_grant.update(|projects_needing_grant| {
                                 projects_needing_grant.insert(project_id);
                             });
                         } else if current() {
-                            ui.toast.set(Some(error));
+                            ui.toast.set(Some(error.to_string()));
                         }
                     }
                 }
@@ -282,7 +273,7 @@ impl WorkspaceActions {
                         if active_project.get_untracked() == Some(project_id)
                             && workspace.open_file.get_untracked().as_deref() == Some(path.as_str())
                         {
-                            ui.toast.set(Some(error));
+                            ui.toast.set(Some(error.to_string()));
                         }
                     }
                 }
@@ -334,7 +325,7 @@ impl WorkspaceActions {
                         if active_project.get_untracked() == Some(project_id)
                             && workspace.open_file.get_untracked().as_deref() == Some(path.as_str())
                         {
-                            ui.toast.set(Some(error));
+                            ui.toast.set(Some(error.to_string()));
                         }
                     }
                 }
@@ -411,7 +402,7 @@ impl WorkspaceActions {
                         }
                         refresh_git.run(());
                     }
-                    Err(error) => ui.toast.set(Some(error)),
+                    Err(error) => ui.toast.set(Some(error.to_string())),
                 }
             });
         });
@@ -668,7 +659,10 @@ impl WorkspaceActions {
                         let Some(ws) = workspace_for.run(project_id) else {
                             return;
                         };
-                        match ws.create(&path, false).await {
+                        match ws
+                            .create(&path, openwebide_core::vfs::VfsEntryKind::File)
+                            .await
+                        {
                             Ok(()) => {
                                 if active_project.get() == Some(project_id) {
                                     load_dir.run((project_id, parent_dir(&path)));
@@ -677,7 +671,7 @@ impl WorkspaceActions {
                             }
                             Err(error) => {
                                 if active_project.get() == Some(project_id) {
-                                    ui.toast.set(Some(error));
+                                    ui.toast.set(Some(error.to_string()));
                                 }
                             }
                         }
@@ -709,7 +703,10 @@ impl WorkspaceActions {
                         let Some(ws) = workspace_for.run(project_id) else {
                             return;
                         };
-                        match ws.create(&path, true).await {
+                        match ws
+                            .create(&path, openwebide_core::vfs::VfsEntryKind::Directory)
+                            .await
+                        {
                             Ok(()) => {
                                 if active_project.get() == Some(project_id) {
                                     load_dir.run((project_id, parent_dir(&path)));
@@ -717,7 +714,7 @@ impl WorkspaceActions {
                             }
                             Err(error) => {
                                 if active_project.get() == Some(project_id) {
-                                    ui.toast.set(Some(error));
+                                    ui.toast.set(Some(error.to_string()));
                                 }
                             }
                         }
@@ -761,7 +758,7 @@ impl WorkspaceActions {
                     }
                     match result {
                         Ok(results) => workspace.search.set(Some(results)),
-                        Err(error) => ui.toast.set(Some(error)),
+                        Err(error) => ui.toast.set(Some(error.to_string())),
                     }
                 });
             },

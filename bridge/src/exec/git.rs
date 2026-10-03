@@ -210,14 +210,11 @@ pub async fn get_repo_diff(repo_dir: &Path, file_path: Option<&str>) -> Result<S
     Ok(diff_out)
 }
 
-#[derive(Debug, serde::Serialize)]
-pub struct ShowOut {
-    pub content: String,
-    pub encoding: &'static str,
-}
-
 /// Retrieve the raw contents of a file at Git HEAD.
-pub async fn get_file_at_head(repo_dir: &Path, file_path: &str) -> Result<ShowOut, GitError> {
+pub async fn get_file_at_head(
+    repo_dir: &Path,
+    file_path: &str,
+) -> Result<openwebide_core::GitFileContent, GitError> {
     let clean_path = file_path.trim_start_matches('/');
     let (out, err, ok) = exec_git_bytes(&["show", &format!("HEAD:{clean_path}")], repo_dir).await?;
     if !ok {
@@ -226,13 +223,13 @@ pub async fn get_file_at_head(repo_dir: &Path, file_path: &str) -> Result<ShowOu
         )));
     }
     Ok(match String::from_utf8(out) {
-        Ok(content) => ShowOut {
+        Ok(content) => openwebide_core::GitFileContent {
             content,
-            encoding: "utf8",
+            encoding: Some("utf8".into()),
         },
-        Err(error) => ShowOut {
+        Err(error) => openwebide_core::GitFileContent {
             content: base64::engine::general_purpose::STANDARD.encode(error.into_bytes()),
-            encoding: "base64",
+            encoding: Some("base64".into()),
         },
     })
 }
@@ -611,7 +608,7 @@ mod tests {
 
         let content = get_file_at_head(&td.path, "spaced.txt").await.unwrap();
         assert_eq!(content.content, exact_content);
-        assert_eq!(content.encoding, "utf8");
+        assert_eq!(content.encoding.as_deref(), Some("utf8"));
     }
 
     #[tokio::test]

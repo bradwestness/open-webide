@@ -16,6 +16,26 @@
    I/O boundary (Spin REST vs. browser File System Access handles), ensuring
    features never drift between modes.
 
+## Shared feature boundaries
+
+UI actions, slash commands, and background refresh use the same feature entry points:
+
+| Feature | Shared behavior | Host primitives |
+| --- | --- | --- |
+| Files and search | `Workspace`, core `Vfs`, shared path validation and ordering | Browser `BrowserFsaVfs`, backend `HostFsVfs`, bridge `NativeFsVfs` |
+| Git and terminals | `ProjectGit` / `ProjectHost`, shared Git types and bridge execution | Backend REST or authenticated browser bridge transport |
+| Chat and agent runs | `ProjectRuns`, agent `session::plan`, `chat_events`, `events`, agent loop and approval policy | Browser, Spin and bridge persistence, cancellation, permission and HTTP adapters |
+| Model requests | `ModelRuntime::apply_to`, provider wire messages and stream state machines | Protocol parsers and browser/Spin/native HTTP clients |
+| History recovery | Core interrupted-run validation and tool-history reconstruction | Persisted messages and tool results, UI presentation mapping |
+
+Mode checks belong to selecting these adapters and browser folder permissions. New
+features extend the shared entry point; adapters supply operations, never a second
+workflow. Cancellation, fallback, result shaping and limits stay above the adapters.
+Browser futures retain checked `SendWrapper` ownership. Asynchronous UI updates must
+validate the originating account, project/session and host revision before applying.
+The filesystem creation contract runs against memory, native and browser adapters;
+provider contracts run the same success and failure cases against both protocols.
+
 ## Components
 
 ```

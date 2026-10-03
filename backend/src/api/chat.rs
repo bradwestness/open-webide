@@ -35,11 +35,7 @@ pub(crate) async fn chat(
         request.model.as_deref(),
     )
     .await?;
-    request.model = runtime.connection.model.clone();
-    request.model_settings = runtime.settings;
-    if request.model_settings.tools == Some(false) {
-        request.tools.clear();
-    }
+    runtime.apply_to(&mut request);
     let connection = runtime.connection;
     let provider = Provider::for_connection(
         &connection,
@@ -64,11 +60,7 @@ pub(crate) async fn chat_tools(
         request.model.as_deref(),
     )
     .await?;
-    request.model = runtime.connection.model.clone();
-    request.model_settings = runtime.settings;
-    if request.model_settings.tools == Some(false) {
-        request.tools.clear();
-    }
+    runtime.apply_to(&mut request);
     let connection = runtime.connection;
     let memo = ToolStreamMemo::new(connection.tool_stream_unsupported);
     let provider = Provider::for_connection_with_memo(

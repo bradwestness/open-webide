@@ -40,6 +40,7 @@ base64 = { workspace = true }
 openwebide-auth = { workspace = true }
 
 [dev-dependencies]
+openwebide-core = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"
 

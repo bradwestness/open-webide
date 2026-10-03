@@ -9,10 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::{Stream, StreamExt};
 use openwebide_agent::{AgentConfig, AgentEvent, VfsToolExecutor};
 use openwebide_core::{
-    BridgeServerMessage, ChatMessage, EditorContext, REPLY_TRUNCATED_MARKER, Role, RunEvent,
-    RunInfo, RunKind, RunPlan, RunRejectCode, RunSnapshot, TurnTelemetry,
+    BridgeServerMessage, ChatMessage, EditorContext, Role, RunEvent, RunInfo, RunKind, RunPlan,
+    RunRejectCode, RunSnapshot, TurnTelemetry,
 };
-use openwebide_llm::{LlmProvider, ProviderError, StreamChunk};
+use openwebide_llm::LlmProvider;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -339,17 +339,14 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
     }
     match plan.kind {
         RunKind::Chat => {
-            let content = openwebide_agent::context::chat_context(&plan.environment);
-            plan.request
-                .system_prompt
-                .get_or_insert_with(String::new)
-                .push_str(&format!("\n\n{content}"));
+            let content =
+                openwebide_agent::session::chat_context(&mut plan.request, &plan.environment);
             match backend
                 .persist_message(
                     run.owner,
                     run.session_id,
                     Role::System,
-                    &format!("{}{content}", openwebide_core::RUN_CONTEXT_PREFIX),
+                    &content,
                     None,
                     None,
                 )
@@ -363,54 +360,17 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                     return;
                 }
             }
-            let mut stream = provider.chat_stream(&plan.request);
-            let mut text = String::new();
-            let mut reasoning = String::new();
-            let mut usage = None;
-            loop {
-                let chunk = tokio::select! {
-                    () = run.cancel.cancelled() => { run.emit(RunEvent::Cancelled); return; }
-                    chunk = stream.next() => chunk,
-                };
-                match chunk {
-                    Some(Ok(StreamChunk::Delta(delta))) => {
-                        text.push_str(&delta);
-                        run.emit(RunEvent::Delta { content: delta });
-                    }
-                    Some(Ok(StreamChunk::Reasoning(content))) => {
-                        reasoning.push_str(&content);
-                        run.emit(RunEvent::ReasoningDelta { content });
-                    }
-                    Some(Ok(StreamChunk::Stop(reason))) => {
-                        if reason == openwebide_core::StopReason::Length {
-                            text.push_str(openwebide_core::REPLY_CUT_OFF_MARKER);
-                        }
-                    }
-                    Some(Ok(StreamChunk::Usage(value))) => {
-                        usage = Some(value);
-                        run.emit(RunEvent::Telemetry { usage: value });
-                    }
-                    Some(Err(ProviderError::Incomplete))
-                        if !text.is_empty() || !reasoning.is_empty() =>
-                    {
-                        text.push_str(REPLY_TRUNCATED_MARKER);
-                        break;
-                    }
-                    Some(Err(error)) => {
-                        run.emit(RunEvent::Error {
-                            message: error.to_string(),
-                        });
-                        return;
-                    }
-                    None => break,
-                }
+            let mut events = Box::pin(openwebide_agent::session::chat_events(
+                SessionPersistence {
+                    run: &run,
+                    backend: &*backend,
+                },
+                provider.chat_stream(&plan.request),
+                run.cancel.clone(),
+            ));
+            while let Some(event) = events.next().await {
+                run.emit(event);
             }
-            if run.cancel.is_cancelled() {
-                run.emit(RunEvent::Cancelled);
-                return;
-            }
-            let text = openwebide_core::with_reasoning(&reasoning, &text);
-            persist_final(&run, &*backend, &text, usage.as_ref()).await;
         }
         RunKind::Agent { .. } => {
             let dir = dir.expect("agent run has a resolved project");
@@ -484,30 +444,6 @@ pub(crate) async fn record_tool_stream_memo<B: RunBackend>(
             .await
     {
         tracing::warn!(%error, "failed to save streamed-tools memo");
-    }
-}
-
-async fn persist_final<B: RunBackend>(
-    run: &Run,
-    backend: &B,
-    text: &str,
-    usage: Option<&TurnTelemetry>,
-) {
-    match backend
-        .persist_message(
-            run.owner,
-            run.session_id,
-            Role::Assistant,
-            text,
-            usage,
-            None,
-        )
-        .await
-    {
-        Ok(message) => run.emit(RunEvent::Done { message }),
-        Err(error) => run.emit(RunEvent::Error {
-            message: format!("failed to save reply: {error}"),
-        }),
     }
 }
 

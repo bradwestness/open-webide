@@ -200,7 +200,7 @@ pub fn chat_view(state: TestState) -> impl IntoView {
     view! {
         <ChatPane on_open_local=Callback::new(|()| ()) on_open_remote=Callback::new(|()| ())
             on_select_connection_model=actions.select_connection_model
-            on_send=actions.send on_resume_local_run=actions.resume_local_run on_stop=actions.stop
+            on_send=actions.send on_resume_run=actions.resume_run on_stop=actions.stop
             on_permission=actions.permission on_permission_always=actions.permission_always on_slash_command=actions.slash_command />
     }
 }

@@ -147,11 +147,7 @@ pub async fn repo_diff(
     project_dir: &str,
     file_path: Option<&str>,
 ) -> Result<String, BridgeError> {
-    #[derive(serde::Deserialize)]
-    struct DiffOut {
-        diff: String,
-    }
-    let res: DiffOut = bridge_post(
+    let res: openwebide_core::GitDiff = bridge_post(
         store,
         "/git/diff",
         project_dir,
@@ -167,13 +163,11 @@ pub enum Blob {
     Binary(Vec<u8>),
 }
 
-#[derive(serde::Deserialize)]
-struct ShowOut {
-    content: String,
-    encoding: Option<String>,
+trait IntoBlob {
+    fn into_blob(self) -> Result<Blob, BridgeError>;
 }
 
-impl ShowOut {
+impl IntoBlob for openwebide_core::GitFileContent {
     fn into_blob(self) -> Result<Blob, BridgeError> {
         match self.encoding.as_deref().unwrap_or("utf8") {
             "utf8" => Ok(Blob::Text(self.content)),
@@ -194,7 +188,7 @@ pub async fn repo_file_head(
     project_dir: &str,
     file_path: &str,
 ) -> Result<Blob, BridgeError> {
-    let res: ShowOut = bridge_post(
+    let res: openwebide_core::GitFileContent = bridge_post(
         store,
         "/git/show",
         project_dir,
@@ -263,12 +257,7 @@ mod tests {
     #[test]
     fn test_parse_bridge_response_parse_error() {
         let json = b"{\"error\": \"not the expected schema\"}";
-        #[derive(serde::Deserialize)]
-        #[allow(dead_code)] // The field defines the schema this malformed response must fail to decode.
-        struct DiffOut {
-            diff: String,
-        }
-        let res: Result<DiffOut, _> = parse_bridge_response(200, json);
+        let res: Result<openwebide_core::GitDiff, _> = parse_bridge_response(200, json);
         match res {
             Err(BridgeError::Parse(_)) => (),
             _ => panic!("unexpected result"),
@@ -277,7 +266,7 @@ mod tests {
 
     #[test]
     fn show_response_utf8() {
-        let res: ShowOut = parse_bridge_response(
+        let res: openwebide_core::GitFileContent = parse_bridge_response(
             200,
             r#"{"content":"  世界\n","encoding":"utf8"}"#.as_bytes(),
         )
@@ -293,13 +282,14 @@ mod tests {
             "encoding": "base64"
         }))
         .unwrap();
-        let res: ShowOut = parse_bridge_response(200, &body).unwrap();
+        let res: openwebide_core::GitFileContent = parse_bridge_response(200, &body).unwrap();
         assert_eq!(res.into_blob().unwrap(), Blob::Binary(bytes.to_vec()));
     }
 
     #[test]
     fn show_response_legacy() {
-        let res: ShowOut = parse_bridge_response(200, br#"{"content":"\n  text\n"}"#).unwrap();
+        let res: openwebide_core::GitFileContent =
+            parse_bridge_response(200, br#"{"content":"\n  text\n"}"#).unwrap();
         assert_eq!(res.into_blob().unwrap(), Blob::Text("\n  text\n".into()));
     }
 
@@ -309,7 +299,7 @@ mod tests {
             br#"{"content":"!","encoding":"base64"}"#.as_slice(),
             br#"{"content":"text","encoding":"unknown"}"#,
         ] {
-            let res: ShowOut = parse_bridge_response(200, body).unwrap();
+            let res: openwebide_core::GitFileContent = parse_bridge_response(200, body).unwrap();
             assert!(matches!(res.into_blob(), Err(BridgeError::Parse(_))));
         }
     }

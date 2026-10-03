@@ -575,8 +575,8 @@ impl BackendApi {
             Some(p) => format!("{ep}?path={}", urlenc(p)),
             None => ep,
         };
-        let res: serde_json::Value = self.get(&query).await?;
-        Ok(res["diff"].as_str().unwrap_or_default().to_string())
+        let res: openwebide_core::GitDiff = self.get(&query).await?;
+        Ok(res.diff)
     }
 
     pub async fn git_file_head(
@@ -586,14 +586,14 @@ impl BackendApi {
     ) -> Result<String, String> {
         let ep = Self::git_endpoint(project_id, "show");
         let query = format!("{ep}?path={}", urlenc(path));
-        let res: serde_json::Value = self.get(&query).await.map_err(|error| {
+        let res: openwebide_core::GitFileContent = self.get(&query).await.map_err(|error| {
             if error == "binary file at HEAD" {
                 "binary file".into()
             } else {
                 error
             }
         })?;
-        Ok(res["content"].as_str().unwrap_or_default().to_string())
+        res.into_text()
     }
 
     pub async fn git_branches(

@@ -14,12 +14,12 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_agent::policy::ApprovalMode;
 use openwebide_core::{
-    ConversationEntry, GitCheckoutRequest, GitCommitRequest, WorkspaceMode,
+    ConversationEntry, GitCheckoutRequest, GitCommitRequest,
     tui::{DEFAULT_CONTEXT_LIMIT, SlashCommand},
 };
 use web_sys::AbortController;
 
-use crate::{backend::Api, components::ToolStepResult, local_agent};
+use crate::{backend::Api, components::ToolStepResult};
 
 pub struct ChatActionContext {
     pub api: Api,
@@ -39,7 +39,7 @@ pub struct ChatActionContext {
 /// and executing slash-command intents.
 pub struct ChatActions {
     pub send: Callback<()>,
-    pub resume_local_run: Callback<()>,
+    pub resume_run: Callback<()>,
     pub stop: Callback<()>,
     pub permission: Callback<(String, bool)>,
     pub permission_always: Callback<String>,
@@ -70,79 +70,17 @@ impl ChatActions {
         let project_git = expect_context::<crate::project_git::ProjectGit>();
         let project_host = expect_context::<crate::project_host::ProjectHost>();
         let run_controls = StoredValue::new_local(super::runs::RunControls::default());
-        let stop = {
-            let local_cancel = chat.local_cancel_flag.get_value();
-            Callback::new(move |()| {
-                if let Some((_, run_id, _)) = chat.active_run.get_untracked() {
-                    run_controls.update_value(|controls| {
-                        controls.send(
-                            bridge.get_untracked().as_ref(),
-                            openwebide_core::BridgeClientMessage::RunCancel { run_id },
-                        );
-                    });
-                    return;
-                }
-                local_cancel.store(true, Ordering::Relaxed);
-                // Ask the server to stop the run; the browser abort below can't do it.
-                if let Some(session_id) = chat.streaming_session.get()
-                    && !chat.streaming_is_local.get_untracked()
-                {
-                    spawn_local(async move {
-                        let _ = api
-                            .with_value(Clone::clone)
-                            .cancel_session(session_id)
-                            .await;
-                    });
-                }
-                // The abort tears down the stream before the server's Cancelled
-                // event can arrive, so mark the stop here.
-                chat.mark_stopped();
-                chat.abort.with(|abort| {
-                    if let Some(controller) = abort.as_ref() {
-                        controller.abort();
-                    }
-                });
-            })
-        };
-
-        let permission = {
-            let local_permissions = chat.local_permissions.get_value();
-            Callback::new(move |(tool_call_id, approved): (String, bool)| {
-                if let Some((_, run_id, _)) = chat.active_run.get_untracked() {
-                    let mut sent = false;
-                    run_controls.update_value(|controls| {
-                        sent = controls.send(
-                            bridge.get_untracked().as_ref(),
-                            openwebide_core::BridgeClientMessage::RunPermission {
-                                run_id,
-                                tool_call_id: tool_call_id.clone(),
-                                approved,
-                            },
-                        );
-                    });
-                    if !sent {
-                        return;
-                    }
-                }
-                if let Ok(mut map) = local_permissions.lock() {
-                    map.insert(tool_call_id.clone(), approved);
-                }
-                // Clear the prompt immediately; the ToolCall (approved) or
-                // ToolResult (denied) event that follows confirms it.
-                chat.messages.clear_prompt(&tool_call_id, true);
-                if chat.active_run.get_untracked().is_some() {
-                    return;
-                }
-                if let Some(session_id) = chat.streaming_session.get() {
-                    spawn_local(async move {
-                        let _ = api
-                            .with_value(Clone::clone)
-                            .set_permission(session_id, &tool_call_id, approved)
-                            .await;
-                    });
-                }
-            })
-        };
+        let project_runs_slot = StoredValue::new(None::<crate::project_runs::ProjectRuns>);
+        let stop = Callback::new(move |()| {
+            if let Some(facade) = project_runs_slot.get_value() {
+                facade.stop();
+            }
+        });
+        let permission = Callback::new(move |(id, approved): (String, bool)| {
+            if let Some(facade) = project_runs_slot.get_value() {
+                facade.permission(id, approved);
+            }
+        });
 
         let permission_always = {
             let auth = expect_context::<crate::state::auth::AuthState>();
@@ -226,6 +164,16 @@ impl ChatActions {
         let runs =
             super::runs::RunActions::new(bridge, chat, api, apply_stream_event, run_controls);
         runs.install_reconnect();
+        let project_runs = crate::project_runs::ProjectRuns::new(
+            api,
+            chat,
+            projects,
+            settings,
+            project_host,
+            runs,
+            bridge,
+        );
+        project_runs_slot.set_value(Some(project_runs));
 
         let start = {
             let local_cancel = chat.local_cancel_flag.get_value();
@@ -240,16 +188,8 @@ impl ChatActions {
                     return;
                 }
                 local_cancel.store(false, Ordering::Relaxed);
-                if let Some(project_id) = projects.active_project.get_untracked()
-                    && let Some(project) = projects
-                        .projects
-                        .get_untracked()
-                        .into_iter()
-                        .find(|project| project.id == project_id)
-                {
-                    chat.streaming_is_local
-                        .set(project.mode == WorkspaceMode::Local);
-                }
+                chat.streaming_is_local
+                    .set(project_runs.browser_owned(projects.active_project.get_untracked()));
                 if let Ok(mut map) = local_permissions.lock() {
                     map.clear();
                 }
@@ -262,8 +202,6 @@ impl ChatActions {
                 chat.streaming.set(true);
                 chat.error.set(None);
                 chat.notice.set(None);
-                let local_cancel = local_cancel.clone();
-                let local_permissions = local_permissions.clone();
                 spawn_local(async move {
                     // Use the active session, or create one named from the first
                     // prompt when a fresh chat has no session selected.
@@ -345,21 +283,6 @@ impl ChatActions {
                     chat.abort.set(Some(controller.clone()));
                     chat.streaming_session.set(Some(session_id));
 
-                    // Resolve local mode and its browser-owned directory handle.
-                    let active_project = projects.active_project.get().and_then(|project_id| {
-                        projects
-                            .projects
-                            .get()
-                            .into_iter()
-                            .find(|project| project.id == project_id)
-                    });
-                    let is_local = active_project
-                        .as_ref()
-                        .is_some_and(|project| project.mode == WorkspaceMode::Local);
-                    let local_handle = active_project
-                        .as_ref()
-                        .and_then(|project| projects.local_handles.get().get(&project.id).cloned());
-
                     let on_event = move |event| {
                         if resume.is_some()
                             && matches!(event, openwebide_core::RunEvent::Done { .. })
@@ -378,109 +301,23 @@ impl ChatActions {
                         None
                     };
 
-                    if is_local {
-                        if let Some(handle) = local_handle {
-                            let session = chat
-                                .sessions
-                                .get()
-                                .into_iter()
-                                .find(|session| session.id == session_id);
-                            let connection_id = session
-                                .as_ref()
-                                .and_then(|session| session.connection_id)
-                                .or_else(|| {
-                                    settings.default_connection.get().or_else(|| {
-                                        settings
-                                            .connections
-                                            .get()
-                                            .into_iter()
-                                            .find(|connection| connection.enabled)
-                                            .map(|connection| connection.id)
-                                    })
-                                });
-                            let Some(connection_id) = connection_id else {
-                                chat.error.set(Some(
-                                    "session has no connection; configure one in settings first"
-                                        .into(),
-                                ));
-                                chat.streaming.set(false);
-                                chat.abort.set(None);
-                                chat.streaming_session.set(None);
-                                return;
-                            };
-                            let system_prompt_id = session
-                                .as_ref()
-                                .and_then(|session| session.system_prompt_id)
-                                .or_else(|| settings.default_prompt.get());
-                            let system_prompt = system_prompt_id.and_then(|prompt_id| {
-                                settings
-                                    .system_prompts
-                                    .get()
-                                    .into_iter()
-                                    .find(|prompt| prompt.id == prompt_id)
-                                    .map(|prompt| prompt.content)
-                            });
-                            if let Some(resume) = resume {
-                                chat.current_run_anchor.set(Some(resume.anchor_id));
-                            }
-                            let result = local_agent::run_local_agent(
-                                api,
-                                session_id,
+                    let result = project_runs
+                        .run(
+                            crate::project_runs::RunInput {
+                                session: session_id,
                                 content,
                                 model,
-                                editor_context,
-                                connection_id,
-                                system_prompt,
-                                handle,
-                                active_project.as_ref().unwrap().clone(),
-                                chat,
-                                local_cancel,
-                                local_permissions,
-                                on_event,
-                                project_host,
-                                bridge.get_untracked(),
+                                editor: editor_context,
+                                controller: controller.clone(),
                                 resume,
-                            )
-                            .await;
-                            if let Err(error) = result
-                                && !controller.signal().aborted()
-                            {
-                                chat.error.set(Some(error));
-                            }
-                        } else {
-                            chat.error.set(Some(
-                                "local directory handle not available; re-open the folder".into(),
-                            ));
-                        }
-                    } else if !runs
-                        .start(openwebide_core::BridgeClientMessage::RunStart {
-                            run_id: format!(
-                                "run-{}",
-                                js_sys::Math::random().to_string().trim_start_matches("0.")
-                            ),
-                            session_id,
-                            content: content.clone(),
-                            model: model.clone(),
-                            editor_context: editor_context.clone(),
-                        })
-                        .await
+                            },
+                            on_event,
+                        )
+                        .await;
+                    if let Err(error) = result
+                        && !controller.signal().aborted()
                     {
-                        let result = api
-                            .with_value(Clone::clone)
-                            .send_message(
-                                session_id,
-                                &content,
-                                model.as_deref(),
-                                editor_context.as_ref(),
-                                Some(&controller.signal()),
-                                Box::new(on_event),
-                            )
-                            .await;
-                        if let Err(error) = result
-                            && !controller.signal().aborted()
-                        {
-                            chat.error.set(Some(error));
-                        }
+                        chat.error.set(Some(error));
                     }
 
                     if chat
@@ -566,7 +403,7 @@ impl ChatActions {
             });
 
         let send = Callback::new(move |()| start.run(None));
-        let resume_local_run = Callback::new(move |()| {
+        let resume_run = Callback::new(move |()| {
             let Some(resume) = chat.interrupted_run.get_untracked() else {
                 return;
             };
@@ -576,12 +413,7 @@ impl ChatActions {
                 .into_iter()
                 .find(|session| Some(session.id) == chat.active_session.get_untracked())
                 .and_then(|session| session.project_id);
-            if session_project != projects.active_project.get_untracked()
-                || !projects.projects.get_untracked().iter().any(|project| {
-                    Some(project.id) == session_project && project.mode == WorkspaceMode::Local
-                })
-                || chat.active_run.get_untracked().is_some()
-            {
+            if !project_runs.can_resume(session_project) {
                 return;
             }
             start.run(Some(resume));
@@ -916,11 +748,11 @@ impl ChatActions {
             })
         };
 
-        install_effects(api, chat, projects, settings, runs);
+        install_effects(api, chat, projects, settings, runs, project_runs);
 
         Self {
             send,
-            resume_local_run,
+            resume_run,
             stop,
             permission,
             permission_always,
@@ -941,6 +773,7 @@ fn install_effects(
     projects: ProjectsState,
     settings: SettingsState,
     runs: super::runs::RunActions,
+    project_runs: crate::project_runs::ProjectRuns,
 ) {
     let active_session = chat.active_session;
     let sessions = chat.sessions;
@@ -1112,43 +945,7 @@ fn install_effects(
                             session_telemetry
                                 .update(|telemetry| telemetry.restore_from_conversation(&entries));
                             chat.messages.install_history(history_items(entries));
-                            let mode = chat
-                                .sessions
-                                .get_untracked()
-                                .into_iter()
-                                .find(|session| session.id == id)
-                                .and_then(|session| session.project_id)
-                                .and_then(|project_id| {
-                                    projects
-                                        .projects
-                                        .get_untracked()
-                                        .into_iter()
-                                        .find(|project| project.id == project_id)
-                                })
-                                .map(|project| project.mode);
-                            if let Some(mode) = mode {
-                                chat.detect_interrupted_run(mode);
-                                if mode == WorkspaceMode::Local
-                                    && !chat.streaming.get_untracked()
-                                    && chat.active_run.get_untracked().is_none()
-                                {
-                                    let anchor =
-                                        chat.messages.snapshot().iter().rev().find_map(|item| {
-                                            match item {
-                                                ConversationItem::Message(message)
-                                                    if message.role
-                                                        == openwebide_core::Role::User =>
-                                                {
-                                                    Some(message.id)
-                                                }
-                                                _ => None,
-                                            }
-                                        });
-                                    if let Some(anchor) = anchor {
-                                        chat.cancel_run_prompts(anchor);
-                                    }
-                                }
-                            }
+                            project_runs.restore(id);
                             runs.history.set(Some((id, this_gen)));
                         }
                         Err(error) => {

@@ -186,7 +186,6 @@ pub(super) async fn build_run_plan(
         .ok_or_else(|| ApiError::bad_request("session has no connection; pick one first"))?;
     let runtime =
         super::model_setup::runtime(state, user_id, connection_id, send.model.as_deref()).await?;
-    let connection = runtime.connection.clone();
     let system_prompt = match session.system_prompt_id {
         Some(id) => Some(state.store.get_system_prompt(id).await?.content),
         None => None,
@@ -196,10 +195,7 @@ pub(super) async fn build_run_plan(
         state.store.list_messages(session_id).await?,
         &state.store.list_tool_steps(session_id).await?,
     );
-    let full_content =
-        openwebide_agent::session::user_content(send.content, send.editor_context.as_ref());
-    // Remote-mode projects run the agentic loop with workspace tools;
-    // everything else is plain chat.
+    // Filesystem capability determines which tool primitives this host can offer.
     let project = match session.project_id {
         Some(id) => match state.store.get_project(id, user_id).await {
             Ok(project) => Some(project),
@@ -216,32 +212,22 @@ pub(super) async fn build_run_plan(
         mode: project.as_ref().map(|project| project.mode),
         timestamp: now(),
     };
-    let is_remote = environment.mode == Some(WorkspaceMode::Remote)
-        && environment.project_root.is_some()
-        && runtime.settings.tools != Some(false);
-    let base = environment.project_root.clone().unwrap_or_default();
-
-    Ok(RunPlan {
-        transport: runtime.transport.clone(),
-        environment,
-        user_content: full_content,
-        request: openwebide_agent::session::request(
-            &runtime,
+    let tools = if environment.project_root.is_some() {
+        workspace_tools()
+    } else {
+        Vec::new()
+    };
+    Ok(openwebide_agent::session::plan(
+        &runtime,
+        openwebide_agent::session::PlanInput {
+            environment,
             system_prompt,
-            history,
-            if is_remote {
-                workspace_tools()
-            } else {
-                Vec::new()
-            },
-        ),
-        connection,
-        kind: if is_remote {
-            RunKind::Agent { project_path: base }
-        } else {
-            RunKind::Chat
+            messages: history,
+            tools,
+            content: send.content,
+            editor: send.editor_context,
         },
-    })
+    ))
 }
 
 pub(crate) async fn run_plan(
@@ -312,18 +298,9 @@ pub(crate) async fn send_session_message(
             gate,
         )
     } else {
-        let content = openwebide_agent::context::chat_context(&plan.environment);
-        request
-            .system_prompt
-            .get_or_insert_with(String::new)
-            .push_str(&format!("\n\n{content}"));
+        let content = openwebide_agent::session::chat_context(&mut request, &plan.environment);
         let context = store
-            .insert_message(
-                session_id,
-                Role::System,
-                &format!("{}{content}", openwebide_core::RUN_CONTEXT_PREFIX),
-                now(),
-            )
+            .insert_message(session_id, Role::System, &content, now())
             .await?;
         let mut stream = message_stream(
             store,

@@ -190,11 +190,84 @@ impl RunEvent {
 
 /// Project-relative execution root, shared by backend planning and frontend host selection.
 pub fn execution_root(project: &crate::Project) -> Option<String> {
+    // Host capability boundary: browser directory handles have no server filesystem root.
+    if project.mode == crate::WorkspaceMode::Local {
+        return None;
+    }
     project
         .path
         .as_deref()
         .and_then(|path| crate::vfs::workspace_path(path).ok())
         .map(|path| if path.is_empty() { ".".into() } else { path })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InterruptedRun {
+    pub anchor_id: i64,
+    pub first_turn: usize,
+}
+
+pub fn interrupted_run(items: &[crate::RunItem]) -> Option<InterruptedRun> {
+    use crate::Role;
+    let last = items.iter().rev().find_map(|item| match item {
+        crate::RunItem::Message(message) if message.id > 0 && message.role != Role::System => {
+            Some(message)
+        }
+        _ => None,
+    })?;
+    if last.role != Role::User && !(last.role == Role::Assistant && last.tool_calls.is_some()) {
+        return None;
+    }
+    let anchor_id = items.iter().rev().find_map(|item| match item {
+        crate::RunItem::Message(message) if message.id > 0 && message.role == Role::User => {
+            Some(message.id)
+        }
+        _ => None,
+    })?;
+    if last.role == Role::Assistant {
+        let calls = last.tool_calls.as_ref()?;
+        let last_position = items.iter().rposition(
+            |item| matches!(item, crate::RunItem::Message(message) if message.id == last.id),
+        )?;
+        let steps: Vec<_> = items[last_position + 1..]
+            .iter()
+            .filter_map(|item| match item {
+                crate::RunItem::Step(crate::RunStep {
+                    id,
+                    result,
+                    awaiting_permission,
+                    ..
+                }) if crate::parse_step_id(id)
+                    .is_some_and(|(anchor, _, _)| anchor == anchor_id) =>
+                {
+                    Some((result, awaiting_permission))
+                }
+                _ => None,
+            })
+            .collect();
+        if calls.is_empty()
+            || steps.len() != calls.len()
+            || steps
+                .iter()
+                .any(|(result, awaiting)| result.is_none() || **awaiting)
+        {
+            return None;
+        }
+    }
+    let highest_turn = items
+        .iter()
+        .filter_map(|item| match item {
+            crate::RunItem::Step(crate::RunStep { id, .. }) => crate::parse_step_id(id)
+                .filter(|(anchor, _, _)| *anchor == anchor_id)
+                .map(|(_, turn, _)| turn),
+            crate::RunItem::Message(_) => None,
+        })
+        .max()
+        .unwrap_or(0);
+    Some(InterruptedRun {
+        anchor_id,
+        first_turn: highest_turn.checked_add(1)?,
+    })
 }
 
 #[cfg(test)]

@@ -143,11 +143,15 @@ impl Vfs for NativeFsVfs {
             Ok(entries)
         })
     }
-    fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
+    fn create<'a>(
+        &'a self,
+        path: &'a str,
+        kind: openwebide_core::vfs::VfsEntryKind,
+    ) -> VfsFuture<'a, ()> {
         Box::pin(async move {
             let full = self.resolve(path)?;
             self.parents(&full).await?;
-            if is_dir {
+            if kind.is_dir() {
                 fs::create_dir_all(full)
                     .await
                     .map_err(|e| io_error(e, path))
@@ -317,13 +321,18 @@ mod tests {
         let vfs = NativeFsVfs {
             root: dir.path().canonicalize().unwrap(),
         };
-        vfs.create("folder", true).await.unwrap();
-        vfs.create("folder/a", false).await.unwrap();
+        vfs.create("folder", openwebide_core::vfs::VfsEntryKind::Directory)
+            .await
+            .unwrap();
+        vfs.create("folder/a", openwebide_core::vfs::VfsEntryKind::File)
+            .await
+            .unwrap();
         vfs.write("folder/a", "Needle\nsecond needle")
             .await
             .unwrap();
         assert!(matches!(
-            vfs.create("folder/a", false).await,
+            vfs.create("folder/a", openwebide_core::vfs::VfsEntryKind::File)
+                .await,
             Err(VfsError::AlreadyExists(_))
         ));
         assert_eq!(vfs.read("folder/a").await.unwrap(), "Needle\nsecond needle");
@@ -355,7 +364,11 @@ mod tests {
         for path in ["../outside", ".spin/db", "a/.spin/db"] {
             assert!(vfs.read(path).await.is_err());
             assert!(vfs.write(path, "x").await.is_err());
-            assert!(vfs.create(path, false).await.is_err());
+            assert!(
+                vfs.create(path, openwebide_core::vfs::VfsEntryKind::File)
+                    .await
+                    .is_err()
+            );
             assert!(vfs.delete(path).await.is_err());
             assert!(vfs.copy("folder/a", path).await.is_err());
         }
@@ -385,5 +398,17 @@ mod tests {
             vfs.read("folder/a").await,
             Err(VfsError::NotFound(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod creation_contract {
+    #[tokio::test]
+    async fn native() {
+        let dir = tempfile::tempdir().unwrap();
+        let vfs = super::NativeFsVfs {
+            root: dir.path().canonicalize().unwrap(),
+        };
+        openwebide_core::testing::vfs_creation_contract(&vfs).await;
     }
 }

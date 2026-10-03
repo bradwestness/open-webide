@@ -9,6 +9,12 @@ for what's still ahead.
 
 ## [Unreleased]
 
+### Changed
+
+- Establish shared feature facades for local and remote files, Git, execution hosts and session runs. UI send/stop/approval/resume actions use the run facade; planning, context, history recovery, streaming, persistence, permission policy and tool workflows live above thin browser, Spin and bridge adapters.
+- Share provider model precedence, wire messages, plain and tool-stream lifecycles; split core domains and diff rendering, share line/word alignment and storage row mapping, and remove storage’s agent dependency. Use typed VFS creation/permission errors and Git responses while retaining browser thread checks and legacy wire formats.
+- Verify common provider and filesystem contracts across adapters, including failure and fallback behavior. Browser chat-only runs share server reply persistence and telemetry; populated-directory deletion and binary Git previews behave consistently in both modes.
+
 ### Added
 
 - Render Markdown tables with aligned columns, themed headers and borders, and horizontal scrolling for wide tables in agent replies and file previews. Support strikethrough while retaining sans-serif prose and monospace code in both modes.

@@ -51,44 +51,52 @@ impl BridgeClient for InProcessBridgeClient {
             .map_err(|error| error.to_string())
     }
     async fn git_status(&self) -> Result<GitRepoStatus, String> {
-        self.git(crate::exec::GitOperation::Status).await
+        match self.git(crate::exec::GitOperation::Status).await? {
+            crate::exec::GitResponse::Status(status) => Ok(status),
+            _ => Err("unexpected Git status response".into()),
+        }
     }
     async fn git_diff(&self, path: Option<&str>) -> Result<String, String> {
-        let value: serde_json::Value = self
+        match self
             .git(crate::exec::GitOperation::Diff(path.map(String::from)))
-            .await?;
-        serde_json::from_value(
-            value
-                .get("diff")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
-        )
-        .map_err(|error| error.to_string())
+            .await?
+        {
+            crate::exec::GitResponse::Diff(diff) => Ok(diff.diff),
+            _ => Err("unexpected Git diff response".into()),
+        }
     }
     async fn git_commit(&self, req: &GitCommitRequest) -> Result<GitCommitResult, String> {
-        self.git(crate::exec::GitOperation::Commit(req.clone()))
-            .await
+        match self
+            .git(crate::exec::GitOperation::Commit(req.clone()))
+            .await?
+        {
+            crate::exec::GitResponse::Commit(result) => Ok(result),
+            _ => Err("unexpected Git commit response".into()),
+        }
     }
     async fn git_checkout(&self, req: &GitCheckoutRequest) -> Result<GitCheckoutResult, String> {
-        self.git(crate::exec::GitOperation::Checkout(req.clone()))
-            .await
+        match self
+            .git(crate::exec::GitOperation::Checkout(req.clone()))
+            .await?
+        {
+            crate::exec::GitResponse::Checkout(result) => Ok(result),
+            _ => Err("unexpected Git checkout response".into()),
+        }
     }
 }
 
 impl InProcessBridgeClient {
-    async fn git<T: serde::de::DeserializeOwned>(
+    async fn git(
         &self,
         operation: crate::exec::GitOperation,
-    ) -> Result<T, String> {
-        let value = self
-            .execution
+    ) -> Result<crate::exec::GitResponse, String> {
+        self.execution
             .git(crate::exec::GitRequest {
                 cwd: self.dir.clone(),
                 operation,
             })
             .await
-            .map_err(|error| error.to_string())?;
-        serde_json::from_value(value).map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())
     }
 }
 

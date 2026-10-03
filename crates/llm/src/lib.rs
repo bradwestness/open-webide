@@ -11,6 +11,11 @@ pub mod ollama;
 pub mod registry;
 
 pub(crate) mod sse;
+mod streaming;
+mod wire;
+
+use streaming::{LineStream, StreamLine};
+use wire::{chat_messages, tool_messages, tools_wire};
 
 #[cfg(test)]
 mod fake;
@@ -26,8 +31,8 @@ use std::sync::{
 use bytes::Bytes;
 use futures::Stream;
 use openwebide_core::{
-    ChatCompletion, ChatRequest, Connection, ModelInfo, ProviderKind, ToolDefinition,
-    TurnTelemetry, estimate_chat_request_tokens, estimate_tokens,
+    ChatCompletion, ChatRequest, Connection, ModelInfo, ProviderKind, TurnTelemetry,
+    estimate_chat_request_tokens, estimate_tokens,
 };
 use serde_json::json;
 
@@ -213,41 +218,6 @@ pub(crate) fn url_for(base: &str, path: &str) -> String {
     )
 }
 
-/// Provider wire format for chat messages: `role` + `content` pairs, with
-/// the system prompt first when one is set.
-pub(crate) fn chat_messages(request: &ChatRequest) -> Vec<serde_json::Value> {
-    let mut messages = Vec::new();
-    if let Some(system) = &request.system_prompt
-        && !system.is_empty()
-    {
-        messages.push(json!({ "role": "system", "content": system }));
-    }
-    for message in &request.messages {
-        messages.push(json!({ "role": message.role.as_str(), "content": message.content }));
-    }
-    messages
-}
-
-/// Provider wire format for the `tools` array, shared by both providers
-/// (Ollama and the OpenAI-compatible llama.cpp API use the same shape).
-pub(crate) fn tools_wire(tools: &[ToolDefinition]) -> serde_json::Value {
-    serde_json::Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    }
-                })
-            })
-            .collect(),
-    )
-}
-
 /// Minimal HTTP surface a provider needs to talk to a local-LLM runtime.
 ///
 /// The host (the Spin backend) supplies the implementation; providers stay
@@ -322,140 +292,6 @@ pub(crate) fn stream_error(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// What one line of a provider stream means.
-///
-/// Step 39's `chat_tools_stream` uses the same parsers and terminal rule.
-pub(crate) enum StreamLine {
-    /// A content delta to emit.
-    Delta(String),
-    /// The model finished; may carry a last delta. More metadata lines may
-    /// follow; EOF is now acceptable.
-    Finished(Option<String>),
-    /// The stream finished successfully.
-    Done,
-    /// A keep-alive or metadata line to ignore.
-    Skip,
-}
-
-/// The default cap on a single stream line's byte length. Ollama puts a
-/// whole tool call, including a full `write_file` body, on one NDJSON
-/// line, so this is generous.
-const MAX_LINE_BYTES: usize = 16 << 20;
-
-/// Splits a byte-chunk stream into newline-delimited lines.
-///
-/// Handles chunks that split a line (or a multi-byte UTF-8 character)
-/// mid-way, `\r\n` line endings, and a final line without a trailing
-/// newline. The buffer is bounded by `max_line`: a line longer than that
-/// yields an error and fuses the stream.
-pub(crate) struct LineStream<S> {
-    inner: S,
-    buffer: Vec<u8>,
-    scan_from: usize,
-    max_line: usize,
-    done: bool,
-}
-
-impl<S> LineStream<S> {
-    pub(crate) fn new(inner: S) -> Self {
-        Self::with_max_line(inner, MAX_LINE_BYTES)
-    }
-
-    pub(crate) fn with_max_line(inner: S, max_line: usize) -> Self {
-        Self {
-            inner,
-            buffer: Vec::new(),
-            scan_from: 0,
-            max_line,
-            done: false,
-        }
-    }
-}
-
-impl<S> Stream for LineStream<S>
-where
-    S: Stream<Item = Result<Bytes, ProviderError>> + Unpin,
-{
-    type Item = Result<String, ProviderError>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        use std::task::Poll;
-
-        let this = self.get_mut();
-        if this.done {
-            return Poll::Ready(None);
-        }
-        loop {
-            if let Some(pos) = this.buffer[this.scan_from..]
-                .iter()
-                .position(|&b| b == b'\n')
-                .map(|p| p + this.scan_from)
-            {
-                if pos + 1 > this.max_line {
-                    this.done = true;
-                    let max_line = this.max_line;
-                    return Poll::Ready(Some(Err(ProviderError::Parse(format!(
-                        "stream line exceeds {max_line} bytes"
-                    )))));
-                }
-                let mut end = pos;
-                if end > 0 && this.buffer[end - 1] == b'\r' {
-                    end -= 1;
-                }
-                let line_bytes: Vec<u8> = this.buffer[..end].to_vec();
-                this.buffer.drain(..=pos);
-                this.scan_from = 0;
-                if line_bytes.is_empty() {
-                    continue;
-                }
-                return match String::from_utf8(line_bytes) {
-                    Ok(line) => Poll::Ready(Some(Ok(line))),
-                    Err(_) => {
-                        this.done = true;
-                        Poll::Ready(Some(Err(ProviderError::Parse(
-                            "stream line is not valid UTF-8".into(),
-                        ))))
-                    }
-                };
-            }
-            this.scan_from = this.buffer.len();
-            if this.buffer.len() > this.max_line {
-                this.done = true;
-                let max_line = this.max_line;
-                return Poll::Ready(Some(Err(ProviderError::Parse(format!(
-                    "stream line exceeds {max_line} bytes"
-                )))));
-            }
-            match Stream::poll_next(std::pin::Pin::new(&mut this.inner), cx) {
-                Poll::Ready(Some(Ok(chunk))) => {
-                    this.buffer.extend_from_slice(&chunk);
-                }
-                Poll::Ready(Some(Err(e))) => {
-                    this.done = true;
-                    return Poll::Ready(Some(Err(e)));
-                }
-                Poll::Ready(None) => {
-                    this.done = true;
-                    let line_bytes = std::mem::take(&mut this.buffer);
-                    if line_bytes.is_empty() {
-                        return Poll::Ready(None);
-                    }
-                    return match String::from_utf8(line_bytes) {
-                        Ok(line) => Poll::Ready(Some(Ok(line))),
-                        Err(_) => Poll::Ready(Some(Err(ProviderError::Parse(
-                            "stream line is not valid UTF-8".into(),
-                        )))),
-                    };
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
-}
-
 /// The shared rule for tool-call responses: a `tool_calls` array is only
 /// meaningful when it's non-empty. `{"tool_calls": []}` means the model
 /// answered with a (possibly empty) text reply, not zero tool calls to run.
@@ -508,6 +344,14 @@ pub(crate) fn apply_model_settings(
     if settings.tools == Some(false) {
         body.as_object_mut().unwrap().remove("tools");
     }
+}
+
+/// Request override takes precedence over the saved connection model in every provider call.
+fn request_model<'a>(
+    requested: Option<&'a str>,
+    configured: Option<&'a str>,
+) -> Result<&'a str, ProviderError> {
+    requested.or(configured).ok_or(ProviderError::NoModel)
 }
 
 #[cfg(test)]

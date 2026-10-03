@@ -1,11 +1,12 @@
 use super::*;
 use futures::stream;
 use openwebide_agent::PermissionGate;
+use openwebide_core::REPLY_TRUNCATED_MARKER;
 use openwebide_core::{
     ChatCompletion, ChatRequest, ChatResponse, Connection, FileDiff, ModelInfo, ProviderKind,
     ToolCall, WebSearchResult,
 };
-use openwebide_llm::ToolStreamChunk;
+use openwebide_llm::{ProviderError, StreamChunk, ToolStreamChunk};
 use std::pin::Pin;
 
 #[derive(Default)]
@@ -1154,11 +1155,12 @@ impl crate::exec::ToolExecution for FakeExecution {
             .unwrap()
             .push(("git status".into(), request.cwd));
         Box::pin(async {
-            Ok(serde_json::to_value(openwebide_core::GitRepoStatus {
-                branch: "fake".into(),
-                ..Default::default()
-            })
-            .unwrap())
+            Ok(crate::exec::GitResponse::Status(
+                openwebide_core::GitRepoStatus {
+                    branch: "fake".into(),
+                    ..Default::default()
+                },
+            ))
         })
     }
 }

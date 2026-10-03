@@ -27,7 +27,8 @@ impl From<openwebide_core::VfsError> for FsError {
     fn from(error: openwebide_core::VfsError) -> Self {
         match error {
             openwebide_core::VfsError::NotFound(path) => Self::NotFound(path),
-            openwebide_core::VfsError::PermissionDenied(path) => Self::PermissionDenied(path),
+            openwebide_core::VfsError::PermissionRequired(path)
+            | openwebide_core::VfsError::PermissionDenied(path) => Self::PermissionDenied(path),
             openwebide_core::VfsError::AlreadyExists(path) => Self::AlreadyExists(path),
             openwebide_core::VfsError::PathEscape(path) => Self::PathEscape(path),
             openwebide_core::VfsError::Io(detail) => Self::Io(detail),
@@ -628,10 +629,14 @@ impl Vfs for HostFsVfs {
         })
     }
 
-    fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
+    fn create<'a>(
+        &'a self,
+        path: &'a str,
+        kind: openwebide_core::vfs::VfsEntryKind,
+    ) -> VfsFuture<'a, ()> {
         Box::pin(async move {
             let full = self.resolve(path)?;
-            create(&full, is_dir).await.map_err(map_vfs_err)
+            create(&full, kind.is_dir()).await.map_err(map_vfs_err)
         })
     }
 
