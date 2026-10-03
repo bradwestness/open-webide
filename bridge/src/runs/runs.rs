@@ -360,6 +360,28 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                     return;
                 }
             }
+            let prepared = openwebide_agent::session::compact_request(
+                &provider,
+                &super::backend_client::ModelSource {
+                    backend: backend.clone(),
+                    user: run.owner,
+                },
+                &mut plan.request,
+                &run.cancel,
+                SessionPersistence {
+                    run: &run,
+                    backend: &*backend,
+                },
+                run.session_id,
+                anchor_id,
+            )
+            .await;
+            for event in prepared.events {
+                run.emit(event);
+            }
+            if prepared.terminal {
+                return;
+            }
             let mut events = Box::pin(openwebide_agent::session::chat_events(
                 SessionPersistence {
                     run: &run,
@@ -404,7 +426,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                     model: plan.request.model.clone(),
                 },
             };
-            let events = openwebide_agent::run(
+            let events = openwebide_agent::run_with_compaction(
                 provider,
                 executor,
                 plan.request,
@@ -412,6 +434,10 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 run.cancel.clone(),
                 gate,
                 anchor_id,
+                super::backend_client::ModelSource {
+                    backend: backend.clone(),
+                    user: run.owner,
+                },
             );
             let events = events.then(|event| async {
                 if let Some(memo) = &memo {

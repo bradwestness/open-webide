@@ -236,7 +236,7 @@ pub fn ModelSetupPanel(
             <Show when=move || defaults_only>
             <ModelChoice label="Default model" value=primary choices=choices.read_only() empty="Use default server’s model" />
             <ModelChoice label="Fast model" value=fast choices=choices.read_only() empty="Use the primary model" />
-            <p class="form-hint">"Used for Auto approvals and planned background tasks. If unset, the primary model does that work."</p>
+            <p class="form-hint">"Used for Auto approvals and context compaction. If unset, the primary model does that work."</p>
             <div class="form-actions">
                 <button class="btn send" disabled=move || busy.get() on:click=save>"Save model defaults"</button>
             </div>
@@ -412,7 +412,7 @@ fn ModelSettingsEditor(selection: ModelSelection) -> impl IntoView {
             <BooleanSetting label="Thinking" value=thinking />
             <BooleanSetting label="Tool calling" value=tools />
             <TextSetting label="Auto-compact (%)" value=threshold input_type="number" placeholder="85 (default)" />
-            <p class="form-hint">"Blank fields use the server default. Auto-compact defaults to 85%; 0 disables it. The compaction engine is not active yet."</p>
+            <p class="form-hint">"Blank fields use the server default. Auto-compact defaults to 85%; 0 disables it. Runs compact before model requests when the context limit is known; original history is retained."</p>
             <button class="btn send" disabled=move || busy.get() on:click=save>"Save model settings"</button>
             <Show when=move || error.get().is_some()><p class="form-error" role="alert">{move || error.get()}</p></Show>
         </div>

@@ -675,8 +675,63 @@ impl openwebide_agent::policy::ApprovalSource for ApprovalAdapter {
     }
 }
 
+/// Model I/O primitives for the shared compaction workflow.
+pub struct BrowserModelSource {
+    pub api: SendWrapper<Api>,
+}
+impl openwebide_agent::compaction::CompactionSource for BrowserModelSource {
+    fn available(&self) -> bool {
+        true
+    }
+    fn runtime(
+        &self,
+        selection: &openwebide_core::ModelSelection,
+    ) -> impl Future<Output = Result<openwebide_core::ModelRuntime, String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .model_runtime(selection.server_id, Some(&selection.model))
+                .await
+        })
+    }
+    fn complete(
+        &self,
+        request: &ChatRequest,
+    ) -> impl Future<Output = Result<ChatCompletion, String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .model_complete(request)
+                .await
+        })
+    }
+    fn context_limit(&self, request: &ChatRequest) -> impl Future<Output = Option<usize>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .model_context(request.connection_id, request.model.as_deref())
+                .await
+                .ok()
+                .flatten()
+        })
+    }
+    fn tokens(&self, request: &ChatRequest) -> impl Future<Output = Option<usize>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .model_tokens(request)
+                .await
+                .ok()
+                .flatten()
+        })
+    }
+}
+
 /// Run the agent loop locally in the browser against a local folder handle.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Execution host entry point receives the existing UI run callbacks and signals"
+)]
 pub async fn run_local_agent(
     api: Api,
     session_id: i64,
@@ -783,6 +838,27 @@ pub async fn run_local_agent(
             return Err("Project access changed".into());
         }
         on_event(RunEvent::Message { message });
+        let prepared = openwebide_agent::session::compact_request(
+            &provider,
+            &BrowserModelSource {
+                api: SendWrapper::new(api),
+            },
+            &mut request,
+            &cancel,
+            SessionPersistence {
+                api: SendWrapper::new(api),
+                session: session_id,
+            },
+            session_id,
+            anchor_id,
+        )
+        .await;
+        for event in prepared.events {
+            on_event(event);
+        }
+        if prepared.terminal {
+            return Ok(());
+        }
         let mut events = Box::pin(openwebide_agent::session::chat_events(
             SessionPersistence {
                 api: SendWrapper::new(api),
@@ -818,7 +894,7 @@ pub async fn run_local_agent(
         crate::project_host::ProjectExecution::Local(bridge) => Some(bridge),
         crate::project_host::ProjectExecution::Remote { .. } => None,
     });
-    let stream = openwebide_agent::run(
+    let stream = openwebide_agent::run_with_compaction(
         provider,
         VfsToolExecutor::with_web_and_bridge(vfs, web, bridge).with_context(environment),
         request,
@@ -826,6 +902,9 @@ pub async fn run_local_agent(
         cancel,
         gate,
         anchor_id,
+        BrowserModelSource {
+            api: SendWrapper::new(api),
+        },
     );
 
     let mut stream = Box::pin(openwebide_agent::session::events(

@@ -561,6 +561,19 @@ impl BackendApi {
         }
     }
 
+    pub async fn model_complete(
+        &self,
+        request: &openwebide_core::ChatRequest,
+    ) -> Result<openwebide_core::ChatCompletion, String> {
+        self.post("/models/complete", request).await
+    }
+    pub async fn model_tokens(
+        &self,
+        request: &openwebide_core::ChatRequest,
+    ) -> Result<Option<usize>, String> {
+        self.post("/models/tokens", request).await
+    }
+
     pub async fn git_status(&self, project_id: Option<i64>) -> Result<GitRepoStatus, String> {
         self.get(&Self::git_endpoint(project_id, "status")).await
     }

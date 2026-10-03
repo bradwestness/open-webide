@@ -13,6 +13,34 @@ use serde_json::{Value, json};
 use crate::runs::http_client::ReqwestHttpClient;
 
 pub trait RunBackend: Send + Sync {
+    fn model_runtime(
+        &self,
+        _user: i64,
+        _selection: &openwebide_core::ModelSelection,
+    ) -> impl Future<Output = Result<openwebide_core::ModelRuntime, String>> + Send {
+        async { Err("Model runtime unavailable".into()) }
+    }
+    fn model_complete(
+        &self,
+        _user: i64,
+        _request: &openwebide_core::ChatRequest,
+    ) -> impl Future<Output = Result<openwebide_core::ChatCompletion, String>> + Send {
+        async { Err("Model completion unavailable".into()) }
+    }
+    fn model_context(
+        &self,
+        _user: i64,
+        _request: &openwebide_core::ChatRequest,
+    ) -> impl Future<Output = Option<usize>> + Send {
+        async { None }
+    }
+    fn model_tokens(
+        &self,
+        _user: i64,
+        _request: &openwebide_core::ChatRequest,
+    ) -> impl Future<Output = Option<usize>> + Send {
+        async { None }
+    }
     fn approval_check(
         &self,
         _user: i64,
@@ -148,6 +176,67 @@ pub fn encode_query(s: &str) -> String {
 }
 
 impl RunBackend for BackendClient {
+    async fn model_runtime(
+        &self,
+        user: i64,
+        selection: &openwebide_core::ModelSelection,
+    ) -> Result<openwebide_core::ModelRuntime, String> {
+        BackendClient::model_runtime(self, user, selection.server_id, Some(&selection.model)).await
+    }
+    async fn model_complete(
+        &self,
+        user: i64,
+        request: &openwebide_core::ChatRequest,
+    ) -> Result<openwebide_core::ChatCompletion, String> {
+        self.call(
+            user,
+            "POST",
+            "/models/complete",
+            serde_json::to_value(request).map_err(|error| error.to_string())?,
+        )
+        .await
+    }
+    async fn model_context(
+        &self,
+        user: i64,
+        request: &openwebide_core::ChatRequest,
+    ) -> Option<usize> {
+        let model = request
+            .model
+            .as_deref()
+            .map(|model| format!("&model={}", encode_query(model)))
+            .unwrap_or_default();
+        let value: Value = self
+            .call(
+                user,
+                "GET",
+                &format!(
+                    "/models/context?connection_id={}{}",
+                    request.connection_id, model
+                ),
+                json!({}),
+            )
+            .await
+            .ok()?;
+        value["context_limit"]
+            .as_u64()
+            .and_then(|limit| usize::try_from(limit).ok())
+    }
+    async fn model_tokens(
+        &self,
+        user: i64,
+        request: &openwebide_core::ChatRequest,
+    ) -> Option<usize> {
+        self.call(
+            user,
+            "POST",
+            "/models/tokens",
+            serde_json::to_value(request).ok()?,
+        )
+        .await
+        .ok()
+        .flatten()
+    }
     async fn approval_check(
         &self,
         user: i64,
@@ -299,6 +388,34 @@ impl<B: RunBackend> openwebide_agent::policy::ApprovalSource for ApprovalAdapter
             )
             .await
             .is_ok_and(|decision| decision.approved)
+    }
+}
+
+pub struct ModelSource<B> {
+    pub backend: Arc<B>,
+    pub user: i64,
+}
+impl<B: RunBackend> openwebide_agent::compaction::CompactionSource for ModelSource<B> {
+    fn available(&self) -> bool {
+        true
+    }
+    async fn runtime(
+        &self,
+        selection: &openwebide_core::ModelSelection,
+    ) -> Result<openwebide_core::ModelRuntime, String> {
+        self.backend.model_runtime(self.user, selection).await
+    }
+    async fn complete(
+        &self,
+        request: &openwebide_core::ChatRequest,
+    ) -> Result<openwebide_core::ChatCompletion, String> {
+        self.backend.model_complete(self.user, request).await
+    }
+    async fn context_limit(&self, request: &openwebide_core::ChatRequest) -> Option<usize> {
+        self.backend.model_context(self.user, request).await
+    }
+    async fn tokens(&self, request: &openwebide_core::ChatRequest) -> Option<usize> {
+        self.backend.model_tokens(self.user, request).await
     }
 }
 

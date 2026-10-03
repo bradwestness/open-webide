@@ -188,8 +188,19 @@ pub fn agent_stream(
         },
     };
     let anchor_id = user_message.id;
-    let events =
-        openwebide_agent::run(provider, executor, request, config, cancel, gate, anchor_id);
+    let events = openwebide_agent::run_with_compaction(
+        provider,
+        executor,
+        request,
+        config,
+        cancel,
+        gate,
+        anchor_id,
+        crate::api::model_operations::ModelSource {
+            store: store.clone(),
+            user: user_id,
+        },
+    );
     let tail = map_agent_events(store, user_id, session_id, anchor_id, events);
     Box::pin(
         stream::iter([RunEvent::Message {
@@ -199,11 +210,11 @@ pub fn agent_stream(
     )
 }
 
-struct SessionPersistence {
-    store: Arc<Store<AppDb>>,
-    user: openwebide_core::UserId,
-    session: i64,
-    anchor: i64,
+pub(crate) struct SessionPersistence {
+    pub(crate) store: Arc<Store<AppDb>>,
+    pub(crate) user: openwebide_core::UserId,
+    pub(crate) session: i64,
+    pub(crate) anchor: i64,
 }
 impl openwebide_agent::session::RunPersistence for SessionPersistence {
     fn now(&self) -> i64 {

@@ -44,6 +44,12 @@ impl<C: HttpClient> Provider<C> {
 }
 
 impl<C: HttpClient + 'static> LlmProvider for Provider<C> {
+    async fn request_tokens(&self, request: &ChatRequest) -> Option<usize> {
+        match self {
+            Self::Ollama(provider) => provider.request_tokens(request).await,
+            Self::LlamaCpp(provider) => provider.request_tokens(request).await,
+        }
+    }
     fn tool_stream_memo(&self) -> Option<ToolStreamMemo> {
         match self {
             Self::LlamaCpp(provider) => provider.tool_stream_memo(),

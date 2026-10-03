@@ -237,6 +237,18 @@ pub trait Backend {
         &'a self,
         session_id: i64,
     ) -> LocalBoxFuture<'a, Result<Vec<ConversationEntry>, String>>;
+    fn model_complete<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+    ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
+        self.chat_tools(request)
+    }
+    fn model_tokens<'a>(
+        &'a self,
+        _request: &'a ChatRequest,
+    ) -> LocalBoxFuture<'a, Result<Option<usize>, String>> {
+        Box::pin(async { Ok(None) })
+    }
     fn approval_check<'a>(
         &'a self,
         session: i64,
@@ -664,6 +676,18 @@ impl Backend for BackendApi {
         session_id: i64,
     ) -> LocalBoxFuture<'a, Result<Vec<ConversationEntry>, String>> {
         Box::pin(BackendApi::list_messages(self, session_id))
+    }
+    fn model_complete<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+    ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
+        Box::pin(BackendApi::model_complete(self, request))
+    }
+    fn model_tokens<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+    ) -> LocalBoxFuture<'a, Result<Option<usize>, String>> {
+        Box::pin(BackendApi::model_tokens(self, request))
     }
     fn approval_check<'a>(
         &'a self,

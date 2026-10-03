@@ -17,6 +17,8 @@ for what's still ahead.
 
 ### Added
 
+- Automatically compact local and remote chat/agent context before model requests and tool continuations, using the configured threshold (85% by default, 0 disables). Reserve response and summary space, use provider tokenization with an estimate fallback, summarize through the fast model or primary fallback, and persist reusable summaries while retaining original history. Failed or cancelled summaries never replace history.
+
 - Render Markdown tables with aligned columns, themed headers and borders, and horizontal scrolling for wide tables in agent replies and file previews. Support strikethrough while retaining sans-serif prose and monospace code in both modes.
 
 - Distinguish user prompts with a compact, rounded, theme-aware background inset from the TUI panel edges and aligned on the right with tool and thought panels; remove repeated assistant headings while preserving a shared text alignment for prompts and replies.
@@ -28,7 +30,7 @@ for what's still ahead.
 
 - Choose Default, Auto-accept edits, Auto, or YOLO from the TUI or with Shift+Tab. Persist session choices in user-scoped database settings and enforce them through one shared policy gate, with thin browser, bridge, and SSE adapters. Auto uses the configured fast model or the primary model and falls back to manual approval on uncertain, malformed, failed, or timed-out classification.
 
-- Configure primary and optional fast models, per-model context/sampling/output/thinking/tool overrides, and an 85% auto-compaction threshold in database-backed settings shared by local and remote mode. Background work falls back to the primary model when no fast model is selected; the compaction engine follows separately.
+- Configure primary and optional fast models, per-model context/sampling/output/thinking/tool overrides, and an 85% auto-compaction threshold in database-backed settings shared by local and remote mode. Background work falls back to the primary model when no fast model is selected..
 - Add model servers by URL, discover common local endpoints, detect model context/capabilities, and configure write-only API keys, proxy headers, timeouts, and Ollama keep-alive.
 
 - Choose a session’s connection and model from a tiered TUI menu, with models discovered on expansion and new sessions starting from the configured default.

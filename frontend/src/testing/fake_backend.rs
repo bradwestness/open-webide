@@ -98,6 +98,8 @@ pub struct FakeBackend {
     pub settings_load_results: RefCell<VecDeque<SettingsLoad>>,
     pub history_save_results:
         RefCell<VecDeque<futures::channel::oneshot::Receiver<Result<(), String>>>>,
+    pub background_completion: RefCell<Option<Result<ChatCompletion, String>>>,
+    pub background_requests: RefCell<Vec<ChatRequest>>,
     pub scripted_completions: RefCell<VecDeque<ChatCompletion>>,
     pub completion_requests: RefCell<Vec<ChatRequest>>,
     pub scripted_events: RefCell<VecDeque<Vec<RunEvent>>>,
@@ -1052,6 +1054,19 @@ impl Backend for FakeBackend {
             Ok(openwebide_core::ApprovalDecision {
                 approved: mode.auto_approves(&check.call.name),
             })
+        })
+    }
+    fn model_complete<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+    ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
+        Box::pin(async move {
+            self.background_requests.borrow_mut().push(request.clone());
+            if let Some(result) = self.background_completion.borrow().clone() {
+                result
+            } else {
+                self.chat_tools(request).await
+            }
         })
     }
     fn chat_tools<'a>(

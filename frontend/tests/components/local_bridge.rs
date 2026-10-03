@@ -1210,3 +1210,120 @@ async fn browser_chat_only_run_uses_shared_reply_lifecycle() {
     );
     assert_eq!(reply.usage.unwrap().prompt_tokens, 10);
 }
+
+#[wasm_bindgen_test]
+async fn browser_chat_and_agent_compact_before_reply_and_keep_history() {
+    use openwebide_core::{
+        ChatCompletion, ChatMessage, ChatResponse, ConversationEntry, ModelProfile, ModelSelection,
+        ModelSettings, Role, StopReason,
+    };
+    for tools in [false, true] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_connection();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = openwebide_core::WorkspaceMode::Local);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, empty_read_folder().unchecked_into());
+            });
+            state
+                .fake
+                .model_setup
+                .borrow_mut()
+                .profiles
+                .push(ModelProfile {
+                    selection: ModelSelection {
+                        server_id: 1,
+                        model: "qwen3:8b".into(),
+                    },
+                    settings: ModelSettings {
+                        context_limit: Some(8192),
+                        tools: Some(tools),
+                        ..Default::default()
+                    },
+                });
+            state.fake.messages.borrow_mut().insert(
+                1,
+                vec![ConversationEntry::Message(ChatMessage {
+                    id: 1,
+                    session_id: 1,
+                    role: Role::Assistant,
+                    content: "original history ".repeat(4000),
+                    created_at: 0,
+                    usage: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                })],
+            );
+            *state.fake.background_completion.borrow_mut() = Some(Ok(ChatCompletion {
+                reasoning: String::new(),
+                preamble: String::new(),
+                response: ChatResponse::Text(
+                    "Previous work: checked the file. Continue the task.".into(),
+                ),
+                stop_reason: StopReason::Complete,
+                usage: None,
+            }));
+            state
+                .fake
+                .scripted_completions
+                .borrow_mut()
+                .push_back(ChatCompletion {
+                    reasoning: String::new(),
+                    preamble: String::new(),
+                    response: ChatResponse::Text("finished".into()),
+                    stop_reason: StopReason::Complete,
+                    usage: None,
+                });
+            chat_view(state)
+        });
+        settle().await;
+        mounted.input("continue fixing the test");
+        mounted.key("Enter", "Enter", false);
+        for _ in 0..1000 {
+            sleep_ms(5).await;
+            settle().await;
+            if !mounted.state.chat.streaming.get_untracked() {
+                break;
+            }
+        }
+        assert!(
+            mounted.state.chat.error.get_untracked().is_none(),
+            "{:?}",
+            mounted.state.chat.error.get_untracked()
+        );
+        assert!(!mounted.state.chat.streaming.get_untracked());
+        let entries = mounted.state.fake.messages.borrow();
+        let messages = entries[&1]
+            .iter()
+            .filter_map(|entry| match entry {
+                ConversationEntry::Message(message) => Some(message),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(messages[0].content, "original history ".repeat(4000));
+        let saved = messages
+            .iter()
+            .find(|message| openwebide_core::Compaction::parse(&message.content).is_some())
+            .unwrap();
+        let summary = openwebide_core::Compaction::parse(&saved.content).unwrap();
+        assert_eq!(summary.retained[0].content, "continue fixing the test");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.id > saved.id && message.content == "finished")
+        );
+        assert!(mounted.state.fake.background_requests.borrow().len() > 1);
+        let requests = mounted.state.fake.completion_requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].messages[0]
+                .content
+                .contains("Previous conversation summary")
+        );
+        assert_eq!(requests[0].messages[1].content, "continue fixing the test");
+    }
+}

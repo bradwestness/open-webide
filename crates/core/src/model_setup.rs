@@ -158,7 +158,12 @@ impl ModelRuntime {
     /// Apply the resolved model and capability policy at every completion entry point.
     pub fn apply_to(&self, request: &mut crate::ChatRequest) {
         request.model = self.connection.model.clone();
+        let output_budget = request.model_settings.max_output_tokens;
         request.model_settings = self.settings.clone();
+        if let Some(budget) = output_budget {
+            request.model_settings.max_output_tokens =
+                Some(budget.min(self.settings.max_output_tokens.unwrap_or(usize::MAX)));
+        }
         if self.settings.tools == Some(false) {
             request.tools.clear();
         }
@@ -231,5 +236,41 @@ mod tests {
         assert_eq!(setup.resolve(1, "main").auto_compact_threshold, Some(0));
         assert_eq!(setup.resolve(1, "other").fast, Some(global_fast));
         assert_eq!(setup.resolve(1, "other").auto_compact_threshold, Some(85));
+    }
+    #[test]
+    fn completion_entry_preserves_reserved_output_below_server_limit() {
+        let runtime = ModelRuntime {
+            connection: crate::Connection {
+                id: 1,
+                name: String::new(),
+                kind: crate::ProviderKind::Ollama,
+                base_url: "http://model.test".into(),
+                model: Some("main".into()),
+                enabled: true,
+                context_limit: Some(4096),
+                tool_stream_unsupported: false,
+                tool_stream_revision: 0,
+            },
+            settings: ModelSettings {
+                max_output_tokens: Some(2048),
+                ..Default::default()
+            },
+            transport: Default::default(),
+        };
+        for (budget, expected) in [(512, 512), (8192, 2048)] {
+            let mut request = crate::ChatRequest {
+                connection_id: 1,
+                model: None,
+                system_prompt: None,
+                messages: vec![],
+                tools: vec![],
+                model_settings: ModelSettings {
+                    max_output_tokens: Some(budget),
+                    ..Default::default()
+                },
+            };
+            runtime.apply_to(&mut request);
+            assert_eq!(request.model_settings.max_output_tokens, Some(expected));
+        }
     }
 }

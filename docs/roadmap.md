@@ -9,7 +9,10 @@ theme and prompt history, and frontend performance & polish — moved to [CHANGE
 
 ### Model setup follow-ups
 
-Finish the setup experience through shared logic and thin local/remote adapters:
+Finish the setup experience through shared logic and thin local/remote adapters.
+Use a rerunnable wizard: choose provider type, enter URL and optional auth token,
+then discover models/settings and review or customize them before applying.
+Allow restarting setup from the server or workspace at any time:
 
 - Relabel the llama.cpp kind as **OpenAI-compatible**, retaining the stored
   `llamacpp` value. Offer server presets that choose the initial detection probe.
@@ -31,24 +34,6 @@ Finish the setup experience through shared logic and thin local/remote adapters:
   manually configured values are unchecked by default.
 - Detect project type to suggest the default `/test` command and linters.
 - Show only the model name unless duplicate names need an `@ host` suffix.
-
-### Auto-compaction engine
-
-Activate the saved threshold (85% by default, with per-model overrides and
-an explicit disable option) in the shared agent loop. Check before every model
-request, including tool continuations within a user turn. Compact at safe
-boundaries after outstanding tool-call/result pairs, without interrupting streams.
-
-Use the detected/configured context limit and treat the threshold as a ceiling:
-compact earlier when the remaining space cannot fit the reserved response budget
-or compaction request, especially on small context windows. Count instructions,
-tool schemas, history and tool results using provider tokenization where available
-and a conservative estimate otherwise.
-
-Use the fast model or primary fallback, retain original history in the database,
-and persist the summary used for subsequent requests. Support both local and
-remote runs. Until the engine is active, keep the UI clear that the threshold is
-configured but auto-compaction is not yet running.
 
 ### Ephemeral chat without a project
 
@@ -188,7 +173,7 @@ The chat/TUI surface grows into a full agent workspace. In priority order:
    accept/reject per file or per hunk, and editor gutter markers for pending
    agent edits.
 3. **Context visibility** — `/context` shows a breakdown bar (system prompt,
-   files, tool output, history), alongside the auto-compaction engine above.
+   files, tool output, history), using the shared compaction engine.
 4. **`@`-mentions** (`@file`, `@folder`, `@diff`, with autocomplete) and
    drag/drop or paste of images for vision models.
 5. **Message queue & steering** — type while the agent runs; queue the next

@@ -10,7 +10,40 @@ use openwebide_core::{
 use std::future::Future;
 
 pub fn history(messages: Vec<ChatMessage>, steps: &[ToolStep]) -> Vec<ChatMessage> {
-    let mut messages = openwebide_core::tool_history(messages, steps);
+    let latest = messages.iter().rev().find_map(|message| {
+        (message.role == Role::System)
+            .then(|| openwebide_core::Compaction::parse(&message.content))
+            .flatten()
+    });
+    let mut messages = if let Some(compaction) = latest {
+        let session = messages.first().map_or(0, |message| message.session_id);
+        let mut history = compaction.messages(session);
+        let tail = messages
+            .into_iter()
+            .filter(|message| {
+                message.id > compaction.through_message_id
+                    && !(message.role == Role::System
+                        && message
+                            .content
+                            .starts_with(openwebide_core::COMPACTION_PREFIX))
+            })
+            .collect();
+        history.extend(openwebide_core::tool_history(tail, steps));
+        history
+    } else {
+        openwebide_core::tool_history(
+            messages
+                .into_iter()
+                .filter(|message| {
+                    !(message.role == Role::System
+                        && message
+                            .content
+                            .starts_with(openwebide_core::COMPACTION_PREFIX))
+                })
+                .collect(),
+            steps,
+        )
+    };
     for message in &mut messages {
         if message.role == Role::Assistant {
             message.content = openwebide_core::strip_reasoning(&message.content).to_owned();
@@ -173,6 +206,26 @@ impl<P: RunPersistence> RunRecorder<P> {
                     }
                 }
             }
+            AgentEvent::Compacted(mut compaction) => {
+                compaction.through_message_id = self.anchor;
+                let saved = match compaction.stored_content() {
+                    Ok(content) => {
+                        self.persistence
+                            .message(Role::System, &content, None, None)
+                            .await
+                    }
+                    Err(error) => Err(error.to_string()),
+                };
+                match saved {
+                    Ok(message) => RunEvent::Message { message },
+                    Err(error) => {
+                        terminal = true;
+                        RunEvent::Error {
+                            message: format!("Could not save conversation summary: {error}"),
+                        }
+                    }
+                }
+            }
             AgentEvent::ReasoningDelta(content) => {
                 self.reasoning.push_str(&content);
                 RunEvent::ReasoningDelta { content }
@@ -297,6 +350,68 @@ impl<P: RunPersistence> RunRecorder<P> {
     }
 }
 
+/// Compact and durably record the replacement before any completion stream starts.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The shared preparation uses model, cancellation and persistence primitives"
+)]
+pub async fn compact_request<P, S, C, D>(
+    provider: &P,
+    source: &S,
+    request: &mut ChatRequest,
+    cancel: &C,
+    persistence: D,
+    session: i64,
+    anchor: i64,
+) -> Recorded
+where
+    P: openwebide_llm::LlmProvider,
+    S: crate::compaction::CompactionSource,
+    C: crate::CancelCheck + Sync,
+    D: RunPersistence,
+{
+    if cancel.check().await {
+        return Recorded {
+            events: vec![RunEvent::Cancelled],
+            terminal: true,
+        };
+    }
+    let result = {
+        let prepare = Box::pin(crate::compaction::prepare(provider, source, request));
+        let cancelled = Box::pin(async { cancel.cancelled().await });
+        match futures::future::select(prepare, cancelled).await {
+            futures::future::Either::Left((result, _)) => result,
+            futures::future::Either::Right(_) => {
+                return Recorded {
+                    events: vec![RunEvent::Cancelled],
+                    terminal: true,
+                };
+            }
+        }
+    };
+    if cancel.check().await {
+        return Recorded {
+            events: vec![RunEvent::Cancelled],
+            terminal: true,
+        };
+    }
+    match result {
+        Ok(Some(compaction)) => {
+            RunRecorder::new(persistence, session, anchor)
+                .record(AgentEvent::Compacted(compaction))
+                .await
+        }
+        Ok(None) => Recorded {
+            events: vec![],
+            terminal: false,
+        },
+        Err(message) => Recorded {
+            events: vec![RunEvent::Error { message }],
+            terminal: true,
+        },
+    }
+}
+
 /// Shared streaming driver. Stops/drops the agent before publishing a terminal event.
 pub fn events<'a, P: RunPersistence + 'a>(
     persistence: P,
@@ -388,6 +503,76 @@ mod tests {
             self.0.store(true, Ordering::Relaxed);
         }
     }
+
+    #[test]
+    fn summary_history_retains_original_task_and_replays_only_new_messages() {
+        let message = |id, role, content: &str| ChatMessage {
+            id,
+            session_id: 1,
+            role,
+            content: content.into(),
+            created_at: 0,
+            tool_calls: None,
+            tool_call_id: None,
+            usage: None,
+        };
+        let old = message(1, Role::User, "old task");
+        let current = message(3, Role::User, "current exact task");
+        let compaction = openwebide_core::Compaction {
+            summary: "Old work completed".into(),
+            retained: vec![current.clone()],
+            through_message_id: 3,
+        };
+        let stored = message(4, Role::System, &compaction.stored_content().unwrap());
+        let originals = vec![
+            old.clone(),
+            message(2, Role::Assistant, "old answer"),
+            current.clone(),
+            stored,
+            message(5, Role::Assistant, "continued answer"),
+            message(6, Role::User, "next task"),
+        ];
+        let history = history(originals.clone(), &[]);
+        assert_eq!(originals[0], old);
+        assert_eq!(history.len(), 4);
+        assert!(history[0].content.contains("Old work completed"));
+        assert_eq!(history[1], current);
+        assert_eq!(history[2].id, 5);
+        assert_eq!(history[3].id, 6);
+        let broken = vec![
+            old.clone(),
+            message(2, Role::System, "[conversation compaction]\ninvalid"),
+        ];
+        assert_eq!(super::history(broken, &[]), vec![old]);
+    }
+
+    #[test]
+    fn failed_summary_save_stops_before_the_next_model_request() {
+        futures::executor::block_on(async {
+            let finished = Arc::new(AtomicUsize::new(0));
+            let compaction = openwebide_core::Compaction {
+                summary: "summary".into(),
+                retained: vec![],
+                through_message_id: 0,
+            };
+            let output: Vec<_> = events(
+                Persistence(finished.clone()),
+                1,
+                3,
+                futures::stream::iter([
+                    AgentEvent::Compacted(compaction),
+                    AgentEvent::TextDelta("must not continue".into()),
+                ]),
+            )
+            .collect()
+            .await;
+            assert!(
+                matches!(output.as_slice(), [RunEvent::Error { message }] if message.contains("save conversation summary"))
+            );
+            assert_eq!(finished.load(Ordering::Relaxed), 1);
+        });
+    }
+
     #[test]
     fn fatal_save_failure_stops_source_and_preserves_actual_tool_result() {
         futures::executor::block_on(async {

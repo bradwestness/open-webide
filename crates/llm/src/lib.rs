@@ -243,6 +243,10 @@ pub trait HttpClient: Send + Sync {
 
 /// A local-LLM runtime the IDE can list models from and chat with.
 pub trait LlmProvider: Send + Sync {
+    /// Provider tokenization when available; otherwise the shared caller estimates conservatively.
+    fn request_tokens(&self, _request: &ChatRequest) -> impl Future<Output = Option<usize>> + Send {
+        async { None }
+    }
     fn tool_stream_memo(&self) -> Option<ToolStreamMemo> {
         None
     }

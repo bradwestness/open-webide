@@ -26,6 +26,7 @@ UI actions, slash commands, and background refresh use the same feature entry po
 | Git and terminals | `ProjectGit` / `ProjectHost`, shared Git types and bridge execution | Backend REST or authenticated browser bridge transport |
 | Chat and agent runs | `ProjectRuns`, agent `session::plan`, `chat_events`, `events`, agent loop and approval policy | Browser, Spin and bridge persistence, cancellation, permission and HTTP adapters |
 | Model requests | `ModelRuntime::apply_to`, provider wire messages and stream state machines | Protocol parsers and browser/Spin/native HTTP clients |
+| Context compaction | Agent `compaction::prepare`, bounded rolling summaries, output reserves and persisted history reconstruction | `CompactionSource` model runtime/completion/token primitives for browser, Spin and bridge |
 | History recovery | Core interrupted-run validation and tool-history reconstruction | Persisted messages and tool results, UI presentation mapping |
 
 Mode checks belong to selecting these adapters and browser folder permissions. New
@@ -35,6 +36,12 @@ Browser futures retain checked `SendWrapper` ownership. Asynchronous UI updates 
 validate the originating account, project/session and host revision before applying.
 The filesystem creation contract runs against memory, native and browser adapters;
 provider contracts run the same success and failure cases against both protocols.
+
+Compaction runs before plain replies and each agent model request, after complete
+call/result pairs. A typed system entry stores the summary, exact current user
+prompt and a message watermark; original messages and tool results remain in
+SQLite. Reconstruction uses the newest valid summary plus later messages.
+The recorder must save the summary before execution polls the next model request.
 
 ## Components
 

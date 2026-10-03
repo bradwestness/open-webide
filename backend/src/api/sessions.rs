@@ -302,22 +302,55 @@ pub(crate) async fn send_session_message(
         let context = store
             .insert_message(session_id, Role::System, &content, now())
             .await?;
-        let mut stream = message_stream(
-            store,
+        let prepared = openwebide_agent::session::compact_request(
+            &provider,
+            &super::model_operations::ModelSource {
+                store: store.clone(),
+                user: user_id,
+            },
+            &mut request,
+            &cancel,
+            crate::agent::SessionPersistence {
+                store: store.clone(),
+                user: user_id,
+                session: session_id,
+                anchor: user_message.id,
+            },
             session_id,
-            user_message,
-            provider.chat_stream(&request),
-            started_ms,
-        );
-        let first = stream.next().await;
-        Box::pin(
-            futures::stream::iter(
-                first
-                    .into_iter()
-                    .chain([openwebide_core::RunEvent::Message { message: context }]),
-            )
-            .chain(stream),
+            user_message.id,
         )
+        .await;
+        if prepared.terminal {
+            Box::pin(futures::stream::iter(
+                [
+                    openwebide_core::RunEvent::Message {
+                        message: user_message,
+                    },
+                    openwebide_core::RunEvent::Message { message: context },
+                ]
+                .into_iter()
+                .chain(prepared.events),
+            ))
+                as std::pin::Pin<Box<dyn futures::Stream<Item = openwebide_core::RunEvent> + Send>>
+        } else {
+            let mut stream = message_stream(
+                store,
+                session_id,
+                user_message,
+                provider.chat_stream(&request),
+                started_ms,
+            );
+            let first = stream.next().await;
+            Box::pin(
+                futures::stream::iter(
+                    first
+                        .into_iter()
+                        .chain([openwebide_core::RunEvent::Message { message: context }]),
+                )
+                .chain(futures::stream::iter(prepared.events))
+                .chain(stream),
+            )
+        }
     };
 
     Ok(Response::builder()

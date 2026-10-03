@@ -1376,6 +1376,48 @@ mod tests {
     }
 
     #[test]
+    fn persisted_compaction_keeps_original_messages_and_is_session_scoped() {
+        let store = test_store();
+        let user = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            let session = store
+                .create_session("s", None, None, None, user, 1)
+                .await
+                .unwrap();
+            let other = store
+                .create_session("other", None, None, None, user, 1)
+                .await
+                .unwrap();
+            let original = store
+                .insert_message(session.id, Role::User, "exact user task", 1)
+                .await
+                .unwrap();
+            let compaction = openwebide_core::Compaction {
+                summary: "prior work".into(),
+                retained: vec![original.clone()],
+                through_message_id: original.id,
+            };
+            store
+                .insert_message(
+                    session.id,
+                    Role::System,
+                    &compaction.stored_content().unwrap(),
+                    2,
+                )
+                .await
+                .unwrap();
+            let messages = store.list_messages(session.id).await.unwrap();
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0], original);
+            assert_eq!(
+                openwebide_core::Compaction::parse(&messages[1].content).unwrap(),
+                compaction
+            );
+            assert!(store.list_messages(other.id).await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
     fn model_profiles_are_shared_but_defaults_are_user_scoped_and_secrets_write_only() {
         use openwebide_core::{
             ModelDefaults, ModelProfile, ModelSelection, ModelSettings, ServerSettingsUpdate,

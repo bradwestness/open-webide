@@ -59,6 +59,8 @@ enum Route {
     ModelContext,
     Chat,
     ChatTools,
+    ModelComplete,
+    ModelTokens,
     WebSearch,
     WebFetch,
     FilesGet,
@@ -145,6 +147,8 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["models"]) => Some(Route::ListModels),
         ("GET", ["models", "context"]) => Some(Route::ModelContext),
         ("POST", ["chat"]) => Some(Route::Chat),
+        ("POST", ["models", "complete"]) => Some(Route::ModelComplete),
+        ("POST", ["models", "tokens"]) => Some(Route::ModelTokens),
         ("POST", ["chat-tools"]) => Some(Route::ChatTools),
         ("GET", ["web", "search"]) => Some(Route::WebSearch),
         ("GET", ["web", "fetch"]) => Some(Route::WebFetch),
@@ -343,6 +347,12 @@ pub async fn route(req: Request) -> JsonResp {
             api::chat::model_context(req, &state, user).await
         }
         (Some(Route::Chat), Some(user)) => api::chat::chat(req, &state, user).await,
+        (Some(Route::ModelComplete), Some(user)) => {
+            api::model_operations::route(req, &state, user, false).await
+        }
+        (Some(Route::ModelTokens), Some(user)) => {
+            api::model_operations::route(req, &state, user, true).await
+        }
         (Some(Route::ChatTools), Some(user)) => api::chat::chat_tools(req, &state, user).await,
         (Some(Route::WebSearch), Some(user)) => api::web::web_search(req, user).await,
         (Some(Route::WebFetch), Some(user)) => api::web::web_fetch(req, user).await,
@@ -676,6 +686,8 @@ mod tests {
             ),
             ("GET", "models", Route::ListModels),
             ("GET", "models/context", Route::ModelContext),
+            ("POST", "models/complete", Route::ModelComplete),
+            ("POST", "models/tokens", Route::ModelTokens),
             ("POST", "chat", Route::Chat),
             ("POST", "chat-tools", Route::ChatTools),
             ("GET", "web/search", Route::WebSearch),

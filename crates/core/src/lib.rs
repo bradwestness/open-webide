@@ -1,5 +1,7 @@
 //! Shared domain types used across the Open WebIDE frontend, backend, and crates.
 
+pub mod compaction;
+pub use compaction::*;
 pub mod approval;
 pub use approval::*;
 pub mod model_setup;

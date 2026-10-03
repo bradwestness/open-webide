@@ -116,6 +116,41 @@ fn usage_fields(value: &Value, acc: &mut UsageAcc) {
 }
 
 impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
+    async fn request_tokens(&self, request: &ChatRequest) -> Option<usize> {
+        let rendered = self
+            .http
+            .post_json(
+                &url_for(&self.base_url, "/apply-template"),
+                &json!({
+                    "model": request.model.as_ref().or(self.model.as_ref()),
+                    "messages": tool_messages(request, ProviderKind::LlamaCpp),
+                    "tools": tools_wire(&request.tools),
+                }),
+            )
+            .await
+            .ok()?;
+        let prompt = rendered.get("prompt")?.as_str()?;
+        let counted = self
+            .http
+            .post_json(
+                &url_for(&self.base_url, "/tokenize"),
+                &json!({"content": prompt, "add_special": true, "parse_special": true}),
+            )
+            .await
+            .ok()?;
+        // Templates that ignore tools still need space for their schemas. Counting twice is conservative.
+        let schemas = if request.tools.is_empty() {
+            0
+        } else {
+            serde_json::to_vec(&tools_wire(&request.tools))
+                .ok()?
+                .len()
+                .div_ceil(3)
+        };
+        let count = counted.get("tokens")?.as_array()?.len();
+        (count > 0).then(|| count.saturating_add(schemas).saturating_add(32))
+    }
+
     fn tool_stream_memo(&self) -> Option<ToolStreamMemo> {
         Some(self.tool_stream_memo.clone())
     }
@@ -493,6 +528,30 @@ mod tests {
     use crate::fake::{FakeHttpClient, FakeState};
     use futures::executor::block_on;
     use openwebide_core::{ChatMessage, Role, ToolDefinition, TurnTelemetry};
+
+    #[test]
+    fn request_tokenization_counts_rendered_history_and_reserves_schemas() {
+        block_on(async {
+            let (provider, state) = provider(FakeHttpClient::new());
+            state.push(Ok(json!({"prompt":"rendered chat"})));
+            state.push(Ok(json!({"tokens":[1,2,3,4]})));
+            let mut request = request(None, Some("rules"));
+            request.tools.push(read_file_tool());
+            assert!(provider.request_tokens(&request).await.unwrap() > 36);
+            {
+                let calls = state.calls.lock().unwrap();
+                assert!(calls[0].url.ends_with("/apply-template"));
+                assert_eq!(
+                    calls[0].body.as_ref().unwrap()["messages"][0]["content"],
+                    "rules"
+                );
+                assert!(calls[1].url.ends_with("/tokenize"));
+                assert_eq!(calls[1].body.as_ref().unwrap()["content"], "rendered chat");
+            }
+            state.push(Err(ProviderError::Http("unsupported".into())));
+            assert!(provider.request_tokens(&request).await.is_none());
+        });
+    }
 
     #[test]
     fn oversized_usage_keeps_telemetry_saturated() {

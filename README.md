@@ -19,7 +19,7 @@ sessions, and preferences live in SQLite, so you can resume from another browser
   Auto uses an optional fast model, falling back to the primary model.
 - Choose personal primary/fast defaults in Settings. Configure shared servers,
   credentials, context, sampling, output, thinking, and tool settings from Servers. The saved auto-compaction
-  threshold defaults to 85%; the compaction engine is still planned.
+  threshold defaults to 85% (0 disables it). Local and remote runs compact before model requests, reserve output space, and retain original history alongside saved summaries.
 - Use slash commands such as `/model`, `/test`, `/diff`, `/commit`, and `/sync`,
   with live token/speed telemetry and a context-window gauge.
 

@@ -20,6 +20,7 @@ use openwebide_llm::{LlmProvider, ProviderError, ToolStreamChunk};
 type ModelStream = Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send>>;
 
 pub mod clients;
+pub mod compaction;
 pub mod context;
 pub mod executor;
 pub mod policy;
@@ -75,6 +76,7 @@ pub struct ToolOutcome {
 pub enum AgentEvent {
     /// Generated instructions added to this run, persisted by its host.
     Context(String),
+    Compacted(openwebide_core::Compaction),
     /// Text received during the current model turn.
     TextDelta(String),
     ReasoningDelta(String),
@@ -245,7 +247,7 @@ impl PermissionGate for NoopGate {
 pub fn run<P, T, C, G>(
     provider: P,
     executor: T,
-    mut request: ChatRequest,
+    request: ChatRequest,
     config: AgentConfig,
     cancel: C,
     gate: G,
@@ -254,8 +256,41 @@ pub fn run<P, T, C, G>(
 where
     P: LlmProvider + 'static,
     T: ToolExecutor + 'static,
-    C: CancelCheck + 'static,
+    C: CancelCheck + Sync + 'static,
     G: PermissionGate + 'static,
+{
+    run_with_compaction(
+        provider,
+        executor,
+        request,
+        config,
+        cancel,
+        gate,
+        anchor_id,
+        compaction::NoopCompactionSource,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Host primitives accompany the existing agent run contract"
+)]
+pub fn run_with_compaction<P, T, C, G, S>(
+    provider: P,
+    executor: T,
+    mut request: ChatRequest,
+    config: AgentConfig,
+    cancel: C,
+    gate: G,
+    anchor_id: i64,
+    compaction: S,
+) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send + 'static>>
+where
+    P: LlmProvider + 'static,
+    T: ToolExecutor + 'static,
+    C: CancelCheck + Sync + 'static,
+    G: PermissionGate + 'static,
+    S: compaction::CompactionSource + 'static,
 {
     request.messages.retain(|message| {
         !(message.role == Role::System
@@ -271,6 +306,7 @@ where
     Box::pin(stream::unfold(
         LoopState {
             provider,
+            compaction,
             executor,
             cancel,
             gate,
@@ -333,6 +369,36 @@ where
                                 )),
                                 state,
                             ));
+                        }
+                        let compacted = {
+                            let prepare = Box::pin(compaction::prepare(
+                                &state.provider,
+                                &state.compaction,
+                                &mut state.request,
+                            ));
+                            let cancelled = Box::pin(async { state.cancel.cancelled().await });
+                            match futures::future::select(prepare, cancelled).await {
+                                futures::future::Either::Left((result, _)) => result,
+                                futures::future::Either::Right(_) => {
+                                    state.next = Next::Cancelled;
+                                    continue;
+                                }
+                            }
+                        };
+                        if matches!(compacted, Ok(Some(_))) && state.cancel.check().await {
+                            state.next = Next::Cancelled;
+                            continue;
+                        }
+                        match compacted {
+                            Ok(Some(compaction)) => {
+                                state.next = Next::CallModel;
+                                return Some((AgentEvent::Compacted(compaction), state));
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                state.next = Next::Stop;
+                                return Some((AgentEvent::Error(error), state));
+                            }
                         }
                         state.instructions_need_review = false;
                         state.turn += 1;
@@ -757,8 +823,9 @@ fn pending_calls(anchor_id: i64, turn: usize, calls: Vec<ToolCall>) -> Vec<Pendi
 }
 
 /// The agent loop's mutable state, threaded through `stream::unfold`.
-struct LoopState<P, T, C, G> {
+struct LoopState<P, T, C, G, S> {
     provider: P,
+    compaction: S,
     executor: T,
     cancel: C,
     gate: G,
@@ -2620,5 +2687,235 @@ mod tests {
                 AgentEvent::FinalText(format!("answer{}", openwebide_core::REPLY_CUT_OFF_MARKER)),
             ]
         );
+    }
+    struct SummarySource {
+        requests: Arc<Mutex<Vec<ChatRequest>>>,
+        fail: bool,
+        fail_fast: bool,
+    }
+    impl compaction::CompactionSource for SummarySource {
+        fn available(&self) -> bool {
+            true
+        }
+        async fn runtime(
+            &self,
+            selection: &openwebide_core::ModelSelection,
+        ) -> Result<openwebide_core::ModelRuntime, String> {
+            Ok(openwebide_core::ModelRuntime {
+                connection: openwebide_core::Connection {
+                    id: selection.server_id,
+                    name: "fast".into(),
+                    kind: openwebide_core::ProviderKind::Ollama,
+                    base_url: "http://fast.test".into(),
+                    model: Some(selection.model.clone()),
+                    enabled: true,
+                    context_limit: Some(1024),
+                    tool_stream_unsupported: false,
+                    tool_stream_revision: 0,
+                },
+                settings: openwebide_core::ModelSettings {
+                    context_limit: Some(1024),
+                    ..Default::default()
+                },
+                transport: Default::default(),
+            })
+        }
+        async fn complete(&self, request: &ChatRequest) -> Result<ChatCompletion, String> {
+            self.requests.lock().unwrap().push(request.clone());
+            assert!(
+                compaction::conservative_tokens(request)
+                    + request.model_settings.max_output_tokens.unwrap()
+                    <= request.model_settings.context_limit.unwrap()
+            );
+            assert!(request.tools.is_empty());
+            if self.fail || (self.fail_fast && request.connection_id == 2) {
+                return Err("offline".into());
+            }
+            Ok(no_usage(ChatResponse::Text(
+                "The file was checked. Continue fixing the failing test.".into(),
+            )))
+        }
+    }
+    fn summary_source(fail: bool, fail_fast: bool) -> SummarySource {
+        SummarySource {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            fail,
+            fail_fast,
+        }
+    }
+
+    #[test]
+    fn compaction_waits_for_tool_results_and_precedes_the_continuation() {
+        let (provider, requests) = FakeProvider::new(vec![
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "read",
+                "read_file",
+                "{}",
+            )]))),
+            Ok(no_usage(ChatResponse::Text("done".into()))),
+        ]);
+        let source = summary_source(false, false);
+        let summaries = source.requests.clone();
+        let mut request = request();
+        request.model_settings.context_limit = Some(2048);
+        let events = collect(run_with_compaction(
+            provider,
+            FakeExecutor::new(vec![outcome(&"large file result ".repeat(600), "read")]),
+            request,
+            AgentConfig::default(),
+            NoopCancel,
+            NoopGate,
+            7,
+            source,
+        ));
+        let result = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::ToolResult { .. }))
+            .unwrap();
+        let compacted = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::Compacted(_)))
+            .unwrap();
+        assert!(result < compacted);
+        assert!(matches!(events.last(), Some(AgentEvent::FinalText(text)) if text == "done"));
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].messages.len(), 2);
+        assert_eq!(requests[1].messages[1].content, "fix the failing test");
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .all(|message| message.tool_calls.is_none() && message.tool_call_id.is_none())
+        );
+        assert!(summaries.lock().unwrap().len() > 1);
+    }
+
+    #[test]
+    fn compaction_disable_failure_and_fast_fallback_preserve_the_task() {
+        futures::executor::block_on(async {
+            for scenario in ["disabled", "failure", "fast"] {
+                let (provider, _) = FakeProvider::new(vec![]);
+                let mut request = request();
+                let mut old = request.messages[0].clone();
+                old.role = Role::Assistant;
+                old.content = "old conversation ".repeat(600);
+                request.messages.insert(0, old);
+                request.model_settings.context_limit = Some(2048);
+                request.model_settings.fast = Some(openwebide_core::ModelSelection {
+                    server_id: 2,
+                    model: "small".into(),
+                });
+                if scenario == "disabled" {
+                    request.model_settings.auto_compact_threshold = Some(0);
+                }
+                let originals = request.messages.clone();
+                let source = summary_source(scenario == "failure", true);
+                let result = compaction::prepare(&provider, &source, &mut request).await;
+                let calls = source.requests.lock().unwrap();
+                match scenario {
+                    "disabled" => {
+                        assert!(result.unwrap().is_none());
+                        assert!(calls.is_empty());
+                        assert_eq!(request.messages, originals);
+                    }
+                    "failure" => {
+                        assert!(result.is_err());
+                        assert_eq!(request.messages, originals);
+                    }
+                    "fast" => {
+                        let summary = result.unwrap().unwrap();
+                        assert_eq!(summary.retained, vec![originals[1].clone()]);
+                        assert_eq!(calls[0].connection_id, 2);
+                        assert!(calls.iter().any(|request| request.connection_id == 1));
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        });
+    }
+    #[test]
+    fn response_reserve_compacts_before_threshold_and_incomplete_pairs_fail_safely() {
+        futures::executor::block_on(async {
+            for pending in [false, true] {
+                let (provider, _) = FakeProvider::new(vec![]);
+                let mut request = request();
+                request.model_settings.context_limit = Some(4096);
+                request.model_settings.max_output_tokens = Some(2048);
+                let mut old = request.messages[0].clone();
+                old.role = Role::Assistant;
+                old.content = "history ".repeat(850);
+                if pending {
+                    old.tool_calls = Some(vec![call("pending", "read_file", "{}")]);
+                }
+                request.messages.push(old);
+                let originals = request.messages.clone();
+                assert!(compaction::conservative_tokens(&request) < 4096 * 85 / 100);
+                let source = summary_source(false, false);
+                let result = compaction::prepare(&provider, &source, &mut request).await;
+                if pending {
+                    assert!(result.unwrap_err().contains("awaiting results"));
+                    assert_eq!(request.messages, originals);
+                    assert!(source.requests.lock().unwrap().is_empty());
+                } else {
+                    assert!(result.unwrap().is_some());
+                    assert!(compaction::conservative_tokens(&request) + 2048 < 4096);
+                }
+            }
+        });
+    }
+    #[test]
+    fn cancellation_during_summary_prevents_model_request() {
+        struct BlockedSummary;
+        impl compaction::CompactionSource for BlockedSummary {
+            fn available(&self) -> bool {
+                true
+            }
+            async fn complete(&self, _: &ChatRequest) -> Result<ChatCompletion, String> {
+                futures::future::pending().await
+            }
+        }
+        let (provider, requests) = FakeProvider::new(vec![]);
+        let mut request = request();
+        request.model_settings.context_limit = Some(2048);
+        let mut old = request.messages[0].clone();
+        old.role = Role::Assistant;
+        old.content = "history ".repeat(1500);
+        request.messages.insert(0, old);
+        let events = collect(run_with_compaction(
+            provider,
+            FakeExecutor::new(vec![]),
+            request,
+            AgentConfig::default(),
+            timed_cancel(),
+            NoopGate,
+            7,
+            BlockedSummary,
+        ));
+        assert_eq!(events, vec![AgentEvent::Cancelled]);
+        assert!(requests.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn failed_compaction_ends_the_agent_without_requesting_a_reply() {
+        let (provider, requests) = FakeProvider::new(vec![]);
+        let mut request = request();
+        request.model_settings.context_limit = Some(2048);
+        let mut old = request.messages[0].clone();
+        old.role = Role::Assistant;
+        old.content = "history ".repeat(1500);
+        request.messages.insert(0, old);
+        let events = collect(run_with_compaction(
+            provider,
+            FakeExecutor::new(vec![]),
+            request,
+            AgentConfig::default(),
+            NoopCancel,
+            NoopGate,
+            7,
+            summary_source(true, false),
+        ));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], AgentEvent::Error(_)));
+        assert!(requests.lock().unwrap().is_empty());
     }
 }

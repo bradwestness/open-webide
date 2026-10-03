@@ -14,6 +14,8 @@ struct FakeBackend {
     messages: Mutex<Vec<ChatMessage>>,
     operations: Mutex<Vec<String>>,
     kind: Mutex<Option<RunKind>>,
+    compaction_request: Mutex<Option<ChatRequest>>,
+    summaries: Mutex<Vec<ChatRequest>>,
     fail_final: AtomicBool,
     fail_completion: AtomicBool,
     fail_interim: AtomicBool,
@@ -23,6 +25,22 @@ struct FakeBackend {
 }
 
 impl RunBackend for FakeBackend {
+    async fn model_complete(
+        &self,
+        _user: i64,
+        request: &ChatRequest,
+    ) -> Result<ChatCompletion, String> {
+        self.summaries.lock().unwrap().push(request.clone());
+        Ok(ChatCompletion {
+            response: ChatResponse::Text(
+                "Previous work completed; continue the current task.".into(),
+            ),
+            preamble: String::new(),
+            reasoning: String::new(),
+            stop_reason: openwebide_core::StopReason::Complete,
+            usage: None,
+        })
+    }
     async fn approval_check(
         &self,
         _user: i64,
@@ -49,10 +67,14 @@ impl RunBackend for FakeBackend {
         if self.fail_plan.load(Ordering::SeqCst) {
             return Err("plan failed".into());
         }
-        Ok(plan(
+        let mut plan = plan(
             self.kind.lock().unwrap().clone().unwrap_or(RunKind::Chat),
             content,
-        ))
+        );
+        if let Some(request) = self.compaction_request.lock().unwrap().clone() {
+            plan.request = request;
+        }
+        Ok(plan)
     }
     async fn persist_message(
         &self,
@@ -1331,5 +1353,69 @@ async fn remote_agent_uses_shared_policy_before_prompting_and_writes_the_file() 
         assert_eq!(checks.len(), 1);
         assert!(checks[0].call.arguments.contains("edited.txt"));
         assert!(checks[0].call.id.starts_with("a10t"));
+    }
+}
+
+#[tokio::test]
+async fn both_server_run_paths_save_compaction_before_the_reply_and_keep_originals() {
+    let dir = tempfile::tempdir().unwrap();
+    for kind in [
+        RunKind::Chat,
+        RunKind::Agent {
+            project_path: ".".into(),
+        },
+    ] {
+        let registry = RunRegistry::default();
+        let backend = Arc::new(FakeBackend::default());
+        *backend.kind.lock().unwrap() = Some(kind);
+        let mut request = plan(RunKind::Chat, "go").request;
+        request.model_settings.context_limit = Some(4096);
+        let original = ChatMessage {
+            id: 1,
+            session_id: 1,
+            role: Role::Assistant,
+            content: "old findings ".repeat(1500),
+            created_at: 0,
+            tool_calls: None,
+            tool_call_id: None,
+            usage: None,
+        };
+        request.messages.push(original.clone());
+        backend.messages.lock().unwrap().push(original.clone());
+        *backend.compaction_request.lock().unwrap() = Some(request);
+        let run = registry
+            .start(
+                &user(1),
+                start("compact"),
+                dir.path(),
+                backend.clone(),
+                |_| FakeProvider {
+                    chat: Mutex::new(vec![Ok(StreamChunk::Delta("final".into()))]),
+                    tools: Mutex::new(vec![vec![Ok(ToolStreamChunk::Response(
+                        ChatResponse::Text("final".into()),
+                    ))]]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        finished(&run).await;
+        let messages = backend.messages.lock().unwrap();
+        assert_eq!(messages[0], original);
+        let summary = messages
+            .iter()
+            .find(|message| {
+                message
+                    .content
+                    .starts_with(openwebide_core::COMPACTION_PREFIX)
+            })
+            .unwrap();
+        let metadata = openwebide_core::Compaction::parse(&summary.content).unwrap();
+        assert_eq!(metadata.retained[0].content, "go");
+        assert!(metadata.through_message_id < summary.id);
+        assert_eq!(messages.last().unwrap().content, "final");
+        assert!(summary.id < messages.last().unwrap().id);
+        assert!(backend.summaries.lock().unwrap().len() > 1);
+        assert!(matches!(events(&run).last(), Some(RunEvent::Done { .. })));
     }
 }

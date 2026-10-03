@@ -753,11 +753,11 @@ pub fn ChatPane(
                                             </Show>
                                         }>
                                             <details class="tui-thinking-box">
-                                                <summary class="tui-thinking-summary">"Run context"</summary>
+                                                <summary class="tui-thinking-summary">{move || if content.get().starts_with(openwebide_core::COMPACTION_PREFIX) { "Conversation summary" } else { "Run context" }}</summary>
                                                 <div class="tui-thinking-trace">
                                                     <pre class="tui-thinking-pre">{move || {
                                                         let text = content.get();
-                                                        text.strip_prefix(openwebide_core::RUN_CONTEXT_PREFIX).unwrap_or(&text).to_string()
+                                                        openwebide_core::Compaction::parse(&text).map_or_else(|| text.strip_prefix(openwebide_core::RUN_CONTEXT_PREFIX).unwrap_or(&text).to_string(), |compaction| compaction.summary)
                                                     }}</pre>
                                                 </div>
                                             </details>
