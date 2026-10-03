@@ -39,6 +39,7 @@ pub struct ChatActionContext {
 /// and executing slash-command intents.
 pub struct ChatActions {
     pub send: Callback<()>,
+    pub rewind: Callback<i64>,
     pub resume_run: Callback<()>,
     pub stop: Callback<()>,
     pub permission: Callback<(String, bool)>,
@@ -71,6 +72,15 @@ impl ChatActions {
         let project_host = expect_context::<crate::project_host::ProjectHost>();
         let run_controls = StoredValue::new_local(super::runs::RunControls::default());
         let project_runs_slot = StoredValue::new(None::<crate::project_runs::ProjectRuns>);
+        let rewind = super::rewind::actions(
+            api,
+            chat,
+            projects,
+            workspace,
+            ui,
+            request_open,
+            refresh_git,
+        );
         let stop = Callback::new(move |()| {
             if let Some(facade) = project_runs_slot.get_value() {
                 facade.stop();
@@ -183,6 +193,7 @@ impl ChatActions {
                 let content = chat.draft.with(|draft| draft.trim().to_string());
                 if (resume.is_none() && content.is_empty())
                     || chat.streaming.get()
+                    || chat.rewinding.get()
                     || chat.connection_changing.get()
                     || chat.creating_session.get()
                 {
@@ -790,6 +801,7 @@ impl ChatActions {
         install_effects(api, chat, projects, settings, runs, project_runs);
 
         Self {
+            rewind,
             send,
             resume_run,
             stop,

@@ -860,6 +860,7 @@ mod tests {
             ),
             ConversationEntry::ToolStep(ToolStep {
                 anchor_message_id: 1,
+                checkpoint: None,
                 tool_call_id: "call_1".into(),
                 name: "read_file".into(),
                 summary: "read a.rs".into(),
@@ -937,6 +938,7 @@ mod tests {
             }),
             ConversationEntry::ToolStep(ToolStep {
                 anchor_message_id: 1,
+                checkpoint: None,
                 tool_call_id: "call_1".into(),
                 name: "read_file".into(),
                 summary: "read src/main.rs".into(),

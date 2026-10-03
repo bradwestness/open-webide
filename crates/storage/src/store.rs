@@ -1,6 +1,7 @@
 //! Typed repositories over a [`Db`].
 
 mod model_setup;
+mod rewind;
 mod rows;
 
 use rows::*;
@@ -879,7 +880,33 @@ impl<D: Db> Store<D> {
             .await
     }
 
-    pub async fn insert_interim_message(
+    pub fn insert_interim_message<'a>(
+        &'a self,
+        session_id: i64,
+        role: Role,
+        content: &'a str,
+        created_at: i64,
+        usage: Option<&'a TurnTelemetry>,
+        tool_calls: Option<&'a [ToolCall]>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ChatMessage, StorageError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.db
+                .transaction(|tx| async move {
+                    let store = Store::new(tx);
+                    store.ensure_not_rewinding(session_id).await?;
+                    store
+                        .insert_interim_message_unlocked(
+                            session_id, role, content, created_at, usage, tool_calls,
+                        )
+                        .await
+                })
+                .await
+        })
+    }
+
+    async fn insert_interim_message_unlocked(
         &self,
         session_id: i64,
         role: Role,
@@ -943,7 +970,40 @@ impl<D: Db> Store<D> {
     /// `tool_call` and a `permission_request` (which share an id), so a gated
     /// write is stored once.
     #[allow(clippy::too_many_arguments)]
-    pub async fn upsert_tool_step(
+    pub fn upsert_tool_step<'a>(
+        &'a self,
+        session_id: i64,
+        anchor_message_id: i64,
+        tool_call_id: &'a str,
+        name: &'a str,
+        summary: &'a str,
+        created_at: i64,
+        diff: Option<&'a FileDiff>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            self.db
+                .transaction(|tx| async move {
+                    let store = Store::new(tx);
+                    store.ensure_not_rewinding(session_id).await?;
+                    store
+                        .upsert_tool_step_unlocked(
+                            session_id,
+                            anchor_message_id,
+                            tool_call_id,
+                            name,
+                            summary,
+                            created_at,
+                            diff,
+                        )
+                        .await
+                })
+                .await
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_tool_step_unlocked(
         &self,
         session_id: i64,
         anchor_message_id: i64,
@@ -995,6 +1055,7 @@ impl<D: Db> Store<D> {
             self.db
                 .transaction(|tx| async move {
                     let store = Store::new(tx);
+                    store.ensure_not_rewinding(session_id).await?;
                     let session = store.get_session(session_id, user_id).await?;
                     if let Some(project) = session.project_id {
                         store.get_project(project, user_id).await?;
@@ -1109,7 +1170,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT tool_call_id, name, summary, ok, result_summary, diff, anchor_message_id
+                "SELECT tool_call_id, name, summary, ok, result_summary, diff, anchor_message_id, checkpoint
                  FROM tool_steps WHERE session_id = ? ORDER BY id",
                 &[DbValue::Int(session_id)],
             )

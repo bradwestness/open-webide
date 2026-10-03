@@ -112,6 +112,19 @@ pub(crate) async fn files_get(
     let user_id = user.id;
     let (id, sub) = project_files_path(path)?;
     match sub {
+        "files/canonical" => {
+            use openwebide_core::Vfs;
+            let rel = params
+                .get("path")
+                .cloned()
+                .ok_or_else(|| ApiError::bad_request("missing ?path="))?;
+            let (_, base) = remote_project_path(state, user_id, id, &rel).await?;
+            let canonical = crate::files::HostFsVfs::new(base)
+                .canonicalize(&rel)
+                .await
+                .map_err(crate::files::FsError::from)?;
+            Ok(json_response(200, &json!({"path": canonical})))
+        }
         "files/context" => {
             let (base, _) = remote_project_path(state, user_id, id, "").await?;
             let project = state.store.get_project(id, user_id).await?;

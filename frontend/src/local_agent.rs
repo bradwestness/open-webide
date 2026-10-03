@@ -986,6 +986,18 @@ impl openwebide_agent::session::RunPersistence for SessionPersistence {
                 .await
         })
     }
+    fn checkpoint(
+        &self,
+        id: &str,
+        checkpoint: &openwebide_core::rewind::ProjectCheckpoint,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .save_project_checkpoint(self.session, id, checkpoint)
+                .await
+        })
+    }
     fn result(
         &self,
         id: &str,

@@ -56,6 +56,7 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub rewinds: RefCell<BTreeMap<i64, openwebide_core::RewindPlan>>,
     pub git_statuses: RefCell<VecDeque<Deferred<GitRepoStatus>>>,
     pub git_status_requests: RefCell<Vec<Option<i64>>>,
     pub model_setup: RefCell<openwebide_core::ModelSetup>,
@@ -91,6 +92,7 @@ pub struct FakeBackend {
     pub project_delete_error: RefCell<Option<String>>,
     pub browse_entries: RefCell<BTreeMap<String, Vec<FileEntry>>>,
     pub files: RefCell<BTreeMap<(i64, String), String>>,
+    pub binary_files: RefCell<BTreeMap<(i64, String), Vec<u8>>>,
     pub directories: RefCell<BTreeSet<(i64, String)>>,
     pub models: RefCell<Vec<ModelInfo>>,
     pub connections: RefCell<Vec<Connection>>,
@@ -831,7 +833,11 @@ impl Backend for FakeBackend {
             let files = self.files.borrow();
             let directories = self.directories.borrow();
             let mut entries = BTreeMap::new();
-            for (project, child) in files.keys().chain(directories.iter()) {
+            for (project, child) in files
+                .keys()
+                .chain(self.binary_files.borrow().keys())
+                .chain(directories.iter())
+            {
                 if *project != project_id {
                     continue;
                 }
@@ -885,6 +891,39 @@ impl Backend for FakeBackend {
                 method: "read_file",
             });
             self.read(project_id, path)
+        })
+    }
+    fn read_file_bytes<'a>(
+        &'a self,
+        project: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<Vec<u8>, String>> {
+        Box::pin(async move {
+            if let Some(bytes) = self.binary_files.borrow().get(&(project, path.into())) {
+                return Ok(bytes.clone());
+            }
+            self.read(project, path).map(String::into_bytes)
+        })
+    }
+    fn write_file_bytes<'a>(
+        &'a self,
+        project: i64,
+        path: &'a str,
+        bytes: &'a [u8],
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                self.binary_files
+                    .borrow_mut()
+                    .remove(&(project, path.into()));
+                self.write_file(project, path, text).await
+            } else {
+                self.binary_files
+                    .borrow_mut()
+                    .insert((project, path.into()), bytes.to_vec());
+                self.files.borrow_mut().remove(&(project, path.into()));
+                Ok(())
+            }
         })
     }
     fn read_file_lossy<'a>(
@@ -976,6 +1015,9 @@ impl Backend for FakeBackend {
             self.calls
                 .borrow_mut()
                 .push(Call::DeleteFile { path: path.into() });
+            self.binary_files
+                .borrow_mut()
+                .remove(&(project_id, path.into()));
             self.files.borrow_mut().remove(&(project_id, path.into()));
             Ok(())
         })
@@ -1185,6 +1227,56 @@ impl Backend for FakeBackend {
                 .get(&session_id)
                 .cloned()
                 .unwrap_or_default())
+        })
+    }
+    fn prepare_rewind(
+        &self,
+        session: i64,
+        message: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::RewindPlan, String>> {
+        Box::pin(async move {
+            if let Some(plan) = self.rewinds.borrow().get(&session).cloned() {
+                return Ok(plan);
+            }
+            let entries = self.list_messages(session).await?;
+            let plan = openwebide_core::RewindPlan::from_conversation(&entries, message)?;
+            self.rewinds.borrow_mut().insert(session, plan.clone());
+            Ok(plan)
+        })
+    }
+    fn complete_rewind(
+        &self,
+        session: i64,
+        message: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<ConversationEntry>, String>> {
+        Box::pin(async move {
+            let plan = self
+                .rewinds
+                .borrow_mut()
+                .remove(&session)
+                .ok_or("rewind not prepared")?;
+            if plan.message_id != message {
+                return Err("checkpoint changed".into());
+            }
+            let mut all = self.messages.borrow_mut();
+            let entries = all.entry(session).or_default();
+            entries.retain(|entry| match entry {
+                ConversationEntry::Message(m) => m.id < message,
+                ConversationEntry::ToolStep(step) => step.anchor_message_id < message,
+            });
+            if let Some(project) = self
+                .sessions
+                .borrow()
+                .iter()
+                .find(|s| s.id == session)
+                .and_then(|s| s.project_id)
+            {
+                let mut edits = self.persisted_edits.borrow_mut();
+                for file in plan.files {
+                    edits.remove(&(project, file.path));
+                }
+            }
+            Ok(entries.clone())
         })
     }
     fn approval_check<'a>(

@@ -26,6 +26,8 @@ for what's still ahead.
 
 ### Added
 
+- Add **Rewind to here** on chat prompts in local, remote and projectless sessions. Restore project file contents and conversation together, including shell/Git working-tree changes, created/deleted files and binary contents. Keep Git history, external effects and generated folders intact. Checkpoint snapshots and recovery history live in the database; conflict checks protect later edits, interrupted restores can resume, and unfinished or missing checkpoints refuse unsafe rewinds. Checkpoints cover up to 32 MiB and 10,000 project files, with the existing 10 MiB single-file limit.
+
 - Keep a permanent speech-bubble chat tab at the right of the project tabs. Chat without a project using web search, page fetching and read-only `host_info`, with file, Git and shell access disabled. Save sessions and the selected chat in user-scoped database settings, restore them across devices, and preserve open project workspaces when switching back. Both bridge WebSocket and backend SSE runs use the same tool restrictions, permissions and compaction. Collapse and disable Files and Editor in projectless chat, restoring their saved visibility on return to a project. Remove the redundant open-project panel from chat.
 
 - Add Rider-style vertical panel tabs: Sessions, Files, Editor and Chat together in one left tab bar. Collapse and expand panels without unmounting editors, drafts or running terminals; save visibility in user-scoped database settings and restore it across devices. Resize only visible panels, preserve collapsed widths, and reveal the relevant pane when opening a file, session, model setup or terminal in either workspace mode.

@@ -14,7 +14,9 @@ pub mod highlight;
 pub mod host;
 pub mod html;
 pub use host::*;
+pub mod rewind;
 pub mod run;
+pub use rewind::{RewindFile, RewindPlan};
 pub mod search;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;

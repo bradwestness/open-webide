@@ -116,32 +116,30 @@ terminal pane are done and in the changelog, but:
 
 The chat/TUI surface grows into a full agent workspace. In priority order:
 
-1. **Checkpoints & rewind** — snapshot the files a turn touches; "rewind to
-   here" restores both the files and the conversation to that point.
-2. **Per-run changes panel** — every file the run touched in one view, with
+1. **Per-run changes panel** — every file the run touched in one view, with
    accept/reject per file or per hunk, and editor gutter markers for pending
    agent edits.
-3. **Context visibility** — `/context` shows a breakdown bar (system prompt,
+2. **Context visibility** — `/context` shows a breakdown bar (system prompt,
    files, tool output, history), using the shared compaction engine.
-4. **`@`-mentions** (`@file`, `@folder`, `@diff`, with autocomplete) and
+3. **`@`-mentions** (`@file`, `@folder`, `@diff`, with autocomplete) and
    drag/drop or paste of images for vision models.
-5. **Message queue & steering** — type while the agent runs; queue the next
+4. **Message queue & steering** — type while the agent runs; queue the next
    prompt or interrupt with guidance. Also edit-and-resend and forking from
    an earlier prompt.
-6. **Browser notifications** when a run finishes or needs approval (pairs
+5. **Browser notifications** when a run finishes or needs approval (pairs
    with the phone layout).
-7. **Todo/plan panel** — an agent-maintained checklist via a `todo_write`
+6. **Todo/plan panel** — an agent-maintained checklist via a `todo_write`
    tool, pinned above the composer.
-8. **Reasoning polish** — a live timer and token count while the model
+7. **Reasoning polish** — a live timer and token count while the model
    thinks, and a collapsed "Thought for 3.2s · 1.4k tokens" summary
    (extends the inline `<think>` blocks and streamed provider reasoning).
-9. **Tool-step polish** — a running spinner with elapsed time, durations,
+8. **Tool-step polish** — a running spinner with elapsed time, durations,
    show-more for long output, ANSI colors, a copy button, and a per-turn
    summary line ("5 tools · 2 files changed · 12.3s").
-10. **Command palette** (`Ctrl+Shift+P`) and a keyboard-shortcut overlay.
-11. **Session management** — search, pin/archive, fast-model auto-titles,
+9. **Command palette** (`Ctrl+Shift+P`) and a keyboard-shortcut overlay.
+10. **Session management** — search, pin/archive, fast-model auto-titles,
     and export to Markdown.
-12. **Sub-agents** — a `task` tool that spawns child agents with their own
+11. **Sub-agents** — a `task` tool that spawns child agents with their own
     context, shown as nested collapsible runs with status, elapsed time,
     tokens and tool count, runnable in parallel.
 

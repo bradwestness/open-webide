@@ -163,6 +163,22 @@ pub trait Backend {
         project_id: i64,
         path: &'a str,
     ) -> LocalBoxFuture<'a, Result<String, String>>;
+    fn canonical_file_path<'a>(
+        &'a self,
+        _project: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>> {
+        Box::pin(
+            async move { openwebide_core::vfs::workspace_path(path).map_err(|e| e.to_string()) },
+        )
+    }
+    fn read_file_bytes<'a>(
+        &'a self,
+        project: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<Vec<u8>, String>> {
+        Box::pin(async move { self.read_file(project, path).await.map(String::into_bytes) })
+    }
     fn read_file_lossy<'a>(
         &'a self,
         project_id: i64,
@@ -174,6 +190,17 @@ pub trait Backend {
         path: &'a str,
         content: &'a str,
     ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn write_file_bytes<'a>(
+        &'a self,
+        project: i64,
+        path: &'a str,
+        bytes: &'a [u8],
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+            self.write_file(project, path, text).await
+        })
+    }
     fn copy_file<'a>(
         &'a self,
         project_id: i64,
@@ -254,6 +281,16 @@ pub trait Backend {
         &'a self,
         session_id: i64,
     ) -> LocalBoxFuture<'a, Result<Vec<ConversationEntry>, String>>;
+    fn prepare_rewind(
+        &self,
+        session: i64,
+        message: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::RewindPlan, String>>;
+    fn complete_rewind(
+        &self,
+        session: i64,
+        message: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<ConversationEntry>, String>>;
     fn model_complete<'a>(
         &'a self,
         request: &'a ChatRequest,
@@ -298,6 +335,14 @@ pub trait Backend {
         summary: &'a str,
         diff: Option<&'a FileDiff>,
     ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn save_project_checkpoint<'a>(
+        &'a self,
+        _session: i64,
+        _id: &'a str,
+        _checkpoint: &'a openwebide_core::rewind::ProjectCheckpoint,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
     fn complete_tool_step<'a>(
         &'a self,
         session_id: i64,
@@ -581,6 +626,20 @@ impl Backend for BackendApi {
     ) -> LocalBoxFuture<'a, Result<String, String>> {
         Box::pin(BackendApi::read_file(self, project_id, path))
     }
+    fn canonical_file_path<'a>(
+        &'a self,
+        project: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<String, String>> {
+        Box::pin(BackendApi::canonical_file_path(self, project, path))
+    }
+    fn read_file_bytes<'a>(
+        &'a self,
+        project: i64,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<Vec<u8>, String>> {
+        Box::pin(BackendApi::read_file_bytes(self, project, path))
+    }
     fn read_file_lossy<'a>(
         &'a self,
         project_id: i64,
@@ -595,6 +654,14 @@ impl Backend for BackendApi {
         content: &'a str,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(BackendApi::write_file(self, project_id, path, content))
+    }
+    fn write_file_bytes<'a>(
+        &'a self,
+        project: i64,
+        path: &'a str,
+        bytes: &'a [u8],
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::write_file_bytes(self, project, path, bytes))
     }
     fn copy_file<'a>(
         &'a self,
@@ -731,6 +798,20 @@ impl Backend for BackendApi {
     ) -> LocalBoxFuture<'a, Result<Option<usize>, String>> {
         Box::pin(BackendApi::model_tokens(self, request))
     }
+    fn prepare_rewind(
+        &self,
+        session: i64,
+        message: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::RewindPlan, String>> {
+        Box::pin(BackendApi::prepare_rewind(self, session, message))
+    }
+    fn complete_rewind(
+        &self,
+        session: i64,
+        message: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<ConversationEntry>, String>> {
+        Box::pin(BackendApi::complete_rewind(self, session, message))
+    }
     fn approval_check<'a>(
         &'a self,
         session: i64,
@@ -781,6 +862,16 @@ impl Backend for BackendApi {
             name,
             summary,
             diff,
+        ))
+    }
+    fn save_project_checkpoint<'a>(
+        &'a self,
+        session: i64,
+        id: &'a str,
+        checkpoint: &'a openwebide_core::rewind::ProjectCheckpoint,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::save_project_checkpoint(
+            self, session, id, checkpoint,
         ))
     }
     fn complete_tool_step<'a>(

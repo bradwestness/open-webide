@@ -686,6 +686,61 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, 
         }
     }
 
+    async fn checkpoint(&self, call: &ToolCall) -> Result<Option<FileDiff>, String> {
+        let Some(mut diff) = self.preview(call).await.and_then(|preview| preview.diff) else {
+            return Ok(None);
+        };
+        let canonical = self
+            .vfs
+            .canonicalize(&diff.path)
+            .await
+            .map_err(|error| error.to_string())?;
+        if canonical
+            .split('/')
+            .any(|part| part.eq_ignore_ascii_case(".git"))
+        {
+            return Err("Refusing to checkpoint a write inside .git".into());
+        }
+        if diff.old_unavailable {
+            let filename = diff.path.rsplit('/').next().unwrap_or(&diff.path);
+            let backup = format!(
+                "{}/{}/{filename}",
+                openwebide_core::vfs::AGENT_BACKUP_DIR,
+                call.id
+            );
+            let ignore = format!("{}/.gitignore", openwebide_core::vfs::AGENT_BACKUP_DIR);
+            if let Err(VfsError::NotFound(_)) = self.vfs.read(&ignore).await {
+                let _ = self.vfs.write(&ignore, "*\n").await;
+            }
+            self.vfs
+                .copy(&diff.path, &backup)
+                .await
+                .map_err(|error| error.to_string())?;
+            diff.backup_path = Some(backup);
+        }
+        Ok(Some(diff))
+    }
+
+    async fn project_checkpoint(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
+        if let Ok(Tool::WriteFile(args)) = tools::parse(call) {
+            return openwebide_core::rewind::capture_file(&self.vfs, &args.path)
+                .await
+                .map(Some);
+        }
+        if matches!(
+            call.name.as_str(),
+            "run_command" | "git_commit" | "git_branch"
+        ) {
+            openwebide_core::rewind::capture_project(&self.vfs)
+                .await
+                .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
     async fn execute(&self, call: &ToolCall) -> ToolOutcome {
         match tools::parse(call) {
             Ok(tool) => {
@@ -773,6 +828,22 @@ impl<E: ToolExecutor + Sync, W: WebClient, B: BridgeClient> ToolExecutor
         }
     }
 
+    async fn checkpoint(&self, call: &ToolCall) -> Result<Option<FileDiff>, String> {
+        match &self.workspace {
+            Some(workspace) => workspace.checkpoint(call).await,
+            None => Ok(None),
+        }
+    }
+
+    async fn project_checkpoint(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
+        match &self.workspace {
+            Some(workspace) => workspace.project_checkpoint(call).await,
+            None => Ok(None),
+        }
+    }
     async fn execute(&self, call: &ToolCall) -> ToolOutcome {
         match &self.workspace {
             Some(workspace) => workspace.execute(call).await,

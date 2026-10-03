@@ -260,6 +260,7 @@ async fn stale_resume_uses_fresh_history_turns() {
                 result_summary: Some("old contents".into()),
                 diff: None,
                 anchor_message_id: 8,
+                checkpoint: None,
             }),
         ]);
     mounted

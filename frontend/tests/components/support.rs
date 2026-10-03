@@ -26,6 +26,7 @@ use wasm_bindgen_futures::JsFuture;
 
 #[derive(Clone)]
 pub struct TestState {
+    pub auth: AuthState,
     pub api: Api,
     pub fake: Rc<FakeBackend>,
     pub chat: ChatState,
@@ -52,7 +53,8 @@ impl TestState {
         let settings = SettingsState::new(Theme::Dark, "ws://localhost:3001".into());
         provide_context(api);
         provide_context(ui);
-        provide_context(AuthState::new());
+        let auth = AuthState::new();
+        provide_context(auth);
         provide_context(LayoutState::with_active_project(projects.active_project));
         provide_context(projects);
         provide_context(workspace);
@@ -66,6 +68,7 @@ impl TestState {
             expect_context::<AuthState>(),
         ));
         Self {
+            auth,
             api,
             fake,
             chat,
@@ -201,7 +204,7 @@ pub fn chat_view(state: TestState) -> impl IntoView {
         <ChatPane
             on_select_connection_model=actions.select_connection_model
             on_send=actions.send on_resume_run=actions.resume_run on_stop=actions.stop
-            on_permission=actions.permission on_permission_always=actions.permission_always on_slash_command=actions.slash_command />
+            on_permission=actions.permission on_permission_always=actions.permission_always on_slash_command=actions.slash_command on_rewind=actions.rewind />
     }
 }
 

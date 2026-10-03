@@ -524,13 +524,16 @@ async fn mapping_cancel_error_and_failed_persistence() {
     )
     .await;
     assert!(
-        backend
+        !backend
             .operations
             .lock()
             .unwrap()
             .contains(&"step:7:t".to_string())
     );
-    assert!(matches!(&events(&run)[0], RunEvent::Interim { message } if message.id == 0));
+    assert_eq!(events(&run).len(), 1);
+    assert!(
+        matches!(&events(&run)[0], RunEvent::Error { message } if message.starts_with("Could not save tool turn"))
+    );
 }
 
 #[tokio::test]

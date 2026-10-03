@@ -614,6 +614,7 @@ pub fn ChatPane(
     on_permission: Callback<(String, bool)>,
     on_permission_always: Callback<String>,
     on_slash_command: Callback<SlashCommand>,
+    #[prop(optional)] on_rewind: Option<Callback<i64>>,
 ) -> impl IntoView {
     let chat = expect_context::<ChatState>();
     let layout = expect_context::<LayoutState>();
@@ -742,7 +743,15 @@ pub fn ChatPane(
                                     let assistant = Memo::new(move |_| item.with(|item| !matches!(item, ConversationItem::Message(message) if message.role != Role::Assistant)));
                                     view! {
                                         <Show when=move || system.get() fallback=move || view! {
-                                            <Show when=move || assistant.get() fallback=move || render_user_message(content)>
+                                            <Show when=move || assistant.get() fallback=move || view! {
+                                                {render_user_message(content)}
+                                                <Show when=move || on_rewind.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
+                                                    <button class="btn ghost tui-rewind" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get()
+                                                        on:click=move |_| {
+                                                            if let (Some(action), Some(id)) = (on_rewind, item.with(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { action.run(id); }
+                                                        }>"Rewind to here"</button>
+                                                </Show>
+                                            }>
                                                 {render_assistant_message(content)}
                                             </Show>
                                         }>
@@ -938,7 +947,7 @@ pub fn ChatPane(
                         view! {
                             <button
                                 class="btn send tui-btn-send"
-                                disabled=move || chat.creating_session.get() || draft.with(|d| d.trim().is_empty())
+                                disabled=move || chat.rewinding.get() || chat.creating_session.get() || draft.with(|d| d.trim().is_empty())
                                 on:click=move |_| submit()
                             >
                                 "Send"

@@ -49,6 +49,8 @@ enum Route {
     SetToolPermission,
     ApprovalCheck,
     ListMessages,
+    PrepareRewind,
+    CompleteRewind,
     SendSessionMessage,
     RunPlan,
     CancelSession,
@@ -141,6 +143,8 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("DELETE", ["sessions", id]) if numeric_id(id) => Some(Route::DeleteSession),
         ("POST", ["sessions", _, "approval-check"]) => Some(Route::ApprovalCheck),
         ("POST", ["sessions", _, "permissions", _]) => Some(Route::SetToolPermission),
+        ("POST", ["sessions", _, "rewind"]) => Some(Route::PrepareRewind),
+        ("POST", ["sessions", _, "rewind", "complete"]) => Some(Route::CompleteRewind),
         ("GET", ["sessions", _, "messages"]) => Some(Route::ListMessages),
         ("POST", ["sessions", _, "messages"]) => Some(Route::SendSessionMessage),
         ("POST", ["sessions", _, "run-plan"]) => Some(Route::RunPlan),
@@ -164,6 +168,7 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["projects", _, "files", "context"]) => Some(Route::FilesGet),
         ("GET", ["projects", _, "files", "read"]) => Some(Route::FilesGet),
         ("GET", ["projects", _, "files", "raw"]) => Some(Route::FilesGet),
+        ("GET", ["projects", _, "files", "canonical"]) => Some(Route::FilesGet),
         ("GET", ["projects", _, "files", "search"]) => Some(Route::FilesGet),
         ("GET", ["projects", _, "files", "content-search"]) => Some(Route::FilesGet),
         ("PUT", ["projects", _, "files", "write"]) => Some(Route::FilesPut),
@@ -328,6 +333,12 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::SetToolPermission), Some(user)) => {
             api::sessions::set_tool_permission(req, &state, &path, user).await
+        }
+        (Some(Route::PrepareRewind), Some(user)) => {
+            api::sessions::rewind_session(req, &state, &path, user, false).await
+        }
+        (Some(Route::CompleteRewind), Some(user)) => {
+            api::sessions::rewind_session(req, &state, &path, user, true).await
         }
         (Some(Route::ListMessages), Some(user)) => {
             api::sessions::list_messages(&state, &path, user).await
@@ -716,6 +727,7 @@ mod tests {
             ("GET", "projects/5/files", Route::FilesGet),
             ("GET", "projects/5/files/read", Route::FilesGet),
             ("GET", "projects/5/files/raw", Route::FilesGet),
+            ("GET", "projects/5/files/canonical", Route::FilesGet),
             ("GET", "projects/5/files/search", Route::FilesGet),
             ("GET", "projects/5/files/content-search", Route::FilesGet),
             ("PUT", "projects/5/files/write", Route::FilesPut),

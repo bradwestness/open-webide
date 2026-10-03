@@ -89,6 +89,19 @@ impl Workspace {
                 .map_err(Into::into),
         }
     }
+    pub async fn read_bytes(&self, path: &str) -> Result<Vec<u8>, WorkspaceError> {
+        let path = workspace_path(path)?;
+        match self {
+            Self::Remote { api, project_id } => api
+                .with_value(Clone::clone)
+                .read_file_bytes(*project_id, &path)
+                .await
+                .map_err(Into::into),
+            Self::Local { handle } => local_fs::read_bytes_typed(handle, &path)
+                .await
+                .map_err(Into::into),
+        }
+    }
     pub async fn read_lossy(&self, path: &str) -> Result<String, WorkspaceError> {
         let path = workspace_path(path)?;
         match self {
@@ -125,6 +138,20 @@ impl Workspace {
                 .map_err(Into::into),
             Self::Local { handle } => local_fs::BrowserFsaVfs::new(handle.clone())
                 .write(&path, content)
+                .await
+                .map_err(Into::into),
+        }
+    }
+    pub async fn write_bytes(&self, path: &str, bytes: &[u8]) -> Result<(), WorkspaceError> {
+        let path = workspace_path(path)?;
+        match self {
+            Self::Remote { api, project_id } => api
+                .with_value(Clone::clone)
+                .write_file_bytes(*project_id, &path, bytes)
+                .await
+                .map_err(Into::into),
+            Self::Local { handle } => local_fs::BrowserFsaVfs::new(handle.clone())
+                .write_bytes(&path, bytes)
                 .await
                 .map_err(Into::into),
         }
@@ -189,5 +216,78 @@ impl Workspace {
                 .await
                 .map_err(Into::into),
         }
+    }
+}
+
+impl openwebide_core::rewind::RewindFiles for Workspace {
+    async fn validate(&self, path: &str) -> Result<(), String> {
+        let canonical = match self {
+            Self::Remote { api, project_id } => {
+                api.with_value(Clone::clone)
+                    .canonical_file_path(*project_id, path)
+                    .await?
+            }
+            Self::Local { handle } => local_fs::BrowserFsaVfs::new(handle.clone())
+                .canonicalize(path)
+                .await
+                .map_err(|e| e.to_string())?,
+        };
+        if canonical
+            .split('/')
+            .any(|part| part.eq_ignore_ascii_case(".git") || part == ".spin")
+        {
+            return Err("Cannot rewind Git or runtime internals".into());
+        }
+        Ok(())
+    }
+
+    async fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
+        // Enumerate each existing ancestor so a removed directory means absence
+        // without classifying transport errors by their text.
+        let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
+        let mut dir = String::new();
+        for part in parent.split('/').filter(|part| !part.is_empty()) {
+            let entries = self.list(&dir).await.map_err(|error| error.to_string())?;
+            let next = if dir.is_empty() {
+                part.to_string()
+            } else {
+                format!("{dir}/{part}")
+            };
+            if !entries
+                .iter()
+                .any(|entry| entry.path == next && entry.is_dir)
+            {
+                return Ok(None);
+            }
+            dir = next;
+        }
+        let entries = self.list(parent).await.map_err(|error| error.to_string())?;
+        if !entries.iter().any(|entry| entry.path == path) {
+            return Ok(None);
+        }
+        Workspace::read_bytes(self, path)
+            .await
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+    async fn write(&self, path: &str, content: &str) -> Result<(), String> {
+        Workspace::write(self, path, content)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    async fn write_bytes(&self, path: &str, content: &[u8]) -> Result<(), String> {
+        Workspace::write_bytes(self, path, content)
+            .await
+            .map_err(|e| e.to_string())
+    }
+    async fn copy(&self, from: &str, to: &str) -> Result<(), String> {
+        Workspace::copy(self, from, to)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    async fn delete(&self, path: &str) -> Result<(), String> {
+        Workspace::delete(self, path)
+            .await
+            .map_err(|error| error.to_string())
     }
 }

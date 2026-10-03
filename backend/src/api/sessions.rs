@@ -180,6 +180,7 @@ pub(super) async fn build_run_plan(
     session_id: i64,
     send: SendMessageBody,
 ) -> Result<RunPlan, ApiError> {
+    state.store.ensure_not_rewinding(session_id).await?;
     let session = state.store.get_session(session_id, user_id).await?;
     let connection_id = session
         .connection_id
@@ -428,6 +429,8 @@ pub(crate) async fn persist_message(
 /// so an unreachable runtime doesn't raise a banner.
 #[derive(Deserialize)]
 pub(super) struct UpsertToolStepBody {
+    #[serde(default)]
+    checkpoint: Option<openwebide_core::rewind::ProjectCheckpoint>,
     anchor_message_id: i64,
     tool_call_id: String,
     name: String,
@@ -445,20 +448,27 @@ pub(crate) async fn upsert_tool_step(
     let user_id = user.id;
     let id = session_id(path)?;
     state.store.get_session(id, user_id).await?;
-    let body = read_body(req, CHAT_BODY_LIMIT).await?;
+    let body = read_body(req, 96 * 1024 * 1024).await?;
     let step: UpsertToolStepBody = parse_json(body)?;
-    state
-        .store
-        .upsert_tool_step(
-            id,
-            step.anchor_message_id,
-            &step.tool_call_id,
-            &step.name,
-            &step.summary,
-            now(),
-            step.diff.as_ref(),
-        )
-        .await?;
+    if let Some(checkpoint) = &step.checkpoint {
+        state
+            .store
+            .save_project_checkpoint(id, &step.tool_call_id, checkpoint)
+            .await?;
+    } else {
+        state
+            .store
+            .upsert_tool_step(
+                id,
+                step.anchor_message_id,
+                &step.tool_call_id,
+                &step.name,
+                &step.summary,
+                now(),
+                step.diff.as_ref(),
+            )
+            .await?;
+    }
     Ok(json_response(200, &json!({ "ok": true })))
 }
 
@@ -494,4 +504,33 @@ pub(crate) async fn complete_tool_step(
         )
         .await?;
     Ok(json_response(200, &json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct RewindBody {
+    message_id: i64,
+}
+
+pub(crate) async fn rewind_session(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+    complete: bool,
+) -> Result<JsonResp, ApiError> {
+    let id = session_id(path)?;
+    let body: RewindBody = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
+    if complete {
+        let entries = state
+            .store
+            .complete_rewind(user.id, id, body.message_id)
+            .await?;
+        Ok(json_response(200, &entries))
+    } else {
+        let plan = state
+            .store
+            .prepare_rewind(user.id, id, body.message_id)
+            .await?;
+        Ok(json_response(200, &plan))
+    }
 }

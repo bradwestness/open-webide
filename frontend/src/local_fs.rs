@@ -119,6 +119,15 @@ pub(crate) async fn read_lossy_typed(
     root: &FileSystemDirectoryHandle,
     path: &str,
 ) -> Result<String, VfsError> {
+    read_bytes_typed(root, path)
+        .await
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+pub(crate) async fn read_bytes_typed(
+    root: &FileSystemDirectoryHandle,
+    path: &str,
+) -> Result<Vec<u8>, VfsError> {
     let path = openwebide_core::vfs::workspace_path(path)?;
     ensure_permission(root).await?;
     let (parent, name) = split_path(&path);
@@ -135,8 +144,7 @@ pub(crate) async fn read_lossy_typed(
         .await
         .map_err(js_vfs_error)?;
     let u8_array = js_sys::Uint8Array::new(&buffer);
-    let vec = u8_array.to_vec();
-    Ok(String::from_utf8_lossy(&vec).into_owned())
+    Ok(u8_array.to_vec())
 }
 
 /// Create an object URL (blob:...) for a local file to display media assets.
@@ -160,6 +168,32 @@ pub(crate) async fn read_blob_url_typed(
 }
 
 /// Write text to a file, creating parent directories as needed.
+pub(crate) async fn write_bytes_typed(
+    root: &FileSystemDirectoryHandle,
+    path: &str,
+    contents: &[u8],
+) -> Result<(), VfsError> {
+    let path = openwebide_core::vfs::workspace_path(path)?;
+    ensure_permission(root).await?;
+    let (parent, name) = split_path(&path);
+    let parent = ensure_dir(root, &parent).await?;
+    let handle = file_handle_create(&parent, &name).await?;
+    let writable: FileSystemWritableFileStream = JsFuture::from(handle.create_writable())
+        .await
+        .map_err(js_vfs_error)?
+        .unchecked_into();
+    let parts = js_sys::Array::new();
+    parts.push(&js_sys::Uint8Array::from(contents));
+    let blob = Blob::new_with_u8_array_sequence(&parts).map_err(js_vfs_error)?;
+    JsFuture::from(writable.write_with_blob(&blob).map_err(js_vfs_error)?)
+        .await
+        .map_err(js_vfs_error)?;
+    JsFuture::from(writable.close())
+        .await
+        .map_err(js_vfs_error)?;
+    Ok(())
+}
+
 async fn write_typed(
     root: &FileSystemDirectoryHandle,
     path: &str,
@@ -561,6 +595,18 @@ impl BrowserFsaVfs {
 }
 
 impl Vfs for BrowserFsaVfs {
+    fn read_bytes<'a>(&'a self, path: &'a str) -> VfsFuture<'a, Vec<u8>> {
+        let root = self.root.clone();
+        Box::pin(SendWrapper::new(async move {
+            read_bytes_typed(&root, path).await
+        }))
+    }
+    fn write_bytes<'a>(&'a self, path: &'a str, contents: &'a [u8]) -> VfsFuture<'a, ()> {
+        let root = self.root.clone();
+        Box::pin(SendWrapper::new(async move {
+            write_bytes_typed(&root, path, contents).await
+        }))
+    }
     fn copy<'a>(&'a self, from: &'a str, to: &'a str) -> VfsFuture<'a, ()> {
         let root = self.root.clone();
         let from = from.to_string();

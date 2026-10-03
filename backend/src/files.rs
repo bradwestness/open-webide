@@ -577,6 +577,9 @@ impl HostFsVfs {
     }
 
     fn strip_base(&self, full_path: &str) -> String {
+        if full_path.trim_end_matches('/') == self.base.trim_end_matches('/') {
+            return String::new();
+        }
         if self.base.is_empty() {
             full_path.to_string()
         } else {
@@ -600,6 +603,16 @@ fn map_vfs_err(e: FsError) -> VfsError {
 }
 
 impl Vfs for HostFsVfs {
+    fn read_bytes<'a>(&'a self, path: &'a str) -> VfsFuture<'a, Vec<u8>> {
+        Box::pin(async move { read_bytes(&self.resolve(path)?).await.map_err(map_vfs_err) })
+    }
+    fn write_bytes<'a>(&'a self, path: &'a str, contents: &'a [u8]) -> VfsFuture<'a, ()> {
+        Box::pin(async move {
+            write(&self.resolve(path)?, contents)
+                .await
+                .map_err(map_vfs_err)
+        })
+    }
     fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
         Box::pin(async move {
             let full = self.resolve(path)?;
@@ -663,6 +676,12 @@ impl Vfs for HostFsVfs {
             let resolved = canonicalize_path(&resolver, &full)
                 .await
                 .map_err(map_vfs_err)?;
+            if !self.base.is_empty()
+                && resolved != self.base.trim_end_matches('/')
+                && !resolved.starts_with(&format!("{}/", self.base.trim_end_matches('/')))
+            {
+                return Err(VfsError::PathEscape(path.into()));
+            }
             Ok(self.strip_base(&resolved))
         })
     }
@@ -933,5 +952,15 @@ mod tests {
         assert!(t.ends_with('€'));
         // Shorter strings pass through unchanged.
         assert_eq!(truncate_line("short", 400), "short");
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_paths {
+    #[test]
+    fn project_root_is_empty_and_children_are_relative() {
+        let vfs = super::HostFsVfs::new("repos/project");
+        assert_eq!(vfs.strip_base("repos/project"), "");
+        assert_eq!(vfs.strip_base("repos/project/src/main.rs"), "src/main.rs");
     }
 }

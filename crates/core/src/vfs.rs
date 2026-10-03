@@ -220,6 +220,19 @@ pub trait Vfs: Send + Sync {
     /// Read the full UTF-8 contents of a workspace file.
     fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String>;
 
+    /// Read bytes without UTF-8 conversion, retaining the shared read limit.
+    fn read_bytes<'a>(&'a self, path: &'a str) -> VfsFuture<'a, Vec<u8>> {
+        Box::pin(async move { self.read(path).await.map(String::into_bytes) })
+    }
+    /// Write bytes without changing their encoding.
+    fn write_bytes<'a>(&'a self, path: &'a str, contents: &'a [u8]) -> VfsFuture<'a, ()> {
+        Box::pin(async move {
+            let text =
+                std::str::from_utf8(contents).map_err(|error| VfsError::Io(error.to_string()))?;
+            self.write(path, text).await
+        })
+    }
+
     /// Write or overwrite a file with the given full contents.
     fn write<'a>(&'a self, path: &'a str, content: &'a str) -> VfsFuture<'a, ()>;
 
@@ -267,6 +280,12 @@ pub trait Vfs: Send + Sync {
 }
 
 impl<V: Vfs + ?Sized> Vfs for &V {
+    fn read_bytes<'a>(&'a self, path: &'a str) -> VfsFuture<'a, Vec<u8>> {
+        (**self).read_bytes(path)
+    }
+    fn write_bytes<'a>(&'a self, path: &'a str, bytes: &'a [u8]) -> VfsFuture<'a, ()> {
+        (**self).write_bytes(path, bytes)
+    }
     fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
         (**self).read(path)
     }
@@ -306,6 +325,12 @@ impl<V: Vfs + ?Sized> Vfs for &V {
 }
 
 impl<V: Vfs + ?Sized> Vfs for Arc<V> {
+    fn read_bytes<'a>(&'a self, path: &'a str) -> VfsFuture<'a, Vec<u8>> {
+        (**self).read_bytes(path)
+    }
+    fn write_bytes<'a>(&'a self, path: &'a str, bytes: &'a [u8]) -> VfsFuture<'a, ()> {
+        (**self).write_bytes(path, bytes)
+    }
     fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
         (**self).read(path)
     }

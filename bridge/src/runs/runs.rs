@@ -550,6 +550,15 @@ impl<B: RunBackend> openwebide_agent::session::RunPersistence for SessionPersist
             )
             .await
     }
+    async fn checkpoint(
+        &self,
+        id: &str,
+        checkpoint: &openwebide_core::rewind::ProjectCheckpoint,
+    ) -> Result<(), String> {
+        self.backend
+            .save_project_checkpoint(self.run.owner, self.run.session_id, id, checkpoint)
+            .await
+    }
     async fn result(
         &self,
         id: &str,

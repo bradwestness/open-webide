@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -138,6 +138,38 @@ async fn apply_step<D: Db>(
         18 => create_pending_edits(db).await,
         19 => create_model_settings(db).await,
         20 => share_model_profiles(db).await,
+        21 => {
+            if db
+                .execute(
+                    "SELECT 1 FROM pragma_table_info('tool_steps') WHERE name = 'checkpoint'",
+                    &[],
+                )
+                .await?
+                .rows
+                .is_empty()
+            {
+                db.execute("ALTER TABLE tool_steps ADD COLUMN checkpoint TEXT", &[])
+                    .await?;
+            }
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS session_rewinds (
+                session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                message_id INTEGER NOT NULL, conversation TEXT NOT NULL, plan TEXT NOT NULL
+            )",
+                &[],
+            )
+            .await?;
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS rewind_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                message_id INTEGER NOT NULL, conversation TEXT NOT NULL
+            )",
+                &[],
+            )
+            .await?;
+            Ok(())
+        }
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),
     }
 }

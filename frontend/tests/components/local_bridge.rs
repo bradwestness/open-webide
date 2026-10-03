@@ -842,10 +842,15 @@ async fn resume_after_failed_history_persistence_reuses_write_id() {
         }
     }
     assert!(!mounted.state.chat.streaming.get_untracked());
-    assert_eq!(vfs.read("file.rs").await.unwrap(), "first write");
-    assert_eq!(
-        mounted.state.workspace.agent_writes.get_untracked()[&(1, "file.rs".into())],
-        1
+    // Failed checkpoint persistence must stop before changing the file.
+    assert_eq!(vfs.read("file.rs").await.unwrap(), "original");
+    assert!(
+        mounted
+            .state
+            .workspace
+            .agent_writes
+            .get_untracked()
+            .is_empty()
     );
     assert!(
         mounted
@@ -853,12 +858,12 @@ async fn resume_after_failed_history_persistence_reuses_write_id() {
             .workspace
             .counted_agent_writes
             .get_untracked()
-            .contains(&(1, "a1t1c0".into()))
+            .is_empty()
     );
     assert_eq!(mounted.state.fake.messages.borrow()[&1].len(), 2);
     assert!(mounted.state.fake.tool_sources.borrow().is_empty());
     assert!(mounted.state.fake.message_save_results.borrow().is_empty());
-    // A failed tool-result save ends the run before requesting the next completion.
+    // A failed tool-turn save ends the run before executing or requesting the next completion.
     mounted
         .state
         .fake
@@ -912,7 +917,7 @@ async fn resume_after_failed_history_persistence_reuses_write_id() {
     settle().await;
     assert_eq!(
         mounted.state.workspace.agent_writes.get_untracked()[&(1, "file.rs".into())],
-        2
+        1
     );
     assert_eq!(
         mounted.state.workspace.content.get_untracked(),
@@ -1305,7 +1310,7 @@ async fn browser_chat_and_agent_compact_before_reply_and_keep_history() {
             .iter()
             .filter_map(|entry| match entry {
                 ConversationEntry::Message(message) => Some(message),
-                _ => None,
+                ConversationEntry::ToolStep(_) => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(messages[0].content, "original history ".repeat(4000));
@@ -1330,4 +1335,170 @@ async fn browser_chat_and_agent_compact_before_reply_and_keep_history() {
         );
         assert_eq!(requests[0].messages[1].content, "continue fixing the test");
     }
+}
+
+#[wasm_bindgen_test]
+async fn rewind_uses_the_same_workspace_contract_in_both_modes() {
+    use openwebide_frontend::workspace::Workspace;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let fixture = contractFolder().await;
+        let handle = contractHandle(&fixture);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, handle.unchecked_into());
+            });
+            view! { <div/> }
+        });
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        openwebide_core::testing::rewind_contract(&files).await;
+        drop(mounted);
+        contractCleanup(&fixture).await;
+    }
+}
+
+#[wasm_bindgen_test]
+async fn rewind_restores_files_conversation_and_prompt_in_both_modes() {
+    use openwebide_core::{ChatMessage, ConversationEntry, FileDiff, Role, ToolStep};
+    use openwebide_frontend::{components::ConfirmDialog, workspace::Workspace};
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let fixture = contractFolder().await;
+        let handle = contractHandle(&fixture);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, handle.unchecked_into());
+            });
+            let message = |id, role, content: &str| {
+                ConversationEntry::Message(ChatMessage {
+                    id,
+                    session_id: 1,
+                    role,
+                    content: content.into(),
+                    created_at: 0,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    usage: None,
+                })
+            };
+            state.fake.messages.borrow_mut().insert(
+                1,
+                vec![
+                    message(1, Role::User, "old prompt"),
+                    message(2, Role::Assistant, "old reply"),
+                    message(3, Role::User, "change a file"),
+                    ConversationEntry::ToolStep(ToolStep {
+                        tool_call_id: "write".into(),
+                        name: "write_file".into(),
+                        summary: "file.txt".into(),
+                        ok: Some(true),
+                        result_summary: Some("done".into()),
+                        diff: Some(FileDiff {
+                            path: "file.txt".into(),
+                            old: Some("before".into()),
+                            new: "after".into(),
+                            old_unavailable: false,
+                            backup_path: None,
+                        }),
+                        anchor_message_id: 3,
+                        checkpoint: None,
+                    }),
+                    message(4, Role::Assistant, "edited"),
+                ],
+            );
+            view! { {chat_view(state)} <ConfirmDialog/> }
+        });
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        files.write("file.txt", "after").await.unwrap();
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".tui-rewind[data-message-id='1']")
+                .unwrap()
+                .is_some()
+        );
+        mounted.click(".tui-rewind[data-message-id='3']");
+        settle().await;
+        assert_eq!(files.read("file.txt").await.unwrap(), "after");
+        mounted.click(".modal-footer .danger");
+        for _ in 0..100 {
+            sleep_ms(5).await;
+            if !mounted.state.chat.rewinding.get_untracked() {
+                break;
+            }
+        }
+        settle().await;
+        assert_eq!(files.read("file.txt").await.unwrap(), "before");
+        assert_eq!(mounted.state.chat.draft.get_untracked(), "change a file");
+        assert!(!mounted.state.chat.rewinding.get_untracked());
+        assert_eq!(mounted.state.fake.messages.borrow()[&1].len(), 2);
+        assert!(!mounted.root.text_content().unwrap().contains("edited"));
+        drop(mounted);
+        contractCleanup(&fixture).await;
+    }
+}
+
+#[wasm_bindgen_test]
+async fn rewind_confirmation_cannot_change_another_session_project_or_account() {
+    use openwebide_core::{ChatMessage, ConversationEntry, Role};
+    use openwebide_frontend::components::ConfirmDialog;
+    for change in ["session", "project", "account", "dirty"] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state.fake.messages.borrow_mut().insert(
+                1,
+                vec![ConversationEntry::Message(ChatMessage {
+                    id: 1,
+                    session_id: 1,
+                    role: Role::User,
+                    content: "original prompt".into(),
+                    created_at: 0,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    usage: None,
+                })],
+            );
+            view! { {chat_view(state)} <ConfirmDialog/> }
+        });
+        settle().await;
+        mounted.click(".tui-rewind");
+        settle().await;
+        match change {
+            "session" => mounted.state.chat.active_session.set(Some(2)),
+            "project" => mounted.state.projects.active_project.set(Some(2)),
+            "account" => mounted.state.auth.generation.update(|value| *value += 1),
+            "dirty" => mounted.state.workspace.dirty.set(true),
+            _ => unreachable!(),
+        }
+        mounted.click(".modal-footer .danger");
+        settle().await;
+        assert!(mounted.state.fake.rewinds.borrow().is_empty());
+        assert_eq!(mounted.state.fake.messages.borrow()[&1].len(), 1);
+        assert!(!mounted.state.chat.rewinding.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn browser_project_checkpoint_contract() {
+    let fixture = contractFolder().await;
+    let vfs = BrowserFsaVfs::new(contractHandle(&fixture).unchecked_into());
+    openwebide_core::testing::project_checkpoint_contract(&vfs).await;
+    contractCleanup(&fixture).await;
 }

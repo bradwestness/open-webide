@@ -61,24 +61,10 @@ async fn panels_collapse_without_unmounting_and_persist_in_both_modes() {
                 Some("false")
             );
             assert!(element.get_attribute("style").unwrap().contains("none"));
-            assert!(
-                child.is_same_node(
-                    element
-                        .first_element_child()
-                        .as_ref()
-                        .map(|node| node.as_ref())
-                )
-            );
+            assert!(child.is_same_node(element.first_element_child().as_ref().map(AsRef::as_ref)));
             mounted.click(&button);
             settle().await;
-            assert!(
-                child.is_same_node(
-                    element
-                        .first_element_child()
-                        .as_ref()
-                        .map(|node| node.as_ref())
-                )
-            );
+            assert!(child.is_same_node(element.first_element_child().as_ref().map(AsRef::as_ref)));
             assert_eq!(
                 mounted
                     .element(&button)

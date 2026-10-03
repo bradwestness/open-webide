@@ -137,6 +137,11 @@ pub(super) fn tool_step_from_row(row: &QueryRow) -> Result<ToolStep, StorageErro
         result_summary: row.get_text_opt(4).map(str::to_string),
         diff,
         anchor_message_id: row.get_int(6)?,
+        checkpoint: row
+            .get_text_opt(7)
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| StorageError::InvalidValue(e.to_string()))?,
     })
 }
 

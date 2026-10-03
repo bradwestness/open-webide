@@ -2614,3 +2614,10 @@ button.browser-item {
   border-bottom: 1px solid var(--border);
   border-radius: 0;
 }
+
+/* Use the shared ghost button treatment for checkpoint controls. */
+.tui-rewind {
+  align-self: flex-end;
+  font-size: 11px;
+  margin-top: -8px;
+}

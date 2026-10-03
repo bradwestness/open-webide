@@ -444,6 +444,18 @@ impl BackendApi {
     }
 
     /// Read a file's contents as text.
+    pub async fn canonical_file_path(&self, project: i64, path: &str) -> Result<String, String> {
+        let value: serde_json::Value = self
+            .get(&format!(
+                "/projects/{project}/files/canonical?path={}",
+                urlenc(path)
+            ))
+            .await?;
+        value["path"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "Invalid canonical path response".into())
+    }
     pub async fn read_file(&self, project_id: i64, path: &str) -> Result<String, String> {
         let value: serde_json::Value = self
             .get(&format!(
@@ -455,12 +467,19 @@ impl BackendApi {
     }
 
     pub async fn read_file_lossy(&self, project_id: i64, path: &str) -> Result<String, String> {
+        self.read_file_bytes(project_id, path)
+            .await
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+    pub async fn read_file_bytes(&self, project_id: i64, path: &str) -> Result<Vec<u8>, String> {
         let url = format!(
             "{}/projects/{project_id}/files/raw?path={}",
             self.base(),
             urlenc(path)
         );
-        let builder = self.builder(&url, Method::GET);
+        let builder = self
+            .builder(&url, Method::GET)
+            .header("Cache-Control", "no-cache");
         let req = builder.build().map_err(|e| e.to_string())?;
 
         let is_signed_in = self.signed_in.get_untracked();
@@ -472,8 +491,7 @@ impl BackendApi {
             }
             return Err(self.error_from(resp).await);
         }
-        let bytes = resp.binary().await.map_err(|e| e.to_string())?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        resp.binary().await.map_err(|e| e.to_string())
     }
 
     /// Write text to a file (raw text body, not JSON).
@@ -507,6 +525,29 @@ impl BackendApi {
         Ok(())
     }
 
+    pub async fn write_file_bytes(
+        &self,
+        project: i64,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let url = format!(
+            "{}/projects/{project}/files/write?path={}",
+            self.base(),
+            urlenc(path)
+        );
+        let request = self
+            .builder(&url, Method::PUT)
+            .header("content-type", "application/octet-stream")
+            .body(js_sys::Uint8Array::from(bytes))
+            .map_err(|e| e.to_string())?;
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        if response.ok() {
+            Ok(())
+        } else {
+            Err(self.error_from(response).await)
+        }
+    }
     pub async fn copy_file(&self, project_id: i64, from: &str, to: &str) -> Result<(), String> {
         let body = serde_json::json!({
             "from": from,
@@ -722,6 +763,29 @@ impl BackendApi {
         self.get(&format!("/sessions/{session_id}/messages")).await
     }
 
+    pub async fn prepare_rewind(
+        &self,
+        session: i64,
+        message: i64,
+    ) -> Result<openwebide_core::RewindPlan, String> {
+        self.post(
+            &format!("/sessions/{session}/rewind"),
+            &json!({ "message_id": message }),
+        )
+        .await
+    }
+    pub async fn complete_rewind(
+        &self,
+        session: i64,
+        message: i64,
+    ) -> Result<Vec<ConversationEntry>, String> {
+        self.post(
+            &format!("/sessions/{session}/rewind/complete"),
+            &json!({ "message_id": message }),
+        )
+        .await
+    }
+
     /// Complete a tool-capable chat request via the backend provider.
     pub async fn approval_check(
         &self,
@@ -773,6 +837,15 @@ impl BackendApi {
 
     /// Record (or refresh) an agent tool step.
     #[allow(clippy::too_many_arguments)]
+    pub async fn save_project_checkpoint(
+        &self,
+        session: i64,
+        id: &str,
+        checkpoint: &openwebide_core::rewind::ProjectCheckpoint,
+    ) -> Result<(), String> {
+        let _: serde_json::Value = self.post(&format!("/sessions/{session}/tool-steps/upsert"), &json!({"anchor_message_id":0,"tool_call_id":id,"name":"","summary":"","checkpoint":checkpoint})).await?;
+        Ok(())
+    }
     pub async fn upsert_tool_step(
         &self,
         session_id: i64,

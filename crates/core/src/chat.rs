@@ -311,6 +311,8 @@ pub struct ToolStep {
     pub diff: Option<FileDiff>,
     /// The id of the user message that started this turn.
     pub anchor_message_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<crate::rewind::ProjectCheckpoint>,
 }
 
 /// Reconstruct model history from persisted assistant calls and tool-step summaries.

@@ -92,6 +92,12 @@ impl Vfs for NativeFsVfs {
     }
     fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
         Box::pin(async move {
+            String::from_utf8(self.read_bytes(path).await?)
+                .map_err(|_| VfsError::Io("file is not valid UTF-8".into()))
+        })
+    }
+    fn read_bytes<'a>(&'a self, path: &'a str) -> VfsFuture<'a, Vec<u8>> {
+        Box::pin(async move {
             const CAP: u64 = openwebide_core::vfs::MAX_READ_BYTES;
             let file = fs::File::open(self.resolve(path)?)
                 .await
@@ -104,10 +110,13 @@ impl Vfs for NativeFsVfs {
             if bytes.len() as u64 > CAP {
                 return Err(VfsError::Io("file exceeds 10 MiB".into()));
             }
-            String::from_utf8(bytes).map_err(|_| VfsError::Io("file is not valid UTF-8".into()))
+            Ok(bytes)
         })
     }
     fn write<'a>(&'a self, path: &'a str, content: &'a str) -> VfsFuture<'a, ()> {
+        self.write_bytes(path, content.as_bytes())
+    }
+    fn write_bytes<'a>(&'a self, path: &'a str, content: &'a [u8]) -> VfsFuture<'a, ()> {
         Box::pin(async move {
             let full = self.resolve(path)?;
             self.parents(&full).await?;
@@ -410,5 +419,6 @@ mod creation_contract {
             root: dir.path().canonicalize().unwrap(),
         };
         openwebide_core::testing::vfs_creation_contract(&vfs).await;
+        openwebide_core::testing::project_checkpoint_contract(&vfs).await;
     }
 }

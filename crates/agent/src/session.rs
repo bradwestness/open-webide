@@ -170,6 +170,13 @@ pub trait RunPersistence: Send + Sync {
         summary: &str,
         diff: Option<&FileDiff>,
     ) -> impl Future<Output = Result<(), String>> + Send;
+    fn checkpoint(
+        &self,
+        _id: &str,
+        _checkpoint: &openwebide_core::rewind::ProjectCheckpoint,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        std::future::ready(Ok(()))
+    }
     fn prepare_permission(&self, _id: &str) {}
     fn finish(&self) -> impl Future<Output = ()> + Send {
         async {}
@@ -182,16 +189,14 @@ pub struct Recorded {
 }
 pub struct RunRecorder<P> {
     pub persistence: P,
-    session: i64,
     anchor: i64,
     reasoning: String,
     usage: Option<TurnTelemetry>,
 }
 impl<P: RunPersistence> RunRecorder<P> {
-    pub fn new(persistence: P, session: i64, anchor: i64) -> Self {
+    pub fn new(persistence: P, _session: i64, anchor: i64) -> Self {
         Self {
             persistence,
-            session,
             anchor,
             reasoning: String::new(),
             usage: None,
@@ -259,25 +264,31 @@ impl<P: RunPersistence> RunRecorder<P> {
                         self.anchor = message.id;
                         message
                     }
-                    Err(_) => ChatMessage {
-                        id: 0,
-                        session_id: self.session,
-                        role: Role::Assistant,
-                        content: text,
-                        created_at: self.persistence.now(),
-                        tool_calls: Some(calls),
-                        tool_call_id: None,
-                        usage,
-                    },
+                    Err(error) => {
+                        return Recorded {
+                            events: vec![RunEvent::Error {
+                                message: format!("Could not save tool turn: {error}"),
+                            }],
+                            terminal: true,
+                        };
+                    }
                 };
                 RunEvent::Interim { message }
             }
             AgentEvent::ToolCall { id, name, summary } => {
                 self.usage = None;
-                let _ = self
+                if let Err(error) = self
                     .persistence
                     .step(self.anchor, &id, &name, &summary, None)
-                    .await;
+                    .await
+                {
+                    return Recorded {
+                        events: vec![RunEvent::Error {
+                            message: format!("Could not checkpoint tool call: {error}"),
+                        }],
+                        terminal: true,
+                    };
+                }
                 RunEvent::ToolCall { id, name, summary }
             }
             AgentEvent::PermissionRequest {
@@ -289,10 +300,18 @@ impl<P: RunPersistence> RunRecorder<P> {
             } => {
                 self.usage = None;
                 self.persistence.prepare_permission(&id);
-                let _ = self
+                if let Err(error) = self
                     .persistence
                     .step(self.anchor, &id, &name, &summary, diff.as_ref())
-                    .await;
+                    .await
+                {
+                    return Recorded {
+                        events: vec![RunEvent::Error {
+                            message: format!("Could not checkpoint tool call: {error}"),
+                        }],
+                        terminal: true,
+                    };
+                }
                 RunEvent::PermissionRequest {
                     id,
                     name,
@@ -300,6 +319,52 @@ impl<P: RunPersistence> RunRecorder<P> {
                     diff,
                     note,
                 }
+            }
+            AgentEvent::ProjectCheckpoint { id, checkpoint } => {
+                return match self.persistence.checkpoint(&id, &checkpoint).await {
+                    Ok(()) => Recorded {
+                        events: vec![],
+                        terminal: false,
+                    },
+                    Err(error) => {
+                        // Clear the unfinished tool marker when storage recovers;
+                        // an incomplete durable snapshot still refuses rewind.
+                        let _ = self
+                            .persistence
+                            .result(&id, false, "checkpoint persistence failed", None)
+                            .await;
+                        Recorded {
+                            events: vec![RunEvent::Error {
+                                message: format!("Could not persist project checkpoint: {error}"),
+                            }],
+                            terminal: true,
+                        }
+                    }
+                };
+            }
+            AgentEvent::FileCheckpoint { id, diff } => {
+                let saved = self
+                    .persistence
+                    .step(
+                        self.anchor,
+                        &id,
+                        "write_file",
+                        &format!("write {}", diff.path),
+                        Some(&diff),
+                    )
+                    .await;
+                return match saved {
+                    Ok(()) => Recorded {
+                        events: vec![],
+                        terminal: false,
+                    },
+                    Err(error) => Recorded {
+                        events: vec![RunEvent::Error {
+                            message: format!("Could not save file checkpoint: {error}"),
+                        }],
+                        terminal: true,
+                    },
+                };
             }
             AgentEvent::ToolResult {
                 id,

@@ -350,7 +350,7 @@ pub fn App() -> impl IntoView {
                 <ToolPanel panel=Panel::Editor>
                 <div class="center-pane">
                     <Editor
-                        read_only=ws_read_only.read_only().into()
+                        read_only=Signal::derive(move || ws_read_only.get() || chat_state.rewinding.get())
                         on_open_lossy=on_open_lossy
                         on_load_git_diff=on_load_git_diff
                         on_discard_git_diff=on_discard_git_diff
@@ -373,6 +373,7 @@ pub fn App() -> impl IntoView {
                     on_permission=on_permission
                     on_permission_always=on_permission_always
                     on_slash_command=on_slash_command
+                    on_rewind=chat_actions.rewind
                 />
                 </ToolPanel>
                 <Show when=move || !layout.visible_panels.get().editor && !layout.visible_panels.get().chat>

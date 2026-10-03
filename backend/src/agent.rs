@@ -261,6 +261,16 @@ impl openwebide_agent::session::RunPersistence for SessionPersistence {
             .await
             .map_err(|error| error.to_string())
     }
+    async fn checkpoint(
+        &self,
+        id: &str,
+        checkpoint: &openwebide_core::rewind::ProjectCheckpoint,
+    ) -> Result<(), String> {
+        self.store
+            .save_project_checkpoint(self.session, id, checkpoint)
+            .await
+            .map_err(|e| e.to_string())
+    }
     async fn result(
         &self,
         id: &str,
@@ -927,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn interim_persistence_failure_still_forwards_text() {
+    fn interim_persistence_failure_stops_before_any_tool() {
         futures::executor::block_on(async {
             let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
             store.migrate_with(&|_| true).await.unwrap();
@@ -936,15 +946,23 @@ mod tests {
                 openwebide_core::UserId::new(1),
                 999,
                 7,
-                stream::iter([AgentEvent::TurnCalls {
-                    text: "checking".into(),
-                    calls: vec![],
-                }]),
+                stream::iter([
+                    AgentEvent::TurnCalls {
+                        text: "checking".into(),
+                        calls: vec![],
+                    },
+                    AgentEvent::ToolCall {
+                        id: "unsafe".into(),
+                        name: "write_file".into(),
+                        summary: "never execute".into(),
+                    },
+                ]),
             )
             .collect::<Vec<_>>()
             .await;
+            assert_eq!(mapped.len(), 1);
             assert!(
-                matches!(&mapped[0], RunEvent::Interim { message } if message.id == 0 && message.content == "checking")
+                matches!(&mapped[0], RunEvent::Error { message } if message.starts_with("Could not save tool turn"))
             );
         });
     }

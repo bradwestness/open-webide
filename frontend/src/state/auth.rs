@@ -75,6 +75,7 @@ impl AuthState {
             .with_value(|flag| flag.store(true, std::sync::atomic::Ordering::Relaxed));
         chat.creating_session.set(false);
         chat.streaming.set(false);
+        chat.rewinding.set(false);
         chat.active_run.set(None);
         chat.notice.set(None);
         chat.interrupted_run.set(None);

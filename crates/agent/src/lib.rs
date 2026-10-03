@@ -92,6 +92,15 @@ pub enum AgentEvent {
         /// What the call is about to do (e.g. `read src/main.rs`).
         summary: String,
     },
+    /// Persist the before/after snapshot before a file write executes.
+    FileCheckpoint {
+        id: String,
+        diff: FileDiff,
+    },
+    ProjectCheckpoint {
+        id: String,
+        checkpoint: openwebide_core::rewind::ProjectCheckpoint,
+    },
     /// A tool call finished.
     ToolResult {
         id: String,
@@ -150,6 +159,22 @@ pub trait ToolExecutor: Send {
     fn describe(&self, call: &ToolCall) -> String;
     fn preview(&self, _call: &ToolCall) -> impl Future<Output = Option<ToolPreview>> + Send {
         std::future::ready(None)
+    }
+    /// Capture a recoverable file snapshot after approval and before execution.
+    fn checkpoint(
+        &self,
+        call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<FileDiff>, String>> + Send {
+        futures::FutureExt::map(self.preview(call), |preview| {
+            Ok(preview.and_then(|preview| preview.diff))
+        })
+    }
+    fn project_checkpoint(
+        &self,
+        _call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<std::collections::BTreeMap<String, String>>, String>> + Send
+    {
+        std::future::ready(Ok(None))
     }
     /// Run the call and report the outcome.
     fn execute(&self, call: &ToolCall) -> impl Future<Output = ToolOutcome> + Send;
@@ -653,7 +678,7 @@ where
                                 state,
                             ));
                         }
-                        state.next = Next::RunTool(pending);
+                        state.next = Next::CheckpointTool(pending);
                         return Some((
                             AgentEvent::ToolCall {
                                 id: call.id,
@@ -704,7 +729,7 @@ where
                             ));
                         }
                         let summary = state.executor.describe(&call);
-                        state.next = Next::RunTool(pending);
+                        state.next = Next::CheckpointTool(pending);
                         return Some((
                             AgentEvent::ToolCall {
                                 id: call.id,
@@ -714,10 +739,137 @@ where
                             state,
                         ));
                     }
-                    Next::RunTool(pending) => {
+                    Next::CheckpointTool(pending) => {
                         if state.cancel.check().await {
-                            state.next = Next::Stop;
-                            return Some((AgentEvent::Cancelled, state));
+                            let event = AgentEvent::ToolResult {
+                                id: pending.call.id.clone(),
+                                name: pending.call.name,
+                                ok: false,
+                                summary: "cancelled before execution".into(),
+                                diff: None,
+                            };
+                            state.next = Next::FinishedTool(event, true);
+                            return Some((
+                                AgentEvent::ProjectCheckpoint {
+                                    id: pending.call.id,
+                                    checkpoint: openwebide_core::rewind::ProjectCheckpoint {
+                                        before: Default::default(),
+                                        after: Some(Default::default()),
+                                    },
+                                },
+                                state,
+                            ));
+                        }
+                        let checkpoint = if pending.call.name == "write_file" {
+                            let preview = Box::pin(state.executor.checkpoint(&pending.call));
+                            let cancel = Box::pin(state.cancel.cancelled());
+                            match futures::future::select(preview, cancel).await {
+                                futures::future::Either::Left((preview, _)) => preview,
+                                futures::future::Either::Right(_) => Err("Cancelled".into()),
+                            }
+                        } else {
+                            Ok(None)
+                        };
+                        let checkpoint = match checkpoint {
+                            Ok(checkpoint) => checkpoint,
+                            Err(error) => {
+                                state.next = if state.cancel.check().await {
+                                    Next::Cancelled
+                                } else {
+                                    Next::Failure(error.clone())
+                                };
+                                return Some((
+                                    AgentEvent::ToolResult {
+                                        id: pending.call.id,
+                                        name: pending.call.name,
+                                        ok: false,
+                                        summary: error,
+                                        diff: None,
+                                    },
+                                    state,
+                                ));
+                            }
+                        };
+                        let id = pending.call.id.clone();
+                        state.next = Next::SnapshotTool(pending);
+                        if let Some(diff) = checkpoint {
+                            return Some((AgentEvent::FileCheckpoint { id, diff }, state));
+                        }
+                    }
+                    Next::Failure(message) => {
+                        state.next = Next::Stop;
+                        return Some((AgentEvent::Error(message), state));
+                    }
+                    Next::SnapshotTool(pending) => {
+                        match state.executor.project_checkpoint(&pending.call).await {
+                            Ok(before) => {
+                                let id = pending.call.id.clone();
+                                state.next = Next::RunTool(pending, before.clone());
+                                if let Some(before) = before {
+                                    return Some((
+                                        AgentEvent::ProjectCheckpoint {
+                                            id,
+                                            checkpoint:
+                                                openwebide_core::rewind::ProjectCheckpoint {
+                                                    before,
+                                                    after: None,
+                                                },
+                                        },
+                                        state,
+                                    ));
+                                }
+                            }
+                            Err(error) => {
+                                let message =
+                                    format!("Could not capture project checkpoint: {error}");
+                                state.next = Next::Failure(message.clone());
+                                return Some((
+                                    AgentEvent::ToolResult {
+                                        id: pending.call.id,
+                                        name: pending.call.name,
+                                        ok: false,
+                                        summary: message,
+                                        diff: None,
+                                    },
+                                    state,
+                                ));
+                            }
+                        }
+                    }
+                    Next::FinishedTool(event, interrupted) => {
+                        state.next = if interrupted {
+                            Next::Cancelled
+                        } else {
+                            Next::EmitToolCall
+                        };
+                        return Some((event, state));
+                    }
+                    Next::RunTool(pending, before) => {
+                        if state.cancel.check().await {
+                            let event = AgentEvent::ToolResult {
+                                id: pending.call.id.clone(),
+                                name: pending.call.name,
+                                ok: false,
+                                summary: "cancelled before execution".into(),
+                                diff: None,
+                            };
+                            if let Some(before) = before {
+                                state.next = Next::FinishedTool(event, true);
+                                let mut checkpoint = openwebide_core::rewind::ProjectCheckpoint {
+                                    after: Some(before.clone()),
+                                    before,
+                                };
+                                checkpoint.compact();
+                                return Some((
+                                    AgentEvent::ProjectCheckpoint {
+                                        id: pending.call.id,
+                                        checkpoint,
+                                    },
+                                    state,
+                                ));
+                            }
+                            state.next = Next::Cancelled;
+                            return Some((event, state));
                         }
                         let PendingCall { call, wire_id } = pending;
                         state.tool_calls += 1;
@@ -758,21 +910,65 @@ where
                             tool_call_id: Some(wire_id),
                             usage: None,
                         });
+                        let event = AgentEvent::ToolResult {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            ok: outcome.ok,
+                            summary: outcome.summary,
+                            diff: outcome.diff,
+                        };
+                        if let Some(before) = before {
+                            let after = match state.executor.project_checkpoint(&call).await {
+                                Ok(Some(after)) => after,
+                                Ok(None) => {
+                                    let message = "Project checkpoint disappeared".to_string();
+                                    state.next = Next::Failure(message.clone());
+                                    return Some((
+                                        AgentEvent::ToolResult {
+                                            id: call.id,
+                                            name: call.name,
+                                            ok: false,
+                                            summary: message,
+                                            diff: None,
+                                        },
+                                        state,
+                                    ));
+                                }
+                                Err(error) => {
+                                    let message = format!("Checkpoint needs recovery: {error}");
+                                    state.next = Next::Failure(message.clone());
+                                    return Some((
+                                        AgentEvent::ToolResult {
+                                            id: call.id,
+                                            name: call.name,
+                                            ok: false,
+                                            summary: message,
+                                            diff: None,
+                                        },
+                                        state,
+                                    ));
+                                }
+                            };
+                            state.next = Next::FinishedTool(event, interrupted);
+                            let mut checkpoint = openwebide_core::rewind::ProjectCheckpoint {
+                                before,
+                                after: Some(after),
+                            };
+                            checkpoint.compact();
+                            return Some((
+                                AgentEvent::ProjectCheckpoint {
+                                    id: call.id,
+                                    checkpoint,
+                                },
+                                state,
+                            ));
+                        }
                         state.next = if interrupted {
                             Next::Cancelled
                         } else {
                             Next::EmitToolCall
                         };
-                        return Some((
-                            AgentEvent::ToolResult {
-                                id: call.id,
-                                name: call.name,
-                                ok: outcome.ok,
-                                summary: outcome.summary,
-                                diff: outcome.diff,
-                            },
-                            state,
-                        ));
+                        return Some((event, state));
                     }
                 }
             }
@@ -866,7 +1062,14 @@ enum Next {
     HandleResponse,
     EmitToolCall,
     AwaitPermission(PendingCall),
-    RunTool(PendingCall),
+    CheckpointTool(PendingCall),
+    SnapshotTool(PendingCall),
+    RunTool(
+        PendingCall,
+        Option<std::collections::BTreeMap<String, String>>,
+    ),
+    FinishedTool(AgentEvent, bool),
+    Failure(String),
     Cancelled,
     Stop,
 }
@@ -986,6 +1189,69 @@ mod tests {
         ) -> Result<Option<usize>, ProviderError> {
             Ok(None)
         }
+    }
+
+    #[test]
+    fn shell_checkpoint_precedes_execution_and_covers_failed_command_changes() {
+        futures::executor::block_on(async {
+            use openwebide_core::{MemoryVfs, Vfs};
+            struct Shell(MemoryVfs);
+            impl BridgeClient for Shell {
+                async fn execute_command(
+                    &self,
+                    _command: &str,
+                    _timeout: u64,
+                ) -> Result<openwebide_core::CommandOutcome, String> {
+                    self.0.write("file.txt", "shell output").await.unwrap();
+                    self.0.write("created.txt", "created").await.unwrap();
+                    Err("command failed after writing".into())
+                }
+            }
+            let vfs = MemoryVfs::new();
+            vfs.write("file.txt", "before").await.unwrap();
+            let (provider, _) = FakeProvider::new(vec![
+                Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                    "shell",
+                    "run_command",
+                    r#"{"command":"change files"}"#,
+                )]))),
+                Ok(no_usage(ChatResponse::Text("done".into()))),
+            ]);
+            let executor = VfsToolExecutor::with_web_and_bridge(
+                vfs.clone(),
+                NoopWebClient,
+                Shell(vfs.clone()),
+            );
+            let mut events = run(
+                provider,
+                executor,
+                request(),
+                AgentConfig::default(),
+                NoopCancel,
+                NoopGate,
+                1,
+            );
+            let before = loop {
+                if let Some(AgentEvent::ProjectCheckpoint { checkpoint, .. }) = events.next().await
+                {
+                    break checkpoint;
+                }
+            };
+            assert!(before.after.is_none());
+            assert_eq!(vfs.read("file.txt").await.unwrap(), "before");
+            let after = loop {
+                if let Some(AgentEvent::ProjectCheckpoint { checkpoint, .. }) = events.next().await
+                {
+                    break checkpoint;
+                }
+            };
+            assert_eq!(vfs.read("file.txt").await.unwrap(), "shell output");
+            assert_eq!(after.changes().unwrap().len(), 2);
+            assert!(matches!(
+                events.next().await,
+                Some(AgentEvent::ToolResult { ok: false, .. })
+            ));
+        });
     }
 
     /// An executor that pops queued outcomes, records the names of the calls
@@ -1582,6 +1848,20 @@ mod tests {
                     id: "a1t1c0".into(),
                     name: "read_file".into(),
                     summary: "read_file {}".into(),
+                },
+                AgentEvent::ProjectCheckpoint {
+                    id: "a1t1c0".into(),
+                    checkpoint: openwebide_core::rewind::ProjectCheckpoint {
+                        before: Default::default(),
+                        after: Some(Default::default())
+                    }
+                },
+                AgentEvent::ToolResult {
+                    id: "a1t1c0".into(),
+                    name: "read_file".into(),
+                    ok: false,
+                    summary: "cancelled before execution".into(),
+                    diff: None
                 },
                 AgentEvent::Cancelled,
             ]

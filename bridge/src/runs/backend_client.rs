@@ -77,6 +77,15 @@ pub trait RunBackend: Send + Sync {
         summary: &str,
         diff: Option<&FileDiff>,
     ) -> impl Future<Output = Result<(), String>> + Send;
+    fn save_project_checkpoint(
+        &self,
+        _user: i64,
+        _session: i64,
+        _id: &str,
+        _checkpoint: &openwebide_core::rewind::ProjectCheckpoint,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        std::future::ready(Ok(()))
+    }
     fn complete_tool_step(
         &self,
         user_id: i64,
@@ -297,6 +306,16 @@ impl RunBackend for BackendClient {
         diff: Option<&FileDiff>,
     ) -> Result<(), String> {
         let _: Value = self.call(user_id, "POST", &format!("/sessions/{session_id}/tool-steps/upsert"), json!({"anchor_message_id":anchor_id,"tool_call_id":id,"name":name,"summary":summary,"diff":diff})).await?;
+        Ok(())
+    }
+    async fn save_project_checkpoint(
+        &self,
+        user: i64,
+        session: i64,
+        id: &str,
+        checkpoint: &openwebide_core::rewind::ProjectCheckpoint,
+    ) -> Result<(), String> {
+        let _: Value = self.call(user, "POST", &format!("/sessions/{session}/tool-steps/upsert"), json!({"anchor_message_id":0,"tool_call_id":id,"name":"","summary":"","checkpoint":checkpoint})).await?;
         Ok(())
     }
     async fn complete_tool_step(
