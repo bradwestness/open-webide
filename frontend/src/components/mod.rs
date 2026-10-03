@@ -38,3 +38,6 @@ pub mod model_setup;
 mod approval_mode;
 
 pub mod model_wizard;
+
+mod tool_panel;
+pub use tool_panel::{PanelRail, ToolPanel};

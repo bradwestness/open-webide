@@ -51,3 +51,6 @@ mod composer;
 
 #[path = "components/project_git.rs"]
 mod project_git;
+
+#[path = "components/panels.rs"]
+mod panels;

@@ -1,7 +1,7 @@
 use crate::state::auth::AuthState;
 use crate::state::chat::ChatState;
 use crate::state::git::GitState;
-use crate::state::layout::{ActiveResizer, LayoutState};
+use crate::state::layout::{ActiveResizer, LayoutState, Panel};
 use crate::state::projects::ProjectsState;
 use crate::state::settings::SettingsState;
 use crate::state::ui::UiState;
@@ -9,8 +9,8 @@ use crate::state::workspace::WorkspaceState;
 use leptos::prelude::*;
 
 use crate::components::{
-    AuthGate, ChatPane, ConfirmDialog, Editor, FileBrowser, FileTree, PanelResizer, PromptDialog,
-    Settings, Sidebar, StatusBar, TabBar, TerminalDock, TopBar,
+    AuthGate, ChatPane, ConfirmDialog, Editor, FileBrowser, FileTree, PanelRail, PanelResizer,
+    PromptDialog, Settings, Sidebar, StatusBar, TabBar, TerminalDock, ToolPanel, TopBar,
 };
 use crate::state_actions::{
     auth::{AuthActionContext, AuthActions},
@@ -40,6 +40,8 @@ pub fn App() -> impl IntoView {
     provide_context(settings);
     let layout = LayoutState::new();
     provide_context(layout);
+    let layout_actions = crate::state_actions::layout::LayoutActions::new(api, layout, auth, ui);
+    provide_context(layout_actions);
     let projects_state = ProjectsState::new();
     let active_project = projects_state.active_project;
     let workspace_state = WorkspaceState::with_active_project(active_project);
@@ -98,7 +100,10 @@ pub fn App() -> impl IntoView {
 
     // -- bottom dock terminal & TUI telemetry/context ----------------------
     let show_terminal = chat_state.show_terminal;
-    let on_toggle_terminal = move || show_terminal.update(|v| *v = !*v);
+    let on_toggle_terminal = move || {
+        layout_actions.show.run(Panel::Editor);
+        show_terminal.update(|v| *v = !*v);
+    };
 
     install_keyboard_shortcuts(workspace_state, chat_state);
 
@@ -135,6 +140,11 @@ pub fn App() -> impl IntoView {
         ui,
     });
     let on_logout = auth_actions.on_logout;
+    Effect::new(move |_| {
+        if settings.show_conn_form.get() {
+            layout_actions.show.run(Panel::Sessions);
+        }
+    });
 
     let workspace_actions = WorkspaceActions::new(
         api,
@@ -215,6 +225,15 @@ pub fn App() -> impl IntoView {
         on_set_bridge_url,
     } = settings_actions;
 
+    let request_open = Callback::new(move |path: String| {
+        layout_actions.show.run(Panel::Editor);
+        request_open.run(path);
+    });
+    Effect::new(move |_| {
+        if show_terminal.get() {
+            layout_actions.show.run(Panel::Editor);
+        }
+    });
     let chat_actions = ChatActions::new(ChatActionContext {
         api,
         chat: chat_state,
@@ -232,8 +251,14 @@ pub fn App() -> impl IntoView {
     let on_stop = chat_actions.stop;
     let on_permission = chat_actions.permission;
     let on_permission_always = chat_actions.permission_always;
-    let on_select_session = chat_actions.on_select_session;
-    let on_new_session = chat_actions.on_new_session;
+    let on_select_session = Callback::new(move |id| {
+        layout_actions.show.run(Panel::Chat);
+        chat_actions.on_select_session.run(id);
+    });
+    let on_new_session = Callback::new(move |()| {
+        layout_actions.show.run(Panel::Chat);
+        chat_actions.on_new_session.run(());
+    });
     let on_rename_session = chat_actions.on_rename_session;
     let on_delete_session = chat_actions.on_delete_session;
     let on_slash_command = chat_actions.slash_command;
@@ -284,7 +309,9 @@ pub fn App() -> impl IntoView {
                     on_open_project=on_open_project
                     on_delete_project=on_delete_project
                 />
-                <div class=move || if active_resizer.get() != ActiveResizer::None { "app-body is-resizing" } else { "app-body" }>
+                <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.panels.get().editor { "" } else { " editor-collapsed" })>
+                <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor] />
+                <ToolPanel panel=Panel::Sessions>
                 <Sidebar
                     on_new_connection=on_new_connection
                     on_edit_connection=on_edit_connection
@@ -301,6 +328,8 @@ pub fn App() -> impl IntoView {
                     on_delete_prompt=on_delete_prompt
                 />
                 <PanelResizer kind=ActiveResizer::Sidebar />
+                </ToolPanel>
+                <ToolPanel panel=Panel::Files>
                 <FileTree
                     on_toggle=on_toggle
                     on_open=request_open
@@ -315,6 +344,8 @@ pub fn App() -> impl IntoView {
                     on_grant_access=on_grant_access
                 />
                 <PanelResizer kind=ActiveResizer::Tree />
+                </ToolPanel>
+                <ToolPanel panel=Panel::Editor>
                 <div class="center-pane">
                     <Editor
                         read_only=ws_read_only.read_only().into()
@@ -329,6 +360,8 @@ pub fn App() -> impl IntoView {
                         <TerminalDock bridge=bridge visible=show_terminal />
                     })}
                 </div>
+                </ToolPanel>
+                <ToolPanel panel=Panel::Chat>
                 <PanelResizer kind=ActiveResizer::Chat />
                 <ChatPane
                     on_select_connection_model=chat_actions.select_connection_model
@@ -341,6 +374,11 @@ pub fn App() -> impl IntoView {
                     on_permission_always=on_permission_always
                     on_slash_command=on_slash_command
                 />
+                </ToolPanel>
+                <Show when=move || !layout.panels.get().editor && !layout.panels.get().chat>
+                    <div class="panel-empty">"Choose a panel tab to expand it."</div>
+                </Show>
+                <PanelRail panels=vec![Panel::Chat] />
             </div>
             <StatusBar
                 health=health.read_only()

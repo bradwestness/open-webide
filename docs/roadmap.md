@@ -156,11 +156,10 @@ streaming, and frontend state stores.
 
 ### Mobile support & collapsible tool windows
 
-- **Tool windows:** every panel (file tree, editor, chat/TUI, terminal,
-  git/diff, search, …) becomes a collapsible tool window docked in a tabbed
-  side strip, like JetBrains Rider: click a tab to show or hide it, drag or
-  pin it to a side, with the layout persisted per user in the database
-  settings (per AGENTS.md — no localStorage).
+- **Tool windows:** Sessions, Files, Editor and Chat now have vertical tabs that
+  collapse or expand mounted panels, with visibility saved per user. Remaining:
+  independent terminal, Git/diff and search tabs, plus dragging or pinning tool
+  windows to another side.
 - **Phone layout:** the TUI chat is the whole app, like the Claude or Codex
   mobile apps — a full-screen chat stream and composer, statusline,
   approvals, and model/approval-mode dropdowns; the other panels open as

@@ -1,21 +1,110 @@
 use leptos::prelude::*;
 
-pub const CENTER_MIN: f64 = 260.0;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Panel {
+    Sessions,
+    Files,
+    Editor,
+    Chat,
+}
+impl Panel {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Sessions => "sessions",
+            Self::Files => "files",
+            Self::Editor => "editor",
+            Self::Chat => "chat",
+        }
+    }
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Sessions => "Sessions",
+            Self::Files => "Files",
+            Self::Editor => "Editor",
+            Self::Chat => "Chat",
+        }
+    }
+}
 
-pub fn fit_panels(viewport: f64, widths: [f64; 3]) -> [f64; 3] {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PanelVisibility {
+    pub sessions: bool,
+    pub files: bool,
+    pub editor: bool,
+    pub chat: bool,
+}
+impl Default for PanelVisibility {
+    fn default() -> Self {
+        Self {
+            sessions: true,
+            files: true,
+            editor: true,
+            chat: true,
+        }
+    }
+}
+impl PanelVisibility {
+    pub const fn visible(self, panel: Panel) -> bool {
+        match panel {
+            Panel::Sessions => self.sessions,
+            Panel::Files => self.files,
+            Panel::Editor => self.editor,
+            Panel::Chat => self.chat,
+        }
+    }
+    pub fn set(&mut self, panel: Panel, visible: bool) {
+        match panel {
+            Panel::Sessions => self.sessions = visible,
+            Panel::Files => self.files = visible,
+            Panel::Editor => self.editor = visible,
+            Panel::Chat => self.chat = visible,
+        }
+    }
+}
+
+pub const PANEL_VISIBILITY_KEY: &str = "panel_visibility";
+pub const PANEL_RAILS_WIDTH: f64 = 72.0;
+
+/// Fit only open panels, retaining the remembered width of collapsed panels.
+pub fn fit_visible_panels(
+    viewport: f64,
+    widths: [f64; 3],
+    visibility: PanelVisibility,
+) -> [f64; 3] {
     let panels = [
         ActiveResizer::Sidebar,
         ActiveResizer::Tree,
         ActiveResizer::Chat,
     ];
+    let visible = [visibility.sessions, visibility.files, visibility.chat];
     let mut widths = std::array::from_fn(|i| widths[i].clamp(panels[i].min(), panels[i].max()));
-    let mut excess = (widths.iter().sum::<f64>() + CENTER_MIN - viewport).max(0.0);
+    let center = if visibility.editor { CENTER_MIN } else { 0.0 };
+    let used = widths
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| visible[*i])
+        .map(|(_, width)| width)
+        .sum::<f64>();
+    let mut excess = (used + center + PANEL_RAILS_WIDTH - viewport).max(0.0);
     for i in [2, 1, 0] {
-        let shrink = excess.min(widths[i] - panels[i].min());
-        widths[i] -= shrink;
-        excess -= shrink;
+        if visible[i] {
+            let shrink = excess.min(widths[i] - panels[i].min());
+            widths[i] -= shrink;
+            excess -= shrink;
+        }
     }
     widths
+}
+
+pub const CENTER_MIN: f64 = 260.0;
+
+pub fn fit_panels(viewport: f64, widths: [f64; 3]) -> [f64; 3] {
+    fit_visible_panels(
+        viewport + PANEL_RAILS_WIDTH,
+        widths,
+        PanelVisibility::default(),
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -68,6 +157,8 @@ impl ActiveResizer {
 /// User-adjustable widths for the three resizable panels.
 #[derive(Clone, Copy)]
 pub struct LayoutState {
+    pub panels: RwSignal<PanelVisibility>,
+    pub panel_revision: RwSignal<u64>,
     pub terminal_cmd: RwSignal<Option<String>>,
     pub sidebar_width: RwSignal<f64>,
     pub tree_width: RwSignal<f64>,
@@ -78,12 +169,60 @@ pub struct LayoutState {
 impl LayoutState {
     pub fn new() -> Self {
         Self {
+            panels: RwSignal::new(PanelVisibility::default()),
+            panel_revision: RwSignal::new(0),
             terminal_cmd: RwSignal::new(None),
             sidebar_width: RwSignal::new(ActiveResizer::Sidebar.default()),
             tree_width: RwSignal::new(ActiveResizer::Tree.default()),
             chat_width: RwSignal::new(ActiveResizer::Chat.default()),
             active_resizer: RwSignal::new(ActiveResizer::None),
         }
+    }
+
+    pub fn fit(&self, viewport: f64) {
+        let [sidebar, tree, chat] = fit_visible_panels(
+            viewport,
+            [
+                self.sidebar_width.get_untracked(),
+                self.tree_width.get_untracked(),
+                self.chat_width.get_untracked(),
+            ],
+            self.panels.get_untracked(),
+        );
+        self.sidebar_width.set(sidebar);
+        self.tree_width.set(tree);
+        self.chat_width.set(chat);
+    }
+
+    pub fn restore_panels(&self, value: Option<&String>) {
+        if self.panel_revision.get_untracked() == 0 {
+            self.panels.set(
+                value
+                    .and_then(|value| serde_json::from_str(value).ok())
+                    .unwrap_or_default(),
+            );
+        }
+    }
+
+    pub fn clamp_visible(&self, resizer: ActiveResizer, requested: f64, viewport: f64) -> f64 {
+        let panels = self.panels.get_untracked();
+        let sidebar = if panels.sessions {
+            self.sidebar_width.get_untracked()
+        } else {
+            0.0
+        };
+        let tree = if panels.files {
+            self.tree_width.get_untracked()
+        } else {
+            0.0
+        };
+        let chat = if panels.chat {
+            self.chat_width.get_untracked()
+        } else {
+            0.0
+        };
+        let viewport = viewport - PANEL_RAILS_WIDTH + if panels.editor { 0.0 } else { CENTER_MIN };
+        Self::clamp(resizer, requested, sidebar, tree, chat, viewport)
     }
 
     /// Clamp a requested panel width to its bounds while keeping room for the
@@ -129,6 +268,32 @@ mod tests {
         for (actual, expected) in actual.into_iter().zip(expected) {
             assert!((actual - expected).abs() < f64::EPSILON);
         }
+    }
+
+    #[test]
+    fn collapsed_panels_keep_their_width_and_release_center_space() {
+        let hidden = PanelVisibility {
+            sessions: false,
+            files: false,
+            editor: true,
+            chat: true,
+        };
+        assert_widths(
+            fit_visible_panels(900.0, [480.0, 650.0, 800.0], hidden),
+            [480.0, 650.0, 568.0],
+        );
+        let chat_only = PanelVisibility {
+            editor: false,
+            ..hidden
+        };
+        assert_widths(
+            fit_visible_panels(900.0, [480.0, 650.0, 800.0], chat_only),
+            [480.0, 650.0, 800.0],
+        );
+        assert_widths(
+            fit_visible_panels(100.0, [480.0, 650.0, 800.0], hidden),
+            [480.0, 650.0, 260.0],
+        );
     }
 
     #[test]

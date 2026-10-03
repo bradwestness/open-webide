@@ -1,7 +1,7 @@
 use crate::state::{
     auth::AuthState,
     chat::ChatState,
-    layout::{LayoutState, fit_panels},
+    layout::LayoutState,
     projects::ProjectsState,
     settings::{SettingsState, Theme},
     workspace::WorkspaceState,
@@ -156,17 +156,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
     let session_pending = StoredValue::new(std::collections::HashMap::<i64, i64>::new());
     let session_saving = RwSignal::new(false);
     let resize_listener = window_event_listener(leptos::ev::resize, move |_| {
-        let [sidebar, tree, chat_width] = fit_panels(
-            viewport_width(),
-            [
-                layout.sidebar_width.get_untracked(),
-                layout.tree_width.get_untracked(),
-                layout.chat_width.get_untracked(),
-            ],
-        );
-        layout.sidebar_width.set(sidebar);
-        layout.tree_width.set(tree);
-        layout.chat_width.set(chat_width);
+        layout.fit(viewport_width());
     });
     on_cleanup(move || resize_listener.remove());
     Effect::new(move |_| {
@@ -309,7 +299,12 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                         widths[i] = width;
                     }
                 }
-                let [sidebar, tree, chat_width] = fit_panels(viewport_width(), widths);
+                layout.restore_panels(values.get(crate::state::layout::PANEL_VISIBILITY_KEY));
+                let [sidebar, tree, chat_width] = crate::state::layout::fit_visible_panels(
+                    viewport_width(),
+                    widths,
+                    layout.panels.get_untracked(),
+                );
                 layout.sidebar_width.set(sidebar);
                 layout.tree_width.set(tree);
                 layout.chat_width.set(chat_width);

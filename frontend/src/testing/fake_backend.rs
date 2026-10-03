@@ -95,6 +95,8 @@ pub struct FakeBackend {
     pub models: RefCell<Vec<ModelInfo>>,
     pub connections: RefCell<Vec<Connection>>,
     pub system_prompts: RefCell<Vec<SystemPrompt>>,
+    pub panel_save_results:
+        RefCell<VecDeque<futures::channel::oneshot::Receiver<Result<(), String>>>>,
     pub settings: RefCell<BTreeMap<String, String>>,
     pub settings_load_error: RefCell<Option<String>>,
     pub settings_load_results: RefCell<VecDeque<SettingsLoad>>,
@@ -651,6 +653,12 @@ impl Backend for FakeBackend {
                 key: key.into(),
                 value: value.into(),
             });
+            if key == "panel_visibility" {
+                let result = self.panel_save_results.borrow_mut().pop_front();
+                if let Some(result) = result {
+                    result.await.map_err(|error| error.to_string())??;
+                }
+            }
             if key == "prompt_history" {
                 let result = self.history_save_results.borrow_mut().pop_front();
                 if let Some(result) = result {

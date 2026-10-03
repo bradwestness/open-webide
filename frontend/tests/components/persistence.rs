@@ -460,7 +460,7 @@ async fn sidebar_drag_does_not_save_fitted_chat_width() {
         }
     });
     wait_for_startup_reads(&mounted.state, 1).await;
-    let _small = Viewport::new(900.0);
+    let _small = Viewport::new(900.0 + openwebide_frontend::state::layout::PANEL_RAILS_WIDTH);
     web_sys::window()
         .unwrap()
         .dispatch_event(&web_sys::Event::new("resize").unwrap())

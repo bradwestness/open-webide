@@ -18,7 +18,7 @@ pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
         ActiveResizer::None => RwSignal::new(0.0f64),
     };
 
-    let _ = window_event_listener(leptos::ev::pointermove, move |ev: PointerEvent| {
+    let pointer_move = window_event_listener(leptos::ev::pointermove, move |ev: PointerEvent| {
         if layout.active_resizer.get() != kind || kind == ActiveResizer::None {
             return;
         }
@@ -35,17 +35,10 @@ pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
             .and_then(|value| value.as_f64())
             .unwrap_or(1200.0);
 
-        width.set(LayoutState::clamp(
-            kind,
-            requested,
-            layout.sidebar_width.get(),
-            layout.tree_width.get(),
-            layout.chat_width.get(),
-            total_width,
-        ));
+        width.set(layout.clamp_visible(kind, requested, total_width));
     });
 
-    let _ = window_event_listener(leptos::ev::pointerup, move |_| {
+    let pointer_up = window_event_listener(leptos::ev::pointerup, move |_| {
         if layout.active_resizer.get() != kind || kind == ActiveResizer::None {
             return;
         }
@@ -58,6 +51,11 @@ pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
                 .set_setting(kind.setting_key(), &value)
                 .await;
         });
+    });
+
+    on_cleanup(move || {
+        pointer_move.remove();
+        pointer_up.remove();
     });
 
     let title = match kind {
@@ -92,6 +90,8 @@ pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
                 }
                 let default_width = kind.default();
                 width.set(default_width);
+                let viewport = window().inner_width().ok().and_then(|value| value.as_f64()).unwrap_or(1200.0);
+                layout.fit(viewport);
                 spawn_local(async move {
                     let _ = api.with_value(Clone::clone)
                         .set_setting(kind.setting_key(), &default_width.to_string())
