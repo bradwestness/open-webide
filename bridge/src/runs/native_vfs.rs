@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use openwebide_core::vfs::{SearchOptions, VfsFuture, skip_dir};
-use openwebide_core::{FileEntry, SearchHit, Vfs, VfsError};
+use openwebide_core::vfs::VfsFuture;
+use openwebide_core::{FileEntry, Vfs, VfsError};
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 
@@ -23,13 +23,15 @@ fn io_error(error: std::io::Error, path: &str) -> VfsError {
 
 impl NativeFsVfs {
     fn resolve(&self, rel: &str) -> Result<PathBuf, VfsError> {
-        resolve_file_in_root(&self.root, rel).map_err(VfsError::PathEscape)
+        resolve_file_in_root(&self.root, &openwebide_core::vfs::workspace_path(rel)?)
+            .map_err(VfsError::PathEscape)
     }
     fn directory(&self, rel: &str) -> Result<PathBuf, VfsError> {
+        let rel = openwebide_core::vfs::workspace_path(rel)?;
         if rel.is_empty() {
             Ok(self.root.clone())
         } else {
-            self.resolve(rel)
+            self.resolve(&rel)
         }
     }
     async fn parents(&self, path: &std::path::Path) -> Result<(), VfsError> {
@@ -48,7 +50,7 @@ impl Vfs for NativeFsVfs {
             let root = fs::canonicalize(&self.root)
                 .await
                 .map_err(|e| io_error(e, path))?;
-            let mut full = self.resolve(path)?;
+            let mut full = self.directory(path)?;
             let mut missing = Vec::new();
             let mut symlinks = 0;
             let mut resolved = loop {
@@ -90,7 +92,7 @@ impl Vfs for NativeFsVfs {
     }
     fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
         Box::pin(async move {
-            const CAP: u64 = 10 * 1024 * 1024;
+            const CAP: u64 = openwebide_core::vfs::MAX_READ_BYTES;
             let file = fs::File::open(self.resolve(path)?)
                 .await
                 .map_err(|e| io_error(e, path))?;
@@ -186,89 +188,13 @@ impl Vfs for NativeFsVfs {
                 .map_err(|e| io_error(e, "copy"))
         })
     }
-    fn search_content<'a>(
-        &'a self,
-        query: &'a str,
-        dir: &'a str,
-        opts: SearchOptions,
-    ) -> VfsFuture<'a, Vec<SearchHit>> {
-        Box::pin(async move {
-            self.directory(dir)?;
-            let mut pending = vec![dir.to_string()];
-            let mut out = Vec::new();
-            let mut entries_left = 20_000;
-            let mut bytes_left = 64 * 1024 * 1024;
-            let query = query.to_lowercase();
-            'walk: while let Some(dir) = pending.pop() {
-                let Ok(mut reader) = fs::read_dir(self.directory(&dir)?).await else {
-                    continue;
-                };
-                while let Ok(Some(entry)) = reader.next_entry().await {
-                    if entries_left == 0 || bytes_left == 0 || out.len() == 500 {
-                        break 'walk;
-                    }
-                    entries_left -= 1;
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if name == ".spin" {
-                        continue;
-                    }
-                    let path = if dir.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{}/{name}", dir.trim_end_matches('/'))
-                    };
-                    let Ok(metadata) = entry.metadata().await else {
-                        continue;
-                    };
-                    if metadata.is_dir() {
-                        if !skip_dir(&name, opts) {
-                            pending.push(path);
-                        }
-                        continue;
-                    }
-                    if metadata.len() > 10 * 1024 * 1024 {
-                        continue;
-                    }
-                    if metadata.len() > bytes_left {
-                        continue;
-                    }
-                    let Ok(file) = fs::File::open(self.resolve(&path)?).await else {
-                        continue;
-                    };
-                    let mut bytes = Vec::new();
-                    let read = file
-                        .take(bytes_left.min(10 * 1024 * 1024 + 1))
-                        .read_to_end(&mut bytes)
-                        .await;
-                    bytes_left -= bytes.len() as u64;
-                    if read.is_err() || bytes.len() > 10 * 1024 * 1024 {
-                        continue;
-                    }
-                    let Ok(text) = String::from_utf8(bytes) else {
-                        continue;
-                    };
-                    for (line, text) in text.lines().enumerate() {
-                        if text.to_lowercase().contains(&query) {
-                            out.push(SearchHit {
-                                path: path.clone(),
-                                line: line + 1,
-                                text: text.chars().take(400).collect(),
-                            });
-                            if out.len() == 500 {
-                                break 'walk;
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(out)
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openwebide_core::SearchHit;
+    use openwebide_core::vfs::SearchOptions;
 
     #[cfg(unix)]
     #[tokio::test]
@@ -426,13 +352,15 @@ mod tests {
             .len(),
             5
         );
-        for path in ["../outside", ".spin/db", "a/.spin/db", "/absolute"] {
+        for path in ["../outside", ".spin/db", "a/.spin/db"] {
             assert!(vfs.read(path).await.is_err());
             assert!(vfs.write(path, "x").await.is_err());
             assert!(vfs.create(path, false).await.is_err());
             assert!(vfs.delete(path).await.is_err());
             assert!(vfs.copy("folder/a", path).await.is_err());
         }
+        vfs.write("/rooted", "project-relative").await.unwrap();
+        assert_eq!(vfs.read("rooted").await.unwrap(), "project-relative");
         assert!(matches!(
             vfs.read("missing").await,
             Err(VfsError::NotFound(_))

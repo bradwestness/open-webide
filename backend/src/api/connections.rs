@@ -26,6 +26,7 @@ pub(crate) async fn create_connection(
     let body = read_body(req, JSON_BODY_LIMIT).await?;
     let new: NewConnection = parse_json(body)?;
     validate_context_limit(new.context_limit)?;
+    super::model_setup::validate_url(&new.base_url)?;
     let connection = state.store.insert_connection(&new).await?;
     Ok(json_response(201, &connection))
 }
@@ -40,6 +41,7 @@ pub(crate) async fn update_connection(
     let body = read_body(req, JSON_BODY_LIMIT).await?;
     let mut connection: openwebide_core::Connection = parse_json(body)?;
     validate_context_limit(connection.context_limit)?;
+    super::model_setup::validate_url(&connection.base_url)?;
     connection.id = id;
     state.store.update_connection(&connection).await?;
     let connection = state.store.get_connection(id).await?;

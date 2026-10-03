@@ -41,6 +41,9 @@ impl Theme {
 #[derive(Clone, Copy)]
 pub struct SettingsState {
     pub show_settings: RwSignal<bool>,
+    pub show_model_setup: RwSignal<bool>,
+    pub model_setup_server: RwSignal<Option<i64>>,
+    pub model_setup: RwSignal<openwebide_core::ModelSetup>,
     pub theme: RwSignal<Theme>,
     pub default_connection: RwSignal<Option<i64>>,
     pub default_prompt: RwSignal<Option<i64>>,
@@ -55,6 +58,7 @@ pub struct SettingsState {
     pub conn_edit_id: RwSignal<Option<i64>>,
     pub conn_name: RwSignal<String>,
     pub conn_kind: RwSignal<ProviderKind>,
+    pub conn_auto_detect: RwSignal<bool>,
     pub conn_base_url: RwSignal<String>,
     pub conn_model: RwSignal<String>,
     pub conn_context_limit: RwSignal<String>,
@@ -64,6 +68,9 @@ impl SettingsState {
     pub fn new(theme: Theme, bridge_url: String) -> Self {
         Self {
             show_settings: RwSignal::new(false),
+            show_model_setup: RwSignal::new(false),
+            model_setup_server: RwSignal::new(None),
+            model_setup: RwSignal::new(Default::default()),
             theme: RwSignal::new(theme),
             default_connection: RwSignal::new(None),
             default_prompt: RwSignal::new(None),
@@ -78,6 +85,7 @@ impl SettingsState {
             conn_edit_id: RwSignal::new(None),
             conn_name: RwSignal::new(String::new()),
             conn_kind: RwSignal::new(ProviderKind::Ollama),
+            conn_auto_detect: RwSignal::new(true),
             conn_base_url: RwSignal::new(String::new()),
             conn_model: RwSignal::new(String::new()),
             conn_context_limit: RwSignal::new(String::new()),

@@ -32,3 +32,7 @@ pub use tab_bar::TabBar;
 pub use terminal_pane::{TerminalDock, TerminalPane};
 pub use top_bar::TopBar;
 pub use ui::{Button, ButtonSize, ButtonVariant};
+
+pub mod model_setup;
+
+mod approval_mode;

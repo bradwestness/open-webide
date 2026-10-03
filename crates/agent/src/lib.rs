@@ -20,8 +20,10 @@ use openwebide_llm::{LlmProvider, ProviderError, ToolStreamChunk};
 type ModelStream = Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send>>;
 
 pub mod clients;
+pub mod context;
 pub mod executor;
 pub mod policy;
+pub mod session;
 pub mod tools;
 pub use executor as vfs_executor;
 pub use executor::{
@@ -71,6 +73,8 @@ pub struct ToolOutcome {
 /// `TurnCalls` carries the wire ids the model saw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
+    /// Generated instructions added to this run, persisted by its host.
+    Context(String),
     /// Text received during the current model turn.
     TextDelta(String),
     ReasoningDelta(String),
@@ -126,6 +130,19 @@ pub struct ToolPreview {
 /// Implementations are responsible for confining their work (e.g. to a
 /// workspace) and for reporting a useful [`ToolOutcome`].
 pub trait ToolExecutor: Send {
+    /// Opt in to startup and per-file context loading.
+    fn has_context(&self) -> bool {
+        false
+    }
+    /// Called once with `None` before the model, and before each file tool with its call.
+    fn context(
+        &mut self,
+        _tools: &[openwebide_core::ToolDefinition],
+        _call: Option<&ToolCall>,
+    ) -> impl Future<Output = Option<String>> + Send {
+        std::future::ready(None)
+    }
+
     /// A short human-readable description of what this call will do, shown in
     /// the UI before the tool runs.
     fn describe(&self, call: &ToolCall) -> String;
@@ -181,6 +198,14 @@ pub trait PermissionGate: Send {
     fn needs_approval(&self, call: &ToolCall) -> bool {
         requires_approval(call)
     }
+    fn uses_automatic_approval(&self) -> bool {
+        false
+    }
+
+    fn automatically_approve(&self, _call: &ToolCall) -> impl Future<Output = bool> + Send {
+        async { false }
+    }
+
     /// Wait for the user's decision on a gated call; `true` = approved.
     ///
     /// `async fn` in a trait cannot express the `Send` bound the agent loop
@@ -232,6 +257,12 @@ where
     C: CancelCheck + 'static,
     G: PermissionGate + 'static,
 {
+    request.messages.retain(|message| {
+        !(message.role == Role::System
+            && message
+                .content
+                .starts_with(openwebide_core::RUN_CONTEXT_PREFIX))
+    });
     for message in &mut request.messages {
         if message.role == Role::Assistant {
             message.content = openwebide_core::strip_reasoning(&message.content).to_string();
@@ -248,13 +279,14 @@ where
             anchor_id,
             turn: config.first_turn.saturating_sub(1),
             tool_calls: 0,
+            instructions_need_review: false,
             pending: VecDeque::new(),
             response: None,
             model_stream: None,
             turn_text: String::new(),
             turn_reasoning: String::new(),
             stop_reason: openwebide_core::StopReason::Complete,
-            next: Next::CallModel,
+            next: Next::Startup,
         },
         |mut state| async move {
             loop {
@@ -263,6 +295,29 @@ where
                     Next::Cancelled => {
                         state.next = Next::Stop;
                         return Some((AgentEvent::Cancelled, state));
+                    }
+                    Next::Startup => {
+                        if !state.executor.has_context() {
+                            state.next = Next::CallModel;
+                            continue;
+                        }
+                        let context = {
+                            let context =
+                                Box::pin(state.executor.context(&state.request.tools, None));
+                            let cancel = Box::pin(state.cancel.cancelled());
+                            match futures::future::select(context, cancel).await {
+                                futures::future::Either::Left((context, _)) => context,
+                                futures::future::Either::Right(((), _)) => {
+                                    state.next = Next::Cancelled;
+                                    continue;
+                                }
+                            }
+                        };
+                        state.next = Next::CallModel;
+                        if let Some(context) = context {
+                            append_context(&mut state.request, &context);
+                            return Some((AgentEvent::Context(context), state));
+                        }
                     }
                     Next::CallModel => {
                         if state.cancel.check().await {
@@ -279,6 +334,7 @@ where
                                 state,
                             ));
                         }
+                        state.instructions_need_review = false;
                         state.turn += 1;
                         state.model_stream = Some(state.provider.chat_tools_stream(&state.request));
                         state.turn_text.clear();
@@ -415,9 +471,96 @@ where
                             .pending
                             .pop_front()
                             .expect("pending calls are nonempty");
+                        if !state.executor.has_context() {
+                            state.next = Next::PrepareTool(pending);
+                            continue;
+                        }
+                        let context = {
+                            let context = Box::pin(
+                                state
+                                    .executor
+                                    .context(&state.request.tools, Some(&pending.call)),
+                            );
+                            let cancel = Box::pin(state.cancel.cancelled());
+                            match futures::future::select(context, cancel).await {
+                                futures::future::Either::Left((context, _)) => context,
+                                futures::future::Either::Right(((), _)) => {
+                                    state.next = Next::Cancelled;
+                                    continue;
+                                }
+                            }
+                        };
+                        if let Some(context) = context {
+                            append_context(&mut state.request, &context);
+                            state.instructions_need_review = true;
+                            state.next = if pending.call.name == "write_file" {
+                                Next::DeferTool(pending)
+                            } else {
+                                Next::PrepareTool(pending)
+                            };
+                            return Some((AgentEvent::Context(context), state));
+                        }
+                        state.next = if state.instructions_need_review
+                            && pending.call.name == "write_file"
+                        {
+                            Next::DeferTool(pending)
+                        } else {
+                            Next::PrepareTool(pending)
+                        };
+                    }
+                    Next::DeferTool(pending) => {
+                        state.next = Next::DeferredResult(pending.clone());
+                        return Some((
+                            AgentEvent::ToolCall {
+                                id: pending.call.id,
+                                name: pending.call.name,
+                                summary:
+                                    "Review newly loaded directory instructions before writing"
+                                        .into(),
+                            },
+                            state,
+                        ));
+                    }
+                    Next::DeferredResult(pending) => {
+                        state.tool_calls += 1;
+                        state.request.messages.push(ChatMessage {
+                            id: 0, session_id: 0, role: Role::Tool,
+                            content: "Write deferred: new directory instructions were just added to the system prompt. Review them, then retry the write if it complies.".into(),
+                            created_at: 0, tool_calls: None, tool_call_id: Some(pending.wire_id), usage: None,
+                        });
+                        state.next = Next::EmitToolCall;
+                        return Some((
+                            AgentEvent::ToolResult {
+                                id: pending.call.id,
+                                name: pending.call.name,
+                                ok: false,
+                                summary: "Deferred until directory instructions are reviewed"
+                                    .into(),
+                                diff: None,
+                            },
+                            state,
+                        ));
+                    }
+                    Next::PrepareTool(pending) => {
                         let call = pending.call.clone();
                         let summary = state.executor.describe(&call);
-                        if state.gate.needs_approval(&call) {
+                        let automatic = if state.gate.needs_approval(&call)
+                            && state.gate.uses_automatic_approval()
+                        {
+                            let decision = Box::pin(state.gate.automatically_approve(&call));
+                            let cancel = Box::pin(state.cancel.cancelled());
+                            match futures::future::select(decision, cancel).await {
+                                futures::future::Either::Left((approved, _)) => Ok(approved),
+                                futures::future::Either::Right(_) => Err(()),
+                            }
+                        } else {
+                            Ok(!state.gate.needs_approval(&call))
+                        };
+                        let Ok(automatic) = automatic else {
+                            state.next = Next::Stop;
+                            return Some((AgentEvent::Cancelled, state));
+                        };
+                        if !automatic {
                             let preview = {
                                 let preview = Box::pin(state.executor.preview(&call));
                                 let cancel = Box::pin(state.cancel.cancelled());
@@ -640,6 +783,7 @@ struct LoopState<P, T, C, G> {
     anchor_id: i64,
     turn: usize,
     tool_calls: usize,
+    instructions_need_review: bool,
     /// Tool calls from the most recent model response, not yet executed.
     pending: VecDeque<PendingCall>,
     /// The model's response, set by `StreamModel` and consumed by
@@ -652,9 +796,19 @@ struct LoopState<P, T, C, G> {
     next: Next,
 }
 
+fn append_context(request: &mut ChatRequest, context: &str) {
+    let prompt = request.system_prompt.get_or_insert_with(String::new);
+    prompt.push_str("\n\n");
+    prompt.push_str(context);
+}
+
 /// Which step the loop takes next.
 #[derive(Debug, Clone)]
 enum Next {
+    Startup,
+    PrepareTool(PendingCall),
+    DeferTool(PendingCall),
+    DeferredResult(PendingCall),
     CallModel,
     StreamModel,
     HandleResponse,
@@ -720,8 +874,19 @@ mod tests {
         async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
             Ok(Vec::new())
         }
-        async fn chat(&self, _request: &ChatRequest) -> Result<String, ProviderError> {
-            Ok(String::new())
+        async fn chat(&self, request: &ChatRequest) -> Result<String, ProviderError> {
+            self.requests.lock().unwrap().push(request.clone());
+            match self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Ok(no_usage(ChatResponse::Text(String::new()))))?
+                .response
+            {
+                ChatResponse::Text(text) => Ok(text),
+                ChatResponse::ToolCalls(_) => Err(ProviderError::Parse("expected text".into())),
+            }
         }
         fn chat_stream(
             &self,
@@ -825,6 +990,7 @@ mod tests {
 
     fn request() -> ChatRequest {
         ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: Some("be brief".into()),
             model: Some("test-model".into()),
@@ -848,6 +1014,166 @@ mod tests {
 
     fn collect(events: impl Stream<Item = AgentEvent>) -> Vec<AgentEvent> {
         futures::executor::block_on(async { events.collect::<Vec<_>>().await })
+    }
+
+    #[test]
+    fn startup_and_nested_instructions_reach_model_before_writes() {
+        futures::executor::block_on(async {
+            use openwebide_core::{MemoryVfs, RunEnvironment, Vfs};
+            let vfs = MemoryVfs::new();
+            vfs.write("AGENTS.md", "Root rule").await.unwrap();
+            vfs.write("CLAUDE.md", "@AGENTS.md").await.unwrap();
+            vfs.write("src/AGENTS.md", "Nested rule").await.unwrap();
+            let write = call(
+                "write",
+                "write_file",
+                r#"{"path":"src/new.rs","content":"new"}"#,
+            );
+            let second = call(
+                "write2",
+                "write_file",
+                r#"{"path":"src/another.rs","content":"second"}"#,
+            );
+            let (provider, requests) = FakeProvider::new(vec![
+                Ok(no_usage(ChatResponse::ToolCalls(vec![
+                    write.clone(),
+                    second.clone(),
+                ]))),
+                Ok(no_usage(ChatResponse::ToolCalls(vec![write, second]))),
+                Ok(no_usage(ChatResponse::Text("done".into()))),
+            ]);
+            let mut request = request();
+            request.system_prompt = Some("Chosen prompt".into());
+            request.messages.push(ChatMessage {
+                id: 9,
+                session_id: 1,
+                role: Role::System,
+                content: format!("{}stale context", openwebide_core::RUN_CONTEXT_PREFIX),
+                created_at: 0,
+                tool_calls: None,
+                tool_call_id: None,
+                usage: None,
+            });
+            request.tools = vfs_tools()
+                .into_iter()
+                .filter(|tool| {
+                    !tool
+                        .name
+                        .parse::<tools::ToolName>()
+                        .is_ok_and(tools::ToolName::needs_bridge)
+                })
+                .collect();
+            let executor =
+                VfsToolExecutor::new(vfs.clone()).with_context(RunEnvironment::default());
+            let events: Vec<_> = run(
+                provider,
+                executor,
+                request,
+                AgentConfig::default(),
+                NoopCancel,
+                NoopGate,
+                1,
+            )
+            .collect()
+            .await;
+            assert!(matches!(&events[0], AgentEvent::Context(text) if text.contains("Root rule")));
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, AgentEvent::Context(_)))
+                    .count(),
+                2
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, AgentEvent::ToolResult { ok: false, .. }))
+                    .count(),
+                2
+            );
+            assert_eq!(vfs.read("src/new.rs").await.unwrap(), "new");
+            assert_eq!(vfs.read("src/another.rs").await.unwrap(), "second");
+            let requests = requests.lock().unwrap();
+            let startup = requests[0].system_prompt.as_ref().unwrap();
+            assert!(startup.starts_with("Chosen prompt"));
+            assert_eq!(startup.matches("Root rule").count(), 1);
+            assert!(!startup.contains("Nested rule") && !startup.contains("- run_command:"));
+            assert!(
+                requests[0]
+                    .messages
+                    .iter()
+                    .all(|message| !message.content.contains("stale context"))
+            );
+            assert!(
+                requests[1]
+                    .system_prompt
+                    .as_ref()
+                    .unwrap()
+                    .contains("Nested rule")
+            );
+            assert!(
+                requests[1]
+                    .messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("Write deferred")
+            );
+        });
+    }
+
+    #[test]
+    fn cancellation_drops_startup_context_before_model_call() {
+        struct DropContext(Arc<Mutex<bool>>);
+        impl Drop for DropContext {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() = true;
+            }
+        }
+        struct ContextExecutor(Arc<Mutex<bool>>);
+        impl ToolExecutor for ContextExecutor {
+            fn has_context(&self) -> bool {
+                true
+            }
+            async fn context(
+                &mut self,
+                _: &[openwebide_core::ToolDefinition],
+                _: Option<&ToolCall>,
+            ) -> Option<String> {
+                let _guard = DropContext(self.0.clone());
+                std::future::pending().await
+            }
+            fn describe(&self, _: &ToolCall) -> String {
+                unreachable!()
+            }
+            async fn execute(&self, _: &ToolCall) -> ToolOutcome {
+                unreachable!()
+            }
+        }
+        let (release, receiver) = futures::channel::oneshot::channel();
+        let cancel = TimedCancel {
+            flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            receiver: Mutex::new(Some(receiver)),
+        };
+        let dropped = Arc::new(Mutex::new(false));
+        let (provider, requests) = FakeProvider::new(vec![]);
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            release.send(()).unwrap();
+        });
+        let events = collect(run(
+            provider,
+            ContextExecutor(dropped.clone()),
+            request(),
+            AgentConfig::default(),
+            cancel,
+            NoopGate,
+            1,
+        ));
+        thread.join().unwrap();
+        assert_eq!(events, [AgentEvent::Cancelled]);
+        assert!(*dropped.lock().unwrap());
+        assert!(requests.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1692,6 +2018,82 @@ mod tests {
         fn approve(&self, _call: &ToolCall) -> impl Future<Output = bool> + Send {
             async { true }
         }
+    }
+
+    struct ModeSource(openwebide_core::ApprovalMode);
+    impl policy::ApprovalSource for ModeSource {
+        async fn check(&self, call: &ToolCall) -> bool {
+            self.0.auto_approves(&call.name)
+        }
+    }
+
+    #[test]
+    fn shared_policy_gate_prompts_only_for_calls_the_mode_does_not_allow() {
+        use openwebide_core::ApprovalMode;
+        for (mode, expected) in [
+            (ApprovalMode::Default, 2),
+            (ApprovalMode::AutoAcceptEdits, 1),
+            (ApprovalMode::Auto, 2),
+            (ApprovalMode::Yolo, 0),
+        ] {
+            let (provider, _) =
+                FakeProvider::new(vec![Ok(no_usage(ChatResponse::ToolCalls(vec![
+                    call("w", "write_file", "{}"),
+                    call("c", "run_command", "{}"),
+                ])))]);
+            let events = collect(run(
+                provider,
+                FakeExecutor::new(vec![]),
+                request(),
+                AgentConfig::default(),
+                NoopCancel,
+                policy::PolicyGate {
+                    manual: DefaultGate,
+                    source: ModeSource(mode),
+                },
+                1,
+            ));
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, AgentEvent::PermissionRequest { .. }))
+                    .count(),
+                expected,
+                "{mode:?}"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, AgentEvent::ToolCall { .. }))
+                    .count(),
+                2,
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classifier_accepts_only_clear_json_and_fails_closed_on_provider_errors() {
+        for (response, expected) in [
+            (r#"{"approved":true}"#, true),
+            (r#"{"approved":false}"#, false),
+            ("yes", false),
+            (r#"{"approved":"true"}"#, false),
+            (r#"{"approved":true,"ignore_rules":true}"#, false),
+            ("```json\n{\"approved\":true}\n```", false),
+        ] {
+            let (provider, _) =
+                FakeProvider::new(vec![Ok(no_usage(ChatResponse::Text(response.into())))]);
+            assert_eq!(
+                futures::executor::block_on(policy::classify(&provider, &request())),
+                expected
+            );
+        }
+        let (provider, _) = FakeProvider::new(vec![Err(ProviderError::Http("offline".into()))]);
+        assert!(!futures::executor::block_on(policy::classify(
+            &provider,
+            &request()
+        )));
     }
 
     #[test]

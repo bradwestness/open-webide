@@ -15,6 +15,26 @@ fn mount_editor(content: String) -> Mounted {
     })
 }
 
+fn assert_scroll_aligned(mounted: &Mounted, textarea: &web_sys::HtmlTextAreaElement) {
+    let overlay = mounted.element(".editor-highlight");
+    assert_eq!(
+        overlay
+            .style()
+            .get_property_value("--editor-scroll-y")
+            .unwrap(),
+        format!("{}px", -textarea.scroll_top())
+    );
+    assert_eq!(
+        overlay
+            .style()
+            .get_property_value("--editor-scroll-x")
+            .unwrap(),
+        format!("{}px", -textarea.scroll_left())
+    );
+    assert!(overlay.scroll_top().abs() < f64::EPSILON);
+    assert!(overlay.scroll_left().abs() < f64::EPSILON);
+}
+
 fn input(mounted: &Mounted, value: &str) -> web_sys::HtmlTextAreaElement {
     let textarea: web_sys::HtmlTextAreaElement =
         mounted.element(".editor-textarea").unchecked_into();
@@ -152,7 +172,7 @@ async fn file_switch_reads_latest_path_and_mode_exit_cancels() {
     frame().await;
     assert_eq!(highlight_count(), before + 1);
     assert_eq!(
-        mounted.element(".editor-highlight").inner_html(),
+        mounted.element(".editor-highlight-content").inner_html(),
         "fn plain <span class=\"tok-operator\">&lt;&gt;&amp;</span>\n"
     );
     let before = highlight_count();
@@ -219,7 +239,7 @@ async fn growing_paste_preserves_scroll_after_frame() {
         .dispatch_event(&web_sys::Event::new("scroll").unwrap())
         .unwrap();
     let overlay = mounted.element(".editor-highlight");
-    let old_height = overlay.scroll_height();
+
     input(&mounted, &format!("{source}\n{source}{}", "x".repeat(200)));
     settle().await;
     textarea.set_scroll_top(f64::from(textarea.scroll_height()));
@@ -230,9 +250,13 @@ async fn growing_paste_preserves_scroll_after_frame() {
     assert!(textarea.scroll_top() > overlay.scroll_top());
     assert!(textarea.scroll_left() > overlay.scroll_left());
     frame().await;
-    assert!(overlay.scroll_height() > old_height);
-    assert!((overlay.scroll_top() - textarea.scroll_top()).abs() < 0.01);
-    assert!((overlay.scroll_left() - textarea.scroll_left()).abs() < 0.01);
+    assert_scroll_aligned(&mounted, &textarea);
+    assert!(
+        mounted
+            .element(".editor-code")
+            .class_list()
+            .contains("highlight-ready")
+    );
 }
 
 #[wasm_bindgen_test]
@@ -275,10 +299,52 @@ async fn overlay_preserves_empty_unicode_long_lines_and_scroll_mirror() {
     textarea
         .dispatch_event(&web_sys::Event::new("scroll").unwrap())
         .unwrap();
-    assert!(
-        (mounted.element(".editor-highlight").scroll_top() - textarea.scroll_top()).abs() < 0.01
-    );
-    assert!(
-        (mounted.element(".editor-highlight").scroll_left() - textarea.scroll_left()).abs() < 0.01
-    );
+    assert_scroll_aligned(&mounted, &textarea);
+}
+
+#[wasm_bindgen_test]
+async fn rapid_bottom_and_reverse_scrolling_uses_one_scroll_source() {
+    for trailing_newline in [false, true] {
+        let source = format!(
+            "{}{}",
+            "fn example() { let value = 42; }\n".repeat(100),
+            if trailing_newline {
+                "\n"
+            } else {
+                "fn last() {}"
+            }
+        );
+        let mounted = mount_editor(source);
+        let style = document().create_element("style").unwrap();
+        let css = include_str!("../../styles.css");
+        let start = css.find(".editor-code {").unwrap();
+        let end = css[start..].find("/* syntax highlight").unwrap() + start;
+        style.set_text_content(Some(&format!("{}\n.editor-code {{ width: 180px; height: 120px; flex: none; --mono: monospace; --text: black; }} .editor-code * {{ box-sizing: border-box; }}", &css[start..end])));
+        mounted.root.append_child(&style).unwrap();
+        settle().await;
+        frame().await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert!(textarea.scroll_height() > textarea.client_height());
+        for offset in [1e6, 0.0, 600.0, 1e6, 240.0, 1e6, 0.0] {
+            textarea.set_scroll_top(offset);
+            textarea
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            assert_scroll_aligned(&mounted, &textarea);
+        }
+        frame().await;
+        assert_scroll_aligned(&mounted, &textarea);
+        let computed = window().get_computed_style(&textarea).unwrap().unwrap();
+        assert_eq!(
+            computed.get_property_value("color").unwrap(),
+            "rgba(0, 0, 0, 0)"
+        );
+        assert!(
+            mounted
+                .element(".editor-code")
+                .class_list()
+                .contains("highlight-ready")
+        );
+    }
 }

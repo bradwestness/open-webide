@@ -103,6 +103,7 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         if let Some(n) = self.num_ctx {
             body["options"] = json!({ "num_ctx": n });
         }
+        crate::apply_model_settings(&mut body, request, ProviderKind::Ollama);
         let value = self
             .http
             .post_json(&url_for(&self.base_url, "/api/chat"), &body)
@@ -132,6 +133,7 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         if let Some(n) = self.num_ctx {
             body["options"] = json!({ "num_ctx": n });
         }
+        crate::apply_model_settings(&mut body, request, ProviderKind::Ollama);
         let url = url_for(&self.base_url, "/api/chat");
         let lines = LineStream::new(self.http.post_stream(&url, &body));
         Box::pin(stream::unfold(
@@ -232,6 +234,7 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         if let Some(n) = self.num_ctx {
             body["options"] = json!({ "num_ctx": n });
         }
+        crate::apply_model_settings(&mut body, request, ProviderKind::Ollama);
         let mut acc = UsageAcc::new(request);
         acc.started = clock_now();
         let value = self
@@ -310,6 +313,7 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         if let Some(n) = self.num_ctx {
             body["options"] = json!({ "num_ctx": n });
         }
+        crate::apply_model_settings(&mut body, request, ProviderKind::Ollama);
         let lines = LineStream::new(
             self.http
                 .post_stream(&url_for(&self.base_url, "/api/chat"), &body),
@@ -602,6 +606,7 @@ mod tests {
 
     fn request(model: Option<&str>, system: Option<&str>) -> ChatRequest {
         ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: system.map(str::to_string),
             model: model.map(str::to_string),
@@ -985,6 +990,7 @@ mod tests {
             usage: None,
         };
         let req = ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: None,
             model: None,

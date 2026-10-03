@@ -14,11 +14,15 @@ pub(crate) async fn remote_project_path(
             "file access is only available for remote-mode projects",
         ));
     }
-    let base = project.path.unwrap_or_default();
-    let base = openwebide_core::normalize_vfs_path(&base)
+    let base = project
+        .path
+        .ok_or_else(|| ApiError::bad_request("project folder is not configured"))?;
+    let base = openwebide_core::vfs::workspace_path(&base)
         .map_err(|_| ApiError::bad_request("project path escapes the workspace root"))?;
+    let rel = openwebide_core::vfs::workspace_path(rel)
+        .map_err(|_| ApiError::bad_request("path escapes the project folder or is reserved"))?;
     let full = if base.is_empty() {
-        rel.to_string()
+        rel.clone()
     } else if rel.is_empty() {
         base.clone()
     } else {
@@ -100,6 +104,30 @@ pub(crate) async fn files_get(
     let user_id = user.id;
     let (id, sub) = project_files_path(path)?;
     match sub {
+        "files/context" => {
+            let (base, _) = remote_project_path(state, user_id, id, "").await?;
+            let project = state.store.get_project(id, user_id).await?;
+            let tools = if params.get("tools").map(String::as_str) == Some("false") {
+                Vec::new()
+            } else {
+                crate::agent::workspace_tools()
+            };
+            let environment = openwebide_core::RunEnvironment {
+                project_name: Some(project.name.clone()),
+                project_root: openwebide_core::run::execution_root(&project),
+                mode: Some(project.mode),
+                timestamp: now(),
+            };
+            let content = openwebide_agent::context::RunContext::new(environment)
+                .startup(
+                    &crate::files::HostFsVfs::new(base.clone()),
+                    &crate::bridge_client::SpinBridgeClient::for_project(&state.store, base),
+                    &tools,
+                )
+                .await;
+            Ok(json_response(200, &json!({"content":content})))
+        }
+
         "files" => {
             let rel = params.get("path").cloned().unwrap_or_default();
             let (full, base) = remote_project_path(state, user_id, id, &rel).await?;

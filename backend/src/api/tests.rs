@@ -182,6 +182,7 @@ fn persisted_memo_skips_streaming() {
         let http = MemoHttp::default();
         let provider = Provider::for_connection(&connection, http.clone());
         let request = ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: None,
             model: Some("model".into()),
@@ -274,7 +275,13 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                 plan.user_content,
                 format!("{}go", context.format_prompt_injection())
             );
-            assert_eq!(plan.connection, connection);
+            let mut resolved_connection = connection.clone();
+            resolved_connection.model = Some("chosen".into());
+            assert_eq!(plan.connection, resolved_connection);
+            assert_eq!(
+                state.store.get_connection(connection.id).await.unwrap(),
+                connection.clone()
+            );
             assert_eq!(plan.request.connection_id, connection.id);
             assert_eq!(plan.request.model.as_deref(), Some("chosen"));
             assert!(
@@ -678,4 +685,218 @@ fn resolution_validation_rejects_pending_and_nonpositive_revisions() {
             );
         }
     }
+}
+
+#[test]
+fn browser_runtime_scrubs_secrets_and_native_runtime_keeps_them() {
+    futures::executor::block_on(async {
+        let store = openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+        store.migrate().await.unwrap();
+        let user = store
+            .insert_user("u", "hash", openwebide_core::UserRole::Admin, 1)
+            .await
+            .unwrap();
+        let connection = store
+            .insert_connection(&NewConnection {
+                name: "server".into(),
+                kind: openwebide_core::ProviderKind::Ollama,
+                base_url: "http://localhost:11434".into(),
+                model: Some("main".into()),
+                context_limit: None,
+            })
+            .await
+            .unwrap();
+        store
+            .save_server_settings(
+                connection.id,
+                &openwebide_core::ServerSettingsUpdate {
+                    api_key: Some("test-secret".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let state = AppState { store };
+        for native in [false, true] {
+            let runtime = super::model_setup::runtime(&state, user.id, connection.id, None)
+                .await
+                .unwrap();
+            let response = super::model_setup::runtime_response(runtime, native);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let runtime: openwebide_core::ModelRuntime = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                runtime.transport.api_key.as_deref(),
+                native.then_some("test-secret")
+            );
+            assert_eq!(runtime.settings.auto_compact_threshold, Some(85));
+            assert_eq!(runtime.settings.fast.unwrap().model, "main");
+        }
+    });
+}
+
+#[test]
+fn approval_modes_are_user_scoped_and_edit_mode_never_approves_commands() {
+    futures::executor::block_on(async {
+        use openwebide_core::{ApprovalCheck, ApprovalMode, ToolCall};
+        let store = openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+        store.migrate().await.unwrap();
+        let user = store
+            .insert_user("alice", "hash", openwebide_core::UserRole::Admin, 1)
+            .await
+            .unwrap();
+        let other = store
+            .insert_user("bob", "hash", openwebide_core::UserRole::User, 1)
+            .await
+            .unwrap();
+        let session = store
+            .create_session("s", None, None, None, user.id, 1)
+            .await
+            .unwrap();
+        for (mode, write, command) in [
+            (ApprovalMode::Default, false, false),
+            (ApprovalMode::AutoAcceptEdits, true, false),
+            (ApprovalMode::Yolo, true, true),
+        ] {
+            store
+                .set_user_setting(
+                    user.id,
+                    &ApprovalMode::setting_key(session.id),
+                    &serde_json::to_string(&mode).unwrap(),
+                )
+                .await
+                .unwrap();
+            for (tool, expected) in [("write_file", write), ("run_command", command)] {
+                let check = ApprovalCheck {
+                    connection_id: 1,
+                    model: None,
+                    call: ToolCall {
+                        id: "a1t1c0".into(),
+                        name: tool.into(),
+                        arguments: "{}".into(),
+                    },
+                };
+                assert_eq!(
+                    super::approvals::decision(&store, user.id, session.id, &check)
+                        .await
+                        .unwrap()
+                        .approved,
+                    expected
+                );
+                assert!(
+                    super::approvals::decision(&store, other.id, session.id, &check)
+                        .await
+                        .is_err()
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn auto_classifier_uses_primary_without_fast_model_and_respects_fast_override() {
+    futures::executor::block_on(async {
+        use openwebide_core::{ApprovalCheck, ModelDefaults, ModelSelection, ToolCall};
+        let store = openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+        store.migrate().await.unwrap();
+        let user = store
+            .insert_user("u", "hash", openwebide_core::UserRole::Admin, 1)
+            .await
+            .unwrap();
+        let server = store
+            .insert_connection(&NewConnection {
+                name: "server".into(),
+                kind: openwebide_core::ProviderKind::Ollama,
+                base_url: "http://localhost:11434".into(),
+                model: Some("main".into()),
+                context_limit: None,
+            })
+            .await
+            .unwrap();
+        let session = store
+            .create_session("s", Some(server.id), None, None, user.id, 1)
+            .await
+            .unwrap();
+        store
+            .insert_message(session.id, Role::User, "Update the README", 2)
+            .await
+            .unwrap();
+        let check = ApprovalCheck {
+            connection_id: server.id,
+            model: Some("selected-main".into()),
+            call: ToolCall {
+                id: "a1t1c0".into(),
+                name: "write_file".into(),
+                arguments: r#"{"path":"README.md","content":"updated"}"#.into(),
+            },
+        };
+        let (_, request) = super::approvals::classifier_plan(&store, user.id, session.id, &check)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.model.as_deref(), Some("selected-main"));
+        assert!(request.messages[0].content.contains("Update the README"));
+        store
+            .save_model_defaults(
+                user.id,
+                &ModelDefaults {
+                    fast: Some(ModelSelection {
+                        server_id: server.id,
+                        model: "fast".into(),
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let (_, request) = super::approvals::classifier_plan(&store, user.id, session.id, &check)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.model.as_deref(), Some("fast"));
+        assert_eq!(request.model_settings.tools, Some(false));
+        assert!(request.tools.is_empty());
+    });
+}
+
+#[test]
+fn project_file_paths_normalize_before_joining_and_do_not_escape_project() {
+    futures::executor::block_on(async {
+        let store = openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+        store.migrate_with(&|_| true).await.unwrap();
+        let user = store
+            .insert_user("paths", "hash", openwebide_core::UserRole::Admin, 1)
+            .await
+            .unwrap();
+        let project = store
+            .create_project(
+                &NewProject {
+                    name: "app".into(),
+                    mode: WorkspaceMode::Remote,
+                    path: Some("repos/app".into()),
+                },
+                user.id,
+                1,
+            )
+            .await
+            .unwrap();
+        let state = AppState { store };
+        assert_eq!(
+            remote_project_path(&state, user.id, project.id, "\\src\\.\\a.rs")
+                .await
+                .unwrap()
+                .0,
+            "repos/app/src/a.rs"
+        );
+        for path in ["../other", "src/../../other", ".spin/db", "a/.spin/db"] {
+            assert_eq!(
+                remote_project_path(&state, user.id, project.id, path)
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status()
+                    .as_u16(),
+                400
+            );
+        }
+    });
 }

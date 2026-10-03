@@ -395,6 +395,7 @@ mod tests {
     #[test]
     fn run_protocol_roundtrips_with_wire_tags() {
         let request = ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: None,
             model: None,

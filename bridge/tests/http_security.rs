@@ -426,3 +426,72 @@ async fn fragmented_health_request_succeeds() {
     assert_eq!(parsed.status, 200);
     assert_eq!(parsed.body, "{\"status\":\"ok\"}");
 }
+
+#[tokio::test]
+async fn execution_environment_requires_auth_and_matches_command_shell() {
+    let test_dir = TestDir::new();
+    let port = start(test_dir.path.clone()).await;
+    let unauthenticated = http(
+        port,
+        &format!(
+            "GET /environment HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!(HttpResponse::parse(&unauthenticated).status, 401);
+    let response = post(
+        port,
+        "/environment",
+        "{}",
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", "Bearer dummy_secret"),
+        ],
+    )
+    .await;
+    assert_eq!(response.status, 200);
+    let environment: openwebide_core::ExecutionEnvironment =
+        serde_json::from_str(&response.body).unwrap();
+    let command = openwebide_bridge::exec::SpawnSpec::shell(
+        "echo hello".into(),
+        test_dir.path.clone(),
+        1,
+        std::future::pending(),
+    );
+    assert_eq!(environment.shell, command.command);
+    assert_eq!(environment.os, std::env::consts::OS);
+}
+
+#[tokio::test]
+async fn model_discovery_uses_authenticated_json_host_adapter() {
+    let test_dir = TestDir::new();
+    let port = start(test_dir.path.clone()).await;
+    let raw = format!(
+        "POST /models/discover HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+    );
+    let response = HttpResponse::parse(&http(port, &raw).await);
+    assert_eq!(response.status, 401);
+    let response = post(
+        port,
+        "/models/discover",
+        "bad",
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", "Bearer dummy_secret"),
+        ],
+    )
+    .await;
+    assert_eq!(response.status, 400);
+    let response = post(
+        port,
+        "/models/discover",
+        "{}",
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", "Bearer dummy_secret"),
+        ],
+    )
+    .await;
+    assert_eq!(response.status, 200);
+    let _: Vec<openwebide_core::ServerDiscovery> = serde_json::from_str(&response.body).unwrap();
+}

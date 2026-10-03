@@ -138,7 +138,7 @@ async fn typed_theme_controls_update_and_save_the_same_database_values() {
         });
         view! {
             <Settings on_set_theme=actions.on_set_theme
-                on_set_default_connection=actions.on_set_default_connection
+
                 on_set_default_prompt=actions.on_set_default_prompt
                 on_set_bridge_url=actions.on_set_bridge_url />
         }

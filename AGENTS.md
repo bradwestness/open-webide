@@ -6,6 +6,17 @@ Instructions, conventions, and architectural principles for AI agents working on
 
 ## 1. Core Principles
 
+### Support Every Feature in Both Local and Remote Modes
+- Features must work in both local and remote projects, with the same user-facing behavior.
+- Users should only need to consider the mode when opening a project: it determines which filesystem the folder picker shows. Once a project is open, workflows and controls should behave consistently without requiring users to manage the mode.
+- Keep filesystem access behind the shared `Workspace` abstraction and mode-specific transport details behind the appropriate adapters.
+- **Share feature implementations across modes.** Put policy, orchestration, validation, and domain behavior in shared code. Route host-specific operations through thin adapters, following the VFS pattern; adapters should handle filesystem, transport, and runtime integration rather than implement a second version of the feature. Avoid parallel local/remote business logic that can drift, and test the shared behavior plus each adapter’s contract.
+- **Required structure:** UI components, state actions, and agent workflows call a shared feature facade. That facade selects an adapter; adapters expose filesystem, HTTP/WebSocket, process, clock, and persistence primitives. Feature policy, validation, orchestration, result shaping, limits, and fallback decisions live once above those adapters. Adding a trait around two complete feature implementations does not satisfy this rule.
+- **Before implementing or fixing a feature:** locate its existing shared entry point and both mode adapters. Extend that entry point. If it is missing, extract the common behavior first rather than add a second implementation. Check UI controls, slash commands, background refresh, and agent tools for callers that bypass the facade.
+- **Mode checks belong at adapter selection and platform capability boundaries**, such as folder picking and browser permissions. Do not branch on local/remote mode inside feature workflows or UI actions to select separate business logic. Differences in runtime libraries (WASI, Tokio, browser APIs) justify different primitives, not different feature contracts.
+- **Required verification:** run the same behavioral contract against both adapters, including failures and fallbacks. Add regression coverage when fixing a parity bug; verify stale results cannot update another project/session or account. A feature is incomplete until both modes support it. Report any remaining gap explicitly.
+- **Review gate:** flag duplicated orchestration, mode-specific feature paths, direct calls to a remote-only API from shared UI, and inconsistent limits or error semantics. Before reporting completion or preparing a commit/PR, identify the shared implementation and thin adapters and check the affected callers and parity tests. Do not mark roadmap work complete while a mode is missing support.
+
 ### Always Use the Component System for UI Elements
 - **Consistency First**: Always use unified UI component patterns and shared styling classes across the frontend. Never introduce ad-hoc, isolated button/input styles that clash with the rest of the application.
 - **Design Tokens & Theme Variables**: Rely strictly on the established CSS variables defined in `frontend/styles.css`:
@@ -20,8 +31,8 @@ Instructions, conventions, and architectural principles for AI agents working on
 - **No user state is persisted in localStorage**: theme and prompt history use user-scoped database settings; legacy keys are removed after import.
 - **Never rely on `localStorage`** for user preferences, workspaces, layout configurations, or session state. The session is an HttpOnly cookie.
 - **User-Scoped Database Settings**:
-  - Persist all user layout preferences, panel dimensions (`panel_sidebar_width`, `panel_tree_width`, `panel_chat_width`), active tabs (`open_tabs`), active project (`active_project`), theme, `bridge_url`, and default configurations in the SQLite database via the `/api/settings` endpoints (`crates/storage/src/store.rs` -> `user_settings` table).
-  - All settings queries and mutations must be scoped to the authenticated `user_id`.
+  - Persist all user layout preferences, panel dimensions (`panel_sidebar_width`, `panel_tree_width`, `panel_chat_width`), active tabs (`open_tabs`), active project (`active_project`), last-used session per project (`last_session_<project_id>`), theme, `bridge_url`, and default configurations in the SQLite database via the `/api/settings` endpoints (`crates/storage/src/store.rs` -> `user_settings` table).
+  - User preferences and model defaults are scoped to the authenticated `user_id`. Server transport, model profiles (context, sampling, capabilities and compaction thresholds), and detection results describe shared server/model configuration; store them once per server/model, outside user settings. Never make runtime model facts or configuration vary by user.
   - Tools that depend on the `bridge_url` user setting must authenticate natively via `BridgeCredentials`.
   - The only browser-specific storage permitted is IndexedDB for local file system directory handles (`FileSystemDirectoryHandle`) and the bridge pairing token when running in browser local-mode, where native browser permissions or security requirements require origin-bound data. (There are no exceptions to this rule.)
 
@@ -77,13 +88,47 @@ Instructions, conventions, and architectural principles for AI agents working on
 - **Execution Bridge**:
   ```bash
   cargo build -p openwebide-bridge
-  ./target/debug/openwebide-bridge --port 3001 --workspace ../.. --host 127.0.0.1 \
-    --backend-url http://127.0.0.1:3000/api --secret-file /tmp/openwebide-bridge-secret
   ```
-- **Spin Dev Server**:
-  ```bash
-  spin up --direct-mounts --allow-transient-write
-  ```
+
+### Launching local development
+
+Run from the repository root. Build the current changes before starting either service:
+
+```bash
+NO_COLOR=true spin build
+cargo build -p openwebide-bridge
+```
+
+`NO_COLOR=true` avoids Trunk rejecting an inherited `NO_COLOR=1` value.
+
+Start these in separate long-running terminal sessions:
+
+```bash
+spin up --direct-mounts --allow-transient-write
+```
+
+```bash
+./target/debug/openwebide-bridge --port 3001 --workspace ../.. --host 127.0.0.1 \
+  --backend-url http://127.0.0.1:3000/api --secret-file /tmp/openwebide-bridge-secret
+```
+
+- **Launch both Spin and the bridge outside the coding agent's filesystem sandbox.**
+  In Codex, use `exec_command` with `sandbox_permissions: "require_escalated"` and
+  `tty: true` for both server commands. Builds can stay sandboxed. A sandboxed server
+  can start successfully and serve the UI while agent writes and shell commands fail
+  with permission denials in other remote projects. Restart sandboxed processes with
+  normal host access; do not change project permissions to compensate.
+- The bridge's `--workspace` must match `component.backend.files.source` in
+  `spin.toml` (currently `../..`, resolving to `~/source`). Keep the Spin flags above:
+  they make remote edits apply to the host files rather than a temporary mount copy.
+- Check existing listeners on ports 3000 and 3001 before launching. When restarting,
+  stop the old processes and keep the new terminal sessions running.
+- Verify the UI at `http://localhost:3000/` and bridge health at
+  `http://localhost:3001/health`. `/api/health` requires authentication; an unsigned
+  request returning 401 is expected. Verify a temporary file can be written, read,
+  and deleted in a remote project outside this repo before claiming remote writes work.
+
+Spin keeps the existing database in `.spin/sqlite_db.db` and logs in `.spin/logs/`.
 
 ### Build disk usage
 
@@ -110,6 +155,8 @@ of GB, and agents running several copies at once have filled the disk before.
 4. **Resilience & Safe Layouts**: When implementing layout resizing, enforce sane minimum and maximum bounds to ensure critical panels (like the code editor or diff viewer) are never crushed.
 
 5. **Lint Policy**: Clippy pedantic picks are enforced via `[workspace.lints]` — every crate inherits it with `[lints] workspace = true`, and CI enforces it with `-D warnings` on native crates, the WASI backend, the WASM frontend, and the bridge. Add a lint there, not per crate; `#[allow]` needs a reason.
+
+6. **Roadmap & Changelog**: Keep `docs/roadmap.md` and `CHANGELOG.md` current in the same change as the implementation. When work is completed and verified in both local and remote modes, remove it from the roadmap and record the shipped behavior under `[Unreleased]` in the changelog. For partial completion, rewrite the roadmap item to describe only the remaining work; configuration alone does not complete the feature it configures. Before reporting a feature complete or preparing a commit/PR, check the affected roadmap entries, dependencies, and cross-references for stale claims. Reviewers should flag missing updates.
 
 ## 5. Threat model
 

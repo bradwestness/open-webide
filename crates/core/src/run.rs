@@ -188,6 +188,15 @@ impl RunEvent {
     }
 }
 
+/// Project-relative execution root, shared by backend planning and frontend host selection.
+pub fn execution_root(project: &crate::Project) -> Option<String> {
+    project
+        .path
+        .as_deref()
+        .and_then(|path| crate::vfs::workspace_path(path).ok())
+        .map(|path| if path.is_empty() { ".".into() } else { path })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

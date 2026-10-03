@@ -52,7 +52,10 @@ pub fn FileTree(
     // would otherwise create a recursive opaque return type.
     let flat = RwSignal::new(Vec::<(FileEntry, u32)>::new());
     Effect::new(move || {
-        let map = entries.get();
+        let mut map = entries.get();
+        for children in map.values_mut() {
+            openwebide_core::vfs::sort_file_entries(children);
+        }
         let exp = expanded.get();
         let mut result: Vec<(FileEntry, u32)> = Vec::new();
         fn traverse(
@@ -143,6 +146,7 @@ pub fn FileTree(
             </div>
             <Show when=move || needs_grant.get() fallback=|| ()>
                 <div style="padding: 12px; text-align: center;">
+                    <p>"This browser needs permission to access the project folder. Grant access or select the folder again to reconnect it."</p>
                     <crate::components::Button
                         variant=crate::components::ButtonVariant::Primary
                         size=crate::components::ButtonSize::Sm

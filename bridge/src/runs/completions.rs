@@ -7,7 +7,7 @@ use openwebide_llm::{LlmProvider, ToolStreamMemos, registry::Provider};
 use tokio::sync::mpsc;
 
 use crate::auth::Principal;
-use crate::runs::backend_client::{BackendClient, RunBackend};
+use crate::runs::backend_client::BackendClient;
 use crate::runs::http_client::ReqwestHttpClient;
 use crate::server::WriterCmd;
 
@@ -24,12 +24,16 @@ pub(crate) async fn complete(
         let Principal::User { user_id } = principal else {
             return Err("unauthorized".into());
         };
-        let connection = backend
-            .list_connections(user_id)
-            .await?
-            .into_iter()
-            .find(|c| c.id == request.connection_id)
-            .ok_or_else(|| "connection not found".to_string())?;
+        let runtime = backend
+            .model_runtime(user_id, request.connection_id, request.model.as_deref())
+            .await?;
+        request.model = runtime.connection.model.clone();
+        request.model_settings = runtime.settings;
+        if request.model_settings.tools == Some(false) {
+            request.tools.clear();
+        }
+        let connection = runtime.connection;
+        let http = http.with_transport(runtime.transport);
         let now = i64::try_from(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

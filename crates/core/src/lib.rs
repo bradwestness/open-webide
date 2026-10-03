@@ -1,5 +1,9 @@
 //! Shared domain types used across the Open WebIDE frontend, backend, and crates.
 
+pub mod approval;
+pub use approval::*;
+pub mod model_setup;
+pub use model_setup::*;
 pub mod bridge;
 pub mod diff;
 pub mod file_type;
@@ -7,6 +11,7 @@ pub mod git;
 pub mod highlight;
 pub mod html;
 pub mod run;
+pub mod search;
 pub mod tui;
 pub mod utf8;
 pub mod vfs;
@@ -191,6 +196,8 @@ pub struct ModelInfo {
 /// Request to run a chat completion against a saved connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatRequest {
+    #[serde(default)]
+    pub model_settings: ModelSettings,
     pub connection_id: i64,
     pub system_prompt: Option<String>,
     /// Model override; falls back to the connection's model when absent.
@@ -202,9 +209,37 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDefinition>,
 }
 
+/// Convert a browser timestamp from milliseconds to whole Unix seconds.
+#[allow(clippy::cast_possible_truncation)] // Browser timestamps are milliseconds within i64's range.
+pub fn now_seconds(milliseconds: f64) -> i64 {
+    (milliseconds / 1000.0) as i64
+}
+
+/// A persisted context message is display history, regenerated for each run.
+pub const RUN_CONTEXT_PREFIX: &str = "[Open WebIDE run context]\n";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunEnvironment {
+    pub project_name: Option<String>,
+    pub project_root: Option<String>,
+    pub mode: Option<WorkspaceMode>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionEnvironment {
+    pub os: String,
+    pub shell: String,
+}
+
 /// A prepared run before its user message is persisted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunPlan {
+    /// Included only on shared-secret-authenticated native bridge responses.
+    #[serde(default)]
+    pub transport: ServerTransport,
+    #[serde(default)]
+    pub environment: RunEnvironment,
     pub user_content: String,
     /// Prior history only; the host appends the new user message after persistence.
     pub request: ChatRequest,
@@ -408,6 +443,9 @@ pub struct ToolStep {
 pub fn tool_history(messages: Vec<ChatMessage>, steps: &[ToolStep]) -> Vec<ChatMessage> {
     let mut history = Vec::new();
     for mut message in messages {
+        if message.role == Role::System && message.content.starts_with(RUN_CONTEXT_PREFIX) {
+            continue;
+        }
         let matching: Vec<_> = steps
             .iter()
             .filter(|step| step.anchor_message_id == message.id)
@@ -1109,8 +1147,11 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(&kind).unwrap(), json);
             let plan = RunPlan {
+                transport: Default::default(),
+                environment: RunEnvironment::default(),
                 user_content: "go".into(),
                 request: ChatRequest {
+                    model_settings: Default::default(),
                     connection_id: 1,
                     system_prompt: None,
                     model: None,

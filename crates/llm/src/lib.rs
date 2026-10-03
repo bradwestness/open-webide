@@ -4,6 +4,7 @@
 //! [`Connection`](openwebide_core::Connection) via
 //! [`registry::Provider::for_connection`].
 
+pub mod discovery;
 pub mod error;
 pub mod llamacpp;
 pub mod ollama;
@@ -465,12 +466,87 @@ pub(crate) fn tool_call_values(message: &serde_json::Value) -> Option<&Vec<serde
     }
 }
 
+/// Apply validated per-model settings to either provider's completion payload.
+pub(crate) fn apply_model_settings(
+    body: &mut serde_json::Value,
+    request: &ChatRequest,
+    kind: ProviderKind,
+) {
+    let settings = &request.model_settings;
+    if kind == ProviderKind::Ollama {
+        if !settings.sampling.is_empty()
+            || settings.context_limit.is_some()
+            || settings.max_output_tokens.is_some()
+        {
+            if !body["options"].is_object() {
+                body["options"] = json!({});
+            }
+            for (key, value) in &settings.sampling {
+                body["options"][key] = value.clone();
+            }
+            if let Some(limit) = settings.context_limit {
+                body["options"]["num_ctx"] = json!(limit);
+            }
+            if let Some(limit) = settings.max_output_tokens {
+                body["options"]["num_predict"] = json!(limit);
+            }
+        }
+        if let Some(thinking) = settings.thinking {
+            body["think"] = json!(thinking);
+        }
+    } else {
+        for (key, value) in &settings.sampling {
+            body[key] = value.clone();
+        }
+        if let Some(limit) = settings.max_output_tokens {
+            body["max_tokens"] = json!(limit);
+        }
+        if let Some(thinking) = settings.thinking {
+            body["chat_template_kwargs"] = json!({"enable_thinking": thinking});
+        }
+    }
+    if settings.tools == Some(false) {
+        body.as_object_mut().unwrap().remove("tools");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::executor::block_on;
     use futures::{StreamExt, stream};
 
     use super::*;
+
+    #[test]
+    fn model_options_map_to_both_provider_protocols() {
+        let request = ChatRequest {
+            connection_id: 1,
+            model: Some("main".into()),
+            system_prompt: None,
+            messages: vec![],
+            tools: vec![],
+            model_settings: openwebide_core::ModelSettings {
+                context_limit: Some(8192),
+                max_output_tokens: Some(512),
+                sampling: std::collections::BTreeMap::from([("temperature".into(), json!(0.3))]),
+                thinking: Some(false),
+                tools: Some(false),
+                ..Default::default()
+            },
+        };
+        let mut ollama = json!({"tools": [], "options": {"num_ctx": 4096}});
+        apply_model_settings(&mut ollama, &request, ProviderKind::Ollama);
+        assert_eq!(
+            ollama,
+            json!({"options": {"num_ctx": 8192, "num_predict": 512, "temperature": 0.3}, "think": false})
+        );
+        let mut compatible = json!({"tools": []});
+        apply_model_settings(&mut compatible, &request, ProviderKind::LlamaCpp);
+        assert_eq!(
+            compatible,
+            json!({"temperature": 0.3, "max_tokens": 512, "chat_template_kwargs": {"enable_thinking": false}})
+        );
+    }
 
     #[test]
     fn connection_reset_replaces_memo_even_when_url_and_kind_return() {
@@ -619,6 +695,7 @@ mod tests {
             }),
         ]);
         let request = ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             model: None,
             system_prompt: None,

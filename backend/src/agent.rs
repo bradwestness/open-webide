@@ -166,6 +166,7 @@ pub fn agent_stream(
     request: ChatRequest,
     provider: Provider<SpinHttpClient>,
     base: String,
+    environment: openwebide_core::RunEnvironment,
     config: AgentConfig,
     cancel: CancelFlag,
     gate: PermissionPoller,
@@ -174,7 +175,18 @@ pub fn agent_stream(
         HostFsVfs::new(base.clone()),
         crate::web::SpinWebClient,
         crate::bridge_client::SpinBridgeClient::for_project(store.clone(), base),
-    );
+    )
+    .with_context(environment);
+    let gate = openwebide_agent::policy::PolicyGate {
+        manual: gate,
+        source: crate::api::approvals::ApprovalAdapter {
+            store: store.clone(),
+            user: user_id,
+            session: session_id,
+            connection_id: request.connection_id,
+            model: request.model.clone(),
+        },
+    };
     let anchor_id = user_message.id;
     let events =
         openwebide_agent::run(provider, executor, request, config, cancel, gate, anchor_id);
@@ -187,185 +199,83 @@ pub fn agent_stream(
     )
 }
 
+struct SessionPersistence {
+    store: Arc<Store<AppDb>>,
+    user: openwebide_core::UserId,
+    session: i64,
+    anchor: i64,
+}
+impl openwebide_agent::session::RunPersistence for SessionPersistence {
+    fn now(&self) -> i64 {
+        now()
+    }
+    async fn message(
+        &self,
+        role: Role,
+        content: &str,
+        usage: Option<&TurnTelemetry>,
+        calls: Option<&[ToolCall]>,
+    ) -> Result<ChatMessage, String> {
+        if calls.is_some() || role == Role::System {
+            self.store
+                .insert_interim_message(self.session, role, content, now(), usage, calls)
+                .await
+        } else {
+            self.store
+                .insert_message_with_usage(self.session, role, content, now(), usage)
+                .await
+        }
+        .map_err(|error| error.to_string())
+    }
+    async fn step(
+        &self,
+        anchor: i64,
+        id: &str,
+        name: &str,
+        summary: &str,
+        diff: Option<&openwebide_core::FileDiff>,
+    ) -> Result<(), String> {
+        self.store
+            .upsert_tool_step(self.session, anchor, id, name, summary, now(), diff)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    async fn result(
+        &self,
+        id: &str,
+        ok: bool,
+        summary: &str,
+        diff: Option<&openwebide_core::FileDiff>,
+    ) -> Result<(), String> {
+        self.store
+            .complete_tool_step(self.user, self.session, id, ok, summary, diff)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    async fn finish(&self) {
+        let _ = self
+            .store
+            .clear_tool_permissions_for_run(self.session, self.anchor)
+            .await;
+    }
+}
 fn map_agent_events(
     store: Arc<Store<AppDb>>,
-    user_id: openwebide_core::UserId,
-    session_id: i64,
-    anchor_id: i64,
+    user: openwebide_core::UserId,
+    session: i64,
+    anchor: i64,
     events: impl Stream<Item = AgentEvent> + Send + 'static,
 ) -> impl Stream<Item = RunEvent> + Send {
-    let events = Box::pin(events);
-    let display_anchor = anchor_id;
-    let last_usage: Option<TurnTelemetry> = None;
-    stream::unfold(
-        (
+    openwebide_agent::session::events(
+        SessionPersistence {
             store,
-            session_id,
-            display_anchor,
-            events,
-            last_usage,
-            String::new(),
-        ),
-        move |state| async move {
-            let (store, session_id, mut display_anchor, mut events, mut last_usage, mut reasoning) =
-                state;
-            let Some(event) = events.next().await else {
-                if let Err(error) = store
-                    .clear_tool_permissions_for_run(session_id, anchor_id)
-                    .await
-                {
-                    eprintln!("session {session_id}: clear_tool_permissions_for_run: {error}");
-                }
-                return None;
-            };
-            let sse = match event {
-                AgentEvent::ToolCall { id, name, summary } => {
-                    last_usage = None;
-                    if let Err(error) = store
-                        .upsert_tool_step(
-                            session_id,
-                            display_anchor,
-                            &id,
-                            &name,
-                            &summary,
-                            now(),
-                            None,
-                        )
-                        .await
-                    {
-                        eprintln!("session {session_id}: upsert_tool_step: {error}");
-                    }
-                    RunEvent::ToolCall { id, name, summary }
-                }
-                AgentEvent::PermissionRequest {
-                    id,
-                    name,
-                    summary,
-                    diff,
-                    note,
-                } => {
-                    last_usage = None;
-                    if let Err(error) = store
-                        .upsert_tool_step(
-                            session_id,
-                            display_anchor,
-                            &id,
-                            &name,
-                            &summary,
-                            now(),
-                            diff.as_ref(),
-                        )
-                        .await
-                    {
-                        eprintln!("session {session_id}: upsert_tool_step: {error}");
-                    }
-                    RunEvent::PermissionRequest {
-                        id,
-                        name,
-                        summary,
-                        diff,
-                        note,
-                    }
-                }
-                AgentEvent::ToolResult {
-                    id,
-                    name,
-                    ok,
-                    summary,
-                    diff,
-                } => {
-                    if let Err(error) = store
-                        .complete_tool_step(user_id, session_id, &id, ok, &summary, diff.as_ref())
-                        .await
-                    {
-                        eprintln!("session {session_id}: complete_tool_step: {error}");
-                        RunEvent::Error {
-                            message: "failed to save tool result".into(),
-                        }
-                    } else {
-                        RunEvent::ToolResult {
-                            id,
-                            name,
-                            ok,
-                            summary,
-                            diff,
-                        }
-                    }
-                }
-                AgentEvent::ReasoningDelta(content) => {
-                    reasoning.push_str(&content);
-                    RunEvent::ReasoningDelta { content }
-                }
-                AgentEvent::TextDelta(delta) => RunEvent::Delta { content: delta },
-                AgentEvent::TurnCalls { text, calls } => {
-                    let text =
-                        openwebide_core::with_reasoning(&std::mem::take(&mut reasoning), &text);
-                    let usage = last_usage.take();
-                    let message = store
-                        .insert_interim_message(
-                            session_id,
-                            Role::Assistant,
-                            &text,
-                            now(),
-                            usage.as_ref(),
-                            Some(&calls),
-                        )
-                        .await;
-                    let message = match message {
-                        Ok(message) => {
-                            display_anchor = message.id;
-                            message
-                        }
-                        Err(_) => ChatMessage {
-                            id: 0,
-                            session_id,
-                            role: Role::Assistant,
-                            content: text,
-                            created_at: now(),
-                            tool_calls: Some(calls),
-                            tool_call_id: None,
-                            usage,
-                        },
-                    };
-                    RunEvent::Interim { message }
-                }
-                AgentEvent::Telemetry(usage) => {
-                    last_usage = Some(usage);
-                    RunEvent::Telemetry { usage }
-                }
-                AgentEvent::FinalText(text) => {
-                    let text = openwebide_core::with_reasoning(&reasoning, &text);
-                    match store
-                        .insert_message_with_usage(
-                            session_id,
-                            Role::Assistant,
-                            &text,
-                            now(),
-                            last_usage.take().as_ref(),
-                        )
-                        .await
-                    {
-                        Ok(message) => RunEvent::Done { message },
-                        Err(error) => RunEvent::Error {
-                            message: format!("failed to save reply: {error}"),
-                        },
-                    }
-                }
-                AgentEvent::Cancelled => RunEvent::Cancelled,
-                AgentEvent::Error(message) => RunEvent::Error { message },
-            };
-            Some((
-                sse,
-                (
-                    store,
-                    session_id,
-                    display_anchor,
-                    events,
-                    last_usage,
-                    reasoning,
-                ),
-            ))
+            user,
+            session,
+            anchor,
         },
+        session,
+        anchor,
+        events,
     )
 }
 
@@ -440,6 +350,7 @@ mod tests {
 
     fn request() -> ChatRequest {
         ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: None,
             model: None,
@@ -460,6 +371,48 @@ mod tests {
             .await
             .unwrap();
         (store, session.id)
+    }
+
+    #[test]
+    fn context_is_persisted_without_replacing_tool_anchor_or_reentering_history() {
+        futures::executor::block_on(async {
+            let (store, session_id) = test_store().await;
+            let user = store
+                .insert_message(session_id, Role::User, "go", 1)
+                .await
+                .unwrap();
+            let id = format!("{}1c0", openwebide_agent::step_id_prefix(user.id));
+            let events = stream::iter([
+                AgentEvent::Context("Root instruction".into()),
+                AgentEvent::ToolCall {
+                    id,
+                    name: "read_file".into(),
+                    summary: "read a".into(),
+                },
+            ]);
+            let mapped: Vec<_> = map_agent_events(
+                store.clone(),
+                openwebide_core::UserId::new(1),
+                session_id,
+                user.id,
+                events,
+            )
+            .collect()
+            .await;
+            assert!(
+                matches!(&mapped[0], RunEvent::Message { message } if message.role == Role::System && message.content.contains("Root instruction"))
+            );
+            let steps = store.list_tool_steps(session_id).await.unwrap();
+            assert_eq!(steps[0].anchor_message_id, user.id);
+            let messages = store.list_messages(session_id).await.unwrap();
+            assert_eq!(messages[1].role, Role::System);
+            let history = openwebide_core::tool_history(messages, &steps);
+            assert!(history.iter().all(|message| {
+                !message
+                    .content
+                    .contains(openwebide_core::RUN_CONTEXT_PREFIX)
+            }));
+        });
     }
 
     fn test_gate(store: Arc<Store<AppDb>>, session_id: i64, started_ms: i64) -> PermissionPoller {
@@ -944,8 +897,10 @@ mod tests {
             )
             .collect::<Vec<_>>()
             .await;
+            assert!(matches!(&mapped[0], RunEvent::ToolResult { .. }));
+            assert_eq!(mapped.len(), 2);
             assert!(
-                matches!(&mapped[0], RunEvent::Error { message } if message == "failed to save tool result")
+                matches!(&mapped[1], RunEvent::Error { message } if message.starts_with("failed to save tool result"))
             );
         });
     }

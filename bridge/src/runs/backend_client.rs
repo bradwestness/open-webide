@@ -13,6 +13,14 @@ use serde_json::{Value, json};
 use crate::runs::http_client::ReqwestHttpClient;
 
 pub trait RunBackend: Send + Sync {
+    fn approval_check(
+        &self,
+        _user: i64,
+        _session: i64,
+        _check: &openwebide_core::ApprovalCheck,
+    ) -> impl Future<Output = Result<openwebide_core::ApprovalDecision, String>> + Send {
+        async { Ok(openwebide_core::ApprovalDecision::default()) }
+    }
     fn run_plan(
         &self,
         user_id: i64,
@@ -85,6 +93,23 @@ impl BackendClient {
         Self { url, secret, http }
     }
 
+    pub async fn model_runtime(
+        &self,
+        user_id: i64,
+        id: i64,
+        model: Option<&str>,
+    ) -> Result<openwebide_core::ModelRuntime, String> {
+        let query = model
+            .map(|model| format!("?model={}", encode_query(model)))
+            .unwrap_or_default();
+        self.call(
+            user_id,
+            "GET",
+            &format!("/connections/{id}/runtime{query}"),
+            json!({}),
+        )
+        .await
+    }
     async fn call<T: DeserializeOwned>(
         &self,
         user_id: i64,
@@ -123,6 +148,20 @@ pub fn encode_query(s: &str) -> String {
 }
 
 impl RunBackend for BackendClient {
+    async fn approval_check(
+        &self,
+        user: i64,
+        session: i64,
+        check: &openwebide_core::ApprovalCheck,
+    ) -> Result<openwebide_core::ApprovalDecision, String> {
+        self.call(
+            user,
+            "POST",
+            &format!("/sessions/{session}/approval-check"),
+            serde_json::to_value(check).map_err(|error| error.to_string())?,
+        )
+        .await
+    }
     async fn run_plan(
         &self,
         user_id: i64,
@@ -236,6 +275,30 @@ impl RunBackend for BackendClient {
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| "missing page content".into())
+    }
+}
+
+pub struct ApprovalAdapter<B> {
+    pub backend: Arc<B>,
+    pub user: i64,
+    pub session: i64,
+    pub connection_id: i64,
+    pub model: Option<String>,
+}
+impl<B: RunBackend> openwebide_agent::policy::ApprovalSource for ApprovalAdapter<B> {
+    async fn check(&self, call: &openwebide_core::ToolCall) -> bool {
+        self.backend
+            .approval_check(
+                self.user,
+                self.session,
+                &openwebide_core::ApprovalCheck {
+                    connection_id: self.connection_id,
+                    model: self.model.clone(),
+                    call: call.clone(),
+                },
+            )
+            .await
+            .is_ok_and(|decision| decision.approved)
     }
 }
 

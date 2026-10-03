@@ -29,6 +29,43 @@ pub trait Backend {
     fn logout<'a>(&'a self) -> LocalBoxFuture<'a, Result<(), String>>;
     fn bridge_token<'a>(&'a self) -> LocalBoxFuture<'a, Result<(String, i64), String>>;
     fn health<'a>(&'a self) -> LocalBoxFuture<'a, Result<Health, String>>;
+    fn detect_model<'a>(
+        &'a self,
+        id: i64,
+        model: &'a str,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelDetection, String>>;
+    fn inspect_server<'a>(
+        &'a self,
+        base_url: &'a str,
+        kind: Option<ProviderKind>,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerDiscovery, String>>;
+    fn discover_servers<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::ServerDiscovery>, String>>;
+    fn model_runtime<'a>(
+        &'a self,
+        id: i64,
+        model: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelRuntime, String>>;
+    fn model_setup<'a>(&'a self)
+    -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>>;
+    fn save_model_defaults<'a>(
+        &'a self,
+        defaults: &'a openwebide_core::ModelDefaults,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>>;
+    fn save_model_profile<'a>(
+        &'a self,
+        profile: &'a openwebide_core::ModelProfile,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>>;
+    fn server_settings<'a>(
+        &'a self,
+        id: i64,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerSettings, String>>;
+    fn save_server_settings<'a>(
+        &'a self,
+        id: i64,
+        update: &'a openwebide_core::ServerSettingsUpdate,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerSettings, String>>;
     fn list_connections<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<Connection>, String>>;
     fn create_connection<'a>(
         &'a self,
@@ -69,6 +106,11 @@ pub trait Backend {
         key: &'a str,
         value: &'a str,
     ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn startup_context(
+        &self,
+        project: i64,
+        tools: bool,
+    ) -> LocalBoxFuture<'_, Result<String, String>>;
     fn create_session<'a>(
         &'a self,
         name: &'a str,
@@ -173,6 +215,11 @@ pub trait Backend {
         project_id: Option<i64>,
         req: &'a GitSyncRequest,
     ) -> LocalBoxFuture<'a, Result<GitSyncResult, String>>;
+    fn set_session_connection(
+        &self,
+        id: i64,
+        connection_id: i64,
+    ) -> LocalBoxFuture<'_, Result<ChatSession, String>>;
     fn rename_session<'a>(
         &'a self,
         id: i64,
@@ -190,6 +237,11 @@ pub trait Backend {
         &'a self,
         session_id: i64,
     ) -> LocalBoxFuture<'a, Result<Vec<ConversationEntry>, String>>;
+    fn approval_check<'a>(
+        &'a self,
+        session: i64,
+        check: &'a openwebide_core::ApprovalCheck,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ApprovalDecision, String>>;
     fn chat_tools<'a>(
         &'a self,
         request: &'a ChatRequest,
@@ -284,6 +336,62 @@ impl Backend for BackendApi {
     fn health<'a>(&'a self) -> LocalBoxFuture<'a, Result<Health, String>> {
         Box::pin(BackendApi::health(self))
     }
+    fn detect_model<'a>(
+        &'a self,
+        id: i64,
+        model: &'a str,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelDetection, String>> {
+        Box::pin(BackendApi::detect_model(self, id, model))
+    }
+    fn inspect_server<'a>(
+        &'a self,
+        base_url: &'a str,
+        kind: Option<ProviderKind>,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerDiscovery, String>> {
+        Box::pin(BackendApi::inspect_server(self, base_url, kind))
+    }
+    fn discover_servers<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::ServerDiscovery>, String>> {
+        Box::pin(BackendApi::discover_servers(self))
+    }
+    fn model_runtime<'a>(
+        &'a self,
+        id: i64,
+        model: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelRuntime, String>> {
+        Box::pin(BackendApi::model_runtime(self, id, model))
+    }
+    fn model_setup<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>> {
+        Box::pin(BackendApi::model_setup(self))
+    }
+    fn save_model_defaults<'a>(
+        &'a self,
+        defaults: &'a openwebide_core::ModelDefaults,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>> {
+        Box::pin(BackendApi::save_model_defaults(self, defaults))
+    }
+    fn save_model_profile<'a>(
+        &'a self,
+        profile: &'a openwebide_core::ModelProfile,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>> {
+        Box::pin(BackendApi::save_model_profile(self, profile))
+    }
+    fn server_settings<'a>(
+        &'a self,
+        id: i64,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerSettings, String>> {
+        Box::pin(BackendApi::server_settings(self, id))
+    }
+    fn save_server_settings<'a>(
+        &'a self,
+        id: i64,
+        update: &'a openwebide_core::ServerSettingsUpdate,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerSettings, String>> {
+        Box::pin(BackendApi::save_server_settings(self, id, update))
+    }
     fn list_connections<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<Connection>, String>> {
         Box::pin(BackendApi::list_connections(self))
     }
@@ -354,6 +462,13 @@ impl Backend for BackendApi {
         value: &'a str,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(BackendApi::set_setting(self, key, value))
+    }
+    fn startup_context(
+        &self,
+        project: i64,
+        tools: bool,
+    ) -> LocalBoxFuture<'_, Result<String, String>> {
+        Box::pin(BackendApi::startup_context(self, project, tools))
     }
     fn create_session<'a>(
         &'a self,
@@ -511,6 +626,13 @@ impl Backend for BackendApi {
     ) -> LocalBoxFuture<'a, Result<GitSyncResult, String>> {
         Box::pin(BackendApi::git_sync(self, project_id, req))
     }
+    fn set_session_connection(
+        &self,
+        id: i64,
+        connection_id: i64,
+    ) -> LocalBoxFuture<'_, Result<ChatSession, String>> {
+        Box::pin(BackendApi::set_session_connection(self, id, connection_id))
+    }
     fn rename_session<'a>(
         &'a self,
         id: i64,
@@ -542,6 +664,13 @@ impl Backend for BackendApi {
         session_id: i64,
     ) -> LocalBoxFuture<'a, Result<Vec<ConversationEntry>, String>> {
         Box::pin(BackendApi::list_messages(self, session_id))
+    }
+    fn approval_check<'a>(
+        &'a self,
+        session: i64,
+        check: &'a openwebide_core::ApprovalCheck,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ApprovalDecision, String>> {
+        Box::pin(BackendApi::approval_check(self, session, check))
     }
     fn chat_tools<'a>(
         &'a self,

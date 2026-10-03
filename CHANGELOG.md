@@ -11,6 +11,26 @@ for what's still ahead.
 
 ### Added
 
+- Render Markdown tables with aligned columns, themed headers and borders, and horizontal scrolling for wide tables in agent replies and file previews. Support strikethrough while retaining sans-serif prose and monospace code in both modes.
+
+- Distinguish user prompts with a compact, rounded, theme-aware background inset from the TUI panel edges and aligned on the right with tool and thought panels; remove repeated assistant headings while preserving a shared text alignment for prompts and replies.
+
+- Keep the file tree ordered at every level: directories first, then files, using case-insensitive natural name sorting consistently across local and remote loads and refreshes.
+
+- New chat immediately creates and selects a session, persisting its project startup context in both modes before the first prompt.
+
+
+- Choose Default, Auto-accept edits, Auto, or YOLO from the TUI or with Shift+Tab. Persist session choices in user-scoped database settings and enforce them through one shared policy gate, with thin browser, bridge, and SSE adapters. Auto uses the configured fast model or the primary model and falls back to manual approval on uncertain, malformed, failed, or timed-out classification.
+
+- Configure primary and optional fast models, per-model context/sampling/output/thinking/tool overrides, and an 85% auto-compaction threshold in database-backed settings shared by local and remote mode. Background work falls back to the primary model when no fast model is selected; the compaction engine follows separately.
+- Add model servers by URL, discover common local endpoints, detect model context/capabilities, and configure write-only API keys, proxy headers, timeouts, and Ollama keep-alive.
+
+- Choose a session’s connection and model from a tiered TUI menu, with models discovered on expansion and new sessions starting from the configured default.
+
+- Generate fresh startup context in local, backend, and bridge runs: environment and available tools, root and nested project instructions, and relative imports. Save the exact context as a collapsible session entry, with visible size and import limits.
+- Automatically refresh the file tree in local and remote projects, preserving expanded folders and editor contents while pausing background tabs.
+- Restore the last-used session per project when opening a project or a fresh browser window, using user-scoped database settings.
+
 - Reload pending agent edits per project from the database and persist Accept/Reject decisions, retaining failed reviews and backups for retry.
 
 - Store pending agent edits and review decisions per project in the database, with replay protection and revision checks; review UI integration follows separately.
@@ -127,6 +147,13 @@ for what's still ahead.
 
 ### Changed
 
+- Keep personal default/fast model choices in Settings; move shared model configuration to a separate dialog opened from Servers. Model profiles, context detection and compaction thresholds are shared per server/model, with existing preferences migrated.
+
+- Share content/file search policy and budgets across browser, WASI and native filesystems, and share run planning and persisted agent events across browser, SSE and bridge runs.
+- Route Git, terminal and agent startup through a common project execution-host facade. Model discovery uses shared probes on the backend or the local companion host.
+- Normalize file paths and enforce a shared 10 MiB read limit across editor and agent adapters; browser filesystem failures retain typed error categories.
+
+
 - Keep assistant thinking blocks collapsed while the model is thinking (click the header to expand the live trace), move the spinner after the "Thinking..." label with a live elapsed-time counter, and show the final elapsed time in the collapsed "Thought" summary; the spinner now cycles proper braille frames. Elapsed time scales with the run (e.g. `42s`, `2m05s`, `1h03m20s`), and aborting a turn clears the "Thinking..." state so the partial trace collapses into the summary.
 - Raise the agent run budget from 12 turns / 24 tool calls to 256 turns / 512 tool calls; the budget is a runaway-loop guard (runs stay cancellable), so nontrivial tasks no longer exhaust it mid-task.
 - Enforce selected pedantic Clippy lints across the workspace, remove unused code, and trim bridge Tokio features.
@@ -171,6 +198,16 @@ for what's still ahead.
 - Reconcile setup, architecture, bridge protocol, roadmap, changelog, and `/help` documentation with current behavior.
 
 ### Fixed
+
+- Delete nested remote files with writable directory descriptors and support recursive folder deletion without following symlinks, matching browser/native adapters.
+
+- Recover recent local projects when browser folder access is missing: request permission or re-pick the original folder, starting at the saved handle when available and retaining the project and sessions.
+- Defer oversized CLAUDE.md/AGENTS.md instructions with scoped read-file directions instead of injecting truncated fragments; retain imports beyond the inline limit.
+
+
+- Route file-tree Git indicators, HEAD diffs, branch/sync controls, and Git slash commands through a shared project Git facade in both modes. Local projects use the verified local bridge instead of the remote-only project API; background refresh includes Git status and stale results are discarded.
+
+- Keep editor syntax highlighting aligned during rapid scrolling and bottom-to-top scrolling by translating the highlight layer from the textarea’s offsets, matching scroll gutters, and showing only one text layer at a time.
 
 - **Side-by-side diff alignment:** the detailed side-by-side diff is now built on the same line-level LCS as the inline diff, so an inserted or deleted line no longer shifts every line below it into a false pair (previously the whole changed middle rendered as insertions); unchanged lines stay aligned as context, and paired changed lines keep intra-line word highlighting and line-ending notes.
 

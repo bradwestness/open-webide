@@ -21,6 +21,19 @@ pub struct InProcessBridgeClient {
 }
 
 impl BridgeClient for InProcessBridgeClient {
+    async fn context_status(&self) -> openwebide_agent::clients::ContextStatus {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            futures::future::join(self.environment(), self.git_status()),
+        )
+        .await
+        .unwrap_or_else(|_| openwebide_agent::clients::context_status_unavailable())
+    }
+
+    async fn environment(&self) -> Result<openwebide_core::ExecutionEnvironment, String> {
+        Ok(crate::exec::environment())
+    }
+
     async fn execute_command(
         &self,
         command: &str,

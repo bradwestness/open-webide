@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 20;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -136,6 +136,8 @@ async fn apply_step<D: Db>(
         16 => add_connection_tool_stream_revision(db).await,
         17 => add_cancel_requested_at_ms(db).await,
         18 => create_pending_edits(db).await,
+        19 => create_model_settings(db).await,
+        20 => share_model_profiles(db).await,
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),
     }
 }
@@ -570,5 +572,125 @@ async fn create_pending_edits<D: Db>(db: &D) -> Result<(), StorageError> {
         )
         .await?;
     }
+    Ok(())
+}
+
+async fn create_model_settings<D: Db>(db: &D) -> Result<(), StorageError> {
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS model_settings (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        server_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        settings TEXT NOT NULL,
+        PRIMARY KEY (user_id, server_id, model)
+    )",
+        &[],
+    )
+    .await?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS server_transport (
+        server_id INTEGER PRIMARY KEY REFERENCES connections(id) ON DELETE CASCADE,
+        settings TEXT NOT NULL
+    )",
+        &[],
+    )
+    .await?;
+    // Preserve the old model-specific context setting for every existing user.
+    db.execute(
+        "INSERT OR IGNORE INTO model_settings (user_id, server_id, model, settings)
+        SELECT users.id, connections.id, connections.model,
+        json_object('context_limit', connections.context_limit)
+        FROM users CROSS JOIN connections WHERE connections.model IS NOT NULL
+        AND connections.context_limit IS NOT NULL",
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn share_model_profiles<D: Db>(db: &D) -> Result<(), StorageError> {
+    use crate::db::DbValue;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS model_profiles (
+        server_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+        model TEXT NOT NULL, settings TEXT NOT NULL, PRIMARY KEY (server_id, model))",
+        &[],
+    )
+    .await?;
+    let legacy = db
+        .execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'model_settings'",
+            &[],
+        )
+        .await?;
+    if !legacy.rows.is_empty() {
+        // Resolve legacy conflicts deterministically: the earliest account's profile wins.
+        let rows = db.execute("SELECT user_id, server_id, model, settings FROM model_settings ORDER BY user_id, server_id, model", &[]).await?;
+        for row in rows.rows {
+            let user = row.get_int(0)?;
+            let mut profile: openwebide_core::ModelSettings =
+                serde_json::from_str(row.get_text(3)?)
+                    .map_err(|e| StorageError::Db(e.to_string()))?;
+            let old = db
+                .execute(
+                    "SELECT value FROM user_settings WHERE user_id = ? AND key = 'model_defaults'",
+                    &[DbValue::Int(user)],
+                )
+                .await?;
+            let mut defaults: serde_json::Value = old
+                .rows
+                .first()
+                .map(|row| {
+                    serde_json::from_str(row.get_text(0)?)
+                        .map_err(|e| StorageError::Db(e.to_string()))
+                })
+                .transpose()?
+                .unwrap_or_else(|| serde_json::json!({}));
+            if profile.auto_compact_threshold.is_none() {
+                profile.auto_compact_threshold = defaults
+                    .get("auto_compact_threshold")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u8::try_from(value).ok());
+            }
+            if let Some(fast) = profile.fast.take()
+                && defaults.get("fast").is_none_or(serde_json::Value::is_null)
+            {
+                defaults["fast"] =
+                    serde_json::to_value(fast).map_err(|e| StorageError::Db(e.to_string()))?;
+                db.execute("INSERT INTO user_settings (user_id, key, value) VALUES (?, 'model_defaults', ?) ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value", &[DbValue::Int(user), DbValue::Text(defaults.to_string())]).await?;
+            }
+            db.execute("INSERT OR IGNORE INTO model_profiles (server_id, model, settings) VALUES (?, ?, ?)", &[DbValue::Int(row.get_int(1)?), DbValue::Text(row.get_text(2)?.into()), DbValue::Text(serde_json::to_string(&profile).map_err(|e| StorageError::Db(e.to_string()))?)]).await?;
+        }
+        db.execute("DROP TABLE model_settings", &[]).await?;
+    }
+    // Older users could configure a threshold without creating an explicit model profile.
+    let defaults = db
+        .execute(
+            "SELECT value FROM user_settings WHERE key = 'model_defaults' ORDER BY user_id",
+            &[],
+        )
+        .await?;
+    for row in defaults.rows {
+        let value: serde_json::Value =
+            serde_json::from_str(row.get_text(0)?).map_err(|e| StorageError::Db(e.to_string()))?;
+        let Some(threshold) = value
+            .get("auto_compact_threshold")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            continue;
+        };
+        let Some(primary) = value.get("primary").and_then(|value| {
+            serde_json::from_value::<openwebide_core::ModelSelection>(value.clone()).ok()
+        }) else {
+            continue;
+        };
+        db.execute("INSERT OR IGNORE INTO model_profiles (server_id, model, settings) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM connections WHERE id = ?)", &[DbValue::Int(primary.server_id), DbValue::Text(primary.model), DbValue::Text(serde_json::json!({"auto_compact_threshold":threshold}).to_string()), DbValue::Int(primary.server_id)]).await?;
+    }
+    db.execute("INSERT OR IGNORE INTO settings (key, value) SELECT key, value FROM user_settings WHERE key GLOB 'model_detection_*' ORDER BY user_id", &[]).await?;
+    db.execute(
+        "DELETE FROM user_settings WHERE key GLOB 'model_detection_*'",
+        &[],
+    )
+    .await?;
     Ok(())
 }

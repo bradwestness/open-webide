@@ -15,15 +15,6 @@ pub fn StatusBar(
     let show_terminal = chat.show_terminal.read_only();
     let git_status: Signal<Option<openwebide_core::GitRepoStatus>> =
         Signal::derive(move || git.status.get());
-    let approval_mode = Signal::derive(move || {
-        chat.active_session
-            .get()
-            .and_then(|session_id| {
-                chat.approval_mode
-                    .with(|modes| modes.get(&session_id).copied())
-            })
-            .unwrap_or_default()
-    });
     view! {
         <footer class="statusbar">
             <Show
@@ -101,11 +92,6 @@ pub fn StatusBar(
             }}
 
             <span class="spacer" />
-            <Show when=move || approval_mode.get() == openwebide_agent::policy::ApprovalMode::AlwaysForSession>
-                <span class="status-mode" title="Always approve tools (except run_command) for this session">
-                    "[ALWAYS]"
-                </span>
-            </Show>
             <button
                 class=move || if show_terminal.get() { "status-btn active" } else { "status-btn" }
                 title="Toggle terminal dock (Ctrl+`)"

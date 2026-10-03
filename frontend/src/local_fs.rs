@@ -3,10 +3,7 @@
 
 use send_wrapper::SendWrapper;
 
-use openwebide_core::{
-    FileEntry, SearchHit, Vfs, VfsFuture, find_content_matches,
-    vfs::{SearchOptions, skip_dir},
-};
+use openwebide_core::{FileEntry, SearchHit, Vfs, VfsError, VfsFuture, vfs::SearchOptions};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
@@ -38,6 +35,26 @@ pub fn js_error(e: &JsValue) -> String {
     }
 }
 
+fn js_vfs_error(error: JsValue) -> VfsError {
+    let name = js_sys::Reflect::get(&error, &JsValue::from_str("name"))
+        .ok()
+        .and_then(|value| value.as_string());
+    let detail = js_error(&error);
+    match name.as_deref() {
+        Some("NotFoundError") => VfsError::NotFound(detail),
+        Some("NotAllowedError" | "SecurityError") => VfsError::PermissionDenied(detail),
+        Some("InvalidModificationError") => VfsError::AlreadyExists(detail),
+        _ => VfsError::Io(detail),
+    }
+}
+
+pub fn display_error(error: VfsError) -> String {
+    match error {
+        VfsError::PermissionDenied(ref detail) if detail == PERMISSION_NEEDED => detail.clone(),
+        error => error.to_string(),
+    }
+}
+
 /// Call a `FileSystemHandle` permission method with an explicit readwrite
 /// descriptor and await its promise. web-sys 0.3.x only exposes the no-arg
 /// overloads (which default to "read"), but writes need readwrite, so the JS
@@ -45,7 +62,7 @@ pub fn js_error(e: &JsValue) -> String {
 async fn call_permission_method(
     handle: &FileSystemDirectoryHandle,
     method: &str,
-) -> Result<JsValue, String> {
+) -> Result<JsValue, VfsError> {
     let desc = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &desc,
@@ -53,16 +70,15 @@ async fn call_permission_method(
         &JsValue::from_str("readwrite"),
     );
     let this: JsValue = handle.clone().unchecked_into();
-    let fn_value =
-        js_sys::Reflect::get(&this, &JsValue::from_str(method)).map_err(|e| js_error(&e))?;
+    let fn_value = js_sys::Reflect::get(&this, &JsValue::from_str(method)).map_err(js_vfs_error)?;
     let fn_value: js_sys::Function = fn_value
         .dyn_into()
-        .map_err(|_| format!("{method} is not a function"))?;
-    let promise_value = fn_value.call1(&this, &desc).map_err(|e| js_error(&e))?;
+        .map_err(|_| VfsError::Io(format!("{method} is not a function")))?;
+    let promise_value = fn_value.call1(&this, &desc).map_err(js_vfs_error)?;
     let promise: js_sys::Promise = promise_value
         .dyn_into()
-        .map_err(|_| "permission method did not return a promise".to_string())?;
-    JsFuture::from(promise).await.map_err(|e| js_error(&e))
+        .map_err(|_| VfsError::Io("permission method did not return a promise".to_string()))?;
+    JsFuture::from(promise).await.map_err(js_vfs_error)
 }
 
 pub const PERMISSION_NEEDED: &str = "folder access needs to be granted";
@@ -70,12 +86,150 @@ pub const PERMISSION_NEEDED: &str = "folder access needs to be granted";
 /// Ensure the handle has readwrite permission, prompting the user if needed.
 /// A freshly picked handle is already granted; one restored from IndexedDB
 /// after a reload reverts to "prompt" and must be re-requested before use.
-async fn ensure_permission(handle: &FileSystemDirectoryHandle) -> Result<(), String> {
+async fn ensure_permission(handle: &FileSystemDirectoryHandle) -> Result<(), VfsError> {
     let query = call_permission_method(handle, "queryPermission").await?;
     if query.as_string().as_deref() == Some("granted") {
         return Ok(());
     }
-    Err(PERMISSION_NEEDED.to_string())
+    Err(VfsError::PermissionDenied(PERMISSION_NEEDED.to_string()))
+}
+
+/// List a directory's entries, returning project-relative paths.
+async fn list_typed(
+    root: &FileSystemDirectoryHandle,
+    dir: &str,
+) -> Result<Vec<FileEntry>, VfsError> {
+    let dir = openwebide_core::vfs::workspace_path(dir)?;
+    ensure_permission(root).await?;
+    let dir_handle = resolve_dir(root, &dir).await?;
+    dir_entries(&dir_handle, &dir).await
+}
+
+/// Read a file's contents as text.
+async fn read_typed(root: &FileSystemDirectoryHandle, path: &str) -> Result<String, VfsError> {
+    let path = openwebide_core::vfs::workspace_path(path)?;
+    ensure_permission(root).await?;
+    let (parent, name) = split_path(&path);
+    let parent_dir = resolve_dir(root, &parent).await?;
+    let file_handle = file_handle(&parent_dir, &name).await?;
+    file_handle_text(&file_handle).await
+}
+
+async fn read_lossy_typed(
+    root: &FileSystemDirectoryHandle,
+    path: &str,
+) -> Result<String, VfsError> {
+    let path = openwebide_core::vfs::workspace_path(path)?;
+    ensure_permission(root).await?;
+    let (parent, name) = split_path(&path);
+    let parent_dir = resolve_dir(root, &parent).await?;
+    let file_handle = file_handle(&parent_dir, &name).await?;
+    let file_value = JsFuture::from(file_handle.get_file())
+        .await
+        .map_err(js_vfs_error)?;
+    let blob: Blob = file_value
+        .dyn_into()
+        .map_err(|_| VfsError::Io(format!("no such file: {path}")))?;
+    check_read_size(blob.size())?;
+    let buffer = JsFuture::from(blob.array_buffer())
+        .await
+        .map_err(js_vfs_error)?;
+    let u8_array = js_sys::Uint8Array::new(&buffer);
+    let vec = u8_array.to_vec();
+    Ok(String::from_utf8_lossy(&vec).into_owned())
+}
+
+/// Create an object URL (blob:...) for a local file to display media assets.
+async fn read_blob_url_typed(
+    root: &FileSystemDirectoryHandle,
+    path: &str,
+) -> Result<String, VfsError> {
+    let path = openwebide_core::vfs::workspace_path(path)?;
+    ensure_permission(root).await?;
+    let (parent, name) = split_path(&path);
+    let parent_dir = resolve_dir(root, &parent).await?;
+    let file_handle = file_handle(&parent_dir, &name).await?;
+    let file_value = JsFuture::from(file_handle.get_file())
+        .await
+        .map_err(js_vfs_error)?;
+    let blob: Blob = file_value
+        .dyn_into()
+        .map_err(|_| VfsError::Io(format!("no such file: {path}")))?;
+    check_read_size(blob.size())?;
+    web_sys::Url::create_object_url_with_blob(&blob).map_err(js_vfs_error)
+}
+
+/// Write text to a file, creating parent directories as needed.
+async fn write_typed(
+    root: &FileSystemDirectoryHandle,
+    path: &str,
+    content: &str,
+) -> Result<(), VfsError> {
+    let path = openwebide_core::vfs::workspace_path(path)?;
+    ensure_permission(root).await?;
+    let (parent, name) = split_path(&path);
+    let parent_dir = ensure_dir(root, &parent).await?;
+    let fh = file_handle_create(&parent_dir, &name).await?;
+    write_file_handle(&fh, content).await
+}
+
+/// Create an empty file or a directory, creating parent directories as needed.
+///
+/// For files: exclusive — fails with an "already exists" error if the file
+/// already exists, leaving it intact. For directories: idempotent.
+async fn create_typed(
+    root: &FileSystemDirectoryHandle,
+    path: &str,
+    is_dir: bool,
+) -> Result<(), VfsError> {
+    let path = openwebide_core::vfs::workspace_path(path)?;
+    ensure_permission(root).await?;
+    if is_dir {
+        ensure_dir(root, &path).await?;
+        return Ok(());
+    }
+    let (parent, name) = split_path(&path);
+    let parent_dir = ensure_dir(root, &parent).await?;
+    match file_handle(&parent_dir, &name).await {
+        Ok(_) => return Err(VfsError::AlreadyExists(path.to_string())),
+        Err(VfsError::NotFound(_)) => {}
+        Err(error) => return Err(error),
+    }
+    let fh = file_handle_create(&parent_dir, &name).await?;
+    write_file_handle(&fh, "").await
+}
+
+/// Delete the file at `path`.
+async fn delete_typed(root: &FileSystemDirectoryHandle, path: &str) -> Result<(), VfsError> {
+    let path = openwebide_core::vfs::workspace_path(path)?;
+    ensure_permission(root).await?;
+    let (parent, name) = split_path(&path);
+    let parent_dir = resolve_dir(root, &parent).await?;
+    JsFuture::from(parent_dir.remove_entry(&name))
+        .await
+        .map_err(js_vfs_error)?;
+    Ok(())
+}
+
+/// Full-text search: return the lines of every readable text file under `dir`
+/// whose content contains `query` (case-insensitive).
+pub async fn search_content(
+    root: &FileSystemDirectoryHandle,
+    query: &str,
+    dir: &str,
+    opts: SearchOptions,
+) -> Result<Vec<SearchHit>, String> {
+    openwebide_core::search::content(&BrowserFsaVfs::new(root.clone()), query, dir, opts)
+        .await
+        .map_err(display_error)
+}
+
+fn check_read_size(size: f64) -> Result<(), VfsError> {
+    if size > openwebide_core::vfs::MAX_READ_BYTES as f64 {
+        Err(VfsError::Io("file exceeds 10 MiB".into()))
+    } else {
+        Ok(())
+    }
 }
 
 pub async fn request_access(handle: &FileSystemDirectoryHandle) -> Result<bool, String> {
@@ -90,8 +244,22 @@ pub async fn request_access(handle: &FileSystemDirectoryHandle) -> Result<bool, 
 /// rejected promise's reason is an *object* (so `JsValue::as_string` is
 /// `None`) — treating it as a string would surface an empty error.
 pub async fn pick_directory() -> Result<Option<FileSystemDirectoryHandle>, String> {
+    pick_directory_from(None).await
+}
+
+pub async fn pick_directory_from(
+    previous: Option<&FileSystemDirectoryHandle>,
+) -> Result<Option<FileSystemDirectoryHandle>, String> {
     let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
     let options = DirectoryPickerOptions::new();
+    if let Some(handle) = previous {
+        js_sys::Reflect::set(
+            options.as_ref(),
+            &JsValue::from_str("startIn"),
+            handle.as_ref(),
+        )
+        .map_err(|error| js_error(&error))?;
+    }
     options.set_mode(FileSystemPermissionMode::Readwrite);
     let promise = window
         .show_directory_picker_with_options(&options)
@@ -116,122 +284,49 @@ pub async fn pick_directory() -> Result<Option<FileSystemDirectoryHandle>, Strin
     }
 }
 
-/// List a directory's entries, returning project-relative paths.
 pub async fn list(root: &FileSystemDirectoryHandle, dir: &str) -> Result<Vec<FileEntry>, String> {
-    ensure_permission(root).await?;
-    let dir_handle = resolve_dir(root, dir).await?;
-    dir_entries(&dir_handle, dir).await
+    BrowserFsaVfs::new(root.clone())
+        .list(dir)
+        .await
+        .map_err(display_error)
 }
-
-/// Read a file's contents as text.
 pub async fn read(root: &FileSystemDirectoryHandle, path: &str) -> Result<String, String> {
-    ensure_permission(root).await?;
-    let (parent, name) = split_path(path);
-    let parent_dir = resolve_dir(root, &parent).await?;
-    let file_handle = file_handle(&parent_dir, &name).await?;
-    file_handle_text(&file_handle).await
-}
-
-pub async fn read_lossy(root: &FileSystemDirectoryHandle, path: &str) -> Result<String, String> {
-    ensure_permission(root).await?;
-    let (parent, name) = split_path(path);
-    let parent_dir = resolve_dir(root, &parent).await?;
-    let file_handle = file_handle(&parent_dir, &name).await?;
-    let file_value = JsFuture::from(file_handle.get_file())
+    BrowserFsaVfs::new(root.clone())
+        .read(path)
         .await
-        .map_err(|e| js_error(&e))?;
-    let blob: Blob = file_value
-        .dyn_into()
-        .map_err(|_| format!("no such file: {path}"))?;
-    let buffer = JsFuture::from(blob.array_buffer())
-        .await
-        .map_err(|e| js_error(&e))?;
-    let u8_array = js_sys::Uint8Array::new(&buffer);
-    let vec = u8_array.to_vec();
-    Ok(String::from_utf8_lossy(&vec).into_owned())
+        .map_err(display_error)
 }
-
-/// Create an object URL (blob:...) for a local file to display media assets.
-pub async fn read_blob_url(root: &FileSystemDirectoryHandle, path: &str) -> Result<String, String> {
-    ensure_permission(root).await?;
-    let (parent, name) = split_path(path);
-    let parent_dir = resolve_dir(root, &parent).await?;
-    let file_handle = file_handle(&parent_dir, &name).await?;
-    let file_value = JsFuture::from(file_handle.get_file())
-        .await
-        .map_err(|e| js_error(&e))?;
-    let blob: Blob = file_value
-        .dyn_into()
-        .map_err(|_| format!("no such file: {path}"))?;
-    web_sys::Url::create_object_url_with_blob(&blob).map_err(|e| js_error(&e))
-}
-
-/// Write text to a file, creating parent directories as needed.
 pub async fn write(
     root: &FileSystemDirectoryHandle,
     path: &str,
     content: &str,
 ) -> Result<(), String> {
-    ensure_permission(root).await?;
-    let (parent, name) = split_path(path);
-    let parent_dir = ensure_dir(root, &parent).await?;
-    let fh = file_handle_create(&parent_dir, &name).await?;
-    write_file_handle(&fh, content).await
+    BrowserFsaVfs::new(root.clone())
+        .write(path, content)
+        .await
+        .map_err(display_error)
 }
-
-/// Create an empty file or a directory, creating parent directories as needed.
-///
-/// For files: exclusive — fails with an "already exists" error if the file
-/// already exists, leaving it intact. For directories: idempotent.
 pub async fn create(
     root: &FileSystemDirectoryHandle,
     path: &str,
     is_dir: bool,
 ) -> Result<(), String> {
-    ensure_permission(root).await?;
-    if is_dir {
-        ensure_dir(root, path).await?;
-        return Ok(());
-    }
-    let (parent, name) = split_path(path);
-    let parent_dir = ensure_dir(root, &parent).await?;
-    match file_handle(&parent_dir, &name).await {
-        Ok(_) => return Err(format!("already exists: {path}")),
-        Err(e) => {
-            let is_not_found = e.contains("NotFoundError") || e.contains("no such file");
-            if !is_not_found {
-                return Err(e);
-            }
-        }
-    }
-    let fh = file_handle_create(&parent_dir, &name).await?;
-    write_file_handle(&fh, "").await
-}
-
-/// Delete the file at `path`.
-pub async fn delete(root: &FileSystemDirectoryHandle, path: &str) -> Result<(), String> {
-    ensure_permission(root).await?;
-    let (parent, name) = split_path(path);
-    let parent_dir = resolve_dir(root, &parent).await?;
-    JsFuture::from(parent_dir.remove_entry(&name))
+    BrowserFsaVfs::new(root.clone())
+        .create(path, is_dir)
         .await
-        .map_err(|e| js_error(&e))?;
-    Ok(())
+        .map_err(display_error)
 }
-
-/// Full-text search: return the lines of every readable text file under `dir`
-/// whose content contains `query` (case-insensitive).
-pub async fn search_content(
-    root: &FileSystemDirectoryHandle,
-    query: &str,
-    dir: &str,
-    opts: SearchOptions,
-) -> Result<Vec<SearchHit>, String> {
-    ensure_permission(root).await?;
-    let start = resolve_dir(root, dir).await?;
-    let mut results = Vec::new();
-    content_search_recursive(&start, dir, query, opts, &mut results).await?;
-    Ok(results)
+pub async fn delete(root: &FileSystemDirectoryHandle, path: &str) -> Result<(), String> {
+    BrowserFsaVfs::new(root.clone())
+        .delete(path)
+        .await
+        .map_err(display_error)
+}
+pub async fn read_lossy(root: &FileSystemDirectoryHandle, path: &str) -> Result<String, String> {
+    read_lossy_typed(root, path).await.map_err(display_error)
+}
+pub async fn read_blob_url(root: &FileSystemDirectoryHandle, path: &str) -> Result<String, String> {
+    read_blob_url_typed(root, path).await.map_err(display_error)
 }
 
 // -- internals ---------------------------------------------------------------
@@ -240,87 +335,83 @@ pub async fn search_content(
 async fn file_handle(
     dir: &FileSystemDirectoryHandle,
     name: &str,
-) -> Result<FileSystemFileHandle, String> {
+) -> Result<FileSystemFileHandle, VfsError> {
     let value = JsFuture::from(dir.get_file_handle(name))
         .await
-        .map_err(|e| js_error(&e))?;
+        .map_err(js_vfs_error)?;
     value
         .dyn_into::<FileSystemFileHandle>()
-        .map_err(|_| format!("no such file: {name}"))
+        .map_err(|_| VfsError::Io(format!("no such file: {name}")))
 }
 
 /// Get a file handle by name, creating it if it does not exist.
 async fn file_handle_create(
     dir: &FileSystemDirectoryHandle,
     name: &str,
-) -> Result<FileSystemFileHandle, String> {
+) -> Result<FileSystemFileHandle, VfsError> {
     let options = web_sys::FileSystemGetFileOptions::new();
     options.set_create(true);
     let value = JsFuture::from(dir.get_file_handle_with_options(name, &options))
         .await
-        .map_err(|e| js_error(&e))?;
+        .map_err(js_vfs_error)?;
     value
         .dyn_into::<FileSystemFileHandle>()
-        .map_err(|_| format!("cannot create file: {name}"))
+        .map_err(|_| VfsError::Io(format!("cannot create file: {name}")))
 }
 
 /// Get an existing directory handle by name, or fail if it does not exist.
 async fn dir_handle(
     dir: &FileSystemDirectoryHandle,
     name: &str,
-) -> Result<FileSystemDirectoryHandle, String> {
+) -> Result<FileSystemDirectoryHandle, VfsError> {
     let value = JsFuture::from(dir.get_directory_handle(name))
         .await
-        .map_err(|e| js_error(&e))?;
+        .map_err(js_vfs_error)?;
     value
         .dyn_into::<FileSystemDirectoryHandle>()
-        .map_err(|_| format!("no such directory: {name}"))
+        .map_err(|_| VfsError::Io(format!("no such directory: {name}")))
 }
 
 /// Get a directory handle by name, creating it if it does not exist.
 async fn dir_handle_create(
     dir: &FileSystemDirectoryHandle,
     name: &str,
-) -> Result<FileSystemDirectoryHandle, String> {
+) -> Result<FileSystemDirectoryHandle, VfsError> {
     let options = FileSystemGetDirectoryOptions::new();
     options.set_create(true);
     let value = JsFuture::from(dir.get_directory_handle_with_options(name, &options))
         .await
-        .map_err(|e| js_error(&e))?;
+        .map_err(js_vfs_error)?;
     value
         .dyn_into::<FileSystemDirectoryHandle>()
-        .map_err(|_| format!("cannot create directory: {name}"))
+        .map_err(|_| VfsError::Io(format!("cannot create directory: {name}")))
 }
 
 async fn write_file_handle(
     file_handle: &FileSystemFileHandle,
     content: &str,
-) -> Result<(), String> {
+) -> Result<(), VfsError> {
     let writable_value = JsFuture::from(file_handle.create_writable())
         .await
-        .map_err(|e| js_error(&e))?;
+        .map_err(js_vfs_error)?;
     let writable: FileSystemWritableFileStream = writable_value
         .dyn_into()
-        .map_err(|_| "failed to open writable stream".to_string())?;
-    let write_promise = writable.write_with_str(content).map_err(|e| js_error(&e))?;
-    JsFuture::from(write_promise)
-        .await
-        .map_err(|e| js_error(&e))?;
+        .map_err(|_| VfsError::Io("failed to open writable stream".to_string()))?;
+    let write_promise = writable.write_with_str(content).map_err(js_vfs_error)?;
+    JsFuture::from(write_promise).await.map_err(js_vfs_error)?;
     // web-sys does not expose `FileSystemWritableFileStream::close`, so call it
     // through Reflect.
     let writable_js: JsValue = writable.unchecked_into();
-    let close_fn_value = js_sys::Reflect::get(&writable_js, &JsValue::from_str("close"))
-        .map_err(|e| js_error(&e))?;
+    let close_fn_value =
+        js_sys::Reflect::get(&writable_js, &JsValue::from_str("close")).map_err(js_vfs_error)?;
     let close_fn: js_sys::Function = close_fn_value
         .dyn_into()
-        .map_err(|_| "close is not a function".to_string())?;
+        .map_err(|_| VfsError::Io("close is not a function".to_string()))?;
     let close_promise_value =
         js_sys::Reflect::apply(&close_fn, &writable_js, &js_sys::Array::new())
-            .map_err(|e| js_error(&e))?;
+            .map_err(js_vfs_error)?;
     let close_promise: js_sys::Promise = close_promise_value.unchecked_into();
-    JsFuture::from(close_promise)
-        .await
-        .map_err(|e| js_error(&e))?;
+    JsFuture::from(close_promise).await.map_err(js_vfs_error)?;
     Ok(())
 }
 
@@ -328,8 +419,9 @@ async fn write_file_handle(
 async fn resolve_dir(
     root: &FileSystemDirectoryHandle,
     dir: &str,
-) -> Result<FileSystemDirectoryHandle, String> {
+) -> Result<FileSystemDirectoryHandle, VfsError> {
     let mut current = root.clone();
+    let dir = openwebide_core::vfs::workspace_path(dir)?;
     for part in dir.split('/').filter(|p| !p.is_empty()) {
         current = dir_handle(&current, part).await?;
     }
@@ -340,8 +432,9 @@ async fn resolve_dir(
 async fn ensure_dir(
     root: &FileSystemDirectoryHandle,
     path: &str,
-) -> Result<FileSystemDirectoryHandle, String> {
+) -> Result<FileSystemDirectoryHandle, VfsError> {
     let mut current = root.clone();
+    let path = openwebide_core::vfs::workspace_path(path)?;
     for part in path.split('/').filter(|p| !p.is_empty()) {
         current = dir_handle_create(&current, part).await?;
     }
@@ -352,26 +445,37 @@ async fn ensure_dir(
 async fn dir_entries_with_handles(
     dir_handle: &FileSystemDirectoryHandle,
     prefix: &str,
-) -> Result<Vec<(FileEntry, FileSystemHandle)>, String> {
+) -> Result<Vec<(FileEntry, FileSystemHandle)>, VfsError> {
     let iter = dir_handle.values();
     let mut entries = Vec::new();
     loop {
-        let next_promise = iter.next().map_err(|e| js_error(&e))?;
-        let result = JsFuture::from(next_promise)
-            .await
-            .map_err(|e| js_error(&e))?;
+        let next_promise = iter.next().map_err(js_vfs_error)?;
+        let result = JsFuture::from(next_promise).await.map_err(js_vfs_error)?;
         let done =
-            js_sys::Reflect::get(&result, &JsValue::from_str("done")).map_err(|e| js_error(&e))?;
+            js_sys::Reflect::get(&result, &JsValue::from_str("done")).map_err(js_vfs_error)?;
         if done.as_bool().unwrap_or(true) {
             break;
         }
         let value =
-            js_sys::Reflect::get(&result, &JsValue::from_str("value")).map_err(|e| js_error(&e))?;
+            js_sys::Reflect::get(&result, &JsValue::from_str("value")).map_err(js_vfs_error)?;
         let handle: FileSystemHandle = value
             .dyn_into()
-            .map_err(|_| "not a file system handle".to_string())?;
+            .map_err(|_| VfsError::Io("not a file system handle".to_string()))?;
         let name = handle.name();
         let is_dir = handle.kind() == FileSystemHandleKind::Directory;
+        if name == ".spin" {
+            continue;
+        }
+        let size = if is_dir {
+            0
+        } else {
+            let file: FileSystemFileHandle = handle.clone().unchecked_into();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // Browser File.size is a nonnegative integer within JS's exact range.
+            {
+                file_handle_file(&file).await?.size() as u64
+            }
+        };
         let path = if prefix.is_empty() {
             name.clone()
         } else {
@@ -382,7 +486,7 @@ async fn dir_entries_with_handles(
                 name,
                 path,
                 is_dir,
-                size: 0,
+                size,
             },
             handle,
         ));
@@ -393,90 +497,36 @@ async fn dir_entries_with_handles(
 async fn dir_entries(
     dir_handle: &FileSystemDirectoryHandle,
     prefix: &str,
-) -> Result<Vec<FileEntry>, String> {
+) -> Result<Vec<FileEntry>, VfsError> {
     dir_entries_with_handles(dir_handle, prefix)
         .await
         .map(|pairs| pairs.into_iter().map(|(entry, _)| entry).collect())
 }
 
 /// Cap on total hits a local content search returns, across the whole walk.
-const MAX_SEARCH_HITS: usize = 500;
-/// Files larger than this are skipped by local content search without being read.
-const MAX_SEARCH_FILE_BYTES: u64 = 1_048_576;
-
-async fn content_search_recursive(
-    dir_handle: &FileSystemDirectoryHandle,
-    prefix: &str,
-    query: &str,
-    opts: SearchOptions,
-    results: &mut Vec<SearchHit>,
-) -> Result<(), String> {
-    if results.len() >= MAX_SEARCH_HITS {
-        return Ok(());
-    }
-    let pairs = dir_entries_with_handles(dir_handle, prefix).await?;
-    for (entry, handle) in pairs {
-        if results.len() >= MAX_SEARCH_HITS {
-            break;
-        }
-        if entry.is_dir {
-            if skip_dir(&entry.name, opts) {
-                continue;
-            }
-            if let Some(sub) = handle.dyn_ref::<FileSystemDirectoryHandle>() {
-                Box::pin(content_search_recursive(
-                    sub,
-                    &entry.path,
-                    query,
-                    opts,
-                    results,
-                ))
-                .await?;
-            }
-        } else if let Some(file) = handle.dyn_ref::<FileSystemFileHandle>() {
-            let Ok(file) = file_handle_file(file).await else {
-                continue;
-            };
-            if file.size() > MAX_SEARCH_FILE_BYTES as f64 {
-                continue;
-            }
-            if let Ok(content) = file_to_text(&file).await {
-                for (line, text) in find_content_matches(&content, query) {
-                    if results.len() >= MAX_SEARCH_HITS {
-                        break;
-                    }
-                    results.push(SearchHit {
-                        path: entry.path.clone(),
-                        line,
-                        text,
-                    });
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Fetch a file handle's `File`, so its size can be checked before reading.
-async fn file_handle_file(file: &FileSystemFileHandle) -> Result<File, String> {
+async fn file_handle_file(file: &FileSystemFileHandle) -> Result<File, VfsError> {
     let file_value = JsFuture::from(file.get_file())
         .await
-        .map_err(|e| js_error(&e))?;
-    file_value.dyn_into().map_err(|_| "not a file".to_string())
+        .map_err(js_vfs_error)?;
+    file_value
+        .dyn_into()
+        .map_err(|_| VfsError::Io("not a file".to_string()))
 }
 
 /// Read a `File`'s contents as text.
-async fn file_to_text(file: &File) -> Result<String, String> {
+async fn file_to_text(file: &File) -> Result<String, VfsError> {
+    check_read_size(file.size())?;
     let buffer = JsFuture::from(file.array_buffer())
         .await
-        .map_err(|e| js_error(&e))?;
+        .map_err(js_vfs_error)?;
     let u8_array = js_sys::Uint8Array::new(&buffer);
     let vec = u8_array.to_vec();
-    String::from_utf8(vec).map_err(|_| "file is not valid UTF-8".to_string())
+    String::from_utf8(vec).map_err(|_| VfsError::Io("file is not valid UTF-8".to_string()))
 }
 
 /// Read a file handle's contents as text.
-async fn file_handle_text(file: &FileSystemFileHandle) -> Result<String, String> {
+async fn file_handle_text(file: &FileSystemFileHandle) -> Result<String, VfsError> {
     let file = file_handle_file(file).await?;
     file_to_text(&file).await
 }
@@ -512,57 +562,45 @@ impl Vfs for BrowserFsaVfs {
         let from = from.to_string();
         let to = to.to_string();
         Box::pin(SendWrapper::new(async move {
+            ensure_permission(&root).await?;
+            let from = openwebide_core::vfs::workspace_path(&from)?;
+            let to = openwebide_core::vfs::workspace_path(&to)?;
             let (from_parent, from_name) = split_path(&from);
-            let from_dir = resolve_dir(&root, &from_parent)
-                .await
-                .map_err(crate::vfs_err::map_vfs_err)?;
-            let from_handle = file_handle(&from_dir, &from_name)
-                .await
-                .map_err(crate::vfs_err::map_vfs_err)?;
+            let from_dir = resolve_dir(&root, &from_parent).await?;
+            let from_handle = file_handle(&from_dir, &from_name).await?;
 
             let file_value = JsFuture::from(from_handle.get_file())
                 .await
-                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
+                .map_err(js_vfs_error)?;
             let file: web_sys::File = file_value
                 .dyn_into()
-                .map_err(|_| crate::vfs_err::map_vfs_err(format!("no such file: {from}")))?;
+                .map_err(|_| VfsError::Io(format!("no such file: {from}")))?;
 
             let (to_parent, to_name) = split_path(&to);
-            let to_dir = ensure_dir(&root, &to_parent)
-                .await
-                .map_err(crate::vfs_err::map_vfs_err)?;
-            let to_handle = file_handle_create(&to_dir, &to_name)
-                .await
-                .map_err(crate::vfs_err::map_vfs_err)?;
+            let to_dir = ensure_dir(&root, &to_parent).await?;
+            let to_handle = file_handle_create(&to_dir, &to_name).await?;
 
             let writable_value = JsFuture::from(to_handle.create_writable())
                 .await
-                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
-            let writable: FileSystemWritableFileStream =
-                writable_value.dyn_into().map_err(|_| {
-                    crate::vfs_err::map_vfs_err("failed to open writable stream".to_string())
-                })?;
+                .map_err(js_vfs_error)?;
+            let writable: FileSystemWritableFileStream = writable_value
+                .dyn_into()
+                .map_err(|_| VfsError::Io("failed to open writable stream".to_string()))?;
 
-            let write_promise = writable
-                .write_with_blob(&file)
-                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
-            JsFuture::from(write_promise)
-                .await
-                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
+            let write_promise = writable.write_with_blob(&file).map_err(js_vfs_error)?;
+            JsFuture::from(write_promise).await.map_err(js_vfs_error)?;
 
             let writable_js: JsValue = writable.unchecked_into();
             let close_fn_value = js_sys::Reflect::get(&writable_js, &JsValue::from_str("close"))
-                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
+                .map_err(js_vfs_error)?;
             let close_fn: js_sys::Function = close_fn_value
                 .dyn_into()
-                .map_err(|_| crate::vfs_err::map_vfs_err("close is not a function".to_string()))?;
+                .map_err(|_| VfsError::Io("close is not a function".to_string()))?;
             let close_promise_value =
                 js_sys::Reflect::apply(&close_fn, &writable_js, &js_sys::Array::new())
-                    .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
+                    .map_err(js_vfs_error)?;
             let close_promise: js_sys::Promise = close_promise_value.unchecked_into();
-            JsFuture::from(close_promise)
-                .await
-                .map_err(|e| crate::vfs_err::map_vfs_err(js_error(&e)))?;
+            JsFuture::from(close_promise).await.map_err(js_vfs_error)?;
 
             Ok(())
         }))
@@ -571,11 +609,9 @@ impl Vfs for BrowserFsaVfs {
     fn read<'a>(&'a self, path: &'a str) -> VfsFuture<'a, String> {
         let root = self.root.clone();
         let path = path.to_string();
-        Box::pin(SendWrapper::new(async move {
-            read(&root, &path)
-                .await
-                .map_err(crate::vfs_err::map_vfs_err)
-        }))
+        Box::pin(SendWrapper::new(
+            async move { read_typed(&root, &path).await },
+        ))
     }
 
     fn write<'a>(&'a self, path: &'a str, content: &'a str) -> VfsFuture<'a, ()> {
@@ -583,53 +619,31 @@ impl Vfs for BrowserFsaVfs {
         let path = path.to_string();
         let content = content.to_string();
         Box::pin(SendWrapper::new(async move {
-            write(&root, &path, &content)
-                .await
-                .map_err(crate::vfs_err::map_vfs_err)
+            write_typed(&root, &path, &content).await
         }))
     }
 
     fn list<'a>(&'a self, dir: &'a str) -> VfsFuture<'a, Vec<FileEntry>> {
         let root = self.root.clone();
         let dir = dir.to_string();
-        Box::pin(SendWrapper::new(async move {
-            list(&root, &dir).await.map_err(crate::vfs_err::map_vfs_err)
-        }))
+        Box::pin(SendWrapper::new(
+            async move { list_typed(&root, &dir).await },
+        ))
     }
 
     fn create<'a>(&'a self, path: &'a str, is_dir: bool) -> VfsFuture<'a, ()> {
         let root = self.root.clone();
         let path = path.to_string();
         Box::pin(SendWrapper::new(async move {
-            create(&root, &path, is_dir)
-                .await
-                .map_err(crate::vfs_err::map_vfs_err)
+            create_typed(&root, &path, is_dir).await
         }))
     }
 
     fn delete<'a>(&'a self, path: &'a str) -> VfsFuture<'a, ()> {
         let root = self.root.clone();
         let path = path.to_string();
-        Box::pin(SendWrapper::new(async move {
-            delete(&root, &path)
-                .await
-                .map_err(crate::vfs_err::map_vfs_err)
-        }))
-    }
-
-    fn search_content<'a>(
-        &'a self,
-        query: &'a str,
-        dir: &'a str,
-        opts: SearchOptions,
-    ) -> VfsFuture<'a, Vec<SearchHit>> {
-        let root = self.root.clone();
-        let query = query.to_string();
-        let dir = dir.to_string();
-        Box::pin(SendWrapper::new(async move {
-            search_content(&root, &query, &dir, opts)
-                .await
-                .map_err(crate::vfs_err::map_vfs_err)
-        }))
+        Box::pin(SendWrapper::new(
+            async move { delete_typed(&root, &path).await },
+        ))
     }
 }

@@ -18,6 +18,10 @@ pub mod local_agent;
 pub mod local_fs;
 pub mod markdown;
 pub mod pending;
+#[cfg(target_arch = "wasm32")]
+pub mod project_git;
+#[cfg(target_arch = "wasm32")]
+pub mod project_host;
 pub mod sse;
 pub mod state;
 #[cfg(target_arch = "wasm32")]
@@ -28,7 +32,6 @@ pub mod testing;
 pub mod text;
 #[cfg(target_arch = "wasm32")]
 pub mod util;
-pub mod vfs_err;
 #[cfg(target_arch = "wasm32")]
 pub mod workspace;
 

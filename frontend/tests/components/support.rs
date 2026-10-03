@@ -4,7 +4,6 @@ use leptos::prelude::*;
 use openwebide_core::{ChatSession, Connection, Project, ProviderKind, WorkspaceMode};
 use openwebide_frontend::{
     backend::Api,
-    bridge::BridgeCredentials,
     components::{ChatPane, ConfirmDialog, Editor},
     state::{
         auth::AuthState,
@@ -60,6 +59,12 @@ impl TestState {
         provide_context(git);
         provide_context(chat);
         provide_context(settings);
+        provide_context(openwebide_frontend::project_git::ProjectGit::new(
+            api,
+            projects,
+            settings,
+            expect_context::<AuthState>(),
+        ));
         Self {
             api,
             fake,
@@ -167,15 +172,15 @@ fn mount_backend<N: IntoView + 'static>(
 }
 
 pub async fn settle() {
-    for _ in 0..10 {
+    for _ in 0..50 {
         JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
             .await
             .unwrap();
     }
 }
 
-pub fn chat_view(state: TestState) -> impl IntoView {
-    let actions = ChatActions::new(ChatActionContext {
+pub fn chat_actions(state: TestState) -> ChatActions {
+    ChatActions::new(ChatActionContext {
         api: state.api,
         chat: state.chat,
         projects: state.projects,
@@ -183,15 +188,19 @@ pub fn chat_view(state: TestState) -> impl IntoView {
         settings: state.settings,
         ui: state.ui,
         git: state.git,
-        bridge_credentials: StoredValue::new(BridgeCredentials::new(state.api)),
         bridge: state.bridge,
         request_open: Callback::new(|_| ()),
         refresh_git: Callback::new(|()| ()),
         on_sync_click: Callback::new(|()| ()),
-    });
+    })
+}
+
+pub fn chat_view(state: TestState) -> impl IntoView {
+    let actions = chat_actions(state);
     view! {
         <ChatPane on_open_local=Callback::new(|()| ()) on_open_remote=Callback::new(|()| ())
-            on_select_model=actions.select_model on_send=actions.send on_resume_local_run=actions.resume_local_run on_stop=actions.stop
+            on_select_connection_model=actions.select_connection_model
+            on_send=actions.send on_resume_local_run=actions.resume_local_run on_stop=actions.stop
             on_permission=actions.permission on_permission_always=actions.permission_always on_slash_command=actions.slash_command />
     }
 }

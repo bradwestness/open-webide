@@ -3,6 +3,17 @@ use wasm_bindgen_test::*;
 
 use super::support::{chat_view, mount_test, settle};
 
+async fn settle_run(mounted: &super::support::Mounted) {
+    use leptos::prelude::GetUntracked;
+    for _ in 0..50 {
+        settle().await;
+        if !mounted.state.chat.streaming.get_untracked() {
+            return;
+        }
+    }
+    panic!("local run did not settle");
+}
+
 fn message(id: i64, role: Role, content: &str) -> ChatMessage {
     ChatMessage {
         id,
@@ -141,9 +152,9 @@ fn interrupted_local_view(state: super::support::TestState) -> impl leptos::prel
             preamble: String::new(),
             usage: None,
         });
-    // A text-only completion never accesses the directory handle.
+    // Startup context checks instruction files even for a text-only completion.
     state.projects.local_handles.update(|handles| {
-        handles.insert(1, js_sys::Object::new().unchecked_into());
+        handles.insert(1, super::local_bridge::empty_read_folder().unchecked_into());
     });
     chat_view(state)
 }
@@ -162,7 +173,7 @@ async fn interrupted_local_resume_requests_model_without_persisting_user() {
     );
     mounted.state.fake.calls.borrow_mut().clear();
     mounted.click_text("Resume");
-    settle().await;
+    settle_run(&mounted).await;
     let calls = mounted.state.fake.calls.borrow();
     assert!(calls.contains(&Call::Request {
         method: "chat_tools"
@@ -175,10 +186,10 @@ async fn interrupted_local_resume_requests_model_without_persisting_user() {
                     method: "persist_message"
                 })
             .count(),
-        1
+        2
     );
     let messages = mounted.state.fake.messages.borrow();
-    assert_eq!(messages[&1].len(), 2);
+    assert_eq!(messages[&1].len(), 3);
     assert_eq!(messages[&1].iter().filter(|entry| matches!(entry, openwebide_core::ConversationEntry::Message(message) if message.role == Role::User)).count(), 1);
     assert!(
         mounted
@@ -268,7 +279,7 @@ async fn stale_resume_uses_fresh_history_turns() {
             usage: None,
         });
     mounted.click_text("Resume");
-    settle().await;
+    settle_run(&mounted).await;
     let ids: Vec<_> = mounted
         .state
         .chat
@@ -300,7 +311,7 @@ async fn stale_resume_rejects_final_reply_or_different_user_anchor() {
             .unwrap()
             .push(ConversationEntry::Message(message(8, role, "new message")));
         mounted.click_text("Resume");
-        settle().await;
+        settle_run(&mounted).await;
         assert!(
             mounted
                 .state
@@ -327,7 +338,7 @@ async fn failed_resume_keeps_recovery_after_missing_handle() {
         .local_handles
         .update(std::collections::HashMap::clear);
     mounted.click_text("Resume");
-    settle().await;
+    settle_run(&mounted).await;
     assert!(
         mounted
             .state
@@ -343,7 +354,7 @@ async fn failed_resume_keeps_recovery_after_missing_handle() {
         handles.insert(1, handle);
     });
     mounted.click_text("Resume");
-    settle().await;
+    settle_run(&mounted).await;
     assert!(
         mounted
             .root
@@ -362,7 +373,7 @@ async fn failed_model_resume_keeps_recovery_available() {
     settle().await;
     mounted.state.fake.scripted_completions.borrow_mut().clear();
     mounted.click_text("Resume");
-    settle().await;
+    settle_run(&mounted).await;
     assert!(mounted.state.chat.error.get_untracked().is_some());
     assert!(!mounted.state.chat.streaming.get_untracked());
     assert!(mounted.state.chat.interrupted_run.get_untracked().is_some());
@@ -379,7 +390,7 @@ async fn failed_model_resume_keeps_recovery_available() {
             usage: None,
         });
     mounted.click_text("Resume");
-    settle().await;
+    settle_run(&mounted).await;
     assert!(mounted.root.text_content().unwrap().contains("Retry reply"));
     assert!(mounted.state.chat.interrupted_run.get_untracked().is_none());
 }
@@ -604,7 +615,7 @@ async fn local_completion_persists_reasoning_and_omits_prior_reasoning() {
     });
     settle().await;
     mounted.click_text("Resume");
-    settle().await;
+    settle_run(&mounted).await;
     let expected = format!(
         "<think>new reasoning</think>Resumed reply{}",
         openwebide_core::REPLY_CUT_OFF_MARKER
@@ -795,4 +806,112 @@ async fn hidden_tool_call_message_becomes_visible_and_user_text_updates() {
             .unwrap()
             .contains("visible")
     );
+}
+
+#[wasm_bindgen_test]
+async fn saved_and_streamed_run_context_is_collapsible_and_survives_reload() {
+    use openwebide_core::ConversationEntry;
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_connection();
+        state.seed_session();
+        state.fake.messages.borrow_mut().insert(
+            1,
+            vec![ConversationEntry::Message(message(
+                8,
+                Role::System,
+                &format!("{}Root rule", openwebide_core::RUN_CONTEXT_PREFIX),
+            ))],
+        );
+        chat_view(state)
+    });
+    settle().await;
+    let context = mounted
+        .root
+        .query_selector("details.tui-thinking-box")
+        .unwrap()
+        .unwrap();
+    assert!(!context.has_attribute("open"));
+    assert!(context.text_content().unwrap().contains("Run context"));
+    assert!(context.text_content().unwrap().contains("Root rule"));
+    assert!(
+        !context
+            .text_content()
+            .unwrap()
+            .contains(openwebide_core::RUN_CONTEXT_PREFIX)
+    );
+    mounted.state.chat.apply_event(RunEvent::Message {
+        message: message(
+            9,
+            Role::System,
+            &format!("{}Nested rule", openwebide_core::RUN_CONTEXT_PREFIX),
+        ),
+    });
+    settle().await;
+    assert_eq!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .matches("Run context")
+            .count(),
+        2
+    );
+    assert!(mounted.root.text_content().unwrap().contains("Nested rule"));
+}
+
+#[wasm_bindgen_test]
+async fn markdown_tables_render_in_history_and_streaming_in_both_modes() {
+    use leptos::prelude::*;
+    use openwebide_core::{ConversationEntry, WorkspaceMode};
+    let table = "Summary with `code`.\n\n| Name | Count |\n| :--- | ---: |\n| `src` | 2 |\n";
+    for mode in [WorkspaceMode::Remote, WorkspaceMode::Local] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_connection();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.fake.messages.borrow_mut().insert(
+                1,
+                vec![ConversationEntry::Message(message(
+                    8,
+                    Role::Assistant,
+                    table,
+                ))],
+            );
+            chat_view(state)
+        });
+        settle().await;
+        let assert_table = |selector: &str| {
+            let body = mounted.element(selector);
+            assert!(
+                body.query_selector(".markdown-table table")
+                    .unwrap()
+                    .is_some()
+            );
+            let header = body.query_selector("th:last-child").unwrap().unwrap();
+            assert_eq!(header.text_content().as_deref(), Some("Count"));
+            assert_eq!(
+                header.get_attribute("style").as_deref(),
+                Some("text-align: right")
+            );
+            assert_eq!(
+                body.query_selector("td code")
+                    .unwrap()
+                    .unwrap()
+                    .text_content()
+                    .as_deref(),
+                Some("src")
+            );
+        };
+        assert_table(".tui-assistant-body");
+        mounted.state.chat.apply_event(RunEvent::Delta {
+            content: table.into(),
+        });
+        settle().await;
+        assert_table(".tui-assistant:last-child .tui-assistant-body");
+    }
 }

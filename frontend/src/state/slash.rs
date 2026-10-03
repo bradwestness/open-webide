@@ -165,7 +165,8 @@ const HELP_TEXT: &str = "**Open WebIDE Terminal Execution & Slash Commands**\n\n
                         * `Ctrl+Backtick` / `Cmd+Backtick` — Toggle bottom terminal dock\n\
                         * `Ctrl+K` / `Cmd+K` — Cycle focus between chat, editor, file explorer, and terminal\n\
                         * `Up` / `Down` — Readline prompt history navigation\n\
-                        * `Alt+Y` / `Alt+N` / `Alt+A` — Approve / deny / always for this session (always excludes shell commands)\n\
+                        * `Shift+Tab` — Cycle approval modes (Default, Auto-accept edits, Auto, YOLO)\n\
+                        * `Alt+Y` / `Alt+N` / `Alt+A` — Approve / deny / auto-accept file edits for this session\n\
                         * `Ctrl+C` / `Cmd+C` — Cancel streaming when no composer text is selected\n\
                         * `Esc` — Detach context when the draft is empty, otherwise cancel streaming";
 

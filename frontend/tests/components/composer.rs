@@ -152,7 +152,7 @@ async fn project_open_buttons_call_their_callbacks_and_alt_shortcuts_are_blocked
             });
         view! {
             <ChatPane
-                on_select_model=Callback::new(|_| ())
+                on_select_connection_model=Callback::new(|_| ())
                 on_send=Callback::new(|()| panic!("sent without a project"))
                 on_open_local=Callback::new(move |()| local.update(|n| *n += 1))
                 on_open_remote=Callback::new(move |()| remote.update(|n| *n += 1))

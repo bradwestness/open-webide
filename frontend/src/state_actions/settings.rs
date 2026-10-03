@@ -125,6 +125,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
     let on_new_connection = Callback::new(move |()| {
         settings.show_conn_form.set(true);
         settings.conn_edit_id.set(None);
+        settings.conn_auto_detect.set(true);
         settings.conn_name.set(String::new());
         settings.conn_kind.set(ProviderKind::Ollama);
         settings.conn_base_url.set(String::new());
@@ -140,6 +141,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
             return;
         };
         settings.conn_edit_id.set(Some(id));
+        settings.conn_auto_detect.set(false);
         settings.conn_name.set(connection.name);
         settings.conn_kind.set(connection.kind);
         settings.conn_base_url.set(connection.base_url);
@@ -161,18 +163,15 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
 
     let on_save_connection = Callback::new(move |()| {
         let name = settings.conn_name.get().trim().to_string();
-        if name.is_empty() {
-            ui.notify("Connection name is required.");
-            return;
-        }
         let base_url = settings.conn_base_url.get().trim().to_string();
         if base_url.is_empty() {
             ui.notify("Base URL is required.");
             return;
         }
-        let kind = settings.conn_kind.get();
+        let mut kind = settings.conn_kind.get();
+        let auto_detect = settings.conn_auto_detect.get();
         let model = settings.conn_model.get().trim().to_string();
-        let model = if model.is_empty() { None } else { Some(model) };
+        let mut model = if model.is_empty() { None } else { Some(model) };
         let context_limit_input = settings.conn_context_limit.get().trim().to_string();
         let context_limit = if context_limit_input.is_empty() {
             None
@@ -185,9 +184,38 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
                 }
             }
         };
+        let generated_name = name.is_empty();
+        let mut name = if generated_name {
+            format!("{} @ {}", kind.as_str(), base_url.trim_end_matches('/'))
+        } else {
+            name
+        };
         let edit_id = settings.conn_edit_id.get();
         ui.clear_toast();
         spawn_local(async move {
+            if auto_detect {
+                match api
+                    .with_value(Clone::clone)
+                    .inspect_server(&base_url, None)
+                    .await
+                {
+                    Ok(discovery) => {
+                        kind = discovery.kind;
+                        if model.is_none() {
+                            model = discovery.models.first().map(|model| model.name.clone());
+                        }
+                    }
+                    Err(error) => {
+                        ui.notify(format!(
+                            "Could not detect server: {error}. Choose its provider type manually."
+                        ));
+                        return;
+                    }
+                }
+            }
+            if generated_name {
+                name = format!("{} @ {}", kind.as_str(), base_url.trim_end_matches('/'));
+            }
             let result = match edit_id {
                 Some(id) => {
                     // Preserve the existing connection's enabled flag.

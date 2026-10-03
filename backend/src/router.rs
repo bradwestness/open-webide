@@ -15,6 +15,15 @@ enum Route {
     Logout,
     BridgeToken,
     ListConnections,
+    ModelSetup,
+    ModelDefaults,
+    ModelProfile,
+    ServerSettings,
+    SaveServerSettings,
+    ModelRuntime,
+    DetectModel,
+    InspectServer,
+    DiscoverServers,
     CreateConnection,
     UpdateConnection,
     DeleteConnection,
@@ -35,8 +44,10 @@ enum Route {
     ListSessions,
     CreateSession,
     RenameSession,
+    SetSessionConnection,
     DeleteSession,
     SetToolPermission,
+    ApprovalCheck,
     ListMessages,
     SendSessionMessage,
     RunPlan,
@@ -80,6 +91,17 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["auth", "me"]) => Some(Route::Me),
         ("POST", ["auth", "logout"]) => Some(Route::Logout),
         ("POST", ["bridge", "token"]) => Some(Route::BridgeToken),
+        ("POST", ["model-setup", "detect"]) => Some(Route::DetectModel),
+        ("POST", ["model-setup", "inspect"]) => Some(Route::InspectServer),
+        ("POST", ["model-setup", "discover"]) => Some(Route::DiscoverServers),
+        ("GET", ["model-setup"]) => Some(Route::ModelSetup),
+        ("PUT", ["model-setup", "defaults"]) => Some(Route::ModelDefaults),
+        ("PUT", ["model-setup", "profile"]) => Some(Route::ModelProfile),
+        ("GET", ["connections", id, "settings"]) if numeric_id(id) => Some(Route::ServerSettings),
+        ("PUT", ["connections", id, "settings"]) if numeric_id(id) => {
+            Some(Route::SaveServerSettings)
+        }
+        ("GET", ["connections", id, "runtime"]) if numeric_id(id) => Some(Route::ModelRuntime),
         ("GET", ["connections"]) => Some(Route::ListConnections),
         ("POST", ["connections"]) => Some(Route::CreateConnection),
         ("PUT", ["connections", _]) => Some(Route::UpdateConnection),
@@ -107,7 +129,11 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["sessions"]) => Some(Route::ListSessions),
         ("POST", ["sessions"]) => Some(Route::CreateSession),
         ("PUT", ["sessions", id]) if numeric_id(id) => Some(Route::RenameSession),
+        ("PUT", ["sessions", id, "connection"]) if numeric_id(id) => {
+            Some(Route::SetSessionConnection)
+        }
         ("DELETE", ["sessions", id]) if numeric_id(id) => Some(Route::DeleteSession),
+        ("POST", ["sessions", _, "approval-check"]) => Some(Route::ApprovalCheck),
         ("POST", ["sessions", _, "permissions", _]) => Some(Route::SetToolPermission),
         ("GET", ["sessions", _, "messages"]) => Some(Route::ListMessages),
         ("POST", ["sessions", _, "messages"]) => Some(Route::SendSessionMessage),
@@ -123,6 +149,7 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["web", "search"]) => Some(Route::WebSearch),
         ("GET", ["web", "fetch"]) => Some(Route::WebFetch),
         ("GET", ["projects", _, "files"]) => Some(Route::FilesGet),
+        ("GET", ["projects", _, "files", "context"]) => Some(Route::FilesGet),
         ("GET", ["projects", _, "files", "read"]) => Some(Route::FilesGet),
         ("GET", ["projects", _, "files", "raw"]) => Some(Route::FilesGet),
         ("GET", ["projects", _, "files", "search"]) => Some(Route::FilesGet),
@@ -204,6 +231,25 @@ pub async fn route(req: Request) -> JsonResp {
         (Some(Route::Logout), None) => api::auth::logout(req, &state).await,
         (Some(Route::Me), Some(user)) => api::auth::me(&state, user).await,
         (Some(Route::BridgeToken), Some(user)) => api::bridge::bridge_token(&state, user).await,
+        (Some(Route::DetectModel), Some(user)) => api::model_setup::detect(req, &state, user).await,
+        (Some(Route::InspectServer), Some(_)) => api::model_setup::inspect(req).await,
+        (Some(Route::DiscoverServers), Some(_)) => api::model_setup::discover().await,
+        (Some(Route::ModelSetup), Some(user)) => api::model_setup::get(&state, user).await,
+        (Some(Route::ModelDefaults), Some(user)) => {
+            api::model_setup::defaults(req, &state, user).await
+        }
+        (Some(Route::ModelProfile), Some(user)) => {
+            api::model_setup::profile(req, &state, user).await
+        }
+        (Some(Route::ServerSettings), Some(_)) => {
+            api::model_setup::settings(req, &state, &path, false).await
+        }
+        (Some(Route::SaveServerSettings), Some(_)) => {
+            api::model_setup::settings(req, &state, &path, true).await
+        }
+        (Some(Route::ModelRuntime), Some(user)) => {
+            api::model_setup::native_runtime(req, &state, &path, user, bridge_authenticated).await
+        }
         (Some(Route::ListConnections), Some(user)) => {
             api::connections::list_connections(&state, user).await
         }
@@ -259,8 +305,14 @@ pub async fn route(req: Request) -> JsonResp {
         (Some(Route::RenameSession), Some(user)) => {
             api::sessions::rename_session(req, &state, &path, user).await
         }
+        (Some(Route::SetSessionConnection), Some(user)) => {
+            api::sessions::set_session_connection(req, &state, &path, user).await
+        }
         (Some(Route::DeleteSession), Some(user)) => {
             api::sessions::delete_session(&state, &path, user).await
+        }
+        (Some(Route::ApprovalCheck), Some(user)) => {
+            api::approvals::check(req, &state, &path, user).await
         }
         (Some(Route::SetToolPermission), Some(user)) => {
             api::sessions::set_tool_permission(req, &state, &path, user).await
@@ -600,6 +652,7 @@ mod tests {
             ("GET", "sessions", Route::ListSessions),
             ("POST", "sessions", Route::CreateSession),
             ("PUT", "sessions/5", Route::RenameSession),
+            ("PUT", "sessions/5/connection", Route::SetSessionConnection),
             ("DELETE", "sessions/5", Route::DeleteSession),
             (
                 "POST",

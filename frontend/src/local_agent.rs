@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::{Stream, StreamExt};
 use openwebide_agent::{
-    AgentConfig, AgentEvent, BridgeClient, CancelCheck, PermissionGate, VfsToolExecutor, WebClient,
+    AgentConfig, BridgeClient, CancelCheck, PermissionGate, VfsToolExecutor, WebClient,
 };
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatResponse, CommandOutcome, ConversationEntry,
@@ -262,12 +262,103 @@ impl BrowserBridgeClient {
         }
     }
 
+    pub fn cwd_verified(&self) -> bool {
+        self.verified.load(Ordering::Relaxed)
+    }
+
+    /// One authenticated transport adapter for agent tools and the workspace Git UI.
+    pub async fn git_request<T: serde::de::DeserializeOwned>(
+        &self,
+        operation: &str,
+        mut payload: serde_json::Value,
+    ) -> Result<T, String> {
+        if !self.cwd_verified() {
+            return Err("Bridge cwd is no longer verified; rediscover the folder.".into());
+        }
+        payload["cwd"] = serde_json::json!(self.git_cwd());
+        let token = self.credentials.credential().await?;
+        let guard = crate::api::CommandFetchGuard(
+            web_sys::AbortController::new().map_err(|error| format!("{error:?}"))?,
+        );
+        let response = gloo_net::http::Request::post(&format!("{}/git/{operation}", self.http_url))
+            .abort_signal(Some(&guard.0.signal()))
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {token}"))
+            .body(payload.to_string())
+            .map_err(|error| error.to_string())?
+            .send()
+            .await
+            .map_err(|error| format!("Bridge connection error: {error}"))?;
+        if !response.ok() {
+            let body = response.text().await.unwrap_or_default();
+            if response.status() == 400 && is_cwd_resolution_error(&body) {
+                self.verified.store(false, Ordering::Relaxed);
+            }
+            if response.status() == 415 {
+                return Err("binary file".into());
+            }
+            return Err(format!("Bridge error (HTTP {}): {body}", response.status()));
+        }
+        response
+            .json()
+            .await
+            .map_err(|error| format!("Parse error: {error}"))
+    }
+
+    pub fn cwd(&self) -> &str {
+        &self.cwd
+    }
+
     fn git_cwd(&self) -> &str {
         if self.cwd.is_empty() { "." } else { &self.cwd }
     }
 }
 
 impl BridgeClient for BrowserBridgeClient {
+    fn context_status(
+        &self,
+    ) -> impl Future<Output = openwebide_agent::clients::ContextStatus> + Send {
+        SendWrapper::new(async move {
+            let work = Box::pin(futures::future::join(self.environment(), self.git_status()));
+            let deadline = Box::pin(crate::util::sleep_ms(2000));
+            match futures::future::select(work, deadline).await {
+                futures::future::Either::Left((status, _)) => status,
+                futures::future::Either::Right(_) => {
+                    openwebide_agent::clients::context_status_unavailable()
+                }
+            }
+        })
+    }
+
+    fn environment(
+        &self,
+    ) -> impl Future<Output = Result<openwebide_core::ExecutionEnvironment, String>> + Send {
+        let endpoint = format!("{}/environment", self.http_url);
+        let credentials = self.credentials.clone();
+        SendWrapper::new(async move {
+            let token = credentials
+                .credential()
+                .await
+                .map_err(|error| error.to_string())?;
+            let guard = crate::api::CommandFetchGuard(
+                web_sys::AbortController::new().map_err(|error| format!("{error:?}"))?,
+            );
+            let response = gloo_net::http::Request::post(&endpoint)
+                .header("Content-Type", "application/json")
+                .header("Authorization", &format!("Bearer {token}"))
+                .abort_signal(Some(&guard.0.signal()))
+                .body("{}")
+                .map_err(|error| error.to_string())?
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            if !response.ok() {
+                return Err(format!("Bridge HTTP {}", response.status()));
+            }
+            response.json().await.map_err(|error| error.to_string())
+        })
+    }
+
     fn execute_command(
         &self,
         command: &str,
@@ -326,79 +417,14 @@ impl BridgeClient for BrowserBridgeClient {
     fn git_status(
         &self,
     ) -> impl Future<Output = Result<openwebide_core::GitRepoStatus, String>> + Send {
-        let endpoint = format!("{}/git/status", self.http_url);
-        let credentials = self.credentials.clone();
-        let verified = self.verified.clone();
-        let payload = serde_json::json!({ "cwd": self.git_cwd() }).to_string();
-        SendWrapper::new(async move {
-            if !verified.load(Ordering::Relaxed) {
-                return Err(
-                    "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
-                );
-            }
-            let token = credentials
-                .credential()
-                .await
-                .map_err(|e| format!("auth error: {e}"))?;
-            let resp = gloo_net::http::Request::post(&endpoint)
-                .header("Content-Type", "application/json")
-                .header("Authorization", &format!("Bearer {token}"))
-                .body(payload)
-                .map_err(|e| format!("request error: {e}"))?
-                .send()
-                .await
-                .map_err(|e| format!("Bridge connection error: {e}"))?;
-            if !resp.ok() {
-                let err_text = resp.text().await.unwrap_or_default();
-                if resp.status() == 400 && is_cwd_resolution_error(&err_text) {
-                    verified.store(false, Ordering::Relaxed);
-                }
-                return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
-            }
-            resp.json::<openwebide_core::GitRepoStatus>()
-                .await
-                .map_err(|e| format!("Parse error: {e}"))
-        })
+        SendWrapper::new(self.git_request("status", serde_json::json!({})))
     }
 
     fn git_diff(&self, path: Option<&str>) -> impl Future<Output = Result<String, String>> + Send {
-        let payload = serde_json::json!({ "path": path, "cwd": self.git_cwd() }).to_string();
-        let endpoint = format!("{}/git/diff", self.http_url);
-        let credentials = self.credentials.clone();
-        let verified = self.verified.clone();
+        let payload = serde_json::json!({ "path": path });
         SendWrapper::new(async move {
-            if !verified.load(Ordering::Relaxed) {
-                return Err(
-                    "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
-                );
-            }
-            let token = credentials
-                .credential()
-                .await
-                .map_err(|e| format!("auth error: {e}"))?;
-            let resp = gloo_net::http::Request::post(&endpoint)
-                .header("Content-Type", "application/json")
-                .header("Authorization", &format!("Bearer {token}"))
-                .body(payload)
-                .map_err(|e| format!("request error: {e}"))?
-                .send()
-                .await
-                .map_err(|e| format!("Bridge connection error: {e}"))?;
-            if !resp.ok() {
-                let err_text = resp.text().await.unwrap_or_default();
-                if resp.status() == 400 && is_cwd_resolution_error(&err_text) {
-                    verified.store(false, Ordering::Relaxed);
-                }
-                return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
-            }
-            #[derive(serde::Deserialize)]
-            struct DiffOut {
-                diff: String,
-            }
-            resp.json::<DiffOut>()
-                .await
-                .map(|d| d.diff)
-                .map_err(|e| format!("Parse error: {e}"))
+            let response: serde_json::Value = self.git_request("diff", payload).await?;
+            Ok(response["diff"].as_str().unwrap_or_default().to_owned())
         })
     }
 
@@ -406,82 +432,16 @@ impl BridgeClient for BrowserBridgeClient {
         &self,
         req: &openwebide_core::GitCommitRequest,
     ) -> impl Future<Output = Result<openwebide_core::GitCommitResult, String>> + Send {
-        let mut payload = serde_json::to_value(req).unwrap_or_default();
-        payload["cwd"] = serde_json::json!(self.git_cwd());
-        let payload = payload.to_string();
-        let endpoint = format!("{}/git/commit", self.http_url);
-        let credentials = self.credentials.clone();
-        let verified = self.verified.clone();
-        SendWrapper::new(async move {
-            if !verified.load(Ordering::Relaxed) {
-                return Err(
-                    "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
-                );
-            }
-            let token = credentials
-                .credential()
-                .await
-                .map_err(|e| format!("auth error: {e}"))?;
-            let resp = gloo_net::http::Request::post(&endpoint)
-                .header("Content-Type", "application/json")
-                .header("Authorization", &format!("Bearer {token}"))
-                .body(payload)
-                .map_err(|e| format!("request error: {e}"))?
-                .send()
-                .await
-                .map_err(|e| format!("Bridge connection error: {e}"))?;
-            if !resp.ok() {
-                let err_text = resp.text().await.unwrap_or_default();
-                if resp.status() == 400 && is_cwd_resolution_error(&err_text) {
-                    verified.store(false, Ordering::Relaxed);
-                }
-                return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
-            }
-            resp.json::<openwebide_core::GitCommitResult>()
-                .await
-                .map_err(|e| format!("Parse error: {e}"))
-        })
+        SendWrapper::new(self.git_request("commit", serde_json::to_value(req).unwrap_or_default()))
     }
 
     fn git_checkout(
         &self,
         req: &openwebide_core::GitCheckoutRequest,
     ) -> impl Future<Output = Result<openwebide_core::GitCheckoutResult, String>> + Send {
-        let mut payload = serde_json::to_value(req).unwrap_or_default();
-        payload["cwd"] = serde_json::json!(self.git_cwd());
-        let payload = payload.to_string();
-        let endpoint = format!("{}/git/checkout", self.http_url);
-        let credentials = self.credentials.clone();
-        let verified = self.verified.clone();
-        SendWrapper::new(async move {
-            if !verified.load(Ordering::Relaxed) {
-                return Err(
-                    "Bridge cwd is no longer verified; send again to rediscover the folder.".into(),
-                );
-            }
-            let token = credentials
-                .credential()
-                .await
-                .map_err(|e| format!("auth error: {e}"))?;
-            let resp = gloo_net::http::Request::post(&endpoint)
-                .header("Content-Type", "application/json")
-                .header("Authorization", &format!("Bearer {token}"))
-                .body(payload)
-                .map_err(|e| format!("request error: {e}"))?
-                .send()
-                .await
-                .map_err(|e| format!("Bridge connection error: {e}"))?;
-            if !resp.ok() {
-                let err_text = resp.text().await.unwrap_or_default();
-                if resp.status() == 400 && is_cwd_resolution_error(&err_text) {
-                    verified.store(false, Ordering::Relaxed);
-                }
-                return Err(format!("Bridge error (HTTP {}): {err_text}", resp.status()));
-            }
-            resp.json::<openwebide_core::GitCheckoutResult>()
-                .await
-                .map_err(|e| format!("Parse error: {e}"))
-        })
+        SendWrapper::new(
+            self.git_request("checkout", serde_json::to_value(req).unwrap_or_default()),
+        )
     }
 }
 
@@ -624,11 +584,7 @@ async fn resolve_bridge_cwd_with_guard<V: openwebide_core::Vfs, B: BridgeClient>
 }
 
 pub fn local_tools(cwd: Option<&str>) -> Vec<openwebide_core::ToolDefinition> {
-    let mut tools = openwebide_agent::vfs_tools();
-    if cwd.is_none() {
-        tools.retain(|tool| !openwebide_agent::policy::BRIDGE_TOOLS.contains(&tool.name.as_str()));
-    }
-    tools
+    openwebide_agent::session::tools_for_host(cwd.is_some())
 }
 
 /// Local-mode cancel checker observing a shared atomic flag.
@@ -679,6 +635,30 @@ impl PermissionGate for LocalPermissionGate {
     }
 }
 
+struct ApprovalAdapter {
+    api: SendWrapper<Api>,
+    session: i64,
+    connection_id: i64,
+    model: Option<String>,
+}
+impl openwebide_agent::policy::ApprovalSource for ApprovalAdapter {
+    fn check(&self, call: &ToolCall) -> impl Future<Output = bool> + Send {
+        let api = *self.api;
+        let session = self.session;
+        let check = openwebide_core::ApprovalCheck {
+            connection_id: self.connection_id,
+            model: self.model.clone(),
+            call: call.clone(),
+        };
+        SendWrapper::new(async move {
+            api.with_value(Clone::clone)
+                .approval_check(session, &check)
+                .await
+                .is_ok_and(|decision| decision.approved)
+        })
+    }
+}
+
 /// Run the agent loop locally in the browser against a local folder handle.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_local_agent(
@@ -690,35 +670,40 @@ pub async fn run_local_agent(
     connection_id: i64,
     system_prompt: Option<String>,
     handle: web_sys::FileSystemDirectoryHandle,
-    pid: i64,
+    project: openwebide_core::Project,
     chat: crate::state::chat::ChatState,
     cancel_flag: Arc<AtomicBool>,
     local_decisions: Arc<Mutex<HashMap<String, bool>>>,
     mut on_event: impl FnMut(RunEvent),
-    bridge_config: crate::bridge::BridgeConfig,
-    bridge_credentials: crate::bridge::BridgeCredentials,
+    project_host: crate::project_host::ProjectHost,
     bridge_connection: Option<crate::bridge::BridgeConn>,
     resume: Option<crate::state::chat::InterruptedRun>,
 ) -> Result<(), String> {
-    let cwd = resolve_bridge_cwd(
-        api,
-        handle.clone(),
-        pid,
-        &bridge_config,
-        &bridge_credentials,
-    )
-    .await;
+    let host = project_host
+        .resolve_guarded(Some(project.id), true, || true)
+        .await
+        .ok();
+    let cwd = host
+        .as_ref()
+        .and_then(crate::project_host::ProjectExecution::cwd);
     if cwd.is_none() {
         chat.notify_bridge_folder_once(session_id);
     }
+    let environment = openwebide_core::RunEnvironment {
+        project_name: Some(project.name),
+        project_root: Some(
+            cwd.clone()
+                .unwrap_or_else(|| format!("Browser-selected folder: {}", handle.name())),
+        ),
+        mode: Some(openwebide_core::WorkspaceMode::Local),
+        timestamp: openwebide_core::now_seconds(js_sys::Date::now()),
+    };
     let vfs = BrowserFsaVfs::new(handle);
     // 1. Fetch prior conversation history before persisting the new message
-    let history = api.with_value(Clone::clone).list_messages(session_id).await;
-    let history_entries = if resume.is_some() {
-        history?
-    } else {
-        history.unwrap_or_default()
-    };
+    let history_entries = api
+        .with_value(Clone::clone)
+        .list_messages(session_id)
+        .await?;
     let resume = if let Some(resume) = resume {
         let current = crate::state::chat::interrupted_run(
             &crate::state_actions::chat::history_items(history_entries.clone()),
@@ -737,20 +722,13 @@ pub async fn run_local_agent(
             ConversationEntry::ToolStep(step) => steps.push(step),
         }
     }
-    let mut messages = openwebide_core::tool_history(history_messages, &steps);
-    for message in &mut messages {
-        if message.role == Role::Assistant {
-            message.content = openwebide_core::strip_reasoning(&message.content).to_string();
-        }
-    }
+    let mut messages = openwebide_agent::session::history(history_messages, &steps);
 
     let (anchor_id, first_turn) = if let Some(resume) = resume {
         (resume.anchor_id, resume.first_turn)
     } else {
-        let full_content = match &editor_context {
-            Some(ctx) => format!("{}{}", ctx.format_prompt_injection(), user_content),
-            None => user_content,
-        };
+        let full_content =
+            openwebide_agent::session::user_content(user_content, editor_context.as_ref());
         let user_message = api
             .with_value(Clone::clone)
             .persist_message(session_id, Role::User, &full_content, None, None)
@@ -764,36 +742,48 @@ pub async fn run_local_agent(
     };
 
     // 3. Assemble chat request with standard workspace tools
-    let request = ChatRequest {
-        connection_id,
+    let runtime = api
+        .with_value(Clone::clone)
+        .model_runtime(connection_id, model.as_deref())
+        .await?;
+    let request = openwebide_agent::session::request(
+        &runtime,
         system_prompt,
-        model,
         messages,
-        tools: local_tools(cwd.as_deref()),
-    };
+        local_tools(cwd.as_deref()),
+    );
 
     let web = BrowserWebClient::new(api);
     let provider = BrowserLlmProvider::new(api, ProviderKind::Ollama, bridge_connection);
     let cancel = LocalCancelCheck {
         flag: cancel_flag.clone(),
     };
-    let gate = LocalPermissionGate {
-        decisions: local_decisions,
-        cancel: cancel_flag,
+    let gate = openwebide_agent::policy::PolicyGate {
+        manual: LocalPermissionGate {
+            decisions: local_decisions,
+            cancel: cancel_flag,
+        },
+        source: ApprovalAdapter {
+            api: SendWrapper::new(api),
+            session: session_id,
+            connection_id,
+            model: request.model.clone(),
+        },
     };
 
     // 4. Drive agent stream
-    let mut display_anchor = anchor_id;
     let config = AgentConfig {
         first_turn,
         ..AgentConfig::default()
     };
-    let mut stream = if let Some(cwd) = cwd {
-        let bridge =
-            BrowserBridgeClient::for_project(bridge_config.http_url, cwd, bridge_credentials);
+    let stream = if let Some(cwd) = cwd {
+        let Some(crate::project_host::ProjectExecution::Local(bridge)) = host else {
+            return Err("Local project requires its verified execution host".into());
+        };
+        let _ = cwd;
         openwebide_agent::run(
             provider,
-            VfsToolExecutor::with_web_and_bridge(vfs, web, bridge),
+            VfsToolExecutor::with_web_and_bridge(vfs, web, bridge).with_context(environment),
             request,
             config,
             cancel,
@@ -803,7 +793,8 @@ pub async fn run_local_agent(
     } else {
         openwebide_agent::run(
             provider,
-            VfsToolExecutor::with_web_and_bridge(vfs, web, openwebide_agent::NoopBridgeClient),
+            VfsToolExecutor::with_web_and_bridge(vfs, web, openwebide_agent::NoopBridgeClient)
+                .with_context(environment),
             request,
             config,
             cancel,
@@ -812,136 +803,70 @@ pub async fn run_local_agent(
         )
     };
 
-    let mut reasoning = String::new();
-    let mut last_usage: Option<TurnTelemetry> = None;
+    let mut stream = Box::pin(openwebide_agent::session::events(
+        SessionPersistence {
+            api: SendWrapper::new(api),
+            session: session_id,
+        },
+        session_id,
+        anchor_id,
+        stream,
+    ));
     while let Some(event) = stream.next().await {
-        match event {
-            AgentEvent::ReasoningDelta(content) => {
-                reasoning.push_str(&content);
-                on_event(RunEvent::ReasoningDelta { content });
-            }
-            AgentEvent::TextDelta(delta) => on_event(RunEvent::Delta { content: delta }),
-            AgentEvent::TurnCalls { text, calls } => {
-                let text = openwebide_core::with_reasoning(&std::mem::take(&mut reasoning), &text);
-                let usage = last_usage.take();
-                let message = api
-                    .with_value(Clone::clone)
-                    .persist_message(
-                        session_id,
-                        Role::Assistant,
-                        &text,
-                        usage.as_ref(),
-                        Some(&calls),
-                    )
-                    .await;
-                let message = match message {
-                    Ok(message) => {
-                        display_anchor = message.id;
-                        message
-                    }
-                    Err(_) => ChatMessage {
-                        id: 0,
-                        session_id,
-                        role: Role::Assistant,
-                        content: text,
-                        created_at: 0,
-                        tool_calls: Some(calls),
-                        tool_call_id: None,
-                        usage,
-                    },
-                };
-                on_event(RunEvent::Interim { message });
-            }
-            AgentEvent::Telemetry(usage) => {
-                last_usage = Some(usage);
-                on_event(RunEvent::Telemetry { usage });
-            }
-            AgentEvent::ToolCall { id, name, summary } => {
-                last_usage = None;
-                let _ = api
-                    .with_value(Clone::clone)
-                    .upsert_tool_step(session_id, display_anchor, &id, &name, &summary, None)
-                    .await;
-                on_event(RunEvent::ToolCall { id, name, summary });
-            }
-            AgentEvent::PermissionRequest {
-                id,
-                name,
-                summary,
-                diff,
-                note,
-            } => {
-                last_usage = None;
-                let _ = api
-                    .with_value(Clone::clone)
-                    .upsert_tool_step(
-                        session_id,
-                        display_anchor,
-                        &id,
-                        &name,
-                        &summary,
-                        diff.as_ref(),
-                    )
-                    .await;
-                on_event(RunEvent::PermissionRequest {
-                    id,
-                    name,
-                    summary,
-                    diff,
-                    note,
-                });
-            }
-            AgentEvent::ToolResult {
-                id,
-                name,
-                ok,
-                summary,
-                diff,
-            } => {
-                if let Err(error) = api
-                    .with_value(Clone::clone)
-                    .complete_tool_step(session_id, &id, ok, &summary, diff.as_ref())
-                    .await
-                {
-                    on_event(RunEvent::Error {
-                        message: format!("failed to save tool result: {error}"),
-                    });
-                }
-                on_event(RunEvent::ToolResult {
-                    id,
-                    name,
-                    ok,
-                    summary,
-                    diff,
-                });
-            }
-            AgentEvent::FinalText(text) => {
-                let text = openwebide_core::with_reasoning(&reasoning, &text);
-                match api
-                    .with_value(Clone::clone)
-                    .persist_message(
-                        session_id,
-                        Role::Assistant,
-                        &text,
-                        last_usage.take().as_ref(),
-                        None,
-                    )
-                    .await
-                {
-                    Ok(msg) => on_event(RunEvent::Done { message: msg }),
-                    Err(e) => on_event(RunEvent::Error {
-                        message: format!("failed to save reply: {e}"),
-                    }),
-                }
-            }
-            AgentEvent::Cancelled => {
-                on_event(RunEvent::Cancelled);
-            }
-            AgentEvent::Error(message) => {
-                on_event(RunEvent::Error { message });
-            }
-        }
+        on_event(event);
     }
-
     Ok(())
+}
+
+struct SessionPersistence {
+    api: SendWrapper<Api>,
+    session: i64,
+}
+impl openwebide_agent::session::RunPersistence for SessionPersistence {
+    fn now(&self) -> i64 {
+        openwebide_core::now_seconds(js_sys::Date::now())
+    }
+    fn message(
+        &self,
+        role: Role,
+        content: &str,
+        usage: Option<&TurnTelemetry>,
+        calls: Option<&[ToolCall]>,
+    ) -> impl Future<Output = Result<ChatMessage, String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .persist_message(self.session, role, content, usage, calls)
+                .await
+        })
+    }
+    fn step(
+        &self,
+        anchor: i64,
+        id: &str,
+        name: &str,
+        summary: &str,
+        diff: Option<&openwebide_core::FileDiff>,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .upsert_tool_step(self.session, anchor, id, name, summary, diff)
+                .await
+        })
+    }
+    fn result(
+        &self,
+        id: &str,
+        ok: bool,
+        summary: &str,
+        diff: Option<&openwebide_core::FileDiff>,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .complete_tool_step(self.session, id, ok, summary, diff)
+                .await
+        })
+    }
 }

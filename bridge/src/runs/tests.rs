@@ -17,9 +17,26 @@ struct FakeBackend {
     fail_completion: AtomicBool,
     fail_interim: AtomicBool,
     fail_plan: AtomicBool,
+    approval_mode: Mutex<openwebide_core::ApprovalMode>,
+    approval_checks: Mutex<Vec<openwebide_core::ApprovalCheck>>,
 }
 
 impl RunBackend for FakeBackend {
+    async fn approval_check(
+        &self,
+        _user: i64,
+        _session: i64,
+        check: &openwebide_core::ApprovalCheck,
+    ) -> Result<openwebide_core::ApprovalDecision, String> {
+        self.approval_checks.lock().unwrap().push(check.clone());
+        Ok(openwebide_core::ApprovalDecision {
+            approved: self
+                .approval_mode
+                .lock()
+                .unwrap()
+                .auto_approves(&check.call.name),
+        })
+    }
     async fn run_plan(
         &self,
         _user_id: i64,
@@ -131,9 +148,12 @@ impl RunBackend for FakeBackend {
 
 fn plan(kind: RunKind, content: &str) -> RunPlan {
     RunPlan {
+        transport: Default::default(),
+        environment: openwebide_core::RunEnvironment::default(),
         kind,
         user_content: content.into(),
         request: ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: None,
             model: None,
@@ -525,10 +545,16 @@ async fn chat_success_truncation_and_errors() {
         finished(&run).await;
         let messages = backend.messages.lock().unwrap();
         assert_eq!(messages[0].role, Role::User);
-        assert_eq!(messages.len(), if expected.is_some() { 2 } else { 1 });
+        assert_eq!(messages[1].role, Role::System);
+        assert!(
+            messages[1]
+                .content
+                .starts_with(openwebide_core::RUN_CONTEXT_PREFIX)
+        );
+        assert_eq!(messages.len(), if expected.is_some() { 3 } else { 2 });
         if let Some(text) = expected {
-            assert_eq!(messages[1].content, text);
-            assert_eq!(messages[1].usage, Some(usage));
+            assert_eq!(messages[2].content, text);
+            assert_eq!(messages[2].usage, Some(usage));
         }
     }
 }
@@ -563,7 +589,7 @@ async fn busy_scoping_cancel_and_reaping() {
     assert_eq!(registry.list(&user(1), 1).len(), 1);
     registry.get(&user(1), "r").unwrap().cancel.cancel();
     finished(&run).await;
-    assert_eq!(backend.messages.lock().unwrap().len(), 1);
+    assert_eq!(backend.messages.lock().unwrap().len(), 2);
     assert_eq!(events(&run).last(), Some(&RunEvent::Cancelled));
     registry.reap();
     assert!(registry.get(&user(1), "r").is_ok());
@@ -656,9 +682,9 @@ async fn cancel_while_agent_waits_for_permission_emits_cancelled() {
     finished(&run).await;
     assert_eq!(events(&run).last(), Some(&RunEvent::Cancelled));
     let messages = backend.messages.lock().unwrap();
-    assert_eq!(messages.len(), 2);
-    assert!(messages[1].content.is_empty());
-    assert!(messages[1].tool_calls.is_some());
+    assert_eq!(messages.len(), 3);
+    assert!(messages[2].content.is_empty());
+    assert!(messages[2].tool_calls.is_some());
     assert!(!dir.path().join("a").exists());
 }
 
@@ -835,6 +861,7 @@ async fn websocket_scopes_attach_cancel_permission_and_list() {
 async fn agent_body_executes_native_tools_and_persists_interim_then_final() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a"), "native file").unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), "Native root instruction").unwrap();
     let backend = Arc::new(FakeBackend::default());
     *backend.kind.lock().unwrap() = Some(RunKind::Agent {
         project_path: "".into(),
@@ -882,20 +909,24 @@ async fn agent_body_executes_native_tools_and_persists_interim_then_final() {
     assert_eq!(
         messages
             .iter()
+            .filter(|message| message.role != Role::System)
             .map(|m| m.content.as_str())
             .collect::<Vec<_>>(),
         ["go", "interim", "final"]
     );
-    assert_eq!(messages[1].usage, Some(first));
-    assert_eq!(messages[2].usage, Some(last));
+    assert_eq!(messages[1].role, Role::System);
+    assert!(messages[1].content.contains("Native root instruction"));
+    assert_eq!(messages[2].usage, Some(first));
+    assert_eq!(messages[3].usage, Some(last));
     assert_eq!(
         *backend.operations.lock().unwrap(),
         [
             "message:10",
             "message:11",
-            "step:11:a10t1c0",
+            "message:12",
+            "step:12:a10t1c0",
             "complete:a10t1c0",
-            "message:12"
+            "message:13"
         ]
     );
     assert!(
@@ -1079,9 +1110,9 @@ async fn incomplete_reasoning_only_chat_is_persisted() {
         .unwrap();
     finished(&run).await;
     let messages = backend.messages.lock().unwrap();
-    assert_eq!(messages.len(), 2);
+    assert_eq!(messages.len(), 3);
     assert_eq!(
-        messages[1].content,
+        messages[2].content,
         openwebide_core::with_reasoning(reasoning, REPLY_TRUNCATED_MARKER)
     );
     assert!(matches!(events(&run).last(), Some(RunEvent::Done { .. })));
@@ -1248,4 +1279,55 @@ async fn http_and_agent_run_use_configured_execution() {
     assert!(!root.join("run-marker").exists());
     stop.send(()).unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn remote_agent_uses_shared_policy_before_prompting_and_writes_the_file() {
+    for mode in [
+        openwebide_core::ApprovalMode::AutoAcceptEdits,
+        openwebide_core::ApprovalMode::Yolo,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(FakeBackend::default());
+        *backend.kind.lock().unwrap() = Some(RunKind::Agent {
+            project_path: String::new(),
+        });
+        *backend.approval_mode.lock().unwrap() = mode;
+        let provider = FakeProvider {
+            tools: Mutex::new(vec![
+                vec![Ok(ToolStreamChunk::Response(ChatResponse::ToolCalls(
+                    vec![ToolCall {
+                        id: "wire".into(),
+                        name: "write_file".into(),
+                        arguments: r#"{"path":"edited.txt","content":"changed"}"#.into(),
+                    }],
+                )))],
+                vec![Ok(ToolStreamChunk::Response(ChatResponse::Text(
+                    "final".into(),
+                )))],
+            ]),
+            ..Default::default()
+        };
+        let registry = RunRegistry::default();
+        let run = registry
+            .start(&user(1), start("r"), dir.path(), backend.clone(), |_| {
+                provider
+            })
+            .await
+            .unwrap();
+        finished(&run).await;
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("edited.txt")).unwrap(),
+            "changed"
+        );
+        assert!(
+            !events(&run)
+                .iter()
+                .any(|event| matches!(event, RunEvent::PermissionRequest { .. }))
+        );
+        let checks = backend.approval_checks.lock().unwrap();
+        assert_eq!(checks.len(), 1);
+        assert!(checks[0].call.arguments.contains("edited.txt"));
+        assert!(checks[0].call.id.starts_with("a10t"));
+    }
 }

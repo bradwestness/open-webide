@@ -54,8 +54,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
         }
         workspace.switch_project(current, id);
         git.switch_project(current, id);
-        chat.active_session
-            .set(workspace.active_session.get_untracked());
+        chat.restore_project_session(id);
         ui.clear_toast();
         ensure_root.run(id);
         refresh_pending.run(id);
@@ -76,8 +75,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                 Some(next_id) => {
                     workspace.switch_project(Some(id), next_id);
                     git.switch_project(Some(id), next_id);
-                    chat.active_session
-                        .set(workspace.active_session.get_untracked());
+                    chat.restore_project_session(next_id);
                     ui.clear_toast();
                     ensure_root.run(next_id);
                     refresh_pending.run(next_id);

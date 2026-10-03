@@ -41,7 +41,8 @@ async fn model_dropdown_uses_default_and_sends_selected_model() {
     mounted.click(".tui-model-name");
     settle().await;
     let menu = mounted.element(".recent-menu").text_content().unwrap();
-    for name in ["Default model", "qwen3:8b", "llama3"] {
+    assert!(!menu.contains("Default model"), "{menu}");
+    for name in ["qwen3:8b", "llama3"] {
         assert!(menu.contains(name), "{menu}");
     }
     mounted.click_text("llama3");
@@ -338,4 +339,282 @@ async fn logout_discards_model_and_context_results() {
             .context_limit,
         123
     );
+}
+
+#[wasm_bindgen_test]
+async fn connection_tree_switches_existing_session_in_both_modes() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Remote,
+        openwebide_core::WorkspaceMode::Local,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.seed_connection();
+            state.seed_session();
+            let mut second = state.settings.connections.get_untracked()[0].clone();
+            second.id = 2;
+            second.name = "llama.cpp".into();
+            second.model = Some("second-model".into());
+            state.fake.connections.borrow_mut().push(second.clone());
+            state
+                .settings
+                .connections
+                .update(|connections| connections.push(second));
+            *state.fake.models.borrow_mut() = vec![ModelInfo {
+                name: "qwen3:8b".into(),
+            }];
+            chat_view(state)
+        });
+        settle().await;
+        mounted.click(".tui-model-name");
+        settle().await;
+        assert!(
+            mounted
+                .element(".recent-menu")
+                .text_content()
+                .unwrap()
+                .contains("llama.cpp")
+        );
+        assert_eq!(&*mounted.state.fake.model_requests.borrow(), &[1]);
+        *mounted.state.fake.models.borrow_mut() = vec![ModelInfo {
+            name: "second-model".into(),
+        }];
+        mounted.click("[data-connection-id='2'] .tui-connection-heading");
+        settle().await;
+        assert_eq!(&*mounted.state.fake.model_requests.borrow(), &[1, 2]);
+        mounted.click("[data-connection-id='2'] .tui-connection-model");
+        settle().await;
+        assert_eq!(
+            mounted.state.fake.sessions.borrow()[0].connection_id,
+            Some(2)
+        );
+        assert_eq!(
+            mounted.state.chat.sessions.get_untracked()[0].connection_id,
+            Some(2)
+        );
+        assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(1));
+        assert_eq!(
+            mounted.state.chat.selected_model.get_untracked().as_deref(),
+            Some("second-model")
+        );
+        assert_eq!(
+            mounted.state.settings.default_connection.get_untracked(),
+            Some(1)
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".recent-menu")
+                .unwrap()
+                .is_none()
+        );
+        // A fresh session goes back to the default connection and configured model.
+        mounted.state.chat.active_session.set(None);
+        settle().await;
+        assert!(mounted.state.chat.selected_model.get_untracked().is_none());
+        assert_eq!(
+            mounted
+                .element(".tui-model-name")
+                .text_content()
+                .unwrap()
+                .trim(),
+            "qwen3:8b"
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn connection_tree_choice_carries_into_new_session() {
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_connection();
+        let mut second = state.settings.connections.get_untracked()[0].clone();
+        second.id = 2;
+        second.name = "llama.cpp".into();
+        second.model = Some("second-model".into());
+        state.fake.connections.borrow_mut().push(second.clone());
+        state
+            .settings
+            .connections
+            .update(|connections| connections.push(second));
+        *state.fake.models.borrow_mut() = vec![ModelInfo {
+            name: "second-model".into(),
+        }];
+        chat_view(state)
+    });
+    settle().await;
+    mounted.click(".tui-model-name");
+    settle().await;
+    mounted.click("[data-connection-id='2'] .tui-connection-heading");
+    settle().await;
+    mounted.click("[data-connection-id='2'] .tui-connection-model");
+    settle().await;
+    mounted.input("new session");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    assert_eq!(
+        mounted.state.fake.sessions.borrow()[0].connection_id,
+        Some(2)
+    );
+    assert!(
+        mounted
+            .state
+            .fake
+            .calls
+            .borrow()
+            .contains(&Call::SendMessage {
+                session: 1,
+                content: "new session".into(),
+                model: Some("second-model".into()),
+            })
+    );
+    assert_eq!(
+        mounted.state.settings.default_connection.get_untracked(),
+        Some(1)
+    );
+}
+
+#[wasm_bindgen_test]
+async fn user_model_defaults_exclude_shared_model_configuration() {
+    use openwebide_frontend::components::model_setup::ModelSetupPanel;
+    use wasm_bindgen::JsCast;
+    let mounted = mount_test(|state| {
+        state.seed_connection();
+        *state.fake.models.borrow_mut() = vec![ModelInfo {
+            name: "qwen3:8b".into(),
+        }];
+        view! { <ModelSetupPanel defaults_only=true /> }
+    });
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".model-settings-editor")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        mounted
+            .root
+            .query_selector(".model-setup input[type=number]")
+            .unwrap()
+            .is_none()
+    );
+    let primary = mounted
+        .element(".model-setup select")
+        .dyn_into::<web_sys::HtmlSelectElement>()
+        .unwrap();
+    primary.set_value(
+        &serde_json::to_string(&openwebide_core::ModelSelection {
+            server_id: 1,
+            model: "qwen3:8b".into(),
+        })
+        .unwrap(),
+    );
+    primary
+        .dispatch_event(&web_sys::Event::new("change").unwrap())
+        .unwrap();
+    mounted.click_text("Save model defaults");
+    settle().await;
+    let setup = mounted.state.fake.model_setup.borrow().clone();
+    assert_eq!(setup.defaults.primary.as_ref().unwrap().model, "qwen3:8b");
+    assert!(setup.defaults.fast.is_none());
+    assert_eq!(setup.resolve(1, "qwen3:8b").fast, setup.defaults.primary);
+    assert_eq!(
+        setup.resolve(1, "qwen3:8b").auto_compact_threshold,
+        Some(85)
+    );
+}
+
+#[wasm_bindgen_test]
+async fn servers_open_shared_configuration_while_preferences_keep_model_defaults() {
+    use openwebide_frontend::components::{Settings, Sidebar, model_setup::ModelSetupDialog};
+    use wasm_bindgen::JsCast;
+    for mode in [
+        openwebide_core::WorkspaceMode::Remote,
+        openwebide_core::WorkspaceMode::Local,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_connection();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            *state.fake.models.borrow_mut() = vec![ModelInfo {
+                name: "qwen3:8b".into(),
+            }];
+            state
+                .fake
+                .model_setup
+                .borrow_mut()
+                .profiles
+                .push(openwebide_core::ModelProfile {
+                    selection: openwebide_core::ModelSelection {
+                        server_id: 1,
+                        model: "qwen3:8b".into(),
+                    },
+                    settings: openwebide_core::ModelSettings {
+                        context_limit: Some(8192),
+                        ..Default::default()
+                    },
+                });
+            let unit = Callback::new(|()| ());
+            let id = Callback::new(|_: i64| ());
+            view! {
+                <Sidebar on_new_connection=unit on_edit_connection=id on_save_connection=unit on_cancel_connection=unit on_delete_connection=id
+                    on_select_session=id on_new_session=unit on_rename_session=id on_delete_session=id
+                    on_new_prompt=unit on_edit_prompt=id on_save_prompt=unit on_cancel_prompt=unit on_delete_prompt=id />
+                <Show when=move || state.settings.show_model_setup.get()><ModelSetupDialog /></Show>
+                <Show when=move || state.settings.show_settings.get()><Settings on_set_theme=Callback::new(|_| ()) on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) /></Show>
+            }
+        });
+        settle().await;
+        mounted.element("button[title='Configure models']").click();
+        settle().await;
+        assert_eq!(
+            mounted.state.settings.model_setup_server.get_untracked(),
+            Some(1)
+        );
+        let modal = mounted.element(".modal");
+        let text = modal.text_content().unwrap();
+        assert!(text.contains("Configuration is shared") && text.contains("Context tokens"));
+        assert!(!text.contains("Default model") && !text.contains("Fast model"));
+        let context: web_sys::HtmlInputElement = mounted
+            .element(".model-settings-editor input[type=number]")
+            .unchecked_into();
+        assert_eq!(context.value(), "8192");
+        assert!(text.contains("Server authentication and options"));
+        context.set_value("16384");
+        context
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        mounted.click_text("Save model settings");
+        settle().await;
+        assert_eq!(
+            mounted.state.fake.model_setup.borrow().profiles[0]
+                .settings
+                .context_limit,
+            Some(16384)
+        );
+        mounted.element(".modal button[title=Close]").click();
+        settle().await;
+        mounted.state.settings.show_settings.set(true);
+        settle().await;
+        let text = mounted.element(".modal").text_content().unwrap();
+        assert!(
+            text.contains("Default model")
+                && text.contains("Fast model")
+                && text.contains("Default system prompt")
+        );
+        assert!(
+            !text.contains("Context tokens")
+                && !text.contains("Auto-compact")
+                && !text.contains("Discover local servers")
+        );
+    }
 }

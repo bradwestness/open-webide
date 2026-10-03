@@ -1,5 +1,7 @@
 //! Typed repositories over a [`Db`].
 
+mod model_setup;
+
 use std::collections::BTreeMap;
 
 use openwebide_core::{
@@ -777,6 +779,27 @@ impl<D: Db> Store<D> {
         self.get_session(res.last_insert_rowid, user_id).await
     }
 
+    pub async fn set_session_connection(
+        &self,
+        id: i64,
+        connection_id: i64,
+        user_id: UserId,
+    ) -> Result<ChatSession, StorageError> {
+        self.get_session(id, user_id).await?;
+        self.get_connection(connection_id).await?;
+        self.db
+            .execute(
+                "UPDATE sessions SET connection_id = ? WHERE id = ? AND user_id = ?",
+                &[
+                    DbValue::Int(connection_id),
+                    DbValue::Int(id),
+                    DbValue::Int(user_id.get()),
+                ],
+            )
+            .await?;
+        self.get_session(id, user_id).await
+    }
+
     pub async fn rename_session(
         &self,
         id: i64,
@@ -1517,6 +1540,227 @@ mod tests {
     }
 
     #[test]
+    fn model_profiles_are_shared_but_defaults_are_user_scoped_and_secrets_write_only() {
+        use openwebide_core::{
+            ModelDefaults, ModelProfile, ModelSelection, ModelSettings, ServerSettingsUpdate,
+        };
+        let store = test_store();
+        let alice = test_user(&store, "alice", UserRole::Admin);
+        let bob = test_user(&store, "bob", UserRole::User);
+        block_on(async {
+            let server = store
+                .insert_connection(&openwebide_core::NewConnection {
+                    name: "server".into(),
+                    base_url: "http://localhost:11434".into(),
+                    kind: openwebide_core::ProviderKind::Ollama,
+                    model: None,
+                    context_limit: None,
+                })
+                .await
+                .unwrap();
+            let selection = ModelSelection {
+                server_id: server.id,
+                model: "main".into(),
+            };
+            store
+                .save_model_defaults(
+                    alice,
+                    &ModelDefaults {
+                        primary: Some(selection.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            store
+                .save_model_profile(&ModelProfile {
+                    selection,
+                    settings: ModelSettings {
+                        context_limit: Some(8192),
+                        ..Default::default()
+                    },
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                store
+                    .model_setup(alice)
+                    .await
+                    .unwrap()
+                    .resolve(server.id, "main")
+                    .context_limit,
+                Some(8192)
+            );
+            assert_eq!(
+                store
+                    .model_setup(alice)
+                    .await
+                    .unwrap()
+                    .resolve(server.id, "other")
+                    .context_limit,
+                None
+            );
+            let bob_setup = store.model_setup(bob).await.unwrap();
+            assert_eq!(bob_setup.defaults, ModelDefaults::default());
+            assert_eq!(
+                bob_setup.resolve(server.id, "main").context_limit,
+                Some(8192)
+            );
+            store
+                .save_server_settings(
+                    server.id,
+                    &ServerSettingsUpdate {
+                        api_key: Some("secret-value".into()),
+                        headers: Some(std::collections::BTreeMap::from([(
+                            "X-Proxy-Key".into(),
+                            "secret-header".into(),
+                        )])),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let browser =
+                serde_json::to_string(&store.server_settings(server.id).await.unwrap()).unwrap();
+            assert!(!browser.contains("secret-value"));
+            assert!(!browser.contains("secret-header"));
+            store
+                .save_server_settings(
+                    server.id,
+                    &ServerSettingsUpdate {
+                        timeout_seconds: Some(60),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                store
+                    .server_transport(server.id)
+                    .await
+                    .unwrap()
+                    .api_key
+                    .as_deref(),
+                Some("secret-value")
+            );
+            store
+                .save_server_settings(
+                    server.id,
+                    &ServerSettingsUpdate {
+                        clear_api_key: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(!store.server_settings(server.id).await.unwrap().has_api_key);
+            assert!(
+                store
+                    .save_server_settings(
+                        server.id,
+                        &ServerSettingsUpdate {
+                            headers: Some(std::collections::BTreeMap::from([(
+                                "Host".into(),
+                                "evil".into()
+                            )])),
+                            ..Default::default()
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn shared_profile_migration_preserves_preferences_thresholds_and_is_idempotent() {
+        block_on(async {
+            let db = RusqliteDb::open_in_memory().unwrap();
+            migrations::apply_through(&db, 19).await.unwrap();
+            let store = Store::new(db);
+            let alice = store
+                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap()
+                .id;
+            let bob = store
+                .insert_user("bob", "hash", UserRole::User, 1)
+                .await
+                .unwrap()
+                .id;
+            let server = store
+                .insert_connection(&NewConnection {
+                    name: "host".into(),
+                    kind: openwebide_core::ProviderKind::Ollama,
+                    base_url: "http://host".into(),
+                    model: Some("main".into()),
+                    context_limit: None,
+                })
+                .await
+                .unwrap();
+            for (user, model, threshold) in [(alice, "main", 80), (bob, "other", 0)] {
+                store.set_user_setting(user, "model_defaults", &serde_json::json!({"primary":{"server_id":server.id,"model":model},"auto_compact_threshold":threshold}).to_string()).await.unwrap();
+            }
+            for (user, context, fast) in [
+                (
+                    alice,
+                    4096,
+                    serde_json::json!({"server_id":server.id,"model":"quick"}),
+                ),
+                (bob, 8192, serde_json::Value::Null),
+            ] {
+                store.db.execute("INSERT INTO model_settings (user_id, server_id, model, settings) VALUES (?, ?, 'main', ?)", &[DbValue::Int(user.get()),DbValue::Int(server.id),DbValue::Text(serde_json::json!({"context_limit":context,"fast":fast}).to_string())]).await.unwrap();
+            }
+            store
+                .set_user_setting(
+                    alice,
+                    &format!("model_detection_{}_main", server.id),
+                    "cached",
+                )
+                .await
+                .unwrap();
+            store
+                .db
+                .execute("PRAGMA user_version = 19", &[])
+                .await
+                .unwrap();
+            store.migrate_with(&|_| true).await.unwrap();
+            let first = store.model_setup(alice).await.unwrap();
+            let second = store.model_setup(bob).await.unwrap();
+            assert_eq!(first.profiles, second.profiles);
+            assert_eq!(first.resolve(server.id, "main").context_limit, Some(4096));
+            assert_eq!(
+                first.resolve(server.id, "main").auto_compact_threshold,
+                Some(80)
+            );
+            assert_eq!(
+                second.resolve(server.id, "other").auto_compact_threshold,
+                Some(0)
+            );
+            assert_eq!(first.defaults.fast.as_ref().unwrap().model, "quick");
+            assert!(second.defaults.fast.is_none());
+            assert_eq!(second.defaults.primary.as_ref().unwrap().model, "other");
+            assert!(
+                first
+                    .profiles
+                    .iter()
+                    .all(|profile| profile.settings.fast.is_none())
+            );
+            assert_eq!(
+                store
+                    .get_setting(&format!("model_detection_{}_main", server.id))
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some("cached")
+            );
+            migrations::apply_through(&store.db, 20).await.unwrap();
+            assert_eq!(store.model_setup(alice).await.unwrap(), first);
+            assert_eq!(store.model_setup(bob).await.unwrap(), second);
+        });
+    }
+
+    #[test]
     fn pending_edits_merge_once_across_sessions_and_keep_resolutions() {
         let store = test_store();
         let user = test_user(&store, "u", UserRole::User);
@@ -1756,7 +2000,7 @@ mod tests {
             store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, ok, diff, created_at) VALUES (?, 1, 'history', 'write_file', 'write', 1, ?, 1)", &[DbValue::Int(session.id), DbValue::Text(serde_json::to_string(&diff).unwrap())]).await.unwrap();
             store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, diff, created_at) VALUES (?, 1, 'preview', 'write_file', 'write', ?, 1)", &[DbValue::Int(session.id), DbValue::Text(serde_json::to_string(&diff).unwrap())]).await.unwrap();
             store.migrate().await.unwrap();
-            assert_eq!(schema_version(&store.db).await, 18);
+            assert_eq!(schema_version(&store.db).await, migrations::SCHEMA_VERSION);
             store
                 .complete_tool_step(user, session.id, "history", true, "replay", Some(&diff))
                 .await
@@ -2136,6 +2380,63 @@ mod tests {
 
             store.delete_system_prompt(prompt.id).await.unwrap();
             assert!(store.list_system_prompts().await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn session_connection_change_preserves_history_and_checks_ownership() {
+        let store = test_store();
+        let alice = test_user(&store, "alice", UserRole::Admin);
+        let bob = test_user(&store, "bob", UserRole::User);
+        block_on(async {
+            let connection = store
+                .insert_connection(&NewConnection {
+                    name: "local".into(),
+                    kind: ProviderKind::Ollama,
+                    base_url: "http://localhost:11434".into(),
+                    model: Some("model".into()),
+                    context_limit: None,
+                })
+                .await
+                .unwrap();
+            let session = store
+                .create_session("history", None, None, None, alice, 1)
+                .await
+                .unwrap();
+            store
+                .insert_message(session.id, Role::User, "hello", 2)
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .set_session_connection(session.id, connection.id, bob)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                store
+                    .set_session_connection(session.id, 9999, alice)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                store
+                    .get_session(session.id, alice)
+                    .await
+                    .unwrap()
+                    .connection_id,
+                None
+            );
+            let changed = store
+                .set_session_connection(session.id, connection.id, alice)
+                .await
+                .unwrap();
+            assert_eq!(changed.connection_id, Some(connection.id));
+            assert_eq!(changed.name, "history");
+            assert_eq!(
+                store.list_messages(session.id).await.unwrap()[0].content,
+                "hello"
+            );
         });
     }
 

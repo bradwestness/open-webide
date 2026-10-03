@@ -10,10 +10,10 @@ use crate::state::{
     workspace::WorkspaceState,
 };
 
-use crate::{backend::Api, workspace::Workspace};
+use crate::{project_git::ProjectGit, state::auth::AuthState, workspace::Workspace};
 
 pub struct GitActionContext {
-    pub api: Api,
+    pub project_git: ProjectGit,
     pub projects: ProjectsState,
     pub workspace: WorkspaceState,
     pub git: GitState,
@@ -32,15 +32,57 @@ pub struct GitActions {
 }
 
 impl GitActions {
-    pub fn refresh(api: Api, projects: ProjectsState, git: GitState) -> Callback<()> {
+    pub fn refresh(
+        project_git: ProjectGit,
+        projects: ProjectsState,
+        git: GitState,
+        auth: AuthState,
+    ) -> Callback<()> {
         let active_project = projects.active_project;
+        let pending = StoredValue::new_local(std::collections::HashSet::new());
         Callback::new(move |()| {
-            let project_id = active_project.get();
+            let Some(project_id) = active_project.get_untracked() else {
+                return;
+            };
+            let generation = auth.generation.get_untracked();
+            let revision = project_git.revision();
+            let key = (project_id, generation, revision);
+            if pending.with_value(|pending| pending.contains(&key)) {
+                return;
+            }
+            pending.update_value(|pending| {
+                pending.insert(key);
+            });
             spawn_local(async move {
-                if let Ok(status) = api.with_value(Clone::clone).git_status(project_id).await
-                    && active_project.get_untracked() == project_id
+                let result = async {
+                    let repository = project_git.repository(Some(project_id)).await?;
+                    match futures::future::select(
+                        Box::pin(repository.status()),
+                        Box::pin(crate::util::sleep_ms(5000)),
+                    )
+                    .await
+                    {
+                        futures::future::Either::Left((result, _)) => result,
+                        futures::future::Either::Right(_) => Err("Git status timed out".into()),
+                    }
+                }
+                .await;
+                if pending
+                    .try_update_value(|pending| {
+                        pending.remove(&key);
+                    })
+                    .is_none()
                 {
-                    git.status.set(Some(status));
+                    return;
+                }
+                if active_project.try_get_untracked() == Some(Some(project_id))
+                    && auth.generation.try_get_untracked() == Some(generation)
+                    && project_git.revision() == revision
+                {
+                    match result {
+                        Ok(status) => git.status.set(Some(status)),
+                        Err(_) => git.status.set(None),
+                    }
                 }
             });
         })
@@ -48,7 +90,7 @@ impl GitActions {
 
     pub fn new(context: GitActionContext) -> Self {
         let GitActionContext {
-            api,
+            project_git,
             projects,
             workspace,
             git,
@@ -81,10 +123,14 @@ impl GitActions {
                             branch,
                             create_if_missing: true,
                         };
-                        match api
-                            .with_value(Clone::clone)
-                            .git_checkout(project_id, &request)
-                            .await
+                        match async {
+                            project_git
+                                .repository(project_id)
+                                .await?
+                                .checkout(&request)
+                                .await
+                        }
+                        .await
                         {
                             Ok(result) => {
                                 refresh.run(());
@@ -105,10 +151,14 @@ impl GitActions {
                     remote: None,
                     branch: None,
                 };
-                match api
-                    .with_value(Clone::clone)
-                    .git_sync(project_id, &request)
-                    .await
+                match async {
+                    project_git
+                        .repository(project_id)
+                        .await?
+                        .sync(&request)
+                        .await
+                }
+                .await
                 {
                     Ok(result) => {
                         refresh.run(());
@@ -131,10 +181,14 @@ impl GitActions {
             };
             let project_id = active_project.get();
             spawn_local(async move {
-                match api
-                    .with_value(Clone::clone)
-                    .git_file_head(project_id, &file_path)
-                    .await
+                match async {
+                    project_git
+                        .repository(project_id)
+                        .await?
+                        .file_head(&file_path)
+                        .await
+                }
+                .await
                 {
                     Ok(content) => {
                         if active_project.get_untracked() == project_id

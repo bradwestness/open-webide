@@ -16,14 +16,16 @@ pub enum Workspace {
 
 impl Workspace {
     pub async fn list(&self, dir: &str) -> Result<Vec<FileEntry>, String> {
-        match self {
+        let mut entries = match self {
             Workspace::Remote { api, project_id } => {
                 api.with_value(Clone::clone)
                     .list_files(*project_id, dir)
                     .await
             }
             Workspace::Local { handle } => local_fs::list(handle, dir).await,
-        }
+        }?;
+        openwebide_core::vfs::sort_file_entries(&mut entries);
+        Ok(entries)
     }
 
     pub async fn read(&self, path: &str) -> Result<String, String> {
@@ -34,6 +36,17 @@ impl Workspace {
                     .await
             }
             Workspace::Local { handle } => local_fs::read(handle, path).await,
+        }
+    }
+
+    pub async fn read_lossy(&self, path: &str) -> Result<String, String> {
+        match self {
+            Workspace::Remote { api, project_id } => {
+                api.with_value(Clone::clone)
+                    .read_file_lossy(*project_id, path)
+                    .await
+            }
+            Workspace::Local { handle } => local_fs::read_lossy(handle, path).await,
         }
     }
 
@@ -69,7 +82,7 @@ impl Workspace {
             Workspace::Local { handle } => {
                 use openwebide_core::Vfs;
                 let vfs = local_fs::BrowserFsaVfs::new(handle.clone());
-                vfs.copy(from, to).await.map_err(|e| format!("{e:?}"))
+                vfs.copy(from, to).await.map_err(local_fs::display_error)
             }
         }
     }

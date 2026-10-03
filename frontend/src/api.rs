@@ -240,6 +240,93 @@ impl BackendApi {
         Ok(())
     }
 
+    pub async fn set_session_connection(
+        &self,
+        id: i64,
+        connection_id: i64,
+    ) -> Result<ChatSession, String> {
+        self.put(
+            &format!("/sessions/{id}/connection"),
+            &json!({"connection_id": connection_id}),
+        )
+        .await
+    }
+
+    pub async fn detect_model(
+        &self,
+        id: i64,
+        model: &str,
+    ) -> Result<openwebide_core::ModelDetection, String> {
+        self.post(
+            "/model-setup/detect",
+            &serde_json::json!({"server_id": id, "model": model}),
+        )
+        .await
+    }
+    pub async fn inspect_server(
+        &self,
+        base_url: &str,
+        kind: Option<ProviderKind>,
+    ) -> Result<openwebide_core::ServerDiscovery, String> {
+        self.post(
+            "/model-setup/inspect",
+            &serde_json::json!({"base_url": base_url, "kind": kind}),
+        )
+        .await
+    }
+    pub async fn discover_servers(&self) -> Result<Vec<openwebide_core::ServerDiscovery>, String> {
+        self.post("/model-setup/discover", &serde_json::json!({}))
+            .await
+    }
+    pub async fn model_runtime(
+        &self,
+        id: i64,
+        model: Option<&str>,
+    ) -> Result<openwebide_core::ModelRuntime, String> {
+        let query = model
+            .map(|model| format!("?model={}", urlenc(model)))
+            .unwrap_or_default();
+        self.get(&format!("/connections/{id}/runtime{query}")).await
+    }
+    pub async fn model_setup(&self) -> Result<openwebide_core::ModelSetup, String> {
+        self.get("/model-setup").await
+    }
+    pub async fn save_model_defaults(
+        &self,
+        defaults: &openwebide_core::ModelDefaults,
+    ) -> Result<openwebide_core::ModelSetup, String> {
+        self.put("/model-setup/defaults", defaults).await
+    }
+    pub async fn save_model_profile(
+        &self,
+        profile: &openwebide_core::ModelProfile,
+    ) -> Result<openwebide_core::ModelSetup, String> {
+        self.put("/model-setup/profile", profile).await
+    }
+    pub async fn server_settings(
+        &self,
+        id: i64,
+    ) -> Result<openwebide_core::ServerSettings, String> {
+        self.get(&format!("/connections/{id}/settings")).await
+    }
+    pub async fn save_server_settings(
+        &self,
+        id: i64,
+        update: &openwebide_core::ServerSettingsUpdate,
+    ) -> Result<openwebide_core::ServerSettings, String> {
+        self.put(&format!("/connections/{id}/settings"), update)
+            .await
+    }
+
+    pub async fn startup_context(&self, project_id: i64, tools: bool) -> Result<String, String> {
+        let response: serde_json::Value = self
+            .get(&format!(
+                "/projects/{project_id}/files/context?tools={tools}"
+            ))
+            .await?;
+        Ok(response["content"].as_str().unwrap_or_default().to_owned())
+    }
+
     pub async fn create_session(
         &self,
         name: &str,
@@ -594,6 +681,15 @@ impl BackendApi {
     }
 
     /// Complete a tool-capable chat request via the backend provider.
+    pub async fn approval_check(
+        &self,
+        session: i64,
+        check: &openwebide_core::ApprovalCheck,
+    ) -> Result<openwebide_core::ApprovalDecision, String> {
+        self.post(&format!("/sessions/{session}/approval-check"), check)
+            .await
+    }
+
     pub async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, String> {
         self.post("/chat-tools", request).await
     }

@@ -298,6 +298,7 @@ async fn multiplexed_commands_require_hello_and_terminal_still_streams() {
     let completion = BridgeClientMessage::CompletionStart {
         id: "c".into(),
         request: ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: None,
             model: None,

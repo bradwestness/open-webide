@@ -397,6 +397,31 @@ body {
   color: var(--text-muted);
 }
 
+.markdown-table {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0 0 8px;
+}
+
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: inherit;
+}
+
+.markdown th,
+.markdown td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown th {
+  background: var(--bg-panel);
+  font-weight: 600;
+}
+
 .chat-error {
   margin: 0 20px;
   padding: 8px 12px;
@@ -1091,9 +1116,9 @@ body {
   inset: 0;
   z-index: 1;
   overflow: hidden;
+  scrollbar-gutter: stable;
   pointer-events: none;
   margin: 0;
-  padding: 12px 16px;
   font-family: var(--mono);
   font-size: 13px;
   line-height: 1.5;
@@ -1101,7 +1126,18 @@ body {
   white-space: pre-wrap;
   overflow-wrap: break-word;
   color: var(--text);
+  visibility: hidden;
 }
+
+.editor-highlight-content {
+  padding: 12px 16px;
+  min-height: 100%;
+  transform: translate(var(--editor-scroll-x, 0px), var(--editor-scroll-y, 0px));
+  will-change: transform;
+}
+
+.editor-code.highlight-ready .editor-highlight { visibility: visible; }
+.editor-code.highlight-ready .editor-textarea { color: transparent; }
 
 .editor-textarea {
   position: absolute;
@@ -1109,14 +1145,13 @@ body {
   width: 100%;
   height: 100%;
   resize: none;
+  scrollbar-gutter: stable;
   border: none;
   outline: none;
   margin: 0;
   padding: 12px 16px;
   background: transparent;
-  /* Visible fallback: if the highlight overlay is blank the raw text still
-     shows, so file content is never invisible. The overlay (z-index: 1)
-     paints the colored tokens on top when it has content. */
+  /* Keep raw text readable until the current highlight frame is ready. */
   color: var(--text);
   caret-color: var(--text);
   font-family: var(--mono);
@@ -2045,6 +2080,7 @@ button.browser-item {
    ========================================================================= */
 
 .tui-pane {
+  --tui-text-inset: 16px;
   font-family: var(--mono);
 }
 
@@ -2079,11 +2115,15 @@ button.browser-item {
 
 .tui-user {
   color: var(--text);
+  padding: 8px;
+  margin-inline: -8px 0;
+  background: var(--bg-hover);
+  border-radius: 4px;
 }
 
 .tui-user-prompt {
   display: flex;
-  gap: 8px;
+  gap: calc(var(--tui-text-inset) - 8px);
   align-items: flex-start;
 }
 
@@ -2093,25 +2133,8 @@ button.browser-item {
 }
 
 .tui-glyph.user {
+  flex: 0 0 8px;
   color: var(--accent);
-}
-
-.tui-glyph.assistant {
-  color: var(--online);
-}
-
-.tui-glyph-header {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.tui-role-label {
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 600;
 }
 
 .tui-attached-pill {
@@ -2134,7 +2157,7 @@ button.browser-item {
 }
 
 .tui-assistant-body {
-  padding-left: 16px;
+  padding-left: var(--tui-text-inset);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
   line-height: 1.5;
@@ -2147,7 +2170,7 @@ button.browser-item {
 
 /* Thinking reasoning box */
 .tui-thinking-box {
-  margin: 4px 0 8px 16px;
+  margin: 4px 0 8px var(--tui-text-inset);
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg);
@@ -2412,6 +2435,8 @@ button.browser-item {
 .tui-model-name {
   color: var(--text);
   font-weight: 600;
+  cursor: pointer;
+  position: relative;
 }
 
 .tui-ctx-gauge.ctx-normal {
@@ -2531,3 +2556,20 @@ button.browser-item {
 .terminal-visibility.hidden {
   display: none;
 }
+
+.tui-model-menu { bottom: 100%; top: auto; min-width: 240px; }
+.tui-connection-group .recent-item { width: 100%; text-align: left; justify-content: flex-start; }
+.tui-connection-heading { font-weight: 600; }
+.tui-connection-model { padding-left: 28px; }
+.tui-connection-group .form-hint { display: block; padding: 6px 28px; }
+.tui-connection-model[aria-current="true"] { background: var(--bg-hover); color: var(--accent); }
+
+.model-setup summary { cursor: pointer; color: var(--text); margin-bottom: 12px; }
+.model-settings-editor { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+.model-setup .form-actions { margin: 12px 0; }
+
+.approval-mode-picker { position: relative; flex-shrink: 0; }
+.approval-mode-picker .tui-mode-badge { font: inherit; padding: 2px 6px; }
+.approval-mode-menu { bottom: 100%; top: auto; min-width: 240px; }
+.approval-mode-menu .form-hint { padding: 8px 12px; white-space: normal; }
+.tui-run-state { color: var(--text-muted); }

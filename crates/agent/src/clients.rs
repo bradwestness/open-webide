@@ -29,8 +29,31 @@ impl WebClient for NoopWebClient {
     }
 }
 
+pub type ContextStatus = (
+    Result<openwebide_core::ExecutionEnvironment, String>,
+    Result<GitRepoStatus, String>,
+);
+
+pub fn context_status_unavailable() -> ContextStatus {
+    (
+        Err("Execution host metadata timed out".into()),
+        Err("Git status timed out".into()),
+    )
+}
+
 /// Process execution bridge client capability for the agent.
 pub trait BridgeClient: Send + Sync {
+    /// Best-effort metadata for startup; hosts bound this independently of tool timeouts.
+    fn context_status(&self) -> impl Future<Output = ContextStatus> + Send {
+        async { futures::future::join(self.environment(), self.git_status()).await }
+    }
+
+    fn environment(
+        &self,
+    ) -> impl Future<Output = Result<openwebide_core::ExecutionEnvironment, String>> + Send {
+        async { Err("Execution host unavailable".into()) }
+    }
+
     fn execute_command(
         &self,
         command: &str,

@@ -44,6 +44,36 @@ pub(crate) async fn create_session(
 }
 
 #[derive(Deserialize)]
+struct SessionConnectionBody {
+    connection_id: i64,
+}
+
+pub(crate) async fn set_session_connection(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let id = session_id(path)?;
+    state.store.get_session(id, user.id).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
+    let selection: SessionConnectionBody = parse_json(body)?;
+    if !state
+        .store
+        .get_connection(selection.connection_id)
+        .await?
+        .enabled
+    {
+        return Err(ApiError::bad_request("connection is disabled"));
+    }
+    let session = state
+        .store
+        .set_session_connection(id, selection.connection_id, user.id)
+        .await?;
+    Ok(json_response(200, &session))
+}
+
+#[derive(Deserialize)]
 pub(super) struct RenameSessionBody {
     name: String,
 }
@@ -154,51 +184,57 @@ pub(super) async fn build_run_plan(
     let connection_id = session
         .connection_id
         .ok_or_else(|| ApiError::bad_request("session has no connection; pick one first"))?;
-    let connection = state.store.get_connection(connection_id).await?;
+    let runtime =
+        super::model_setup::runtime(state, user_id, connection_id, send.model.as_deref()).await?;
+    let connection = runtime.connection.clone();
     let system_prompt = match session.system_prompt_id {
         Some(id) => Some(state.store.get_system_prompt(id).await?.content),
         None => None,
     };
     let system_prompt = Some(with_temporal_context(system_prompt, now()));
-    let mut history = openwebide_core::tool_history(
+    let history = openwebide_agent::session::history(
         state.store.list_messages(session_id).await?,
         &state.store.list_tool_steps(session_id).await?,
     );
-    for message in &mut history {
-        if message.role == Role::Assistant {
-            message.content = openwebide_core::strip_reasoning(&message.content).to_string();
-        }
-    }
-    let full_content = match &send.editor_context {
-        Some(ctx) => format!("{}{}", ctx.format_prompt_injection(), send.content),
-        None => send.content,
-    };
+    let full_content =
+        openwebide_agent::session::user_content(send.content, send.editor_context.as_ref());
     // Remote-mode projects run the agentic loop with workspace tools;
     // everything else is plain chat.
-    let (is_remote, base) = match session.project_id {
+    let project = match session.project_id {
         Some(id) => match state.store.get_project(id, user_id).await {
-            Ok(project) if project.mode == WorkspaceMode::Remote => {
-                (true, project.path.unwrap_or_default())
-            }
-            Ok(_) | Err(openwebide_storage::StorageError::NotFound(_)) => (false, String::new()),
+            Ok(project) => Some(project),
+            Err(openwebide_storage::StorageError::NotFound(_)) => None,
             Err(error) => return Err(error.into()),
         },
-        None => (false, String::new()),
+        None => None,
     };
+    let environment = openwebide_core::RunEnvironment {
+        project_name: project.as_ref().map(|project| project.name.clone()),
+        project_root: project
+            .as_ref()
+            .and_then(openwebide_core::run::execution_root),
+        mode: project.as_ref().map(|project| project.mode),
+        timestamp: now(),
+    };
+    let is_remote = environment.mode == Some(WorkspaceMode::Remote)
+        && environment.project_root.is_some()
+        && runtime.settings.tools != Some(false);
+    let base = environment.project_root.clone().unwrap_or_default();
 
     Ok(RunPlan {
+        transport: runtime.transport.clone(),
+        environment,
         user_content: full_content,
-        request: ChatRequest {
-            connection_id,
+        request: openwebide_agent::session::request(
+            &runtime,
             system_prompt,
-            model: send.model,
-            messages: history,
-            tools: if is_remote {
+            history,
+            if is_remote {
                 workspace_tools()
             } else {
                 Vec::new()
             },
-        },
+        ),
         connection,
         kind: if is_remote {
             RunKind::Agent { project_path: base }
@@ -216,9 +252,13 @@ pub(crate) async fn run_plan(
 ) -> Result<JsonResp, ApiError> {
     let user_id = user.id;
     let session_id = session_id(path)?;
+    let native = req.headers().contains_key("authorization");
     let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let send: SendMessageBody = parse_json(body)?;
-    let plan = build_run_plan(state, user_id, session_id, send).await?;
+    let mut plan = build_run_plan(state, user_id, session_id, send).await?;
+    if !native {
+        plan.transport = Default::default();
+    }
     Ok(json_response(200, &plan))
 }
 
@@ -248,8 +288,11 @@ pub(crate) async fn send_session_message(
     let memo = ToolStreamMemo::new(plan.connection.tool_stream_unsupported);
     let connection_id = plan.connection.id;
     let tool_stream_revision = plan.connection.tool_stream_revision;
-    let provider =
-        Provider::for_connection_with_memo(&plan.connection, SpinHttpClient, memo.clone());
+    let provider = Provider::for_connection_with_memo(
+        &plan.connection,
+        SpinHttpClient::default().with_transport(plan.transport),
+        memo.clone(),
+    );
     let store = Arc::new(state.store);
     let cancel = CancelFlag::new(store.clone(), session_id, started_ms);
     let gate = PermissionPoller::new(store.clone(), session_id, started_ms);
@@ -263,17 +306,40 @@ pub(crate) async fn send_session_message(
             request,
             provider,
             project_path,
+            plan.environment,
             AgentConfig::default(),
             cancel,
             gate,
         )
     } else {
-        message_stream(
+        let content = openwebide_agent::context::chat_context(&plan.environment);
+        request
+            .system_prompt
+            .get_or_insert_with(String::new)
+            .push_str(&format!("\n\n{content}"));
+        let context = store
+            .insert_message(
+                session_id,
+                Role::System,
+                &format!("{}{content}", openwebide_core::RUN_CONTEXT_PREFIX),
+                now(),
+            )
+            .await?;
+        let mut stream = message_stream(
             store,
             session_id,
             user_message,
             provider.chat_stream(&request),
             started_ms,
+        );
+        let first = stream.next().await;
+        Box::pin(
+            futures::stream::iter(
+                first
+                    .into_iter()
+                    .chain([openwebide_core::RunEvent::Message { message: context }]),
+            )
+            .chain(stream),
         )
     };
 

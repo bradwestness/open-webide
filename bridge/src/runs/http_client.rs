@@ -17,6 +17,7 @@ type Connector = HttpConnector;
 #[derive(Clone, Debug)]
 pub struct ReqwestHttpClient {
     client: Client<Connector, Full<Bytes>>,
+    transport: openwebide_core::ServerTransport,
 }
 
 impl Default for ReqwestHttpClient {
@@ -36,21 +37,57 @@ impl Default for ReqwestHttpClient {
         let connector = http;
         Self {
             client: Client::builder(TokioExecutor::new()).build(connector),
+            transport: Default::default(),
         }
     }
 }
 
 impl ReqwestHttpClient {
+    pub fn with_transport(mut self, transport: openwebide_core::ServerTransport) -> Self {
+        self.transport = transport;
+        self
+    }
     pub async fn send(
         &self,
-        request: Request<Full<Bytes>>,
+        mut request: Request<Full<Bytes>>,
     ) -> Result<Response<Incoming>, ProviderError> {
-        self.client
-            .request(request)
-            .await
-            .map_err(|e| ProviderError::Http(e.to_string()))
+        for (name, value) in &self.transport.headers {
+            request.headers_mut().insert(
+                name.parse::<hyper::header::HeaderName>()
+                    .map_err(|_| ProviderError::Http("Invalid server header.".into()))?,
+                value
+                    .parse()
+                    .map_err(|_| ProviderError::Http("Invalid server header.".into()))?,
+            );
+        }
+        if let Some(key) = &self.transport.api_key {
+            request.headers_mut().insert(
+                "authorization",
+                format!("Bearer {key}")
+                    .parse()
+                    .map_err(|_| ProviderError::Http("Invalid API key.".into()))?,
+            );
+        }
+        tokio::time::timeout(
+            Duration::from_secs(u64::from(self.transport.timeout_seconds)),
+            self.client.request(request),
+        )
+        .await
+        .map_err(|_| ProviderError::Http("Model server request timed out.".into()))?
+        .map_err(|_| ProviderError::Http("Cannot reach model server.".into()))
     }
 
+    fn payload(&self, url: &str, body: &serde_json::Value) -> Result<Bytes, ProviderError> {
+        let mut body = body.clone();
+        if url.ends_with("/api/chat")
+            && let Some(keep_alive) = &self.transport.keep_alive
+        {
+            body["keep_alive"] = serde_json::json!(keep_alive);
+        }
+        serde_json::to_vec(&body)
+            .map(Bytes::from)
+            .map_err(|e| ProviderError::Parse(e.to_string()))
+    }
     pub async fn json(
         &self,
         request: Request<Full<Bytes>>,
@@ -72,6 +109,9 @@ impl ReqwestHttpClient {
 }
 
 fn status_error(status: hyper::StatusCode, body: &[u8]) -> ProviderError {
+    if matches!(status.as_u16(), 401 | 403) {
+        return ProviderError::Authentication;
+    }
     let text = String::from_utf8_lossy(body).into_owned();
     let detail = serde_json::from_str::<serde_json::Value>(&text)
         .ok()
@@ -99,8 +139,8 @@ impl HttpClient for ReqwestHttpClient {
         url: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, ProviderError> {
-        let bytes = serde_json::to_vec(body).map_err(|e| ProviderError::Parse(e.to_string()))?;
-        self.json(request("POST", url, bytes.into())?).await
+        let bytes = self.payload(url, body)?;
+        self.json(request("POST", url, bytes)?).await
     }
 
     fn post_stream(
@@ -109,9 +149,9 @@ impl HttpClient for ReqwestHttpClient {
         body: &serde_json::Value,
     ) -> Pin<Box<dyn Stream<Item = Result<Bytes, ProviderError>> + Send + 'static>> {
         let client = self.clone();
-        let req = serde_json::to_vec(body)
-            .map_err(|e| ProviderError::Parse(e.to_string()))
-            .and_then(|body| request("POST", url, body.into()));
+        let req = self
+            .payload(url, body)
+            .and_then(|body| request("POST", url, body));
         Box::pin(
             stream::once(async move {
                 let response = client.send(req?).await?;
@@ -180,6 +220,49 @@ pub(crate) mod tests {
             }
         }
         String::from_utf8(bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn server_credentials_and_keep_alive_reach_native_requests() {
+        let (url, task) =
+            capture("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await;
+        let client =
+            ReqwestHttpClient::default().with_transport(openwebide_core::ServerTransport {
+                api_key: Some("test-key".into()),
+                headers: std::collections::BTreeMap::from([(
+                    "X-Proxy-Key".into(),
+                    "test-header".into(),
+                )]),
+                keep_alive: Some("10m".into()),
+                ..Default::default()
+            });
+        client
+            .post_json(
+                &format!("{url}/api/chat"),
+                &serde_json::json!({"model": "main"}),
+            )
+            .await
+            .unwrap();
+        let request = task.await.unwrap();
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-key")
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("x-proxy-key: test-header")
+        );
+        assert!(request.contains("\"keep_alive\":\"10m\""));
+        let (url, task) =
+            capture("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+        assert!(matches!(
+            client.get_json(&url).await,
+            Err(ProviderError::Authentication)
+        ));
+        task.await.unwrap();
     }
 
     #[tokio::test]

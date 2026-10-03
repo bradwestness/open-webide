@@ -73,6 +73,7 @@ impl AuthState {
         }
         chat.local_cancel_flag
             .with_value(|flag| flag.store(true, std::sync::atomic::Ordering::Relaxed));
+        chat.creating_session.set(false);
         chat.streaming.set(false);
         chat.active_run.set(None);
         chat.notice.set(None);
@@ -98,6 +99,8 @@ impl AuthState {
         git.reset();
 
         chat.approval_mode.set(Default::default());
+        chat.draft_approval_mode.set(Default::default());
+        chat.last_sessions.set(Default::default());
         chat.current_run_anchor.set(None);
         chat.session_telemetry.set(SessionTelemetry::default());
         settings.connections.set(Vec::new());
@@ -105,7 +108,12 @@ impl AuthState {
         chat.models.set(Vec::new());
         chat.session_model.set(Default::default());
         chat.selected_model.set(None);
+        chat.draft_connection.set(None);
+        chat.connection_changing.set(false);
         settings.default_connection.set(None);
+        settings.model_setup.set(Default::default());
+        settings.show_model_setup.set(false);
+        settings.model_setup_server.set(None);
         settings.default_prompt.set(None);
         chat.show_terminal.set(false);
         chat.active_editor_context.set(None);

@@ -69,7 +69,10 @@ pub(super) async fn route(
 
     let path = req.uri().path().to_string();
 
-    let is_api_req = path == "/exec" || path.starts_with("/git/");
+    let is_api_req = path == "/exec"
+        || path == "/environment"
+        || path.starts_with("/git/")
+        || path == "/models/discover";
     if is_api_req && method != "OPTIONS" {
         let auth_header = req
             .headers()
@@ -105,6 +108,11 @@ pub(super) async fn route(
 
     match (method.as_str(), path.as_str()) {
         ("OPTIONS", _) => Ok(preflight_response(req.headers(), allowed_origin)),
+        ("GET" | "POST", "/environment") => Ok(respond(
+            StatusCode::OK,
+            &serde_json::to_string(&crate::exec::environment()).expect("environment serializes"),
+            allowed_origin,
+        )),
         ("GET", "/health") => Ok(respond(
             StatusCode::OK,
             r#"{"status":"ok"}"#,
@@ -119,6 +127,25 @@ pub(super) async fn route(
             Err(BridgeError::Forbidden("forbidden".into())),
             allowed_origin,
         )),
+        ("POST", "/models/discover") => {
+            if let Err(error) =
+                read_json::<serde_json::Value>(req.into_body(), config.limits.max_body).await
+            {
+                return Ok(execution_response(Err(error.into()), allowed_origin));
+            }
+            let transport = openwebide_core::ServerTransport {
+                timeout_seconds: 2,
+                ..Default::default()
+            };
+            let client =
+                crate::runs::http_client::ReqwestHttpClient::default().with_transport(transport);
+            let found = openwebide_llm::discovery::discover(client).await;
+            Ok(respond(
+                StatusCode::OK,
+                &serde_json::to_string(&found).expect("discovery serializes"),
+                allowed_origin,
+            ))
+        }
         ("POST", "/exec") => Ok(execution_response(
             handle_exec(req, &config).await,
             allowed_origin,

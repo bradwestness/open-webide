@@ -137,6 +137,7 @@ impl From<openwebide_llm::ProviderError> for ApiError {
     fn from(err: openwebide_llm::ProviderError) -> Self {
         match err {
             openwebide_llm::ProviderError::NotImplemented(msg) => Self::not_implemented(msg),
+            openwebide_llm::ProviderError::Authentication => Self::bad_request(err.to_string()),
             openwebide_llm::ProviderError::NoModel => Self::bad_request(err.to_string()),
             other => Self::internal(other.to_string()),
         }
@@ -150,6 +151,7 @@ impl From<crate::files::FsError> for ApiError {
             FsError::Reserved(_) | FsError::PathEscape(_) | FsError::TooLarge { .. } => 400,
             FsError::AlreadyExists(_) => 409,
             FsError::NotFound(_) => 404,
+            FsError::PermissionDenied(_) => 403,
             FsError::Io(_) => 500,
         };
         Self::new(status, err.to_string())
@@ -198,6 +200,7 @@ mod tests {
             (FsError::Reserved(".spin".into()), 400),
             (FsError::AlreadyExists("a".into()), 409),
             (FsError::NotFound("a".into()), 404),
+            (FsError::PermissionDenied("a".into()), 403),
             (FsError::TooLarge { size: 11, max: 10 }, 400),
             (FsError::PathEscape("../a".into()), 400),
             (FsError::Io("disk failed".into()), 500),

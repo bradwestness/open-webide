@@ -415,6 +415,7 @@ async fn local_completions_stream_cancel_and_report_disconnect() {
         mounted.state.bridge.get_untracked(),
     );
     let request = openwebide_core::ChatRequest {
+        model_settings: Default::default(),
         connection_id: 1,
         model: None,
         system_prompt: None,

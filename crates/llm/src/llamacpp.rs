@@ -48,13 +48,14 @@ impl<C: HttpClient> LlamaCppProvider<C> {
         let Some(model) = request.model.clone().or_else(|| self.model.clone()) else {
             return Box::pin(stream::once(async { Err(ProviderError::NoModel) }));
         };
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": llamacpp_tool_messages(request),
             "stream": true,
             "tools": tools_wire(&request.tools),
             "stream_options": { "include_usage": true },
         });
+        crate::apply_model_settings(&mut body, request, ProviderKind::LlamaCpp);
         let lines = LineStream::new(
             self.http
                 .post_stream(&url_for(&self.base_url, "/v1/chat/completions"), &body),
@@ -363,11 +364,12 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
             .clone()
             .or_else(|| self.model.clone())
             .ok_or(ProviderError::NoModel)?;
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": chat_messages(request),
             "stream": false,
         });
+        crate::apply_model_settings(&mut body, request, ProviderKind::LlamaCpp);
         let value = self
             .http
             .post_json(&url_for(&self.base_url, "/v1/chat/completions"), &body)
@@ -394,12 +396,13 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
         let Some(model) = request.model.clone().or_else(|| self.model.clone()) else {
             return Box::pin(stream::once(async { Err(ProviderError::NoModel) }));
         };
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": chat_messages(request),
             "stream": true,
             "stream_options": { "include_usage": true },
         });
+        crate::apply_model_settings(&mut body, request, ProviderKind::LlamaCpp);
         let url = url_for(&self.base_url, "/v1/chat/completions");
         let lines = LineStream::new(self.http.post_stream(&url, &body));
         Box::pin(stream::unfold(
@@ -494,12 +497,13 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
             .clone()
             .or_else(|| self.model.clone())
             .ok_or(ProviderError::NoModel)?;
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": llamacpp_tool_messages(request),
             "stream": false,
             "tools": tools_wire(&request.tools),
         });
+        crate::apply_model_settings(&mut body, request, ProviderKind::LlamaCpp);
         let mut acc = UsageAcc::new(request);
         acc.started = clock_now();
         let value = self
@@ -790,6 +794,7 @@ mod tests {
 
     fn request(model: Option<&str>, system: Option<&str>) -> ChatRequest {
         ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: system.map(str::to_string),
             model: model.map(str::to_string),
@@ -1255,6 +1260,7 @@ mod tests {
             usage: None,
         };
         let req = ChatRequest {
+            model_settings: Default::default(),
             connection_id: 1,
             system_prompt: None,
             model: None,

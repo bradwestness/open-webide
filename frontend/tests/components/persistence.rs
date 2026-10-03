@@ -8,7 +8,7 @@ use openwebide_frontend::{
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_test::*;
 
-use super::support::{TestState, chat_view, mount_test, settle};
+use super::support::{TestState, chat_view, mount_test, mount_test_with_backend, settle};
 
 #[wasm_bindgen(inline_js = r#"
 export function setViewport(width) {
@@ -38,6 +38,10 @@ impl Drop for Viewport {
 }
 
 fn install(state: &TestState) {
+    install_with_selection(state, Callback::new(|_| ()));
+}
+
+fn install_with_selection(state: &TestState, select_project: Callback<i64>) {
     let auth = expect_context::<AuthState>();
     auth.set_user(User {
         id: openwebide_core::UserId::new(1),
@@ -53,8 +57,85 @@ fn install(state: &TestState) {
         projects: state.projects,
         chat: state.chat,
         layout: expect_context::<LayoutState>(),
-        select_project: Callback::new(|_| ()),
+        select_project,
     });
+}
+
+fn install_session_restore(
+    state: &TestState,
+) -> openwebide_frontend::state_actions::projects::ProjectsActions {
+    use openwebide_frontend::state_actions::projects::{
+        ProjectsActionContext, build_projects_actions,
+    };
+    let actions = build_projects_actions(ProjectsActionContext {
+        api: state.api,
+        projects: state.projects,
+        workspace: state.workspace,
+        git: state.git,
+        chat: state.chat,
+        ui: state.ui,
+        ensure_root: Callback::new(|_| ()),
+        refresh_git: Callback::new(|()| ()),
+    });
+    install_with_selection(state, actions.select_project);
+    actions
+}
+
+#[wasm_bindgen_test]
+async fn last_session_restores_on_project_open_and_fresh_window_in_both_modes() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.fake.projects.borrow_mut()[0].mode = mode;
+            state.seed_session();
+            let mut newer = state.fake.sessions.borrow()[0].clone();
+            newer.id = 2;
+            newer.created_at = 2;
+            state.fake.sessions.borrow_mut().push(newer);
+            state
+                .fake
+                .settings
+                .borrow_mut()
+                .insert("last_session_1".into(), "1".into());
+            state.workspace.active_session.set(None);
+            state.projects.active_project.set(None);
+            let actions = install_session_restore(&state);
+            view! {
+                {chat_view(state)}
+                <button on:click=move |_| actions.close_project.run(1)>"Close fixture"</button>
+                <button on:click=move |_| actions.on_open_project.run(1)>"Open fixture"</button>
+            }
+        });
+        wait_for_startup_reads(&mounted.state, 1).await;
+        assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(1));
+        mounted.state.chat.active_session.set(Some(2));
+        settle().await;
+        assert_eq!(mounted.state.fake.settings.borrow()["last_session_1"], "2");
+        // Choosing a fresh session remains explicit; no effect immediately reopens the old one.
+        mounted.state.chat.active_session.set(None);
+        settle().await;
+        assert_eq!(mounted.state.chat.active_session.get_untracked(), None);
+        mounted.click_text("Close fixture");
+        settle().await;
+        mounted.click_text("Open fixture");
+        settle().await;
+        assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(2));
+        let backend = mounted.state.fake.clone();
+        drop(mounted);
+        let reopened = mount_test_with_backend(backend, |state| {
+            install_session_restore(&state);
+            chat_view(state)
+        });
+        wait_for_startup_reads(&reopened.state, 2).await;
+        assert_eq!(reopened.state.chat.active_session.get_untracked(), Some(2));
+    }
 }
 
 async fn wait_for_startup_reads(state: &TestState, count: usize) {

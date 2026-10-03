@@ -121,6 +121,7 @@ pub(super) mod chat;
 pub(super) mod connections;
 pub(super) mod files;
 pub(super) mod git;
+pub(crate) mod model_setup;
 mod paths;
 pub(super) mod projects;
 pub(super) mod prompts;
@@ -133,3 +134,5 @@ use query::query;
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) mod approvals;

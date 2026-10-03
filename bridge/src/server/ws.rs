@@ -460,7 +460,7 @@ impl Connection {
                         let memo = config.tool_stream_memos.get_or_insert(&plan.connection);
                         openwebide_llm::registry::Provider::for_connection_with_memo(
                             &plan.connection,
-                            http,
+                            http.with_transport(plan.transport.clone()),
                             memo,
                         )
                     },

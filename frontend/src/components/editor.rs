@@ -88,12 +88,27 @@ fn highlight_html(source: &str, language: Language) -> String {
     html
 }
 
+/// The textarea owns scrolling; translate paint instead of copying clamped offsets.
+fn sync_highlight_scroll(textarea: &web_sys::HtmlTextAreaElement, overlay: &web_sys::HtmlElement) {
+    let _ = overlay.style().set_property(
+        "--editor-scroll-x",
+        &format!("{}px", -textarea.scroll_left()),
+    );
+    let _ = overlay.style().set_property(
+        "--editor-scroll-y",
+        &format!("{}px", -textarea.scroll_top()),
+    );
+    overlay.set_scroll_top(0.0);
+    overlay.set_scroll_left(0.0);
+}
+
 #[component]
 fn HighlightOverlay(
     content: ReadSignal<String>,
     open_file: ReadSignal<Option<String>>,
     node_ref: NodeRef<leptos::html::Div>,
     textarea_ref: NodeRef<leptos::html::Textarea>,
+    ready: RwSignal<bool>,
 ) -> impl IntoView {
     use wasm_bindgen::closure::Closure;
 
@@ -114,8 +129,9 @@ fn HighlightOverlay(
             .with_untracked(|path| path.as_deref().map(language_from_path))
             .unwrap_or(Language::Plain);
         rendered.set(content.with_untracked(|text| highlight_html(text, language)));
+        ready.set(true);
         let published_generation = generation.get_value();
-        // The old overlay can clamp scroll offsets until its new HTML reaches the DOM.
+        // Re-align after the highlighted HTML reaches the DOM.
         leptos::leptos_dom::helpers::queue_microtask(move || {
             if generation.try_get_value() != Some(published_generation)
                 || open_file.try_get_untracked() != path.try_get_value()
@@ -126,14 +142,14 @@ fn HighlightOverlay(
                 textarea_ref.try_get_untracked(),
                 node_ref.try_get_untracked(),
             ) {
-                overlay.set_scroll_top(textarea.scroll_top());
-                overlay.set_scroll_left(textarea.scroll_left());
+                sync_highlight_scroll(&textarea, &overlay);
             }
         });
     }));
 
     Effect::new(move || {
         content.track();
+        ready.set(false);
         let current_path = open_file.get();
         let mounted = node_ref.get().is_some();
         if current_path != path.get_value() || !mounted {
@@ -162,7 +178,7 @@ fn HighlightOverlay(
         }
     });
 
-    view! { <div class="editor-highlight" node_ref=node_ref inner_html=move || rendered.get() /> }
+    view! { <div class="editor-highlight" node_ref=node_ref><div class="editor-highlight-content" inner_html=move || rendered.get() /></div> }
 }
 
 /// Render a list of intra-line diff chunks with word-level highlights.
@@ -494,6 +510,7 @@ pub fn Editor(
     });
     let ta = NodeRef::<leptos::html::Textarea>::new();
     let hl = NodeRef::<leptos::html::Div>::new();
+    let highlight_ready = RwSignal::new(false);
     let view_mode = RwSignal::new(ViewMode::Code);
 
     // Default to Preview for non-text files; default to Code for source files.
@@ -730,8 +747,8 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code">
-                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta />
+                                    <div class="editor-code" class:highlight-ready=move || highlight_ready.get()>
+                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready />
                                         <textarea
                                             class="editor-textarea"
                                             spellcheck="false"
@@ -747,8 +764,7 @@ pub fn Editor(
                                             }
                                             on:scroll=move |_| {
                                                 if let (Some(ta_el), Some(hl_el)) = (ta.get(), hl.get()) {
-                                                    hl_el.set_scroll_top(ta_el.scroll_top());
-                                                    hl_el.set_scroll_left(ta_el.scroll_left());
+                                                    sync_highlight_scroll(&ta_el, &hl_el);
                                                 }
                                             }
                                         />

@@ -120,7 +120,9 @@ pub fn App() -> impl IntoView {
         show_browser.set(false);
     });
 
-    let refresh_git = GitActions::refresh(api, projects_state, git_state);
+    let project_git = crate::project_git::ProjectGit::new(api, projects_state, settings, auth);
+    provide_context(project_git);
+    let refresh_git = GitActions::refresh(project_git, projects_state, git_state, auth);
 
     let auth_actions = AuthActions::new(AuthActionContext {
         api,
@@ -162,7 +164,7 @@ pub fn App() -> impl IntoView {
     } = workspace_actions;
 
     let git_actions = GitActions::new(GitActionContext {
-        api,
+        project_git,
         projects: projects_state,
         workspace: workspace_state,
         git: git_state,
@@ -209,7 +211,7 @@ pub fn App() -> impl IntoView {
         on_delete_connection,
         on_open_settings,
         on_set_theme,
-        on_set_default_connection,
+        on_set_default_connection: _,
         on_set_default_prompt,
         on_set_bridge_url,
     } = settings_actions;
@@ -222,7 +224,6 @@ pub fn App() -> impl IntoView {
         settings,
         ui,
         git: git_state,
-        bridge_credentials,
         bridge: bridge_connection,
         request_open,
         refresh_git,
@@ -232,7 +233,6 @@ pub fn App() -> impl IntoView {
     let on_stop = chat_actions.stop;
     let on_permission = chat_actions.permission;
     let on_permission_always = chat_actions.permission_always;
-    let on_select_model = chat_actions.select_model;
     let on_select_session = chat_actions.on_select_session;
     let on_new_session = chat_actions.on_new_session;
     let on_rename_session = chat_actions.on_rename_session;
@@ -333,7 +333,7 @@ pub fn App() -> impl IntoView {
                 </div>
                 <PanelResizer kind=ActiveResizer::Chat />
                 <ChatPane
-                    on_select_model=on_select_model
+                    on_select_connection_model=chat_actions.select_connection_model
                     on_send=on_send
                     on_open_local=on_open_local
                     on_open_remote=on_open_remote
@@ -353,11 +353,12 @@ pub fn App() -> impl IntoView {
             <Show when=move || show_settings.get() fallback=|| ()>
                 <Settings
                     on_set_theme=on_set_theme
-                    on_set_default_connection=on_set_default_connection
+
                     on_set_default_prompt=on_set_default_prompt
                     on_set_bridge_url=on_set_bridge_url
                 />
             </Show>
+            <Show when=move || settings.show_model_setup.get()><crate::components::model_setup::ModelSetupDialog /></Show>
             <ConfirmDialog />
             <PromptDialog />
             <Show when=move || show_browser.get() fallback=|| ()>

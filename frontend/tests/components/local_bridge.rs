@@ -21,7 +21,9 @@ export function probeFolder() {
     const files = new Map();
     const deleted = [];
     return {
-        files, deleted,
+        files, deleted, name: 'project',
+        values: async function*() {},
+        getDirectoryHandle: async () => { throw new DOMException('missing', 'NotFoundError'); },
         queryPermission: async () => 'granted',
         getFileHandle: async (name, options) => {
             if (!files.has(name) && !options?.create) throw new DOMException('missing', 'NotFoundError');
@@ -34,6 +36,12 @@ export function probeFolder() {
         removeEntry: async name => { deleted.push(name); files.delete(name); }
     };
 }
+export function emptyReadFolder() {
+    return { name: 'project', queryPermission: async () => 'granted', values: async function*() {},
+        removeEntry: async () => { throw new DOMException('missing', 'NotFoundError'); },
+        getDirectoryHandle: async () => { throw new DOMException('missing', 'NotFoundError'); },
+        getFileHandle: async () => { throw new DOMException('missing', 'NotFoundError'); } };
+}
 export function fakeBridgeHttp() {
     const original = window.fetch;
     const mock = { found: true, invalid: false, hanging: false, aborted: 0, calls: [], restore: () => { window.fetch = original; } };
@@ -42,6 +50,7 @@ export function fakeBridgeHttp() {
         const body = JSON.parse(await request.text());
         const path = new URL(request.url).pathname;
         mock.calls.push({ path, body, authorization: request.headers.get('Authorization') });
+        if (path === '/environment' && !mock.hanging) return new Response(JSON.stringify({os: 'linux', shell: 'sh'}));
         if (mock.hanging) return new Promise((resolve, reject) => {
             const abort = () => {
                 mock.aborted++;
@@ -92,7 +101,9 @@ extern "C" {
     #[wasm_bindgen(js_name = folderEmpty)]
     fn folder_empty(folder: &JsValue) -> bool;
     #[wasm_bindgen(js_name = probeFolder)]
-    fn probe_folder() -> JsValue;
+    pub(crate) fn probe_folder() -> JsValue;
+    #[wasm_bindgen(js_name = emptyReadFolder)]
+    pub(crate) fn empty_read_folder() -> JsValue;
     #[wasm_bindgen(js_name = probeDeleted)]
     fn probe_deleted(folder: &JsValue, name: &str) -> bool;
 }
@@ -755,7 +766,11 @@ async fn resume_after_failed_history_persistence_reuses_write_id() {
         state.chat.sessions.update(|sessions| sessions.push(second));
         state
             .chat
-            .set_approval_mode(1, openwebide_agent::policy::ApprovalMode::AlwaysForSession);
+            .set_approval_mode(1, openwebide_core::ApprovalMode::AutoAcceptEdits);
+        state.fake.settings.borrow_mut().insert(
+            openwebide_core::ApprovalMode::setting_key(1),
+            serde_json::to_string(&openwebide_core::ApprovalMode::AutoAcceptEdits).unwrap(),
+        );
         state.workspace.open_file.set(Some("file.rs".into()));
         state.workspace.content.set("dirty draft".into());
         state.workspace.dirty.set(true);
@@ -786,7 +801,7 @@ async fn resume_after_failed_history_persistence_reuses_write_id() {
         .fake
         .message_save_results
         .borrow_mut()
-        .extend([Ok(()), Err("offline".into()), Err("offline".into())]);
+        .extend([Ok(()), Ok(()), Err("offline".into())]);
     *mounted.state.fake.step_save_error.borrow_mut() = Some("offline".into());
     for content in ["first write", "resumed write"] {
         mounted
@@ -839,9 +854,16 @@ async fn resume_after_failed_history_persistence_reuses_write_id() {
             .get_untracked()
             .contains(&(1, "a1t1c0".into()))
     );
-    assert_eq!(mounted.state.fake.messages.borrow()[&1].len(), 1);
+    assert_eq!(mounted.state.fake.messages.borrow()[&1].len(), 2);
     assert!(mounted.state.fake.tool_sources.borrow().is_empty());
     assert!(mounted.state.fake.message_save_results.borrow().is_empty());
+    // A failed tool-result save ends the run before requesting the next completion.
+    mounted
+        .state
+        .fake
+        .scripted_completions
+        .borrow_mut()
+        .pop_front();
     mounted.state.chat.active_session.set(Some(2));
     settle().await;
     mounted.state.chat.active_session.set(Some(1));
@@ -896,4 +918,195 @@ async fn resume_after_failed_history_persistence_reuses_write_id() {
         "dirty draft"
     );
     assert!(mounted.state.workspace.dirty.get_untracked());
+}
+
+#[wasm_bindgen_test]
+async fn startup_instructions_use_browser_filesystem_and_actual_local_tools() {
+    let folder = probe_folder();
+    let files = js_sys::Reflect::get(&folder, &"files".into())
+        .unwrap()
+        .unchecked_into::<js_sys::Map>();
+    files.set(
+        &"AGENTS.md".into(),
+        &"Browser root instruction @shared.md".into(),
+    );
+    files.set(&"CLAUDE.md".into(), &"@AGENTS.md".into());
+    files.set(&"shared.md".into(), &"Imported instruction".into());
+    let vfs = BrowserFsaVfs::new(folder.unchecked_into());
+    let mut context = openwebide_agent::context::RunContext::new(openwebide_core::RunEnvironment {
+        project_name: Some("Browser project".into()),
+        mode: Some(openwebide_core::WorkspaceMode::Local),
+        ..Default::default()
+    });
+    let text = context
+        .startup(
+            &vfs,
+            &openwebide_agent::NoopBridgeClient,
+            &local_tools(None),
+        )
+        .await;
+    assert_eq!(text.matches("Browser root instruction").count(), 1);
+    assert!(text.contains("Imported instruction"));
+    assert!(text.contains("Workspace mode: local"));
+    assert!(!text.contains("- run_command:"));
+}
+
+#[wasm_bindgen_test]
+async fn startup_environment_comes_from_authenticated_execution_bridge() {
+    let previous = openwebide_frontend::idb::get_bridge_pairing_token()
+        .await
+        .unwrap();
+    openwebide_frontend::idb::set_bridge_pairing_token("context-token")
+        .await
+        .unwrap();
+    let mounted = mount_test(|_| view! { <div /> });
+    let mock = HttpGuard(fake_bridge_http());
+    let credentials = BridgeCredentials::new(mounted.state.api);
+    let bridge = BrowserBridgeClient::for_project(
+        "http://bridge.test:3001".into(),
+        "repos/x".into(),
+        credentials,
+    );
+    let host = bridge.environment().await.unwrap();
+    assert_eq!(host.os, "linux");
+    assert_eq!(host.shell, "sh");
+    assert!(bridge_calls(&mock.0).contains("context-token"));
+    if let Some(token) = previous {
+        openwebide_frontend::idb::set_bridge_pairing_token(&token)
+            .await
+            .unwrap();
+    } else {
+        openwebide_frontend::idb::delete_bridge_pairing_token()
+            .await
+            .unwrap();
+    }
+}
+
+#[wasm_bindgen_test]
+async fn new_local_chat_uses_browser_instructions_and_selects_session() {
+    let previous = openwebide_frontend::idb::get_bridge_pairing_token()
+        .await
+        .unwrap();
+    openwebide_frontend::idb::set_bridge_pairing_token("warm-token")
+        .await
+        .unwrap();
+    let http = fake_bridge_http();
+    let folder = probe_folder();
+    let files = js_sys::Reflect::get(&folder, &"files".into())
+        .unwrap()
+        .unchecked_into::<js_sys::Map>();
+    files.set(&"CLAUDE.md".into(), &"Local startup rule".into());
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        state.seed_connection();
+        state
+            .projects
+            .projects
+            .update(|items| items[0].mode = openwebide_core::WorkspaceMode::Local);
+        state.projects.local_handles.update(|handles| {
+            handles.insert(1, folder.unchecked_into());
+        });
+        state
+            .settings
+            .bridge_url
+            .set("ws://bridge.test:3001".into());
+        let actions = super::support::chat_actions(state);
+        view! { <button on:click=move |_| actions.on_new_session.run(())>"New chat"</button> }
+    });
+    settle().await;
+    mounted.click_text("New chat");
+    for _ in 0..100 {
+        sleep_ms(5).await;
+        settle().await;
+        if !mounted.state.chat.creating_session.get_untracked() {
+            break;
+        }
+    }
+    let session = mounted.state.chat.active_session.get_untracked().unwrap();
+    assert!(
+        mounted.state.chat.error.get_untracked().is_none(),
+        "{:?}",
+        mounted.state.chat.error.get_untracked()
+    );
+    assert!(
+        matches!(&mounted.state.fake.messages.borrow()[&session][0], openwebide_core::ConversationEntry::Message(message) if message.content.contains("Local startup rule") && message.content.contains("Workspace mode: local"))
+    );
+    drop(mounted);
+    restore_bridge_http(&http);
+    if let Some(token) = previous {
+        openwebide_frontend::idb::set_bridge_pairing_token(&token)
+            .await
+            .unwrap();
+    } else {
+        openwebide_frontend::idb::delete_bridge_pairing_token()
+            .await
+            .unwrap();
+    }
+}
+
+#[wasm_bindgen(inline_js = r#"
+export async function contractFolder() {
+    const root = await navigator.storage.getDirectory();
+    const name = 'vfs-contract-' + crypto.randomUUID();
+    const handle = await root.getDirectoryHandle(name, {create:true});
+    return {handle, cleanup: async () => root.removeEntry(name, {recursive:true})};
+}
+export function contractHandle(fixture) { return fixture.handle; }
+export async function contractCleanup(fixture) { await fixture.cleanup(); }
+"#)]
+extern "C" {
+    async fn contractFolder() -> JsValue;
+    fn contractHandle(fixture: &JsValue) -> JsValue;
+    async fn contractCleanup(fixture: &JsValue);
+}
+
+#[wasm_bindgen_test]
+async fn browser_vfs_uses_shared_paths_read_limits_and_search_contract() {
+    let fixture = contractFolder().await;
+    let vfs = BrowserFsaVfs::new(contractHandle(&fixture).unchecked_into());
+    vfs.write("src\\a.txt", "Needle\nsecond needle")
+        .await
+        .unwrap();
+    assert_eq!(
+        vfs.read("/src/./a.txt").await.unwrap(),
+        "Needle\nsecond needle"
+    );
+    assert!(matches!(
+        vfs.create("src/a.txt", false).await,
+        Err(openwebide_core::VfsError::AlreadyExists(_))
+    ));
+    for path in ["../outside", ".spin/db", "a/.spin/db"] {
+        assert!(matches!(
+            vfs.write(path, "x").await,
+            Err(openwebide_core::VfsError::PathEscape(_))
+        ));
+    }
+    vfs.write("node_modules/ignored", "needle").await.unwrap();
+    let mut large = "x".repeat(2 * 1024 * 1024);
+    large.push_str("\nneedle");
+    vfs.write("large", &large).await.unwrap();
+    let hits = vfs
+        .search_content("NEEDLE", "", Default::default())
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 3);
+    assert!(hits.iter().any(|hit| hit.path == "large"));
+    assert!(!hits.iter().any(|hit| hit.path.starts_with("node_modules")));
+    vfs.write("oversized", &"x".repeat(10 * 1024 * 1024 + 1))
+        .await
+        .unwrap();
+    assert!(vfs.read("oversized").await.is_err());
+    vfs.write(
+        "src/a.txt",
+        &format!("needle{}\n", "é".repeat(500)).repeat(501),
+    )
+    .await
+    .unwrap();
+    let hits = vfs
+        .search_content("needle", "src", Default::default())
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 500);
+    assert!(hits.iter().all(|hit| hit.text.chars().count() == 400));
+    contractCleanup(&fixture).await;
 }

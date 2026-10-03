@@ -12,7 +12,7 @@ use leptos::prelude::*;
 use openwebide_core::{BridgeClientMessage, BridgeServerMessage};
 use web_sys::wasm_bindgen::JsCast;
 
-struct RemoteSpawnFallback {
+struct ProjectSpawnFallback {
     message: BridgeClientMessage,
     current: std::rc::Rc<dyn Fn() -> bool>,
 }
@@ -123,14 +123,14 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
     let pending_spawn_ids = RwSignal::new(Vec::<String>::new());
     let projects = expect_context::<crate::state::projects::ProjectsState>();
     let auth = expect_context::<crate::state::auth::AuthState>();
-    let api = expect_context::<crate::backend::Api>();
+    let project_host = expect_context::<crate::project_host::ProjectHost>();
     let settings = expect_context::<crate::state::settings::SettingsState>();
     let pending_spawns = RwSignal::new(0usize);
     let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let alive_for_cleanup = alive.clone();
     on_cleanup(move || alive_for_cleanup.store(false, Ordering::Relaxed));
     let remote_fallbacks =
-        StoredValue::new_local(std::collections::HashMap::<String, RemoteSpawnFallback>::new());
+        StoredValue::new_local(std::collections::HashMap::<String, ProjectSpawnFallback>::new());
     let ids_for_spawn = spawned_ids.clone();
     let spawn = StoredValue::new_local(
         move |args: Vec<String>, notice: Option<String>, exclusive: bool| {
@@ -147,12 +147,6 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
             let ids = ids_for_spawn.clone();
             let alive = alive.clone();
             let project_id = project.as_ref().map(|project| project.id);
-            let resolving_remote = project
-                .as_ref()
-                .is_some_and(|project| project.mode == openwebide_core::WorkspaceMode::Remote);
-            let resolving_local = project
-                .as_ref()
-                .is_some_and(|project| project.mode == openwebide_core::WorkspaceMode::Local);
             let current = std::rc::Rc::new(move || {
                 alive.load(Ordering::Relaxed)
                     && auth.generation.try_get_untracked() == Some(generation)
@@ -163,9 +157,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                 if !current_for_finish() {
                     return;
                 }
-                if resolving_local {
-                    pending_spawns.update(|pending| *pending -= 1);
-                }
+                pending_spawns.update(|pending| *pending = pending.saturating_sub(1));
                 if exclusive
                     && (active_session.get_untracked().is_some() || !ids.lock().unwrap().is_empty())
                 {
@@ -192,11 +184,11 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     rows: 30,
                 };
                 if sender.send(message.clone()).is_ok() {
-                    if resolving_remote && !fallback {
+                    if project_id.is_some() && !fallback {
                         remote_fallbacks.update_value(|fallbacks| {
                             fallbacks.insert(
                                 id.clone(),
-                                RemoteSpawnFallback {
+                                ProjectSpawnFallback {
                                     message,
                                     current: current_for_finish.clone(),
                                 },
@@ -214,41 +206,19 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     }
                 }
             };
-            match project {
-                Some(project) if project.mode == openwebide_core::WorkspaceMode::Remote => {
-                    finish(
-                        project
-                            .path
-                            .map(|path| if path.is_empty() { ".".into() } else { path }),
-                    );
-                }
-                Some(project) => {
-                    let handle = projects
-                        .local_handles
-                        .with_untracked(|handles| handles.get(&project.id).cloned());
-                    let config =
-                        crate::bridge::BridgeConfig::new(&settings.bridge_url.get_untracked());
-                    pending_spawns.update(|pending| *pending += 1);
-                    leptos::task::spawn_local(async move {
-                        let cwd = match handle {
-                            Some(handle) => {
-                                crate::local_agent::resolve_bridge_cwd_guarded(
-                                    api,
-                                    handle,
-                                    project.id,
-                                    &config,
-                                    &crate::bridge::BridgeCredentials::new(api),
-                                    move || current(),
-                                )
-                                .await
-                            }
-                            None => None,
-                        };
-                        finish(cwd);
-                    });
-                }
-                None => finish(None),
+            pending_spawns.update(|pending| *pending += 1);
+            if let Some(host) = project_host.resolve_immediate(project_id) {
+                finish(host.ok().and_then(|host| host.cwd()));
+                return;
             }
+            leptos::task::spawn_local(async move {
+                let cwd = project_host
+                    .resolve_guarded(project_id, true, move || current())
+                    .await
+                    .ok()
+                    .and_then(|host| host.cwd());
+                finish(cwd);
+            });
         },
     );
     let spawn_fresh = StoredValue::new_local(move || {

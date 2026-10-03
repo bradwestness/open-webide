@@ -1,40 +1,25 @@
-use super::modal::Modal;
+use super::{modal::Modal, model_setup::ModelSetupPanel};
 use crate::state::settings::{SettingsState, Theme};
 use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
 
-/// The settings dialog: theme, and the connection / system prompt used as
-/// defaults for new sessions.
+/// User preferences and the model / system prompt defaults for new sessions.
 #[component]
 pub fn Settings(
     on_set_theme: Callback<Theme>,
-    on_set_default_connection: Callback<Option<i64>>,
     on_set_default_prompt: Callback<Option<i64>>,
     on_set_bridge_url: Callback<String>,
 ) -> impl IntoView {
     let settings = expect_context::<SettingsState>();
     let theme = settings.theme.read_only();
-    let default_connection = settings.default_connection.read_only();
     let default_prompt = settings.default_prompt.read_only();
-    let connections = settings.connections.read_only();
     let system_prompts = settings.system_prompts.read_only();
     let bridge_url = settings.bridge_url.read_only();
     let on_close = Callback::new(move |()| settings.show_settings.set(false));
-    let conn_ref = NodeRef::<leptos::html::Select>::new();
     let prompt_ref = NodeRef::<leptos::html::Select>::new();
 
     // Leptos 0.8 has no reactive `value` for <select>, so set the DOM value
     // directly whenever the chosen id or the option list changes.
-    Effect::new(move || {
-        let value = default_connection
-            .get()
-            .map(|id| id.to_string())
-            .unwrap_or_default();
-        connections.track();
-        if let Some(el) = conn_ref.get() {
-            el.set_value(&value);
-        }
-    });
     Effect::new(move || {
         let value = default_prompt
             .get()
@@ -115,32 +100,7 @@ pub fn Settings(
                     </div>
                 </div>
 
-                <div class="setting-row">
-                    <span class="setting-label">"Default connection"</span>
-                    <select
-                        class="form-input"
-                        node_ref=conn_ref
-                        on:change=move |e: web_sys::Event| {
-                            if let Some(target) = e.target()
-                                && let Some(sel) = target.dyn_ref::<web_sys::HtmlSelectElement>()
-                            {
-                                on_set_default_connection.run(sel.value().parse::<i64>().ok());
-                            }
-                        }
-                    >
-                        <option value="">"(none)"</option>
-                        {connections
-                            .get()
-                            .into_iter()
-                            .map(|c| {
-                                let name = c.name.clone();
-                                let value = c.id.to_string();
-                                view! { <option value=value>{name}</option> }
-                            })
-                            .collect::<Vec<_>>()}
-                    </select>
-                </div>
-
+                <ModelSetupPanel defaults_only=true />
                 <div class="setting-row">
                     <span class="setting-label">"Default system prompt"</span>
                     <select

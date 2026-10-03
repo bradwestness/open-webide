@@ -56,6 +56,10 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub git_statuses: RefCell<VecDeque<Deferred<GitRepoStatus>>>,
+    pub git_status_requests: RefCell<Vec<Option<i64>>>,
+    pub model_setup: RefCell<openwebide_core::ModelSetup>,
+    pub server_settings: RefCell<BTreeMap<i64, openwebide_core::ServerSettings>>,
     pub endpoint_latency_ms: RefCell<i32>,
     pub project_results: RefCell<VecDeque<Deferred<Vec<Project>>>>,
     pub connection_results: RefCell<VecDeque<Deferred<Vec<Connection>>>>,
@@ -170,6 +174,138 @@ impl Backend for FakeBackend {
                 status: "ok".into(),
                 version: "test".into(),
             })
+        })
+    }
+    fn detect_model<'a>(
+        &'a self,
+        _id: i64,
+        _model: &'a str,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelDetection, String>> {
+        Box::pin(async {
+            Ok(openwebide_core::ModelDetection {
+                context_limit: Some(8192),
+                source: "test server".into(),
+                capabilities: vec!["tools".into()],
+                ..Default::default()
+            })
+        })
+    }
+    fn inspect_server<'a>(
+        &'a self,
+        base_url: &'a str,
+        kind: Option<ProviderKind>,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerDiscovery, String>> {
+        Box::pin(async move {
+            Ok(openwebide_core::ServerDiscovery {
+                base_url: base_url.into(),
+                kind: kind.unwrap_or(ProviderKind::Ollama),
+                models: self.models.borrow().clone(),
+            })
+        })
+    }
+    fn discover_servers<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::ServerDiscovery>, String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn model_runtime<'a>(
+        &'a self,
+        id: i64,
+        model: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelRuntime, String>> {
+        Box::pin(async move {
+            let mut connection = self
+                .connections
+                .borrow()
+                .iter()
+                .find(|connection| connection.id == id)
+                .cloned()
+                .ok_or("Server not found")?;
+            let setup = self.model_setup.borrow();
+            let model = model
+                .map(str::to_string)
+                .or_else(|| {
+                    setup
+                        .defaults
+                        .primary
+                        .as_ref()
+                        .filter(|selection| selection.server_id == id)
+                        .map(|selection| selection.model.clone())
+                })
+                .or_else(|| connection.model.clone())
+                .unwrap_or_default();
+            let settings = setup.resolve(id, &model);
+            connection.model = Some(model);
+            Ok(openwebide_core::ModelRuntime {
+                connection,
+                settings,
+                transport: Default::default(),
+            })
+        })
+    }
+    fn model_setup<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>> {
+        Box::pin(async { Ok(self.model_setup.borrow().clone()) })
+    }
+    fn save_model_defaults<'a>(
+        &'a self,
+        defaults: &'a openwebide_core::ModelDefaults,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>> {
+        Box::pin(async move {
+            self.model_setup.borrow_mut().defaults = defaults.clone();
+            Ok(self.model_setup.borrow().clone())
+        })
+    }
+    fn save_model_profile<'a>(
+        &'a self,
+        profile: &'a openwebide_core::ModelProfile,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>> {
+        Box::pin(async move {
+            let mut setup = self.model_setup.borrow_mut();
+            setup
+                .profiles
+                .retain(|item| item.selection != profile.selection);
+            setup.profiles.push(profile.clone());
+            Ok(setup.clone())
+        })
+    }
+    fn server_settings<'a>(
+        &'a self,
+        id: i64,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerSettings, String>> {
+        Box::pin(async move {
+            Ok(self.server_settings.borrow().get(&id).cloned().unwrap_or(
+                openwebide_core::ServerSettings {
+                    timeout_seconds: 300,
+                    ..Default::default()
+                },
+            ))
+        })
+    }
+    fn save_server_settings<'a>(
+        &'a self,
+        id: i64,
+        update: &'a openwebide_core::ServerSettingsUpdate,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerSettings, String>> {
+        Box::pin(async move {
+            let mut settings = self.server_settings.borrow_mut();
+            let item = settings
+                .entry(id)
+                .or_insert_with(|| openwebide_core::ServerSettings {
+                    timeout_seconds: 300,
+                    ..Default::default()
+                });
+            if update.clear_api_key {
+                item.has_api_key = false;
+            } else if update.api_key.is_some() {
+                item.has_api_key = true;
+            }
+            if let Some(timeout) = update.timeout_seconds {
+                item.timeout_seconds = timeout;
+            }
+            item.keep_alive.clone_from(&update.keep_alive);
+            Ok(item.clone())
         })
     }
     fn list_connections<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<Connection>, String>> {
@@ -404,6 +540,13 @@ impl Backend for FakeBackend {
             self.settings.borrow_mut().insert(key.into(), value.into());
             Ok(())
         })
+    }
+    fn startup_context(
+        &self,
+        _project: i64,
+        _tools: bool,
+    ) -> LocalBoxFuture<'_, Result<String, String>> {
+        Box::pin(async { Ok("Environment\nProject instructions ready".into()) })
     }
     fn create_session<'a>(
         &'a self,
@@ -726,13 +869,20 @@ impl Backend for FakeBackend {
     }
     fn git_status<'a>(
         &'a self,
-        _project_id: Option<i64>,
+        project_id: Option<i64>,
     ) -> LocalBoxFuture<'a, Result<GitRepoStatus, String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {
                 method: "git_status",
             });
-            Err("git_status has no scripted response".into())
+            self.git_status_requests.borrow_mut().push(project_id);
+            let result = self.git_statuses.borrow_mut().pop_front();
+            match result {
+                Some(result) => result
+                    .await
+                    .map_err(|_| "git status response dropped".to_string())?,
+                None => Err("git_status has no scripted response".into()),
+            }
         })
     }
     fn git_diff<'a>(
@@ -806,6 +956,21 @@ impl Backend for FakeBackend {
             Err("git_sync has no scripted response".into())
         })
     }
+    fn set_session_connection(
+        &self,
+        id: i64,
+        connection_id: i64,
+    ) -> LocalBoxFuture<'_, Result<ChatSession, String>> {
+        Box::pin(async move {
+            let mut items = self.sessions.borrow_mut();
+            let item = items
+                .iter_mut()
+                .find(|item| item.id == id)
+                .ok_or("not found")?;
+            item.connection_id = Some(connection_id);
+            Ok(item.clone())
+        })
+    }
     fn rename_session<'a>(
         &'a self,
         id: i64,
@@ -870,6 +1035,23 @@ impl Backend for FakeBackend {
                 .get(&session_id)
                 .cloned()
                 .unwrap_or_default())
+        })
+    }
+    fn approval_check<'a>(
+        &'a self,
+        session: i64,
+        check: &'a openwebide_core::ApprovalCheck,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ApprovalDecision, String>> {
+        Box::pin(async move {
+            let mode = self
+                .settings
+                .borrow()
+                .get(&openwebide_core::ApprovalMode::setting_key(session))
+                .and_then(|value| serde_json::from_str::<openwebide_core::ApprovalMode>(value).ok())
+                .unwrap_or_default();
+            Ok(openwebide_core::ApprovalDecision {
+                approved: mode.auto_approves(&check.call.name),
+            })
         })
     }
     fn chat_tools<'a>(
@@ -1082,18 +1264,19 @@ impl Backend for FakeBackend {
             if request.decision == EditDecision::Pending || request.revision <= 0 {
                 return Err("invalid edit resolution".into());
             }
-            let mut edits = self.persisted_edits.borrow_mut();
-            let edit = edits
-                .get_mut(&(project_id, request.path.clone()))
-                .ok_or("pending edit not found")?;
-            if edit.revision != request.revision
-                || (edit.decision != EditDecision::Pending && edit.decision != request.decision)
-            {
-                return Err("edit revision or decision changed".into());
-            }
-            edit.decision = request.decision;
-            let committed = edit.clone();
-            drop(edits);
+            let committed = {
+                let mut edits = self.persisted_edits.borrow_mut();
+                let edit = edits
+                    .get_mut(&(project_id, request.path.clone()))
+                    .ok_or("pending edit not found")?;
+                if edit.revision != request.revision
+                    || (edit.decision != EditDecision::Pending && edit.decision != request.decision)
+                {
+                    return Err("edit revision or decision changed".into());
+                }
+                edit.decision = request.decision;
+                edit.clone()
+            };
             let response = self.resolution_response_results.borrow_mut().pop_front();
             if let Some(response) = response {
                 response

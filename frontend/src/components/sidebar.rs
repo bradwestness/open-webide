@@ -31,16 +31,10 @@ pub fn Sidebar(
     let connections = settings.connections.read_only();
     let show_conn_form = settings.show_conn_form.read_only();
     let conn_edit_id = settings.conn_edit_id.read_only();
-    let conn_name = settings.conn_name.read_only();
-    let set_conn_name = settings.conn_name.write_only();
     let conn_kind = settings.conn_kind.read_only();
     let set_conn_kind = settings.conn_kind.write_only();
     let conn_base_url = settings.conn_base_url.read_only();
     let set_conn_base_url = settings.conn_base_url.write_only();
-    let conn_model = settings.conn_model.read_only();
-    let set_conn_model = settings.conn_model.write_only();
-    let conn_context_limit = settings.conn_context_limit.read_only();
-    let set_conn_context_limit = settings.conn_context_limit.write_only();
     let sessions = chat.sessions.read_only();
     let active_project = projects.active_project.read_only();
     let active_session = chat.active_session.read_only();
@@ -76,7 +70,7 @@ pub fn Sidebar(
                     <button
                         class="icon-btn"
                         title="New chat"
-                        disabled=move || active_project.get().is_none()
+                        disabled=move || active_project.get().is_none() || chat.creating_session.get() || chat.streaming.get()
                         on:click=move |_| on_new_session.run(())
                     >
                         "+"
@@ -150,10 +144,14 @@ pub fn Sidebar(
             // -- connections --------------------------------------------------
             <div class="sidebar-section">
                 <div class="section-header">
-                    <h2>"Connections"</h2>
+                    <h2>"Servers"</h2>
+                    <button class="icon-btn" title="Model configuration" on:click=move |_| {
+                        settings.model_setup_server.set(None);
+                        settings.show_model_setup.set(true);
+                    }>"⚙"</button>
                     <button
                         class="icon-btn"
-                        title="New connection"
+                        title="New server"
                         on:click=move |_| on_new_connection.run(())
                     >
                         "+"
@@ -161,19 +159,7 @@ pub fn Sidebar(
                 </div>
                 <Show when=move || show_conn_form.get() fallback=|| ()>
                     <div class="new-project-form">
-                        <input
-                            type="text"
-                            class="form-input"
-                            placeholder="Connection name"
-                            value=move || conn_name.get()
-                            on:input=move |e: web_sys::Event| {
-                                if let Some(target) = e.target()
-                                    && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
-                                {
-                                    set_conn_name.set(input.value());
-                                }
-                            }
-                        />
+                        <label><input type="checkbox" prop:checked=move || settings.conn_auto_detect.get() on:change=move |event| settings.conn_auto_detect.set(event_target_checked(&event)) />"Detect provider automatically"</label>
                         <div class="mode-picker">
                             <label
                                 class=move || {
@@ -188,7 +174,7 @@ pub fn Sidebar(
                                     type="radio"
                                     name="conn-kind"
                                     checked=move || conn_kind.get() == ProviderKind::Ollama
-                                    on:click=move |_| set_conn_kind.set(ProviderKind::Ollama)
+                                    on:click=move |_| { set_conn_kind.set(ProviderKind::Ollama); settings.conn_auto_detect.set(false); }
                                 />
                                 "Ollama"
                             </label>
@@ -205,9 +191,9 @@ pub fn Sidebar(
                                     type="radio"
                                     name="conn-kind"
                                     checked=move || conn_kind.get() == ProviderKind::LlamaCpp
-                                    on:click=move |_| set_conn_kind.set(ProviderKind::LlamaCpp)
+                                    on:click=move |_| { set_conn_kind.set(ProviderKind::LlamaCpp); settings.conn_auto_detect.set(false); }
                                 />
-                                "llama.cpp"
+                                "OpenAI-compatible"
                             </label>
                         </div>
                         <input
@@ -223,43 +209,7 @@ pub fn Sidebar(
                                 }
                             }
                         />
-                        <input
-                            type="text"
-                            class="form-input"
-                            placeholder="Model (optional)"
-                            value=move || conn_model.get()
-                            on:input=move |e: web_sys::Event| {
-                                if let Some(target) = e.target()
-                                    && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
-                                {
-                                    set_conn_model.set(input.value());
-                                }
-                            }
-                        />
-                        <input
-                            type="text"
-                            class="form-input"
-                            inputmode="numeric"
-                            placeholder="Context limit in tokens (optional)"
-                            value=move || conn_context_limit.get()
-                            on:input=move |e: web_sys::Event| {
-                                if let Some(target) = e.target()
-                                    && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
-                                {
-                                    set_conn_context_limit.set(input.value());
-                                }
-                            }
-                        />
-                        <div class="form-hint">
-                            {move || match conn_kind.get() {
-                                ProviderKind::Ollama => {
-                                    "Sent to Ollama as num_ctx on every request. Leave blank to use the model's default."
-                                }
-                                ProviderKind::LlamaCpp => {
-                                    "Base URL works with or without /v1. Display only: llama.cpp's context size is fixed when llama-server starts (-c / --ctx-size). Set this to match it, or leave blank to read it from the server."
-                                }
-                            }}
-                        </div>
+                        <p class="form-hint">"Configure models and advanced options from the Servers list. Default and fast models are in Settings."</p>
                         <Show when=move || conn_edit_id.get().is_some_and(|id| connections.get().iter().any(|connection| connection.id == id && connection.tool_stream_unsupported))>
                             <div class="form-hint">"Streaming tool calls disabled — this server rejected them. Changing the server URL or provider kind re-checks."</div>
                         </Show>
@@ -297,6 +247,10 @@ pub fn Sidebar(
                                 <span class="conn-name">{name}</span>
                                 <span class="conn-kind">{kind.as_str()}</span>
                                 <span class="conn-actions">
+                                    <button class="icon-btn" title="Configure models" on:click=move |_| {
+                                        settings.model_setup_server.set(Some(id));
+                                        settings.show_model_setup.set(true);
+                                    }>"⚙"</button>
                                     <button
                                         class="icon-btn"
                                         title="Edit"

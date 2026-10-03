@@ -20,7 +20,9 @@ pub struct InterruptedRun {
 pub fn interrupted_run(items: &[ConversationItem]) -> Option<InterruptedRun> {
     use openwebide_core::Role;
     let last = items.iter().rev().find_map(|item| match item {
-        ConversationItem::Message(message) if message.id > 0 => Some(message),
+        ConversationItem::Message(message) if message.id > 0 && message.role != Role::System => {
+            Some(message)
+        }
         _ => None,
     })?;
     if last.role != Role::User && !(last.role == Role::Assistant && last.tool_calls.is_some()) {
@@ -344,11 +346,13 @@ impl ConversationStore {
 #[derive(Clone, Copy)]
 pub struct ChatState {
     pub sessions: RwSignal<Vec<ChatSession>>,
+    pub last_sessions: RwSignal<HashMap<i64, i64>>,
     pub active_session: RwSignal<Option<i64>>,
     pub has_session: Memo<bool>,
     pub messages: ConversationStore,
     pub history_gen: StoredValue<u64>,
     pub skip_history_load: StoredValue<Option<i64>>,
+    pub creating_session: RwSignal<bool>,
     pub streaming: RwSignal<bool>,
     pub reasoning_active: RwSignal<bool>,
     pub active_run: RwSignal<Option<(i64, String, u64)>>,
@@ -369,8 +373,11 @@ pub struct ChatState {
     pub models: RwSignal<Vec<ModelInfo>>,
     pub session_model: RwSignal<HashMap<i64, Option<String>>>,
     pub selected_model: RwSignal<Option<String>>,
+    pub draft_connection: RwSignal<Option<i64>>,
+    pub connection_changing: RwSignal<bool>,
     pub session_telemetry: RwSignal<SessionTelemetry>,
     pub approval_mode: RwSignal<HashMap<i64, ApprovalMode>>,
+    pub draft_approval_mode: RwSignal<ApprovalMode>,
     pub current_run_anchor: RwSignal<Option<i64>>,
     pub active_editor_context: RwSignal<Option<openwebide_core::EditorContext>>,
     pub awaiting_step_id: Memo<Option<String>>,
@@ -409,11 +416,13 @@ impl ChatState {
 
         Self {
             sessions: RwSignal::new(Vec::new()),
+            last_sessions: RwSignal::new(HashMap::new()),
             active_session,
             has_session,
             messages,
             history_gen: StoredValue::new(0),
             skip_history_load: StoredValue::new(None),
+            creating_session: RwSignal::new(false),
             streaming: RwSignal::new(false),
             reasoning_active: RwSignal::new(false),
             active_run: RwSignal::new(None),
@@ -434,8 +443,11 @@ impl ChatState {
             models: RwSignal::new(Vec::new()),
             session_model: RwSignal::new(HashMap::new()),
             selected_model: RwSignal::new(None),
+            draft_connection: RwSignal::new(None),
+            connection_changing: RwSignal::new(false),
             session_telemetry: RwSignal::new(SessionTelemetry::default()),
             approval_mode: RwSignal::new(HashMap::new()),
+            draft_approval_mode: RwSignal::new(ApprovalMode::Default),
             current_run_anchor,
             active_editor_context: RwSignal::new(None),
             awaiting_step_id,
@@ -456,6 +468,32 @@ impl ChatState {
                 .dismissed_interruptions
                 .with_value(|dismissed| dismissed.contains(&run.anchor_id))
         }));
+    }
+
+    /// Restore a project's remembered session, falling back to its newest session.
+    pub fn restore_project_session(&self, project_id: i64) {
+        let remembered = self
+            .last_sessions
+            .with_untracked(|sessions| sessions.get(&project_id).copied());
+        let existing = self.active_session.get_untracked();
+        let selected = self.sessions.with_untracked(|sessions| {
+            let belongs = |id| {
+                sessions
+                    .iter()
+                    .any(|session| session.id == id && session.project_id == Some(project_id))
+            };
+            existing
+                .filter(|id| belongs(*id))
+                .or_else(|| remembered.filter(|id| belongs(*id)))
+                .or_else(|| {
+                    sessions
+                        .iter()
+                        .filter(|session| session.project_id == Some(project_id))
+                        .max_by_key(|session| (session.created_at, session.id))
+                        .map(|session| session.id)
+                })
+        });
+        self.active_session.set(selected);
     }
 
     pub fn dismiss_interrupted_run(&self) {
@@ -613,7 +651,7 @@ impl ChatState {
                 let mode = self
                     .approval_mode
                     .with_untracked(|modes| modes.get(&session_id).copied().unwrap_or_default());
-                if mode.auto_approves(&name) {
+                if mode == ApprovalMode::AlwaysForSession && mode.auto_approves(&name) {
                     effects.push(ChatEffect::ApprovePermission { id });
                 } else {
                     self.messages.push(ConversationItem::ToolStep {
@@ -1139,6 +1177,48 @@ mod tests {
             assert!(matches!(&items[3], ConversationItem::ToolStep { id, result: Some(result), awaiting_permission: false, .. } if id == "a90t1c0" && result.ok));
             assert!(matches!(&items[4], ConversationItem::Message(msg) if msg.id == 91));
             assert_eq!(chat.session_telemetry.get_untracked().tool_calls_count, 1);
+        });
+    }
+
+    #[test]
+    fn project_session_restore_validates_ownership_and_preserves_a_snapshot() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            let session = |id, project_id| ChatSession {
+                id,
+                project_id: Some(project_id),
+                name: "test".into(),
+                connection_id: None,
+                system_prompt_id: None,
+                user_id: None,
+                created_at: id,
+            };
+            chat.sessions
+                .set(vec![session(1, 10), session(2, 10), session(3, 20)]);
+            chat.last_sessions.update(|sessions| {
+                sessions.insert(10, 1);
+            });
+            chat.restore_project_session(10);
+            assert_eq!(chat.active_session.get_untracked(), Some(1));
+            chat.active_session.set(Some(2));
+            chat.restore_project_session(10);
+            assert_eq!(chat.active_session.get_untracked(), Some(2));
+            chat.active_session.set(None);
+            chat.last_sessions.update(|sessions| {
+                sessions.insert(10, 3);
+            });
+            chat.restore_project_session(10);
+            assert_eq!(chat.active_session.get_untracked(), Some(2));
+            chat.active_session.set(None);
+            chat.last_sessions.update(|sessions| {
+                sessions.insert(10, 99);
+            });
+            chat.restore_project_session(10);
+            assert_eq!(chat.active_session.get_untracked(), Some(2));
+            chat.restore_project_session(20);
+            assert_eq!(chat.active_session.get_untracked(), Some(3));
+            chat.restore_project_session(30);
+            assert_eq!(chat.active_session.get_untracked(), None);
         });
     }
 

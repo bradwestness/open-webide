@@ -2,10 +2,12 @@ use std::time::Duration;
 
 use js_sys::Date;
 
-use crate::state::{chat::ChatState, layout::LayoutState, projects::ProjectsState};
+use crate::state::{
+    chat::ChatState, layout::LayoutState, projects::ProjectsState, settings::SettingsState,
+};
 use leptos::prelude::*;
 use openwebide_core::{
-    FileDiff, ModelInfo, Role, diff_inline_detailed, diff_inline_lines,
+    Connection, FileDiff, ModelInfo, Role, diff_inline_detailed, diff_inline_lines,
     tui::{SessionTelemetry, SlashCommand, extract_editor_context_prelude, parse_thinking},
 };
 use web_sys::wasm_bindgen::JsCast;
@@ -129,11 +131,6 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
 
     view! {
         <div class="tui-stream-line tui-assistant">
-            <div class="tui-glyph-header">
-                <span class="tui-glyph assistant">"◇"</span>
-                <span class="tui-role-label">"assistant"</span>
-            </div>
-
             <Show when=move || !thinking_sig.with(String::is_empty) fallback=|| ()>
                 <div class="tui-thinking-box">
                     <Show
@@ -350,15 +347,15 @@ fn render_tool_step(
                                 "[Alt+N]o"
                             </button>
                             <Show
-                                when=move || openwebide_agent::policy::always_approvable(&name_sig.get())
+                                when=move || name_sig.get() == "write_file"
                                 fallback=|| ()
                             >
                                 <button
                                     class="btn send tui-perm-btn btn-a"
-                                    title="Always approve for this session [Alt+A]"
+                                    title="Auto-accept edits for this session [Alt+A]"
                                     on:click=move |_| on_permission_always.run(id_sig.get())
                                 >
-                                    "[Alt+A]lways"
+                                    "[Alt+A]uto-accept edits"
                                 </button>
                             </Show>
                             <button
@@ -423,6 +420,81 @@ fn render_tool_step(
     }
 }
 
+/// Discover models only when a connection is expanded in the picker.
+#[component]
+fn ConnectionModels(
+    connection: Connection,
+    active_connection: Signal<Option<i64>>,
+    models: ReadSignal<Vec<ModelInfo>>,
+    on_select: Callback<(i64, String)>,
+) -> impl IntoView {
+    let api = expect_context::<crate::backend::Api>();
+    let chat = expect_context::<ChatState>();
+    let id = connection.id;
+    let enabled = connection.enabled;
+    let expanded = RwSignal::new(active_connection.get_untracked() == Some(id));
+    let discovered = RwSignal::new(Vec::<ModelInfo>::new());
+    let loading = RwSignal::new(false);
+    let error = RwSignal::new(Option::<String>::None);
+    let request = StoredValue::new(0_u64);
+    Effect::new(move |_| {
+        request.update_value(|generation| *generation += 1);
+        let generation = request.get_value();
+        if !expanded.get() || active_connection.get() == Some(id) || !enabled {
+            return;
+        }
+        loading.set(true);
+        error.set(None);
+        leptos::task::spawn_local(async move {
+            let result = api.with_value(Clone::clone).list_models(id).await;
+            if request.try_get_value() != Some(generation) {
+                return;
+            }
+            loading.set(false);
+            match result {
+                Ok(models) => discovered.set(models),
+                Err(message) => error.set(Some(message)),
+            }
+        });
+    });
+    let available = Signal::derive(move || {
+        if active_connection.get() == Some(id) {
+            models.get()
+        } else {
+            discovered.get()
+        }
+    });
+    view! {
+        <div class="tui-connection-group" data-connection-id=id.to_string()>
+            <button class="btn recent-item tui-connection-heading"
+                aria-expanded=move || expanded.get().to_string()
+                disabled=!enabled
+                on:click=move |_| expanded.update(|value| *value = !*value)>
+                {move || if expanded.get() { "▾" } else { "▸" }} " " {connection.name}
+            </button>
+            <Show when=move || expanded.get()>
+                <Show when=move || loading.get()><span class="form-hint">"Loading models…"</span></Show>
+                <Show when=move || error.get().is_some()><span class="form-hint">{move || error.get()}</span></Show>
+                <Show when=move || !loading.get() && error.get().is_none() && available.get().is_empty()>
+                    <span class="form-hint">"No models available"</span>
+                </Show>
+                <For each=move || available.get() key=|model| model.name.clone() children=move |model| {
+                    let name = model.name.clone();
+                    let active_name = name.clone();
+                    view! {
+                        <button class="btn recent-item tui-connection-model"
+                            aria-current=move || (active_connection.get() == Some(id) && chat.session_telemetry.with(|telemetry| telemetry.model == active_name)).to_string()
+                            disabled=move || chat.streaming.get() || chat.connection_changing.get()
+                            on:click=move |_| on_select.run((id, name.clone()))>
+                            {model.name}
+                        </button>
+                    }
+                } />
+            </Show>
+        </div>
+    }
+}
+
 /// Powerline-style statusline segment above composer.
 #[component]
 fn TuiStatusLine(
@@ -431,18 +503,8 @@ fn TuiStatusLine(
     session_telemetry: ReadSignal<SessionTelemetry>,
     local_mode: Signal<bool>,
     models: ReadSignal<Vec<ModelInfo>>,
-    on_select_model: Callback<Option<String>>,
+    on_select_connection_model: Callback<(i64, String)>,
 ) -> impl IntoView {
-    let mode_state = move || {
-        if has_awaiting.get() {
-            ("AWAITING", "mode-awaiting")
-        } else if streaming.get() {
-            ("RUNNING", "mode-running")
-        } else {
-            ("NORMAL", "mode-normal")
-        }
-    };
-
     let gauge_color_class = move || {
         let pct = session_telemetry.with(SessionTelemetry::context_percent);
         if pct >= 85.0 {
@@ -455,44 +517,61 @@ fn TuiStatusLine(
     };
 
     let show_model_menu = RwSignal::new(false);
+    let chat = expect_context::<ChatState>();
+    let settings = expect_context::<SettingsState>();
+    let active_connection = Signal::derive(move || {
+        chat.active_session
+            .get()
+            .and_then(|id| {
+                chat.sessions.with(|sessions| {
+                    sessions
+                        .iter()
+                        .find(|session| session.id == id)
+                        .and_then(|session| session.connection_id)
+                })
+            })
+            .or_else(|| {
+                chat.draft_connection
+                    .get()
+                    .filter(|_| chat.active_session.get().is_none())
+            })
+            .or_else(|| {
+                settings
+                    .model_setup
+                    .get()
+                    .defaults
+                    .primary
+                    .map(|selection| selection.server_id)
+            })
+            .or_else(|| settings.default_connection.get())
+            .or_else(|| {
+                settings.connections.with(|connections| {
+                    connections
+                        .iter()
+                        .find(|connection| connection.enabled)
+                        .map(|connection| connection.id)
+                })
+            })
+    });
+    let on_select = Callback::new(move |selection: (i64, String)| {
+        on_select_connection_model.run(selection);
+        show_model_menu.set(false);
+    });
 
     view! {
         <div class="tui-statusline">
-            <span class=move || format!("tui-mode-badge {}", mode_state().1)>
-                "[" {move || mode_state().0} "]"
-            </span>
+            <super::approval_mode::ApprovalModePicker />
+            <Show when=move || streaming.get() || has_awaiting.get()><span class="tui-run-state">{move || if has_awaiting.get() { "Awaiting" } else { "Running" }}</span></Show>
             <span class="tui-sep">"│"</span>
-            <span class="tui-model-name" title="Active Model" style="cursor: pointer; position: relative;" on:click=move |_| show_model_menu.set(!show_model_menu.get())>
+            <span class="tui-model-name" title="Choose connection and model" on:click=move |_| show_model_menu.set(!show_model_menu.get())>
                 {move || session_telemetry.with(|telemetry| telemetry.model.clone())}
                 <Show when=move || show_model_menu.get() fallback=|| ()>
                     <div class="recent-backdrop" on:click=move |e| { e.stop_propagation(); show_model_menu.set(false); } />
-                    <div class="recent-menu" style="bottom: 100%; top: auto; min-width: 200px;" on:click=move |e| e.stop_propagation()>
-                        <div
-                            class="recent-item"
-                            on:click=move |_| {
-                                on_select_model.run(None);
-                                show_model_menu.set(false);
-                            }
-                        >
-                            "Default model"
-                        </div>
-                        <For
-                            each=move || models.get()
-                            key=|m| m.name.clone()
-                            children=move |m| {
-                                let name = m.name.clone();
-                                let sel_name = name.clone();
-                                view! {
-                                    <div
-                                        class="recent-item"
-                                        on:click=move |_| {
-                                            on_select_model.run(Some(sel_name.clone()));
-                                            show_model_menu.set(false);
-                                        }
-                                    >
-                                        {name}
-                                    </div>
-                                }
+                    <div class="recent-menu tui-model-menu" on:click=move |e| e.stop_propagation()>
+                        <For each=move || settings.connections.get()
+                            key=|connection| (connection.id, connection.name.clone(), connection.base_url.clone(), connection.enabled)
+                            children=move |connection| view! {
+                                <ConnectionModels connection=connection active_connection=active_connection models=models on_select=on_select />
                             }
                         />
                     </div>
@@ -527,7 +606,7 @@ fn TuiStatusLine(
 
 #[component]
 pub fn ChatPane(
-    on_select_model: Callback<Option<String>>,
+    on_select_connection_model: Callback<(i64, String)>,
     on_send: Callback<()>,
     on_open_local: Callback<()>,
     on_open_remote: Callback<()>,
@@ -546,7 +625,6 @@ pub fn ChatPane(
     let draft = chat.draft.read_only();
     let set_draft = chat.draft.write_only();
     let models = chat.models.read_only();
-    let selected_model = chat.selected_model.read_only();
     let active_context = chat.active_editor_context.read_only();
     let set_active_context = chat.active_editor_context.write_only();
     let session_telemetry = chat.session_telemetry.read_only();
@@ -555,7 +633,6 @@ pub fn ChatPane(
     let has_project = move || projects.active_project.get().is_some();
     let scroll_ref = NodeRef::<leptos::html::Div>::new();
     let input_ref = NodeRef::<leptos::html::Textarea>::new();
-    let model_ref = NodeRef::<leptos::html::Select>::new();
 
     // Readline prompt history state
     let prompt_history = chat.prompt_history;
@@ -574,15 +651,6 @@ pub fn ChatPane(
         })
     });
     let has_awaiting = Signal::derive(move || awaiting_step.get().is_some());
-
-    // Keep the model picker's value in sync with the chosen model.
-    Effect::new(move || {
-        let value = selected_model.get().unwrap_or_default();
-        let _ = models.get();
-        if let Some(el) = model_ref.get() {
-            el.set_value(&value);
-        }
-    });
 
     // Keep the newest message in view as tokens arrive.
     Effect::new(move || {
@@ -676,10 +744,23 @@ pub fn ChatPane(
                                         ConversationItem::Notice { text, .. } => text.clone(),
                                         _ => String::new(),
                                     }));
+                                    let system = Memo::new(move |_| item.with(|item| matches!(item, ConversationItem::Message(message) if message.role == Role::System)));
                                     let assistant = Memo::new(move |_| item.with(|item| !matches!(item, ConversationItem::Message(message) if message.role != Role::Assistant)));
                                     view! {
-                                        <Show when=move || assistant.get() fallback=move || render_user_message(content)>
-                                            {render_assistant_message(content)}
+                                        <Show when=move || system.get() fallback=move || view! {
+                                            <Show when=move || assistant.get() fallback=move || render_user_message(content)>
+                                                {render_assistant_message(content)}
+                                            </Show>
+                                        }>
+                                            <details class="tui-thinking-box">
+                                                <summary class="tui-thinking-summary">"Run context"</summary>
+                                                <div class="tui-thinking-trace">
+                                                    <pre class="tui-thinking-pre">{move || {
+                                                        let text = content.get();
+                                                        text.strip_prefix(openwebide_core::RUN_CONTEXT_PREFIX).unwrap_or(&text).to_string()
+                                                    }}</pre>
+                                                </div>
+                                            </details>
                                         </Show>
                                     }.into_any()
                                 }
@@ -702,7 +783,7 @@ pub fn ChatPane(
                 session_telemetry=session_telemetry
                 local_mode=local_mode
                 models=models
-                on_select_model=on_select_model
+                on_select_connection_model=on_select_connection_model
             />
 
             <Show when=move || active_context.get().is_some() fallback=|| ()>
@@ -738,8 +819,8 @@ pub fn ChatPane(
                     disabled=move || !has_project() && !streaming.get()
                     placeholder=move || {
                         if let Some((_, name)) = awaiting_step.get() {
-                            if openwebide_agent::policy::always_approvable(&name) {
-                                "? Tool awaiting approval: press [Alt+Y]es, [Alt+N]o, or [Alt+A]lways..."
+                            if name == "write_file" {
+                                "? Tool awaiting approval: press [Alt+Y]es, [Alt+N]o, or [Alt+A]uto-accept edits..."
                             } else {
                                 "? Tool awaiting approval: press [Alt+Y]es, or [Alt+N]o..."
                             }
@@ -786,7 +867,7 @@ pub fn ChatPane(
                                     on_permission.run((id, false));
                                     return;
                                 }
-                                if code == "KeyA" && openwebide_agent::policy::always_approvable(&name) {
+                                if code == "KeyA" && name == "write_file" {
                                     e.prevent_default();
                                     on_permission_always.run(id);
                                     return;
@@ -883,7 +964,7 @@ pub fn ChatPane(
                         view! {
                             <button
                                 class="btn send tui-btn-send"
-                                disabled=move || !has_project() || draft.with(|d| d.trim().is_empty())
+                                disabled=move || !has_project() || chat.creating_session.get() || draft.with(|d| d.trim().is_empty())
                                 on:click=move |_| submit()
                             >
                                 "Send"

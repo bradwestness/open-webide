@@ -56,6 +56,9 @@ fn sanitizer() -> ammonia::Builder<'static> {
     b.url_relative(UrlRelative::PassThrough);
     b.link_rel(Some("noopener noreferrer"));
     b.add_tag_attributes("code", &["class"]);
+    b.add_tag_attributes("div", &["class"]);
+    b.add_tag_attributes("th", &["style"]);
+    b.add_tag_attributes("td", &["style"]);
     b.attribute_filter(|element, attribute, value| {
         if element == "img" && attribute == "src" {
             if safe_url(value, UrlUse::Image) {
@@ -69,6 +72,14 @@ fn sanitizer() -> ammonia::Builder<'static> {
             } else {
                 None
             }
+        } else if element == "div" && attribute == "class" {
+            (value == "markdown-table").then(|| value.into())
+        } else if matches!(element, "th" | "td") && attribute == "style" {
+            matches!(
+                value,
+                "text-align: left" | "text-align: center" | "text-align: right"
+            )
+            .then(|| value.into())
         } else {
             Some(value.into())
         }
@@ -81,14 +92,53 @@ thread_local! {
 }
 
 pub fn render(md: &str) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
     let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(md));
+    let parser = Parser::new_ext(md, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH);
+    let events = parser.flat_map(|event| {
+        let pair = match event {
+            Event::Start(Tag::Table(_)) => [
+                Some(Event::Html("<div class=\"markdown-table\">".into())),
+                Some(event),
+            ],
+            Event::End(TagEnd::Table) => [Some(event), Some(Event::Html("</div>".into()))],
+            _ => [Some(event), None],
+        };
+        pair.into_iter().flatten()
+    });
+    pulldown_cmark::html::push_html(&mut html, events);
     SANITIZER.with(|b| b.clean(&html).to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tables_preserve_structure_alignment_and_inline_formatting() {
+        let html = render(
+            "| Name | Count | State |\n| :--- | ---: | :---: |\n| `file` | 2 | **ready** |\n",
+        );
+        assert!(html.contains("<div class=\"markdown-table\"><table>"));
+        assert!(html.contains("<th style=\"text-align: right\">Count</th>"));
+        assert!(html.contains("<td style=\"text-align: center\"><strong>ready</strong></td>"));
+        assert!(html.contains("<code>file</code>"));
+        assert!(html.replace('\n', "").contains("</table></div>"));
+        assert!(render("~~removed~~").contains("<del>removed</del>"));
+        // Table parsing must not alter literal examples inside fenced code.
+        assert!(!render("```\n| A | B |\n| --- | --- |\n```").contains("<table>"));
+    }
+
+    #[test]
+    fn table_cells_cannot_introduce_arbitrary_styles_or_scripts() {
+        let html = render(
+            "| Value |\n| --- |\n| <img src=x onerror=alert(1)> |\n\n<table><tr><td style=\"position:fixed\" onclick=\"alert(1)\">unsafe</td></tr></table>",
+        );
+        assert!(html.contains("<table>"));
+        assert!(!html.contains("onerror"));
+        assert!(!html.contains("onclick"));
+        assert!(!html.contains("position:fixed"));
+    }
 
     #[test]
     fn test_safe_url() {

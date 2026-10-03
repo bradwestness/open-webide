@@ -6,6 +6,8 @@ pub enum ProviderError {
     NotImplemented(String),
     #[error("no model selected; set a model on the connection or in the request")]
     NoModel,
+    #[error("Model server rejected authentication; set or update its API key.")]
+    Authentication,
     #[error("HTTP error: {0}")]
     Http(String),
     #[error("failed to parse provider response: {0}")]

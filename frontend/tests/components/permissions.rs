@@ -289,3 +289,74 @@ async fn unreadable_approval_preview_shows_note_without_a_diff() {
             .is_none()
     );
 }
+
+#[wasm_bindgen_test]
+async fn approval_picker_and_shift_tab_share_database_state_in_both_modes() {
+    use openwebide_core::{ApprovalMode, WorkspaceMode};
+    use openwebide_frontend::state_actions::lifecycle::install_keyboard_shortcuts;
+    fn shift_tab(mounted: &super::support::Mounted) {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Tab");
+        init.set_shift_key(true);
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        mounted
+            .element(".composer-input")
+            .dispatch_event(
+                &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            install_keyboard_shortcuts(state.workspace, state.chat);
+            chat_view(state)
+        });
+        settle().await;
+        assert_eq!(
+            mounted.element(".tui-mode-badge").text_content().unwrap(),
+            "[DEFAULT]"
+        );
+        shift_tab(&mounted);
+        settle().await;
+        assert_eq!(
+            mounted.state.chat.approval_mode.get_untracked().get(&1),
+            Some(&ApprovalMode::AutoAcceptEdits)
+        );
+        assert_eq!(
+            mounted.state.fake.settings.borrow()[&ApprovalMode::setting_key(1)],
+            "\"auto_accept_edits\""
+        );
+        mounted.click(".tui-mode-badge");
+        settle().await;
+        mounted.click(".approval-mode-menu button:nth-child(3)");
+        settle().await;
+        assert_eq!(
+            mounted.state.chat.approval_mode.get_untracked().get(&1),
+            Some(&ApprovalMode::Auto)
+        );
+        shift_tab(&mounted);
+        settle().await;
+        assert_eq!(
+            mounted.element(".tui-mode-badge").text_content().unwrap(),
+            "[YOLO]"
+        );
+        shift_tab(&mounted);
+        settle().await;
+        assert_eq!(
+            mounted.state.chat.approval_mode.get_untracked().get(&1),
+            Some(&ApprovalMode::Default)
+        );
+        assert_eq!(
+            mounted.state.fake.settings.borrow()[&ApprovalMode::setting_key(1)],
+            "\"default\""
+        );
+    }
+}

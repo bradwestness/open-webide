@@ -14,6 +14,13 @@ pub mod proc;
 pub type ExecOutput = CommandOutcome;
 pub type ExecutionFuture<T> = Pin<Box<dyn Future<Output = Result<T, BridgeError>> + Send>>;
 
+pub fn environment() -> openwebide_core::ExecutionEnvironment {
+    openwebide_core::ExecutionEnvironment {
+        os: std::env::consts::OS.into(),
+        shell: if cfg!(windows) { "cmd" } else { "sh" }.into(),
+    }
+}
+
 pub struct SpawnSpec {
     pub command: String,
     pub args: Vec<String>,

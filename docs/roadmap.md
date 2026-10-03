@@ -7,30 +7,55 @@ theme and prompt history, and frontend performance & polish — moved to [CHANGE
 
 ## Next
 
-### Agent startup context: environment, tools, project instructions
+### Model setup follow-ups
 
-Give every run a generated startup prompt, so the agent knows where it is and what
-it can do the way a TUI agent launched in a project directory does. Today the system
-prompt is only the user's chosen prompt plus the date (`with_temporal_context`).
-Built mechanically at the start of each run, in every host (SSE backend,
-bridge-hosted runs, local mode), and appended after the user's system prompt:
+Finish the setup experience through shared logic and thin local/remote adapters:
 
-- **Environment:** project name and root, local or remote mode, whether the bridge is
-  connected, whether the project is a git repository (and its branch), the host OS
-  and shell where commands run, and the date.
-- **Tools:** one line per tool actually sent in this run's `tools`, with a short
-  when-to-use note (e.g. `run_command` only when a bridge can run it), generated from
-  the same list as the schemas so the two can't drift. No `list_tools` tool — the
-  schemas already reach the model; discovery waits for deferred loading
-  (`tool_search`, under the MCP client entry).
-- **Project instructions**, discovered through the host's VFS:
-  - `AGENTS.md` at the project root, the cross-tool standard (Codex, Gemini, Copilot);
-  - `CLAUDE.md`, following `@path` imports as Claude Code does, deduplicated so a
-    `CLAUDE.md` that is just `@AGENTS.md` doesn't include it twice;
-  - nested per-directory `AGENTS.md` / `CLAUDE.md`, added when the agent reads or
-    edits files under that directory.
-- Size-capped, with a visible note when something is truncated, and shown in the
-  session so it's clear what the agent was told.
+- Relabel the llama.cpp kind as **OpenAI-compatible**, retaining the stored
+  `llamacpp` value. Offer server presets that choose the initial detection probe.
+- Extend context detection to LiteLLM `/model/info` (`max_input_tokens`) and
+  OpenRouter `/models` (`context_length`).
+- Run discovery automatically on first use (manual discovery supports both hosts); identify
+  server versions and prompt for credentials when a discovered server returns 401.
+  Select sensible primary and fast defaults when nothing is configured.
+- Extend model details with default sampling, embedding/FIM capabilities, CPU
+  spill information and provider tokenization. Surface size, quantization and
+  loaded state, hide irrelevant capability toggles, and exclude embedding-only
+  models from the chat picker.
+- Add an optional **Test model** action for structured/streamed tool calls,
+  time to first token and tokens/sec. When a model rejects tools, fall back to
+  plain chat with a notice and remember that capability per server + model.
+- Extend detection beyond the model editor: run it when adding a server, allow
+  server/workspace re-runs, and show the current probe and fallback source.
+  Offer a current → detected review with Apply selected / Apply all / Dismiss;
+  manually configured values are unchecked by default.
+- Detect project type to suggest the default `/test` command and linters.
+- Show only the model name unless duplicate names need an `@ host` suffix.
+
+### Shared code refactoring
+
+Deduplicate provider model resolution, delta streaming and wire messages; split
+large core modules and deduplicate diff helpers; share storage row mapping; use
+typed VFS and git status values. Preserve the checked browser `SendWrapper`
+boundary when adjusting shared async contracts.
+
+### Auto-compaction engine
+
+Activate the saved threshold (85% by default, with per-model overrides and
+an explicit disable option) in the shared agent loop. Check before every model
+request, including tool continuations within a user turn. Compact at safe
+boundaries after outstanding tool-call/result pairs, without interrupting streams.
+
+Use the detected/configured context limit and treat the threshold as a ceiling:
+compact earlier when the remaining space cannot fit the reserved response budget
+or compaction request, especially on small context windows. Count instructions,
+tool schemas, history and tool results using provider tokenization where available
+and a conservative estimate otherwise.
+
+Use the fast model or primary fallback, retain original history in the database,
+and persist the summary used for subsequent requests. Support both local and
+remote runs. Until the engine is active, keep the UI clear that the threshold is
+configured but auto-compaction is not yet running.
 
 ### Ephemeral chat without a project
 
@@ -78,7 +103,7 @@ Small items the review rounds left open, plus the manual checks nobody has run y
   composer's keydown ignores IME composition (`isComposing`); rejecting a background
   edit restored from a backup doesn't restore the editor; `/model` with no argument
   doesn't mark the active model and `/model default` doesn't reset the override;
-  inline styles on the model dropdown; an orphaned `model_ref` sync effect.
+  remaining model-picker polish.
 - **Providers:** base URLs with a query string or fragment break endpoint joining.
 - **Structure:** `openwebide-storage` depends on `openwebide-agent` only for
   `step_id_prefix`; move the helper down.
@@ -97,35 +122,19 @@ Small items the review rounds left open, plus the manual checks nobody has run y
   panel, WebSocket chat with no SSE, `OPENWEBIDE_BRIDGE=0` fallback); a phone on the
   LAN; podman/systemd; editor IME, paste and caret behaviour.
 
-### Secondary "fast model" per connection
+### File tree: context menus
 
-A second, smaller/faster model configurable per user or per connection
-(the same idea as Qwen Code's second model), used for background work that
-doesn't need the main model's quality: approval classification (see below),
-session naming, and autocomplete/suggestion-style tasks. Falls back to the
-main model when none is configured. Nothing here exists yet — there is no
-secondary-model setting anywhere in `Connection`, `user_settings`, or the
-providers today.
+Add right-click menus for files and folders, with the same actions in local and
+remote projects through shared workspace and Git facades:
 
-### Approval modes
-
-A real CLI/TUI-style approval mode selector instead of the current
-`Alt+A` per-session "always" choice. This builds on the `ApprovalMode`
-enum in `openwebide_agent::policy` (which currently supports `Default`
-and `AlwaysForSession` — the latter explicitly never auto-approving
-`run_command`):
-
-- **Default** — prompt for every gated tool call (today's behavior).
-- **Auto-accept edits** — file edits are auto-approved; shell commands still
-  prompt.
-- **Auto with a classifier** — the fast model (above) judges whether a given
-  call is safe to auto-approve.
-- **YOLO** — approve everything, including `run_command`, no prompts (like Qwen Code's YOLO mode).
-
-Cycle modes with `Shift+Tab`; show the current mode in the TUI statusline
-(replacing the current `[ALWAYS]` segment), which is also clickable and
-opens a dropdown to pick a mode directly. Depends on the fast model
-(classifier mode).
+- File actions: create, rename, move, copy path and delete, with confirmation for
+  destructive operations and clear handling of open or dirty editor tabs.
+- Git actions: add/track, ignore, stage, unstage and revert changes. Show actions
+  appropriate to the selected file's status and support folders where applicable.
+- Chat TUI / agent actions: explain or summarize a file/folder, review changes,
+  and similar shortcuts. Inject an editable prompt with the selected paths into
+  the chat composer so the user can review and send it.
+- Make menus keyboard-accessible and usable with a touch-friendly alternative.
 
 ### File tree: Explorer / Changes mode
 
@@ -179,135 +188,6 @@ terminal pane are done and in the changelog, but:
   `browser_console_logs` tools, failing open to `fetch_web_page` when no CDP
   browser is reachable.
 
-### OpenAI-compatible proxies (LiteLLM, OpenRouter)
-
-Let a connection point at an OpenAI-compatible proxy — LiteLLM, OpenRouter,
-a vLLM or LM Studio server behind a key — so hosted models (Claude, GPT,
-Gemini) are reachable through the proxy without adding native OpenAI or
-Anthropic providers. Queued after the hardening sequence above, since it
-touches the provider transport, the backend API, and the bridge-hosted runs
-that sequence is still reshaping.
-
-The llama.cpp provider already speaks plain OpenAI chat completions
-(`/v1/models`, `/v1/chat/completions`, OpenAI `tools`/`tool_calls`, SSE with
-`[DONE]`), and the backend's outbound allowlist already permits any HTTPS
-host, so an unauthenticated proxy works today. What's missing is auth:
-
-- **Headers on the provider transport:** `HttpClient` gains per-request
-  headers; the backend client builds requests itself instead of the
-  header-less `spin_sdk` `get`/`post` helpers, and the bridge's completion
-  client does the same. Providers send `Authorization: Bearer <key>` when a
-  key is set.
-- **API key and extra headers on the connection:** an optional `api_key` and
-  optional extra headers (e.g. OpenRouter's `HTTP-Referer`/`X-Title`) in a
-  new migration step. Stored in SQLite like the other server-side secrets.
-- **Keys never leave the backend:** connection responses return
-  `has_api_key` instead of the key; saving without a key keeps the stored
-  one, with an explicit clear. Keys are never logged. Bridge-hosted runs get
-  the key from the backend over the shared-secret channel, never via the
-  browser.
-- **Relabel the kind:** the llama.cpp kind shows as "OpenAI-compatible
-  (llama.cpp, LiteLLM, vLLM, LM Studio…)"; the stored `llamacpp` value stays
-  (renaming it would mean rebuilding the table for its `CHECK` constraint).
-- **Proxy-aware context limit:** after llama.cpp `/props`, try LiteLLM
-  `/model/info` (`max_input_tokens`) and OpenRouter `/models`
-  (`context_length`), then the configured value.
-- **Clear failures:** a 401/403 says the key is missing or wrong instead of a
-  generic provider error; a model that rejects `tools` falls back to plain
-  chat with a notice, remembered per connection + model.
-
-The server / model settings split below absorbs this: the key and headers
-move to the server, and the probes join its detection chain.
-
-### Server / model settings split
-
-Split today's single `Connection` (kind + name + URL + model) into
-**servers** and **per-model settings**, and generalize the llama.cpp kind:
-
-- **Servers:** kind, URL, an optional API key/extra headers (moved from the
-  connection, see OpenAI-compatible proxies above), and a request timeout. No name field — the label is derived from the host (e.g.
-  `ollama @ 192.168.1.20`). Ollama servers also get a `keep_alive` setting.
-- Rename the llama.cpp connection kind to **OpenAI-compatible**, with
-  llama.cpp kept as a preset; the same kind covers LM Studio, llama-swap,
-  vLLM, SGLang, MLX (`mlx_lm.server`), KoboldCpp, TabbyAPI, LocalAI, Jan,
-  llamafile, Docker Model Runner, Lemonade, text-generation-webui, and
-  LiteLLM. Ollama keeps its native provider (needed for `num_ctx`,
-  `keep_alive`, and capability detection).
-- **Context-limit and capability detection:** the OpenAI-compatible provider
-  runs a short chain of server-specific probes — llama.cpp `/props`
-  (`n_ctx`), vLLM `/v1/models` (`max_model_len`), LM Studio's model info
-  (loaded/max context), SGLang's model info, KoboldCpp's true-max-context
-  endpoint — then falls back to the configured value, then 4,096. The preset
-  only picks which probe runs first; the server type is auto-detected where
-  possible. If a server rejects tool calls, fall back to plain chat with a
-  notice.
-  - **Visible and re-runnable:** detection runs automatically when a server
-    is added, and a **Detect** button on the server (and each model) re-runs
-    it at any time. While it runs, the settings form shows a spinner with the
-    probe currently being tried (e.g. "Checking /props…"); when it finishes
-    it shows what was found and from where (e.g. "Context 32,768 · from
-    llama.cpp /props · tools ✓"), or which fallback was used. Detected values
-    are cached per server + model and never overwrite a value you set by
-    hand.
-- **Per-model settings** (optional overrides, keyed by server + model):
-  context limit (moves here from the connection, see the per-connection
-  context limit in the changelog), sampling (temperature, top_p, top_k,
-  min_p, repeat penalty, seed), max output tokens, thinking on/off, and tool
-  calling on/off.
-- Auto-detect model capabilities where possible (Ollama's `POST /api/show`
-  `capabilities`: tools, vision, thinking) to hide irrelevant toggles and
-  fall back to plain chat for models that don't support tools.
-- The UI shows just the model name, adding `@ host` only when two servers
-  offer the same model name.
-- **Principle (stated explicitly, applies to all of the above):** works out
-  of the box with sensible defaults. Adding a server needs only a URL (kind
-  auto-detected where possible); every setting is optional with a
-  documented fallback; nothing blocks sending the first prompt.
-
-This also reframes the secondary "fast model" above as a per-model setting
-rather than a bare per-connection one.
-
-The `core`/`llm` refactor happens together with this split, since it
-reshapes the same code: provider deduplication (`resolve_model`,
-`delta_stream`, `messages_wire`), a typed `ProviderError`, splitting the
-core god-file and deduplicating its diff helpers, storage row-mapping
-helpers, enums/`FromStr`/`thiserror` for `VfsError` and git status, and a
-`MaybeSend` alias so the frontend can drop its `unsafe impl Send/Sync`.
-
-### Auto-discovery & configuration
-
-Discover and configure as much as possible so the first prompt works with no
-setup. Builds on the server/model split and its context-limit detection.
-
-- **Server discovery:** on first run (and on demand), probe `localhost` and
-  the bridge host on default ports — Ollama 11434, llama.cpp/llama-swap 8080,
-  LM Studio 1234, vLLM 8000, KoboldCpp 5001, TabbyAPI 5000, Jan 1337.
-  Fingerprint the server type and version from its telltale endpoint
-  (Ollama `/api/version`, llama.cpp `/props`, vLLM `/version`, …). A 401
-  prompts for an API key instead of failing.
-- **Model details:** capabilities (chat, tools, vision, thinking, embedding,
-  fill-in-the-middle), size and quantization, the model's own default
-  sampling settings, loaded-vs-cold state (Ollama `/api/ps`, including the
-  context actually running and whether the model spilled to CPU), and exact
-  token counts where the server can tokenize (llama.cpp `/tokenize`).
-  Embedding-only models stay out of the chat picker.
-- **Automatic defaults:** pick a main model and a fast model (the smallest
-  tool-capable chat model) when none is configured.
-- **Active test:** an optional "Test model" request checks structured and
-  streamed tool calls and measures time to first token and tokens/sec.
-- **Workspace & host (via the bridge):** project type → default `/test`
-  command and linters; installed tools (`git`, `cargo`, `node`, `python`, …)
-  → what the agent's system prompt says is available.
-- **Review before apply:** discovery never changes settings silently. It
-  shows a list of detected values that differ from the current ones —
-  current → detected, with where each came from (e.g. "Context 4,096 →
-  32,768 · llama.cpp /props") — each with a checkbox, plus Apply selected /
-  Apply all / Dismiss. Values the user set by hand are unchecked by default.
-  First-run discovery with nothing configured applies directly.
-- **Visible and re-runnable:** every detection shows a spinner with the
-  current probe, can be re-run at any time from the server, model or
-  workspace settings, and caches its results.
-
 ### Fully fleshed-out TUI
 
 The chat/TUI surface grows into a full agent workspace. In priority order:
@@ -317,9 +197,8 @@ The chat/TUI surface grows into a full agent workspace. In priority order:
 2. **Per-run changes panel** — every file the run touched in one view, with
    accept/reject per file or per hunk, and editor gutter markers for pending
    agent edits.
-3. **Auto-compaction** — near the context limit, summarize older turns with
-   the fast model; `/context` shows a breakdown bar (system prompt, files,
-   tool output, history).
+3. **Context visibility** — `/context` shows a breakdown bar (system prompt,
+   files, tool output, history), alongside the auto-compaction engine above.
 4. **`@`-mentions** (`@file`, `@folder`, `@diff`, with autocomplete) and
    drag/drop or paste of images for vision models.
 5. **Message queue & steering** — type while the agent runs; queue the next
@@ -342,9 +221,8 @@ The chat/TUI surface grows into a full agent workspace. In priority order:
     context, shown as nested collapsible runs with status, elapsed time,
     tokens and tool count, runnable in parallel.
 
-Dependencies: the fast model (auto-compaction, session auto-titles,
-sub-agents), WebSocket streaming (sub-agents), and the existing frontend state
-stores for the UI-heavy items.
+Build on the existing fast-model selection and primary fallback, WebSocket
+streaming, and frontend state stores.
 
 ### Mobile support & collapsible tool windows
 
@@ -417,14 +295,12 @@ after the first account):
 The VFS already confines the file tools (`read_file`, `write_file`,
 `list_dir`, `search`) to the working directory, but `run_command` and the
 git tools spawn real host processes as the user, which the VFS doesn't
-cover — today the user's approval is the sandbox (always-approve never
-covers `run_command`). Once commands can run without asking (YOLO or other
-auto-approve modes), offer an opt-in mode that runs the agent's tool
+cover. Approval modes now allow commands to run without asking. Offer an
+opt-in mode that runs the agent's tool
 executor in a container or as a restricted user with only the project folder
 mounted and optionally no network, while the user's own terminal keeps full
-access. Off by default; recommended alongside YOLO mode. Depends on the
-approval-modes item (and uses the tool-execution trait the bridge refactor
-introduces).
+access. Off by default; recommended alongside YOLO mode. Use the existing
+shared tool-execution trait.
 
 ### Productionization & public release (1.0)
 

@@ -19,7 +19,7 @@ use openwebide_core::{
 };
 use web_sys::AbortController;
 
-use crate::{backend::Api, bridge::BridgeCredentials, components::ToolStepResult, local_agent};
+use crate::{backend::Api, components::ToolStepResult, local_agent};
 
 pub struct ChatActionContext {
     pub api: Api,
@@ -29,7 +29,6 @@ pub struct ChatActionContext {
     pub settings: SettingsState,
     pub ui: UiState,
     pub git: GitState,
-    pub bridge_credentials: StoredValue<BridgeCredentials>,
     pub bridge: RwSignal<Option<crate::bridge::BridgeConn>, LocalStorage>,
     pub request_open: Callback<String>,
     pub refresh_git: Callback<()>,
@@ -45,6 +44,7 @@ pub struct ChatActions {
     pub permission: Callback<(String, bool)>,
     pub permission_always: Callback<String>,
     pub select_model: Callback<Option<String>>,
+    pub select_connection_model: Callback<(i64, String)>,
     pub slash_command: Callback<SlashCommand>,
     pub on_select_session: Callback<i64>,
     pub on_new_session: Callback<()>,
@@ -62,12 +62,13 @@ impl ChatActions {
             settings,
             ui,
             git,
-            bridge_credentials,
             bridge,
             request_open,
             refresh_git,
             on_sync_click,
         } = context;
+        let project_git = expect_context::<crate::project_git::ProjectGit>();
+        let project_host = expect_context::<crate::project_host::ProjectHost>();
         let run_controls = StoredValue::new_local(super::runs::RunControls::default());
         let stop = {
             let local_cancel = chat.local_cancel_flag.get_value();
@@ -144,13 +145,27 @@ impl ChatActions {
         };
 
         let permission_always = {
+            let auth = expect_context::<crate::state::auth::AuthState>();
             Callback::new(move |tool_call_id: String| {
-                if let Some(session_id) = chat.streaming_session.get_untracked() {
-                    chat.set_approval_mode(session_id, ApprovalMode::AlwaysForSession);
-                } else {
+                let Some(session) = chat.streaming_session.get_untracked() else {
                     return;
-                }
-                permission.run((tool_call_id, true));
+                };
+                let generation = auth.generation.get_untracked();
+                spawn_local(async move {
+                    let mode = ApprovalMode::AutoAcceptEdits;
+                    match super::approvals::save_session_mode(api, session, mode).await {
+                        Ok(()) => {
+                            if auth.generation.try_get_untracked() != Some(generation)
+                                || chat.streaming_session.try_get_untracked() != Some(Some(session))
+                            {
+                                return;
+                            }
+                            chat.set_approval_mode(session, mode);
+                            permission.run((tool_call_id, true));
+                        }
+                        Err(error) => ui.notify(format!("Could not save approval mode: {error}")),
+                    }
+                });
             })
         };
 
@@ -217,7 +232,11 @@ impl ChatActions {
             let local_permissions = chat.local_permissions.get_value();
             Callback::new(move |resume: Option<InterruptedRun>| {
                 let content = chat.draft.with(|draft| draft.trim().to_string());
-                if (resume.is_none() && content.is_empty()) || chat.streaming.get() {
+                if (resume.is_none() && content.is_empty())
+                    || chat.streaming.get()
+                    || chat.connection_changing.get()
+                    || chat.creating_session.get()
+                {
                     return;
                 }
                 local_cancel.store(false, Ordering::Relaxed);
@@ -256,14 +275,26 @@ impl ChatActions {
                                 return;
                             };
                             let name = derive_session_name(&content);
-                            let connection_id = settings.default_connection.get().or_else(|| {
-                                settings
-                                    .connections
-                                    .get()
-                                    .into_iter()
-                                    .find(|connection| connection.enabled)
-                                    .map(|connection| connection.id)
-                            });
+                            let connection_id = chat
+                                .draft_connection
+                                .get()
+                                .or_else(|| {
+                                    settings
+                                        .model_setup
+                                        .get()
+                                        .defaults
+                                        .primary
+                                        .map(|selection| selection.server_id)
+                                })
+                                .or(settings.default_connection.get())
+                                .or_else(|| {
+                                    settings
+                                        .connections
+                                        .get()
+                                        .into_iter()
+                                        .find(|connection| connection.enabled)
+                                        .map(|connection| connection.id)
+                                });
                             let prompt_id = settings.default_prompt.get();
                             match api
                                 .with_value(Clone::clone)
@@ -271,6 +302,16 @@ impl ChatActions {
                                 .await
                             {
                                 Ok(session) => {
+                                    let mode = chat.draft_approval_mode.get_untracked();
+                                    if let Err(error) =
+                                        super::approvals::save_session_mode(api, session.id, mode)
+                                            .await
+                                    {
+                                        chat.streaming.set(false);
+                                        chat.error.set(Some(error));
+                                        return;
+                                    }
+                                    chat.set_approval_mode(session.id, mode);
                                     chat.sessions
                                         .update(|sessions| sessions.push(session.clone()));
                                     chat.skip_history_load.set_value(Some(session.id));
@@ -391,13 +432,12 @@ impl ChatActions {
                                 connection_id,
                                 system_prompt,
                                 handle,
-                                active_project.as_ref().unwrap().id,
+                                active_project.as_ref().unwrap().clone(),
                                 chat,
                                 local_cancel,
                                 local_permissions,
                                 on_event,
-                                crate::bridge::BridgeConfig::new(&settings.bridge_url.get()),
-                                bridge_credentials.with_value(Clone::clone),
+                                project_host,
                                 bridge.get_untracked(),
                                 resume,
                             )
@@ -467,6 +507,64 @@ impl ChatActions {
             }
         });
 
+        let auth = expect_context::<crate::state::auth::AuthState>();
+        let select_connection_model =
+            Callback::new(move |(connection_id, model): (i64, String)| {
+                if chat.streaming.get_untracked()
+                    || chat.connection_changing.get_untracked()
+                    || !settings.connections.with_untracked(|connections| {
+                        connections
+                            .iter()
+                            .any(|connection| connection.id == connection_id && connection.enabled)
+                    })
+                {
+                    return;
+                }
+                let Some(session_id) = chat.active_session.get_untracked() else {
+                    chat.draft_connection.set(Some(connection_id));
+                    select_model.run(Some(model));
+                    return;
+                };
+                if chat.sessions.with_untracked(|sessions| {
+                    sessions.iter().any(|session| {
+                        session.id == session_id && session.connection_id == Some(connection_id)
+                    })
+                }) {
+                    select_model.run(Some(model));
+                    return;
+                }
+                let generation = auth.generation.get_untracked();
+                chat.connection_changing.set(true);
+                spawn_local(async move {
+                    let result = api
+                        .with_value(Clone::clone)
+                        .set_session_connection(session_id, connection_id)
+                        .await;
+                    if auth.generation.get_untracked() != generation {
+                        return;
+                    }
+                    chat.connection_changing.set(false);
+                    match result {
+                        Ok(updated) => {
+                            chat.session_model.update(|models| {
+                                models.insert(session_id, Some(model.clone()));
+                            });
+                            chat.sessions.update(|sessions| {
+                                if let Some(session) =
+                                    sessions.iter_mut().find(|session| session.id == session_id)
+                                {
+                                    *session = updated;
+                                }
+                            });
+                            if chat.active_session.get_untracked() == Some(session_id) {
+                                chat.selected_model.set(Some(model));
+                            }
+                        }
+                        Err(error) => chat.error.set(Some(error)),
+                    }
+                });
+            });
+
         let send = Callback::new(move |()| start.run(None));
         let resume_local_run = Callback::new(move |()| {
             let Some(resume) = chat.interrupted_run.get_untracked() else {
@@ -491,7 +589,86 @@ impl ChatActions {
 
         let on_select_session =
             Callback::new(move |session_id: i64| chat.active_session.set(Some(session_id)));
-        let on_new_session = Callback::new(move |()| chat.active_session.set(None));
+        let auth = expect_context::<crate::state::auth::AuthState>();
+        let on_new_session = Callback::new(move |()| {
+            if chat.creating_session.get_untracked() || chat.streaming.get_untracked() {
+                return;
+            }
+            let Some(project_id) = projects.active_project.get_untracked() else {
+                return;
+            };
+            let primary = settings.model_setup.get_untracked().defaults.primary;
+            let connection = primary
+                .as_ref()
+                .map(|model| model.server_id)
+                .or(settings.default_connection.get_untracked());
+            let model = primary.map(|model| model.model);
+            let prompt = settings.default_prompt.get_untracked();
+            let generation = auth.generation.get_untracked();
+            let mode = chat.draft_approval_mode.get_untracked();
+            chat.creating_session.set(true);
+            let current = move || {
+                auth.generation.try_get_untracked() == Some(generation)
+                    && projects.active_project.try_get_untracked() == Some(Some(project_id))
+            };
+            spawn_local(async move {
+                let result = async {
+                    let backend = api.with_value(Clone::clone);
+                    let session = backend
+                        .create_session("New chat", connection, prompt, Some(project_id))
+                        .await?;
+                    super::approvals::save_session_mode(api, session.id, mode).await?;
+                    if !current() {
+                        return Ok::<_, String>(());
+                    }
+                    chat.set_approval_mode(session.id, mode);
+                    chat.sessions
+                        .update(|sessions| sessions.push(session.clone()));
+                    chat.draft_connection.set(None);
+                    chat.selected_model.set(model.clone());
+                    chat.session_model.update(|models| {
+                        models.insert(session.id, model.clone());
+                    });
+                    chat.skip_history_load.set_value(Some(session.id));
+                    chat.messages.install_history(Vec::new());
+                    chat.active_session.set(Some(session.id));
+                    let content = project_host
+                        .startup_context(project_id, connection, model.as_deref())
+                        .await?;
+                    if !current() {
+                        return Ok(());
+                    }
+                    let content = format!("{}{content}", openwebide_core::RUN_CONTEXT_PREFIX);
+                    let message = backend
+                        .persist_message(
+                            session.id,
+                            openwebide_core::Role::System,
+                            &content,
+                            None,
+                            None,
+                        )
+                        .await?;
+                    if current()
+                        && chat.active_session.try_get_untracked() == Some(Some(session.id))
+                    {
+                        chat.apply_event_for_session(
+                            session.id,
+                            openwebide_core::RunEvent::Message { message },
+                        );
+                    }
+                    Ok(())
+                }
+                .await;
+                if auth.generation.try_get_untracked() == Some(generation) {
+                    chat.creating_session.set(false);
+                    if let Err(error) = result
+                        && current()
+                    {
+                        chat.error.set(Some(error));
+                    }
+                }
+            });
+        });
 
         let on_rename_session = Callback::new(move |session_id: i64| {
             let current = chat
@@ -568,10 +745,14 @@ impl ChatActions {
                     SlashAction::Clear => chat.messages.install_history(Vec::new()),
                     SlashAction::GitDiff { project_id, path } => {
                         spawn_local(async move {
-                            match api
-                                .with_value(Clone::clone)
-                                .git_diff(project_id, path.as_deref())
-                                .await
+                            match async {
+                                project_git
+                                    .repository(project_id)
+                                    .await?
+                                    .diff(path.as_deref())
+                                    .await
+                            }
+                            .await
                             {
                                 Ok(diff) if !diff.trim().is_empty() => chat.notify(format!(
                                     "**Git Repository Diff:**\n```diff\n{diff}\n```"
@@ -617,10 +798,14 @@ impl ChatActions {
                                 paths: None,
                                 include_untracked: false,
                             };
-                            match api
-                                .with_value(Clone::clone)
-                                .git_commit(project_id, &request)
-                                .await
+                            match async {
+                                project_git
+                                    .repository(project_id)
+                                    .await?
+                                    .commit(&request)
+                                    .await
+                            }
+                            .await
                             {
                                 Ok(result) => {
                                     refresh_git.run(());
@@ -641,10 +826,14 @@ impl ChatActions {
                                 branch: branch.clone(),
                                 create_if_missing: false,
                             };
-                            match api
-                                .with_value(Clone::clone)
-                                .git_checkout(project_id, &request)
-                                .await
+                            match async {
+                                project_git
+                                    .repository(project_id)
+                                    .await?
+                                    .checkout(&request)
+                                    .await
+                            }
+                            .await
                             {
                                 Ok(result) => {
                                     refresh_git.run(());
@@ -666,10 +855,14 @@ impl ChatActions {
                                 branch: branch.clone(),
                                 create_if_missing: true,
                             };
-                            match api
-                                .with_value(Clone::clone)
-                                .git_checkout(project_id, &request)
-                                .await
+                            match async {
+                                project_git
+                                    .repository(project_id)
+                                    .await?
+                                    .checkout(&request)
+                                    .await
+                            }
+                            .await
                             {
                                 Ok(result) => {
                                     refresh_git.run(());
@@ -686,7 +879,11 @@ impl ChatActions {
                     }
                     SlashAction::ListBranches { project_id } => {
                         spawn_local(async move {
-                            match api.with_value(Clone::clone).git_branches(project_id).await {
+                            match async {
+                                project_git.repository(project_id).await?.branches().await
+                            }
+                            .await
+                            {
                                 Ok(branches) => {
                                     let branch_list = if branches.is_empty() {
                                         "No branches found.".to_string()
@@ -728,6 +925,7 @@ impl ChatActions {
             permission,
             permission_always,
             select_model,
+            select_connection_model,
             slash_command,
             on_select_session,
             on_new_session,
@@ -764,14 +962,26 @@ fn install_effects(
                 })
             })
             .or_else(|| {
-                default_connection.get().or_else(|| {
-                    connections.with(|connections| {
-                        connections
-                            .iter()
-                            .find(|connection| connection.enabled)
-                            .map(|connection| connection.id)
+                chat.draft_connection
+                    .get()
+                    .filter(|_| active_session.get().is_none())
+                    .or_else(|| {
+                        settings
+                            .model_setup
+                            .get()
+                            .defaults
+                            .primary
+                            .map(|selection| selection.server_id)
                     })
-                })
+                    .or(default_connection.get())
+                    .or_else(|| {
+                        connections.with(|connections| {
+                            connections
+                                .iter()
+                                .find(|connection| connection.enabled)
+                                .map(|connection| connection.id)
+                        })
+                    })
             });
         let connection = id.and_then(|id| {
             connections.with(|connections| {
@@ -793,11 +1003,22 @@ fn install_effects(
     });
     let context_request = Memo::new(move |_| {
         let (_, connection) = effective_connection.get();
-        let model = selected_model.get().or_else(|| {
-            connection
-                .as_ref()
-                .and_then(|connection| connection.model.clone())
-        });
+        let model = selected_model
+            .get()
+            .or_else(|| {
+                settings
+                    .model_setup
+                    .get()
+                    .defaults
+                    .primary
+                    .filter(|selection| Some(selection.server_id) == effective_connection.get().0)
+                    .map(|selection| selection.model)
+            })
+            .or_else(|| {
+                connection
+                    .as_ref()
+                    .and_then(|connection| connection.model.clone())
+            });
         let limit = connection
             .as_ref()
             .and_then(|connection| connection.context_limit);
@@ -806,11 +1027,22 @@ fn install_effects(
 
     Effect::new(move |_| {
         let (_, connection) = effective_connection.get();
-        let effective_model = selected_model.get().or_else(|| {
-            connection
-                .as_ref()
-                .and_then(|connection| connection.model.clone())
-        });
+        let effective_model = selected_model
+            .get()
+            .or_else(|| {
+                settings
+                    .model_setup
+                    .get()
+                    .defaults
+                    .primary
+                    .filter(|selection| Some(selection.server_id) == effective_connection.get().0)
+                    .map(|selection| selection.model)
+            })
+            .or_else(|| {
+                connection
+                    .as_ref()
+                    .and_then(|connection| connection.model.clone())
+            });
         let display_model = effective_model.unwrap_or_else(|| {
             format!(
                 "Default ({})",
@@ -953,6 +1185,15 @@ fn install_effects(
                 chat.models.set(models);
             }
         });
+    });
+
+    Effect::new(move |_| {
+        projects.active_project.track();
+        active_session.track();
+        chat.draft_connection.set(None);
+        if active_session.get_untracked().is_none() {
+            chat.selected_model.set(None);
+        }
     });
 
     Effect::new(move |_| {

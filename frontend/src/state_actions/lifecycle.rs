@@ -29,12 +29,28 @@ pub fn install_keyboard_shortcuts(workspace: WorkspaceState, chat: ChatState) {
     let content = workspace.content;
     let active_editor_context = chat.active_editor_context;
     let show_terminal = chat.show_terminal;
+    let select_approval_mode = super::approvals::mode_selector(chat);
     let on_toggle_terminal = move || show_terminal.update(|value| *value = !*value);
 
     let _ = leptos::prelude::window_event_listener(
         leptos::ev::keydown,
         move |event: web_sys::KeyboardEvent| {
             if crate::components::modal::modal_is_open() {
+                return;
+            }
+            if event.key() == "Tab"
+                && event.shift_key()
+                && !event.ctrl_key()
+                && !event.meta_key()
+                && !event.alt_key()
+                && event
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    .is_some_and(|element| element.class_list().contains("composer-input"))
+            {
+                event.prevent_default();
+                let mode = super::approvals::current_mode(chat);
+                select_approval_mode.run(mode.next());
                 return;
             }
             if (event.ctrl_key() || event.meta_key()) && event.key() == "`" {
@@ -137,6 +153,8 @@ pub fn install_project_effects(context: ProjectEffectContext) {
     let history_pending = RwSignal::new(None::<String>);
     let history_saving = RwSignal::new(false);
     let history_imported = RwSignal::new(false);
+    let session_pending = StoredValue::new(std::collections::HashMap::<i64, i64>::new());
+    let session_saving = RwSignal::new(false);
     let resize_listener = window_event_listener(leptos::ev::resize, move |_| {
         let [sidebar, tree, chat_width] = fit_panels(
             viewport_width(),
@@ -157,6 +175,9 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         history_pending.set(None);
         history_saving.set(false);
         history_imported.set(false);
+        session_pending.set_value(Default::default());
+        session_saving.set(false);
+        chat.last_sessions.set(Default::default());
         let Some(user) = auth.user.get() else {
             return;
         };
@@ -193,19 +214,53 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 connections_result,
                 sessions_result,
                 prompts_result,
+                model_setup_result,
             ) = futures::join!(
                 backend.get_settings(),
                 backend.list_projects(),
                 backend.list_connections(),
                 backend.list_sessions(),
                 backend.list_system_prompts(),
+                backend.model_setup(),
             );
             if auth.generation.get_untracked() != generation {
                 return;
             }
+            if let Ok(setup) = model_setup_result {
+                settings.model_setup.set(setup);
+            }
             let mut stored_tab_ids = Vec::<i64>::new();
             let mut stored_active_project = None;
             if let Ok(values) = settings_result {
+                chat.approval_mode.set(
+                    values
+                        .iter()
+                        .filter_map(|(key, value)| {
+                            Some((
+                                key.strip_prefix("approval_mode_")?.parse().ok()?,
+                                serde_json::from_str(value).ok()?,
+                            ))
+                        })
+                        .collect(),
+                );
+                chat.draft_approval_mode.set(
+                    values
+                        .get("draft_approval_mode")
+                        .and_then(|value| serde_json::from_str(value).ok())
+                        .unwrap_or_default(),
+                );
+
+                chat.last_sessions.set(
+                    values
+                        .iter()
+                        .filter_map(|(key, value)| {
+                            Some((
+                                key.strip_prefix("last_session_")?.parse().ok()?,
+                                value.parse().ok()?,
+                            ))
+                        })
+                        .collect(),
+                );
                 if let Some(theme) = values.get("theme") {
                     settings.theme.set(Theme::parse(theme));
                 }
@@ -361,6 +416,74 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 select_project.run(project_id);
             }
             projects.projects_loaded.set(true);
+        });
+    });
+
+    Effect::new(move |_| {
+        let generation = auth.generation.get();
+        if auth.user.get().is_none()
+            || history_loaded.get() != Some(generation)
+            || !projects.projects_loaded.get()
+        {
+            return;
+        }
+        let Some(project_id) = projects.active_project.get() else {
+            return;
+        };
+        let Some(session_id) = chat.active_session.get() else {
+            return;
+        };
+        if !chat.sessions.with(|sessions| {
+            sessions
+                .iter()
+                .any(|session| session.id == session_id && session.project_id == Some(project_id))
+        }) || chat
+            .last_sessions
+            .with_untracked(|sessions| sessions.get(&project_id).copied())
+            == Some(session_id)
+        {
+            return;
+        }
+        chat.last_sessions.update(|sessions| {
+            sessions.insert(project_id, session_id);
+        });
+        session_pending.update_value(|pending| {
+            pending.insert(project_id, session_id);
+        });
+        if session_saving.get_untracked() {
+            return;
+        }
+        session_saving.set(true);
+        spawn_local(async move {
+            loop {
+                if auth.generation.try_get_untracked() != Some(generation) {
+                    return;
+                }
+                let next = session_pending.with_value(|pending| {
+                    pending
+                        .iter()
+                        .next()
+                        .map(|(project, session)| (*project, *session))
+                });
+                let Some((project_id, session_id)) = next else {
+                    break;
+                };
+                session_pending.update_value(|pending| {
+                    pending.remove(&project_id);
+                });
+                let key = format!("last_session_{project_id}");
+                if let Err(error) = api
+                    .with_value(Clone::clone)
+                    .set_setting(&key, &session_id.to_string())
+                    .await
+                    && auth.generation.try_get_untracked() == Some(generation)
+                {
+                    chat.error.set(Some(format!(
+                        "Could not save the last used session: {error}"
+                    )));
+                }
+            }
+            session_saving.set(false);
         });
     });
 

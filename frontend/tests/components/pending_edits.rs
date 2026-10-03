@@ -505,7 +505,7 @@ async fn local_folder_unavailable_keeps_rejection_pending_but_allows_acceptance(
             .toast
             .get_untracked()
             .unwrap()
-            .contains("Folder not available")
+            .contains("Grant folder access")
     );
     assert!(file_calls(&mounted).is_empty());
     mounted.click_text("✓ Accept");
@@ -816,7 +816,6 @@ async fn delayed_resolution_after_agent_write(dirty: bool, rejected: bool) {
     use openwebide_core::{ChatMessage, Role, RunEvent};
     use openwebide_frontend::{
         backend::Backend,
-        bridge::BridgeCredentials,
         components::{ConfirmDialog, Editor},
         state::auth::AuthState,
         state_actions::{
@@ -875,7 +874,6 @@ async fn delayed_resolution_after_agent_write(dirty: bool, rejected: bool) {
             settings: state.settings,
             ui: state.ui,
             git: state.git,
-            bridge_credentials: StoredValue::new(BridgeCredentials::new(state.api)),
             bridge: state.bridge,
             request_open: actions.request_open,
             refresh_git: Callback::new(|()| ()),

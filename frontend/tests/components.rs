@@ -31,6 +31,9 @@ mod editor;
 #[path = "components/search.rs"]
 mod search;
 
+#[path = "components/tree_refresh.rs"]
+mod tree_refresh;
+
 #[path = "components/idb.rs"]
 mod idb;
 
@@ -45,3 +48,6 @@ mod recent_projects;
 
 #[path = "components/composer.rs"]
 mod composer;
+
+#[path = "components/project_git.rs"]
+mod project_git;

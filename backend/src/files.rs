@@ -18,13 +18,24 @@ pub enum FsError {
     TooLarge { size: u64, max: u64 },
     #[error("path {0:?} escapes the workspace root")]
     PathEscape(String),
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
     #[error("{0}")]
     Io(String),
 }
-use openwebide_core::{
-    FileEntry, SearchHit, Vfs, VfsError, VfsFuture, find_content_matches, normalize_vfs_path,
-    vfs::{SearchOptions, skip_dir},
-};
+impl From<openwebide_core::VfsError> for FsError {
+    fn from(error: openwebide_core::VfsError) -> Self {
+        match error {
+            openwebide_core::VfsError::NotFound(path) => Self::NotFound(path),
+            openwebide_core::VfsError::PermissionDenied(path) => Self::PermissionDenied(path),
+            openwebide_core::VfsError::AlreadyExists(path) => Self::AlreadyExists(path),
+            openwebide_core::VfsError::PathEscape(path) => Self::PathEscape(path),
+            openwebide_core::VfsError::Io(detail) => Self::Io(detail),
+        }
+    }
+}
+
+use openwebide_core::{FileEntry, SearchHit, Vfs, VfsError, VfsFuture, vfs::SearchOptions};
 
 use crate::wasi::filesystem::preopens;
 use crate::wasi::filesystem::types::{
@@ -32,11 +43,12 @@ use crate::wasi::filesystem::types::{
 };
 
 /// Upper bound on a single file read, so a huge file can't blow up memory.
-pub(crate) const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const MAX_READ_BYTES: u64 = openwebide_core::vfs::MAX_READ_BYTES;
 
 fn fs_error(code: ErrorCode) -> FsError {
     match code {
         ErrorCode::NoEntry => FsError::NotFound("entry".into()),
+        ErrorCode::Access | ErrorCode::NotPermitted => FsError::PermissionDenied("entry".into()),
         other => FsError::Io(format!("filesystem error: {other:?}")),
     }
 }
@@ -46,6 +58,7 @@ fn fs_error(code: ErrorCode) -> FsError {
 fn fs_error_at(code: ErrorCode, path: &str) -> FsError {
     match code {
         ErrorCode::NoEntry => FsError::NotFound(path.into()),
+        ErrorCode::Access | ErrorCode::NotPermitted => FsError::PermissionDenied(path.into()),
         other => FsError::Io(format!("filesystem error: {other:?} (at {path})")),
     }
 }
@@ -415,7 +428,7 @@ pub async fn copy(from: &str, to: &str) -> Result<()> {
     }
 }
 
-/// Delete the file (or symlink, or empty directory) at `rel`.
+/// Delete a file, symlink, or directory tree at `rel`.
 ///
 /// Only the **parent directory** is resolved through the PathResolver, so all
 /// `.spin`/escape checks run on every ancestor component. The final path
@@ -453,190 +466,90 @@ pub async fn delete(rel: &str) -> Result<()> {
                 PathFlags::empty(),
                 resolved_parent.clone(),
                 OpenFlags::DIRECTORY,
-                DescriptorFlags::empty(),
+                DescriptorFlags::MUTATE_DIRECTORY,
             )
             .await
             .map_err(|code| fs_error_at(code, &resolved_parent))?
     };
 
-    parent_dir
-        .unlink_file_at(leaf.to_string())
-        .await
-        .map_err(|code| fs_error_at(code, rel))
+    remove_entry(&parent_dir, leaf).await
 }
 
-/// Hard caps on a search walk: number of matching hits returned, total
-/// bytes of file content read, and directory entries visited. A search
+/// WASI recursive deletion primitive; symlinks are unlinked without following them.
+fn remove_entry<'a>(
+    parent: &'a Descriptor,
+    leaf: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let metadata = parent
+            .stat_at(PathFlags::empty(), leaf.to_string())
+            .await
+            .map_err(|code| fs_error_at(code, leaf))?;
+        if matches!(metadata.type_, DescriptorType::Directory) {
+            let directory = parent
+                .open_at(
+                    PathFlags::empty(),
+                    leaf.to_string(),
+                    OpenFlags::DIRECTORY,
+                    DescriptorFlags::MUTATE_DIRECTORY,
+                )
+                .await
+                .map_err(|code| fs_error_at(code, leaf))?;
+            for entry in read_dir_entries(&directory).await? {
+                if entry.name != "." && entry.name != ".." {
+                    remove_entry(&directory, &entry.name).await?;
+                }
+            }
+            parent
+                .remove_directory_at(leaf.to_string())
+                .await
+                .map_err(|code| fs_error_at(code, leaf))
+        } else {
+            // Do not follow symlinks: only unlink their literal directory entry.
+            parent
+                .unlink_file_at(leaf.to_string())
+                .await
+                .map_err(|code| fs_error_at(code, leaf))
+        }
+    })
+}
+
+/// Hard caps on a search walk: matching hits, bytes read and directory entries. A search
 /// stops early once the hit or entry budget is exhausted; the byte budget
 /// is checked per file before reading.
-pub struct SearchBudget {
-    pub hits: usize,
-    pub bytes: usize,
-    pub entries: usize,
-}
+#[cfg(test)]
+use openwebide_core::{
+    search::{SearchBudget, truncate_line},
+    vfs::skip_dir,
+};
 
-impl SearchBudget {
-    pub fn new() -> Self {
-        Self {
-            hits: 500,
-            bytes: 64 * 1024 * 1024,
-            entries: 20_000,
-        }
-    }
-
-    /// Whether one more directory entry may be visited.
-    pub fn allow_entry(&mut self) -> bool {
-        if self.entries == 0 {
-            return false;
-        }
-        self.entries -= 1;
-        true
-    }
-
-    /// Whether a file of `size` bytes may be read, charging the byte budget.
-    pub fn allow_file(&mut self, size: u64) -> bool {
-        let Ok(size) = usize::try_from(size) else {
-            return false;
-        };
-        if size > self.bytes {
-            return false;
-        }
-        self.bytes -= size;
-        true
-    }
-
-    /// Whether one more hit may be recorded.
-    pub fn push_hit(&mut self) -> bool {
-        if self.hits == 0 {
-            return false;
-        }
-        self.hits -= 1;
-        true
-    }
-
-    /// Whether the walk must stop (hit or entry budget spent).
-    pub fn exhausted(&self) -> bool {
-        self.hits == 0 || self.entries == 0
-    }
-}
-
-/// Truncate `s` to at most `max_chars` characters, never splitting a
-/// multi-byte character.
-fn truncate_line(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        s.chars().take(max_chars).collect()
-    }
-}
-
-/// Recursively walk the directory at `rel` and return files whose path
-/// contains `query` (case-insensitive), bounded by a fresh [`SearchBudget`].
-/// Directories in `SEARCH_SKIP_DIRS` are skipped unless
-/// `opts.include_ignored` is set.
 pub async fn search(rel: &str, query: &str, opts: SearchOptions) -> Result<Vec<FileEntry>> {
-    let query = query.to_lowercase();
-    let mut out = Vec::new();
-    let mut budget = SearchBudget::new();
-    walk(rel, &query, opts, &mut out, &mut budget).await?;
-    Ok(out)
+    openwebide_core::search::files(
+        &HostFsVfs {
+            base: String::new(),
+        },
+        query,
+        rel,
+        opts,
+    )
+    .await
+    .map_err(FsError::from)
 }
-
-async fn walk(
-    dir_rel: &str,
-    query: &str,
-    opts: SearchOptions,
-    out: &mut Vec<FileEntry>,
-    budget: &mut SearchBudget,
-) -> Result<()> {
-    if budget.exhausted() {
-        return Ok(());
-    }
-    let Ok(entries) = list(dir_rel).await else {
-        return Ok(()); // not a directory or unreadable; skip
-    };
-    for e in entries {
-        if budget.exhausted() {
-            break;
-        }
-        if !budget.allow_entry() {
-            break;
-        }
-        if e.is_dir {
-            if skip_dir(&e.name, opts) {
-                continue;
-            }
-            Box::pin(walk(&e.path, query, opts, out, budget)).await?;
-        } else if e.path.to_lowercase().contains(query) {
-            if !budget.push_hit() {
-                break;
-            }
-            out.push(e);
-        }
-    }
-    Ok(())
-}
-
-/// Recursively walk the directory at `rel` and return the lines of every
-/// readable text file whose content contains `query` (case-insensitive),
-/// bounded by a fresh [`SearchBudget`].
-///
-/// Files that are too large or not valid UTF-8 are skipped (their `read`
-/// errors are ignored), so a binary or huge file can't break the search.
-/// Directories in `SEARCH_SKIP_DIRS` are skipped unless
-/// `opts.include_ignored` is set.
 pub async fn full_text_search(
     rel: &str,
     query: &str,
     opts: SearchOptions,
 ) -> Result<Vec<SearchHit>> {
-    let mut out = Vec::new();
-    let mut budget = SearchBudget::new();
-    walk_content(rel, query, opts, &mut out, &mut budget).await?;
-    Ok(out)
-}
-
-async fn walk_content(
-    dir_rel: &str,
-    query: &str,
-    opts: SearchOptions,
-    out: &mut Vec<SearchHit>,
-    budget: &mut SearchBudget,
-) -> Result<()> {
-    if budget.exhausted() {
-        return Ok(());
-    }
-    let Ok(entries) = list(dir_rel).await else {
-        return Ok(()); // not a directory or unreadable; skip
-    };
-    for e in entries {
-        if budget.exhausted() {
-            break;
-        }
-        if !budget.allow_entry() {
-            break;
-        }
-        if e.is_dir {
-            if skip_dir(&e.name, opts) {
-                continue;
-            }
-            Box::pin(walk_content(&e.path, query, opts, out, budget)).await?;
-        } else if budget.allow_file(e.size)
-            && let Ok(content) = read(&e.path).await
-        {
-            for (line, text) in find_content_matches(&content, query) {
-                if !budget.push_hit() {
-                    break;
-                }
-                out.push(SearchHit {
-                    path: e.path.clone(),
-                    line,
-                    text: truncate_line(&text, 400),
-                });
-            }
-        }
-    }
-    Ok(())
+    openwebide_core::search::content(
+        &HostFsVfs {
+            base: String::new(),
+        },
+        query,
+        rel,
+        opts,
+    )
+    .await
+    .map_err(FsError::from)
 }
 
 /// Remote-mode VFS implementation bound to a project's base directory
@@ -652,7 +565,7 @@ impl HostFsVfs {
     }
 
     fn resolve(&self, rel: &str) -> Result<String, VfsError> {
-        let norm = normalize_vfs_path(rel)?;
+        let norm = openwebide_core::vfs::workspace_path(rel)?;
         if self.base.is_empty() {
             Ok(norm)
         } else if norm.is_empty() {
@@ -679,6 +592,7 @@ fn map_vfs_err(e: FsError) -> VfsError {
     match e {
         FsError::AlreadyExists(path) => VfsError::AlreadyExists(path),
         FsError::NotFound(path) => VfsError::NotFound(path),
+        FsError::PermissionDenied(path) => VfsError::PermissionDenied(path),
         FsError::PathEscape(path) | FsError::Reserved(path) => VfsError::PathEscape(path),
         other => VfsError::Io(other.to_string()),
     }
@@ -733,28 +647,6 @@ impl Vfs for HostFsVfs {
             let from = self.resolve(from)?;
             let to = self.resolve(to)?;
             copy(&from, &to).await.map_err(map_vfs_err)
-        })
-    }
-
-    fn search_content<'a>(
-        &'a self,
-        query: &'a str,
-        dir: &'a str,
-        opts: SearchOptions,
-    ) -> VfsFuture<'a, Vec<SearchHit>> {
-        Box::pin(async move {
-            let full = self.resolve(dir)?;
-            let hits = full_text_search(&full, query, opts)
-                .await
-                .map_err(map_vfs_err)?;
-            let stripped = hits
-                .into_iter()
-                .map(|mut h| {
-                    h.path = self.strip_base(&h.path);
-                    h
-                })
-                .collect();
-            Ok(stripped)
         })
     }
 
@@ -981,8 +873,11 @@ mod tests {
         let mut budget = SearchBudget::new();
         // A file larger than the whole budget is refused outright.
         assert!(!budget.allow_file(64 * 1024 * 1024_u64 + 1));
-        // Exactly the full budget is allowed and leaves nothing for the next.
-        assert!(budget.allow_file(64 * 1024 * 1024_u64));
+        // Bounded files drain the aggregate budget.
+        for _ in 0..6 {
+            assert!(budget.allow_file(10 * 1024 * 1024_u64));
+        }
+        assert!(budget.allow_file(4 * 1024 * 1024_u64));
         assert!(!budget.allow_file(1));
         // Smaller reads drain the budget incrementally.
         let mut fresh = SearchBudget::new();

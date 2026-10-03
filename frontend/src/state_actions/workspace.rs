@@ -126,31 +126,43 @@ impl WorkspaceActions {
             }
         });
 
+        super::tree::watch_tree(projects, workspace, auth, workspace_for, refresh_git);
+
         let load_dir = Callback::new(move |(project_id, dir): (i64, String)| {
+            let generation = auth.generation.get_untracked();
             spawn_local(async move {
+                let current = || {
+                    auth.generation.try_get_untracked() == Some(generation)
+                        && active_project.try_get_untracked() == Some(Some(project_id))
+                };
+                if !current() {
+                    return;
+                }
                 let Some(ws) = workspace_for.run(project_id) else {
-                    if active_project.get() == Some(project_id) {
-                        ui.toast.set(Some(
-                            "Folder not available. Re-open the project to pick it again."
-                                .to_string(),
-                        ));
+                    if current() {
+                        projects.needs_grant.update(|ids| {
+                            ids.insert(project_id);
+                        });
                     }
                     return;
                 };
                 match ws.list(&dir).await {
                     Ok(entries) => {
-                        if active_project.get() == Some(project_id) {
+                        if current() {
                             workspace.entries.update(|entries_by_dir| {
                                 entries_by_dir.insert(dir, entries);
                             });
                         }
                     }
                     Err(error) => {
+                        if !current() {
+                            return;
+                        }
                         if error == local_fs::PERMISSION_NEEDED {
                             projects.needs_grant.update(|projects_needing_grant| {
                                 projects_needing_grant.insert(project_id);
                             });
-                        } else if active_project.get() == Some(project_id) {
+                        } else if current() {
                             ui.toast.set(Some(error));
                         }
                     }
@@ -165,17 +177,76 @@ impl WorkspaceActions {
             let handle = projects
                 .local_handles
                 .with(|handles| handles.get(&project_id).cloned());
-            if let Some(handle) = handle {
-                let load_dir = load_dir;
-                spawn_local(async move {
-                    if let Ok(true) = local_fs::request_access(&handle).await {
-                        projects.needs_grant.update(|projects_needing_grant| {
-                            projects_needing_grant.remove(&project_id);
-                        });
-                        load_dir.run((project_id, String::new()));
+            let Some(project) = projects.project(project_id) else {
+                return;
+            };
+            let generation = auth.generation.get_untracked();
+            spawn_local(async move {
+                let current = || {
+                    auth.generation.try_get_untracked() == Some(generation)
+                        && projects
+                            .projects
+                            .try_with_untracked(|items| items.iter().any(|p| p.id == project_id))
+                            == Some(true)
+                };
+                let result = async {
+                    let restored = match handle.as_ref() {
+                        Some(handle) if local_fs::request_access(handle).await.unwrap_or(false) => {
+                            handle.clone()
+                        }
+                        previous => {
+                            let Some(picked) = local_fs::pick_directory_from(previous).await?
+                            else {
+                                return Ok::<_, String>(());
+                            };
+                            let matches = match previous {
+                                Some(previous) => {
+                                    wasm_bindgen_futures::JsFuture::from(
+                                        previous.is_same_entry(&picked),
+                                    )
+                                    .await
+                                    .map_err(|error| local_fs::js_error(&error))?
+                                    .as_bool()
+                                        == Some(true)
+                                }
+                                None => {
+                                    picked.name()
+                                        == project.path.as_deref().unwrap_or(&project.name)
+                                }
+                            };
+                            if !matches {
+                                return Err(format!(
+                                    "Choose the original folder ({}) to reconnect this project.",
+                                    project.name
+                                ));
+                            }
+                            picked
+                        }
+                    };
+                    if !current() {
+                        return Ok(());
                     }
-                });
-            }
+                    crate::idb::save_handle(project_id, project.user_id, &restored).await?;
+                    if !current() {
+                        return Ok(());
+                    }
+                    projects.local_handles.update(|handles| {
+                        handles.insert(project_id, restored);
+                    });
+                    projects.needs_grant.update(|ids| {
+                        ids.remove(&project_id);
+                    });
+                    load_dir.run((project_id, String::new()));
+                    refresh_git.run(());
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = result
+                    && current()
+                {
+                    ui.notify(error);
+                }
+            });
         });
 
         let ensure_root = Callback::new(move |project_id: i64| {
@@ -198,14 +269,7 @@ impl WorkspaceActions {
                 let Some(ws) = workspace_for.run(project_id) else {
                     return;
                 };
-                let result = match ws {
-                    Workspace::Remote { api, project_id } => {
-                        api.with_value(Clone::clone)
-                            .read_file_lossy(project_id, &path)
-                            .await
-                    }
-                    Workspace::Local { handle } => local_fs::read_lossy(&handle, &path).await,
-                };
+                let result = ws.read_lossy(&path).await;
                 match result {
                     Ok(content) => {
                         if active_project.get_untracked() == Some(project_id)
@@ -269,7 +333,6 @@ impl WorkspaceActions {
                     Err(error) => {
                         if active_project.get_untracked() == Some(project_id)
                             && workspace.open_file.get_untracked().as_deref() == Some(path.as_str())
-                            && !error.contains("not valid UTF-8")
                         {
                             ui.toast.set(Some(error));
                         }
@@ -392,7 +455,7 @@ impl WorkspaceActions {
                 let result = async {
                     if decision == EditDecision::Rejected {
                         let ws = workspace_for.run(project_id).ok_or_else(|| {
-                            "Folder not available. Re-open the project to pick it again."
+                            "Reconnect this folder using Grant folder access in the file tree."
                                 .to_string()
                         })?;
                         // Check the revision before mutating files as well as when saving the decision.

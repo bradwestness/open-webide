@@ -66,6 +66,7 @@ pub fn vfs_tools() -> Vec<ToolDefinition> {
 /// A tool executor backed by a [`Vfs`], optional [`WebClient`], and optional [`BridgeClient`].
 pub struct VfsToolExecutor<V: Vfs, W: WebClient = NoopWebClient, B: BridgeClient = NoopBridgeClient>
 {
+    context: Option<crate::context::RunContext>,
     vfs: V,
     web: W,
     bridge: B,
@@ -74,6 +75,7 @@ pub struct VfsToolExecutor<V: Vfs, W: WebClient = NoopWebClient, B: BridgeClient
 impl<V: Vfs> VfsToolExecutor<V, NoopWebClient, NoopBridgeClient> {
     pub fn new(vfs: V) -> Self {
         Self {
+            context: None,
             vfs,
             web: NoopWebClient,
             bridge: NoopBridgeClient,
@@ -84,6 +86,7 @@ impl<V: Vfs> VfsToolExecutor<V, NoopWebClient, NoopBridgeClient> {
 impl<V: Vfs, W: WebClient> VfsToolExecutor<V, W, NoopBridgeClient> {
     pub fn with_web(vfs: V, web: W) -> Self {
         Self {
+            context: None,
             vfs,
             web,
             bridge: NoopBridgeClient,
@@ -93,7 +96,17 @@ impl<V: Vfs, W: WebClient> VfsToolExecutor<V, W, NoopBridgeClient> {
 
 impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
     pub fn with_web_and_bridge(vfs: V, web: W, bridge: B) -> Self {
-        Self { vfs, web, bridge }
+        Self {
+            context: None,
+            vfs,
+            web,
+            bridge,
+        }
+    }
+
+    pub fn with_context(mut self, environment: openwebide_core::RunEnvironment) -> Self {
+        self.context = Some(crate::context::RunContext::new(environment));
+        self
     }
 
     pub fn vfs(&self) -> &V {
@@ -604,6 +617,26 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
 }
 
 impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, W, B> {
+    fn has_context(&self) -> bool {
+        self.context.is_some()
+    }
+
+    async fn context(
+        &mut self,
+        definitions: &[ToolDefinition],
+        call: Option<&ToolCall>,
+    ) -> Option<String> {
+        let context = self.context.as_mut()?;
+        match call {
+            None => Some(context.startup(&self.vfs, &self.bridge, definitions).await),
+            Some(call) => match tools::parse(call).ok()? {
+                Tool::ReadFile(args) => context.for_path(&self.vfs, &args.path).await,
+                Tool::WriteFile(args) => context.for_path(&self.vfs, &args.path).await,
+                _ => None,
+            },
+        }
+    }
+
     fn describe(&self, call: &ToolCall) -> String {
         match tools::parse(call) {
             Ok(tool) => tool.describe(),

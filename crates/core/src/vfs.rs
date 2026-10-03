@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{FileEntry, SearchHit, find_content_matches};
+use crate::{FileEntry, SearchHit};
 
 /// Errors encountered during Virtual File System operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,56 @@ impl std::error::Error for VfsError {}
 /// A pinned, heap-allocated, Send-safe future returning a Vfs result.
 pub type VfsFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, VfsError>> + Send + 'a>>;
 
+/// Maximum allocation for reading one workspace file.
+pub const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Explorer order at every level: directories first, then natural, case-insensitive names.
+/// Raw names and paths break ties so enumeration order never affects the result.
+pub fn sort_file_entries(entries: &mut [FileEntry]) {
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| natural_name_cmp(&a.name.to_lowercase(), &b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+}
+
+fn natural_name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
+    while let (Some(&left), Some(&right)) = (a.first(), b.first()) {
+        let order = if left.is_ascii_digit() && right.is_ascii_digit() {
+            let left_len = a.iter().take_while(|byte| byte.is_ascii_digit()).count();
+            let right_len = b.iter().take_while(|byte| byte.is_ascii_digit()).count();
+            let (left_digits, left_rest) = a.split_at(left_len);
+            let (right_digits, right_rest) = b.split_at(right_len);
+            // Compare magnitude without parsing: filenames can contain arbitrarily long numbers.
+            let left_digits = &left_digits[left_digits
+                .iter()
+                .position(|&byte| byte != b'0')
+                .unwrap_or(left_digits.len())..];
+            let right_digits = &right_digits[right_digits
+                .iter()
+                .position(|&byte| byte != b'0')
+                .unwrap_or(right_digits.len())..];
+            a = left_rest;
+            b = right_rest;
+            left_digits
+                .len()
+                .cmp(&right_digits.len())
+                .then_with(|| left_digits.cmp(right_digits))
+        } else {
+            a = &a[1..];
+            b = &b[1..];
+            left.cmp(&right)
+        };
+        if order != std::cmp::Ordering::Equal {
+            return order;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
 /// Normalize a raw user or model-supplied path into a canonical workspace-relative POSIX path.
 ///
 /// Rules:
@@ -65,6 +115,15 @@ pub fn normalize_vfs_path(raw: &str) -> Result<String, VfsError> {
     }
 
     Ok(parts.join("/"))
+}
+
+/// Shared lexical path contract; runtime adapters additionally resolve symlinks.
+pub fn workspace_path(raw: &str) -> Result<String, VfsError> {
+    let path = normalize_vfs_path(raw)?;
+    if path.split('/').any(|part| part == ".spin") {
+        return Err(VfsError::PathEscape(raw.to_string()));
+    }
+    Ok(path)
 }
 
 /// Format a Unix timestamp (seconds since epoch) into a human-readable UTC string.
@@ -180,7 +239,9 @@ pub trait Vfs: Send + Sync {
         query: &'a str,
         dir: &'a str,
         opts: SearchOptions,
-    ) -> VfsFuture<'a, Vec<SearchHit>>;
+    ) -> VfsFuture<'a, Vec<SearchHit>> {
+        Box::pin(crate::search::content(self, query, dir, opts))
+    }
 
     /// Resolve symbolic links and return the canonical workspace-relative path.
     ///
@@ -499,11 +560,7 @@ impl Vfs for MemoryVfs {
                 }
             }
 
-            entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            });
+            sort_file_entries(&mut entries);
 
             Ok(entries)
         })
@@ -550,40 +607,6 @@ impl Vfs for MemoryVfs {
             files.retain(|k, _| k != &norm && !k.starts_with(&prefix));
             dirs.retain(|k| k != &norm && !k.starts_with(&prefix));
             Ok(())
-        })
-    }
-
-    fn search_content<'a>(
-        &'a self,
-        query: &'a str,
-        dir: &'a str,
-        opts: SearchOptions,
-    ) -> VfsFuture<'a, Vec<SearchHit>> {
-        let _ = opts;
-        Box::pin(async move {
-            let norm = normalize_vfs_path(dir)?;
-            let files = self.files.read().map_err(|e| VfsError::Io(e.to_string()))?;
-
-            let prefix = if norm.is_empty() {
-                String::new()
-            } else {
-                format!("{norm}/")
-            };
-
-            let mut hits = Vec::new();
-            for (path, content) in files.iter() {
-                if norm.is_empty() || path.starts_with(&prefix) {
-                    for (line, text) in find_content_matches(content, query) {
-                        hits.push(SearchHit {
-                            path: path.clone(),
-                            line,
-                            text,
-                        });
-                    }
-                }
-            }
-
-            Ok(hits)
         })
     }
 }
@@ -770,5 +793,57 @@ mod tests {
             vfs.create("src", true).await.unwrap();
             vfs.create("src", true).await.unwrap();
         });
+    }
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+
+    #[test]
+    fn explorer_order_is_natural_and_independent_of_enumeration() {
+        let mut entries: Vec<_> = [
+            ("file10", false),
+            ("z2", true),
+            ("file2", false),
+            ("alpha", false),
+            ("a10", true),
+            ("a2", true),
+            ("file02", false),
+            ("Alpha", false),
+            ("file999999999999999999999999999999", false),
+            ("file1000000000000000000000000000000", false),
+        ]
+        .into_iter()
+        .map(|(name, is_dir)| FileEntry {
+            name: name.into(),
+            path: name.into(),
+            is_dir,
+            size: 0,
+        })
+        .collect();
+        sort_file_entries(&mut entries);
+        let expected = entries.clone();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "a2",
+                "a10",
+                "z2",
+                "Alpha",
+                "alpha",
+                "file02",
+                "file2",
+                "file10",
+                "file999999999999999999999999999999",
+                "file1000000000000000000000000000000"
+            ]
+        );
+        entries.reverse();
+        sort_file_entries(&mut entries);
+        assert_eq!(entries, expected);
     }
 }

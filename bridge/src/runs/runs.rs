@@ -329,13 +329,40 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
     run: Arc<Run>,
     provider: P,
     backend: Arc<B>,
-    plan: RunPlan,
+    mut plan: RunPlan,
     dir: Option<PathBuf>,
     anchor_id: i64,
     execution: Arc<dyn crate::exec::ToolExecution>,
 ) {
+    if plan.environment.timestamp == 0 {
+        plan.environment.timestamp = i64::try_from(now()).unwrap_or(i64::MAX);
+    }
     match plan.kind {
         RunKind::Chat => {
+            let content = openwebide_agent::context::chat_context(&plan.environment);
+            plan.request
+                .system_prompt
+                .get_or_insert_with(String::new)
+                .push_str(&format!("\n\n{content}"));
+            match backend
+                .persist_message(
+                    run.owner,
+                    run.session_id,
+                    Role::System,
+                    &format!("{}{content}", openwebide_core::RUN_CONTEXT_PREFIX),
+                    None,
+                    None,
+                )
+                .await
+            {
+                Ok(message) => run.emit(RunEvent::Message { message }),
+                Err(_) => {
+                    run.emit(RunEvent::Error {
+                        message: "Could not save run context".into(),
+                    });
+                    return;
+                }
+            }
             let mut stream = provider.chat_stream(&plan.request);
             let mut text = String::new();
             let mut reasoning = String::new();
@@ -387,6 +414,10 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
         }
         RunKind::Agent { .. } => {
             let dir = dir.expect("agent run has a resolved project");
+            plan.environment.project_root = Some(dir.to_string_lossy().into_owned());
+            plan.environment
+                .mode
+                .get_or_insert(openwebide_core::WorkspaceMode::Remote);
             let executor = VfsToolExecutor::with_web_and_bridge(
                 NativeFsVfs { root: dir.clone() },
                 BackendWebClient {
@@ -398,17 +429,28 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                     execution,
                     cancel: run.cancel.clone(),
                 },
-            );
+            )
+            .with_context(plan.environment);
             let memo = provider.tool_stream_memo();
             let connection_id = plan.connection.id;
             let tool_stream_revision = plan.connection.tool_stream_revision;
+            let gate = openwebide_agent::policy::PolicyGate {
+                manual: run.gate.clone(),
+                source: super::backend_client::ApprovalAdapter {
+                    backend: backend.clone(),
+                    user: run.owner,
+                    session: run.session_id,
+                    connection_id,
+                    model: plan.request.model.clone(),
+                },
+            };
             let events = openwebide_agent::run(
                 provider,
                 executor,
                 plan.request,
                 AgentConfig::default(),
                 run.cancel.clone(),
-                run.gate.clone(),
+                gate,
                 anchor_id,
             );
             let events = events.then(|event| async {
@@ -469,142 +511,83 @@ async fn persist_final<B: RunBackend>(
     }
 }
 
+struct SessionPersistence<'a, B> {
+    run: &'a Run,
+    backend: &'a B,
+}
+impl<B: RunBackend> openwebide_agent::session::RunPersistence for SessionPersistence<'_, B> {
+    fn now(&self) -> i64 {
+        i64::try_from(now()).unwrap_or(i64::MAX)
+    }
+    async fn message(
+        &self,
+        role: Role,
+        content: &str,
+        usage: Option<&TurnTelemetry>,
+        calls: Option<&[openwebide_core::ToolCall]>,
+    ) -> Result<ChatMessage, String> {
+        self.backend
+            .persist_message(
+                self.run.owner,
+                self.run.session_id,
+                role,
+                content,
+                usage,
+                calls,
+            )
+            .await
+    }
+    async fn step(
+        &self,
+        anchor: i64,
+        id: &str,
+        name: &str,
+        summary: &str,
+        diff: Option<&openwebide_core::FileDiff>,
+    ) -> Result<(), String> {
+        self.backend
+            .upsert_tool_step(
+                self.run.owner,
+                self.run.session_id,
+                anchor,
+                id,
+                name,
+                summary,
+                diff,
+            )
+            .await
+    }
+    async fn result(
+        &self,
+        id: &str,
+        ok: bool,
+        summary: &str,
+        diff: Option<&openwebide_core::FileDiff>,
+    ) -> Result<(), String> {
+        self.backend
+            .complete_tool_step(self.run.owner, self.run.session_id, id, ok, summary, diff)
+            .await
+    }
+    fn prepare_permission(&self, id: &str) {
+        self.run.gate.prepare(id);
+    }
+    async fn finish(&self) {
+        self.run.gate.clear();
+    }
+}
 async fn map_agent_events<B: RunBackend>(
     run: &Run,
     backend: &B,
-    anchor_id: i64,
+    anchor: i64,
     events: impl Stream<Item = AgentEvent> + Send,
 ) {
-    let mut events = Box::pin(events);
-    let mut display_anchor = anchor_id;
-    let mut reasoning = String::new();
-    let mut last_usage = None;
+    let mut events = Box::pin(openwebide_agent::session::events(
+        SessionPersistence { run, backend },
+        run.session_id,
+        anchor,
+        events,
+    ));
     while let Some(event) = events.next().await {
-        let event = match event {
-            AgentEvent::ReasoningDelta(content) => {
-                reasoning.push_str(&content);
-                RunEvent::ReasoningDelta { content }
-            }
-            AgentEvent::TextDelta(content) => RunEvent::Delta { content },
-            AgentEvent::Telemetry(usage) => {
-                last_usage = Some(usage);
-                RunEvent::Telemetry { usage }
-            }
-            AgentEvent::TurnCalls { text, calls } => {
-                let text = openwebide_core::with_reasoning(&std::mem::take(&mut reasoning), &text);
-                let usage = last_usage.take();
-                let message = match backend
-                    .persist_message(
-                        run.owner,
-                        run.session_id,
-                        Role::Assistant,
-                        &text,
-                        usage.as_ref(),
-                        Some(&calls),
-                    )
-                    .await
-                {
-                    Ok(message) => {
-                        display_anchor = message.id;
-                        message
-                    }
-                    Err(_) => ChatMessage {
-                        id: 0,
-                        session_id: run.session_id,
-                        role: Role::Assistant,
-                        content: text,
-                        created_at: i64::try_from(now()).unwrap_or(i64::MAX),
-                        tool_calls: Some(calls),
-                        tool_call_id: None,
-                        usage,
-                    },
-                };
-                RunEvent::Interim { message }
-            }
-            AgentEvent::ToolCall { id, name, summary } => {
-                last_usage = None;
-                let _ = backend
-                    .upsert_tool_step(
-                        run.owner,
-                        run.session_id,
-                        display_anchor,
-                        &id,
-                        &name,
-                        &summary,
-                        None,
-                    )
-                    .await;
-                RunEvent::ToolCall { id, name, summary }
-            }
-            AgentEvent::PermissionRequest {
-                id,
-                name,
-                summary,
-                diff,
-                note,
-            } => {
-                last_usage = None;
-                run.gate.prepare(&id);
-                let _ = backend
-                    .upsert_tool_step(
-                        run.owner,
-                        run.session_id,
-                        display_anchor,
-                        &id,
-                        &name,
-                        &summary,
-                        diff.as_ref(),
-                    )
-                    .await;
-                RunEvent::PermissionRequest {
-                    id,
-                    name,
-                    summary,
-                    diff,
-                    note,
-                }
-            }
-            AgentEvent::ToolResult {
-                id,
-                name,
-                ok,
-                summary,
-                diff,
-            } => {
-                if let Err(error) = backend
-                    .complete_tool_step(run.owner, run.session_id, &id, ok, &summary, diff.as_ref())
-                    .await
-                {
-                    run.emit(RunEvent::ToolResult {
-                        id,
-                        name,
-                        ok,
-                        summary,
-                        diff,
-                    });
-                    // Stop the agent before the terminal event releases its session reservation.
-                    drop(events);
-                    run.emit(RunEvent::Error {
-                        message: format!("failed to save tool result: {error}"),
-                    });
-                    return;
-                }
-                RunEvent::ToolResult {
-                    id,
-                    name,
-                    ok,
-                    summary,
-                    diff,
-                }
-            }
-            AgentEvent::FinalText(text) => {
-                let text = openwebide_core::with_reasoning(&reasoning, &text);
-                persist_final(run, backend, &text, last_usage.as_ref()).await;
-                return;
-            }
-            AgentEvent::Cancelled => RunEvent::Cancelled,
-            AgentEvent::Error(message) => RunEvent::Error { message },
-        };
         run.emit(event);
     }
 }
