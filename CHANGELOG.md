@@ -24,7 +24,7 @@ for what's still ahead.
 
 ### Added
 
-- Add Rider-style vertical panel tabs: Sessions, Files and Editor on the left, Chat on the right. Collapse and expand panels without unmounting editors, drafts or running terminals; save visibility in user-scoped database settings and restore it across devices. Resize only visible panels, preserve collapsed widths, and reveal the relevant pane when opening a file, session, model setup or terminal in either workspace mode.
+- Add Rider-style vertical panel tabs: Sessions, Files, Editor and Chat together in one left tab bar. Collapse and expand panels without unmounting editors, drafts or running terminals; save visibility in user-scoped database settings and restore it across devices. Resize only visible panels, preserve collapsed widths, and reveal the relevant pane when opening a file, session, model setup or terminal in either workspace mode.
 - Theme scrollbars throughout the app with the active dark/light palette, including panels, editor, terminal, dialogs and native controls.
 
 - Set up model servers through a rerunnable wizard: choose Ollama or OpenAI-compatible, enter URL and optional write-only auth token, then discover models and review/customize settings. Retry discovery without duplicate servers, preserve saved tokens and manual model overrides, and choose an initial default model when applying reviewed settings. Launch setup from Servers, model configuration or the workspace toolbar in either mode.

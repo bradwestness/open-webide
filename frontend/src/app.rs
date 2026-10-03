@@ -310,7 +310,7 @@ pub fn App() -> impl IntoView {
                     on_delete_project=on_delete_project
                 />
                 <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.panels.get().editor { "" } else { " editor-collapsed" })>
-                <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor] />
+                <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
                 <ToolPanel panel=Panel::Sessions>
                 <Sidebar
                     on_new_connection=on_new_connection
@@ -378,7 +378,6 @@ pub fn App() -> impl IntoView {
                 <Show when=move || !layout.panels.get().editor && !layout.panels.get().chat>
                     <div class="panel-empty">"Choose a panel tab to expand it."</div>
                 </Show>
-                <PanelRail panels=vec![Panel::Chat] />
             </div>
             <StatusBar
                 health=health.read_only()

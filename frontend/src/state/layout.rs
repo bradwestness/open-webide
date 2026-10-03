@@ -64,7 +64,7 @@ impl PanelVisibility {
 }
 
 pub const PANEL_VISIBILITY_KEY: &str = "panel_visibility";
-pub const PANEL_RAILS_WIDTH: f64 = 72.0;
+pub const PANEL_RAILS_WIDTH: f64 = 36.0;
 
 /// Fit only open panels, retaining the remembered width of collapsed panels.
 pub fn fit_visible_panels(
@@ -280,7 +280,7 @@ mod tests {
         };
         assert_widths(
             fit_visible_panels(900.0, [480.0, 650.0, 800.0], hidden),
-            [480.0, 650.0, 568.0],
+            [480.0, 650.0, 604.0],
         );
         let chat_only = PanelVisibility {
             editor: false,

@@ -156,7 +156,7 @@ streaming, and frontend state stores.
 
 ### Mobile support & collapsible tool windows
 
-- **Tool windows:** Sessions, Files, Editor and Chat now have vertical tabs that
+- **Tool windows:** Sessions, Files, Editor and Chat now share a left vertical tab bar to
   collapse or expand mounted panels, with visibility saved per user. Remaining:
   independent terminal, Git/diff and search tabs, plus dragging or pinning tool
   windows to another side.
