@@ -147,6 +147,7 @@ impl RunBackend for FakeBackend {
         user_id: i64,
         connection_id: i64,
         tool_stream_revision: i64,
+        _model: Option<&str>,
     ) -> Result<(), String> {
         self.operations.lock().unwrap().push(format!(
             "memo:{user_id}:{connection_id}:{tool_stream_revision}"
@@ -973,6 +974,7 @@ async fn seeded_memo_and_new_detection_record_only_once() {
         7,
         connection.id,
         connection.tool_stream_revision,
+        connection.model.as_deref(),
         &seeded,
     )
     .await;
@@ -988,6 +990,7 @@ async fn seeded_memo_and_new_detection_record_only_once() {
         7,
         connection.id,
         connection.tool_stream_revision,
+        connection.model.as_deref(),
         &fresh,
     )
     .await;
@@ -996,6 +999,7 @@ async fn seeded_memo_and_new_detection_record_only_once() {
         7,
         connection.id,
         connection.tool_stream_revision,
+        connection.model.as_deref(),
         &memos.get_or_insert(&connection),
     )
     .await;

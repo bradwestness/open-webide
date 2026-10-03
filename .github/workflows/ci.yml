@@ -41,10 +41,22 @@ jobs:
         run: cargo test -p openwebide-core -p openwebide-llm -p openwebide-storage -p openwebide-agent -p openwebide-auth -p openwebide-bridge -p openwebide-backend
 
       - name: Tests (frontend native)
-        run: cargo test -p openwebide-frontend --lib
+        run: cargo test -p openwebide-frontend
 
       - name: Build backend component
         run: cargo build -p openwebide-backend --target wasm32-wasip2 --release
+
+  bridge-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check bridge Windows adapters with TLS
+        run: cargo clippy -p openwebide-bridge -- -D warnings
 
   frontend:
     runs-on: ubuntu-latest

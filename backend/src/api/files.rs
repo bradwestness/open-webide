@@ -73,6 +73,14 @@ pub(super) fn strip_base_hits(base: &str, hits: Vec<SearchHit>) -> Vec<SearchHit
         .collect()
 }
 
+pub(super) fn search_query(value: Option<String>) -> Result<String, ApiError> {
+    let query = value.ok_or_else(|| ApiError::bad_request("missing ?q="))?;
+    if query.trim().is_empty() {
+        return Err(ApiError::bad_request("query must not be empty"));
+    }
+    Ok(query)
+}
+
 pub(super) fn is_include_ignored(value: Option<String>) -> bool {
     matches!(value.as_deref(), Some("1" | "true"))
 }
@@ -166,13 +174,7 @@ pub(crate) async fn files_get(
             Ok(resp)
         }
         "files/search" => {
-            let q = params
-                .get("q")
-                .cloned()
-                .ok_or_else(|| ApiError::bad_request("missing ?q="))?;
-            if q.trim().is_empty() {
-                return Err(ApiError::bad_request("query must not be empty"));
-            }
+            let q = search_query(params.get("q").cloned())?;
             let rel = params.get("path").cloned().unwrap_or_default();
             let opts = SearchOptions {
                 include_ignored: is_include_ignored(params.get("include_ignored").cloned()),
@@ -182,13 +184,7 @@ pub(crate) async fn files_get(
             Ok(json_response(200, &strip_base(&base, entries)))
         }
         "files/content-search" => {
-            let q = params
-                .get("q")
-                .cloned()
-                .ok_or_else(|| ApiError::bad_request("missing ?q="))?;
-            if q.trim().is_empty() {
-                return Err(ApiError::bad_request("query must not be empty"));
-            }
+            let q = search_query(params.get("q").cloned())?;
             let rel = params.get("path").cloned().unwrap_or_default();
             let opts = SearchOptions {
                 include_ignored: is_include_ignored(params.get("include_ignored").cloned()),

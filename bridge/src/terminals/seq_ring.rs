@@ -86,6 +86,10 @@ impl<T: Clone> SeqRing<T> {
         (vec, truncated)
     }
 
+    pub fn has_subscribers(&self) -> bool {
+        self.watch_tx.receiver_count() > 1
+    }
+
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.watch_rx.clone()
     }

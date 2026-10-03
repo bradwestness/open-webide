@@ -376,3 +376,85 @@ async fn ws_connection_holds_accept_permit() {
     let resp = HttpResponse::parse(&String::from_utf8_lossy(&raw));
     assert_eq!(resp.status, 200);
 }
+
+#[tokio::test]
+async fn http10_keep_alive_closes_and_half_closed_clients_receive_response() {
+    let dir = TestDir::new();
+    let port = start(dir.path.clone()).await;
+    let raw = tokio::time::timeout(
+        Duration::from_secs(2),
+        http(
+            port,
+            "GET /health HTTP/1.0\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n",
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(raw.contains("200 OK"));
+    let mut client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    client
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    client.shutdown().await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(Duration::from_secs(2), client.read_to_string(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(response.contains("200 OK"));
+}
+
+#[tokio::test]
+async fn websocket_rejects_oversized_message() {
+    let dir = TestDir::new();
+    let port = start(dir.path.clone()).await;
+    let mut ws = ws_with_headers(port, &[("Authorization", "Bearer dummy_secret")])
+        .await
+        .unwrap();
+    let _ = ws
+        .send(Message::Text("x".repeat(16 * 1024 * 1024 + 1).into()))
+        .await;
+    let result = tokio::time::timeout(Duration::from_secs(3), ws.next())
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        None | Some(Err(_) | Ok(Message::Close(_)))
+    ));
+}
+
+#[tokio::test]
+async fn stalled_request_body_times_out_and_releases_connection() {
+    let dir = TestDir::new();
+    let port = start_with_limits(
+        dir.path.clone(),
+        Limits {
+            max_connections: 1,
+            ..Limits::default()
+        },
+    )
+    .await;
+    let mut stalled = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stalled.write_all(b"POST /exec HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer dummy_secret\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{").await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(35),
+        stalled.read_to_string(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(response.contains("400 Bad Request"));
+    assert!(response.contains("timed out"));
+    let next = tokio::time::timeout(
+        Duration::from_secs(2),
+        http(
+            port,
+            "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(next.contains("200 OK"));
+}

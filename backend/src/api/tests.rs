@@ -900,3 +900,15 @@ fn project_file_paths_normalize_before_joining_and_do_not_escape_project() {
         }
     });
 }
+
+#[test]
+fn empty_search_queries_return_400_before_filesystem_access() {
+    for value in [None, Some(String::new()), Some(" \t\n".into())] {
+        let error = super::files::search_query(value).unwrap_err();
+        assert_eq!(error.into_response().status().as_u16(), 400);
+    }
+    assert_eq!(
+        super::files::search_query(Some("hello".into())).unwrap(),
+        "hello"
+    );
+}

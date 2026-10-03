@@ -532,7 +532,7 @@ async fn user_model_defaults_exclude_shared_model_configuration() {
 
 #[wasm_bindgen_test]
 async fn servers_open_shared_configuration_while_preferences_keep_model_defaults() {
-    use openwebide_frontend::components::{Settings, Sidebar, model_setup::ModelSetupDialog};
+    use openwebide_frontend::components::{Settings, Sidebar};
     use wasm_bindgen::JsCast;
     for mode in [
         openwebide_core::WorkspaceMode::Remote,
@@ -565,35 +565,37 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
                 });
             let unit = Callback::new(|()| ());
             let id = Callback::new(|_: i64| ());
+            let edit = Callback::new(move |id: i64| state.settings.begin_model_setup(Some(id)));
             view! {
-                <Sidebar on_new_connection=unit on_edit_connection=id on_cancel_connection=unit on_delete_connection=id
+                <Sidebar on_new_connection=unit on_edit_connection=edit on_cancel_connection=Callback::new(move |()| state.settings.show_conn_form.set(false)) on_delete_connection=id
                     on_select_session=id on_new_session=unit on_rename_session=id on_delete_session=id
                     on_new_prompt=unit on_edit_prompt=id on_save_prompt=unit on_cancel_prompt=unit on_delete_prompt=id />
-                <Show when=move || state.settings.show_model_setup.get()><ModelSetupDialog /></Show>
                 <Show when=move || state.settings.show_settings.get()><Settings on_set_theme=Callback::new(|_| ()) on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) /></Show>
             }
         });
         settle().await;
-        mounted.element("button[title='Configure models']").click();
+        mounted.element("button[title='Edit']").click();
         settle().await;
-        assert_eq!(
-            mounted.state.settings.model_setup_server.get_untracked(),
-            Some(1)
-        );
+        assert_eq!(mounted.state.settings.conn_edit_id.get_untracked(), Some(1));
+        mounted.click_text("Next: server");
+        settle().await;
+        mounted.click_text("Discover models");
+        settle().await;
         let modal = mounted.element(".modal");
         let text = modal.text_content().unwrap();
-        assert!(text.contains("Configuration is shared") && text.contains("Context tokens"));
+        assert!(text.contains("Detect settings") && text.contains("Context tokens"));
         assert!(!text.contains("Default model") && !text.contains("Fast model"));
         let context: web_sys::HtmlInputElement = mounted
             .element(".model-settings-editor input[type=number]")
             .unchecked_into();
         assert_eq!(context.value(), "8192");
-        assert!(text.contains("Server authentication and options"));
+
         context.set_value("16384");
         context
             .dispatch_event(&web_sys::Event::new("input").unwrap())
             .unwrap();
-        mounted.click_text("Save model settings");
+        settle().await;
+        mounted.click_text("Save");
         settle().await;
         assert_eq!(
             mounted.state.fake.model_setup.borrow().profiles[0]
@@ -601,8 +603,6 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
                 .context_limit,
             Some(16384)
         );
-        mounted.element(".modal button[title=Close]").click();
-        settle().await;
         mounted.state.settings.show_settings.set(true);
         settle().await;
         let text = mounted.element(".modal").text_content().unwrap();
@@ -657,7 +657,7 @@ async fn setup_wizard_discovers_customizes_and_reruns_in_both_modes() {
         mounted.click_text("Discover models");
         settle().await;
         assert!(mounted.root.text_content().unwrap().contains("Step 3 of 3"));
-        assert!(mounted.state.fake.server_settings.borrow()[&1].has_api_key);
+        assert!(mounted.state.fake.server_settings.borrow().is_empty());
         let context: web_sys::HtmlInputElement = mounted
             .element(".model-settings-editor input[type=number]")
             .unchecked_into();
@@ -666,32 +666,42 @@ async fn setup_wizard_discovers_customizes_and_reruns_in_both_modes() {
         context
             .dispatch_event(&web_sys::Event::new("input").unwrap())
             .unwrap();
-        mounted.click_text("Save model settings");
         settle().await;
-        mounted.click_text("Re-run discovery");
+        assert!(mounted.state.fake.model_setup.borrow().profiles.is_empty());
+        assert!(
+            !mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Save model settings")
+        );
+        assert!(
+            !mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Use detected context")
+        );
+        assert!(
+            !mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Re-run discovery")
+        );
+        mounted.click_text("Detect settings");
         settle().await;
-        let key: web_sys::HtmlInputElement =
-            mounted.element("input[type=password]").unchecked_into();
-        assert!(key.value().is_empty());
-        mounted.click_text("Discover models");
-        settle().await;
-        let context: web_sys::HtmlInputElement = mounted
-            .element(".model-settings-editor input[type=number]")
-            .unchecked_into();
-        assert_eq!(context.value(), "16384");
-        assert_eq!(mounted.state.fake.connections.borrow().len(), 1);
-        let context: web_sys::HtmlInputElement = mounted
-            .element(".model-settings-editor input[type=number]")
-            .unchecked_into();
+        assert_eq!(context.value(), "8192");
         context.set_value("24576");
         context
             .dispatch_event(&web_sys::Event::new("input").unwrap())
             .unwrap();
         settle().await;
-        mounted.click_text("Apply settings");
+        mounted.click_text("Save");
         settle().await;
         let setup = mounted.state.fake.model_setup.borrow();
         assert_eq!(setup.profiles[0].settings.context_limit, Some(24576));
+        assert!(mounted.state.fake.server_settings.borrow()[&1].has_api_key);
         assert_eq!(setup.defaults.primary.as_ref().unwrap().model, "qwen3:8b");
         assert!(mounted.root.query_selector(".modal").unwrap().is_none());
     }
@@ -715,7 +725,7 @@ async fn setup_retry_keeps_one_server_and_closed_discovery_cannot_apply() {
         settle().await;
         mounted.click_text("Discover models");
         settle().await;
-        assert_eq!(mounted.state.fake.connections.borrow().len(), 1);
+        assert_eq!(mounted.state.fake.connections.borrow().len(), 0);
         if close {
             mounted.element(".modal button[title=Close]").click();
             settle().await;
@@ -752,7 +762,154 @@ async fn setup_retry_keeps_one_server_and_closed_discovery_cannot_apply() {
             mounted.click_text("Discover models");
             settle().await;
             assert!(mounted.root.text_content().unwrap().contains("Step 3 of 3"));
+            assert_eq!(mounted.state.fake.connections.borrow().len(), 0);
+            mounted.click_text("Save");
+            settle().await;
             assert_eq!(mounted.state.fake.connections.borrow().len(), 1);
         }
     }
+}
+
+#[wasm_bindgen_test]
+async fn detection_fills_all_reported_values_and_cancel_discards_them_in_both_modes() {
+    use openwebide_core::{
+        ModelDetection, ModelProfile, ModelSelection, ModelSettings, WorkspaceMode,
+    };
+    use openwebide_frontend::components::model_wizard::ModelSetupWizard;
+    use wasm_bindgen::JsCast;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.seed_connection();
+            state.settings.begin_model_setup(Some(1));
+            *state.fake.models.borrow_mut() = vec![ModelInfo {
+                name: "main".into(),
+            }];
+            state
+                .fake
+                .model_setup
+                .borrow_mut()
+                .profiles
+                .push(ModelProfile {
+                    selection: ModelSelection {
+                        server_id: 1,
+                        model: "main".into(),
+                    },
+                    settings: ModelSettings {
+                        context_limit: Some(4096),
+                        max_output_tokens: Some(256),
+                        sampling: std::collections::BTreeMap::from([(
+                            "temperature".into(),
+                            serde_json::json!(0.2),
+                        )]),
+                        ..Default::default()
+                    },
+                });
+            state.fake.detections.borrow_mut().insert(
+                (1, "main".into()),
+                ModelDetection {
+                    context_limit: Some(8192),
+                    max_output_tokens: Some(1024),
+                    sampling: std::collections::BTreeMap::from([(
+                        "temperature".into(),
+                        serde_json::json!(0.8),
+                    )]),
+                    capabilities: vec!["completion".into(), "tools".into()],
+                    ..Default::default()
+                },
+            );
+            let open = RwSignal::new(true);
+            view! { <Show when=move || open.get()><ModelSetupWizard on_close=Callback::new(move |()| open.set(false)) /></Show> }
+        });
+        settle().await;
+        mounted.click_text("Next: server");
+        settle().await;
+        mounted.click_text("Discover models");
+        settle().await;
+        let context: web_sys::HtmlInputElement = mounted
+            .element(".model-settings-editor label:nth-of-type(1) input")
+            .unchecked_into();
+        let output: web_sys::HtmlInputElement = mounted
+            .element(".model-settings-editor label:nth-of-type(2) input")
+            .unchecked_into();
+        let temperature: web_sys::HtmlInputElement = mounted
+            .element(".model-settings-editor label:nth-of-type(3) input")
+            .unchecked_into();
+        assert_eq!(
+            (context.value(), output.value(), temperature.value()),
+            ("4096".into(), "256".into(), "0.2".into())
+        );
+        mounted.click_text("Detect settings");
+        settle().await;
+        assert_eq!(
+            (context.value(), output.value(), temperature.value()),
+            ("8192".into(), "1024".into(), "0.8".into())
+        );
+        assert_eq!(
+            mounted.state.fake.model_setup.borrow().profiles[0]
+                .settings
+                .context_limit,
+            Some(4096)
+        );
+        mounted.click_text("Cancel");
+        settle().await;
+        assert!(mounted.root.query_selector(".modal").unwrap().is_none());
+        assert_eq!(
+            mounted.state.fake.model_setup.borrow().profiles[0]
+                .settings
+                .context_limit,
+            Some(4096)
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn model_test_plain_chat_fallback_is_saved_only_for_the_tested_model() {
+    use openwebide_frontend::components::model_wizard::ModelSetupWizard;
+    let mounted = mount_test(|state| {
+        state.seed_connection();
+        state.settings.begin_model_setup(Some(1));
+        *state.fake.models.borrow_mut() = vec![
+            ModelInfo { name: "one".into() },
+            ModelInfo { name: "two".into() },
+        ];
+        state
+            .fake
+            .test_results
+            .borrow_mut()
+            .push_back(Ok(openwebide_core::ModelTestResult {
+                notice: Some("Plain chat after Save".into()),
+                ..Default::default()
+            }));
+        let open = RwSignal::new(true);
+        view! { <Show when=move || open.get()><ModelSetupWizard on_close=Callback::new(move |()| open.set(false)) /></Show> }
+    });
+    settle().await;
+    mounted.click_text("Next: server");
+    settle().await;
+    mounted.click_text("Discover models");
+    settle().await;
+    mounted.click_text("Test model");
+    settle().await;
+    assert!(mounted.state.fake.model_setup.borrow().profiles.is_empty());
+    mounted.click_text("Save");
+    settle().await;
+    let setup = mounted.state.fake.model_setup.borrow();
+    let one = setup
+        .profiles
+        .iter()
+        .find(|profile| profile.selection.model == "one")
+        .unwrap();
+    let two = setup
+        .profiles
+        .iter()
+        .find(|profile| profile.selection.model == "two")
+        .unwrap();
+    assert_eq!(one.settings.tools, Some(false));
+    assert_eq!(one.settings.stream_tools, Some(false));
+    assert_eq!(two.settings.tools, Some(true));
 }

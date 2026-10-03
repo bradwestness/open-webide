@@ -59,6 +59,8 @@ pub struct FakeBackend {
     pub git_statuses: RefCell<VecDeque<Deferred<GitRepoStatus>>>,
     pub git_status_requests: RefCell<Vec<Option<i64>>>,
     pub model_setup: RefCell<openwebide_core::ModelSetup>,
+    pub detections: RefCell<BTreeMap<(i64, String), openwebide_core::ModelDetection>>,
+    pub test_results: RefCell<VecDeque<Result<openwebide_core::ModelTestResult, String>>>,
     pub server_settings: RefCell<BTreeMap<i64, openwebide_core::ServerSettings>>,
     pub endpoint_latency_ms: RefCell<i32>,
     pub project_results: RefCell<VecDeque<Deferred<Vec<Project>>>>,
@@ -178,12 +180,95 @@ impl Backend for FakeBackend {
             })
         })
     }
+    fn preview_server<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerDiscovery, String>> {
+        Box::pin(async move {
+            Ok(openwebide_core::ServerDiscovery {
+                base_url: probe.base_url.clone(),
+                kind: probe.kind,
+                models: self.list_models(probe.server_id.unwrap_or(0)).await?,
+                detections: Default::default(),
+                detection_errors: Default::default(),
+            })
+        })
+    }
+    fn save_model_setup<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+        profiles: &'a [openwebide_core::ModelProfile],
+    ) -> LocalBoxFuture<'a, Result<(Connection, openwebide_core::ModelSetup), String>> {
+        Box::pin(async move {
+            for profile in profiles {
+                profile.settings.validate()?;
+            }
+            let server = if let Some(id) = probe.server_id {
+                let mut server = self
+                    .connections
+                    .borrow()
+                    .iter()
+                    .find(|server| server.id == id)
+                    .cloned()
+                    .ok_or("Server not found")?;
+                server.kind = probe.kind;
+                server.base_url.clone_from(&probe.base_url);
+                self.update_connection(&server).await?
+            } else {
+                self.create_connection("Server", probe.kind, &probe.base_url, None, None)
+                    .await?
+            };
+            self.save_server_settings(server.id, &probe.transport)
+                .await?;
+            for profile in profiles {
+                let mut profile = profile.clone();
+                profile.selection.server_id = server.id;
+                self.save_model_profile(&profile).await?;
+            }
+            let defaults = openwebide_core::model_setup::review_defaults(
+                &self.model_setup.borrow().defaults,
+                server.id,
+                profiles,
+            );
+            let setup = self.save_model_defaults(&defaults).await?;
+            Ok((server, setup))
+        })
+    }
+    fn test_model<'a>(
+        &'a self,
+        _probe: &'a openwebide_core::ModelProbe,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelTestResult, String>> {
+        Box::pin(async {
+            if let Some(result) = self.test_results.borrow_mut().pop_front() {
+                return result;
+            }
+            Ok(openwebide_core::ModelTestResult {
+                structured_tools: true,
+                streamed_tools: true,
+                first_token_ms: Some(25),
+                tokens_per_second: Some(50.0),
+                ..Default::default()
+            })
+        })
+    }
+    fn preview_model<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelDetection, String>> {
+        self.detect_model(
+            probe.server_id.unwrap_or(0),
+            probe.model.as_deref().unwrap_or_default(),
+        )
+    }
     fn detect_model<'a>(
         &'a self,
-        _id: i64,
-        _model: &'a str,
+        id: i64,
+        model: &'a str,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelDetection, String>> {
-        Box::pin(async {
+        Box::pin(async move {
+            if let Some(detected) = self.detections.borrow().get(&(id, model.into())) {
+                return Ok(detected.clone());
+            }
             Ok(openwebide_core::ModelDetection {
                 context_limit: Some(8192),
                 source: "test server".into(),
@@ -202,6 +287,8 @@ impl Backend for FakeBackend {
                 base_url: base_url.into(),
                 kind: kind.unwrap_or(ProviderKind::Ollama),
                 models: self.models.borrow().clone(),
+                detections: Default::default(),
+                detection_errors: Default::default(),
             })
         })
     }
@@ -298,6 +385,9 @@ impl Backend for FakeBackend {
                     timeout_seconds: 300,
                     ..Default::default()
                 });
+            if let Some(preset) = update.preset {
+                item.preset = preset;
+            }
             if update.clear_api_key {
                 item.has_api_key = false;
             } else if update.api_key.is_some() {
@@ -387,6 +477,32 @@ impl Backend for FakeBackend {
                 method: "delete_connection",
             });
             self.connections.borrow_mut().retain(|item| item.id != id);
+            self.server_settings.borrow_mut().remove(&id);
+            let mut setup = self.model_setup.borrow_mut();
+            setup
+                .profiles
+                .retain(|profile| profile.selection.server_id != id);
+            if setup
+                .defaults
+                .primary
+                .as_ref()
+                .is_some_and(|selection| selection.server_id == id)
+            {
+                setup.defaults.primary = None;
+            }
+            if setup
+                .defaults
+                .fast
+                .as_ref()
+                .is_some_and(|selection| selection.server_id == id)
+            {
+                setup.defaults.fast = None;
+            }
+            for session in self.sessions.borrow_mut().iter_mut() {
+                if session.connection_id == Some(id) {
+                    session.connection_id = None;
+                }
+            }
             Ok(())
         })
     }
@@ -657,6 +773,23 @@ impl Backend for FakeBackend {
                 return Err(error);
             }
             self.projects.borrow_mut().retain(|item| item.id != id);
+            let sessions = self
+                .sessions
+                .borrow()
+                .iter()
+                .filter(|session| session.project_id == Some(id))
+                .map(|session| session.id)
+                .collect::<Vec<_>>();
+            for session in sessions {
+                self.sessions.borrow_mut().retain(|item| item.id != session);
+                self.messages.borrow_mut().remove(&session);
+            }
+            self.files
+                .borrow_mut()
+                .retain(|(project, _), _| *project != id);
+            self.directories
+                .borrow_mut()
+                .retain(|(project, _)| *project != id);
             self.persisted_edits
                 .borrow_mut()
                 .retain(|(project, _), _| *project != id);
@@ -999,6 +1132,7 @@ impl Backend for FakeBackend {
                 method: "delete_session",
             });
             self.sessions.borrow_mut().retain(|item| item.id != id);
+            self.messages.borrow_mut().remove(&id);
             Ok(())
         })
     }

@@ -7,29 +7,6 @@ theme and prompt history, and frontend performance & polish — moved to [CHANGE
 
 ## Next
 
-### Model setup follow-ups
-
-The rerunnable provider → URL/auth → discovery/customization wizard is shipped.
-Remaining setup work uses the same shared facade and thin adapters:
-
-- Offer server presets that choose the initial detection probe.
-- Extend context detection to LiteLLM `/model/info` (`max_input_tokens`) and
-  OpenRouter `/models` (`context_length`).
-- Run discovery automatically on first use (manual discovery supports both hosts); identify
-  server versions and prompt for credentials when a discovered server returns 401.
-  Select sensible primary and fast defaults when nothing is configured.
-- Extend model details with default sampling, embedding/FIM capabilities, CPU
-  spill information and provider tokenization. Surface size, quantization and
-  loaded state, hide irrelevant capability toggles, and exclude embedding-only
-  models from the chat picker.
-- Add an optional **Test model** action for structured/streamed tool calls,
-  time to first token and tokens/sec. When a model rejects tools, fall back to
-  plain chat with a notice and remember that capability per server + model.
-- Extend the discovery review with field-level current → detected selection and
-  Apply selected / Apply all / Dismiss; manually configured values are unchecked
-  by default. The wizard currently fills unset values and preserves overrides.
-- Detect project type to suggest the default `/test` command and linters.
-
 ### Ephemeral chat without a project
 
 With no project open the composer is disabled today ("Open a project to start a
@@ -58,39 +35,22 @@ SSH config. Make it work there without private keys ever entering the container:
 - README: git over SSH for native vs Docker, plus HTTPS with a credential helper or
   token as the alternative.
 
-### Follow-ups from the hardening sequence
+### Remaining manual verification
 
-Small items the review rounds left open, plus the manual checks nobody has run yet.
+The model setup and code hardening follow-ups are implemented. Native and browser
+contracts cover both modes, failures, stale results and fallbacks. Docker checks
+cover authenticated WebSocket PTYs, real-model streaming, remote file writes,
+host-owned Git workspaces, supervisor shutdown and bridge-disabled SSE fallback.
 
-- **Bridge process cleanup:** kill detached PTY sessions after an idle timeout (a lost
-  `Kill` after logout or on a dying socket otherwise leaves a shell until bridge restart);
-  SIGHUP first for PTY sessions, SIGKILL after a grace period (on bash hosts a closed
-  dock or bridge shutdown leaves the shell's background jobs running); shutdown should
-  honour the guard's delayed SIGKILL. Windows code paths have never been compiled.
-- **Bridge HTTP edges:** no body-read / response-write timeout (a stalled client holds
-  a connection permit); HTTP/1.0 `keep-alive` clients bypass `Connection: close`;
-  half-closing clients get no response; the 16 MiB WebSocket message limit is untested;
-  `respond` copies every body; unbounded fallback error-body length in
-  `parse_bridge_response`.
-- **Frontend:** the terminal buffer doesn't cap a single unterminated line; the
-  composer's keydown ignores IME composition (`isComposing`); rejecting a background
-  edit restored from a backup doesn't restore the editor; `/model` with no argument
-  doesn't mark the active model and `/model default` doesn't reset the override;
-  remaining model-picker polish.
-- **Providers:** base URLs with a query string or fragment break endpoint joining.
-- **Tests:** missing-header rejection on register/login/logout; the
-  `get_or_create_secret` race; a valid-token case in the backend expiry test;
-  empty search query → 400; component-test helper `click_text` matches `class_name`
-  exactly; fake-backend deletes don't cascade; `cargo test -p openwebide-frontend`
-  without `--lib` doesn't build natively.
-- **Bundle:** `data-wasm-opt="z"` cut the raw WASM ~3% but gzip only ~0.2% and cold
-  load didn't improve — keep or revert.
-- **Manual verification pass:** first-paint theme and both themes visually; the
-  terminal against a real PTY (colours, `\r` progress, dock hide/show, cwd); streaming
-  and reconnect against a real model; resume after a mid-run reload with a slow model;
-  pending edits across two browsers; the Docker image end to end (browser terminal, git
-  panel, WebSocket chat with no SSE, `OPENWEBIDE_BRIDGE=0` fallback); a phone on the
-  LAN; podman/systemd; editor IME, paste and caret behaviour.
+The following checks still require hands-on device or environment testing:
+
+- First-paint theme and both themes visually; terminal dock hide/show.
+- Resume after a mid-run reload with a slow model; pending edits across two browsers.
+- Docker browser terminal and Git panel interactions.
+- A phone on the LAN; podman/systemd.
+- Editor IME composition, paste and caret behaviour with a real input method.
+- Windows runtime process cleanup. The Windows adapter compiles without TLS locally;
+  the Windows CI job checks the full TLS build.
 
 ### File tree: context menus
 

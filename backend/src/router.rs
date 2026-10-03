@@ -61,6 +61,10 @@ enum Route {
     ChatTools,
     ModelComplete,
     ModelTokens,
+    PreviewServer,
+    PreviewModel,
+    TestModel,
+    SaveModelSetup,
     WebSearch,
     WebFetch,
     FilesGet,
@@ -149,6 +153,10 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("POST", ["chat"]) => Some(Route::Chat),
         ("POST", ["models", "complete"]) => Some(Route::ModelComplete),
         ("POST", ["models", "tokens"]) => Some(Route::ModelTokens),
+        ("POST", ["model-setup", "save"]) => Some(Route::SaveModelSetup),
+        ("POST", ["models", "preview"]) => Some(Route::PreviewServer),
+        ("POST", ["models", "preview", "test"]) => Some(Route::TestModel),
+        ("POST", ["models", "preview", "detect"]) => Some(Route::PreviewModel),
         ("POST", ["chat-tools"]) => Some(Route::ChatTools),
         ("GET", ["web", "search"]) => Some(Route::WebSearch),
         ("GET", ["web", "fetch"]) => Some(Route::WebFetch),
@@ -347,6 +355,14 @@ pub async fn route(req: Request) -> JsonResp {
             api::chat::model_context(req, &state, user).await
         }
         (Some(Route::Chat), Some(user)) => api::chat::chat(req, &state, user).await,
+        (Some(Route::PreviewServer), Some(_)) => {
+            api::model_setup::preview(req, &state, false).await
+        }
+        (Some(Route::SaveModelSetup), Some(user)) => {
+            api::model_setup::save_review(req, &state, user).await
+        }
+        (Some(Route::TestModel), Some(_)) => api::model_setup::test_model(req, &state).await,
+        (Some(Route::PreviewModel), Some(_)) => api::model_setup::preview(req, &state, true).await,
         (Some(Route::ModelComplete), Some(user)) => {
             api::model_operations::route(req, &state, user, false).await
         }
@@ -456,6 +472,8 @@ mod tests {
                 "/api/settings",
                 "/api/health",
                 "/api/auth/login",
+                "/api/auth/register",
+                "/api/auth/logout",
                 "/api/unknown",
             ] {
                 if method == "GET" && path == "/api/theme.js" {
@@ -467,6 +485,9 @@ mod tests {
         headers.insert("x-openwebide", "1".parse().unwrap());
         assert!(csrf_allowed("POST", "/api/theme.js", &headers));
         assert!(csrf_allowed("GET", "/api/settings", &headers));
+        for path in ["/api/auth/register", "/api/auth/login", "/api/auth/logout"] {
+            assert!(csrf_allowed("POST", path, &headers));
+        }
     }
 
     #[test]

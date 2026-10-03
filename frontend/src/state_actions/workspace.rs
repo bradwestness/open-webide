@@ -119,6 +119,41 @@ impl WorkspaceActions {
 
         super::tree::watch_tree(projects, workspace, auth, workspace_for, refresh_git);
 
+        let tooling_generation = StoredValue::new(0_u64);
+        Effect::new(move |_| {
+            let project_id = active_project.get();
+            let entries = workspace.entries.with(|entries| entries.get("").cloned());
+            let epoch = auth.generation.get();
+            projects.local_handles.track();
+            tooling_generation.update_value(|value| *value += 1);
+            let generation = tooling_generation.get_value();
+            if let (Some(id), Some(entries), Some(ws)) = (
+                project_id,
+                entries,
+                project_id.and_then(|id| workspace_for.run(id)),
+            ) {
+                spawn_local(async move {
+                    let tooling = crate::project_setup::from_entries(&ws, &entries)
+                        .await
+                        .ok()
+                        .flatten();
+                    if tooling_generation.try_get_value() != Some(generation)
+                        || auth.generation.try_get_untracked() != Some(epoch)
+                        || active_project.try_get_untracked() != Some(Some(id))
+                    {
+                        return;
+                    }
+                    projects.tooling.update(|tools| {
+                        if let Some(tooling) = tooling {
+                            tools.insert(id, tooling);
+                        } else {
+                            tools.remove(&id);
+                        }
+                    });
+                });
+            }
+        });
+
         let load_dir = Callback::new(move |(project_id, dir): (i64, String)| {
             let generation = auth.generation.get_untracked();
             spawn_local(async move {
@@ -423,11 +458,26 @@ impl WorkspaceActions {
             let agent_writes_before = workspace
                 .agent_writes
                 .with_untracked(|writes| writes.get(&key).copied().unwrap_or_default());
-            let editor_before = (
-                workspace.open_file.get_untracked(),
-                workspace.content.get_untracked(),
-                workspace.dirty.get_untracked(),
-            );
+            let editor_before = if active_project.get_untracked() == Some(project_id) {
+                (
+                    workspace.open_file.get_untracked(),
+                    workspace.content.get_untracked(),
+                    workspace.dirty.get_untracked(),
+                )
+            } else {
+                workspace.snapshots.with_untracked(|snapshots| {
+                    snapshots
+                        .get(&project_id)
+                        .map(|snapshot| {
+                            (
+                                snapshot.open_file.clone(),
+                                snapshot.content.clone(),
+                                snapshot.dirty,
+                            )
+                        })
+                        .unwrap_or_default()
+                })
+            };
             let auth_generation = auth.generation.get_untracked();
             let epoch = workspace.pending_epoch.get_untracked();
             ui.clear_toast();
@@ -443,6 +493,7 @@ impl WorkspaceActions {
                     return;
                 }
                 let action = crate::pending::reject_action(&edit.diff);
+                let mut restored_content = None;
                 let result = async {
                     if decision == EditDecision::Rejected {
                         let ws = workspace_for.run(project_id).ok_or_else(|| {
@@ -471,6 +522,7 @@ impl WorkspaceActions {
                             }
                             crate::pending::RejectAction::RestoreFromBackup(backup) => {
                                 ws.copy(backup, &path).await?;
+                                restored_content = ws.read_lossy(&path).await.ok();
                             }
                             crate::pending::RejectAction::Delete => {
                                 // A retry after a successful delete may find the file already absent.
@@ -523,7 +575,13 @@ impl WorkspaceActions {
                                 crate::pending::RejectAction::Restore(previous) => {
                                     snapshot.content.clone_from(previous);
                                 }
-                                crate::pending::RejectAction::RestoreFromBackup(_) => {}
+                                crate::pending::RejectAction::RestoreFromBackup(_) => {
+                                    if let Some(content) = &restored_content {
+                                        snapshot.content.clone_from(content);
+                                    } else {
+                                        snapshot.open_file = None;
+                                    }
+                                }
                                 crate::pending::RejectAction::Delete => snapshot.open_file = None,
                                 crate::pending::RejectAction::Unavailable => unreachable!(),
                             }
@@ -535,14 +593,6 @@ impl WorkspaceActions {
                         let mut snapshot = workspace.active_snapshot();
                         if transition(&mut snapshot) {
                             workspace.content.set(snapshot.content);
-                            if decision == EditDecision::Rejected
-                                && matches!(
-                                    action,
-                                    crate::pending::RejectAction::RestoreFromBackup(_)
-                                )
-                            {
-                                workspace.open_file.set(None);
-                            }
                             workspace.open_file.set(snapshot.open_file);
                             workspace.dirty.set(snapshot.dirty);
                             load_dir.run((project_id, parent_dir(&path)));

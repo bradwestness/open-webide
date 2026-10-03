@@ -52,6 +52,7 @@ pub enum HttpError {
 pub fn builder(limits: &Limits) -> http1::Builder {
     let mut builder = http1::Builder::new();
     builder
+        .half_close(true)
         .timer(TokioTimer::new())
         .header_read_timeout(limits.head_timeout)
         .max_buf_size(limits.max_head);
@@ -60,16 +61,20 @@ pub fn builder(limits: &Limits) -> http1::Builder {
 
 /// Read a request body up to `max` bytes.
 pub async fn read_body(body: Incoming, max: usize) -> Result<Bytes, HttpError> {
-    let collected = Limited::new(body, max).collect().await.map_err(|err| {
-        if err
-            .downcast_ref::<http_body_util::LengthLimitError>()
-            .is_some()
-        {
-            HttpError::TooLarge
-        } else {
-            HttpError::BadRequest(err.to_string())
-        }
-    })?;
+    let collected =
+        tokio::time::timeout(Duration::from_secs(30), Limited::new(body, max).collect())
+            .await
+            .map_err(|_| HttpError::BadRequest("Request body timed out.".into()))?
+            .map_err(|err| {
+                if err
+                    .downcast_ref::<http_body_util::LengthLimitError>()
+                    .is_some()
+                {
+                    HttpError::TooLarge
+                } else {
+                    HttpError::BadRequest(err.to_string())
+                }
+            })?;
     Ok(collected.to_bytes())
 }
 
@@ -84,7 +89,7 @@ pub async fn read_json<T: DeserializeOwned>(body: Incoming, max: usize) -> Resul
 /// `allowed_origin` is set.
 pub fn respond(
     status: StatusCode,
-    json: &str,
+    json: impl Into<Bytes>,
     allowed_origin: Option<&str>,
 ) -> Response<Full<Bytes>> {
     let mut builder = Response::builder()
@@ -97,6 +102,85 @@ pub fn respond(
             .header("vary", "Origin");
     }
     builder
-        .body(Full::new(Bytes::from(json.to_string())))
+        .body(Full::new(json.into()))
         .expect("static headers and JSON body always produce a valid response")
+}
+
+/// Bound stalled response writes without limiting command execution or WebSocket lifetime.
+pub(super) struct WriteTimeout<T> {
+    inner: T,
+    timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+impl<T> WriteTimeout<T> {
+    pub fn new(inner: T) -> Self {
+        Self { inner, timer: None }
+    }
+    fn finish<R>(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        result: std::task::Poll<std::io::Result<R>>,
+    ) -> std::task::Poll<std::io::Result<R>> {
+        use std::future::Future;
+        if result.is_ready() {
+            self.timer = None;
+            return result;
+        }
+        let timer = self
+            .timer
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(Duration::from_secs(30))));
+        if timer.as_mut().poll(cx).is_ready() {
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Response write timed out.",
+            )));
+        }
+        result
+    }
+}
+impl<T: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for WriteTimeout<T> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for WriteTimeout<T> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let result = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        self.finish(cx, result)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let result = std::pin::Pin::new(&mut self.inner).poll_flush(cx);
+        self.finish(cx, result)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let result = std::pin::Pin::new(&mut self.inner).poll_shutdown(cx);
+        self.finish(cx, result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_response_write_times_out_without_limiting_idle_reads() {
+        let (writer, _reader) = tokio::io::duplex(1);
+        let mut writer = WriteTimeout::new(writer);
+        let error = writer.write_all(b"ab").await.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
 }

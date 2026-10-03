@@ -399,3 +399,43 @@ async fn tree_refresh_pauses_hidden_tabs_and_cancels_stale_requests() {
     drop(mounted);
     assert_eq!(refreshTimerCount(&timers.0), 0);
 }
+
+#[wasm_bindgen_test]
+async fn project_tooling_uses_the_same_contract_in_both_modes() {
+    use openwebide_frontend::{project_setup, workspace::Workspace};
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        editor_view(state)
+    });
+    for (manifest, command, language) in [
+        ("Cargo.toml", "cargo test", "Rust"),
+        ("go.mod", "go test ./...", "Go"),
+        ("pyproject.toml", "python -m pytest", "Python"),
+        ("Example.SLNX", "dotnet test", ".NET"),
+    ] {
+        mounted.state.fake.files.borrow_mut().clear();
+        mounted
+            .state
+            .fake
+            .files
+            .borrow_mut()
+            .insert((1, manifest.into()), String::new());
+        let tree = localTree();
+        localEntry(&tree, manifest, "file");
+        for workspace in [
+            Workspace::Remote {
+                api: mounted.state.api,
+                project_id: 1,
+            },
+            Workspace::Local {
+                handle: localRoot(&tree).unchecked_into(),
+            },
+        ] {
+            let tools = project_setup::detect(&workspace).await.unwrap().unwrap();
+            assert_eq!(tools.test_command(""), command);
+            assert_eq!(tools.language, language);
+            assert!(!tools.linters.is_empty());
+            assert!(tools.test_command("quoted ' filter").contains("'"));
+        }
+    }
+}

@@ -138,10 +138,6 @@ pub fn Sidebar(
             <div class="sidebar-section">
                 <div class="section-header">
                     <h2>"Servers"</h2>
-                    <button class="icon-btn" title="Model configuration" on:click=move |_| {
-                        settings.model_setup_server.set(None);
-                        settings.show_model_setup.set(true);
-                    }>"⚙"</button>
                     <button
                         class="icon-btn"
                         title="New server"
@@ -165,10 +161,6 @@ pub fn Sidebar(
                                 <span class="conn-name">{name}</span>
                                 <span class="conn-kind">{kind.display_name()}</span>
                                 <span class="conn-actions">
-                                    <button class="icon-btn" title="Configure models" on:click=move |_| {
-                                        settings.model_setup_server.set(Some(id));
-                                        settings.show_model_setup.set(true);
-                                    }>"⚙"</button>
                                     <button
                                         class="icon-btn"
                                         title="Edit"

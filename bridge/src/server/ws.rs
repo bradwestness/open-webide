@@ -829,7 +829,11 @@ impl Connection {
         match crate::exec::proc::parse_signal(signal.as_deref()) {
             Ok(sig) => {
                 if let Some(sess) = sessions.get(&id) {
-                    sess.try_kill(sig);
+                    sess.try_kill(if sess.pty && signal.is_none() {
+                        crate::exec::proc::Signal::Hup
+                    } else {
+                        sig
+                    });
                 }
             }
             Err(message) => {

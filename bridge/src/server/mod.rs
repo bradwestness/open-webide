@@ -233,16 +233,26 @@ pub async fn run_server_until(
         loop {
             interval.tick().await;
             reap_sessions.reap(session_ttl);
+            reap_sessions.reap_detached(Duration::from_secs(15 * 60));
             reap_runs.reap();
         }
     });
 
-    let accept = tokio::spawn(run_accept_loop(listener, config, session_manager.clone()));
+    let runs = config.runs.clone();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let accept = tokio::spawn(run_accept_loop(
+        listener,
+        config,
+        session_manager.clone(),
+        stopped,
+    ));
 
     shutdown.await;
 
     reaper.abort();
-    accept.abort();
+    let _ = stop.send(());
+    let _ = accept.await;
+    runs.shutdown().await;
     session_manager.kill_all().await;
 }
 
@@ -264,35 +274,40 @@ async fn run_accept_loop<A: Accept>(
     acceptor: A,
     config: ServerConfig,
     session_manager: SessionManager,
+    mut stop: tokio::sync::oneshot::Receiver<()>,
 ) {
+    let mut connections = tokio::task::JoinSet::new();
     let semaphore = Arc::new(Semaphore::new(config.limits.max_connections));
     let mut backoff = Duration::from_millis(10);
     const MAX_BACKOFF: Duration = Duration::from_secs(1);
 
     loop {
-        let permit = semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore is never closed");
-
-        match acceptor.accept().await {
+        while connections.try_join_next().is_some() {}
+        let (permit, accepted) = tokio::select! {
+            _ = &mut stop => break,
+            result = async {
+                let permit = semaphore.clone().acquire_owned().await.expect("semaphore is never closed");
+                (permit, acceptor.accept().await)
+            } => result,
+        };
+        match accepted {
             Ok((stream, addr)) => {
                 backoff = Duration::from_millis(10);
                 let mgr = session_manager.clone();
                 let cfg = config.clone();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     handle_connection(stream, addr, mgr, cfg, permit).await;
                 });
             }
             Err(err) => {
                 tracing::warn!(error = %err, "accept failed");
                 drop(permit);
-                tokio::time::sleep(backoff).await;
+                tokio::select! { () = tokio::time::sleep(backoff) => {}, _ = &mut stop => break }
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
         }
     }
+    connections.shutdown().await;
 }
 
 /// Holds the accept-loop's connection permit until either this HTTP exchange finishes or, for
@@ -309,18 +324,36 @@ async fn handle_connection(
     config: ServerConfig,
     permit: OwnedSemaphorePermit,
 ) {
-    let io = TokioIo::new(stream);
+    let io = TokioIo::new(http::WriteTimeout::new(stream));
     let limits = config.limits;
     let permit_cell: PermitCell = Arc::new(Mutex::new(Some(permit)));
+    let close = Arc::new(tokio::sync::Notify::new());
+    let response_close = close.clone();
     let service = service_fn(move |req| {
         let sessions = sessions.clone();
         let config = config.clone();
         let permit_cell = permit_cell.clone();
-        async move { routes::route(req, addr, sessions, config, permit_cell).await }
+        let close = response_close.clone();
+        async move {
+            let response = routes::route(req, addr, sessions, config, permit_cell).await;
+            if response
+                .as_ref()
+                .is_ok_and(|response| response.status() != hyper::StatusCode::SWITCHING_PROTOCOLS)
+            {
+                close.notify_one();
+            }
+            response
+        }
     });
-
-    let _ = builder(&limits)
+    let connection = builder(&limits)
         .serve_connection(io, service)
-        .with_upgrades()
-        .await;
+        .with_upgrades();
+    tokio::pin!(connection);
+    tokio::select! {
+        _ = &mut connection => {},
+        () = close.notified() => {
+            connection.as_mut().graceful_shutdown();
+            let _ = connection.await;
+        }
+    }
 }

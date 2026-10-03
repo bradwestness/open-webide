@@ -26,6 +26,7 @@ pub mod project_git;
 pub mod project_host;
 #[cfg(target_arch = "wasm32")]
 pub mod project_runs;
+pub mod project_setup;
 pub mod sse;
 pub mod state;
 #[cfg(target_arch = "wasm32")]

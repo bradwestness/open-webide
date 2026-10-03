@@ -252,6 +252,35 @@ impl BackendApi {
         .await
     }
 
+    pub async fn preview_server(
+        &self,
+        probe: &openwebide_core::ModelProbe,
+    ) -> Result<openwebide_core::ServerDiscovery, String> {
+        self.post("/models/preview", probe).await
+    }
+    pub async fn save_model_setup(
+        &self,
+        probe: &openwebide_core::ModelProbe,
+        profiles: &[openwebide_core::ModelProfile],
+    ) -> Result<(Connection, openwebide_core::ModelSetup), String> {
+        self.post(
+            "/model-setup/save",
+            &serde_json::json!({"probe":probe,"profiles":profiles}),
+        )
+        .await
+    }
+    pub async fn test_model(
+        &self,
+        probe: &openwebide_core::ModelProbe,
+    ) -> Result<openwebide_core::ModelTestResult, String> {
+        self.post("/models/preview/test", probe).await
+    }
+    pub async fn preview_model(
+        &self,
+        probe: &openwebide_core::ModelProbe,
+    ) -> Result<openwebide_core::ModelDetection, String> {
+        self.post("/models/preview/detect", probe).await
+    }
     pub async fn detect_model(
         &self,
         id: i64,

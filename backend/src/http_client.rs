@@ -8,7 +8,9 @@ use bytes::Bytes;
 use futures::Stream;
 use http_body_util::BodyExt;
 use openwebide_llm::{HttpClient, ProviderError};
-use spin_sdk::http::{self, Response};
+#[cfg(target_arch = "wasm32")]
+use spin_sdk::http;
+use spin_sdk::http::Response;
 
 /// Outbound HTTP client backed by Spin's WASI HTTP handler.
 #[derive(Clone, Default)]
@@ -20,6 +22,7 @@ impl SpinHttpClient {
         self.transport = transport;
         self
     }
+    #[cfg(target_arch = "wasm32")]
     async fn send(&self, method: &str, url: &str, body: Bytes) -> Result<Response, ProviderError> {
         let mut builder = http::Request::builder()
             .method(method)
@@ -48,6 +51,17 @@ impl SpinHttpClient {
                 "Model server request timed out.".into(),
             )),
         }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn send(
+        &self,
+        _method: &str,
+        _url: &str,
+        _body: Bytes,
+    ) -> Result<Response, ProviderError> {
+        Err(ProviderError::NotImplemented(
+            "Spin HTTP requires a WASI host.".into(),
+        ))
     }
     fn payload(&self, url: &str, body: &serde_json::Value) -> Result<Bytes, ProviderError> {
         let mut body = body.clone();

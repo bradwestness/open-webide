@@ -25,6 +25,7 @@ pub struct ModelSettings {
     pub sampling: BTreeMap<String, serde_json::Value>,
     pub thinking: Option<bool>,
     pub tools: Option<bool>,
+    pub stream_tools: Option<bool>,
     pub fast: Option<ModelSelection>,
     /// None uses 85%; zero disables compaction.
     pub auto_compact_threshold: Option<u8>,
@@ -99,10 +100,45 @@ impl ModelSetup {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerPreset {
+    #[default]
+    Auto,
+    Ollama,
+    LlamaCpp,
+    LmStudio,
+    Vllm,
+    LiteLlm,
+    OpenRouter,
+    SgLang,
+    KoboldCpp,
+}
+impl ServerPreset {
+    pub const fn kind(self) -> crate::ProviderKind {
+        match self {
+            Self::Ollama => crate::ProviderKind::Ollama,
+            _ => crate::ProviderKind::LlamaCpp,
+        }
+    }
+    pub const fn base_url(self) -> &'static str {
+        match self {
+            Self::Ollama => "http://localhost:11434",
+            Self::LmStudio => "http://localhost:1234",
+            Self::LiteLlm => "http://localhost:4000",
+            Self::OpenRouter => "https://openrouter.ai/api/v1",
+            Self::KoboldCpp => "http://localhost:5001",
+            Self::Vllm | Self::SgLang => "http://localhost:8000",
+            _ => "http://localhost:8080",
+        }
+    }
+}
+
 /// Persisted server secrets. Never serialize this into a browser response.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerTransport {
+    pub preset: ServerPreset,
     pub api_key: Option<String>,
     pub headers: BTreeMap<String, String>,
     pub timeout_seconds: u32,
@@ -111,6 +147,7 @@ pub struct ServerTransport {
 impl Default for ServerTransport {
     fn default() -> Self {
         Self {
+            preset: ServerPreset::Auto,
             api_key: None,
             headers: BTreeMap::new(),
             timeout_seconds: 300,
@@ -118,6 +155,66 @@ impl Default for ServerTransport {
         }
     }
 }
+impl ServerTransport {
+    pub fn updated(&self, update: &ServerSettingsUpdate) -> Result<Self, String> {
+        let mut transport = self.clone();
+        if let Some(preset) = update.preset {
+            transport.preset = preset;
+        }
+        if update.clear_api_key {
+            transport.api_key = None;
+        } else if let Some(key) = &update.api_key {
+            if key.contains(['\r', '\n']) {
+                return Err("Invalid API key.".into());
+            }
+            transport.api_key = Some(key.clone());
+        }
+        if let Some(headers) = &update.headers {
+            for (name, value) in headers {
+                if name.is_empty()
+                    || !name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                    || value.contains(['\r', '\n'])
+                    || [
+                        "host",
+                        "authorization",
+                        "cookie",
+                        "content-length",
+                        "connection",
+                        "transfer-encoding",
+                    ]
+                    .contains(&name.to_ascii_lowercase().as_str())
+                {
+                    return Err(
+                        "Invalid extra header; use the API key field for authorization.".into(),
+                    );
+                }
+            }
+            transport.headers = headers.clone();
+        }
+        if let Some(timeout) = update.timeout_seconds {
+            if !(1..=3600).contains(&timeout) {
+                return Err("Timeout must be 1–3600 seconds.".into());
+            }
+            transport.timeout_seconds = timeout;
+        }
+        if let Some(keep_alive) = &update.keep_alive {
+            transport.keep_alive = (!keep_alive.trim().is_empty()).then(|| keep_alive.clone());
+        }
+        Ok(transport)
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ModelProbe {
+    pub server_id: Option<i64>,
+    pub kind: crate::ProviderKind,
+    pub base_url: String,
+    pub transport: ServerSettingsUpdate,
+    pub model: Option<String>,
+}
+
 impl std::fmt::Debug for ServerTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerTransport")
@@ -128,7 +225,9 @@ impl std::fmt::Debug for ServerTransport {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ServerSettings {
+    pub preset: ServerPreset,
     pub has_api_key: bool,
     /// Only non-secret header names are returned; values are never read back.
     pub header_names: Vec<String>,
@@ -139,6 +238,7 @@ pub struct ServerSettings {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerSettingsUpdate {
+    pub preset: Option<ServerPreset>,
     /// None preserves the stored key; clear_api_key explicitly removes it.
     pub api_key: Option<String>,
     pub clear_api_key: bool,
@@ -171,7 +271,13 @@ impl ModelRuntime {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ModelDetection {
+    pub max_output_tokens: Option<usize>,
+    pub sampling: BTreeMap<String, serde_json::Value>,
+    pub cpu_bytes: Option<u64>,
+    pub tokenizer: Option<String>,
+    pub server_version: Option<String>,
     pub context_limit: Option<usize>,
     pub source: String,
     pub capabilities: Vec<String>,
@@ -180,10 +286,54 @@ pub struct ModelDetection {
     pub loaded: Option<bool>,
 }
 impl ModelDetection {
+    pub fn chat_capable(&self) -> bool {
+        !self
+            .capabilities
+            .iter()
+            .any(|capability| capability == "embedding")
+            || self
+                .capabilities
+                .iter()
+                .any(|capability| capability == "completion")
+    }
+    pub fn details(&self) -> String {
+        let mut parts = vec![self.source.clone()];
+        if let Some(version) = &self.server_version {
+            parts.push(format!("server {version}"));
+        }
+        if let Some(size) = self.size_bytes {
+            parts.push(format!("{size} bytes"));
+        }
+        if let Some(cpu) = self.cpu_bytes {
+            parts.push(format!("{cpu} bytes on CPU"));
+        }
+        if let Some(quantization) = &self.quantization {
+            parts.push(quantization.clone());
+        }
+        if let Some(loaded) = self.loaded {
+            parts.push(if loaded { "loaded" } else { "not loaded" }.into());
+        }
+        parts.push(
+            self.tokenizer
+                .clone()
+                .unwrap_or_else(|| "request tokens estimated".into()),
+        );
+        if !self.capabilities.is_empty() {
+            parts.push(self.capabilities.join(", "));
+        }
+        parts.join(" · ")
+    }
     /// Detected defaults fill gaps; explicit server/model overrides always win.
     pub fn defaults_for(&self, current: &ModelSettings) -> ModelSettings {
         let mut settings = current.clone();
         settings.context_limit = settings.context_limit.or(self.context_limit);
+        settings.max_output_tokens = settings.max_output_tokens.or(self.max_output_tokens);
+        for (name, value) in &self.sampling {
+            settings
+                .sampling
+                .entry(name.clone())
+                .or_insert_with(|| value.clone());
+        }
         if !self.capabilities.is_empty() {
             settings.tools = settings.tools.or(Some(
                 self.capabilities
@@ -204,6 +354,10 @@ pub struct ServerDiscovery {
     pub base_url: String,
     pub kind: crate::ProviderKind,
     pub models: Vec<crate::ModelInfo>,
+    #[serde(default)]
+    pub detections: BTreeMap<String, ModelDetection>,
+    #[serde(default)]
+    pub detection_errors: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
@@ -318,5 +472,37 @@ mod tests {
             Some(32768)
         );
         assert_eq!(ModelDetection::default().defaults_for(&current), current);
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelTestResult {
+    pub structured_tools: bool,
+    pub streamed_tools: bool,
+    pub first_token_ms: Option<u64>,
+    pub tokens_per_second: Option<f64>,
+    pub estimated: bool,
+    pub notice: Option<String>,
+}
+
+/// Choose defaults from the reviewed ranking while retaining the user's existing choices.
+pub fn review_defaults(
+    current: &ModelDefaults,
+    server_id: i64,
+    profiles: &[ModelProfile],
+) -> ModelDefaults {
+    let selection = |profile: &ModelProfile| ModelSelection {
+        server_id,
+        model: profile.selection.model.clone(),
+    };
+    ModelDefaults {
+        primary: current
+            .primary
+            .clone()
+            .or_else(|| profiles.first().map(selection)),
+        fast: current
+            .fast
+            .clone()
+            .or_else(|| profiles.last().map(selection)),
     }
 }

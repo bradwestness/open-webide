@@ -148,6 +148,8 @@ pub fn spawn_pty(
     // process group directly, falling back to the portable-pty killer (a direct kill of the
     // immediate child only) when the pid is unavailable.
     let mut killer = child.clone_killer();
+    #[cfg(unix)]
+    let runtime = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name(format!("pty-kill-{id}"))
         .spawn(move || {
@@ -158,7 +160,12 @@ pub fn spawn_pty(
                     }
                     #[cfg(unix)]
                     Signal::Term | Signal::Hup | Signal::Kill => match pid {
-                        Some(pgid) => crate::exec::proc::signal_group(pgid, sig),
+                        Some(pgid) => {
+                            crate::exec::proc::signal_group(pgid, sig);
+                            if matches!(sig, Signal::Term | Signal::Hup) {
+                                crate::exec::proc::schedule_cleanup(&runtime, pgid);
+                            }
+                        }
                         None => {
                             let _ = killer.kill();
                         }

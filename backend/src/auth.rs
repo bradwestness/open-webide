@@ -280,8 +280,37 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_secret_initialization_reuses_one_database_value() {
+        futures::executor::block_on(async {
+            let state = AppState::new().await.unwrap();
+            let barrier = std::sync::Barrier::new(8);
+            let secrets = std::thread::scope(|scope| {
+                let tasks = (0..8)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            futures::executor::block_on(get_or_create_secret(&state)).unwrap()
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                tasks
+                    .into_iter()
+                    .map(|task| task.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            assert!(secrets.iter().all(|secret| secret == &secrets[0]));
+            assert_eq!(
+                state.store.get_setting(SECRET_KEY).await.unwrap(),
+                Some(secrets[0].clone())
+            );
+        });
+    }
+
+    #[test]
     fn verify_token_rejects_expired_token() {
         let secret = "test-secret";
+        let valid = openwebide_auth::sign_token_expires(secret, 7, 3_000, 2);
+        assert!(verify_token(secret, &valid, Some(2_000)).unwrap().is_some());
         let expired = openwebide_auth::sign_token_expires(secret, 7, 1_000, 2);
         assert!(matches!(
             verify_token(secret, &expired, Some(2_000)),

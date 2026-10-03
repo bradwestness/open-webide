@@ -47,6 +47,7 @@ pub(crate) async fn complete(
                 user_id,
                 connection.id,
                 connection.tool_stream_revision,
+                connection.model.as_deref(),
                 &memo,
             )
             .await;

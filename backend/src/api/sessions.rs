@@ -274,6 +274,7 @@ pub(crate) async fn send_session_message(
     let memo = ToolStreamMemo::new(plan.connection.tool_stream_unsupported);
     let connection_id = plan.connection.id;
     let tool_stream_revision = plan.connection.tool_stream_revision;
+    let memo_model = plan.connection.model.clone().unwrap_or_default();
     let provider = Provider::for_connection_with_memo(
         &plan.connection,
         SpinHttpClient::default().with_transport(plan.transport),
@@ -361,10 +362,15 @@ pub(crate) async fn send_session_message(
             move |event| {
                 let store = memo_store.clone();
                 let memo = memo.clone();
+                let model = memo_model.clone();
                 async move {
                     if memo.take_unrecorded()
                         && let Err(error) = store
-                            .set_tool_stream_unsupported(connection_id, tool_stream_revision)
+                            .set_model_tool_stream_unsupported(
+                                connection_id,
+                                &model,
+                                tool_stream_revision,
+                            )
                             .await
                     {
                         eprintln!("session {session_id}: set_tool_stream_unsupported: {error}");

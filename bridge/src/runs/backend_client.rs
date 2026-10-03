@@ -91,6 +91,7 @@ pub trait RunBackend: Send + Sync {
         user_id: i64,
         connection_id: i64,
         tool_stream_revision: i64,
+        model: Option<&str>,
     ) -> impl Future<Output = Result<(), String>> + Send;
     fn list_connections(
         &self,
@@ -322,13 +323,14 @@ impl RunBackend for BackendClient {
         user_id: i64,
         connection_id: i64,
         tool_stream_revision: i64,
+        model: Option<&str>,
     ) -> Result<(), String> {
         let _: Value = self
             .call(
                 user_id,
                 "POST",
                 &format!("/connections/{connection_id}/tool-stream-unsupported"),
-                json!({"tool_stream_revision": tool_stream_revision}),
+                json!({"tool_stream_revision": tool_stream_revision, "model": model}),
             )
             .await?;
         Ok(())
@@ -434,7 +436,10 @@ mod tests {
             "shared-secret".into(),
             ReqwestHttpClient::default(),
         );
-        client.set_tool_stream_unsupported(42, 7, 3).await.unwrap();
+        client
+            .set_tool_stream_unsupported(42, 7, 3, Some("main"))
+            .await
+            .unwrap();
         let request = captured.await.unwrap().to_ascii_lowercase();
         assert!(
             request.starts_with("post /api/connections/7/tool-stream-unsupported http/1.1\r\n")

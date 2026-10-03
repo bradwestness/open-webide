@@ -186,6 +186,24 @@ impl RunRegistry {
             })
             .collect()
     }
+    pub async fn shutdown(&self) {
+        let runs = self
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for run in &runs {
+            run.cancel.cancel();
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while runs.iter().any(|run| run.running.load(Ordering::SeqCst))
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
     pub fn reap(&self) {
         self.runs.lock().unwrap().retain(|_, run| {
             run.finished_at
@@ -416,6 +434,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
             let memo = provider.tool_stream_memo();
             let connection_id = plan.connection.id;
             let tool_stream_revision = plan.connection.tool_stream_revision;
+            let memo_model = plan.connection.model.clone();
             let gate = openwebide_agent::policy::PolicyGate {
                 manual: run.gate.clone(),
                 source: super::backend_client::ApprovalAdapter {
@@ -446,6 +465,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                         run.owner,
                         connection_id,
                         tool_stream_revision,
+                        memo_model.as_deref(),
                         memo,
                     )
                     .await;
@@ -462,11 +482,12 @@ pub(crate) async fn record_tool_stream_memo<B: RunBackend>(
     user_id: i64,
     connection_id: i64,
     tool_stream_revision: i64,
+    model: Option<&str>,
     memo: &openwebide_llm::ToolStreamMemo,
 ) {
     if memo.take_unrecorded()
         && let Err(error) = backend
-            .set_tool_stream_unsupported(user_id, connection_id, tool_stream_revision)
+            .set_tool_stream_unsupported(user_id, connection_id, tool_stream_revision, model)
             .await
     {
         tracing::warn!(%error, "failed to save streamed-tools memo");

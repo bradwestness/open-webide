@@ -1139,3 +1139,48 @@ async fn delayed_accept_preserves_editor_after_newer_revision_hydrates() {
         newer
     );
 }
+
+#[wasm_bindgen_test]
+async fn background_backup_rejection_restores_editor_without_overwriting_new_input() {
+    for intervening_edit in [false, true] {
+        let mounted = mount_diff(FileDiff {
+            path: "file.rs".into(),
+            old: None,
+            new: "v2".into(),
+            old_unavailable: true,
+            backup_path: Some("backup.rs".into()),
+        });
+        let (release, pending) = futures::channel::oneshot::channel();
+        mounted
+            .state
+            .fake
+            .resolution_results
+            .borrow_mut()
+            .push_back(pending);
+        settle().await;
+        mounted.click_text("✕ Reject");
+        settle().await;
+        mounted.click(".modal-footer .danger");
+        settle().await;
+        if intervening_edit {
+            mounted.state.workspace.content.set("newer draft".into());
+        }
+        mounted.state.workspace.switch_project(Some(1), 2);
+        mounted.state.workspace.content.set("other project".into());
+        release.send(Ok(())).unwrap();
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "other project"
+        );
+        mounted.state.workspace.switch_project(Some(2), 1);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            if intervening_edit {
+                "newer draft"
+            } else {
+                "original bytes"
+            }
+        );
+    }
+}

@@ -29,7 +29,10 @@ fn parse_bridge_response<T: DeserializeOwned>(status: u16, body: &[u8]) -> Resul
                     .map(ToString::to_string)
             })
             .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned());
-        return Err(BridgeError::Status(status, msg));
+        return Err(BridgeError::Status(
+            status,
+            msg.chars().take(1024).collect(),
+        ));
     }
     serde_json::from_slice::<T>(body).map_err(|e| BridgeError::Parse(e.to_string()))
 }

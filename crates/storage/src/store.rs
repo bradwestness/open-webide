@@ -2179,6 +2179,138 @@ mod tests {
     }
 
     #[test]
+    fn setup_save_is_atomic_when_transport_validation_fails() {
+        let store = test_store();
+        let user = test_user(&store, "setup", UserRole::User);
+        block_on(async {
+            let probe = openwebide_core::ModelProbe {
+                server_id: None,
+                kind: ProviderKind::Ollama,
+                base_url: "http://server".into(),
+                transport: openwebide_core::ServerSettingsUpdate {
+                    api_key: Some("secret".into()),
+                    timeout_seconds: Some(0),
+                    ..Default::default()
+                },
+                model: None,
+            };
+            let profiles = vec![openwebide_core::ModelProfile {
+                selection: openwebide_core::ModelSelection {
+                    server_id: 0,
+                    model: "main".into(),
+                },
+                settings: Default::default(),
+            }];
+            assert!(
+                store
+                    .save_model_setup(user, &probe, &profiles)
+                    .await
+                    .is_err()
+            );
+            assert!(store.list_connections().await.unwrap().is_empty());
+            assert!(store.model_setup(user).await.unwrap().profiles.is_empty());
+            let mut probe = probe;
+            probe.transport.timeout_seconds = Some(300);
+            let (server, setup) = store
+                .save_model_setup(user, &probe, &profiles)
+                .await
+                .unwrap();
+            assert_eq!(setup.defaults.primary.unwrap().server_id, server.id);
+            assert!(store.server_settings(server.id).await.unwrap().has_api_key);
+        });
+    }
+
+    #[test]
+    fn discovery_cache_and_stream_capabilities_are_scoped_and_reject_stale_servers() {
+        let store = test_store();
+        block_on(async {
+            let connection = store
+                .insert_connection(&NewConnection {
+                    name: "server".into(),
+                    kind: ProviderKind::Ollama,
+                    base_url: "http://old".into(),
+                    model: None,
+                    context_limit: None,
+                })
+                .await
+                .unwrap();
+            let detection = openwebide_core::ModelDetection {
+                context_limit: Some(8192),
+                ..Default::default()
+            };
+            store
+                .save_model_detection(&connection, "one", &detection)
+                .await
+                .unwrap();
+            store
+                .set_model_tool_stream_unsupported(
+                    connection.id,
+                    "one",
+                    connection.tool_stream_revision,
+                )
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .model_tool_stream_unsupported(&connection, "one")
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !store
+                    .model_tool_stream_unsupported(&connection, "two")
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                store.model_detection(&connection, "one").await.unwrap(),
+                Some(detection.clone())
+            );
+            assert_eq!(
+                store.model_detection(&connection, "two").await.unwrap(),
+                None
+            );
+            store
+                .save_server_settings(
+                    connection.id,
+                    &openwebide_core::ServerSettingsUpdate {
+                        preset: Some(openwebide_core::ServerPreset::LiteLlm),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let updated = store.get_connection(connection.id).await.unwrap();
+            assert_eq!(store.model_detection(&updated, "one").await.unwrap(), None);
+            assert!(
+                !store
+                    .model_tool_stream_unsupported(&updated, "one")
+                    .await
+                    .unwrap()
+            );
+            store
+                .save_model_detection(&connection, "one", &detection)
+                .await
+                .unwrap();
+            store
+                .set_model_tool_stream_unsupported(
+                    connection.id,
+                    "one",
+                    connection.tool_stream_revision,
+                )
+                .await
+                .unwrap();
+            assert_eq!(store.model_detection(&updated, "one").await.unwrap(), None);
+            assert!(
+                !store
+                    .model_tool_stream_unsupported(&updated, "one")
+                    .await
+                    .unwrap()
+            );
+        });
+    }
+
+    #[test]
     fn connection_crud() {
         let store = test_store();
         block_on(async {

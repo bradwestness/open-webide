@@ -356,7 +356,6 @@ pub fn App() -> impl IntoView {
                     on_set_bridge_url=on_set_bridge_url
                 />
             </Show>
-            <Show when=move || settings.show_model_setup.get()><crate::components::model_setup::ModelSetupDialog /></Show>
             <ConfirmDialog />
             <PromptDialog />
             <Show when=move || show_browser.get() fallback=|| ()>

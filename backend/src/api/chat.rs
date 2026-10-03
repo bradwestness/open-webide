@@ -18,7 +18,16 @@ pub(crate) async fn list_models(
             .with_transport(state.store.server_transport(connection.id).await?),
     );
     let models = provider.list_models().await?;
-    Ok(json_response(200, &models))
+    let detected = super::model_setup::discover_models(&state.store, &connection, &models).await?;
+    let chat_models = models
+        .into_iter()
+        .filter(|model| {
+            detected
+                .get(&model.name)
+                .is_none_or(openwebide_core::ModelDetection::chat_capable)
+        })
+        .collect::<Vec<_>>();
+    Ok(json_response(200, &chat_models))
 }
 
 pub(crate) async fn chat(
@@ -73,7 +82,11 @@ pub(crate) async fn chat_tools(
     if memo.take_unrecorded()
         && let Err(error) = state
             .store
-            .set_tool_stream_unsupported(connection.id, connection.tool_stream_revision)
+            .set_model_tool_stream_unsupported(
+                connection.id,
+                connection.model.as_deref().unwrap_or_default(),
+                connection.tool_stream_revision,
+            )
             .await
     {
         eprintln!(

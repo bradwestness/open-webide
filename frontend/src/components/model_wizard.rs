@@ -16,15 +16,22 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
     let url = RwSignal::new(state.conn_base_url.get_untracked());
     let token = RwSignal::new(String::new());
     let server_id = RwSignal::new(state.conn_edit_id.get_untracked());
+    let preset = RwSignal::new(openwebide_core::ServerPreset::Auto);
+    let options = RwSignal::new(Ok::<_, String>(
+        openwebide_core::ServerSettingsUpdate::default(),
+    ));
+    let pending = RwSignal::new(None::<openwebide_core::ModelProbe>);
     let models = RwSignal::new(Vec::<DiscoveredModel>::new());
     let drafts = RwSignal::new(std::collections::BTreeMap::<
         String,
         Result<openwebide_core::ModelSettings, String>,
     >::new());
     let busy = RwSignal::new(false);
+    let inflight = RwSignal::new(std::collections::BTreeMap::<String, bool>::new());
     let error = RwSignal::new(None::<String>);
     let generation = RwSignal::new(0_u64);
     let has_key = RwSignal::new(false);
+    let preset_edited = RwSignal::new(false);
     if let Some(id) = server_id.get_untracked() {
         let epoch = auth.generation.get_untracked();
         spawn_local(async move {
@@ -32,6 +39,9 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
                 && auth.generation.get_untracked() == epoch
             {
                 has_key.try_set(settings.has_api_key);
+                if preset_edited.try_get_untracked() == Some(false) {
+                    preset.try_set(settings.preset);
+                }
             }
         });
     }
@@ -43,51 +53,27 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
             auth.generation.try_get_untracked() == Some(epoch)
                 && generation.try_get_untracked() == Some(request)
         };
-        let existing = state.connections.with_untracked(|servers| {
-            servers
-                .iter()
-                .find(|server| Some(server.id) == server_id.get_untracked())
-                .cloned()
-        });
-        let kind = kind.get_untracked();
-        let url = url.get_untracked();
-        let secret = token.get_untracked();
+        let mut transport = match options.get_untracked() {
+            Ok(value) => value,
+            Err(message) => {
+                error.set(Some(message));
+                return;
+            }
+        };
+        transport.api_key = (!token.get_untracked().is_empty()).then(|| token.get_untracked());
+        transport.preset = Some(preset.get_untracked());
+        let probe = openwebide_core::ModelProbe {
+            server_id: server_id.get_untracked(),
+            kind: kind.get_untracked(),
+            base_url: url.get_untracked(),
+            transport,
+            model: None,
+        };
         busy.set(true);
         error.set(None);
         spawn_local(async move {
             let backend = api.with_value(Clone::clone);
-            let registered = move |server: openwebide_core::Connection| {
-                if !current() {
-                    return;
-                }
-                server_id.set(Some(server.id));
-                state.conn_edit_id.set(Some(server.id));
-                state.connections.update(|servers| {
-                    if let Some(existing) =
-                        servers.iter_mut().find(|existing| existing.id == server.id)
-                    {
-                        *existing = server;
-                    } else {
-                        servers.push(server);
-                    }
-                });
-            };
-            let result = match model_setup::connect(
-                &*backend, existing, kind, &url, &secret, current, registered,
-            )
-            .await
-            {
-                Ok(server) => {
-                    if current() {
-                        token.set(String::new());
-                        if !secret.is_empty() {
-                            has_key.set(true);
-                        }
-                    }
-                    model_setup::discover(&*backend, server.id, current).await
-                }
-                Err(error) => Err(error),
-            };
+            let result = model_setup::preview(&*backend, &probe, current).await;
             if !current() {
                 return;
             }
@@ -98,6 +84,7 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
                         .into(),
                 )),
                 Ok(found) => {
+                    pending.set(Some(probe));
                     models.set(found);
                     step.set(3);
                 }
@@ -146,14 +133,26 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
         busy.set(true);
         error.set(None);
         spawn_local(async move {
-            let result =
-                model_setup::apply_review(&*api.with_value(Clone::clone), &profiles, current).await;
+            let Some(probe) = pending.get_untracked() else {
+                busy.set(false);
+                return;
+            };
+            let backend = api.with_value(Clone::clone);
+            let result = model_setup::save_setup(&*backend, &probe, &profiles, current).await;
             if !current() {
                 return;
             }
             busy.set(false);
             match result {
-                Ok(setup) => {
+                Ok((server, setup)) => {
+                    state.connections.update(|servers| {
+                        if let Some(saved) = servers.iter_mut().find(|saved| saved.id == server.id)
+                        {
+                            *saved = server;
+                        } else {
+                            servers.push(server);
+                        }
+                    });
                     state.default_connection.set(
                         setup
                             .defaults
@@ -178,26 +177,42 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
                             <option value="ollama">"Ollama"</option><option value="llamacpp">"OpenAI-compatible (llama.cpp, LM Studio, vLLM…)"</option>
                         </select>
                     </label>
+                    <label class="setting-row"><span class="setting-label">"Server preset"</span><select class="form-input" prop:value=move || serde_json::to_string(&preset.get()).unwrap_or_default().trim_matches('"').to_string() on:change=move |event| {
+                        if let Ok(value) = serde_json::from_str::<openwebide_core::ServerPreset>(&format!("\"{}\"",event_target_value(&event))) {
+                            preset_edited.set(true); preset.set(value); if value != openwebide_core::ServerPreset::Auto { kind.set(value.kind()); url.set(value.base_url().into()); }
+                        }
+                    }>
+                        <option value="auto">"Detect automatically"</option><option value="ollama">"Ollama"</option><option value="llama_cpp">"llama.cpp"</option><option value="lm_studio">"LM Studio"</option><option value="vllm">"vLLM"</option><option value="lite_llm">"LiteLLM"</option><option value="open_router">"OpenRouter"</option><option value="sg_lang">"SGLang"</option><option value="kobold_cpp">"KoboldCpp"</option>
+                    </select></label>
                     <button class="btn send" on:click=move |_| { if url.get_untracked().is_empty() { url.set(if kind.get_untracked() == ProviderKind::Ollama { "http://localhost:11434" } else { "http://localhost:8080" }.into()); } step.set(2); }>"Next: server"</button>
                 </Show>
                 <Show when=move || step.get() == 2>
-                    <label class="setting-row"><span class="setting-label">"Server URL"</span><input class="form-input" type="url" prop:value=move || url.get() on:input=move |event| url.set(event_target_value(&event)) /></label>
-                    <label class="setting-row"><span class="setting-label">"Auth token (optional)"</span><input class="form-input" type="password" autocomplete="new-password" prop:value=move || token.get() on:input=move |event| token.set(event_target_value(&event)) /></label>
+                    <label class="setting-row"><span class="setting-label">"Server URL"</span><input class="form-input" type="url" disabled=move || busy.get() prop:value=move || url.get() on:input=move |event| url.set(event_target_value(&event)) /></label>
+                    <label class="setting-row"><span class="setting-label">"Auth token (optional)"</span><input class="form-input" type="password" disabled=move || busy.get() autocomplete="new-password" prop:value=move || token.get() on:input=move |event| token.set(event_target_value(&event)) /></label>
                     <p class="form-hint">{move || if has_key.get() { "A token is saved. Leave this blank to keep it." } else { "Leave the token blank for servers without authentication." }}</p>
+                    <super::model_setup::ServerOptions id=server_id.get_untracked() on_edit=Callback::new(move |value| options.set(value)) />
                     <div class="form-actions"><button class="btn" disabled=move || busy.get() on:click=move |_| step.set(1)>"Back"</button><button class="btn send" disabled=move || busy.get() on:click=discover>{move || if busy.get() { "Discovering models and settings…" } else { "Discover models" }}</button></div>
                 </Show>
                 <Show when=move || step.get() == 3>
-                    <p class="form-hint">"Review and customize detected settings. Existing overrides are preserved. Save the models you want to configure; you can run setup again at any time."</p>
+                    <p class="form-hint">"Review and customize detected settings. Existing overrides are preserved. Detect settings refreshes a model’s values. Changes are saved together when you choose Save."</p>
                     <For each=move || models.get() key=|model| (model.profile.selection.server_id, model.profile.selection.model.clone()) children=move |model| {
                         let selection = model.profile.selection.clone();
                         let model_name = selection.model.clone();
+                        let busy_model = model_name.clone();
+                        let chat_capable = model.detection.as_ref().is_none_or(openwebide_core::ModelDetection::chat_capable);
+                        let details = model.detection.as_ref().map(openwebide_core::ModelDetection::details).unwrap_or_default();
                         view! { <details open=true class="model-settings-editor"><summary>{selection.model.clone()}</summary>
-                            {model.error.map(|error| view! { <p class="form-error">{error}</p> })}
-                            <super::model_setup::ModelSettingsEditor selection=selection initial=Some(model.profile.settings) discovered=model.detection auto_detect=false on_edit=Callback::new(move |settings| drafts.update(|values| { values.insert(model_name.clone(), settings); })) />
+                            {if chat_capable {
+                                view! { <super::model_setup::ModelSettingsEditor selection=selection initial_error=model.error on_busy=Callback::new(move |busy| inflight.update(|values| { values.insert(busy_model.clone(), busy); })) initial=Some(model.profile.settings) discovered=model.detection auto_detect=false probe=pending.get_untracked() on_edit=Callback::new(move |settings| drafts.update(|values| { values.insert(model_name.clone(), settings); })) /> }.into_any()
+                            } else {
+                                view! { <p class="form-hint">"Embedding model — unavailable for chat."</p><p class="form-hint">{details}</p> }.into_any()
+                            }}
                         </details> }
+
                     } />
-                    <div class="form-actions"><button class="btn" disabled=move || busy.get() on:click=move |_| { models.set(vec![]); drafts.set(Default::default()); step.set(2); }>"Re-run discovery"</button><button class="btn send" disabled=move || busy.get() on:click=apply>"Apply settings"</button><button class="btn" disabled=move || busy.get() on:click=move |_| on_close.run(())>"Done"</button></div>
+                    <div class="form-actions"><button class="btn" disabled=move || busy.get() on:click=move |_| on_close.run(())>"Cancel"</button><button class="btn send" disabled=move || busy.get() || inflight.with(|values| values.values().any(|busy| *busy)) on:click=apply>"Save"</button></div>
                 </Show>
+                <Show when=move || step.get() != 3><button class="btn" disabled=move || busy.get() on:click=move |_| on_close.run(())>"Cancel"</button></Show>
                 <Show when=move || error.get().is_some()><p class="form-error" role="alert">{move || error.get()}</p></Show>
             </div>
         </super::modal::Modal>

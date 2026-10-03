@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 

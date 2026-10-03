@@ -4,9 +4,7 @@ use crate::{
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use openwebide_core::{
-    ModelDefaults, ModelProfile, ModelSelection, ModelSettings, ServerSettingsUpdate,
-};
+use openwebide_core::{ModelDefaults, ModelSelection, ModelSettings, ServerSettingsUpdate};
 
 #[derive(Clone, Debug)]
 struct ModelOption {
@@ -64,22 +62,6 @@ fn TextSetting(
 }
 
 #[component]
-pub fn ModelSetupDialog() -> impl IntoView {
-    let settings = expect_context::<SettingsState>();
-    let server = settings.model_setup_server.get_untracked();
-    view! {
-        <super::modal::Modal title=Signal::derive(|| "Model configuration".to_string()) on_close=Callback::new(move |()| settings.show_model_setup.set(false))>
-            <div class="modal-body">
-                <button class="btn" on:click=move |_| {
-                    settings.begin_model_setup(server);
-                }>"Run setup wizard"</button>
-                <ModelSetupPanel server=server />
-            </div>
-        </super::modal::Modal>
-    }
-}
-
-#[component]
 pub fn ModelSetupPanel(
     #[prop(default = false)] defaults_only: bool,
     #[prop(optional_no_strip)] server: Option<i64>,
@@ -90,7 +72,6 @@ pub fn ModelSetupPanel(
     let choices = RwSignal::new(Vec::<ModelOption>::new());
     let primary = RwSignal::new(settings.model_setup.get_untracked().defaults.primary);
     let fast = RwSignal::new(settings.model_setup.get_untracked().defaults.fast);
-    let target = RwSignal::new(Option::<ModelSelection>::None);
     let busy = RwSignal::new(false);
     let loading = RwSignal::new(false);
     let error = RwSignal::new(Option::<String>::None);
@@ -164,9 +145,6 @@ pub fn ModelSetupPanel(
             if !failures.is_empty() {
                 error.set(Some(failures.join("; ")));
             }
-            if !defaults_only && target.get_untracked().is_none() {
-                target.set(items.first().map(|item| item.selection.clone()));
-            }
             choices.set(items);
             loading.set(false);
         });
@@ -175,7 +153,7 @@ pub fn ModelSetupPanel(
     let candidates = RwSignal::new(Vec::<openwebide_core::ServerDiscovery>::new());
     let discovering = RwSignal::new(false);
     let project = expect_context::<crate::state::projects::ProjectsState>().active_project;
-    let discover = move |_| {
+    let discover = Callback::new(move |()| {
         let epoch = auth.generation.get_untracked();
         let revision = project_host.revision();
         let project_id = project.get_untracked();
@@ -199,7 +177,14 @@ pub fn ModelSetupPanel(
                 Err(message) => error.set(Some(message)),
             }
         });
-    };
+    });
+    let first_discovery = StoredValue::new(false);
+    Effect::new(move |_| {
+        if !defaults_only && settings.connections.get().is_empty() && !first_discovery.get_value() {
+            first_discovery.set_value(true);
+            discover.run(());
+        }
+    });
     let save = move |_| {
         let defaults = ModelDefaults {
             primary: primary.get_untracked(),
@@ -232,7 +217,7 @@ pub fn ModelSetupPanel(
         <div class="model-setup">
             <Show when=move || !defaults_only>
                 <p class="form-hint">"Configuration is shared by everyone using this server and model."</p>
-            <button class="btn" disabled=move || discovering.get() on:click=discover>{move || if discovering.get() { "Looking for local model servers…" } else { "Discover local servers" }}</button>
+            <button class="btn" disabled=move || discovering.get() on:click=move |_| discover.run(())>{move || if discovering.get() { "Looking for local model servers…" } else { "Discover local servers" }}</button>
             <p class="form-hint">"Checks standard model-server ports on the project’s execution host. Add other machines by URL in Servers."</p>
             <For each=move || candidates.get() key=|server| server.base_url.clone() children=move |candidate| {
                 let label = format!("Set up {} @ {}", candidate.kind.display_name(), candidate.base_url);
@@ -256,13 +241,7 @@ pub fn ModelSetupPanel(
             </Show>
             <button class="btn" disabled=move || loading.get() on:click=move |_| reload.update(|value| *value += 1)>"Refresh models"</button>
             <Show when=move || error.get().is_some()><p class="form-error" role="alert">{move || error.get()}</p></Show>
-            <Show when=move || !defaults_only>
-            <ModelChoice label="Model settings" value=target choices=choices.read_only() empty="Choose a model to configure" />
-            <For each=move || { target.get().into_iter().collect::<Vec<_>>() } key=|selection| (selection.server_id, selection.model.clone()) children=move |selection| view! {
-                <ModelSettingsEditor selection=selection />
-            } />
-            <For each=move || { target.get().map(|selection| selection.server_id).into_iter().collect::<Vec<_>>() } key=|id| *id children=move |id| view! { <ServerOptions id=id /> } />
-            </Show>
+
         </div>
     }
 }
@@ -274,6 +253,9 @@ pub(crate) fn ModelSettingsEditor(
     #[prop(optional_no_strip)] discovered: Option<openwebide_core::ModelDetection>,
     #[prop(optional)] on_edit: Option<Callback<Result<ModelSettings, String>>>,
     #[prop(default = true)] auto_detect: bool,
+    #[prop(optional)] on_busy: Option<Callback<bool>>,
+    #[prop(optional_no_strip)] initial_error: Option<String>,
+    #[prop(optional_no_strip)] probe: Option<openwebide_core::ModelProbe>,
 ) -> impl IntoView {
     let api = expect_context::<Api>();
     let auth = expect_context::<AuthState>();
@@ -328,32 +310,86 @@ pub(crate) fn ModelSettingsEditor(
             ),
         )
     });
-    let error = RwSignal::new(Option::<String>::None);
-    let busy = RwSignal::new(false);
+    let error = RwSignal::new(initial_error);
     let has_discovery = discovered.is_some();
     let detection = RwSignal::new(discovered);
     let detecting = RwSignal::new(false);
     let selection_for_detection = selection.clone();
+    let testing = RwSignal::new(false);
+    let tested = RwSignal::new(None::<openwebide_core::ModelTestResult>);
+    let stream_tools = RwSignal::new(saved.stream_tools);
+    let test_probe = probe.clone();
+    if let Some(on_busy) = on_busy {
+        Effect::new(move |_| on_busy.run(detecting.get() || testing.get()));
+    }
     let detect = Callback::new(move |()| {
         let selection = selection_for_detection.clone();
+        let probe = probe.clone();
         let epoch = auth.generation.get_untracked();
         detecting.set(true);
         error.set(None);
         spawn_local(async move {
-            let result = api
-                .with_value(Clone::clone)
-                .detect_model(selection.server_id, &selection.model)
-                .await;
+            let backend = api.with_value(Clone::clone);
+            let result = crate::model_setup::refresh(&*backend, &selection, probe).await;
             if auth.generation.get_untracked() != epoch || detecting.try_get_untracked().is_none() {
                 return;
             }
             detecting.set(false);
             match result {
-                Ok(result) => detection.set(Some(result)),
+                Ok(result) => {
+                    let detected = result.defaults_for(&ModelSettings::default());
+                    if let Some(value) = detected.context_limit {
+                        context.set(value.to_string());
+                    }
+                    if let Some(value) = detected.max_output_tokens {
+                        output.set(value.to_string());
+                    }
+                    for (name, value) in sampling {
+                        if let Some(detected_value) = detected.sampling.get(name) {
+                            value.set(detected_value.to_string());
+                        }
+                    }
+                    if let Some(value) = detected.thinking {
+                        thinking.set(Some(value));
+                    }
+                    if let Some(value) = detected.tools {
+                        tools.set(Some(value));
+                    }
+                    stream_tools.set(None);
+                    tested.set(None);
+                    detection.set(Some(result));
+                }
                 Err(message) => error.set(Some(message)),
             }
         });
     });
+    let test_model = move |_| {
+        let Some(mut probe) = test_probe.clone() else {
+            return;
+        };
+        probe.model = Some(selection.model.clone());
+        let epoch = auth.generation.get_untracked();
+        testing.set(true);
+        error.set(None);
+        spawn_local(async move {
+            let backend = api.with_value(Clone::clone);
+            let result = crate::model_setup::test(&*backend, &probe).await;
+            if auth.generation.try_get_untracked() != Some(epoch)
+                || testing.try_get_untracked().is_none()
+            {
+                return;
+            }
+            testing.set(false);
+            match result {
+                Ok(result) => {
+                    tools.set(Some(result.structured_tools));
+                    stream_tools.set(Some(result.streamed_tools));
+                    tested.set(Some(result));
+                }
+                Err(message) => error.set(Some(message)),
+            }
+        });
+    };
     if auto_detect && !has_discovery {
         detect.run(());
     }
@@ -374,6 +410,7 @@ pub(crate) fn ModelSettingsEditor(
             max_output_tokens: number(output)?,
             thinking: thinking.get_untracked(),
             tools: tools.get_untracked(),
+            stream_tools: stream_tools.get_untracked(),
             auto_compact_threshold: number(threshold)?
                 .map(u8::try_from)
                 .transpose()
@@ -382,6 +419,7 @@ pub(crate) fn ModelSettingsEditor(
         };
         for (name, value) in sampling {
             let value = value.get_untracked();
+            settings.sampling.remove(name);
             if !value.trim().is_empty() {
                 settings.sampling.insert(
                     name.into(),
@@ -401,58 +439,30 @@ pub(crate) fn ModelSettingsEditor(
             threshold.track();
             thinking.track();
             tools.track();
+            stream_tools.track();
             for (_, value) in sampling {
                 value.track();
             }
             on_edit.run(read_settings());
         });
     }
-    let save = move |_| {
-        let result = read_settings();
-        let profile = match result {
-            Ok(settings) => ModelProfile {
-                selection: selection.clone(),
-                settings,
-            },
-            Err(message) => {
-                error.set(Some(message));
-                return;
-            }
-        };
-        let epoch = auth.generation.get_untracked();
-        busy.set(true);
-        error.set(None);
-        spawn_local(async move {
-            let result = api
-                .with_value(Clone::clone)
-                .save_model_profile(&profile)
-                .await;
-            if auth.generation.get_untracked() != epoch || busy.try_get_untracked().is_none() {
-                return;
-            }
-            busy.set(false);
-            match result {
-                Ok(setup) => state.model_setup.set(setup),
-                Err(message) => error.set(Some(message)),
-            }
-        });
-    };
     view! {
         <div class="model-settings-editor">
-            <div class="form-actions"><button class="btn" disabled=move || detecting.get() on:click=move |_| detect.run(())>{move || if detecting.get() { "Detecting context and capabilities…" } else { "Detect model" }}</button></div>
+            <div class="form-actions"><button class="btn" disabled=move || detecting.get() || testing.get() on:click=move |_| detect.run(())>{move || if detecting.get() { "Detecting settings…" } else { "Detect settings" }}</button></div>
+            <button class="btn" disabled=move || testing.get() || detecting.get() on:click=test_model>{move || if testing.get() { "Testing model…" } else { "Test model" }}</button>
+            <Show when=move || tested.get().is_some()><p class="form-hint">{move || tested.get().map(|result| format!("Structured tools: {} · Streamed tools: {} · Plain chat first token: {} · {} tokens/sec{}{}", result.structured_tools, result.streamed_tools, result.first_token_ms.map_or_else(|| "unknown".into(), |ms| format!("{ms} ms")), result.tokens_per_second.map_or_else(|| "unknown".into(), |speed| format!("{speed:.1}")), if result.estimated { " (estimated)" } else { "" }, result.notice.map_or_else(String::new, |notice| format!(" · {notice}"))))}</p></Show>
             <Show when=move || detection.get().is_some()>
-                <p class="form-hint">{move || detection.get().map(|result| format!("{} · context {} · {}", result.source, result.context_limit.map(|limit| limit.to_string()).unwrap_or_else(|| "unknown".into()), if result.capabilities.is_empty() { "capabilities unknown".into() } else { result.capabilities.join(", ") }))}</p>
-                <button class="btn" on:click=move |_| { if let Some(result) = detection.get_untracked() && let Some(limit) = result.context_limit { context.set(limit.to_string()); } }>"Use detected context"</button>
+                <p class="form-hint">{move || detection.get().map(|result| result.details())}</p>
+
             </Show>
 
             <TextSetting label="Context tokens" value=context input_type="number" placeholder="Detect from server" />
             <TextSetting label="Max output tokens" value=output input_type="number" placeholder="Model default" />
             {sampling.into_iter().map(|(name, value)| view! { <TextSetting label=name value=value placeholder="Model default" /> }).collect::<Vec<_>>()}
-            <BooleanSetting label="Thinking" value=thinking />
-            <BooleanSetting label="Tool calling" value=tools />
+            <Show when=move || detection.get().is_none_or(|result| result.capabilities.is_empty() || result.capabilities.iter().any(|capability| capability == "thinking"))><BooleanSetting label="Thinking" value=thinking /></Show>
+            <Show when=move || detection.get().is_none_or(|result| result.capabilities.is_empty() || result.capabilities.iter().any(|capability| capability == "tools"))><BooleanSetting label="Tool calling" value=tools /></Show>
             <TextSetting label="Auto-compact (%)" value=threshold input_type="number" placeholder="85 (default)" />
             <p class="form-hint">"Blank fields use the server default. Auto-compact defaults to 85%; 0 disables it. Runs compact before model requests when the context limit is known; original history is retained."</p>
-            <button class="btn send" disabled=move || busy.get() on:click=save>"Save model settings"</button>
             <Show when=move || error.get().is_some()><p class="form-error" role="alert">{move || error.get()}</p></Show>
         </div>
     }
@@ -476,97 +486,63 @@ fn BooleanSetting(label: &'static str, value: RwSignal<Option<bool>>) -> impl In
 }
 
 #[component]
-pub fn ServerOptions(id: i64) -> impl IntoView {
+pub fn ServerOptions(
+    #[prop(optional_no_strip)] id: Option<i64>,
+    on_edit: Callback<Result<ServerSettingsUpdate, String>>,
+) -> impl IntoView {
     let api = expect_context::<Api>();
     let auth = expect_context::<AuthState>();
-    let key = RwSignal::new(String::new());
     let clear_key = RwSignal::new(false);
-    let has_key = RwSignal::new(false);
     let timeout = RwSignal::new("300".to_string());
     let keep_alive = RwSignal::new(String::new());
     let headers = RwSignal::new(String::new());
     let clear_headers = RwSignal::new(false);
-    let headers_node = NodeRef::<leptos::html::Textarea>::new();
-    Effect::new(move |_| {
-        let text = headers.get();
-        if let Some(node) = headers_node.get() {
-            node.set_value(&text);
-        }
-    });
-    let error = RwSignal::new(Option::<String>::None);
-    let busy = RwSignal::new(false);
-    let epoch = auth.generation.get_untracked();
-    spawn_local(async move {
-        let result = api.with_value(Clone::clone).server_settings(id).await;
-        if auth.generation.get_untracked() != epoch || has_key.try_get_untracked().is_none() {
-            return;
-        }
-        match result {
-            Ok(settings) => {
-                has_key.set(settings.has_api_key);
-                timeout.set(settings.timeout_seconds.to_string());
-                keep_alive.set(settings.keep_alive.unwrap_or_default());
-            }
-            Err(message) => error.set(Some(message)),
-        }
-    });
-    let save = move |_| {
-        let Ok(timeout_seconds) = timeout.get_untracked().parse::<u32>() else {
-            error.set(Some("Enter a timeout in seconds.".into()));
-            return;
-        };
-        let mut extra_headers = std::collections::BTreeMap::new();
-        for line in headers
-            .get_untracked()
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-        {
-            let Some((name, value)) = line.split_once(':') else {
-                error.set(Some("Use one Name: Value header per line.".into()));
-                return;
-            };
-            extra_headers.insert(name.trim().to_string(), value.trim().to_string());
-        }
-        let update = ServerSettingsUpdate {
-            api_key: (!key.get_untracked().is_empty()).then(|| key.get_untracked()),
-            clear_api_key: clear_key.get_untracked(),
-            headers: (clear_headers.get_untracked() || !headers.get_untracked().trim().is_empty())
-                .then_some(extra_headers),
-            timeout_seconds: Some(timeout_seconds),
-            keep_alive: Some(keep_alive.get_untracked()),
-        };
-        busy.set(true);
-        error.set(None);
+    if let Some(id) = id {
+        let epoch = auth.generation.get_untracked();
         spawn_local(async move {
-            let result = api
-                .with_value(Clone::clone)
-                .save_server_settings(id, &update)
-                .await;
-            if auth.generation.get_untracked() != epoch || busy.try_get_untracked().is_none() {
-                return;
-            }
-            busy.set(false);
-            match result {
-                Ok(settings) => {
-                    has_key.set(settings.has_api_key);
-                    key.set(String::new());
-                    clear_key.set(false);
-                    headers.set(String::new());
-                }
-                Err(message) => error.set(Some(message)),
+            if let Ok(settings) = api.with_value(Clone::clone).server_settings(id).await
+                && auth.generation.try_get_untracked() == Some(epoch)
+            {
+                timeout.try_set(settings.timeout_seconds.to_string());
+                keep_alive.try_set(settings.keep_alive.unwrap_or_default());
             }
         });
-    };
-    view! { <details><summary>"Server authentication and options"</summary>
-        <TextSetting label="API key" value=key input_type="password" placeholder="Leave blank to keep stored key" />
-        <p class="form-hint">{move || if has_key.get() { "An API key is stored. Its value is never returned to the browser." } else { "No API key stored." }}</p>
-        <label><input type="checkbox" prop:checked=move || clear_key.get() on:change=move |event| clear_key.set(event_target_checked(&event)) />"Clear stored API key"</label>
+    }
+    Effect::new(move |_| {
+        let timeout = timeout.get();
+        let keep_alive = keep_alive.get();
+        let headers = headers.get();
+        let clear_headers = clear_headers.get();
+        let clear_api_key = clear_key.get();
+        let result = (|| {
+            let timeout_seconds = timeout
+                .parse::<u32>()
+                .map_err(|_| "Enter a timeout in seconds.".to_string())?;
+            let mut extra_headers = std::collections::BTreeMap::new();
+            for line in headers.lines().filter(|line| !line.trim().is_empty()) {
+                let (name, value) = line
+                    .split_once(':')
+                    .ok_or_else(|| "Use one Name: Value header per line.".to_string())?;
+                extra_headers.insert(name.trim().to_string(), value.trim().to_string());
+            }
+            let update = ServerSettingsUpdate {
+                clear_api_key,
+                headers: (clear_headers || !headers.trim().is_empty()).then_some(extra_headers),
+                timeout_seconds: Some(timeout_seconds),
+                keep_alive: Some(keep_alive),
+                ..Default::default()
+            };
+            openwebide_core::ServerTransport::default().updated(&update)?;
+            Ok(update)
+        })();
+        on_edit.run(result);
+    });
+    view! { <details><summary>"Advanced server options"</summary>
+        <label><input type="checkbox" prop:checked=move || clear_key.get() on:change=move |event| clear_key.set(event_target_checked(&event)) />"Clear stored auth token"</label>
         <TextSetting label="Timeout (seconds)" value=timeout input_type="number" />
         <TextSetting label="Ollama keep alive" value=keep_alive placeholder="Server default (e.g. 5m)" />
-        <label class="setting-row"><span class="setting-label">"Extra headers"</span><textarea class="form-input" node_ref=headers_node placeholder="One Name: Value per line" rows="3" on:input=move |event| headers.set(event_target_value(&event)) /></label>
+        <label class="setting-row"><span class="setting-label">"Extra headers"</span><textarea class="form-input" placeholder="One Name: Value per line" rows="3" on:input=move |event| headers.set(event_target_value(&event)) /></label>
         <label><input type="checkbox" prop:checked=move || clear_headers.get() on:change=move |event| clear_headers.set(event_target_checked(&event)) />"Clear stored extra headers"</label>
         <p class="form-hint">"Blank preserves stored headers. New headers replace them; stored values are never read back."</p>
-        <button class="btn send" disabled=move || busy.get() on:click=save>"Save server options"</button>
-        <Show when=move || error.get().is_some()><p class="form-error" role="alert">{move || error.get()}</p></Show>
     </details> }
 }

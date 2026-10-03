@@ -5,6 +5,7 @@
 //! the whole group, including grandchildren that outlive the direct child (e.g. backgrounded
 //! jobs), which a plain `child.kill()` never does.
 
+#[cfg(unix)]
 use std::time::Duration;
 
 /// A signal requested by a client `Kill` message.
@@ -79,7 +80,12 @@ fn group_alive(pgid: i32) -> bool {
 /// SIGKILL. Returns once the group is confirmed gone or the SIGKILL has been sent.
 #[cfg(unix)]
 pub async fn terminate_group(pgid: i32, grace: Duration) {
-    signal_group(pgid, Signal::Term);
+    terminate_group_with(pgid, grace, Signal::Term).await;
+}
+
+#[cfg(unix)]
+pub async fn terminate_group_with(pgid: i32, grace: Duration, signal: Signal) {
+    signal_group(pgid, signal);
 
     let deadline = tokio::time::Instant::now() + grace;
     loop {
@@ -122,11 +128,31 @@ impl Drop for GroupGuard {
     fn drop(&mut self) {
         let pgid = self.0;
         signal_group(pgid, Signal::Term);
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            signal_group(pgid, Signal::Kill);
-        });
+        schedule_cleanup(&tokio::runtime::Handle::current(), pgid);
     }
+}
+
+#[cfg(unix)]
+pub fn schedule_cleanup(runtime: &tokio::runtime::Handle, pgid: i32) {
+    let cleanup = runtime.spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        signal_group(pgid, Signal::Kill);
+    });
+    let mut tasks = cleanup_tasks().lock().unwrap();
+    tasks.retain(|task| !task.is_finished());
+    tasks.push(cleanup);
+}
+
+#[cfg(unix)]
+fn cleanup_tasks() -> &'static std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>> {
+    static TASKS: std::sync::OnceLock<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+        std::sync::OnceLock::new();
+    TASKS.get_or_init(Default::default)
+}
+#[cfg(unix)]
+pub async fn wait_for_cleanup() {
+    let tasks = std::mem::take(&mut *cleanup_tasks().lock().unwrap());
+    futures::future::join_all(tasks).await;
 }
 
 #[cfg(test)]

@@ -110,7 +110,7 @@ pub(super) async fn route(
         ("OPTIONS", _) => Ok(preflight_response(req.headers(), allowed_origin)),
         ("GET" | "POST", "/environment") => Ok(respond(
             StatusCode::OK,
-            &serde_json::to_string(&crate::exec::environment()).expect("environment serializes"),
+            serde_json::to_string(&crate::exec::environment()).expect("environment serializes"),
             allowed_origin,
         )),
         ("GET", "/health") => Ok(respond(
@@ -120,7 +120,7 @@ pub(super) async fn route(
         )),
         ("POST", "/secret") if origin.is_none() && addr.ip().is_loopback() => Ok(respond(
             StatusCode::OK,
-            &serde_json::json!({ "secret": config.secret.as_ref() }).to_string(),
+            serde_json::json!({ "secret": config.secret.as_ref() }).to_string(),
             allowed_origin,
         )),
         ("POST", "/secret") => Ok(execution_response(
@@ -142,7 +142,7 @@ pub(super) async fn route(
             let found = openwebide_llm::discovery::discover(client).await;
             Ok(respond(
                 StatusCode::OK,
-                &serde_json::to_string(&found).expect("discovery serializes"),
+                serde_json::to_string(&found).expect("discovery serializes"),
                 allowed_origin,
             ))
         }
@@ -298,10 +298,10 @@ fn execution_response(
     origin: Option<&str>,
 ) -> Response<Full<Bytes>> {
     match result {
-        Ok(body) => respond(StatusCode::OK, &body, origin),
+        Ok(body) => respond(StatusCode::OK, body, origin),
         Err(error) => respond(
             error.status(),
-            &serde_json::json!({"error": error.to_string()}).to_string(),
+            serde_json::json!({"error": error.to_string()}).to_string(),
             origin,
         ),
     }

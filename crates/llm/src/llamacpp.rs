@@ -27,7 +27,11 @@ pub struct LlamaCppProvider<C: HttpClient> {
 impl<C: HttpClient> LlamaCppProvider<C> {
     pub fn new(base_url: impl Into<String>, model: Option<String>, http: C) -> Self {
         let base_url = base_url.into();
-        let base_url = base_url.trim_end_matches('/');
+        let base_url = base_url
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(&base_url)
+            .trim_end_matches('/');
         let base_url = base_url.strip_suffix("/v1").unwrap_or(base_url);
         Self {
             base_url: base_url.to_string(),
@@ -626,6 +630,7 @@ mod tests {
             ("http://h/v10", "http://h/v10"),
             ("http://h/api/v1x", "http://h/api/v1x"),
             ("http://h/v1/v1", "http://h/v1"),
+            ("http://h/proxy/v1/?key=old#fragment", "http://h/proxy"),
         ] {
             let http = FakeHttpClient::new();
             let state = http.state();

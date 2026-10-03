@@ -13,6 +13,7 @@ pub struct ProjectsState {
     pub recent_projects: Memo<Vec<Project>>,
     pub needs_grant: RwSignal<HashSet<i64>>,
     pub projects_loaded: RwSignal<bool>,
+    pub tooling: RwSignal<std::collections::BTreeMap<i64, crate::project_setup::ProjectTools>>,
     #[cfg(target_arch = "wasm32")]
     pub local_handles: RwSignal<std::collections::HashMap<i64, web_sys::FileSystemDirectoryHandle>>,
 }
@@ -45,6 +46,7 @@ impl ProjectsState {
             local_mode,
             needs_grant: RwSignal::new(HashSet::new()),
             projects_loaded: RwSignal::new(false),
+            tooling: RwSignal::new(std::collections::BTreeMap::new()),
             #[cfg(target_arch = "wasm32")]
             local_handles: RwSignal::new(std::collections::HashMap::new()),
         }
@@ -126,6 +128,7 @@ impl ProjectsState {
         self.active_project.set(None);
         self.needs_grant.set(HashSet::new());
         self.projects_loaded.set(false);
+        self.tooling.set(std::collections::BTreeMap::new());
         #[cfg(target_arch = "wasm32")]
         self.local_handles.set(std::collections::HashMap::new());
     }

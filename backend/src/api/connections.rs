@@ -61,12 +61,20 @@ pub(crate) async fn set_tool_stream_unsupported(
     #[derive(Deserialize)]
     struct MemoBody {
         tool_stream_revision: i64,
+        model: Option<String>,
     }
     let body: MemoBody = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
-    state
-        .store
-        .set_tool_stream_unsupported(id, body.tool_stream_revision)
-        .await?;
+    if let Some(model) = body.model {
+        state
+            .store
+            .set_model_tool_stream_unsupported(id, &model, body.tool_stream_revision)
+            .await?;
+    } else {
+        state
+            .store
+            .set_tool_stream_unsupported(id, body.tool_stream_revision)
+            .await?;
+    }
     Ok(json_response(200, &json!({})))
 }
 

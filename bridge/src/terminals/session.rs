@@ -26,6 +26,7 @@ pub struct Session {
     pub pid: Option<i32>,
     pub running: Arc<AtomicBool>,
     pub exited_at: Mutex<Option<Instant>>,
+    detached_at: Mutex<Option<Instant>>,
     pub ring: Mutex<SeqRing<BridgeServerMessage>>,
     stdin_tx: Mutex<Option<mpsc::Sender<String>>>,
     resize_tx: Mutex<Option<mpsc::Sender<(u16, u16)>>>,
@@ -56,6 +57,7 @@ impl Session {
             pid,
             running: Arc::new(AtomicBool::new(true)),
             exited_at: Mutex::new(None),
+            detached_at: Mutex::new(Some(Instant::now())),
             ring: Mutex::new(SeqRing::new(Some(MAX_RING_BUFFER_BYTES), None)),
             stdin_tx: Mutex::new(Some(stdin_tx)),
             resize_tx: Mutex::new(Some(resize_tx)),
@@ -229,6 +231,22 @@ impl SessionManager {
         count
     }
 
+    /// Detached interactive shells expire; headless jobs retain their separate lifecycle.
+    pub fn reap_detached(&self, ttl: Duration) {
+        for session in self.sessions.read().unwrap().values() {
+            if !session.pty || !session.running.load(Ordering::SeqCst) {
+                continue;
+            }
+            let mut detached = session.detached_at.lock().unwrap();
+            if session.ring.lock().unwrap().has_subscribers() {
+                *detached = None;
+            } else if detached.get_or_insert_with(Instant::now).elapsed() >= ttl {
+                session.try_kill(Signal::Hup);
+                *detached = Some(Instant::now());
+            }
+        }
+    }
+
     /// Terminate every running session's process group concurrently, for graceful daemon
     /// shutdown.
     pub async fn kill_all(&self) {
@@ -239,9 +257,20 @@ impl SessionManager {
             let kills = sessions
                 .iter()
                 .filter(|s| s.running.load(Ordering::SeqCst))
-                .filter_map(|s| s.pid)
-                .map(|pgid| crate::exec::proc::terminate_group(pgid, Duration::from_secs(2)));
+                .filter_map(|s| s.pid.map(|pid| (pid, s.pty)))
+                .map(|(pgid, pty)| {
+                    crate::exec::proc::terminate_group_with(
+                        pgid,
+                        Duration::from_secs(2),
+                        if pty { Signal::Hup } else { Signal::Term },
+                    )
+                });
             futures::future::join_all(kills).await;
+            crate::exec::proc::wait_for_cleanup().await;
+        }
+        #[cfg(windows)]
+        for session in self.sessions.read().unwrap().values() {
+            session.try_kill(Signal::Kill);
         }
     }
 }
@@ -263,6 +292,34 @@ mod tests {
             resize_tx,
             kill_tx,
         ))
+    }
+
+    #[test]
+    fn detached_pty_expires_but_attached_and_headless_sessions_do_not() {
+        let (input, _) = mpsc::channel(1);
+        let (resize, _) = mpsc::channel(1);
+        let (kill, mut signals) = mpsc::channel(1);
+        let session = Arc::new(Session::new(
+            "detached".into(),
+            "sh".into(),
+            true,
+            None,
+            input,
+            resize,
+            kill,
+        ));
+        let manager = SessionManager::new();
+        manager.try_insert(session.clone()).unwrap();
+        let attached = session.ring.lock().unwrap().subscribe();
+        manager.reap_detached(Duration::ZERO);
+        assert!(signals.try_recv().is_err());
+        drop(attached);
+        manager.reap_detached(Duration::ZERO);
+        assert_eq!(signals.try_recv().unwrap(), Signal::Hup);
+        let headless = test_session("job");
+        manager.try_insert(headless.clone()).unwrap();
+        manager.reap_detached(Duration::ZERO);
+        assert!(headless.detached_at.lock().unwrap().is_some());
     }
 
     #[test]

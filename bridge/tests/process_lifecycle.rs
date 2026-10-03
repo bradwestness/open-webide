@@ -49,3 +49,44 @@ async fn exec_client_disconnect_kills_group() {
         "disconnecting the /exec client should kill the command's whole process group"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_waits_for_delayed_process_group_cleanup() {
+    use openwebide_bridge::{ServerConfig, run_server_until};
+    use tokio::net::TcpListener;
+    let dir = TestDir::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let config = ServerConfig::new(dir.path.clone(), std::sync::Arc::from("dummy_secret"), None);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        run_server_until(listener, config, async {
+            let _ = stopped.await;
+        })
+        .await;
+    });
+    let pid_file = dir.path.join("pid");
+    let body = serde_json::json!({"command": format!("trap '' TERM; echo $$ > {}; while :; do sleep 1; done", pid_file.display())}).to_string();
+    let mut client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    client.write_all(format!("POST /exec HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer dummy_secret\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let pid: i32 = std::fs::read_to_string(pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(6), server)
+        .await
+        .unwrap()
+        .unwrap();
+    // SAFETY: signal zero only checks whether the test-owned process group remains alive.
+    assert_eq!(unsafe { libc::kill(-pid, 0) }, -1);
+}

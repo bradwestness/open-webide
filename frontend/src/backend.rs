@@ -29,6 +29,23 @@ pub trait Backend {
     fn logout<'a>(&'a self) -> LocalBoxFuture<'a, Result<(), String>>;
     fn bridge_token<'a>(&'a self) -> LocalBoxFuture<'a, Result<(String, i64), String>>;
     fn health<'a>(&'a self) -> LocalBoxFuture<'a, Result<Health, String>>;
+    fn preview_server<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerDiscovery, String>>;
+    fn save_model_setup<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+        profiles: &'a [openwebide_core::ModelProfile],
+    ) -> LocalBoxFuture<'a, Result<(Connection, openwebide_core::ModelSetup), String>>;
+    fn test_model<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelTestResult, String>>;
+    fn preview_model<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelDetection, String>>;
     fn detect_model<'a>(
         &'a self,
         id: i64,
@@ -347,6 +364,31 @@ impl Backend for BackendApi {
     }
     fn health<'a>(&'a self) -> LocalBoxFuture<'a, Result<Health, String>> {
         Box::pin(BackendApi::health(self))
+    }
+    fn preview_server<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerDiscovery, String>> {
+        Box::pin(BackendApi::preview_server(self, probe))
+    }
+    fn save_model_setup<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+        profiles: &'a [openwebide_core::ModelProfile],
+    ) -> LocalBoxFuture<'a, Result<(Connection, openwebide_core::ModelSetup), String>> {
+        Box::pin(BackendApi::save_model_setup(self, probe, profiles))
+    }
+    fn test_model<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelTestResult, String>> {
+        Box::pin(BackendApi::test_model(self, probe))
+    }
+    fn preview_model<'a>(
+        &'a self,
+        probe: &'a openwebide_core::ModelProbe,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelDetection, String>> {
+        Box::pin(BackendApi::preview_model(self, probe))
     }
     fn detect_model<'a>(
         &'a self,

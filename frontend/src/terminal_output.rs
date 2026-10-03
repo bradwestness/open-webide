@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 pub const LINE_LIMIT: usize = 10_000;
+const LINE_CHARACTER_LIMIT: usize = 16_384;
 const COLORS: [&str; 16] = [
     "term-black",
     "term-red",
@@ -159,6 +160,9 @@ impl TerminalOutput {
     }
 
     fn write(&mut self, ch: char) {
+        if self.cursor >= LINE_CHARACTER_LIMIT {
+            return;
+        }
         while self.current.len() < self.cursor {
             self.current.push((' ', Style::default()));
         }
@@ -429,6 +433,8 @@ mod tests {
         assert_eq!(output.completed().count(), LINE_LIMIT - 1);
         assert_eq!(output.completed().next().unwrap().id, 90_003);
         output.push(&"x".repeat(1_000_000));
-        assert_eq!(output.current_html().len(), 1_000_000);
+        assert_eq!(output.current_html().len(), LINE_CHARACTER_LIMIT);
+        output.push("\rOK");
+        assert!(output.current_html().starts_with("OK"));
     }
 }

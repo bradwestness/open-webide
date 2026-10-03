@@ -574,6 +574,10 @@ impl ChatActions {
                         select_model.run(Some(name.clone()));
                         chat.notify(format!("Switched model to `{name}`."));
                     }
+                    SlashAction::DefaultModel => {
+                        select_model.run(None);
+                        chat.notify("Using the default model.");
+                    }
                     SlashAction::Clear => chat.messages.install_history(Vec::new()),
                     SlashAction::GitDiff { project_id, path } => {
                         spawn_local(async move {
@@ -603,7 +607,7 @@ impl ChatActions {
                             diff.path
                         ));
                     }
-                    SlashAction::RunTests { filter, .. } => {
+                    SlashAction::RunTests { project_id, filter } => {
                         if !bridge
                             .get_untracked()
                             .is_some_and(|bridge| bridge.status().get_untracked().terminal_ready())
@@ -611,14 +615,28 @@ impl ChatActions {
                             chat.notify("The terminal bridge isn't connected; start openwebide-bridge and try again.");
                             return;
                         }
-                        let cmd = crate::text::test_command(
-                            (!filter.is_empty()).then_some(filter.as_str()),
+                        let tooling = projects.tooling.with_untracked(|tools| {
+                            project_id.and_then(|id| tools.get(&id).cloned())
+                        });
+                        let cmd = tooling.as_ref().map_or_else(
+                            || {
+                                crate::text::test_command(
+                                    (!filter.is_empty()).then_some(filter.as_str()),
+                                )
+                            },
+                            |tools| tools.test_command(&filter),
                         );
                         chat.show_terminal.set(true);
                         expect_context::<crate::state::layout::LayoutState>()
                             .terminal_cmd
                             .set(Some(cmd.clone()));
-                        chat.notify(format!("Running `{cmd}` in the terminal."));
+                        let suggestion = tooling.map_or_else(String::new, |tools| {
+                            format!(
+                                " {} project; suggested linter: `{}`.",
+                                tools.language, tools.linters
+                            )
+                        });
+                        chat.notify(format!("Running `{cmd}` in the terminal.{suggestion}"));
                     }
                     SlashAction::Commit {
                         project_id,
@@ -969,17 +987,19 @@ fn install_effects(
         model_request_gen.update_value(|generation| *generation += 1);
         let this_gen = model_request_gen.get_value();
         spawn_local(async move {
-            let models = match request.1 {
-                Some(id) => api
-                    .with_value(Clone::clone)
-                    .list_models(id)
-                    .await
-                    .unwrap_or_default(),
-                None => Vec::new(),
+            let result = match request.1 {
+                Some(id) => api.with_value(Clone::clone).list_models(id).await,
+                None => Ok(Vec::new()),
             };
             if model_request_gen.get_value() == this_gen && model_request.get_untracked() == request
             {
-                chat.models.set(models);
+                match result {
+                    Ok(models) => chat.models.set(models),
+                    Err(message) => {
+                        chat.models.set(Vec::new());
+                        chat.error.set(Some(message));
+                    }
+                }
             }
         });
     });

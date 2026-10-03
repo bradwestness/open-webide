@@ -238,7 +238,7 @@ impl Mounted {
         fn find(parent: &web_sys::Element, text: &str) -> Option<web_sys::HtmlElement> {
             let mut child = parent.first_element_child();
             while let Some(element) = child {
-                if (element.tag_name() == "BUTTON" || element.class_name() == "recent-item")
+                if (element.tag_name() == "BUTTON" || element.class_list().contains("recent-item"))
                     && element.text_content().unwrap_or_default().contains(text)
                 {
                     return Some(element.unchecked_into());

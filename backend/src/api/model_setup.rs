@@ -91,32 +91,20 @@ pub(crate) async fn runtime_store(
         .iter()
         .any(|profile| profile.selection.server_id == id && profile.selection.model == model);
     let mut settings = setup.resolve(id, &model);
-    if let Some(cached) = store
-        .get_setting(&format!("model_detection_{id}_{model}"))
-        .await?
-        && let Ok(cached) = serde_json::from_str::<serde_json::Value>(&cached)
-        && cached.get("revision").and_then(serde_json::Value::as_i64)
-            == Some(connection.tool_stream_revision)
-        && let Some(detected) = cached.get("detection").and_then(|value| {
-            serde_json::from_value::<openwebide_core::ModelDetection>(value.clone()).ok()
-        })
-    {
-        if settings.context_limit.is_none() {
-            settings.context_limit = detected.context_limit;
-        }
-        if settings.tools.is_none()
-            && !detected.capabilities.is_empty()
-            && !detected
-                .capabilities
-                .iter()
-                .any(|capability| capability == "tools")
-        {
-            settings.tools = Some(false);
-        }
+    if !model.is_empty() {
+        let detection = discover_model(store, &connection, &model).await?;
+        settings = detection.defaults_for(&settings);
     }
     if !explicit && connection.model.as_deref() == Some(&model) {
         settings.context_limit = settings.context_limit.or(connection.context_limit);
     }
+    connection.tool_stream_unsupported = connection.tool_stream_unsupported
+        || store
+            .model_tool_stream_unsupported(&connection, &model)
+            .await?;
+    connection.tool_stream_unsupported = settings
+        .stream_tools
+        .map_or(connection.tool_stream_unsupported, |enabled| !enabled);
     connection.context_limit = settings.context_limit;
     connection.model = selected_model;
     Ok(ModelRuntime {
@@ -124,6 +112,82 @@ pub(crate) async fn runtime_store(
         settings,
         transport,
     })
+}
+
+async fn probe_model(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    connection: &openwebide_core::Connection,
+    model: &str,
+    fallback: bool,
+) -> Result<openwebide_core::ModelDetection, ApiError> {
+    let mut transport = store.server_transport(connection.id).await?;
+    transport.timeout_seconds = transport.timeout_seconds.min(5);
+    let detection = openwebide_llm::discovery::detect_with_preset(
+        connection,
+        model,
+        transport.preset,
+        SpinHttpClient::default().with_transport(transport),
+    )
+    .await;
+    let detection = match detection {
+        Ok(detected) => detected,
+        Err(error @ openwebide_llm::ProviderError::Authentication) => return Err(error.into()),
+        Err(error) if fallback => {
+            eprintln!("model discovery: {error}");
+            return Ok(openwebide_core::ModelDetection::default());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    store
+        .save_model_detection(connection, model, &detection)
+        .await?;
+    Ok(detection)
+}
+pub(crate) async fn discover_model(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    connection: &openwebide_core::Connection,
+    model: &str,
+) -> Result<openwebide_core::ModelDetection, ApiError> {
+    if let Some(cached) = store.model_detection(connection, model).await? {
+        return Ok(cached);
+    }
+    probe_model(store, connection, model, true).await
+}
+
+pub(crate) async fn discover_models(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    connection: &openwebide_core::Connection,
+    models: &[openwebide_core::ModelInfo],
+) -> Result<std::collections::BTreeMap<String, openwebide_core::ModelDetection>, ApiError> {
+    let mut found = std::collections::BTreeMap::new();
+    let mut missing = Vec::new();
+    for model in models {
+        if let Some(cached) = store.model_detection(connection, &model.name).await? {
+            found.insert(model.name.clone(), cached);
+        } else {
+            missing.push(model.clone());
+        }
+    }
+    if !missing.is_empty() {
+        let mut transport = store.server_transport(connection.id).await?;
+        transport.timeout_seconds = transport.timeout_seconds.min(5);
+        let detected = openwebide_llm::discovery::detect_models(
+            connection,
+            &missing,
+            transport.preset,
+            SpinHttpClient::default().with_transport(transport),
+        )
+        .await?;
+        for (model, result) in detected {
+            if let Ok(detection) = result {
+                store
+                    .save_model_detection(connection, &model, &detection)
+                    .await?;
+                found.insert(model, detection);
+            }
+        }
+    }
+    Ok(found)
 }
 
 pub(crate) async fn native_runtime(
@@ -163,21 +227,7 @@ pub(crate) async fn detect(
 ) -> Result<JsonResp, ApiError> {
     let body: DetectBody = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
     let connection = state.store.get_connection(body.server_id).await?;
-    let mut transport = state.store.server_transport(body.server_id).await?;
-    transport.timeout_seconds = transport.timeout_seconds.min(5);
-    let detection = openwebide_llm::discovery::detect(
-        &connection,
-        &body.model,
-        SpinHttpClient::default().with_transport(transport),
-    )
-    .await?;
-    state
-        .store
-        .set_setting(
-            &format!("model_detection_{}_{}", connection.id, body.model),
-            &serde_json::to_string(&serde_json::json!({"revision": connection.tool_stream_revision, "detection": detection})).map_err(|e| ApiError::internal(e.to_string()))?,
-        )
-        .await?;
+    let detection = probe_model(&state.store, &connection, &body.model, false).await?;
     Ok(json_response(200, &detection))
 }
 #[derive(Deserialize)]
@@ -227,4 +277,130 @@ pub(crate) async fn discover() -> Result<JsonResp, ApiError> {
         openwebide_llm::discovery::discover(SpinHttpClient::default().with_transport(transport))
             .await;
     Ok(json_response(200, &found))
+}
+
+pub(crate) async fn preview(
+    req: Request,
+    state: &AppState,
+    detect: bool,
+) -> Result<JsonResp, ApiError> {
+    let probe: openwebide_core::ModelProbe = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
+    validate_url(&probe.base_url)?;
+    let transport = match probe.server_id {
+        Some(id) => state.store.server_transport(id).await?,
+        None => openwebide_core::ServerTransport::default(),
+    }
+    .updated(&probe.transport)
+    .map_err(ApiError::bad_request)?;
+    let preset = transport.preset;
+    let mut transport = transport;
+    transport.timeout_seconds = transport.timeout_seconds.min(5);
+    let http = SpinHttpClient::default().with_transport(transport);
+    if detect {
+        let connection = openwebide_core::Connection {
+            id: probe.server_id.unwrap_or(0),
+            name: String::new(),
+            kind: probe.kind,
+            base_url: probe.base_url,
+            model: probe.model.clone(),
+            enabled: true,
+            context_limit: None,
+            tool_stream_unsupported: false,
+            tool_stream_revision: 0,
+        };
+        let model = probe
+            .model
+            .ok_or_else(|| ApiError::bad_request("Choose a model to detect."))?;
+        let result =
+            openwebide_llm::discovery::detect_with_preset(&connection, &model, preset, http)
+                .await?;
+        Ok(json_response(200, &result))
+    } else {
+        let mut result =
+            openwebide_llm::discovery::inspect(&probe.base_url, Some(probe.kind), http.clone())
+                .await?;
+        let connection = openwebide_core::Connection {
+            id: probe.server_id.unwrap_or(0),
+            name: String::new(),
+            kind: probe.kind,
+            base_url: probe.base_url,
+            model: None,
+            enabled: true,
+            context_limit: None,
+            tool_stream_unsupported: false,
+            tool_stream_revision: 0,
+        };
+        let detected =
+            openwebide_llm::discovery::detect_models(&connection, &result.models, preset, http)
+                .await?;
+        for (model, detection) in detected {
+            match detection {
+                Ok(detection) => {
+                    result.detections.insert(model, detection);
+                }
+                Err(message) => {
+                    result.detection_errors.insert(model, message);
+                }
+            }
+        }
+        Ok(json_response(200, &result))
+    }
+}
+
+pub(crate) async fn test_model(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
+    let probe: openwebide_core::ModelProbe = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
+    validate_url(&probe.base_url)?;
+    let transport = match probe.server_id {
+        Some(id) => state.store.server_transport(id).await?,
+        None => Default::default(),
+    }
+    .updated(&probe.transport)
+    .map_err(ApiError::bad_request)?;
+    let model = probe
+        .model
+        .ok_or_else(|| ApiError::bad_request("Choose a model to test."))?;
+    let connection = openwebide_core::Connection {
+        id: probe.server_id.unwrap_or(0),
+        name: String::new(),
+        kind: probe.kind,
+        base_url: probe.base_url,
+        model: Some(model.clone()),
+        enabled: true,
+        context_limit: None,
+        tool_stream_unsupported: false,
+        tool_stream_revision: 0,
+    };
+    let provider = Provider::for_connection(
+        &connection,
+        SpinHttpClient::default().with_transport(transport),
+    );
+    let request = ChatRequest {
+        connection_id: connection.id,
+        model: Some(model),
+        system_prompt: None,
+        messages: vec![],
+        tools: vec![],
+        model_settings: Default::default(),
+    };
+    let result = openwebide_llm::model_test::test(&provider, request).await?;
+    Ok(json_response(200, &result))
+}
+
+pub(crate) async fn save_review(
+    req: Request,
+    state: &AppState,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    #[derive(Deserialize)]
+    struct Review {
+        probe: openwebide_core::ModelProbe,
+        profiles: Vec<ModelProfile>,
+    }
+    let review: Review = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
+    validate_url(&review.probe.base_url)?;
+    let saved = state
+        .store
+        .save_model_setup(user.id, &review.probe, &review.profiles)
+        .await?;
+    Ok(json_response(200, &saved))
 }

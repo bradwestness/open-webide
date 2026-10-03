@@ -41,8 +41,6 @@ impl Theme {
 #[derive(Clone, Copy)]
 pub struct SettingsState {
     pub show_settings: RwSignal<bool>,
-    pub show_model_setup: RwSignal<bool>,
-    pub model_setup_server: RwSignal<Option<i64>>,
     pub model_setup: RwSignal<openwebide_core::ModelSetup>,
     pub theme: RwSignal<Theme>,
     pub default_connection: RwSignal<Option<i64>>,
@@ -77,15 +75,12 @@ impl SettingsState {
         );
         self.conn_base_url
             .set(connection.map_or_else(String::new, |connection| connection.base_url));
-        self.show_model_setup.set(false);
         self.show_conn_form.set(true);
     }
 
     pub fn new(theme: Theme, bridge_url: String) -> Self {
         Self {
             show_settings: RwSignal::new(false),
-            show_model_setup: RwSignal::new(false),
-            model_setup_server: RwSignal::new(None),
             model_setup: RwSignal::new(Default::default()),
             theme: RwSignal::new(theme),
             default_connection: RwSignal::new(None),

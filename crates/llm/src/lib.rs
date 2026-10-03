@@ -7,6 +7,7 @@
 pub mod discovery;
 pub mod error;
 pub mod llamacpp;
+pub mod model_test;
 pub mod ollama;
 pub mod registry;
 
@@ -87,20 +88,25 @@ impl ToolStreamMemo {
     }
 }
 
+type ModelMemoKey = (i64, Option<String>);
+type ModelMemoValue = (ProviderKind, String, i64, ToolStreamMemo);
+
 #[derive(Default)]
-pub struct ToolStreamMemos(Mutex<HashMap<i64, (ProviderKind, String, i64, ToolStreamMemo)>>);
+pub struct ToolStreamMemos(Mutex<HashMap<ModelMemoKey, ModelMemoValue>>);
 
 impl ToolStreamMemos {
     pub fn get_or_insert(&self, connection: &Connection) -> ToolStreamMemo {
         let mut memos = self.0.lock().unwrap();
-        let entry = memos.entry(connection.id).or_insert_with(|| {
-            (
-                connection.kind,
-                connection.base_url.clone(),
-                connection.tool_stream_revision,
-                ToolStreamMemo::new(connection.tool_stream_unsupported),
-            )
-        });
+        let entry = memos
+            .entry((connection.id, connection.model.clone()))
+            .or_insert_with(|| {
+                (
+                    connection.kind,
+                    connection.base_url.clone(),
+                    connection.tool_stream_revision,
+                    ToolStreamMemo::new(connection.tool_stream_unsupported),
+                )
+            });
         if entry.2 > connection.tool_stream_revision {
             return ToolStreamMemo::new(connection.tool_stream_unsupported);
         }
@@ -211,11 +217,12 @@ impl UsageAcc {
 /// Join a connection base URL and an API path, tolerating a trailing slash
 /// on the base and a leading slash on the path.
 pub(crate) fn url_for(base: &str, path: &str) -> String {
-    format!(
-        "{}/{}",
-        base.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    )
+    let base = base
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(base)
+        .trim_end_matches('/');
+    format!("{base}/{}", path.trim_start_matches('/'))
 }
 
 /// Minimal HTTP surface a provider needs to talk to a local-LLM runtime.
@@ -364,6 +371,17 @@ mod tests {
     use futures::{StreamExt, stream};
 
     use super::*;
+
+    #[test]
+    fn endpoint_joining_preserves_prefixes_without_query_or_fragment() {
+        for (base, expected) in [
+            ("http://server/?key=old#fragment", "http://server/v1/models"),
+            ("http://server/proxy/", "http://server/proxy/v1/models"),
+            ("https://server/api", "https://server/api/v1/models"),
+        ] {
+            assert_eq!(url_for(base, "/v1/models"), expected);
+        }
+    }
 
     #[test]
     fn model_options_map_to_both_provider_protocols() {

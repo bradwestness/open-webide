@@ -9,6 +9,7 @@ use super::{chat::ChatState, git::GitState, workspace::WorkspaceState};
 pub enum SlashAction {
     Notify(String),
     SelectModel(String),
+    DefaultModel,
     Clear,
     GitDiff {
         project_id: Option<i64>,
@@ -55,6 +56,9 @@ pub fn dispatch(
 
     match cmd {
         SlashCommand::Help => SlashAction::Notify(HELP_TEXT.into()),
+        SlashCommand::Model(Some(target)) if target.eq_ignore_ascii_case("default") => {
+            SlashAction::DefaultModel
+        }
         SlashCommand::Model(Some(target)) => chat.models.with_untracked(|models| {
             match models
                 .iter()
@@ -70,7 +74,23 @@ pub fn dispatch(
             let names = chat.models.with_untracked(|models| {
                 models
                     .iter()
-                    .map(|model| format!("* `{}`", model.name))
+                    .map(|model| {
+                        format!(
+                            "* `{}`{}",
+                            model.name,
+                            if chat
+                                .selected_model
+                                .get_untracked()
+                                .as_deref()
+                                .unwrap_or(&chat.session_telemetry.get_untracked().model)
+                                == model.name
+                            {
+                                " (active)"
+                            } else {
+                                ""
+                            }
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             });
@@ -78,7 +98,7 @@ pub fn dispatch(
                 .session_telemetry
                 .with_untracked(|telemetry| telemetry.model.clone());
             SlashAction::Notify(format!(
-                "Current model: `{current}`\n\nAvailable models:\n{names}\n\nUse `/model <name>` to switch."
+                "Current model: `{current}`\n\nAvailable models:\n{names}\n\nUse `/model <name>` to switch or `/model default` to reset."
             ))
         }
         SlashCommand::Clear => SlashAction::Clear,
@@ -305,7 +325,7 @@ mod tests {
                 (
                     SlashCommand::Model(None),
                     SlashAction::Notify(
-                        "Current model: `default`\n\nAvailable models:\n\n\nUse `/model <name>` to switch."
+                        "Current model: `default`\n\nAvailable models:\n\n\nUse `/model <name>` to switch or `/model default` to reset."
                             .into(),
                     ),
                 ),

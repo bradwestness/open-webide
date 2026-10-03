@@ -112,11 +112,9 @@ impl AuthState {
         chat.connection_changing.set(false);
         settings.default_connection.set(None);
         settings.model_setup.set(Default::default());
-        settings.show_model_setup.set(false);
         settings.show_conn_form.set(false);
         settings.conn_edit_id.set(None);
         settings.conn_base_url.set(String::new());
-        settings.model_setup_server.set(None);
         settings.default_prompt.set(None);
         chat.show_terminal.set(false);
         chat.active_editor_context.set(None);

@@ -843,6 +843,7 @@ pub fn ChatPane(
                     on:keydown={
                         let submit = submit_or_command;
                         move |e: leptos::ev::KeyboardEvent| {
+                            if e.is_composing() { return; }
                             let key = e.key();
                             if !has_project()
                                 && !(streaming.get()
