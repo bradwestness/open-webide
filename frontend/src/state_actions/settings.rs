@@ -1,6 +1,5 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use openwebide_core::{Connection, ProviderKind};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
@@ -26,7 +25,6 @@ pub struct SettingsActions {
     pub on_new_connection: Callback<()>,
     pub on_edit_connection: Callback<i64>,
     pub on_cancel_connection: Callback<()>,
-    pub on_save_connection: Callback<()>,
     pub on_delete_connection: Callback<i64>,
     pub on_open_settings: Callback<()>,
     pub on_set_theme: Callback<Theme>,
@@ -122,148 +120,11 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         });
     });
 
-    let on_new_connection = Callback::new(move |()| {
-        settings.show_conn_form.set(true);
-        settings.conn_edit_id.set(None);
-        settings.conn_auto_detect.set(true);
-        settings.conn_name.set(String::new());
-        settings.conn_kind.set(ProviderKind::Ollama);
-        settings.conn_base_url.set(String::new());
-        settings.conn_model.set(String::new());
-        settings.conn_context_limit.set(String::new());
-    });
-
-    let on_edit_connection = Callback::new(move |id: i64| {
-        let Some(connection) = settings
-            .connections
-            .with(|items| items.iter().find(|connection| connection.id == id).cloned())
-        else {
-            return;
-        };
-        settings.conn_edit_id.set(Some(id));
-        settings.conn_auto_detect.set(false);
-        settings.conn_name.set(connection.name);
-        settings.conn_kind.set(connection.kind);
-        settings.conn_base_url.set(connection.base_url);
-        settings
-            .conn_model
-            .set(connection.model.unwrap_or_default());
-        settings.conn_context_limit.set(
-            connection
-                .context_limit
-                .map(|limit| limit.to_string())
-                .unwrap_or_default(),
-        );
-        settings.show_conn_form.set(true);
-    });
+    let on_new_connection = Callback::new(move |()| settings.begin_model_setup(None));
+    let on_edit_connection = Callback::new(move |id: i64| settings.begin_model_setup(Some(id)));
 
     let on_cancel_connection = Callback::new(move |()| {
         settings.show_conn_form.set(false);
-    });
-
-    let on_save_connection = Callback::new(move |()| {
-        let name = settings.conn_name.get().trim().to_string();
-        let base_url = settings.conn_base_url.get().trim().to_string();
-        if base_url.is_empty() {
-            ui.notify("Base URL is required.");
-            return;
-        }
-        let mut kind = settings.conn_kind.get();
-        let auto_detect = settings.conn_auto_detect.get();
-        let model = settings.conn_model.get().trim().to_string();
-        let mut model = if model.is_empty() { None } else { Some(model) };
-        let context_limit_input = settings.conn_context_limit.get().trim().to_string();
-        let context_limit = if context_limit_input.is_empty() {
-            None
-        } else {
-            match context_limit_input.parse::<usize>() {
-                Ok(limit) if limit > 0 => Some(limit),
-                _ => {
-                    ui.notify("Context limit must be a positive whole number of tokens.");
-                    return;
-                }
-            }
-        };
-        let generated_name = name.is_empty();
-        let mut name = if generated_name {
-            format!("{} @ {}", kind.as_str(), base_url.trim_end_matches('/'))
-        } else {
-            name
-        };
-        let edit_id = settings.conn_edit_id.get();
-        ui.clear_toast();
-        spawn_local(async move {
-            if auto_detect {
-                match api
-                    .with_value(Clone::clone)
-                    .inspect_server(&base_url, None)
-                    .await
-                {
-                    Ok(discovery) => {
-                        kind = discovery.kind;
-                        if model.is_none() {
-                            model = discovery.models.first().map(|model| model.name.clone());
-                        }
-                    }
-                    Err(error) => {
-                        ui.notify(format!(
-                            "Could not detect server: {error}. Choose its provider type manually."
-                        ));
-                        return;
-                    }
-                }
-            }
-            if generated_name {
-                name = format!("{} @ {}", kind.as_str(), base_url.trim_end_matches('/'));
-            }
-            let result = match edit_id {
-                Some(id) => {
-                    // Preserve the existing connection's enabled flag.
-                    let enabled = settings.connections.with(|connections| {
-                        connections
-                            .iter()
-                            .find(|connection| connection.id == id)
-                            .map(|connection| connection.enabled)
-                            .unwrap_or(true)
-                    });
-                    let updated = Connection {
-                        id,
-                        name: name.clone(),
-                        kind,
-                        base_url: base_url.clone(),
-                        model: model.clone(),
-                        enabled,
-                        context_limit,
-                        tool_stream_unsupported: false,
-                        tool_stream_revision: 0,
-                    };
-                    api.with_value(Clone::clone)
-                        .update_connection(&updated)
-                        .await
-                }
-                None => {
-                    api.with_value(Clone::clone)
-                        .create_connection(&name, kind, &base_url, model.as_deref(), context_limit)
-                        .await
-                }
-            };
-            match result {
-                Ok(connection) => {
-                    settings.connections.update(|connections| match edit_id {
-                        Some(id) => {
-                            if let Some(existing) =
-                                connections.iter_mut().find(|item| item.id == id)
-                            {
-                                *existing = connection;
-                            }
-                        }
-                        None => connections.push(connection),
-                    });
-                    settings.show_conn_form.set(false);
-                }
-                Err(error) => ui.notify(error),
-            }
-        });
     });
 
     let on_delete_connection = Callback::new(move |id: i64| {
@@ -350,7 +211,6 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         on_new_connection,
         on_edit_connection,
         on_cancel_connection,
-        on_save_connection,
         on_delete_connection,
         on_open_settings,
         on_set_theme,

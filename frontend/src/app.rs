@@ -207,7 +207,6 @@ pub fn App() -> impl IntoView {
         on_new_connection,
         on_edit_connection,
         on_cancel_connection,
-        on_save_connection,
         on_delete_connection,
         on_open_settings,
         on_set_theme,
@@ -289,7 +288,6 @@ pub fn App() -> impl IntoView {
                 <Sidebar
                     on_new_connection=on_new_connection
                     on_edit_connection=on_edit_connection
-                    on_save_connection=on_save_connection
                     on_cancel_connection=on_cancel_connection
                     on_delete_connection=on_delete_connection
                     on_select_session=on_select_session

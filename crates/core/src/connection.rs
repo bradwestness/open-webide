@@ -11,6 +11,13 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Ollama => "Ollama",
+            Self::LlamaCpp => "OpenAI-compatible",
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ollama => "ollama",

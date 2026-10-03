@@ -10,6 +10,7 @@ pub fn TopBar(
     on_logout: Callback<()>,
 ) -> impl IntoView {
     let auth = expect_context::<AuthState>();
+    let settings = expect_context::<crate::state::settings::SettingsState>();
     let username = Signal::derive(move || auth.username.get());
     view! {
         <header class="topbar">
@@ -25,6 +26,7 @@ pub fn TopBar(
             >
                 "⎋"
             </button>
+            <button class="icon-btn" title="Model setup" on:click=move |_| settings.begin_model_setup(settings.default_connection.get_untracked())>"☷"</button>
             <button
                 class="icon-btn"
                 title="Settings"

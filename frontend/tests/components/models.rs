@@ -566,7 +566,7 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
             let unit = Callback::new(|()| ());
             let id = Callback::new(|_: i64| ());
             view! {
-                <Sidebar on_new_connection=unit on_edit_connection=id on_save_connection=unit on_cancel_connection=unit on_delete_connection=id
+                <Sidebar on_new_connection=unit on_edit_connection=id on_cancel_connection=unit on_delete_connection=id
                     on_select_session=id on_new_session=unit on_rename_session=id on_delete_session=id
                     on_new_prompt=unit on_edit_prompt=id on_save_prompt=unit on_cancel_prompt=unit on_delete_prompt=id />
                 <Show when=move || state.settings.show_model_setup.get()><ModelSetupDialog /></Show>
@@ -616,5 +616,143 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
                 && !text.contains("Auto-compact")
                 && !text.contains("Discover local servers")
         );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn setup_wizard_discovers_customizes_and_reruns_in_both_modes() {
+    use openwebide_frontend::components::model_wizard::ModelSetupWizard;
+    use wasm_bindgen::JsCast;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.seed_connection();
+            state.settings.conn_edit_id.set(Some(1));
+            state
+                .settings
+                .conn_base_url
+                .set("http://models.test".into());
+            *state.fake.models.borrow_mut() = vec![ModelInfo {
+                name: "qwen3:8b".into(),
+            }];
+            let open = RwSignal::new(true);
+            view! { <Show when=move || open.get()><ModelSetupWizard on_close=Callback::new(move |()| open.set(false)) /></Show> }
+        });
+        settle().await;
+        assert!(mounted.root.text_content().unwrap().contains("Step 1 of 3"));
+        mounted.click_text("Next: server");
+        settle().await;
+        let key: web_sys::HtmlInputElement =
+            mounted.element("input[type=password]").unchecked_into();
+        key.set_value("test-token");
+        key.dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        mounted.click_text("Discover models");
+        settle().await;
+        assert!(mounted.root.text_content().unwrap().contains("Step 3 of 3"));
+        assert!(mounted.state.fake.server_settings.borrow()[&1].has_api_key);
+        let context: web_sys::HtmlInputElement = mounted
+            .element(".model-settings-editor input[type=number]")
+            .unchecked_into();
+        assert_eq!(context.value(), "8192");
+        context.set_value("16384");
+        context
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        mounted.click_text("Save model settings");
+        settle().await;
+        mounted.click_text("Re-run discovery");
+        settle().await;
+        let key: web_sys::HtmlInputElement =
+            mounted.element("input[type=password]").unchecked_into();
+        assert!(key.value().is_empty());
+        mounted.click_text("Discover models");
+        settle().await;
+        let context: web_sys::HtmlInputElement = mounted
+            .element(".model-settings-editor input[type=number]")
+            .unchecked_into();
+        assert_eq!(context.value(), "16384");
+        assert_eq!(mounted.state.fake.connections.borrow().len(), 1);
+        let context: web_sys::HtmlInputElement = mounted
+            .element(".model-settings-editor input[type=number]")
+            .unchecked_into();
+        context.set_value("24576");
+        context
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        settle().await;
+        mounted.click_text("Apply settings");
+        settle().await;
+        let setup = mounted.state.fake.model_setup.borrow();
+        assert_eq!(setup.profiles[0].settings.context_limit, Some(24576));
+        assert_eq!(setup.defaults.primary.as_ref().unwrap().model, "qwen3:8b");
+        assert!(mounted.root.query_selector(".modal").unwrap().is_none());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn setup_retry_keeps_one_server_and_closed_discovery_cannot_apply() {
+    use openwebide_frontend::components::model_wizard::ModelSetupWizard;
+    for close in [false, true] {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let mounted = mount_test(move |state| {
+            state.fake.model_results.borrow_mut().push_back(receiver);
+            *state.fake.models.borrow_mut() = vec![ModelInfo {
+                name: "chat".into(),
+            }];
+            let open = RwSignal::new(true);
+            view! { <Show when=move || open.get()><ModelSetupWizard on_close=Callback::new(move |()| open.set(false)) /></Show> }
+        });
+        settle().await;
+        mounted.click_text("Next: server");
+        settle().await;
+        mounted.click_text("Discover models");
+        settle().await;
+        assert_eq!(mounted.state.fake.connections.borrow().len(), 1);
+        if close {
+            mounted.element(".modal button[title=Close]").click();
+            settle().await;
+            sender
+                .send(Ok(vec![ModelInfo {
+                    name: "stale".into(),
+                }]))
+                .unwrap();
+            settle().await;
+            assert!(mounted.state.fake.model_setup.borrow().profiles.is_empty());
+            assert!(
+                mounted
+                    .state
+                    .fake
+                    .model_setup
+                    .borrow()
+                    .defaults
+                    .primary
+                    .is_none()
+            );
+            assert!(mounted.root.query_selector(".modal").unwrap().is_none());
+        } else {
+            sender
+                .send(Err("401: Authentication required".into()))
+                .unwrap();
+            settle().await;
+            assert!(
+                mounted
+                    .root
+                    .text_content()
+                    .unwrap()
+                    .contains("Authentication required")
+            );
+            mounted.click_text("Discover models");
+            settle().await;
+            assert!(mounted.root.text_content().unwrap().contains("Step 3 of 3"));
+            assert_eq!(mounted.state.fake.connections.borrow().len(), 1);
+        }
     }
 }

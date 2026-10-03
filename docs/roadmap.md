@@ -9,13 +9,10 @@ theme and prompt history, and frontend performance & polish — moved to [CHANGE
 
 ### Model setup follow-ups
 
-Finish the setup experience through shared logic and thin local/remote adapters.
-Use a rerunnable wizard: choose provider type, enter URL and optional auth token,
-then discover models/settings and review or customize them before applying.
-Allow restarting setup from the server or workspace at any time:
+The rerunnable provider → URL/auth → discovery/customization wizard is shipped.
+Remaining setup work uses the same shared facade and thin adapters:
 
-- Relabel the llama.cpp kind as **OpenAI-compatible**, retaining the stored
-  `llamacpp` value. Offer server presets that choose the initial detection probe.
+- Offer server presets that choose the initial detection probe.
 - Extend context detection to LiteLLM `/model/info` (`max_input_tokens`) and
   OpenRouter `/models` (`context_length`).
 - Run discovery automatically on first use (manual discovery supports both hosts); identify
@@ -28,12 +25,10 @@ Allow restarting setup from the server or workspace at any time:
 - Add an optional **Test model** action for structured/streamed tool calls,
   time to first token and tokens/sec. When a model rejects tools, fall back to
   plain chat with a notice and remember that capability per server + model.
-- Extend detection beyond the model editor: run it when adding a server, allow
-  server/workspace re-runs, and show the current probe and fallback source.
-  Offer a current → detected review with Apply selected / Apply all / Dismiss;
-  manually configured values are unchecked by default.
+- Extend the discovery review with field-level current → detected selection and
+  Apply selected / Apply all / Dismiss; manually configured values are unchecked
+  by default. The wizard currently fills unset values and preserves overrides.
 - Detect project type to suggest the default `/test` command and linters.
-- Show only the model name unless duplicate names need an `@ host` suffix.
 
 ### Ephemeral chat without a project
 

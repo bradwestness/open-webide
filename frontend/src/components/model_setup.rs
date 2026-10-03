@@ -69,7 +69,12 @@ pub fn ModelSetupDialog() -> impl IntoView {
     let server = settings.model_setup_server.get_untracked();
     view! {
         <super::modal::Modal title=Signal::derive(|| "Model configuration".to_string()) on_close=Callback::new(move |()| settings.show_model_setup.set(false))>
-            <div class="modal-body"><ModelSetupPanel server=server /></div>
+            <div class="modal-body">
+                <button class="btn" on:click=move |_| {
+                    settings.begin_model_setup(server);
+                }>"Run setup wizard"</button>
+                <ModelSetupPanel server=server />
+            </div>
         </super::modal::Modal>
     }
 }
@@ -132,7 +137,7 @@ pub fn ModelSetupPanel(
                     Ok(models) => {
                         for model in models {
                             items.push(ModelOption {
-                                label: format!("{} @ {}", model.name, server.base_url),
+                                label: model.name.clone(),
                                 selection: ModelSelection {
                                     server_id: server.id,
                                     model: model.name,
@@ -141,6 +146,19 @@ pub fn ModelSetupPanel(
                         }
                     }
                     Err(message) => failures.push(format!("{}: {message}", server.name)),
+                }
+            }
+            let mut names = std::collections::BTreeMap::new();
+            for item in &items {
+                *names.entry(item.label.clone()).or_insert(0_usize) += 1;
+            }
+            for item in &mut items {
+                if names[&item.label] > 1
+                    && let Some(server) = connections
+                        .iter()
+                        .find(|server| server.id == item.selection.server_id)
+                {
+                    item.label = format!("{} @ {}", item.label, server.base_url);
                 }
             }
             if !failures.is_empty() {
@@ -217,18 +235,13 @@ pub fn ModelSetupPanel(
             <button class="btn" disabled=move || discovering.get() on:click=discover>{move || if discovering.get() { "Looking for local model servers…" } else { "Discover local servers" }}</button>
             <p class="form-hint">"Checks standard model-server ports on the project’s execution host. Add other machines by URL in Servers."</p>
             <For each=move || candidates.get() key=|server| server.base_url.clone() children=move |candidate| {
-                let label = format!("Add {} @ {}", candidate.kind.as_str(), candidate.base_url);
+                let label = format!("Set up {} @ {}", candidate.kind.display_name(), candidate.base_url);
                 let url = candidate.base_url.clone();
                 view! { <button class="btn" on:click=move |_| {
-                    if settings.connections.with_untracked(|servers| servers.iter().any(|server| server.base_url.trim_end_matches('/') == url.trim_end_matches('/'))) { return; }
-                    let url = url.clone(); let model = candidate.models.first().map(|model| model.name.clone());
-                    let epoch = auth.generation.get_untracked();
-                    spawn_local(async move {
-                        let name = format!("{} @ {}", candidate.kind.as_str(), url);
-                        let result = api.with_value(Clone::clone).create_connection(&name, candidate.kind, &url, model.as_deref(), None).await;
-                        if auth.generation.get_untracked() != epoch { return; }
-                        match result { Ok(server) => settings.connections.update(|servers| servers.push(server)), Err(message) => { error.try_set(Some(message)); } }
-                    });
+                    let existing = settings.connections.with_untracked(|servers| servers.iter().find(|server| server.base_url.trim_end_matches('/') == url.trim_end_matches('/')).map(|server| server.id));
+                    settings.begin_model_setup(existing);
+                    settings.conn_kind.set(candidate.kind);
+                    settings.conn_base_url.set(url.clone());
                 }>{label}</button> }
             } />
             <Show when=move || loading.get()><p class="form-hint">"Loading models from saved servers…"</p></Show>
@@ -255,17 +268,25 @@ pub fn ModelSetupPanel(
 }
 
 #[component]
-fn ModelSettingsEditor(selection: ModelSelection) -> impl IntoView {
+pub(crate) fn ModelSettingsEditor(
+    selection: ModelSelection,
+    #[prop(optional_no_strip)] initial: Option<ModelSettings>,
+    #[prop(optional_no_strip)] discovered: Option<openwebide_core::ModelDetection>,
+    #[prop(optional)] on_edit: Option<Callback<Result<ModelSettings, String>>>,
+    #[prop(default = true)] auto_detect: bool,
+) -> impl IntoView {
     let api = expect_context::<Api>();
     let auth = expect_context::<AuthState>();
     let state = expect_context::<SettingsState>();
-    let saved = state.model_setup.with_untracked(|setup| {
-        setup
-            .profiles
-            .iter()
-            .find(|profile| profile.selection == selection)
-            .map(|profile| profile.settings.clone())
-            .unwrap_or_default()
+    let saved = initial.unwrap_or_else(|| {
+        state.model_setup.with_untracked(|setup| {
+            setup
+                .profiles
+                .iter()
+                .find(|profile| profile.selection == selection)
+                .map(|profile| profile.settings.clone())
+                .unwrap_or_default()
+        })
     });
     let context = RwSignal::new(
         saved
@@ -309,7 +330,8 @@ fn ModelSettingsEditor(selection: ModelSelection) -> impl IntoView {
     });
     let error = RwSignal::new(Option::<String>::None);
     let busy = RwSignal::new(false);
-    let detection = RwSignal::new(Option::<openwebide_core::ModelDetection>::None);
+    let has_discovery = discovered.is_some();
+    let detection = RwSignal::new(discovered);
     let detecting = RwSignal::new(false);
     let selection_for_detection = selection.clone();
     let detect = Callback::new(move |()| {
@@ -332,44 +354,61 @@ fn ModelSettingsEditor(selection: ModelSelection) -> impl IntoView {
             }
         });
     });
-    detect.run(());
-    let save = move |_| {
-        let result = (|| -> Result<ModelSettings, String> {
-            let number = |signal: RwSignal<String>| -> Result<Option<usize>, String> {
-                let value = signal.get_untracked();
-                if value.trim().is_empty() {
-                    Ok(None)
-                } else {
-                    value
-                        .parse::<usize>()
-                        .map(Some)
-                        .map_err(|_| "Token limits must be positive whole numbers.".into())
-                }
-            };
-            let mut settings = ModelSettings {
-                context_limit: number(context)?,
-                max_output_tokens: number(output)?,
-                thinking: thinking.get_untracked(),
-                tools: tools.get_untracked(),
-                auto_compact_threshold: number(threshold)?
-                    .map(u8::try_from)
-                    .transpose()
-                    .map_err(|_| "Invalid auto-compaction percentage.".to_string())?,
-                ..Default::default()
-            };
-            for (name, value) in sampling {
-                let value = value.get_untracked();
-                if !value.trim().is_empty() {
-                    settings.sampling.insert(
-                        name.into(),
-                        serde_json::from_str(&value)
-                            .map_err(|_| format!("Enter a number for {name}."))?,
-                    );
-                }
+    if auto_detect && !has_discovery {
+        detect.run(());
+    }
+    let read_settings = std::rc::Rc::new(move || -> Result<ModelSettings, String> {
+        let number = |signal: RwSignal<String>| -> Result<Option<usize>, String> {
+            let value = signal.get_untracked();
+            if value.trim().is_empty() {
+                Ok(None)
+            } else {
+                value
+                    .parse::<usize>()
+                    .map(Some)
+                    .map_err(|_| "Token limits must be positive whole numbers.".into())
             }
-            settings.validate()?;
-            Ok(settings)
-        })();
+        };
+        let mut settings = ModelSettings {
+            context_limit: number(context)?,
+            max_output_tokens: number(output)?,
+            thinking: thinking.get_untracked(),
+            tools: tools.get_untracked(),
+            auto_compact_threshold: number(threshold)?
+                .map(u8::try_from)
+                .transpose()
+                .map_err(|_| "Invalid auto-compaction percentage.".to_string())?,
+            ..saved.clone()
+        };
+        for (name, value) in sampling {
+            let value = value.get_untracked();
+            if !value.trim().is_empty() {
+                settings.sampling.insert(
+                    name.into(),
+                    serde_json::from_str(&value)
+                        .map_err(|_| format!("Enter a number for {name}."))?,
+                );
+            }
+        }
+        settings.validate()?;
+        Ok(settings)
+    });
+    if let Some(on_edit) = on_edit {
+        let read_settings = read_settings.clone();
+        Effect::new(move |_| {
+            context.track();
+            output.track();
+            threshold.track();
+            thinking.track();
+            tools.track();
+            for (_, value) in sampling {
+                value.track();
+            }
+            on_edit.run(read_settings());
+        });
+    }
+    let save = move |_| {
+        let result = read_settings();
         let profile = match result {
             Ok(settings) => ModelProfile {
                 selection: selection.clone(),

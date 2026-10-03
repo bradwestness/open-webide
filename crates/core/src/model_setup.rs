@@ -179,6 +179,26 @@ pub struct ModelDetection {
     pub quantization: Option<String>,
     pub loaded: Option<bool>,
 }
+impl ModelDetection {
+    /// Detected defaults fill gaps; explicit server/model overrides always win.
+    pub fn defaults_for(&self, current: &ModelSettings) -> ModelSettings {
+        let mut settings = current.clone();
+        settings.context_limit = settings.context_limit.or(self.context_limit);
+        if !self.capabilities.is_empty() {
+            settings.tools = settings.tools.or(Some(
+                self.capabilities
+                    .iter()
+                    .any(|capability| capability == "tools"),
+            ));
+            settings.thinking = settings.thinking.or(Some(
+                self.capabilities
+                    .iter()
+                    .any(|capability| capability == "thinking"),
+            ));
+        }
+        settings
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerDiscovery {
     pub base_url: String,
@@ -272,5 +292,31 @@ mod tests {
             runtime.apply_to(&mut request);
             assert_eq!(request.model_settings.max_output_tokens, Some(expected));
         }
+    }
+    #[test]
+    fn discovery_fills_unknown_settings_without_replacing_overrides() {
+        let detected = ModelDetection {
+            context_limit: Some(32768),
+            capabilities: vec!["tools".into()],
+            ..Default::default()
+        };
+        let current = ModelSettings {
+            context_limit: Some(8192),
+            tools: Some(false),
+            auto_compact_threshold: Some(0),
+            ..Default::default()
+        };
+        let merged = detected.defaults_for(&current);
+        assert_eq!(merged.context_limit, Some(8192));
+        assert_eq!(merged.tools, Some(false));
+        assert_eq!(merged.auto_compact_threshold, Some(0));
+        assert_eq!(merged.thinking, Some(false));
+        assert_eq!(
+            detected
+                .defaults_for(&ModelSettings::default())
+                .context_limit,
+            Some(32768)
+        );
+        assert_eq!(ModelDetection::default().defaults_for(&current), current);
     }
 }

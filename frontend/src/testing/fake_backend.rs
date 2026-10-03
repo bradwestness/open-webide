@@ -306,7 +306,9 @@ impl Backend for FakeBackend {
             if let Some(timeout) = update.timeout_seconds {
                 item.timeout_seconds = timeout;
             }
-            item.keep_alive.clone_from(&update.keep_alive);
+            if let Some(keep_alive) = &update.keep_alive {
+                item.keep_alive = (!keep_alive.trim().is_empty()).then(|| keep_alive.clone());
+            }
             Ok(item.clone())
         })
     }

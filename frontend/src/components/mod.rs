@@ -36,3 +36,5 @@ pub use ui::{Button, ButtonSize, ButtonVariant};
 pub mod model_setup;
 
 mod approval_mode;
+
+pub mod model_wizard;

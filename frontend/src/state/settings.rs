@@ -56,15 +56,31 @@ pub struct SettingsState {
     pub prompt_content: RwSignal<String>,
     pub show_conn_form: RwSignal<bool>,
     pub conn_edit_id: RwSignal<Option<i64>>,
-    pub conn_name: RwSignal<String>,
     pub conn_kind: RwSignal<ProviderKind>,
-    pub conn_auto_detect: RwSignal<bool>,
     pub conn_base_url: RwSignal<String>,
-    pub conn_model: RwSignal<String>,
-    pub conn_context_limit: RwSignal<String>,
 }
 
 impl SettingsState {
+    pub fn begin_model_setup(self, server: Option<i64>) {
+        let connection = self.connections.with_untracked(|connections| {
+            connections
+                .iter()
+                .find(|connection| Some(connection.id) == server)
+                .cloned()
+        });
+        self.conn_edit_id
+            .set(connection.as_ref().map(|connection| connection.id));
+        self.conn_kind.set(
+            connection
+                .as_ref()
+                .map_or(ProviderKind::Ollama, |connection| connection.kind),
+        );
+        self.conn_base_url
+            .set(connection.map_or_else(String::new, |connection| connection.base_url));
+        self.show_model_setup.set(false);
+        self.show_conn_form.set(true);
+    }
+
     pub fn new(theme: Theme, bridge_url: String) -> Self {
         Self {
             show_settings: RwSignal::new(false),
@@ -83,12 +99,8 @@ impl SettingsState {
             prompt_content: RwSignal::new(String::new()),
             show_conn_form: RwSignal::new(false),
             conn_edit_id: RwSignal::new(None),
-            conn_name: RwSignal::new(String::new()),
             conn_kind: RwSignal::new(ProviderKind::Ollama),
-            conn_auto_detect: RwSignal::new(true),
             conn_base_url: RwSignal::new(String::new()),
-            conn_model: RwSignal::new(String::new()),
-            conn_context_limit: RwSignal::new(String::new()),
         }
     }
 }

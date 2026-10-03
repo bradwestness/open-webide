@@ -17,6 +17,8 @@ for what's still ahead.
 
 ### Added
 
+- Set up model servers through a rerunnable wizard: choose Ollama or OpenAI-compatible, enter URL and optional write-only auth token, then discover models and review/customize settings. Retry discovery without duplicate servers, preserve saved tokens and manual model overrides, and choose an initial default model when applying reviewed settings. Launch setup from Servers, model configuration or the workspace toolbar in either mode.
+
 - Automatically compact local and remote chat/agent context before model requests and tool continuations, using the configured threshold (85% by default, 0 disables). Reserve response and summary space, use provider tokenization with an estimate fallback, summarize through the fast model or primary fallback, and persist reusable summaries while retaining original history. Failed or cancelled summaries never replace history.
 
 - Render Markdown tables with aligned columns, themed headers and borders, and horizontal scrolling for wide tables in agent replies and file previews. Support strikethrough while retaining sans-serif prose and monospace code in both modes.

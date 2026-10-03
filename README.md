@@ -20,6 +20,7 @@ sessions, and preferences live in SQLite, so you can resume from another browser
 - Choose personal primary/fast defaults in Settings. Configure shared servers,
   credentials, context, sampling, output, thinking, and tool settings from Servers. The saved auto-compaction
   threshold defaults to 85% (0 disables it). Local and remote runs compact before model requests, reserve output space, and retain original history alongside saved summaries.
+  Server setup uses a rerunnable provider → URL/auth → model discovery wizard; review and customize detected settings before applying. Re-run it from Servers or the model setup toolbar button.
 - Use slash commands such as `/model`, `/test`, `/diff`, `/commit`, and `/sync`,
   with live token/speed telemetry and a context-window gauge.
 
