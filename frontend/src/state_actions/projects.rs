@@ -25,6 +25,7 @@ pub struct ProjectsActionContext {
 #[derive(Clone, Copy)]
 pub struct ProjectsActions {
     pub select_project: Callback<i64>,
+    pub select_chat: Callback<()>,
     pub close_project: Callback<i64>,
     pub on_open_project: Callback<i64>,
     pub on_open_local: Callback<()>,
@@ -61,6 +62,19 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
         refresh_git.run(());
     });
 
+    let select_chat = Callback::new(move |()| {
+        let Some(id) = active_project.get_untracked() else {
+            return;
+        };
+        workspace.save_active(id);
+        git.save_active(id);
+        workspace.clear_active();
+        git.clear_active();
+        chat.active_editor_context.set(None);
+        chat.restore_chat_session();
+        ui.clear_toast();
+    });
+
     let close_project = Callback::new(move |id: i64| {
         let was_active = active_project.get() == Some(id);
         let next = projects.close_tab(id);
@@ -87,7 +101,8 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                     }
                     workspace.clear_active();
                     git.clear_active();
-                    chat.active_session.set(None);
+                    chat.active_editor_context.set(None);
+                    chat.restore_chat_session();
                 }
             }
         }
@@ -219,6 +234,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
 
     ProjectsActions {
         select_project,
+        select_chat,
         close_project,
         on_open_project,
         on_open_local,

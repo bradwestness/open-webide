@@ -38,11 +38,11 @@ pub fn App() -> impl IntoView {
         crate::bridge::default_bridge_url(),
     );
     provide_context(settings);
-    let layout = LayoutState::new();
+    let projects_state = ProjectsState::new();
+    let layout = LayoutState::with_active_project(projects_state.active_project);
     provide_context(layout);
     let layout_actions = crate::state_actions::layout::LayoutActions::new(api, layout, auth, ui);
     provide_context(layout_actions);
-    let projects_state = ProjectsState::new();
     let active_project = projects_state.active_project;
     let workspace_state = WorkspaceState::with_active_project(active_project);
     let git_state = GitState::with_active_project(active_project);
@@ -200,6 +200,7 @@ pub fn App() -> impl IntoView {
     });
     let ProjectsActions {
         select_project,
+        select_chat,
         close_project,
         on_open_project,
         on_open_local,
@@ -302,6 +303,7 @@ pub fn App() -> impl IntoView {
                     on_logout=on_logout
                 />
                 <TabBar
+                    on_select_chat=Callback::new(move |()| { select_chat.run(()); layout_actions.show.run(Panel::Chat); })
                     on_select=select_project
                     on_close=close_project
                     on_open_local=on_open_local
@@ -309,7 +311,7 @@ pub fn App() -> impl IntoView {
                     on_open_project=on_open_project
                     on_delete_project=on_delete_project
                 />
-                <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.panels.get().editor { "" } else { " editor-collapsed" })>
+                <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.visible_panels.get().editor { "" } else { " editor-collapsed" })>
                 <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
                 <ToolPanel panel=Panel::Sessions>
                 <Sidebar
@@ -366,8 +368,6 @@ pub fn App() -> impl IntoView {
                 <ChatPane
                     on_select_connection_model=chat_actions.select_connection_model
                     on_send=on_send
-                    on_open_local=on_open_local
-                    on_open_remote=on_open_remote
                     on_resume_run=chat_actions.resume_run
                     on_stop=on_stop
                     on_permission=on_permission
@@ -375,7 +375,7 @@ pub fn App() -> impl IntoView {
                     on_slash_command=on_slash_command
                 />
                 </ToolPanel>
-                <Show when=move || !layout.panels.get().editor && !layout.panels.get().chat>
+                <Show when=move || !layout.visible_panels.get().editor && !layout.visible_panels.get().chat>
                     <div class="panel-empty">"Choose a panel tab to expand it."</div>
                 </Show>
             </div>

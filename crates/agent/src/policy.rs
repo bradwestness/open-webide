@@ -15,6 +15,7 @@ use crate::tools::ToolName;
 /// Every other tool (destructive operations, external network calls like
 /// `fetch_web_page`, shell execution, git mutations) requires user approval.
 pub const AUTO_APPROVED: &[&str] = &[
+    "host_info",
     "read_file",
     "list_dir",
     "search",
@@ -28,6 +29,7 @@ pub const AUTO_APPROVED: &[&str] = &[
 /// host git operations) rather than against the in-memory VFS or the web
 /// client.
 pub const BRIDGE_TOOLS: &[&str] = &[
+    "host_info",
     "run_command",
     "git_status",
     "git_diff",

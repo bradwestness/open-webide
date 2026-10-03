@@ -754,9 +754,8 @@ impl<D: Db> Store<D> {
         if let Some(p) = project_id {
             self.get_project(p, user_id).await?;
         }
-        let res = self
-            .db
-            .execute(
+        let id = self.db.transaction(|tx| async move {
+            let res = tx.execute(
                 "INSERT INTO sessions (name, connection_id, system_prompt_id, project_id, user_id, created_at)
                  VALUES (?, ?, ?, ?, ?, ?)",
                 &[
@@ -769,7 +768,17 @@ impl<D: Db> Store<D> {
                 ],
             )
             .await?;
-        self.get_session(res.last_insert_rowid, user_id).await
+            tx.execute(
+                "INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)",
+                &[
+                    DbValue::Int(user_id.get()),
+                    DbValue::Text(openwebide_core::ApprovalMode::setting_key(res.last_insert_rowid)),
+                    DbValue::Text(serde_json::to_string(&openwebide_core::ApprovalMode::NEW_SESSION).expect("approval mode serializes")),
+                ],
+            ).await?;
+            Ok(res.last_insert_rowid)
+        }).await?;
+        self.get_session(id, user_id).await
     }
 
     pub async fn set_session_connection(
@@ -2447,6 +2456,74 @@ mod tests {
                 store.list_messages(session.id).await.unwrap()[0].content,
                 "hello"
             );
+        });
+    }
+
+    #[test]
+    fn new_session_mode_is_auto_and_creation_rolls_back_if_mode_cannot_be_saved() {
+        let store = test_store();
+        let user = test_user(&store, "alice", UserRole::Admin);
+        block_on(async {
+            let legacy = store
+                .create_session("legacy", None, None, None, user, 1)
+                .await
+                .unwrap();
+            store
+                .db
+                .execute(
+                    "DELETE FROM user_settings WHERE user_id = ? AND key = ?",
+                    &[
+                        DbValue::Int(user.get()),
+                        DbValue::Text(openwebide_core::ApprovalMode::setting_key(legacy.id)),
+                    ],
+                )
+                .await
+                .unwrap();
+            for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+                let project = store
+                    .create_project(
+                        &NewProject {
+                            name: "p".into(),
+                            mode,
+                            path: Some("p".into()),
+                        },
+                        user,
+                        1,
+                    )
+                    .await
+                    .unwrap();
+                let session = store
+                    .create_session("new", None, None, Some(project.id), user, 2)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    store
+                        .get_user_setting(
+                            user,
+                            &openwebide_core::ApprovalMode::setting_key(session.id)
+                        )
+                        .await
+                        .unwrap()
+                        .as_deref(),
+                    Some("\"auto\"")
+                );
+            }
+            assert!(
+                store
+                    .get_user_setting(user, &openwebide_core::ApprovalMode::setting_key(legacy.id))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let before = store.list_sessions(user).await.unwrap();
+            store.db.execute("CREATE TRIGGER reject_session_mode BEFORE INSERT ON user_settings BEGIN SELECT RAISE(ABORT, 'mode unavailable'); END", &[]).await.unwrap();
+            assert!(
+                store
+                    .create_session("failed", None, None, None, user, 3)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(store.list_sessions(user).await.unwrap(), before);
         });
     }
 

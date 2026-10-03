@@ -34,7 +34,19 @@ impl LayoutActions {
             layout.active_resizer.set(Default::default());
             pending.set_value(None);
         });
+        Effect::new(move |_| {
+            layout.active_project.track();
+            layout.active_resizer.set(Default::default());
+            let viewport = web_sys::window()
+                .and_then(|window| window.inner_width().ok())
+                .and_then(|value| value.as_f64())
+                .unwrap_or(1200.0);
+            layout.fit(viewport);
+        });
         let change = Callback::new(move |(panel, visible): (Panel, bool)| {
+            if !layout.available(panel) {
+                return;
+            }
             let mut panels = layout.panels.get_untracked();
             if panels.visible(panel) == visible {
                 return;

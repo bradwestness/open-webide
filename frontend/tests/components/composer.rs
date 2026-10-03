@@ -17,7 +17,7 @@ use wasm_bindgen_test::*;
 use super::support::{chat_view, mount_test, settle};
 
 #[wasm_bindgen_test]
-async fn composer_requires_a_project_and_reenables_when_one_opens() {
+async fn composer_creates_a_projectless_session_and_sends() {
     let mounted = mount_test(|state| {
         state.seed_connection();
         chat_view(state)
@@ -25,48 +25,34 @@ async fn composer_requires_a_project_and_reenables_when_one_opens() {
     settle().await;
     let textarea: web_sys::HtmlTextAreaElement =
         mounted.element(".composer-input").unchecked_into();
-    let send: web_sys::HtmlButtonElement = mounted.element(".tui-btn-send").unchecked_into();
-    assert!(textarea.disabled());
-    assert!(send.disabled());
-    let text = mounted.root.text_content().unwrap();
-    for label in [
-        "Open a project to start a session",
-        "Open local",
-        "Open remote",
-    ] {
-        assert!(text.contains(label));
-    }
-    mounted.input("ignored");
-    assert!(mounted.state.chat.draft.get_untracked().is_empty());
-    for draft in ["hello", "/help"] {
-        mounted.state.chat.draft.set(draft.into());
-        settle().await;
-        assert!(send.disabled());
-        mounted.key("Enter", "Enter", false);
-        mounted.key("Enter", "Enter", true);
-        mounted.click(".tui-btn-send");
-        settle().await;
-        assert_eq!(mounted.state.chat.draft.get_untracked(), draft);
-        assert!(mounted.state.chat.messages.get_untracked().is_empty());
-        assert!(mounted.state.chat.prompt_history.get_untracked().is_empty());
-    }
-    assert!(
-        !mounted
-            .state
-            .fake
-            .calls
-            .borrow()
-            .iter()
-            .any(|call| matches!(call, Call::SendMessage { .. }))
-    );
-    mounted.state.seed_project();
-    mounted.state.chat.draft.set("hello".into());
-    settle().await;
     assert!(!textarea.disabled());
-    assert!(!send.disabled());
     assert!(mounted.root.query_selector(".chat-hint").unwrap().is_none());
+    mounted.input("hello");
     mounted.key("Enter", "Enter", false);
     settle().await;
+    let sessions = mounted.state.fake.sessions.borrow();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].project_id, None);
+    assert_eq!(sessions[0].name, "hello");
+    assert_eq!(
+        mounted
+            .state
+            .chat
+            .approval_mode
+            .get_untracked()
+            .get(&sessions[0].id),
+        Some(&openwebide_core::ApprovalMode::Auto)
+    );
+    assert_eq!(
+        mounted
+            .state
+            .fake
+            .settings
+            .borrow()
+            .get(&openwebide_core::ApprovalMode::setting_key(sessions[0].id))
+            .map(String::as_str),
+        Some("\"auto\"")
+    );
     assert!(
         mounted
             .state
@@ -110,34 +96,14 @@ async fn selected_sessions_remain_viewable_without_a_project() {
                 .unwrap()
                 .contains("Saved answer")
         );
-        assert!(
-            mounted
-                .root
-                .text_content()
-                .unwrap()
-                .contains("Open a project to start a session")
-        );
-        assert!(mounted.element(".composer-input").has_attribute("disabled"));
+
+        assert!(!mounted.element(".composer-input").has_attribute("disabled"));
         assert!(mounted.element(".tui-btn-send").has_attribute("disabled"));
-        mounted.state.chat.draft.set("hello".into());
-        mounted.key("Enter", "Enter", false);
-        settle().await;
-        assert!(
-            !mounted
-                .state
-                .fake
-                .calls
-                .borrow()
-                .iter()
-                .any(|call| matches!(call, Call::SendMessage { .. }))
-        );
     }
 }
 
 #[wasm_bindgen_test]
-async fn project_open_buttons_call_their_callbacks_and_alt_shortcuts_are_blocked() {
-    let local = RwSignal::new(0);
-    let remote = RwSignal::new(0);
+async fn projectless_chat_supports_permission_shortcuts() {
     let permissions = RwSignal::new(0);
     let mounted = mount_test(move |state| {
         state.chat.current_run_anchor.set(Some(1));
@@ -154,8 +120,6 @@ async fn project_open_buttons_call_their_callbacks_and_alt_shortcuts_are_blocked
             <ChatPane
                 on_select_connection_model=Callback::new(|_| ())
                 on_send=Callback::new(|()| panic!("sent without a project"))
-                on_open_local=Callback::new(move |()| local.update(|n| *n += 1))
-                on_open_remote=Callback::new(move |()| remote.update(|n| *n += 1))
                 on_resume_run=Callback::new(|()| ())
                 on_stop=Callback::new(|()| ())
                 on_permission=Callback::new(move |_| permissions.update(|n| *n += 1))
@@ -175,11 +139,7 @@ async fn project_open_buttons_call_their_callbacks_and_alt_shortcuts_are_blocked
     for (key, code) in [("y", "KeyY"), ("n", "KeyN"), ("a", "KeyA")] {
         mounted.key(key, code, true);
     }
-    assert_eq!(permissions.get_untracked(), 0);
-    mounted.click_text("Open local");
-    mounted.click_text("Open remote");
-    assert_eq!(local.get_untracked(), 1);
-    assert_eq!(remote.get_untracked(), 1);
+    assert_eq!(permissions.get_untracked(), 3);
 }
 
 #[wasm_bindgen_test]
@@ -257,46 +217,6 @@ async fn cancel_shortcuts_work_after_closing_the_last_project() {
         let textarea: web_sys::HtmlTextAreaElement =
             mounted.element(".composer-input").unchecked_into();
         assert!(!textarea.disabled());
-        let draft = state.chat.draft.get_untracked();
-        let history = state.chat.prompt_history.get_untracked();
-        for (blocked_key, blocked_code) in [
-            ("x", "KeyX"),
-            ("Enter", "Enter"),
-            ("ArrowUp", "ArrowUp"),
-            ("ArrowDown", "ArrowDown"),
-        ] {
-            let init = web_sys::KeyboardEventInit::new();
-            init.set_key(blocked_key);
-            init.set_code(blocked_code);
-            init.set_bubbles(true);
-            init.set_cancelable(true);
-            let event = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
-                .unwrap();
-            textarea.dispatch_event(&event).unwrap();
-            assert!(event.default_prevented());
-        }
-        for input in ["ignored", "/help"] {
-            mounted.input(input);
-            mounted.key("Enter", "Enter", false);
-            settle().await;
-            assert_eq!(state.chat.draft.get_untracked(), draft);
-        }
-        assert_eq!(state.chat.prompt_history.get_untracked(), history);
-        assert_eq!(
-            fake.sent()
-                .iter()
-                .filter(|message| matches!(message, BridgeClientMessage::RunStart { .. }))
-                .count(),
-            1
-        );
-        assert!(
-            !state
-                .fake
-                .calls
-                .borrow()
-                .iter()
-                .any(|call| matches!(call, Call::SendMessage { .. }))
-        );
         textarea.set_selection_start(Some(0)).unwrap();
         textarea.set_selection_end(Some(0)).unwrap();
         let init = web_sys::KeyboardEventInit::new();
@@ -323,7 +243,38 @@ async fn cancel_shortcuts_work_after_closing_the_last_project() {
         });
         settle().await;
         assert!(!state.chat.streaming.get_untracked());
-        assert!(textarea.disabled());
+        assert!(!textarea.disabled());
         state.bridge.get_untracked().unwrap().close();
     }
+}
+
+#[wasm_bindgen_test]
+async fn new_projectless_session_preserves_an_explicit_manual_choice() {
+    let mounted = mount_test(|state| {
+        state.seed_connection();
+        state
+            .chat
+            .draft_approval_mode
+            .set(openwebide_core::ApprovalMode::Default);
+        chat_view(state)
+    });
+    settle().await;
+    assert_eq!(
+        mounted.element(".tui-mode-badge").text_content().as_deref(),
+        Some("[MANUAL]")
+    );
+    mounted.input("hello");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    let session = mounted.state.fake.sessions.borrow()[0].id;
+    assert_eq!(
+        mounted
+            .state
+            .fake
+            .settings
+            .borrow()
+            .get(&openwebide_core::ApprovalMode::setting_key(session))
+            .map(String::as_str),
+        Some("\"default\"")
+    );
 }

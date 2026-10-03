@@ -69,6 +69,13 @@ impl GitState {
         self.head_content.set(None);
     }
 
+    pub fn save_active(&self, project_id: i64) {
+        let status = self.status.get_untracked();
+        self.statuses_by_project.update(|statuses| {
+            statuses.insert(project_id, status);
+        });
+    }
+
     pub fn clear_active(&self) {
         self.status.set(None);
         self.head_content.set(None);

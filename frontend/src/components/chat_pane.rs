@@ -608,8 +608,6 @@ fn TuiStatusLine(
 pub fn ChatPane(
     on_select_connection_model: Callback<(i64, String)>,
     on_send: Callback<()>,
-    on_open_local: Callback<()>,
-    on_open_remote: Callback<()>,
     on_resume_run: Callback<()>,
     on_stop: Callback<()>,
     /// Approve or deny a gated tool call: `(tool_call_id, approved)`.
@@ -630,7 +628,6 @@ pub fn ChatPane(
     let session_telemetry = chat.session_telemetry.read_only();
     let has_session = chat.has_session;
     let local_mode = Signal::from(projects.local_mode);
-    let has_project = move || projects.active_project.get().is_some();
     let scroll_ref = NodeRef::<leptos::html::Div>::new();
     let input_ref = NodeRef::<leptos::html::Textarea>::new();
 
@@ -672,9 +669,6 @@ pub fn ChatPane(
 
     let submit_or_command = {
         move || {
-            if !has_project() {
-                return;
-            }
             let current = draft.get().trim().to_string();
             if current.is_empty() {
                 return;
@@ -802,21 +796,11 @@ pub fn ChatPane(
                 </div>
             </Show>
 
-            <Show when=move || !has_project()>
-                <div class="chat-hint">
-                    <p>"Open a project to start a session"</p>
-                    <button class="btn" on:click=move |_| on_open_local.run(())>"Open local"</button>
-                    " "
-                    <button class="btn" on:click=move |_| on_open_remote.run(())>"Open remote"</button>
-                </div>
-            </Show>
-
             <div class="composer tui-composer">
                 <span class="tui-prompt-glyph">"❯"</span>
                 <textarea
                     class="composer-input tui-input"
                     node_ref=input_ref
-                    disabled=move || !has_project() && !streaming.get()
                     placeholder=move || {
                         if let Some((_, name)) = awaiting_step.get() {
                             if name == "write_file" {
@@ -831,9 +815,6 @@ pub fn ChatPane(
                         }
                     }
                     on:input=move |e: web_sys::Event| {
-                        if !has_project() {
-                            return;
-                        }
                         if let Some(target) = e.target()
                             && let Some(textarea) = target.dyn_ref::<web_sys::HtmlTextAreaElement>()
                         {
@@ -845,14 +826,6 @@ pub fn ChatPane(
                         move |e: leptos::ev::KeyboardEvent| {
                             if e.is_composing() { return; }
                             let key = e.key();
-                            if !has_project()
-                                && !(streaming.get()
-                                    && (key == "Escape" || ((e.ctrl_key() || e.meta_key()) && key == "c")))
-                            {
-                                e.prevent_default();
-                                return;
-                            }
-
                             // Intercept permission handshake if waiting for approval
                             if let Some((id, name)) = awaiting_step.get()
                                 && e.alt_key() && !e.ctrl_key() && !e.meta_key()
@@ -965,7 +938,7 @@ pub fn ChatPane(
                         view! {
                             <button
                                 class="btn send tui-btn-send"
-                                disabled=move || !has_project() || chat.creating_session.get() || draft.with(|d| d.trim().is_empty())
+                                disabled=move || chat.creating_session.get() || draft.with(|d| d.trim().is_empty())
                                 on:click=move |_| submit()
                             >
                                 "Send"

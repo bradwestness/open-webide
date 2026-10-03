@@ -107,6 +107,7 @@ pub enum Tool {
     FetchWebPage(FetchWebPageArgs),
     RunCommand(RunCommandArgs),
     GitStatus,
+    HostInfo,
     GitDiff(GitDiffArgs),
     GitCommit(GitCommitArgs),
     GitBranch(GitBranchArgs),
@@ -130,6 +131,7 @@ impl Tool {
             Tool::FetchWebPage(args) => format!("fetch web page {}", args.url),
             Tool::RunCommand(args) => format!("run '{}'", args.command),
             Tool::GitStatus => "inspect git status".to_string(),
+            Tool::HostInfo => "inspect bridge host hardware".into(),
             Tool::GitDiff(args) => match args.path.as_deref() {
                 Some(p) => format!("inspect git diff for '{p}'"),
                 None => "inspect repository git diff".to_string(),
@@ -158,6 +160,7 @@ pub enum ToolName {
     FetchWebPage,
     RunCommand,
     GitStatus,
+    HostInfo,
     GitDiff,
     GitCommit,
     GitBranch,
@@ -188,6 +191,7 @@ impl ToolName {
         ToolName::FetchWebPage,
         ToolName::RunCommand,
         ToolName::GitStatus,
+        ToolName::HostInfo,
         ToolName::GitDiff,
         ToolName::GitCommit,
         ToolName::GitBranch,
@@ -205,6 +209,7 @@ impl ToolName {
             ToolName::FetchWebPage => "fetch_web_page",
             ToolName::RunCommand => "run_command",
             ToolName::GitStatus => "git_status",
+            ToolName::HostInfo => "host_info",
             ToolName::GitDiff => "git_diff",
             ToolName::GitCommit => "git_commit",
             ToolName::GitBranch => "git_branch",
@@ -316,6 +321,11 @@ impl ToolName {
                     "required": ["command"]
                 }),
             },
+            ToolName::HostInfo => ToolDefinition {
+                name: "host_info".into(),
+                description: "Read CPU, RAM, disk capacity, GPUs and available temperature/fan sensors on the execution bridge host. This is not necessarily the machine hosting the model. Unsupported readings are unavailable; container readings may reflect container limits.".into(),
+                parameters: json!({"type":"object", "properties":{}, "additionalProperties":false}),
+            },
             ToolName::GitStatus => ToolDefinition {
                 name: "git_status".into(),
                 description: "Inspect uncommitted modifications, untracked files, and current branch status.".into(),
@@ -371,6 +381,7 @@ impl ToolName {
                 | ToolName::ListDir
                 | ToolName::Search
                 | ToolName::GrepSearch
+                | ToolName::HostInfo
                 | ToolName::GitStatus
                 | ToolName::GitDiff
                 | ToolName::SearchWeb
@@ -387,6 +398,7 @@ impl ToolName {
         matches!(
             self,
             ToolName::RunCommand
+                | ToolName::HostInfo
                 | ToolName::GitStatus
                 | ToolName::GitDiff
                 | ToolName::GitCommit
@@ -413,6 +425,7 @@ impl FromStr for ToolName {
             "fetch_web_page" => Ok(ToolName::FetchWebPage),
             "run_command" => Ok(ToolName::RunCommand),
             "git_status" => Ok(ToolName::GitStatus),
+            "host_info" => Ok(ToolName::HostInfo),
             "git_diff" => Ok(ToolName::GitDiff),
             "git_commit" => Ok(ToolName::GitCommit),
             "git_branch" => Ok(ToolName::GitBranch),
@@ -478,6 +491,17 @@ pub fn parse(call: &ToolCall) -> Result<Tool, ToolArgError> {
         ToolName::SearchWeb => parse_as!(SearchWeb, SearchWebArgs),
         ToolName::FetchWebPage => parse_as!(FetchWebPage, FetchWebPageArgs),
         ToolName::RunCommand => parse_as!(RunCommand, RunCommandArgs),
+        ToolName::HostInfo => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct NoArgs {}
+            serde_json::from_str::<NoArgs>(raw)
+                .map(|_| Tool::HostInfo)
+                .map_err(|error| ToolArgError::InvalidArguments {
+                    tool: "host_info",
+                    error: error.to_string(),
+                })
+        }
         ToolName::GitStatus => unreachable!("handled above"),
         ToolName::GitDiff => parse_as!(GitDiff, GitDiffArgs),
         ToolName::GitCommit => parse_as!(GitCommit, GitCommitArgs),
@@ -568,6 +592,7 @@ mod tests {
             Tool::FetchWebPage(_) => ToolName::FetchWebPage,
             Tool::RunCommand(_) => ToolName::RunCommand,
             Tool::GitStatus => ToolName::GitStatus,
+            Tool::HostInfo => ToolName::HostInfo,
             Tool::GitDiff(_) => ToolName::GitDiff,
             Tool::GitCommit(_) => ToolName::GitCommit,
             Tool::GitBranch(_) => ToolName::GitBranch,
@@ -674,6 +699,7 @@ mod tests {
             ToolName::Search,
             ToolName::GrepSearch,
             ToolName::GitStatus,
+            ToolName::HostInfo,
             ToolName::GitDiff,
             ToolName::SearchWeb,
         ];
@@ -693,6 +719,7 @@ mod tests {
                 matches!(
                     name,
                     ToolName::RunCommand
+                        | ToolName::HostInfo
                         | ToolName::GitStatus
                         | ToolName::GitDiff
                         | ToolName::GitCommit

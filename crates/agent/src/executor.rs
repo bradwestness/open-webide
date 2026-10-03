@@ -608,6 +608,15 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Tool::SearchWeb(args) => self.search_web(&args).await,
             Tool::FetchWebPage(args) => self.fetch_web_page(&args).await,
             Tool::RunCommand(args) => self.run_command(&args).await,
+            Tool::HostInfo => match self.bridge.host_info().await {
+                Ok(info) => ToolOutcome {
+                    ok: true,
+                    content: serde_json::to_string(&info).expect("host info serializes"),
+                    summary: "bridge host hardware snapshot".into(),
+                    diff: None,
+                },
+                Err(error) => fail("host_info", "", &error),
+            },
             Tool::GitStatus => self.git_status().await,
             Tool::GitDiff(args) => self.git_diff(&args).await,
             Tool::GitCommit(args) => self.git_commit(&args).await,
@@ -695,6 +704,84 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, 
                 summary: e.to_string(),
                 diff: None,
             },
+        }
+    }
+}
+
+/// Select workspace execution or projectless tools without granting a filesystem capability.
+pub struct SessionToolExecutor<E: ToolExecutor, W: WebClient, B: BridgeClient = NoopBridgeClient> {
+    workspace: Option<E>,
+    web: VfsToolExecutor<openwebide_core::MemoryVfs, W, B>,
+    environment: openwebide_core::RunEnvironment,
+}
+
+impl<E: ToolExecutor, W: WebClient> SessionToolExecutor<E, W> {
+    pub fn new(workspace: Option<E>, web: W, environment: openwebide_core::RunEnvironment) -> Self {
+        Self {
+            workspace,
+            web: VfsToolExecutor::with_web(openwebide_core::MemoryVfs::new(), web),
+            environment,
+        }
+    }
+}
+
+impl<E: ToolExecutor, W: WebClient, B: BridgeClient> SessionToolExecutor<E, W, B> {
+    pub fn with_host<H: BridgeClient>(self, host: H) -> SessionToolExecutor<E, W, H> {
+        SessionToolExecutor {
+            workspace: self.workspace,
+            web: VfsToolExecutor::with_web_and_bridge(self.web.vfs, self.web.web, host),
+            environment: self.environment,
+        }
+    }
+}
+
+impl<E: ToolExecutor + Sync, W: WebClient, B: BridgeClient> ToolExecutor
+    for SessionToolExecutor<E, W, B>
+{
+    fn has_context(&self) -> bool {
+        true
+    }
+
+    async fn context(
+        &mut self,
+        tools: &[ToolDefinition],
+        call: Option<&ToolCall>,
+    ) -> Option<String> {
+        if let Some(workspace) = &mut self.workspace {
+            workspace.context(tools, call).await
+        } else if call.is_none() {
+            Some(crate::context::environment_context(
+                &self.environment,
+                &crate::session::projectless_tools(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn describe(&self, call: &ToolCall) -> String {
+        self.workspace.as_ref().map_or_else(
+            || self.web.describe(call),
+            |workspace| workspace.describe(call),
+        )
+    }
+
+    async fn preview(&self, call: &ToolCall) -> Option<ToolPreview> {
+        match &self.workspace {
+            Some(workspace) => workspace.preview(call).await,
+            None => None,
+        }
+    }
+
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
+        match &self.workspace {
+            Some(workspace) => workspace.execute(call).await,
+            None if crate::session::is_projectless_tool(&call.name) => self.web.execute(call).await,
+            None => fail(
+                &call.name,
+                "",
+                "Open a project to use file, Git, or shell tools.",
+            ),
         }
     }
 }
@@ -1010,7 +1097,11 @@ mod tests {
                 }
             }
         ]);
-        assert_eq!(serde_json::to_value(vfs_tools()).unwrap(), snapshot);
+        let existing_tools = vfs_tools()
+            .into_iter()
+            .filter(|tool| tool.name != "host_info")
+            .collect::<Vec<_>>();
+        assert_eq!(serde_json::to_value(existing_tools).unwrap(), snapshot);
     }
 
     #[test]
@@ -1234,6 +1325,116 @@ mod tests {
             let outcome = executor.execute(&escape_call).await;
             assert!(!outcome.ok);
             assert!(outcome.summary.contains("escapes"));
+        });
+    }
+
+    #[test]
+    fn session_executor_web_only_contract() {
+        futures::executor::block_on(async {
+            let vfs = MemoryVfs::new();
+            vfs.write("private.txt", "secret").await.unwrap();
+            let workspace = VfsToolExecutor::with_web(vfs, MockWebClient).with_context(
+                openwebide_core::RunEnvironment {
+                    project_root: Some("project".into()),
+                    ..Default::default()
+                },
+            );
+            for workspace in [Some(workspace), None] {
+                let restricted = workspace.is_none();
+                let mut executor =
+                    SessionToolExecutor::new(workspace, MockWebClient, Default::default());
+                for (name, arguments, ok) in [
+                    ("search_web", json!({"query":"rust"}), true),
+                    ("search_web", json!({"query":"error"}), false),
+                    ("fetch_web_page", json!({"url":"https://example.com"}), true),
+                    (
+                        "fetch_web_page",
+                        json!({"url":"https://example.com/error"}),
+                        false,
+                    ),
+                    (
+                        "fetch_web_page",
+                        json!({"url":"file:///private.txt"}),
+                        false,
+                    ),
+                ] {
+                    let call = ToolCall {
+                        id: "web".into(),
+                        name: name.into(),
+                        arguments: arguments.to_string(),
+                    };
+                    assert_eq!(executor.execute(&call).await.ok, ok);
+                }
+                let read = ToolCall {
+                    id: "read".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path":"private.txt"}).to_string(),
+                };
+                assert_eq!(executor.execute(&read).await.ok, !restricted);
+                if restricted {
+                    let context = executor.context(&vfs_tools(), None).await.unwrap();
+                    assert!(!context.contains("secret"));
+                    assert!(!context.contains("- read_file"));
+                    for name in ToolName::ALL.iter().map(|tool| tool.definition().name) {
+                        if crate::session::is_projectless_tool(&name) {
+                            continue;
+                        }
+                        let call = ToolCall {
+                            id: "denied".into(),
+                            name,
+                            arguments: "{}".into(),
+                        };
+                        assert!(executor.context(&vfs_tools(), Some(&call)).await.is_none());
+                        assert!(executor.preview(&call).await.is_none());
+                        let result = executor.execute(&call).await;
+                        assert!(!result.ok);
+                        assert!(result.content.contains("Open a project"));
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn projectless_host_info_succeeds_or_reports_missing_bridge() {
+        struct Host;
+        impl BridgeClient for Host {
+            async fn host_info(&self) -> Result<openwebide_core::HostInfo, String> {
+                Ok(openwebide_core::HostInfo {
+                    cpu: Some("Test CPU".into()),
+                    scope: "bridge host".into(),
+                    ..Default::default()
+                })
+            }
+            async fn execute_command(
+                &self,
+                _: &str,
+                _: u64,
+            ) -> Result<openwebide_core::CommandOutcome, String> {
+                panic!("host info must not execute arbitrary commands")
+            }
+        }
+        futures::executor::block_on(async {
+            let call = ToolCall {
+                id: "host".into(),
+                name: "host_info".into(),
+                arguments: "{}".into(),
+            };
+            let executor = SessionToolExecutor::<VfsToolExecutor<MemoryVfs>, _>::new(
+                None,
+                MockWebClient,
+                Default::default(),
+            );
+            assert!(!executor.execute(&call).await.ok);
+            let executor = executor.with_host(Host);
+            let result = executor.execute(&call).await;
+            assert!(result.ok);
+            assert!(result.content.contains("Test CPU"));
+            let forged = ToolCall {
+                arguments: r#"{"command":"cat /etc/passwd"}"#.into(),
+                ..call
+            };
+            assert!(!executor.execute(&forged).await.ok);
         });
     }
 

@@ -165,18 +165,28 @@ pub fn agent_stream(
     user_message: ChatMessage,
     request: ChatRequest,
     provider: Provider<SpinHttpClient>,
-    base: String,
+    base: Option<String>,
     environment: openwebide_core::RunEnvironment,
     config: AgentConfig,
     cancel: CancelFlag,
     gate: PermissionPoller,
 ) -> Pin<Box<dyn Stream<Item = RunEvent> + Send + 'static>> {
-    let executor = VfsToolExecutor::with_web_and_bridge(
-        HostFsVfs::new(base.clone()),
+    let workspace = base.map(|base| {
+        VfsToolExecutor::with_web_and_bridge(
+            HostFsVfs::new(base.clone()),
+            crate::web::SpinWebClient,
+            crate::bridge_client::SpinBridgeClient::for_project(store.clone(), base),
+        )
+        .with_context(environment.clone())
+    });
+    let executor = openwebide_agent::vfs_executor::SessionToolExecutor::new(
+        workspace,
         crate::web::SpinWebClient,
-        crate::bridge_client::SpinBridgeClient::for_project(store.clone(), base),
+        environment,
     )
-    .with_context(environment);
+    .with_host(crate::bridge_client::SpinBridgeClient::for_host(
+        store.clone(),
+    ));
     let gate = openwebide_agent::policy::PolicyGate {
         manual: gate,
         source: crate::api::approvals::ApprovalAdapter {

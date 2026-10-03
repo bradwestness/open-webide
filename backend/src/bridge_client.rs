@@ -17,6 +17,12 @@ pub struct SpinBridgeClient<S = std::sync::Arc<openwebide_storage::Store<crate::
 }
 
 impl<S> SpinBridgeClient<S> {
+    pub fn for_host(store: S) -> Self {
+        Self {
+            store,
+            project_dir: String::new(),
+        }
+    }
     pub fn for_project(store: S, dir: String) -> Self {
         Self {
             store,
@@ -29,6 +35,16 @@ impl<
     S: Clone + std::ops::Deref<Target = openwebide_storage::Store<crate::state::AppDb>> + Send + Sync,
 > BridgeClient for SpinBridgeClient<S>
 {
+    async fn host_info(&self) -> Result<openwebide_core::HostInfo, String> {
+        let (status, body) = crate::bridge::send(&self.store, "/host/info", "{}".into())
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+        if status != 200 {
+            return Err(format!("Bridge HTTP {status}"));
+        }
+        serde_json::from_slice(&body).map_err(|error| error.to_string())
+    }
+
     async fn context_status(&self) -> openwebide_agent::clients::ContextStatus {
         let work = Box::pin(futures::future::join(self.environment(), self.git_status()));
         let deadline = Box::pin(spin_sdk::time::sleep(std::time::Duration::from_secs(2)));

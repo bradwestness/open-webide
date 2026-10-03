@@ -53,7 +53,7 @@ impl TestState {
         provide_context(api);
         provide_context(ui);
         provide_context(AuthState::new());
-        provide_context(LayoutState::new());
+        provide_context(LayoutState::with_active_project(projects.active_project));
         provide_context(projects);
         provide_context(workspace);
         provide_context(git);
@@ -198,7 +198,7 @@ pub fn chat_actions(state: TestState) -> ChatActions {
 pub fn chat_view(state: TestState) -> impl IntoView {
     let actions = chat_actions(state);
     view! {
-        <ChatPane on_open_local=Callback::new(|()| ()) on_open_remote=Callback::new(|()| ())
+        <ChatPane
             on_select_connection_model=actions.select_connection_model
             on_send=actions.send on_resume_run=actions.resume_run on_stop=actions.stop
             on_permission=actions.permission on_permission_always=actions.permission_always on_slash_command=actions.slash_command />

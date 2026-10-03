@@ -153,7 +153,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
     let history_pending = RwSignal::new(None::<String>);
     let history_saving = RwSignal::new(false);
     let history_imported = RwSignal::new(false);
-    let session_pending = StoredValue::new(std::collections::HashMap::<i64, i64>::new());
+    let session_pending = StoredValue::new(std::collections::HashMap::<Option<i64>, i64>::new());
     let session_saving = RwSignal::new(false);
     let resize_listener = window_event_listener(leptos::ev::resize, move |_| {
         layout.fit(viewport_width());
@@ -168,6 +168,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         session_pending.set_value(Default::default());
         session_saving.set(false);
         chat.last_sessions.set(Default::default());
+        chat.last_chat_session.set(None);
         let Some(user) = auth.user.get() else {
             return;
         };
@@ -221,6 +222,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
             }
             let mut stored_tab_ids = Vec::<i64>::new();
             let mut stored_active_project = None;
+            let mut chat_was_active = false;
             if let Ok(values) = settings_result {
                 chat.approval_mode.set(
                     values
@@ -237,9 +239,14 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                     values
                         .get("draft_approval_mode")
                         .and_then(|value| serde_json::from_str(value).ok())
-                        .unwrap_or_default(),
+                        .unwrap_or(openwebide_core::ApprovalMode::NEW_SESSION),
                 );
 
+                chat.last_chat_session.set(
+                    values
+                        .get("last_chat_session")
+                        .and_then(|value| value.parse().ok()),
+                );
                 chat.last_sessions.set(
                     values
                         .iter()
@@ -274,6 +281,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 {
                     stored_tab_ids = ids;
                 }
+                chat_was_active = values.get("active_project").is_some_and(String::is_empty);
                 if let Some(id) = values
                     .get("active_project")
                     .and_then(|value| value.parse::<i64>().ok())
@@ -303,7 +311,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 let [sidebar, tree, chat_width] = crate::state::layout::fit_visible_panels(
                     viewport_width(),
                     widths,
-                    layout.panels.get_untracked(),
+                    layout.visible_panels.get_untracked(),
                 );
                 layout.sidebar_width.set(sidebar);
                 layout.tree_width.set(tree);
@@ -399,16 +407,23 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 }
             }
             if restored_tab_ids.is_empty()
+                && !chat_was_active
                 && let Some(first) = all_projects.first()
             {
                 restored_tab_ids.push(first.id);
             }
             projects.open_tab_ids.set(restored_tab_ids.clone());
-            let active_project = stored_active_project
-                .filter(|id| restored_tab_ids.contains(id))
-                .or_else(|| restored_tab_ids.first().copied());
+            let active_project = if chat_was_active {
+                None
+            } else {
+                stored_active_project
+                    .filter(|id| restored_tab_ids.contains(id))
+                    .or_else(|| restored_tab_ids.first().copied())
+            };
             if let Some(project_id) = active_project {
                 select_project.run(project_id);
+            } else {
+                chat.restore_chat_session();
             }
             projects.projects_loaded.set(true);
         });
@@ -422,26 +437,31 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         {
             return;
         }
-        let Some(project_id) = projects.active_project.get() else {
-            return;
-        };
+        let project_id = projects.active_project.get();
         let Some(session_id) = chat.active_session.get() else {
             return;
+        };
+        let remembered = match project_id {
+            Some(id) => chat
+                .last_sessions
+                .with_untracked(|sessions| sessions.get(&id).copied()),
+            None => chat.last_chat_session.get_untracked(),
         };
         if !chat.sessions.with(|sessions| {
             sessions
                 .iter()
-                .any(|session| session.id == session_id && session.project_id == Some(project_id))
-        }) || chat
-            .last_sessions
-            .with_untracked(|sessions| sessions.get(&project_id).copied())
-            == Some(session_id)
+                .any(|session| session.id == session_id && session.project_id == project_id)
+        }) || remembered == Some(session_id)
         {
             return;
         }
-        chat.last_sessions.update(|sessions| {
-            sessions.insert(project_id, session_id);
-        });
+        if let Some(id) = project_id {
+            chat.last_sessions.update(|sessions| {
+                sessions.insert(id, session_id);
+            });
+        } else {
+            chat.last_chat_session.set(Some(session_id));
+        }
         session_pending.update_value(|pending| {
             pending.insert(project_id, session_id);
         });
@@ -466,7 +486,10 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 session_pending.update_value(|pending| {
                     pending.remove(&project_id);
                 });
-                let key = format!("last_session_{project_id}");
+                let key = project_id.map_or_else(
+                    || "last_chat_session".to_string(),
+                    |id| format!("last_session_{id}"),
+                );
                 if let Err(error) = api
                     .with_value(Clone::clone)
                     .set_setting(&key, &session_id.to_string())

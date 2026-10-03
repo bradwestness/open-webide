@@ -176,6 +176,7 @@ impl ChatActions {
         project_runs_slot.set_value(Some(project_runs));
 
         let start = {
+            let auth = expect_context::<crate::state::auth::AuthState>();
             let local_cancel = chat.local_cancel_flag.get_value();
             let local_permissions = chat.local_permissions.get_value();
             Callback::new(move |resume: Option<InterruptedRun>| {
@@ -202,16 +203,21 @@ impl ChatActions {
                 chat.streaming.set(true);
                 chat.error.set(None);
                 chat.notice.set(None);
+                let generation = auth.generation.get_untracked();
+                let project = projects.active_project.get_untracked();
+                let active_session = chat.active_session.get_untracked();
+                let current = move || {
+                    auth.generation.try_get_untracked() == Some(generation)
+                        && projects.active_project.try_get_untracked() == Some(project)
+                        && chat.active_session.try_get_untracked() == Some(active_session)
+                };
                 spawn_local(async move {
                     // Use the active session, or create one named from the first
                     // prompt when a fresh chat has no session selected.
-                    let session_id = match chat.active_session.get() {
+                    let session_id = match active_session {
                         Some(id) => id,
                         None => {
-                            let Some(project_id) = projects.active_project.get() else {
-                                chat.streaming.set(false);
-                                return;
-                            };
+                            let project_id = project;
                             let name = derive_session_name(&content);
                             let connection_id = chat
                                 .draft_connection
@@ -236,10 +242,16 @@ impl ChatActions {
                             let prompt_id = settings.default_prompt.get();
                             match api
                                 .with_value(Clone::clone)
-                                .create_session(&name, connection_id, prompt_id, Some(project_id))
+                                .create_session(&name, connection_id, prompt_id, project_id)
                                 .await
                             {
                                 Ok(session) => {
+                                    if !current() {
+                                        if auth.generation.try_get_untracked() == Some(generation) {
+                                            chat.streaming.set(false);
+                                        }
+                                        return;
+                                    }
                                     let mode = chat.draft_approval_mode.get_untracked();
                                     if let Err(error) =
                                         super::approvals::save_session_mode(api, session.id, mode)
@@ -247,6 +259,12 @@ impl ChatActions {
                                     {
                                         chat.streaming.set(false);
                                         chat.error.set(Some(error));
+                                        return;
+                                    }
+                                    if !current() {
+                                        if auth.generation.try_get_untracked() == Some(generation) {
+                                            chat.streaming.set(false);
+                                        }
                                         return;
                                     }
                                     chat.set_approval_mode(session.id, mode);
@@ -262,8 +280,10 @@ impl ChatActions {
                                     session.id
                                 }
                                 Err(error) => {
-                                    chat.error.set(Some(error));
-                                    chat.streaming.set(false);
+                                    if current() {
+                                        chat.error.set(Some(error));
+                                        chat.streaming.set(false);
+                                    }
                                     return;
                                 }
                             }
@@ -426,9 +446,7 @@ impl ChatActions {
             if chat.creating_session.get_untracked() || chat.streaming.get_untracked() {
                 return;
             }
-            let Some(project_id) = projects.active_project.get_untracked() else {
-                return;
-            };
+            let project_id = projects.active_project.get_untracked();
             let primary = settings.model_setup.get_untracked().defaults.primary;
             let connection = primary
                 .as_ref()
@@ -441,13 +459,13 @@ impl ChatActions {
             chat.creating_session.set(true);
             let current = move || {
                 auth.generation.try_get_untracked() == Some(generation)
-                    && projects.active_project.try_get_untracked() == Some(Some(project_id))
+                    && projects.active_project.try_get_untracked() == Some(project_id)
             };
             spawn_local(async move {
                 let result = async {
                     let backend = api.with_value(Clone::clone);
                     let session = backend
-                        .create_session("New chat", connection, prompt, Some(project_id))
+                        .create_session("New chat", connection, prompt, project_id)
                         .await?;
                     super::approvals::save_session_mode(api, session.id, mode).await?;
                     if !current() {
@@ -464,6 +482,9 @@ impl ChatActions {
                     chat.skip_history_load.set_value(Some(session.id));
                     chat.messages.install_history(Vec::new());
                     chat.active_session.set(Some(session.id));
+                    let Some(project_id) = project_id else {
+                        return Ok(());
+                    };
                     let content = project_host
                         .startup_context(project_id, connection, model.as_deref())
                         .await?;

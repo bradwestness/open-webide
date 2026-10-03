@@ -703,6 +703,10 @@ impl Backend for FakeBackend {
                 user_id: None,
                 created_at: 0,
             };
+            self.settings.borrow_mut().insert(
+                openwebide_core::ApprovalMode::setting_key(session.id),
+                serde_json::to_string(&openwebide_core::ApprovalMode::NEW_SESSION).unwrap(),
+            );
             self.sessions.borrow_mut().push(session.clone());
             Ok(session)
         })

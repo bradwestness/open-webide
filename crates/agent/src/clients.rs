@@ -43,6 +43,9 @@ pub fn context_status_unavailable() -> ContextStatus {
 
 /// Process execution bridge client capability for the agent.
 pub trait BridgeClient: Send + Sync {
+    fn host_info(&self) -> impl Future<Output = Result<openwebide_core::HostInfo, String>> + Send {
+        async { Err("Host information is unavailable (bridge daemon not connected).".into()) }
+    }
     /// Best-effort metadata for startup; hosts bound this independently of tool timeouts.
     fn context_status(&self) -> impl Future<Output = ContextStatus> + Send {
         async { futures::future::join(self.environment(), self.git_status()).await }
@@ -102,6 +105,12 @@ impl BridgeClient for NoopBridgeClient {
 
 /// Optional execution-host capability. Missing hosts use the same failure contract everywhere.
 impl<B: BridgeClient> BridgeClient for Option<B> {
+    async fn host_info(&self) -> Result<openwebide_core::HostInfo, String> {
+        match self {
+            Some(host) => host.host_info().await,
+            None => NoopBridgeClient.host_info().await,
+        }
+    }
     async fn context_status(&self) -> ContextStatus {
         match self {
             Some(host) => host.context_status().await,

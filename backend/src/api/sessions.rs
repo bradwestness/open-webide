@@ -284,7 +284,11 @@ pub(crate) async fn send_session_message(
     let cancel = CancelFlag::new(store.clone(), session_id, started_ms);
     let gate = PermissionPoller::new(store.clone(), session_id, started_ms);
     let memo_store = store.clone();
-    let stream = if let RunKind::Agent { project_path } = plan.kind {
+    let base = match &plan.kind {
+        RunKind::Agent { project_path } => Some(project_path.clone()),
+        _ => None,
+    };
+    let stream = if !matches!(plan.kind, RunKind::Chat) {
         agent_stream(
             store.clone(),
             user_id,
@@ -292,7 +296,7 @@ pub(crate) async fn send_session_message(
             user_message,
             request,
             provider,
-            project_path,
+            base,
             plan.environment,
             AgentConfig::default(),
             cancel,

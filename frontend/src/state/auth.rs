@@ -99,8 +99,10 @@ impl AuthState {
         git.reset();
 
         chat.approval_mode.set(Default::default());
-        chat.draft_approval_mode.set(Default::default());
+        chat.draft_approval_mode
+            .set(openwebide_core::ApprovalMode::NEW_SESSION);
         chat.last_sessions.set(Default::default());
+        chat.last_chat_session.set(None);
         chat.current_run_anchor.set(None);
         chat.session_telemetry.set(SessionTelemetry::default());
         settings.connections.set(Vec::new());

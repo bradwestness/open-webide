@@ -40,7 +40,7 @@ pub fn environment_context(environment: &RunEnvironment, tools: &[ToolDefinition
             .as_deref()
             .unwrap_or("No filesystem access")
     );
-    if !tools.is_empty() {
+    if environment.project_root.is_some() && !tools.is_empty() {
         text.push_str("Filesystem tool paths are relative to the project root; commands run from that root.\n");
     }
     text.push_str("\nAvailable tools (use only these tools):\n");

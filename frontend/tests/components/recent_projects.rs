@@ -28,7 +28,7 @@ async fn recent_list_and_empty_message_use_the_same_projects() {
         );
         state.projects.open_tab_ids.set(vec![1]);
         view! {
-            <TabBar on_select=Callback::new(|_| ()) on_close=Callback::new(|_| ())
+            <TabBar on_select_chat=Callback::new(|()| ()) on_select=Callback::new(|_| ()) on_close=Callback::new(|_| ())
                 on_open_local=Callback::new(|()| ()) on_open_remote=Callback::new(|()| ())
                 on_open_project=Callback::new(move |id| { state.projects.open_tab(id); })
                 on_delete_project=Callback::new(|_| ()) />

@@ -11,7 +11,9 @@ pub mod diff;
 pub mod file_type;
 pub mod git;
 pub mod highlight;
+pub mod host;
 pub mod html;
+pub use host::*;
 pub mod run;
 pub mod search;
 #[cfg(any(test, feature = "test-support"))]
@@ -79,6 +81,7 @@ mod tests {
         .unwrap();
         for (kind, json) in [
             (RunKind::Chat, serde_json::json!({"kind": "chat"})),
+            (RunKind::WebChat, serde_json::json!({"kind": "web_chat"})),
             (
                 RunKind::Agent {
                     project_path: "repos/app".into(),

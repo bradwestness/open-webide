@@ -173,6 +173,7 @@ pub struct RunPlan {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunKind {
     Chat,
+    WebChat,
     Agent { project_path: String },
 }
 

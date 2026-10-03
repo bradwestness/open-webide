@@ -21,6 +21,12 @@ pub struct InProcessBridgeClient {
 }
 
 impl BridgeClient for InProcessBridgeClient {
+    async fn host_info(&self) -> Result<openwebide_core::HostInfo, String> {
+        self.execution
+            .host_info()
+            .await
+            .map_err(|error| error.to_string())
+    }
     async fn context_status(&self) -> openwebide_agent::clients::ContextStatus {
         tokio::time::timeout(
             Duration::from_secs(2),
@@ -217,6 +223,21 @@ impl PermissionGate for BridgeGate {
         };
         self.pending.lock().unwrap().take();
         decision
+    }
+}
+
+/// Project-independent read-only bridge capability.
+pub struct HostInfoClient(pub Arc<dyn crate::exec::ToolExecution>);
+impl BridgeClient for HostInfoClient {
+    async fn host_info(&self) -> Result<openwebide_core::HostInfo, String> {
+        self.0.host_info().await.map_err(|error| error.to_string())
+    }
+    async fn execute_command(
+        &self,
+        _command: &str,
+        _timeout_seconds: u64,
+    ) -> Result<CommandOutcome, String> {
+        Err("Commands require a project".into())
     }
 }
 

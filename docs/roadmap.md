@@ -7,12 +7,6 @@ theme and prompt history, and frontend performance & polish — moved to [CHANGE
 
 ## Next
 
-### Ephemeral chat without a project
-
-With no project open the composer is disabled today ("Open a project to start a
-session"). Later: allow a plain, non-coding chat there — no tools and no file
-access — in a session that isn't tied to a project, kept or discarded on close.
-
 ### Git over SSH in the Docker image
 
 Git (status, commit, pull, push, sync) runs through the bridge in both local and remote

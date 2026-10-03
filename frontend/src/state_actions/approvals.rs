@@ -16,9 +16,6 @@ pub fn current_mode(chat: ChatState) -> ApprovalMode {
         .unwrap_or_else(|| chat.draft_approval_mode.get_untracked())
 }
 pub async fn save_session_mode(api: Api, session: i64, mode: ApprovalMode) -> Result<(), String> {
-    if mode == ApprovalMode::Default {
-        return Ok(());
-    }
     api.with_value(Clone::clone)
         .set_setting(
             &ApprovalMode::setting_key(session),

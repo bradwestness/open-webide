@@ -273,7 +273,11 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                 .unwrap();
             assert_eq!(
                 plan.user_content,
-                format!("{}go", context.format_prompt_injection())
+                if project_id.is_some() {
+                    format!("{}go", context.format_prompt_injection())
+                } else {
+                    "go".into()
+                }
             );
             let mut resolved_connection = connection.clone();
             resolved_connection.model = Some("chosen".into());
@@ -303,8 +307,11 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                 );
                 assert_eq!(plan.request.tools, workspace_tools());
             } else {
-                assert_eq!(plan.kind, RunKind::Chat);
-                assert!(plan.request.tools.is_empty());
+                assert_eq!(plan.kind, RunKind::WebChat);
+                assert_eq!(
+                    plan.request.tools,
+                    openwebide_agent::session::projectless_tools()
+                );
             }
             assert_eq!(
                 state.store.list_messages(session.id).await.unwrap(),

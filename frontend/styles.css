@@ -446,14 +446,6 @@ body {
   font-size: 12px;
 }
 
-.chat-hint {
-  margin: 0 20px 8px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
 
 /* agent tool steps */
 
@@ -817,6 +809,7 @@ body {
 
 .tabbar {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: stretch;
   gap: 2px;
@@ -2613,3 +2606,11 @@ button.browser-item {
 
 .app-body.editor-collapsed #panel-chat > .panel-resizer { display: none; }
 .panel-empty { flex: 1; min-width: 0; display: grid; place-items: center; color: var(--text-muted); }
+
+.chat-tab {
+  flex: none;
+  margin-left: auto;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}

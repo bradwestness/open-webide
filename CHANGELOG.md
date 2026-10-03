@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Default new sessions to **Auto** approval mode and label the former Default choice **Manual**. Preserve saved modes and keep older sessions without a saved choice manual.
+
 - Simplify model setup to one **Detect settings** action per chat model and a single modal **Cancel / Save**. Preview and testing leave configuration untouched until Save atomically commits server options, credentials, profiles and initial defaults. Keep only **Edit** on server rows and **New server** in the Servers heading.
 - Add server presets and shared detection for Ollama, llama.cpp, LM Studio, vLLM, LiteLLM, OpenRouter, SGLang and KoboldCpp. Discover standard host endpoints on first setup, cache model facts by transport revision, preserve manual overrides, surface sampling, runtime context, size, quantization, loaded state, server version, CPU spill and tokenizer details when reported, and exclude embedding-only models from chat.
 - Add optional model testing for structured and streamed tools, first-token latency and tokens/sec. Probe failures fall back to plain chat with a notice; tool streaming capability is scoped to each server and model. Shared project detection suggests test commands and linters in local and remote workspaces.
@@ -24,7 +26,10 @@ for what's still ahead.
 
 ### Added
 
+- Keep a permanent speech-bubble chat tab at the right of the project tabs. Chat without a project using web search, page fetching and read-only `host_info`, with file, Git and shell access disabled. Save sessions and the selected chat in user-scoped database settings, restore them across devices, and preserve open project workspaces when switching back. Both bridge WebSocket and backend SSE runs use the same tool restrictions, permissions and compaction. Collapse and disable Files and Editor in projectless chat, restoring their saved visibility on return to a project. Remove the redundant open-project panel from chat.
+
 - Add Rider-style vertical panel tabs: Sessions, Files, Editor and Chat together in one left tab bar. Collapse and expand panels without unmounting editors, drafts or running terminals; save visibility in user-scoped database settings and restore it across devices. Resize only visible panels, preserve collapsed widths, and reveal the relevant pane when opening a file, session, model setup or terminal in either workspace mode.
+- Add `host_info` for local, remote and projectless chat. Read CPU, available/total RAM and disk capacity from the bridge host; report available temperatures, Linux fan RPM, NVIDIA GPU/VRAM/temperature/fan percentage, Linux AMD VRAM and macOS GPU inventory. Identify the bridge as the source and mark unavailable readings and container scope explicitly.
 - Theme scrollbars throughout the app with the active dark/light palette, including panels, editor, terminal, dialogs and native controls.
 
 - Set up model servers through a rerunnable wizard: choose Ollama or OpenAI-compatible, enter URL and optional write-only auth token, then discover models and review/customize settings. Retry discovery without duplicate servers, preserve saved tokens and manual model overrides, and choose an initial default model when applying reviewed settings. Launch setup from Servers, model configuration or the workspace toolbar in either mode.

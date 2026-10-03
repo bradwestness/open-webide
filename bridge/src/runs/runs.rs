@@ -299,7 +299,7 @@ impl RunRegistry {
                 .await
                 .map_err(|e| (RunRejectCode::PlanFailed, e))?;
             let dir = match &plan.kind {
-                RunKind::Chat => None,
+                RunKind::Chat | RunKind::WebChat => None,
                 RunKind::Agent { project_path } => Some(
                     crate::paths::resolve_in_root(workspace, Some(project_path))
                         .map_err(|e| (RunRejectCode::ProjectUnavailable, e))?,
@@ -412,25 +412,35 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 run.emit(event);
             }
         }
-        RunKind::Agent { .. } => {
-            let dir = dir.expect("agent run has a resolved project");
-            plan.environment.project_root = Some(dir.to_string_lossy().into_owned());
-            plan.environment
-                .mode
-                .get_or_insert(openwebide_core::WorkspaceMode::Remote);
-            let executor = VfsToolExecutor::with_web_and_bridge(
-                NativeFsVfs { root: dir.clone() },
+        RunKind::Agent { .. } | RunKind::WebChat => {
+            let workspace = dir.map(|dir| {
+                plan.environment.project_root = Some(dir.to_string_lossy().into_owned());
+                plan.environment
+                    .mode
+                    .get_or_insert(openwebide_core::WorkspaceMode::Remote);
+                VfsToolExecutor::with_web_and_bridge(
+                    NativeFsVfs { root: dir.clone() },
+                    BackendWebClient {
+                        backend: backend.clone(),
+                        user_id: run.owner,
+                    },
+                    InProcessBridgeClient {
+                        dir,
+                        execution: execution.clone(),
+                        cancel: run.cancel.clone(),
+                    },
+                )
+                .with_context(plan.environment.clone())
+            });
+            let executor = openwebide_agent::vfs_executor::SessionToolExecutor::new(
+                workspace,
                 BackendWebClient {
                     backend: backend.clone(),
                     user_id: run.owner,
                 },
-                InProcessBridgeClient {
-                    dir,
-                    execution,
-                    cancel: run.cancel.clone(),
-                },
+                plan.environment,
             )
-            .with_context(plan.environment);
+            .with_host(crate::runs::agent_host::HostInfoClient(execution));
             let memo = provider.tool_stream_memo();
             let connection_id = plan.connection.id;
             let tool_stream_revision = plan.connection.tool_stream_revision;

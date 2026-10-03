@@ -315,6 +315,7 @@ impl ConversationStore {
 pub struct ChatState {
     pub sessions: RwSignal<Vec<ChatSession>>,
     pub last_sessions: RwSignal<HashMap<i64, i64>>,
+    pub last_chat_session: RwSignal<Option<i64>>,
     pub active_session: RwSignal<Option<i64>>,
     pub has_session: Memo<bool>,
     pub messages: ConversationStore,
@@ -385,6 +386,7 @@ impl ChatState {
         Self {
             sessions: RwSignal::new(Vec::new()),
             last_sessions: RwSignal::new(HashMap::new()),
+            last_chat_session: RwSignal::new(None),
             active_session,
             has_session,
             messages,
@@ -415,7 +417,7 @@ impl ChatState {
             connection_changing: RwSignal::new(false),
             session_telemetry: RwSignal::new(SessionTelemetry::default()),
             approval_mode: RwSignal::new(HashMap::new()),
-            draft_approval_mode: RwSignal::new(ApprovalMode::Default),
+            draft_approval_mode: RwSignal::new(ApprovalMode::NEW_SESSION),
             current_run_anchor,
             active_editor_context: RwSignal::new(None),
             awaiting_step_id,
@@ -457,6 +459,26 @@ impl ChatState {
                     sessions
                         .iter()
                         .filter(|session| session.project_id == Some(project_id))
+                        .max_by_key(|session| (session.created_at, session.id))
+                        .map(|session| session.id)
+                })
+        });
+        self.active_session.set(selected);
+    }
+
+    pub fn restore_chat_session(&self) {
+        let remembered = self.last_chat_session.get_untracked();
+        let selected = self.sessions.with_untracked(|sessions| {
+            remembered
+                .filter(|id| {
+                    sessions
+                        .iter()
+                        .any(|session| session.id == *id && session.project_id.is_none())
+                })
+                .or_else(|| {
+                    sessions
+                        .iter()
+                        .filter(|session| session.project_id.is_none())
                         .max_by_key(|session| (session.created_at, session.id))
                         .map(|session| session.id)
                 })

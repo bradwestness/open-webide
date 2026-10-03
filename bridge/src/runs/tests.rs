@@ -1365,6 +1365,7 @@ async fn both_server_run_paths_save_compaction_before_the_reply_and_keep_origina
     let dir = tempfile::tempdir().unwrap();
     for kind in [
         RunKind::Chat,
+        RunKind::WebChat,
         RunKind::Agent {
             project_path: ".".into(),
         },
@@ -1422,4 +1423,98 @@ async fn both_server_run_paths_save_compaction_before_the_reply_and_keep_origina
         assert!(backend.summaries.lock().unwrap().len() > 1);
         assert!(matches!(events(&run).last(), Some(RunEvent::Done { .. })));
     }
+}
+
+#[tokio::test]
+async fn projectless_run_uses_web_tools_and_rejects_workspace_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("private.txt"), "secret").unwrap();
+    let backend = Arc::new(FakeBackend::default());
+    *backend.kind.lock().unwrap() = Some(RunKind::WebChat);
+    *backend.approval_mode.lock().unwrap() = openwebide_core::ApprovalMode::Yolo;
+    let calls = vec![
+        ToolCall {
+            id: "host".into(),
+            name: "host_info".into(),
+            arguments: "{}".into(),
+        },
+        ToolCall {
+            id: "web".into(),
+            name: "search_web".into(),
+            arguments: r#"{"query":"rust"}"#.into(),
+        },
+        ToolCall {
+            id: "fetch".into(),
+            name: "fetch_web_page".into(),
+            arguments: r#"{"url":"https://example.com"}"#.into(),
+        },
+        ToolCall {
+            id: "read".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"private.txt"}"#.into(),
+        },
+        ToolCall {
+            id: "write".into(),
+            name: "write_file".into(),
+            arguments: r#"{"path":"private.txt","content":"changed"}"#.into(),
+        },
+        ToolCall {
+            id: "shell".into(),
+            name: "run_command".into(),
+            arguments: r#"{"command":"touch forbidden"}"#.into(),
+        },
+        ToolCall {
+            id: "git".into(),
+            name: "git_status".into(),
+            arguments: "{}".into(),
+        },
+    ];
+    let provider = FakeProvider {
+        tools: Mutex::new(vec![
+            vec![Ok(ToolStreamChunk::Response(ChatResponse::ToolCalls(
+                calls,
+            )))],
+            vec![Ok(ToolStreamChunk::Response(ChatResponse::Text(
+                "final".into(),
+            )))],
+        ]),
+        ..Default::default()
+    };
+    let run = RunRegistry::default()
+        .start(
+            &user(1),
+            start("web-chat"),
+            dir.path(),
+            backend.clone(),
+            |_| provider,
+        )
+        .await
+        .unwrap();
+    finished(&run).await;
+    let events = events(&run);
+    for (name, expected) in [
+        ("host_info", true),
+        ("search_web", true),
+        ("fetch_web_page", true),
+        ("read_file", false),
+        ("write_file", false),
+        ("run_command", false),
+        ("git_status", false),
+    ] {
+        assert!(events.iter().any(|event| matches!(event, RunEvent::ToolResult { name:actual, ok, .. } if actual == name && *ok == expected)));
+    }
+    assert!(matches!(events.last(), Some(RunEvent::Done { .. })));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("private.txt")).unwrap(),
+        "secret"
+    );
+    assert!(!dir.path().join("forbidden").exists());
+    assert!(
+        !backend
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message.content.contains("secret"))
+    );
 }

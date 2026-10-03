@@ -322,7 +322,7 @@ async fn approval_picker_and_shift_tab_share_database_state_in_both_modes() {
         settle().await;
         assert_eq!(
             mounted.element(".tui-mode-badge").text_content().unwrap(),
-            "[DEFAULT]"
+            "[MANUAL]"
         );
         shift_tab(&mounted);
         settle().await;

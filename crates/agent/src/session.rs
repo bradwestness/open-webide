@@ -107,11 +107,19 @@ pub struct PlanInput {
 }
 
 pub fn plan(runtime: &ModelRuntime, input: PlanInput) -> openwebide_core::RunPlan {
-    let request = request(runtime, input.system_prompt, input.messages, input.tools);
+    let projectless =
+        input.environment.project_name.is_none() && input.environment.project_root.is_none();
+    let tools = if projectless {
+        projectless_tools()
+    } else {
+        input.tools
+    };
+    let request = request(runtime, input.system_prompt, input.messages, tools);
     let kind = match input.environment.project_root.as_ref() {
         Some(root) if !request.tools.is_empty() => openwebide_core::RunKind::Agent {
             project_path: root.clone(),
         },
+        _ if projectless => openwebide_core::RunKind::WebChat,
         _ => openwebide_core::RunKind::Chat,
     };
     openwebide_core::RunPlan {
@@ -119,7 +127,10 @@ pub fn plan(runtime: &ModelRuntime, input: PlanInput) -> openwebide_core::RunPla
         transport: runtime.transport.clone(),
         request,
         environment: input.environment,
-        user_content: user_content(input.content, input.editor.as_ref()),
+        user_content: user_content(
+            input.content,
+            input.editor.as_ref().filter(|_| !projectless),
+        ),
         kind,
     }
 }
@@ -450,6 +461,18 @@ pub fn events<'a, P: RunPersistence + 'a>(
             }
         },
     )
+}
+
+/// Read-only host information and web tools available without opening a workspace.
+pub fn projectless_tools() -> Vec<ToolDefinition> {
+    crate::vfs_tools()
+        .into_iter()
+        .filter(|tool| is_projectless_tool(&tool.name))
+        .collect()
+}
+
+pub fn is_projectless_tool(name: &str) -> bool {
+    matches!(name, "search_web" | "fetch_web_page" | "host_info")
 }
 
 #[cfg(test)]

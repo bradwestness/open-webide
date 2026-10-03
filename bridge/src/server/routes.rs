@@ -71,6 +71,7 @@ pub(super) async fn route(
 
     let is_api_req = path == "/exec"
         || path == "/environment"
+        || path == "/host/info"
         || path.starts_with("/git/")
         || path == "/models/discover";
     if is_api_req && method != "OPTIONS" {
@@ -108,6 +109,13 @@ pub(super) async fn route(
 
     match (method.as_str(), path.as_str()) {
         ("OPTIONS", _) => Ok(preflight_response(req.headers(), allowed_origin)),
+        ("GET" | "POST", "/host/info") => Ok(execution_response(
+            config.execution.host_info().await.and_then(|info| {
+                serde_json::to_string(&info)
+                    .map_err(|error| BridgeError::Execution(error.to_string()))
+            }),
+            allowed_origin,
+        )),
         ("GET" | "POST", "/environment") => Ok(respond(
             StatusCode::OK,
             serde_json::to_string(&crate::exec::environment()).expect("environment serializes"),

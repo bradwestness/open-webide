@@ -8,6 +8,9 @@ pub enum Panel {
     Chat,
 }
 impl Panel {
+    pub const fn requires_project(self) -> bool {
+        matches!(self, Self::Files | Self::Editor)
+    }
     pub const fn id(self) -> &'static str {
         match self {
             Self::Sessions => "sessions",
@@ -45,6 +48,13 @@ impl Default for PanelVisibility {
     }
 }
 impl PanelVisibility {
+    pub const fn for_project(mut self, available: bool) -> Self {
+        if !available {
+            self.files = false;
+            self.editor = false;
+        }
+        self
+    }
     pub const fn visible(self, panel: Panel) -> bool {
         match panel {
             Panel::Sessions => self.sessions,
@@ -158,6 +168,8 @@ impl ActiveResizer {
 #[derive(Clone, Copy)]
 pub struct LayoutState {
     pub panels: RwSignal<PanelVisibility>,
+    pub visible_panels: Memo<PanelVisibility>,
+    pub active_project: RwSignal<Option<i64>>,
     pub panel_revision: RwSignal<u64>,
     pub terminal_cmd: RwSignal<Option<String>>,
     pub sidebar_width: RwSignal<f64>,
@@ -168,8 +180,17 @@ pub struct LayoutState {
 
 impl LayoutState {
     pub fn new() -> Self {
+        Self::with_active_project(RwSignal::new(None))
+    }
+
+    pub fn with_active_project(active_project: RwSignal<Option<i64>>) -> Self {
+        let panels = RwSignal::new(PanelVisibility::default());
+        let visible_panels =
+            Memo::new(move |_| panels.get().for_project(active_project.get().is_some()));
         Self {
-            panels: RwSignal::new(PanelVisibility::default()),
+            panels,
+            visible_panels,
+            active_project,
             panel_revision: RwSignal::new(0),
             terminal_cmd: RwSignal::new(None),
             sidebar_width: RwSignal::new(ActiveResizer::Sidebar.default()),
@@ -177,6 +198,10 @@ impl LayoutState {
             chat_width: RwSignal::new(ActiveResizer::Chat.default()),
             active_resizer: RwSignal::new(ActiveResizer::None),
         }
+    }
+
+    pub fn available(&self, panel: Panel) -> bool {
+        !panel.requires_project() || self.active_project.get().is_some()
     }
 
     pub fn fit(&self, viewport: f64) {
@@ -187,7 +212,7 @@ impl LayoutState {
                 self.tree_width.get_untracked(),
                 self.chat_width.get_untracked(),
             ],
-            self.panels.get_untracked(),
+            self.visible_panels.get_untracked(),
         );
         self.sidebar_width.set(sidebar);
         self.tree_width.set(tree);
@@ -205,7 +230,7 @@ impl LayoutState {
     }
 
     pub fn clamp_visible(&self, resizer: ActiveResizer, requested: f64, viewport: f64) -> f64 {
-        let panels = self.panels.get_untracked();
+        let panels = self.visible_panels.get_untracked();
         let sidebar = if panels.sessions {
             self.sidebar_width.get_untracked()
         } else {

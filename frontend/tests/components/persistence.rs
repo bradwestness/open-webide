@@ -226,6 +226,7 @@ async fn stored_history_is_recalled_and_submissions_are_persisted() {
 async fn resize_shrinks_chat_first_without_persisting_fitted_widths() {
     let _wide = Viewport::new(2000.0);
     let mounted = mount_test(|state| {
+        state.seed_project();
         for (key, value) in [
             ("panel_sidebar_width", "200"),
             ("panel_tree_width", "180"),
@@ -941,5 +942,153 @@ async fn pending_refresh_discards_stale_results_after_logout_and_project_deletio
                 .is_empty()
         );
         assert!(mounted.state.workspace.snapshots.get_untracked().is_empty());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn permanent_chat_tab_restores_and_preserves_both_workspace_modes() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.fake.projects.borrow_mut()[0].mode = mode;
+            state.seed_session();
+            let mut standalone = state.fake.sessions.borrow()[0].clone();
+            standalone.id = 2;
+            standalone.project_id = None;
+            standalone.name = "Web chat".into();
+            state.fake.sessions.borrow_mut().push(standalone);
+            state.fake.settings.borrow_mut().extend([
+                ("open_tabs".into(), "[1]".into()),
+                ("active_project".into(), "".into()),
+                ("last_chat_session".into(), "2".into()),
+            ]);
+            state.projects.active_project.set(None);
+            state.chat.active_session.set(None);
+            let actions = install_session_restore(&state);
+            view! {
+                <openwebide_frontend::components::TabBar
+                    on_select=actions.select_project on_select_chat=actions.select_chat
+                    on_close=actions.close_project on_open_local=actions.on_open_local
+                    on_open_remote=Callback::new(|()| ()) on_open_project=actions.on_open_project
+                    on_delete_project=actions.on_delete_project />
+            }
+        });
+        wait_for_startup_reads(&mounted.state, 1).await;
+        for _ in 0..100 {
+            if mounted.state.projects.projects_loaded.get_untracked() {
+                break;
+            }
+            openwebide_frontend::util::sleep_ms(5).await;
+        }
+        assert!(mounted.state.projects.projects_loaded.get_untracked());
+        assert_eq!(mounted.state.projects.active_project.get_untracked(), None);
+        assert_eq!(mounted.state.projects.open_tab_ids.get_untracked(), vec![1]);
+        assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(2));
+        assert!(mounted.element(".chat-tab").class_list().contains("active"));
+        assert!(
+            mounted
+                .element(".chat-tab")
+                .query_selector(".tab-close")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click(".tabbar .tab");
+        settle().await;
+        assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(1));
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("draft.rs".into()));
+        mounted.state.workspace.content.set("unsaved".into());
+        mounted.state.workspace.dirty.set(true);
+        mounted
+            .state
+            .chat
+            .active_editor_context
+            .set(Some(openwebide_core::EditorContext {
+                file_path: "draft.rs".into(),
+                selection: None,
+                cursor_line: 1,
+                cursor_col: 1,
+            }));
+        mounted.click(".chat-tab");
+        settle().await;
+        assert_eq!(mounted.state.projects.active_project.get_untracked(), None);
+        assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(2));
+        assert!(mounted.state.workspace.open_file.get_untracked().is_none());
+        assert!(
+            mounted
+                .state
+                .chat
+                .active_editor_context
+                .get_untracked()
+                .is_none()
+        );
+        assert_eq!(
+            mounted
+                .state
+                .fake
+                .settings
+                .borrow()
+                .get("active_project")
+                .map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            mounted
+                .state
+                .fake
+                .settings
+                .borrow()
+                .get("last_chat_session")
+                .map(String::as_str),
+            Some("2")
+        );
+        mounted.state.chat.active_session.set(None);
+        mounted.click(".chat-tab");
+        settle().await;
+        assert_eq!(mounted.state.chat.active_session.get_untracked(), None);
+        mounted.click(".tabbar .tab");
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "unsaved");
+        assert!(mounted.state.workspace.dirty.get_untracked());
+        mounted.click(".tabbar .tab-close");
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .projects
+                .open_tab_ids
+                .get_untracked()
+                .is_empty()
+        );
+        let backend = mounted.state.fake.clone();
+        drop(mounted);
+        let reopened = mount_test_with_backend(backend, |state| {
+            install_session_restore(&state);
+            view! { <div /> }
+        });
+        wait_for_startup_reads(&reopened.state, 2).await;
+        for _ in 0..100 {
+            if reopened.state.projects.projects_loaded.get_untracked() {
+                break;
+            }
+            openwebide_frontend::util::sleep_ms(5).await;
+        }
+        assert!(reopened.state.projects.projects_loaded.get_untracked());
+        assert!(
+            reopened
+                .state
+                .projects
+                .open_tab_ids
+                .get_untracked()
+                .is_empty()
+        );
+        assert_eq!(reopened.state.projects.active_project.get_untracked(), None);
+        assert_eq!(reopened.state.chat.active_session.get_untracked(), Some(2));
     }
 }

@@ -159,7 +159,11 @@ async fn saved_panel_layout_restores_and_account_changes_clear_it() {
                 .element(&format!("button[aria-controls='panel-{panel}']"))
                 .get_attribute("aria-expanded")
                 .as_deref(),
-            Some("true")
+            Some(if matches!(panel, "files" | "editor") {
+                "false"
+            } else {
+                "true"
+            })
         );
     }
 }
@@ -197,6 +201,7 @@ async fn rapid_panel_toggles_save_in_order_and_late_loading_preserves_changes() 
     let slot = std::rc::Rc::new(std::cell::Cell::new(None));
     let state_slot = slot.clone();
     let mounted = mount_test(move |state| {
+        state.seed_project();
         let auth = expect_context::<AuthState>();
         auth.set_user(user(1));
         let layout = expect_context::<LayoutState>();
@@ -235,4 +240,84 @@ async fn rapid_panel_toggles_save_in_order_and_late_loading_preserves_changes() 
     assert!(!saved.editor && saved.chat);
     let writes = mounted.state.fake.calls.borrow().iter().filter(|call| matches!(call, openwebide_frontend::testing::fake_backend::Call::SetSetting { key, .. } if key == PANEL_VISIBILITY_KEY)).count();
     assert_eq!(writes, 2);
+}
+
+#[wasm_bindgen_test]
+async fn projectless_chat_hides_and_disables_files_and_editor_without_saving_over_preferences() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let actions_slot = RwSignal::new(None);
+        let layout_slot = RwSignal::new(None);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            let auth = expect_context::<AuthState>();
+            auth.set_user(user(1));
+            let layout = expect_context::<LayoutState>();
+            let actions = LayoutActions::new(state.api, layout, auth, state.ui);
+            actions_slot.set(Some(actions));
+            layout_slot.set(Some(layout));
+            provide_context(actions);
+            view! {
+                <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
+                <ToolPanel panel=Panel::Files><input value="file draft" /></ToolPanel>
+                <ToolPanel panel=Panel::Editor><textarea>"editor draft"</textarea></ToolPanel>
+                <ToolPanel panel=Panel::Chat><textarea>"chat draft"</textarea></ToolPanel>
+            }
+        });
+        settle().await;
+        let layout = layout_slot.get_untracked().unwrap();
+        actions_slot
+            .get_untracked()
+            .unwrap()
+            .toggle
+            .run(Panel::Files);
+        settle().await;
+        let saved = mounted.state.fake.settings.borrow()[PANEL_VISIBILITY_KEY].clone();
+        let preferences = layout.panels.get_untracked();
+        assert!(!preferences.files && preferences.editor);
+        let editor = mounted.element("#panel-editor textarea");
+        mounted.state.projects.active_project.set(None);
+        settle().await;
+        for panel in [Panel::Files, Panel::Editor] {
+            let button = mounted.element(&format!("button[aria-controls='panel-{}']", panel.id()));
+            assert!(button.has_attribute("disabled"));
+            assert_eq!(
+                button.get_attribute("aria-expanded").as_deref(),
+                Some("false")
+            );
+            assert!(
+                mounted
+                    .element(&format!("#panel-{}", panel.id()))
+                    .get_attribute("style")
+                    .unwrap()
+                    .contains("none")
+            );
+            actions_slot.get_untracked().unwrap().toggle.run(panel);
+        }
+        settle().await;
+        assert_eq!(layout.panels.get_untracked(), preferences);
+        assert_eq!(
+            mounted.state.fake.settings.borrow()[PANEL_VISIBILITY_KEY],
+            saved
+        );
+        mounted.state.projects.active_project.set(Some(1));
+        settle().await;
+        assert_eq!(layout.visible_panels.get_untracked(), preferences);
+        assert!(
+            !mounted
+                .element("button[aria-controls='panel-editor']")
+                .has_attribute("disabled")
+        );
+        assert!(
+            mounted
+                .element("#panel-editor")
+                .get_attribute("style")
+                .unwrap()
+                .contains("contents")
+        );
+        assert!(editor.is_same_node(Some(mounted.element("#panel-editor textarea").as_ref())));
+    }
 }

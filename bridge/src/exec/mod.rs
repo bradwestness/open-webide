@@ -9,6 +9,7 @@ use openwebide_core::{CommandOutcome, GitCheckoutRequest, GitCommitRequest, GitS
 
 pub mod git;
 mod host;
+mod host_info;
 pub mod proc;
 
 pub type ExecOutput = CommandOutcome;
@@ -106,6 +107,13 @@ pub enum GitResponse {
 }
 
 pub trait ToolExecution: Send + Sync {
+    fn host_info(&self) -> ExecutionFuture<openwebide_core::HostInfo> {
+        Box::pin(async {
+            Err(BridgeError::Execution(
+                "Host information is unavailable".into(),
+            ))
+        })
+    }
     fn run_command(&self, spec: SpawnSpec) -> ExecutionFuture<ExecOutput>;
     fn git(&self, request: GitRequest) -> ExecutionFuture<GitResponse>;
 }
@@ -114,6 +122,13 @@ pub trait ToolExecution: Send + Sync {
 pub struct HostExecution;
 
 impl ToolExecution for HostExecution {
+    fn host_info(&self) -> ExecutionFuture<openwebide_core::HostInfo> {
+        Box::pin(async {
+            tokio::time::timeout(Duration::from_secs(6), host_info::snapshot())
+                .await
+                .map_err(|_| BridgeError::Execution("Host information timed out".into()))?
+        })
+    }
     fn run_command(&self, spec: SpawnSpec) -> ExecutionFuture<ExecOutput> {
         Box::pin(host::execute_command_direct(spec))
     }

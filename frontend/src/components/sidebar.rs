@@ -63,18 +63,12 @@ pub fn Sidebar(
                     <button
                         class="icon-btn"
                         title="New chat"
-                        disabled=move || active_project.get().is_none() || chat.creating_session.get() || chat.streaming.get()
+                        disabled=move || chat.creating_session.get() || chat.streaming.get()
                         on:click=move |_| on_new_session.run(())
                     >
                         "+"
                     </button>
                 </div>
-                <Show
-                    when=move || active_project.get().is_some()
-                    fallback=move || {
-                        view! { <p class="empty">"Open a project to start a session."</p> }
-                    }
-                >
                     <For
                         each=move || {
                             let active = active_project.get();
@@ -131,7 +125,6 @@ pub fn Sidebar(
                     >
                         <p class="empty">"No sessions yet — start chatting to create one."</p>
                     </Show>
-                </Show>
             </div>
 
             // -- connections --------------------------------------------------

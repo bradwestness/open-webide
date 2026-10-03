@@ -13,10 +13,12 @@ pub enum ApprovalMode {
     AlwaysForSession,
 }
 impl ApprovalMode {
+    /// Fresh sessions use classification; absent legacy settings remain manual.
+    pub const NEW_SESSION: Self = Self::Auto;
     pub const CHOICES: [Self; 4] = [Self::Default, Self::AutoAcceptEdits, Self::Auto, Self::Yolo];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Default => "Default",
+            Self::Default => "Manual",
             Self::AutoAcceptEdits => "Auto-accept edits",
             Self::Auto => "Auto",
             Self::Yolo => "YOLO",

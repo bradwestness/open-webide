@@ -50,6 +50,7 @@ export function fakeBridgeHttp() {
         const body = JSON.parse(await request.text());
         const path = new URL(request.url).pathname;
         mock.calls.push({ path, body, authorization: request.headers.get('Authorization') });
+        if (path === '/host/info' && !mock.hanging) return new Response(JSON.stringify({host_name:'bridge-host', os:'linux', scope:'bridge host', cpu:'Test CPU', logical_cores:8, ram_total_bytes:32000000000, ram_available_bytes:16000000000, disks:[], temperatures:[], gpus:[], fans:[], notes:[]}));
         if (path === '/environment' && !mock.hanging) return new Response(JSON.stringify({os: 'linux', shell: 'sh'}));
         if (mock.hanging) return new Promise((resolve, reject) => {
             const abort = () => {
@@ -970,6 +971,9 @@ async fn startup_environment_comes_from_authenticated_execution_bridge() {
     let host = bridge.environment().await.unwrap();
     assert_eq!(host.os, "linux");
     assert_eq!(host.shell, "sh");
+    let hardware = bridge.host_info().await.unwrap();
+    assert_eq!(hardware.host_name.as_deref(), Some("bridge-host"));
+    assert_eq!(hardware.logical_cores, 8);
     assert!(bridge_calls(&mock.0).contains("context-token"));
     if let Some(token) = previous {
         openwebide_frontend::idb::set_bridge_pairing_token(&token)

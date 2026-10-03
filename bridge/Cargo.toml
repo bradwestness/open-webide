@@ -26,6 +26,7 @@ http-body-util = { workspace = true }
 hyper = { version = "1", features = ["server", "http1", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
 libc = "0.2"
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk", "component"] }
 openwebide-core = { workspace = true }
 openwebide-agent = { workspace = true }
 openwebide-llm = { workspace = true }

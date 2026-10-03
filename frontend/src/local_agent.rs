@@ -375,6 +375,33 @@ impl BridgeClient for BrowserBridgeClient {
         })
     }
 
+    fn host_info(&self) -> impl Future<Output = Result<openwebide_core::HostInfo, String>> + Send {
+        let endpoint = format!("{}/host/info", self.http_url);
+        let credentials = self.credentials.clone();
+        SendWrapper::new(async move {
+            let token = credentials
+                .credential()
+                .await
+                .map_err(|error| error.to_string())?;
+            let guard = crate::api::CommandFetchGuard(
+                web_sys::AbortController::new().map_err(|error| format!("{error:?}"))?,
+            );
+            let response = gloo_net::http::Request::post(&endpoint)
+                .header("Content-Type", "application/json")
+                .header("Authorization", &format!("Bearer {token}"))
+                .abort_signal(Some(&guard.0.signal()))
+                .body("{}")
+                .map_err(|error| error.to_string())?
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            if !response.ok() {
+                return Err(format!("Bridge HTTP {}", response.status()));
+            }
+            response.json().await.map_err(|error| error.to_string())
+        })
+    }
+
     fn execute_command(
         &self,
         command: &str,
