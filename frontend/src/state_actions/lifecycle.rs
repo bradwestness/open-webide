@@ -4,7 +4,6 @@ use crate::state::{
     layout::LayoutState,
     projects::ProjectsState,
     settings::{SettingsState, Theme},
-    workspace::WorkspaceState,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -24,24 +23,47 @@ pub struct ProjectEffectContext {
     pub select_project: Callback<i64>,
 }
 
-pub fn install_keyboard_shortcuts(workspace: WorkspaceState, chat: ChatState) {
-    let open_file = workspace.open_file;
-    let content = workspace.content;
-    let active_editor_context = chat.active_editor_context;
-    let show_terminal = chat.show_terminal;
+pub fn install_keyboard_shortcuts(chat: ChatState) {
+    let commands = expect_context::<super::commands::CommandActions>();
+    let ui = expect_context::<crate::state::ui::UiState>();
     let select_approval_mode = super::approvals::mode_selector(chat);
-    let on_toggle_terminal = move || show_terminal.update(|value| *value = !*value);
-
-    let _ = leptos::prelude::window_event_listener(
-        leptos::ev::keydown,
-        move |event: web_sys::KeyboardEvent| {
-            if crate::components::modal::modal_is_open() {
+    let listener =
+        window_event_listener(leptos::ev::keydown, move |event: web_sys::KeyboardEvent| {
+            if event.is_composing()
+                || event.default_prevented()
+                || crate::components::modal::modal_is_open()
+            {
                 return;
             }
-            if event.key() == "Tab"
+            let modifier = event.ctrl_key() || event.meta_key();
+            let key = event.key().to_lowercase();
+            let command = if modifier && event.shift_key() && key == "p" && !event.alt_key() {
+                Some(crate::commands::Command::Palette)
+            } else if modifier && !event.alt_key() && event.code() == "Slash" {
+                Some(crate::commands::Command::Shortcuts)
+            } else if modifier && !event.shift_key() && !event.alt_key() {
+                match key.as_str() {
+                    "`" => Some(crate::commands::Command::ToggleTerminal),
+                    "l" => Some(crate::commands::Command::CaptureEditor),
+                    "k" => Some(crate::commands::Command::CycleFocus),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(command) = command {
+                if command
+                    .unavailable(commands.context.get_untracked())
+                    .is_none()
+                {
+                    event.prevent_default();
+                    commands.run.run(command);
+                }
+                return;
+            }
+            if key == "tab"
                 && event.shift_key()
-                && !event.ctrl_key()
-                && !event.meta_key()
+                && !modifier
                 && !event.alt_key()
                 && event
                     .target()
@@ -49,80 +71,52 @@ pub fn install_keyboard_shortcuts(workspace: WorkspaceState, chat: ChatState) {
                     .is_some_and(|element| element.class_list().contains("composer-input"))
             {
                 event.prevent_default();
-                let mode = super::approvals::current_mode(chat);
-                select_approval_mode.run(mode.next());
-                return;
+                select_approval_mode.run(super::approvals::current_mode(chat).next());
             }
-            if (event.ctrl_key() || event.meta_key()) && event.key() == "`" {
-                event.prevent_default();
-                on_toggle_terminal();
-                return;
-            }
-            if (event.ctrl_key() || event.meta_key())
-                && (event.key() == "l" || event.key() == "L")
-                && let Some(context) = capture_active_editor(open_file.get(), &content.get())
-            {
-                event.prevent_default();
-                active_editor_context.set(Some(context));
-                if let Some(document) = web_sys::window().and_then(|window| window.document())
-                    && let Ok(Some(composer)) = document.query_selector(".composer-input")
-                    && let Ok(element) = composer.dyn_into::<web_sys::HtmlElement>()
-                {
-                    let _ = element.focus();
-                }
-                return;
-            }
-            if (event.ctrl_key() || event.meta_key()) && (event.key() == "k" || event.key() == "K")
-            {
-                event.prevent_default();
-                if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-                    let active = document.active_element();
-                    let is_in = |selector: &str| -> bool {
-                        if let (Some(active), Ok(Some(target))) =
-                            (active.as_ref(), document.query_selector(selector))
-                        {
-                            active.is_same_node(Some(&target)) || target.contains(Some(active))
-                        } else {
-                            false
-                        }
-                    };
-
-                    if is_in(".composer-input") {
-                        if let Ok(Some(element)) = document.query_selector(".editor-textarea")
-                            && let Ok(element) = element.dyn_into::<web_sys::HtmlElement>()
-                        {
-                            let _ = element.focus();
-                            return;
-                        }
-                    } else if is_in(".editor-textarea") {
-                        if let Ok(Some(element)) = document.query_selector(".file-tree")
-                            && let Ok(element) = element.dyn_into::<web_sys::HtmlElement>()
-                        {
-                            let _ = element.focus();
-                            return;
-                        }
-                    } else if (is_in(".sidebar") || is_in(".file-tree"))
-                        && show_terminal.get()
-                        && let Ok(Some(element)) =
-                            document.query_selector(".terminal-input, .terminal-pane")
-                        && let Ok(element) = element.dyn_into::<web_sys::HtmlElement>()
-                    {
-                        let _ = element.focus();
-                        return;
-                    }
-
-                    if let Ok(Some(element)) = document.query_selector(".composer-input")
-                        && let Ok(element) = element.dyn_into::<web_sys::HtmlElement>()
-                    {
-                        let _ = element.focus();
-                    }
-                }
-            }
-        },
-    );
+        });
+    on_cleanup(move || listener.remove());
+    // Scope changes close transient command dialogs rather than applying an
+    // action to another workspace, session or account.
+    Effect::new(move |_| {
+        let _ = commands.scope.get();
+        ui.palette_open.set(false);
+        ui.shortcuts_open.set(false);
+    });
 }
 
-fn capture_active_editor(open_file: Option<String>, content: &str) -> Option<EditorContext> {
+pub(super) fn cycle_focus() {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let targets: Vec<_> = [
+        ".composer-input",
+        ".editor-textarea",
+        ".file-tree",
+        ".terminal-input, .terminal-pane",
+    ]
+    .iter()
+    .filter_map(|selector| document.query_selector(selector).ok().flatten())
+    .filter_map(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+    .filter(|element| element.offset_width() + element.offset_height() > 0)
+    .collect();
+    if targets.is_empty() {
+        return;
+    }
+    let active = document.active_element();
+    let next = active
+        .and_then(|active| {
+            targets.iter().position(|target| {
+                target.is_same_node(Some(&active)) || target.contains(Some(&active))
+            })
+        })
+        .map_or(0, |index| (index + 1) % targets.len());
+    let _ = targets[next].focus();
+}
+
+pub(super) fn capture_active_editor(
+    open_file: Option<String>,
+    content: &str,
+) -> Option<EditorContext> {
     let file_path = open_file?;
     let window = web_sys::window()?;
     let document = window.document()?;

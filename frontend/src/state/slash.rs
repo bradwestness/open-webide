@@ -184,6 +184,8 @@ const HELP_TEXT: &str = "**Open WebIDE Terminal Execution & Slash Commands**\n\n
                         * `/context` — Show the latest model input breakdown\n\
                         * `/stop` — Abort active execution\n\n\
                         **Keybindings:**\n\
+                        * `Ctrl+Shift+P` / `Cmd+Shift+P` — Open command palette\n\
+                        * `Ctrl+/` / `Cmd+/` — Show keyboard shortcuts\n\
                         * `Cmd+L` / `Ctrl+L` — Capture active editor file & selection into context pill\n\
                         * `Ctrl+Backtick` / `Cmd+Backtick` — Toggle bottom terminal dock\n\
                         * `Ctrl+K` / `Cmd+K` — Cycle focus between chat, editor, file explorer, and terminal\n\

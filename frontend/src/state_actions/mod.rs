@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod chat;
+pub mod commands;
 pub mod conversation;
 pub mod git;
 pub mod lifecycle;

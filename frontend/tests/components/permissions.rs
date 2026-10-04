@@ -317,7 +317,8 @@ async fn approval_picker_and_shift_tab_share_database_state_in_both_modes() {
                 .projects
                 .projects
                 .update(|projects| projects[0].mode = mode);
-            install_keyboard_shortcuts(state.workspace, state.chat);
+            super::support::command_actions(state.clone());
+            install_keyboard_shortcuts(state.chat);
             chat_view(state)
         });
         settle().await;

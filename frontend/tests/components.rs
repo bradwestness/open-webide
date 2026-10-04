@@ -69,3 +69,6 @@ mod todos;
 
 #[path = "components/tool_steps.rs"]
 mod tool_steps;
+
+#[path = "components/commands.rs"]
+mod commands;

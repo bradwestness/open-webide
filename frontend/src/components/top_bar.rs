@@ -11,11 +11,13 @@ pub fn TopBar(
 ) -> impl IntoView {
     let auth = expect_context::<AuthState>();
     let settings = expect_context::<crate::state::settings::SettingsState>();
+    let ui = expect_context::<crate::state::ui::UiState>();
     let username = Signal::derive(move || auth.username.get());
     view! {
         <header class="topbar">
             <span class="logo">"open-webide"</span>
             <span class="spacer" />
+            <button class="btn ghost" title="Command palette (Ctrl/⌘+Shift+P)" on:click=move |_| ui.palette_open.set(true)>"Commands"</button>
             <Show when=move || username.get().is_some() fallback=|| ()>
                 <span class="topbar-user">{move || username.get().unwrap_or_default()}</span>
             </Show>

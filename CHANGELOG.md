@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Add a searchable command palette (`Ctrl/⌘+Shift+P`) and keyboard-shortcut overlay (`Ctrl/⌘+/`), with a Commands button in the top bar. Support arrow keys, Enter, Escape and restored focus; reuse shared session, project, settings, model, panel and slash-command actions. Disable project-only commands in projectless chat, preserve drafts and close stale dialogs on account, project or session changes.
+
 - Polish tool steps in local, remote and projectless chats with live elapsed time, persisted final durations, expandable ANSI-colored output and plain-text Copy (including an HTTP LAN fallback). Add per-prompt tool/file counts, including shell changes, and recorded model/tool time; mark incomplete timing as a lower bound. Exclude approval waits, freeze cancelled tools, preserve timing through reload, fork and rewind, and keep timing-save failures from stopping runs.
 
 - Show live reasoning time to tenths of a second and estimated tokens for inline `<think>` blocks and provider reasoning in every chat mode. Freeze a compact “Thought for 3.2s · ~1.4k tokens” summary on completion, cancellation or provider failure, keep traces collapsed until expanded, and support keyboard toggling. Historical traces without observed timing show their token estimate without inventing a duration.

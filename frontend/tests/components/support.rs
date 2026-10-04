@@ -286,3 +286,30 @@ impl Mounted {
             .unwrap();
     }
 }
+
+pub fn command_actions(
+    state: TestState,
+) -> openwebide_frontend::state_actions::commands::CommandActions {
+    use openwebide_frontend::state_actions::{
+        commands::{CommandActionContext, CommandActions},
+        layout::LayoutActions,
+    };
+    let layout = expect_context::<LayoutState>();
+    let layout_actions = LayoutActions::new(state.api, layout, state.auth, state.ui);
+    provide_context(layout_actions);
+    let chat_actions = chat_actions(state.clone());
+    let actions = CommandActions::new(CommandActionContext {
+        workspace: state.workspace,
+        chat: state.chat,
+        settings: state.settings,
+        ui: state.ui,
+        layout: layout_actions,
+        new_session: chat_actions.on_new_session,
+        open_local: Callback::new(|()| ()),
+        open_remote: Callback::new(|()| ()),
+        open_settings: Callback::new(move |()| state.settings.show_settings.set(true)),
+        slash: chat_actions.slash_command,
+    });
+    provide_context(actions);
+    actions
+}

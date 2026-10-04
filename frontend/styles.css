@@ -2713,3 +2713,15 @@ button.browser-item {
   font-size: 11px;
   font-family: var(--mono);
 }
+
+/* The command dialogs use the shared modal, button and input styles. */
+.command-search { width: 100%; }
+.command-results { max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.command-option { width: 100%; justify-content: space-between; text-align: left; white-space: normal; }
+.command-option.selected { background: var(--bg-hover); border-color: var(--accent); }
+.command-unavailable { display: block; }
+.command-option kbd, .shortcut-row kbd { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.command-option kbd { flex-shrink: 0; margin-left: 12px; }
+.shortcut-row { display: flex; gap: 16px; margin: 10px 0; }
+.shortcut-row dt { min-width: 130px; }
+.shortcut-row dd { margin: 0; }

@@ -1,5 +1,6 @@
 mod auth_gate;
 mod chat_pane;
+mod commands;
 mod confirm_dialog;
 mod editor;
 mod file_browser;
@@ -17,6 +18,7 @@ pub mod ui;
 
 pub use auth_gate::AuthGate;
 pub use chat_pane::{ChatPane, ToolStepResult};
+pub use commands::CommandDialogs;
 pub use confirm_dialog::ConfirmDialog;
 pub use editor::Editor;
 #[cfg(feature = "test-support")]

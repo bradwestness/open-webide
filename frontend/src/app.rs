@@ -105,8 +105,6 @@ pub fn App() -> impl IntoView {
         show_terminal.update(|v| *v = !*v);
     };
 
-    install_keyboard_shortcuts(workspace_state, chat_state);
-
     let show_settings = settings.show_settings;
 
     // -- confirmation dialogs (Phase 10) -----------------------------------
@@ -285,6 +283,21 @@ pub fn App() -> impl IntoView {
     let on_rename_session = chat_actions.on_rename_session;
     let on_delete_session = chat_actions.on_delete_session;
     let on_slash_command = chat_actions.slash_command;
+    provide_context(crate::state_actions::commands::CommandActions::new(
+        crate::state_actions::commands::CommandActionContext {
+            workspace: workspace_state,
+            chat: chat_state,
+            settings,
+            ui,
+            layout: layout_actions,
+            new_session: on_new_session,
+            open_local: on_open_local,
+            open_remote: on_open_remote,
+            open_settings: on_open_settings,
+            slash: on_slash_command,
+        },
+    ));
+    install_keyboard_shortcuts(chat_state);
 
     install_project_effects(ProjectEffectContext {
         api,
@@ -319,6 +332,7 @@ pub fn App() -> impl IntoView {
             }
         >
             <div class="app">
+                <crate::components::CommandDialogs />
                 <TopBar
                     health=health.read_only()
                     on_open_settings=on_open_settings

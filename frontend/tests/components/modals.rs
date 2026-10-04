@@ -31,7 +31,9 @@ fn key(target: &web_sys::HtmlElement, name: &str, shift: bool, ctrl: bool) -> bo
 #[wasm_bindgen_test]
 async fn confirm_focus_traps_live_controls_and_restores_opener() {
     let mounted = mount_test(|state| {
-        install_keyboard_shortcuts(state.workspace, state.chat);
+        state.seed_project();
+        super::support::command_actions(state.clone());
+        install_keyboard_shortcuts(state.chat);
         view! { <button class="opener">"Open"</button> <ConfirmDialog /> }
     });
     let opener = mounted.element(".opener");

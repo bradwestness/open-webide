@@ -6,6 +6,7 @@ pub mod app;
 pub mod backend;
 #[cfg(target_arch = "wasm32")]
 pub mod bridge;
+pub mod commands;
 #[cfg(target_arch = "wasm32")]
 pub mod components;
 pub mod conversation;
