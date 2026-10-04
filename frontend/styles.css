@@ -2674,3 +2674,13 @@ button.browser-item {
 .tui-prompt-edit { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; color: var(--text-muted); background: var(--bg-panel); border-top: 1px solid var(--border); font-size: 12px; }
 
 .notification-status { color: var(--text-muted); font-size: 12px; margin: 0 0 16px; }
+
+.tui-todo-plan { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); margin-bottom: 8px; font-size: 12px; }
+.tui-todo-plan summary { padding: 6px 10px; cursor: pointer; color: var(--text-muted); }
+.todo-items { max-height: 160px; overflow-y: auto; padding: 0 10px 8px; }
+.todo-row { display: flex; gap: 8px; padding: 4px 0; overflow-wrap: anywhere; }
+.todo-status { flex-shrink: 0; color: var(--text-muted); }
+.todo-row.active .todo-status { color: var(--accent); }
+.todo-row.completed { color: var(--text-muted); }
+.todo-row.completed .todo-status { color: var(--online); }
+.todo-notice { color: var(--text-muted); font-size: 12px; margin-bottom: 8px; }

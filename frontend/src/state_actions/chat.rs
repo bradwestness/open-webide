@@ -75,6 +75,7 @@ impl ChatActions {
             refresh_git,
             on_sync_click,
         } = context;
+        let todos = super::todos::install(api, chat, projects);
         let project_git = expect_context::<crate::project_git::ProjectGit>();
         let project_host = expect_context::<crate::project_host::ProjectHost>();
         let run_controls = StoredValue::new_local(super::runs::RunControls::default());
@@ -161,6 +162,11 @@ impl ChatActions {
                     &event,
                     replayed,
                 );
+                if matches!(&event, openwebide_core::RunEvent::ToolResult { name, .. } if name == "todo_write")
+                    || matches!(&event, openwebide_core::RunEvent::Done { .. })
+                {
+                    todos.refresh.run(session_id);
+                }
                 let run_project_id = chat
                     .sessions
                     .get_untracked()

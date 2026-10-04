@@ -763,6 +763,24 @@ impl BackendApi {
         self.get(&format!("/sessions/{session_id}/messages")).await
     }
 
+    pub async fn get_todo_plan(
+        &self,
+        session: i64,
+    ) -> Result<Option<openwebide_core::TodoUpdate>, String> {
+        self.get(&format!("/sessions/{session}/todos")).await
+    }
+    pub async fn write_todo_plan(
+        &self,
+        session: i64,
+        anchor: i64,
+        plan: &openwebide_core::TodoPlan,
+    ) -> Result<openwebide_core::TodoUpdate, String> {
+        self.post(
+            &format!("/sessions/{session}/todos"),
+            &json!({"anchor_message_id":anchor,"plan":plan}),
+        )
+        .await
+    }
     pub async fn fork_session(
         &self,
         session: i64,

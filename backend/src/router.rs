@@ -63,6 +63,8 @@ enum Route {
     RemoveQueuedPrompt,
     ConsumeQueuedPrompt,
     ForkSession,
+    GetTodoPlan,
+    WriteTodoPlan,
     UpsertToolStep,
     CompleteToolStep,
     ListModels,
@@ -164,6 +166,8 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("DELETE", ["sessions", _, "queue"]) => Some(Route::RemoveQueuedPrompt),
         ("POST", ["sessions", _, "queue", "send"]) => Some(Route::ConsumeQueuedPrompt),
         ("POST", ["sessions", _, "fork"]) => Some(Route::ForkSession),
+        ("GET", ["sessions", _, "todos"]) => Some(Route::GetTodoPlan),
+        ("POST", ["sessions", _, "todos"]) => Some(Route::WriteTodoPlan),
         ("POST", ["sessions", _, "tool-steps", "upsert"]) => Some(Route::UpsertToolStep),
         ("POST", ["sessions", _, "tool-steps", "complete"]) => Some(Route::CompleteToolStep),
         ("GET", ["models"]) => Some(Route::ListModels),
@@ -376,6 +380,12 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::PersistMessage), Some(user)) => {
             api::sessions::persist_message(req, &state, &path, user).await
+        }
+        (Some(Route::GetTodoPlan), Some(user)) => {
+            api::sessions::get_todo_plan(&state, &path, user).await
+        }
+        (Some(Route::WriteTodoPlan), Some(user)) => {
+            api::sessions::write_todo_plan(req, &state, &path, user).await
         }
         (Some(Route::ForkSession), Some(user)) => {
             api::sessions::fork_session(req, &state, &path, user).await
@@ -762,6 +772,8 @@ mod tests {
             ("DELETE", "sessions/5/queue", Route::RemoveQueuedPrompt),
             ("POST", "sessions/5/queue/send", Route::ConsumeQueuedPrompt),
             ("POST", "sessions/5/fork", Route::ForkSession),
+            ("GET", "sessions/5/todos", Route::GetTodoPlan),
+            ("POST", "sessions/5/todos", Route::WriteTodoPlan),
             (
                 "POST",
                 "sessions/5/tool-steps/upsert",

@@ -449,6 +449,15 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 plan.environment,
             )
             .with_host(crate::runs::agent_host::HostInfoClient(execution));
+            let executor = openwebide_agent::todo::TodoTools::new(
+                executor,
+                TodoPersistence {
+                    backend: backend.clone(),
+                    user: run.owner,
+                    session: run.session_id,
+                    anchor: anchor_id,
+                },
+            );
             let memo = provider.tool_stream_memo();
             let connection_id = plan.connection.id;
             let tool_stream_revision = plan.connection.tool_stream_revision;
@@ -599,6 +608,26 @@ async fn map_agent_events<B: RunBackend>(
     ));
     while let Some(event) = events.next().await {
         run.emit(event);
+    }
+}
+
+struct TodoPersistence<B> {
+    backend: Arc<B>,
+    user: i64,
+    session: i64,
+    anchor: i64,
+}
+impl<B: RunBackend> openwebide_agent::todo::TodoStore for TodoPersistence<B> {
+    async fn read(&self) -> Result<Option<openwebide_core::TodoUpdate>, String> {
+        self.backend.get_todo_plan(self.user, self.session).await
+    }
+    async fn write(
+        &self,
+        plan: &openwebide_core::TodoPlan,
+    ) -> Result<openwebide_core::TodoUpdate, String> {
+        self.backend
+            .write_todo_plan(self.user, self.session, self.anchor, plan)
+            .await
     }
 }
 

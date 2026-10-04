@@ -77,6 +77,9 @@ impl AuthState {
         chat.streaming.set(false);
         chat.rewinding.set(false);
         chat.prompt_images.set(Vec::new());
+        chat.todo_plan.set(None);
+        chat.todo_loading.set(false);
+        chat.todo_error.set(None);
         chat.queued_prompts.set(Vec::new());
         chat.queue_busy.set(false);
         chat.queue_loading.set(false);

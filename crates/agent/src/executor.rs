@@ -608,6 +608,7 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Tool::SearchWeb(args) => self.search_web(&args).await,
             Tool::FetchWebPage(args) => self.fetch_web_page(&args).await,
             Tool::RunCommand(args) => self.run_command(&args).await,
+            Tool::TodoWrite(_) => fail("todo_write", "", "Session plan persistence is unavailable"),
             Tool::HostInfo => match self.bridge.host_info().await {
                 Ok(info) => ToolOutcome {
                     ok: true,
@@ -1170,7 +1171,7 @@ mod tests {
         ]);
         let existing_tools = vfs_tools()
             .into_iter()
-            .filter(|tool| tool.name != "host_info")
+            .filter(|tool| !matches!(tool.name.as_str(), "host_info" | "todo_write"))
             .collect::<Vec<_>>();
         assert_eq!(serde_json::to_value(existing_tools).unwrap(), snapshot);
     }

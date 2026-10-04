@@ -647,3 +647,50 @@ pub(crate) async fn rewind_session(
         Ok(json_response(200, &plan))
     }
 }
+
+#[derive(Deserialize)]
+pub(super) struct TodoPlanBody {
+    pub(super) anchor_message_id: i64,
+    pub(super) plan: openwebide_core::TodoPlan,
+}
+
+pub(crate) async fn get_todo_plan(
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    Ok(json_response(
+        200,
+        &state
+            .store
+            .get_todo_plan(user.id, session_id(path)?)
+            .await?,
+    ))
+}
+pub(crate) async fn write_todo_plan(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let session = session_id(path)?;
+    state.store.get_session(session, user.id).await?;
+    let body: TodoPlanBody = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
+    write_todo_plan_body(state, session, user, body).await
+}
+
+pub(super) async fn write_todo_plan_body(
+    state: &AppState,
+    session: i64,
+    user: AuthedUser,
+    body: TodoPlanBody,
+) -> Result<JsonResp, ApiError> {
+    body.plan.validate().map_err(ApiError::bad_request)?;
+    Ok(json_response(
+        201,
+        &state
+            .store
+            .write_todo_plan(user.id, session, body.anchor_message_id, &body.plan, now())
+            .await?,
+    ))
+}

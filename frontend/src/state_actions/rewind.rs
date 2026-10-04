@@ -22,6 +22,7 @@ pub fn actions(
     refresh_git: Callback<()>,
 ) -> Callback<i64> {
     let auth = expect_context::<AuthState>();
+    let todos = use_context::<super::todos::TodoActions>();
     Callback::new(move |message: i64| {
         let Some(session) = chat.active_session.get_untracked() else {
             return;
@@ -94,6 +95,7 @@ pub fn actions(
                         let entries = backend.complete_rewind(session, message).await?;
                         if current() {
                             chat.history_gen.update_value(|value| *value += 1);
+                            if let Some(todos) = todos { todos.refresh.run(session); }
                             chat.session_telemetry.update(|telemetry| telemetry.restore_from_conversation(&entries));
                             chat.messages.install_history(super::chat::history_items(entries));
                             chat.interrupted_run.set(None);

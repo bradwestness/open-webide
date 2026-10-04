@@ -931,7 +931,14 @@ pub async fn run_local_agent(
     });
     let stream = openwebide_agent::run_with_compaction(
         provider,
-        VfsToolExecutor::with_web_and_bridge(vfs, web, bridge).with_context(environment),
+        openwebide_agent::todo::TodoTools::new(
+            VfsToolExecutor::with_web_and_bridge(vfs, web, bridge).with_context(environment),
+            TodoPersistence {
+                api: SendWrapper::new(api),
+                session: session_id,
+                anchor: anchor_id,
+            },
+        ),
         request,
         config,
         cancel,
@@ -1017,6 +1024,35 @@ impl openwebide_agent::session::RunPersistence for SessionPersistence {
             self.api
                 .with_value(Clone::clone)
                 .complete_tool_step(self.session, id, ok, summary, diff)
+                .await
+        })
+    }
+}
+
+struct TodoPersistence {
+    api: SendWrapper<Api>,
+    session: i64,
+    anchor: i64,
+}
+impl openwebide_agent::todo::TodoStore for TodoPersistence {
+    fn read(
+        &self,
+    ) -> impl Future<Output = Result<Option<openwebide_core::TodoUpdate>, String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .get_todo_plan(self.session)
+                .await
+        })
+    }
+    fn write(
+        &self,
+        plan: &openwebide_core::TodoPlan,
+    ) -> impl Future<Output = Result<openwebide_core::TodoUpdate, String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .write_todo_plan(self.session, self.anchor, plan)
                 .await
         })
     }

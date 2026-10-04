@@ -922,3 +922,147 @@ fn empty_search_queries_return_400_before_filesystem_access() {
         "hello"
     );
 }
+
+#[test]
+fn todo_endpoints_share_owned_validation_and_durability_in_every_workspace() {
+    futures::executor::block_on(async {
+        for mode in [
+            Some(WorkspaceMode::Local),
+            Some(WorkspaceMode::Remote),
+            None,
+        ] {
+            let state = AppState::new().await.unwrap();
+            let owner = state
+                .store
+                .insert_user("owner", "hash", openwebide_core::UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let other = state
+                .store
+                .insert_user("other", "hash", openwebide_core::UserRole::User, 1)
+                .await
+                .unwrap();
+            let project = if let Some(mode) = mode {
+                Some(
+                    state
+                        .store
+                        .create_project(
+                            &NewProject {
+                                name: "project".into(),
+                                mode,
+                                path: Some("test".into()),
+                            },
+                            owner.id,
+                            1,
+                        )
+                        .await
+                        .unwrap()
+                        .id,
+                )
+            } else {
+                None
+            };
+            let session = state
+                .store
+                .create_session("session", None, None, project, owner.id, 1)
+                .await
+                .unwrap()
+                .id;
+            let prompt = state
+                .store
+                .insert_message(session, Role::User, "task", 1)
+                .await
+                .unwrap();
+            let user = AuthedUser {
+                id: owner.id,
+                role: owner.role,
+            };
+            let other = AuthedUser {
+                id: other.id,
+                role: other.role,
+            };
+            let path = format!("/api/sessions/{session}/todos");
+            let plan = openwebide_core::TodoPlan {
+                todos: vec![openwebide_core::TodoItem {
+                    id: "inspect".into(),
+                    content: "Inspect the code".into(),
+                    status: openwebide_core::TodoStatus::Pending,
+                }],
+            };
+            let request = |anchor, plan: &openwebide_core::TodoPlan| TodoPlanBody {
+                anchor_message_id: anchor,
+                plan: plan.clone(),
+            };
+            assert_eq!(
+                get_todo_plan(&state, &path, user).await.unwrap().status(),
+                200
+            );
+            assert_eq!(
+                write_todo_plan_body(&state, session, user, request(prompt.id, &plan))
+                    .await
+                    .unwrap()
+                    .status(),
+                201
+            );
+            let response = get_todo_plan(&state, &path, user)
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes();
+            let persisted: openwebide_core::TodoUpdate = serde_json::from_slice(&response).unwrap();
+            assert_eq!(persisted.plan, plan);
+            assert_eq!(persisted.anchor_message_id, prompt.id);
+            assert_eq!(
+                get_todo_plan(&state, &path, other)
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                404
+            );
+            assert_eq!(
+                write_todo_plan_body(&state, session, other, request(prompt.id, &plan))
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                404
+            );
+            let invalid = openwebide_core::TodoPlan {
+                todos: vec![openwebide_core::TodoItem {
+                    id: "bad".into(),
+                    content: String::new(),
+                    status: openwebide_core::TodoStatus::Pending,
+                }],
+            };
+            assert_eq!(
+                write_todo_plan_body(&state, session, user, request(prompt.id, &invalid))
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                400
+            );
+            state
+                .store
+                .insert_message(session, Role::User, "new task", 2)
+                .await
+                .unwrap();
+            assert_eq!(
+                write_todo_plan_body(&state, session, user, request(prompt.id, &plan))
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                409
+            );
+            assert_eq!(
+                state.store.get_todo_plan(user.id, session).await.unwrap(),
+                Some(persisted)
+            );
+        }
+    });
+}

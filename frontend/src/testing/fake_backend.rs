@@ -56,6 +56,10 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub todo_updates: RefCell<BTreeMap<i64, Vec<openwebide_core::TodoUpdate>>>,
+    pub todo_load_results: RefCell<VecDeque<Deferred<Option<openwebide_core::TodoUpdate>>>>,
+    pub todo_errors: RefCell<VecDeque<String>>,
+
     pub fork_results: RefCell<VecDeque<Deferred<openwebide_core::ForkedSession>>>,
     pub fork_errors: RefCell<VecDeque<String>>,
     pub queued_prompts: RefCell<BTreeMap<i64, Vec<openwebide_core::QueuedPrompt>>>,
@@ -1208,6 +1212,7 @@ impl Backend for FakeBackend {
             self.sessions.borrow_mut().retain(|item| item.id != id);
             self.messages.borrow_mut().remove(&id);
             self.queued_prompts.borrow_mut().remove(&id);
+            self.todo_updates.borrow_mut().remove(&id);
             Ok(())
         })
     }
@@ -1414,6 +1419,9 @@ impl Backend for FakeBackend {
                     edits.remove(&(project, file.path));
                 }
             }
+            if let Some(updates) = self.todo_updates.borrow_mut().get_mut(&session) {
+                updates.retain(|update| update.anchor_message_id < message);
+            }
             Ok(entries.clone())
         })
     }
@@ -1460,6 +1468,64 @@ impl Backend for FakeBackend {
                 .borrow_mut()
                 .pop_front()
                 .ok_or_else(|| "chat_tools has no scripted response".into())
+        })
+    }
+    fn get_todo_plan(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<Option<openwebide_core::TodoUpdate>, String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "get_todo_plan",
+            });
+            let pending = self.todo_load_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            Ok(self
+                .todo_updates
+                .borrow()
+                .get(&session)
+                .and_then(|updates| updates.last().cloned()))
+        })
+    }
+    fn write_todo_plan<'a>(
+        &'a self,
+        session: i64,
+        anchor: i64,
+        plan: &'a openwebide_core::TodoPlan,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::TodoUpdate, String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "write_todo_plan",
+            });
+            plan.validate()?;
+            if let Some(error) = self.todo_errors.borrow_mut().pop_front() {
+                return Err(error);
+            }
+            let messages = self.messages.borrow();
+            let latest = messages.get(&session).and_then(|entries| {
+                entries.iter().rev().find_map(|entry| match entry {
+                    ConversationEntry::Message(message) if message.role == Role::User => {
+                        Some(message.id)
+                    }
+                    _ => None,
+                })
+            });
+            if latest != Some(anchor) {
+                return Err("Plan belongs to an earlier prompt".into());
+            }
+            let mut updates = self.todo_updates.borrow_mut();
+            let updates = updates.entry(session).or_default();
+            let update = openwebide_core::TodoUpdate {
+                id: updates.last().map_or(1, |update| update.id + 1),
+                session_id: session,
+                anchor_message_id: anchor,
+                created_at: 0,
+                plan: plan.clone(),
+            };
+            updates.push(update.clone());
+            Ok(update)
         })
     }
     fn fork_session<'a>(
@@ -1536,6 +1602,21 @@ impl Backend for FakeBackend {
             self.messages
                 .borrow_mut()
                 .insert(session.id, copied.clone());
+            let plans = self
+                .todo_updates
+                .borrow()
+                .get(&source)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|update| update.anchor_message_id < target)
+                .map(|mut update| {
+                    update.session_id = session.id;
+                    update.anchor_message_id = ids[&update.anchor_message_id];
+                    update
+                })
+                .collect();
+            self.todo_updates.borrow_mut().insert(session.id, plans);
             let mode = self
                 .settings
                 .borrow()

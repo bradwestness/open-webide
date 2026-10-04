@@ -339,6 +339,16 @@ pub trait Backend {
         &'a self,
         request: &'a ChatRequest,
     ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>>;
+    fn get_todo_plan(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<Option<openwebide_core::TodoUpdate>, String>>;
+    fn write_todo_plan<'a>(
+        &'a self,
+        session: i64,
+        anchor: i64,
+        plan: &'a openwebide_core::TodoPlan,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::TodoUpdate, String>>;
     fn fork_session<'a>(
         &'a self,
         session: i64,
@@ -915,6 +925,20 @@ impl Backend for BackendApi {
         request: &'a ChatRequest,
     ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
         Box::pin(BackendApi::chat_tools(self, request))
+    }
+    fn get_todo_plan(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<Option<openwebide_core::TodoUpdate>, String>> {
+        Box::pin(BackendApi::get_todo_plan(self, session))
+    }
+    fn write_todo_plan<'a>(
+        &'a self,
+        session: i64,
+        anchor: i64,
+        plan: &'a openwebide_core::TodoPlan,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::TodoUpdate, String>> {
+        Box::pin(BackendApi::write_todo_plan(self, session, anchor, plan))
     }
     fn fork_session<'a>(
         &'a self,

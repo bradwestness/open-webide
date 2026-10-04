@@ -108,6 +108,7 @@ pub enum Tool {
     RunCommand(RunCommandArgs),
     GitStatus,
     HostInfo,
+    TodoWrite(openwebide_core::TodoPlan),
     GitDiff(GitDiffArgs),
     GitCommit(GitCommitArgs),
     GitBranch(GitBranchArgs),
@@ -132,6 +133,7 @@ impl Tool {
             Tool::RunCommand(args) => format!("run '{}'", args.command),
             Tool::GitStatus => "inspect git status".to_string(),
             Tool::HostInfo => "inspect bridge host hardware".into(),
+            Tool::TodoWrite(plan) => format!("update plan ({} items)", plan.todos.len()),
             Tool::GitDiff(args) => match args.path.as_deref() {
                 Some(p) => format!("inspect git diff for '{p}'"),
                 None => "inspect repository git diff".to_string(),
@@ -161,6 +163,7 @@ pub enum ToolName {
     RunCommand,
     GitStatus,
     HostInfo,
+    TodoWrite,
     GitDiff,
     GitCommit,
     GitBranch,
@@ -192,6 +195,7 @@ impl ToolName {
         ToolName::RunCommand,
         ToolName::GitStatus,
         ToolName::HostInfo,
+        ToolName::TodoWrite,
         ToolName::GitDiff,
         ToolName::GitCommit,
         ToolName::GitBranch,
@@ -210,6 +214,7 @@ impl ToolName {
             ToolName::RunCommand => "run_command",
             ToolName::GitStatus => "git_status",
             ToolName::HostInfo => "host_info",
+            ToolName::TodoWrite => "todo_write",
             ToolName::GitDiff => "git_diff",
             ToolName::GitCommit => "git_commit",
             ToolName::GitBranch => "git_branch",
@@ -219,6 +224,15 @@ impl ToolName {
     /// The tool's JSON-schema definition, as advertised to the model.
     pub fn definition(self) -> ToolDefinition {
         match self {
+            ToolName::TodoWrite => ToolDefinition {
+                name: "todo_write".into(),
+                description: "Replace the session checklist for a task with several steps. Keep stable IDs, mark completed work, and keep at most one item in progress. An empty list clears the plan.".into(),
+                parameters: json!({ "type": "object", "properties": { "todos": { "type": "array", "maxItems": 64, "items": { "type": "object", "properties": {
+                    "id": { "type": "string", "maxLength": 64, "description": "Stable item ID" },
+                    "content": { "type": "string", "maxLength": 2048, "description": "Short actionable task" },
+                    "status": { "type": "string", "enum": ["pending", "in_progress", "completed"] }
+                }, "required": ["id", "content", "status"] } } }, "required": ["todos"] }),
+            },
             ToolName::ReadFile => ToolDefinition {
                 name: "read_file".into(),
                 description: "Read the contents of a file in the workspace.".into(),
@@ -382,6 +396,7 @@ impl ToolName {
                 | ToolName::Search
                 | ToolName::GrepSearch
                 | ToolName::HostInfo
+                | ToolName::TodoWrite
                 | ToolName::GitStatus
                 | ToolName::GitDiff
                 | ToolName::SearchWeb
@@ -426,6 +441,7 @@ impl FromStr for ToolName {
             "run_command" => Ok(ToolName::RunCommand),
             "git_status" => Ok(ToolName::GitStatus),
             "host_info" => Ok(ToolName::HostInfo),
+            "todo_write" => Ok(ToolName::TodoWrite),
             "git_diff" => Ok(ToolName::GitDiff),
             "git_commit" => Ok(ToolName::GitCommit),
             "git_branch" => Ok(ToolName::GitBranch),
@@ -483,6 +499,7 @@ pub fn parse(call: &ToolCall) -> Result<Tool, ToolArgError> {
         };
     }
     match name {
+        ToolName::TodoWrite => parse_as!(TodoWrite, openwebide_core::TodoPlan),
         ToolName::ReadFile => parse_as!(ReadFile, ReadFileArgs),
         ToolName::WriteFile => parse_as!(WriteFile, WriteFileArgs),
         ToolName::ListDir => parse_as!(ListDir, ListDirArgs),
@@ -593,6 +610,7 @@ mod tests {
             Tool::RunCommand(_) => ToolName::RunCommand,
             Tool::GitStatus => ToolName::GitStatus,
             Tool::HostInfo => ToolName::HostInfo,
+            Tool::TodoWrite(_) => ToolName::TodoWrite,
             Tool::GitDiff(_) => ToolName::GitDiff,
             Tool::GitCommit(_) => ToolName::GitCommit,
             Tool::GitBranch(_) => ToolName::GitBranch,
@@ -700,6 +718,7 @@ mod tests {
             ToolName::GrepSearch,
             ToolName::GitStatus,
             ToolName::HostInfo,
+            ToolName::TodoWrite,
             ToolName::GitDiff,
             ToolName::SearchWeb,
         ];

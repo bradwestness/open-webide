@@ -829,6 +829,7 @@ pub fn ChatPane(
                 </div>
             </Show>
 
+            <super::todo_plan::TodoPlanPanel />
             <crate::prompt::PromptControls composer=prompt_composer />
             <Show when=move || chat.prompt_edit.get().is_some()>
                 <div class="tui-prompt-edit"><span>"Editing an earlier prompt. Send starts a new branch."</span>

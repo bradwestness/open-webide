@@ -63,3 +63,6 @@ mod branches;
 
 #[path = "components/notifications.rs"]
 mod notifications;
+
+#[path = "components/todos.rs"]
+mod todos;

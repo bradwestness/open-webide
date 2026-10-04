@@ -6,6 +6,7 @@ mod model_setup;
 mod reviews;
 mod rewind;
 mod rows;
+mod todos;
 
 use rows::*;
 

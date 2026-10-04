@@ -13,6 +13,23 @@ use serde_json::{Value, json};
 use crate::runs::http_client::ReqwestHttpClient;
 
 pub trait RunBackend: Send + Sync {
+    fn get_todo_plan(
+        &self,
+        _user: i64,
+        _session: i64,
+    ) -> impl Future<Output = Result<Option<openwebide_core::TodoUpdate>, String>> + Send {
+        async { Ok(None) }
+    }
+    fn write_todo_plan(
+        &self,
+        _user: i64,
+        _session: i64,
+        _anchor: i64,
+        _plan: &openwebide_core::TodoPlan,
+    ) -> impl Future<Output = Result<openwebide_core::TodoUpdate, String>> + Send {
+        async { Err("Session plan persistence unavailable".into()) }
+    }
+
     fn consume_queued_prompt(
         &self,
         _user: i64,
@@ -195,6 +212,35 @@ pub fn encode_query(s: &str) -> String {
 }
 
 impl RunBackend for BackendClient {
+    async fn get_todo_plan(
+        &self,
+        user: i64,
+        session: i64,
+    ) -> Result<Option<openwebide_core::TodoUpdate>, String> {
+        self.call(
+            user,
+            "GET",
+            &format!("/sessions/{session}/todos"),
+            Value::Null,
+        )
+        .await
+    }
+    async fn write_todo_plan(
+        &self,
+        user: i64,
+        session: i64,
+        anchor: i64,
+        plan: &openwebide_core::TodoPlan,
+    ) -> Result<openwebide_core::TodoUpdate, String> {
+        self.call(
+            user,
+            "POST",
+            &format!("/sessions/{session}/todos"),
+            json!({ "anchor_message_id": anchor, "plan": plan }),
+        )
+        .await
+    }
+
     async fn model_runtime(
         &self,
         user: i64,

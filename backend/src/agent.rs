@@ -198,6 +198,15 @@ pub fn agent_stream(
         },
     };
     let anchor_id = user_message.id;
+    let executor = openwebide_agent::todo::TodoTools::new(
+        executor,
+        TodoPersistence {
+            store: store.clone(),
+            user: user_id,
+            session: session_id,
+            anchor: anchor_id,
+        },
+    );
     let events = openwebide_agent::run_with_compaction(
         provider,
         executor,
@@ -310,6 +319,30 @@ fn map_agent_events(
     )
 }
 
+struct TodoPersistence {
+    store: Arc<Store<AppDb>>,
+    user: openwebide_core::UserId,
+    session: i64,
+    anchor: i64,
+}
+impl openwebide_agent::todo::TodoStore for TodoPersistence {
+    async fn read(&self) -> Result<Option<openwebide_core::TodoUpdate>, String> {
+        self.store
+            .get_todo_plan(self.user, self.session)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    async fn write(
+        &self,
+        plan: &openwebide_core::TodoPlan,
+    ) -> Result<openwebide_core::TodoUpdate, String> {
+        self.store
+            .write_todo_plan(self.user, self.session, self.anchor, plan, now())
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +353,79 @@ mod tests {
     use openwebide_llm::{LlmProvider, ProviderError, StreamChunk, ToolStreamChunk};
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    #[test]
+    fn sse_plan_adapter_preserves_success_and_failure_contracts_in_every_workspace() {
+        futures::executor::block_on(async {
+            for mode in [
+                Some(openwebide_core::WorkspaceMode::Local),
+                Some(openwebide_core::WorkspaceMode::Remote),
+                None,
+            ] {
+                let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+                store.migrate().await.unwrap();
+                let user = store
+                    .insert_user("owner", "hash", UserRole::Admin, 1)
+                    .await
+                    .unwrap()
+                    .id;
+                let project = if let Some(mode) = mode {
+                    Some(
+                        store
+                            .create_project(
+                                &openwebide_core::NewProject {
+                                    name: "project".into(),
+                                    mode,
+                                    path: Some("test".into()),
+                                },
+                                user,
+                                1,
+                            )
+                            .await
+                            .unwrap()
+                            .id,
+                    )
+                } else {
+                    None
+                };
+                let session = store
+                    .create_session("session", None, None, project, user, 1)
+                    .await
+                    .unwrap()
+                    .id;
+                let prompt = store
+                    .insert_message(session, Role::User, "task", 1)
+                    .await
+                    .unwrap();
+                let executor = openwebide_agent::todo::TodoTools::new(
+                    VfsToolExecutor::new(openwebide_core::MemoryVfs::new()),
+                    TodoPersistence {
+                        store: store.clone(),
+                        user,
+                        session,
+                        anchor: prompt.id,
+                    },
+                );
+                let call = ToolCall { id: "plan".into(), name: "todo_write".into(), arguments: r#"{"todos":[{"id":"inspect","content":"Inspect the code","status":"in_progress"}]}"#.into() };
+                let result = executor.execute(&call).await;
+                assert!(result.ok);
+                let saved = store.get_todo_plan(user, session).await.unwrap().unwrap();
+                assert_eq!(
+                    serde_json::from_str::<openwebide_core::TodoPlan>(&result.content).unwrap(),
+                    saved.plan
+                );
+                store
+                    .insert_message(session, Role::User, "new task", 2)
+                    .await
+                    .unwrap();
+                assert!(!executor.execute(&call).await.ok);
+                assert_eq!(
+                    store.get_todo_plan(user, session).await.unwrap(),
+                    Some(saved)
+                );
+            }
+        });
+    }
 
     struct ScriptedProvider(Mutex<VecDeque<ChatResponse>>);
 

@@ -11,6 +11,8 @@ use std::pin::Pin;
 
 #[derive(Default)]
 struct FakeBackend {
+    todo_plan: Mutex<Option<openwebide_core::TodoUpdate>>,
+    fail_todo: AtomicBool,
     messages: Mutex<Vec<ChatMessage>>,
     operations: Mutex<Vec<String>>,
     kind: Mutex<Option<RunKind>>,
@@ -27,6 +29,35 @@ struct FakeBackend {
 }
 
 impl RunBackend for FakeBackend {
+    async fn get_todo_plan(
+        &self,
+        _user: i64,
+        _session: i64,
+    ) -> Result<Option<openwebide_core::TodoUpdate>, String> {
+        Ok(self.todo_plan.lock().unwrap().clone())
+    }
+    async fn write_todo_plan(
+        &self,
+        user: i64,
+        session: i64,
+        anchor: i64,
+        plan: &openwebide_core::TodoPlan,
+    ) -> Result<openwebide_core::TodoUpdate, String> {
+        assert_eq!(user, 1);
+        if self.fail_todo.load(Ordering::SeqCst) {
+            return Err("plan database unavailable".into());
+        }
+        let update = openwebide_core::TodoUpdate {
+            id: 1,
+            session_id: session,
+            anchor_message_id: anchor,
+            plan: plan.clone(),
+            created_at: 1,
+        };
+        *self.todo_plan.lock().unwrap() = Some(update.clone());
+        Ok(update)
+    }
+
     async fn consume_queued_prompt(
         &self,
         user: i64,
@@ -1625,4 +1656,82 @@ async fn queued_run_uses_atomic_delivery_after_preflight_and_never_falls_back_to
         1
     );
     assert_eq!(messages[0].content, "go");
+}
+
+#[tokio::test]
+async fn native_and_projectless_runs_persist_checklists_before_success_and_keep_failed_updates() {
+    use openwebide_core::{TodoItem, TodoPlan, TodoStatus};
+    for project in [true, false] {
+        for failure in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Arc::new(FakeBackend::default());
+            *backend.kind.lock().unwrap() = Some(if project {
+                RunKind::Agent {
+                    project_path: "".into(),
+                }
+            } else {
+                RunKind::WebChat
+            });
+            backend.fail_todo.store(failure, Ordering::SeqCst);
+            let plan = TodoPlan {
+                todos: vec![TodoItem {
+                    id: "inspect".into(),
+                    content: "Inspect the code".into(),
+                    status: TodoStatus::InProgress,
+                }],
+            };
+            let provider = FakeProvider {
+                tools: Mutex::new(vec![
+                    vec![Ok(ToolStreamChunk::Response(ChatResponse::ToolCalls(
+                        vec![ToolCall {
+                            id: "plan".into(),
+                            name: "todo_write".into(),
+                            arguments: serde_json::to_string(&plan).unwrap(),
+                        }],
+                    )))],
+                    vec![Ok(ToolStreamChunk::Response(ChatResponse::Text(
+                        "final".into(),
+                    )))],
+                ]),
+                ..Default::default()
+            };
+            let run = RunRegistry::default()
+                .start(
+                    &user(1),
+                    start("plan-run"),
+                    dir.path(),
+                    backend.clone(),
+                    |_| provider,
+                )
+                .await
+                .unwrap();
+            finished(&run).await;
+            let emitted = events(&run);
+            assert!(emitted.iter().any(|event| matches!(event, RunEvent::ToolResult { name, ok, .. } if name == "todo_write" && *ok != failure)));
+            assert!(matches!(emitted.last(), Some(RunEvent::Done { .. })));
+            assert!(
+                !emitted
+                    .iter()
+                    .any(|event| matches!(event, RunEvent::PermissionRequest { .. }))
+            );
+            let stored = backend.todo_plan.lock().unwrap().clone();
+            if failure {
+                assert!(stored.is_none());
+            } else {
+                let stored = stored.unwrap();
+                assert_eq!(stored.plan, plan);
+                let messages = backend.messages.lock().unwrap();
+                assert_eq!(
+                    stored.anchor_message_id,
+                    messages
+                        .iter()
+                        .find(|message| message.role == Role::User)
+                        .unwrap()
+                        .id
+                );
+                assert_eq!(stored.session_id, 1);
+            }
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+    }
 }
