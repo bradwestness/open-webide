@@ -28,6 +28,8 @@ pub use rewind::{RewindFile, RewindPlan};
 pub mod search;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+pub mod tool_timing;
+pub use tool_timing::ToolTiming;
 pub mod tui;
 pub mod utf8;
 pub mod vfs;

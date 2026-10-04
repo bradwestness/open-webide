@@ -42,7 +42,7 @@ impl<D: Db> Store<D> {
                 let anchor = ids.get(&step.anchor_message_id).ok_or_else(|| StorageError::Conflict("Tool references missing branch history".into()))?;
                 // Copy history/checkpoints without applying edits or duplicating
                 // project review decisions. Tool wire IDs remain session scoped.
-                store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, ok, result_summary, diff, created_at, completion_applied, checkpoint) SELECT ?, ?, tool_call_id, name, summary, ok, result_summary, diff, created_at, completion_applied, checkpoint FROM tool_steps WHERE session_id = ? AND tool_call_id = ?", &[DbValue::Int(session.id), DbValue::Int(*anchor), DbValue::Int(source), DbValue::Text(step.tool_call_id.clone())]).await?;
+                store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, ok, result_summary, diff, created_at, completion_applied, checkpoint, timing) SELECT ?, ?, tool_call_id, name, summary, ok, result_summary, diff, created_at, completion_applied, checkpoint, timing FROM tool_steps WHERE session_id = ? AND tool_call_id = ?", &[DbValue::Int(session.id), DbValue::Int(*anchor), DbValue::Int(source), DbValue::Text(step.tool_call_id.clone())]).await?;
             }
             for (original, copied) in &ids {
                 store.db.execute("INSERT INTO todo_updates (session_id, anchor_message_id, plan, created_at) SELECT ?, ?, plan, created_at FROM todo_updates WHERE session_id = ? AND anchor_message_id = ? ORDER BY id", &[DbValue::Int(session.id), DbValue::Int(*copied), DbValue::Int(source), DbValue::Int(*original)]).await?;

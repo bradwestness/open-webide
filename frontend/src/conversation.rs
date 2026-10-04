@@ -16,6 +16,7 @@ pub enum ConversationItem {
     /// An agent tool step: the call (always known) and, once it finishes, its
     /// result (which may carry a file diff for edits).
     ToolStep {
+        timing: Option<openwebide_core::ToolTiming>,
         /// A fresh per-item nonce, used as the `<For>` key so two tool calls
         /// sharing a legacy `id` never collide.
         key: u64,
@@ -121,6 +122,7 @@ pub fn merge_snapshot(items: &mut Vec<ConversationItem>, snapshot: &openwebide_c
                     })
                     .unwrap_or_else(next_item_nonce);
                 let merged = ConversationItem::ToolStep {
+                    timing: step.timing,
                     key,
                     id: step.id.clone(),
                     name: step.name.clone(),
@@ -195,6 +197,7 @@ mod tests {
         let mut items = vec![
             ConversationItem::Message(message.clone()),
             ConversationItem::ToolStep {
+                timing: None,
                 key: 55,
                 id: "t".into(),
                 name: "write_file".into(),
@@ -210,6 +213,7 @@ mod tests {
             items: vec![
                 RunItem::Message(message.clone()),
                 RunItem::Step(RunStep {
+                    timing: None,
                     id: "t".into(),
                     name: "write_file".into(),
                     summary: "new".into(),
@@ -259,6 +263,7 @@ mod tests {
     #[test]
     fn tool_steps_with_same_id_but_distinct_keys_get_distinct_keys() {
         let a = ConversationItem::ToolStep {
+            timing: None,
             id: "same".into(),
             name: "write_file".into(),
             summary: "a.txt".into(),
@@ -269,6 +274,7 @@ mod tests {
             note: None,
         };
         let b = ConversationItem::ToolStep {
+            timing: None,
             id: "same".into(),
             name: "write_file".into(),
             summary: "b.txt".into(),

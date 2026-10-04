@@ -28,6 +28,7 @@ pub fn interrupted_run(items: &[ConversationItem]) -> Option<InterruptedRun> {
                 awaiting_permission,
                 ..
             } => Some(openwebide_core::RunItem::Step(openwebide_core::RunStep {
+                timing: None,
                 id: id.clone(),
                 name: name.clone(),
                 summary: summary.clone(),
@@ -319,6 +320,7 @@ pub struct ChatState {
     pub active_session: RwSignal<Option<i64>>,
     pub has_session: Memo<bool>,
     pub messages: ConversationStore,
+    pub turn_summaries: Memo<std::collections::BTreeMap<i64, crate::turn_summary::TurnSummary>>,
     pub history_gen: StoredValue<u64>,
     pub send_generation: StoredValue<u64>,
     pub skip_history_load: StoredValue<Option<i64>>,
@@ -385,6 +387,15 @@ impl ChatState {
         error: RwSignal<Option<String>>,
     ) -> Self {
         let messages = ConversationStore::new();
+        let turn_summaries = Memo::new(move |_| {
+            let mut summaries = crate::turn_summary::TurnSummaries::default();
+            messages.handles.with(|handles| {
+                for handle in handles {
+                    handle.item.with(|item| summaries.observe(item));
+                }
+            });
+            summaries.finish()
+        });
         let current_run_anchor = RwSignal::new(None);
         let has_session = Memo::new(move |_| active_session.get().is_some());
         let awaiting_step_id = Memo::new(move |_| {
@@ -409,6 +420,7 @@ impl ChatState {
             active_session,
             has_session,
             messages,
+            turn_summaries,
             history_gen: StoredValue::new(0),
             send_generation: StoredValue::new(0),
             skip_history_load: StoredValue::new(None),
@@ -644,10 +656,24 @@ impl ChatState {
         let close_reasoning = self.reasoning_active.get_untracked();
         match &event {
             RunEvent::ReasoningDelta { .. } => self.reasoning_active.set(true),
-            RunEvent::Telemetry { .. } => {}
+            RunEvent::Telemetry { .. } | RunEvent::ToolTiming { .. } => {}
             _ => self.reasoning_active.set(false),
         }
         match event {
+            RunEvent::ToolTiming { id, timing } => {
+                if let Some(handle) = self.messages.tool(&id) {
+                    self.messages.update_item(handle, |item| {
+                        if let ConversationItem::ToolStep {
+                            timing: previous, ..
+                        } = item
+                            && let Ok(timing) =
+                                previous.map_or(Ok(timing), |previous| previous.merge(timing))
+                        {
+                            *previous = Some(timing);
+                        }
+                    });
+                }
+            }
             RunEvent::Message { message: msg } => {
                 if msg.role == openwebide_core::Role::User {
                     self.current_run_anchor.set(Some(msg.id));
@@ -683,6 +709,7 @@ impl ChatState {
                     effects.push(ChatEffect::ApprovePermission { id });
                 } else {
                     self.messages.push(ConversationItem::ToolStep {
+                        timing: None,
                         key: next_item_nonce(),
                         id,
                         name,
@@ -711,6 +738,7 @@ impl ChatState {
                     });
                 } else {
                     self.messages.push(ConversationItem::ToolStep {
+                        timing: None,
                         key: next_item_nonce(),
                         id,
                         name,
@@ -744,6 +772,7 @@ impl ChatState {
                     });
                 } else {
                     self.messages.push(ConversationItem::ToolStep {
+                        timing: None,
                         key: next_item_nonce(),
                         id,
                         name: String::new(),
@@ -845,6 +874,7 @@ mod tests {
 
     fn complete_step(id: &str) -> ConversationItem {
         ConversationItem::ToolStep {
+            timing: None,
             key: next_item_nonce(),
             id: id.into(),
             name: "read_file".into(),
@@ -1293,6 +1323,7 @@ mod tests {
             chat.streaming_session.set(Some(7));
             chat.current_run_anchor.set(Some(90));
             chat.messages.set(vec![ConversationItem::ToolStep {
+                timing: None,
                 key: 1,
                 id: "a90t0c0".into(),
                 name: "write_file".into(),

@@ -586,6 +586,35 @@ pub(crate) async fn upsert_tool_step(
 }
 
 #[derive(Deserialize)]
+pub(super) struct ToolTimingBody {
+    tool_call_id: String,
+    timing: openwebide_core::ToolTiming,
+}
+
+pub(crate) async fn save_tool_timing(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let id = session_id(path)?;
+    state.store.get_session(id, user.id).await?;
+    let body = read_body(req, CHAT_BODY_LIMIT).await?;
+    save_tool_timing_body(&state.store, user.id, id, parse_json(body)?).await
+}
+pub(super) async fn save_tool_timing_body(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    user: UserId,
+    session: i64,
+    body: ToolTimingBody,
+) -> Result<JsonResp, ApiError> {
+    store
+        .save_tool_timing(user, session, &body.tool_call_id, &body.timing)
+        .await?;
+    Ok(json_response(200, &json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
 pub(super) struct CompleteToolStepBody {
     tool_call_id: String,
     ok: bool,
@@ -693,4 +722,122 @@ pub(super) async fn write_todo_plan_body(
             .write_todo_plan(user.id, session, body.anchor_message_id, &body.plan, now())
             .await?,
     ))
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+    use openwebide_core::{NewProject, ToolTiming, UserRole, WorkspaceMode};
+    fn body(id: &str, timing: ToolTiming) -> ToolTimingBody {
+        serde_json::from_value(json!({"tool_call_id":id,"timing":timing})).unwrap()
+    }
+    #[test]
+    fn timing_api_is_owned_and_preserves_completed_durations_in_all_modes() {
+        futures::executor::block_on(async {
+            for mode in [
+                Some(WorkspaceMode::Local),
+                Some(WorkspaceMode::Remote),
+                None,
+            ] {
+                let store =
+                    openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+                store.migrate_with(&|_| true).await.unwrap();
+                let user = store
+                    .insert_user("owner", "hash", UserRole::Admin, 1)
+                    .await
+                    .unwrap()
+                    .id;
+                let other = store
+                    .insert_user("other", "hash", UserRole::User, 1)
+                    .await
+                    .unwrap()
+                    .id;
+                let project = if let Some(mode) = mode {
+                    Some(
+                        store
+                            .create_project(
+                                &NewProject {
+                                    name: "test".into(),
+                                    mode,
+                                    path: Some("test".into()),
+                                },
+                                user,
+                                1,
+                            )
+                            .await
+                            .unwrap()
+                            .id,
+                    )
+                } else {
+                    None
+                };
+                let session = store
+                    .create_session("test", None, None, project, user, 1)
+                    .await
+                    .unwrap()
+                    .id;
+                let anchor = store
+                    .insert_message(session, Role::User, "prompt", 1)
+                    .await
+                    .unwrap()
+                    .id;
+                store
+                    .upsert_tool_step(session, anchor, "t", "host_info", "host", 1, None)
+                    .await
+                    .unwrap();
+                let timing = ToolTiming::start(1000).sample(4200, true);
+                assert_eq!(
+                    save_tool_timing_body(&store, user, session, body("t", timing))
+                        .await
+                        .unwrap()
+                        .status(),
+                    200
+                );
+                assert_eq!(
+                    save_tool_timing_body(&store, other, session, body("t", timing))
+                        .await
+                        .unwrap_err()
+                        .into_response()
+                        .status()
+                        .as_u16(),
+                    404
+                );
+                assert_eq!(
+                    save_tool_timing_body(&store, user, session, body("missing", timing))
+                        .await
+                        .unwrap_err()
+                        .into_response()
+                        .status()
+                        .as_u16(),
+                    404
+                );
+                assert_eq!(
+                    save_tool_timing_body(
+                        &store,
+                        user,
+                        session,
+                        body("t", ToolTiming::start(1000))
+                    )
+                    .await
+                    .unwrap()
+                    .status(),
+                    200
+                );
+                assert_eq!(
+                    save_tool_timing_body(&store, user, session, body("t", ToolTiming::start(999)))
+                        .await
+                        .unwrap_err()
+                        .into_response()
+                        .status()
+                        .as_u16(),
+                    409
+                );
+                assert_eq!(
+                    store.list_tool_steps(session).await.unwrap()[0].timing,
+                    Some(timing)
+                );
+            }
+            assert!(serde_json::from_value::<ToolTimingBody>(json!({"tool_call_id":"t","timing":{"started_at_ms":-1,"elapsed_ms":0,"finished":false}})).is_err());
+        });
+    }
 }

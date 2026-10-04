@@ -9,6 +9,7 @@ use super::support::{chat_view, mount_test, settle};
 
 fn awaiting(id: &str) -> ConversationItem {
     ConversationItem::ToolStep {
+        timing: None,
         key: next_item_nonce(),
         id: id.into(),
         name: "write_file".into(),

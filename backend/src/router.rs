@@ -66,6 +66,7 @@ enum Route {
     GetTodoPlan,
     WriteTodoPlan,
     UpsertToolStep,
+    SaveToolTiming,
     CompleteToolStep,
     ListModels,
     ModelContext,
@@ -169,6 +170,7 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["sessions", _, "todos"]) => Some(Route::GetTodoPlan),
         ("POST", ["sessions", _, "todos"]) => Some(Route::WriteTodoPlan),
         ("POST", ["sessions", _, "tool-steps", "upsert"]) => Some(Route::UpsertToolStep),
+        ("POST", ["sessions", _, "tool-steps", "timing"]) => Some(Route::SaveToolTiming),
         ("POST", ["sessions", _, "tool-steps", "complete"]) => Some(Route::CompleteToolStep),
         ("GET", ["models"]) => Some(Route::ListModels),
         ("GET", ["models", "context"]) => Some(Route::ModelContext),
@@ -413,6 +415,9 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::UpsertToolStep), Some(user)) => {
             api::sessions::upsert_tool_step(req, &state, &path, user).await
+        }
+        (Some(Route::SaveToolTiming), Some(user)) => {
+            api::sessions::save_tool_timing(req, &state, &path, user).await
         }
         (Some(Route::CompleteToolStep), Some(user)) => {
             api::sessions::complete_tool_step(req, &state, &path, user).await
@@ -783,6 +788,11 @@ mod tests {
                 "POST",
                 "sessions/5/tool-steps/complete",
                 Route::CompleteToolStep,
+            ),
+            (
+                "POST",
+                "sessions/5/tool-steps/timing",
+                Route::SaveToolTiming,
             ),
             ("GET", "models", Route::ListModels),
             ("GET", "models/context", Route::ModelContext),

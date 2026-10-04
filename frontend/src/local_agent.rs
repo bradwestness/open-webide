@@ -969,6 +969,27 @@ struct SessionPersistence {
     session: i64,
 }
 impl openwebide_agent::session::RunPersistence for SessionPersistence {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Browser epoch milliseconds are positive and fit in u64"
+    )]
+    fn now_ms(&self) -> u64 {
+        js_sys::Date::now() as u64
+    }
+    fn timing(
+        &self,
+        id: &str,
+        timing: &openwebide_core::ToolTiming,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .save_tool_timing(self.session, id, timing)
+                .await
+        })
+    }
+
     fn now(&self) -> i64 {
         openwebide_core::now_seconds(js_sys::Date::now())
     }

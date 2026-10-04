@@ -364,6 +364,7 @@ async fn stale_resume_uses_fresh_history_turns() {
         .extend([
             ConversationEntry::Message(interim),
             ConversationEntry::ToolStep(ToolStep {
+                timing: None,
                 tool_call_id: "a7t1c0".into(),
                 name: "read_file".into(),
                 summary: "read old.txt".into(),

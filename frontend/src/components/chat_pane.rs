@@ -196,6 +196,10 @@ fn render_tool_step(
     on_permission: Callback<(String, bool)>,
     on_permission_always: Callback<String>,
 ) -> impl IntoView {
+    let chat = expect_context::<ChatState>();
+    let running = Memo::new(move |_| {
+        chat.streaming.get() && chat.streaming_session.get() == chat.active_session.get()
+    });
     let result_sig = Memo::new(move |_| {
         item.with(|item| match item {
             ConversationItem::ToolStep { result, .. } => result.clone(),
@@ -249,11 +253,21 @@ fn render_tool_step(
             _ => None,
         })
     });
+    let timing = Memo::new(move |_| {
+        item.with(|item| match item {
+            ConversationItem::ToolStep { timing, result, .. } => {
+                timing.filter(|timing| timing.finished || (running.get() && result.is_none()))
+            }
+            _ => None,
+        })
+    });
     let status_class = move || {
         result_sig.with(|result| match result {
             Some(result) if result.ok => "ok",
             Some(_) => "err",
             None if awaiting_permission.get() => "awaiting",
+            None if timing.get().is_some_and(|timing| timing.finished) => "stopped",
+            None if !running.get() => "stopped",
             None => "running",
         })
     };
@@ -261,6 +275,7 @@ fn render_tool_step(
         "ok" => "[✔ ok]",
         "err" => "[✖ err]",
         "awaiting" => "[? permission required]",
+        "stopped" => "[⏹ stopped]",
         _ => "[⠋ running]",
     };
     let show_diff = RwSignal::new(true);
@@ -272,6 +287,7 @@ fn render_tool_step(
                 <span class="tui-tool-tag">"[tool]"</span>
                 <span class="tui-tool-title">{move || format!(" {}(\"{}\") ", name_sig.get(), summary.get())}</span>
                 <span class="tui-tool-spacer"></span>
+                <super::tool_duration::ToolDuration timing=timing />
                 <span class=move || format!("tui-tool-status-badge {}", status_class())>{status_badge}</span>
                 <span class="tui-box-corner">"─┐"</span>
             </div>
@@ -342,7 +358,7 @@ fn render_tool_step(
                 </Show>
 
                 <Show
-                    when=move || result_sig.get().is_none() && !awaiting_permission.get()
+                    when=move || status_class() == "running"
                     fallback=|| ()
                 >
                     <div class="tui-tool-pending">
@@ -362,13 +378,13 @@ fn render_tool_step(
                 </Show>
 
                 <Show
-                    when=move || result_sig.get().is_some_and(|r| r.diff.is_none())
+                    when=move || result_sig.with(Option::is_some)
                     fallback=|| ()
                 >
                     {move || {
                         let r = result_sig.get().unwrap();
                         view! {
-                            <div class="tui-tool-summary-out">{r.summary.clone()}</div>
+                            <super::tool_output::ToolOutput text=r.summary />
                         }
                     }}
                 </Show>
@@ -722,6 +738,7 @@ pub fn ChatPane(
                                             <Show when=move || assistant.get() fallback=move || view! {
                                                 {render_user_message(content)}
                                                 {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 => view! { <crate::components::RunChangesPanel message=message.id /> }.into_any(), _ => ().into_any() })}
+                                                {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 && message.role == Role::User => view! { <super::turn_summary::TurnSummary message=message.id /> }.into_any(), _ => ().into_any() })}
                                                 <Show when=move || conversation_actions.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
                                                     <button class="btn ghost tui-edit-prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
                                                         if let (Some(actions), Some(id)) = (conversation_actions, item.with_untracked(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { actions.edit.run(id); }

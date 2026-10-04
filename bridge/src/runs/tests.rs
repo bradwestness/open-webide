@@ -29,6 +29,16 @@ struct FakeBackend {
 }
 
 impl RunBackend for FakeBackend {
+    async fn save_tool_timing(
+        &self,
+        _user: i64,
+        _session: i64,
+        _id: &str,
+        _timing: &openwebide_core::ToolTiming,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn get_todo_plan(
         &self,
         _user: i64,
@@ -1143,7 +1153,10 @@ async fn cancel_running_command_kills_group_before_marker() {
     assert!(started.elapsed() < Duration::from_secs(2));
     let emitted = events(&run);
     assert!(
-        matches!(&emitted[emitted.len()-2], RunEvent::ToolResult { ok: false, summary, .. } if summary == "cancelled")
+        matches!(&emitted[emitted.len()-3], RunEvent::ToolResult { ok: false, summary, .. } if summary == "cancelled")
+    );
+    assert!(
+        matches!(&emitted[emitted.len()-2], RunEvent::ToolTiming { timing, .. } if timing.finished)
     );
     assert_eq!(emitted.last(), Some(&RunEvent::Cancelled));
     tokio::time::sleep(Duration::from_secs(31)).await;

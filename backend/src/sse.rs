@@ -282,6 +282,7 @@ mod tests {
             RunEvent::ToolCall { .. } => panic!("unexpected tool_call"),
             RunEvent::PermissionRequest { .. } => panic!("unexpected permission_request"),
             RunEvent::ToolResult { .. } => panic!("unexpected tool_result"),
+            RunEvent::ToolTiming { .. } => panic!("unexpected tool_timing"),
             RunEvent::Done { message: m } => Kind::Done(m.content.clone()),
             RunEvent::Telemetry { usage: t } => Kind::Telemetry(*t),
             RunEvent::Cancelled => Kind::Cancelled,

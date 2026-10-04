@@ -57,6 +57,7 @@ pub struct TerminalOutput {
     escape: Escape,
     next_id: u64,
     structure_changed: bool,
+    truncated: bool,
     #[cfg(test)]
     parsed_characters: usize,
 }
@@ -146,6 +147,7 @@ impl TerminalOutput {
                 // The mutable current line also occupies one retained line.
                 while self.completed.len() >= LINE_LIMIT {
                     self.completed.pop_front();
+                    self.truncated = true;
                 }
                 self.current.clear();
                 self.cursor = 0;
@@ -161,6 +163,7 @@ impl TerminalOutput {
 
     fn write(&mut self, ch: char) {
         if self.cursor >= LINE_CHARACTER_LIMIT {
+            self.truncated = true;
             return;
         }
         while self.current.len() < self.cursor {
@@ -258,6 +261,10 @@ impl TerminalOutput {
             html.push_str("</span>");
         }
         html
+    }
+
+    pub fn was_truncated(&self) -> bool {
+        self.truncated
     }
 
     pub fn completed(&self) -> impl Iterator<Item = &Arc<Line>> {

@@ -135,6 +135,11 @@ pub(super) fn tool_step_from_row(row: &QueryRow) -> Result<ToolStep, StorageErro
         .transpose()
         .map_err(|e| StorageError::InvalidValue(format!("bad tool step diff: {e}")))?;
     Ok(ToolStep {
+        timing: row
+            .get_text_opt(8)
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|error| StorageError::InvalidValue(error.to_string()))?,
         tool_call_id: row.get_text(0)?.to_string(),
         name: row.get_text(1)?.to_string(),
         summary: row.get_text(2)?.to_string(),

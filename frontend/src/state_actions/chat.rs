@@ -1366,6 +1366,7 @@ pub(crate) fn history_items(entries: Vec<ConversationEntry>) -> Vec<Conversation
         .map(|entry| match entry {
             ConversationEntry::Message(message) => ConversationItem::Message(message),
             ConversationEntry::ToolStep(step) => ConversationItem::ToolStep {
+                timing: step.timing,
                 key: next_item_nonce(),
                 id: step.tool_call_id,
                 name: step.name,

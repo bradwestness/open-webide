@@ -95,6 +95,7 @@ pub struct FakeBackend {
     pub search_requests: RefCell<Vec<(i64, String, SearchOptions)>>,
     pub model_requests: RefCell<Vec<i64>>,
     pub context_requests: RefCell<Vec<(i64, Option<String>)>>,
+    pub tool_timings: RefCell<BTreeMap<(i64, String), openwebide_core::ToolTiming>>,
     pub tool_sources: RefCell<BTreeMap<(i64, String), bool>>,
     pub message_save_results: RefCell<VecDeque<Result<(), String>>>,
     pub step_save_error: RefCell<Option<String>>,
@@ -1843,6 +1844,35 @@ impl Backend for FakeBackend {
                 .borrow_mut()
                 .entry((session_id, tool_call_id.into()))
                 .or_insert(false);
+            Ok(())
+        })
+    }
+    fn save_tool_timing<'a>(
+        &'a self,
+        session: i64,
+        id: &'a str,
+        timing: &'a openwebide_core::ToolTiming,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            if let Some(error) = self.step_save_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
+            let mut timings = self.tool_timings.borrow_mut();
+            let key = (session, id.to_string());
+            let timing = timings
+                .get(&key)
+                .map_or(Ok(*timing), |previous| previous.merge(*timing))
+                .map_err(str::to_string)?;
+            timings.insert(key, timing);
+            if let Some(entries) = self.messages.borrow_mut().get_mut(&session) {
+                for entry in entries {
+                    if let ConversationEntry::ToolStep(step) = entry
+                        && step.tool_call_id == id
+                    {
+                        step.timing = Some(timing);
+                    }
+                }
+            }
             Ok(())
         })
     }

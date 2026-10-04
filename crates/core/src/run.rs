@@ -39,6 +39,10 @@ pub enum RunEvent {
         summary: String,
         diff: Option<FileDiff>,
     },
+    ToolTiming {
+        id: String,
+        timing: crate::ToolTiming,
+    },
     Telemetry {
         usage: TurnTelemetry,
     },
@@ -71,6 +75,8 @@ pub enum RunItem {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<crate::ToolTiming>,
     pub id: String,
     pub name: String,
     pub summary: String,
@@ -90,8 +96,33 @@ pub struct ToolStepResultWire {
 }
 
 impl RunSnapshot {
+    pub fn refresh_tool_timings(&mut self, now_ms: u64) {
+        for item in &mut self.items {
+            if let RunItem::Step(step) = item {
+                step.timing = step
+                    .timing
+                    .filter(|timing| {
+                        timing.finished || (self.finished.is_none() && step.result.is_none())
+                    })
+                    .map(|timing| timing.sample(now_ms, false));
+            }
+        }
+    }
+
     pub fn apply(&mut self, event: &RunEvent) {
         match event {
+            RunEvent::ToolTiming { id, timing } => {
+                if let Some(RunItem::Step(step)) = self
+                    .items
+                    .iter_mut()
+                    .find(|item| matches!(item, RunItem::Step(step) if step.id == *id))
+                    && let Ok(timing) = step
+                        .timing
+                        .map_or(Ok(*timing), |previous| previous.merge(*timing))
+                {
+                    step.timing = Some(timing);
+                }
+            }
             RunEvent::Message { message } | RunEvent::Interim { message } => {
                 self.items.push(RunItem::Message(message.clone()));
                 if matches!(event, RunEvent::Interim { .. }) {
@@ -116,6 +147,7 @@ impl RunSnapshot {
                     .position(|item| matches!(item, RunItem::Step(step) if step.id == *id));
                 let index = index.unwrap_or_else(|| {
                     self.items.push(RunItem::Step(RunStep {
+                        timing: None,
                         id: id.clone(),
                         name: name.clone(),
                         summary: summary.clone(),
@@ -180,6 +212,7 @@ impl RunEvent {
             Self::ToolCall { .. } => "tool_call",
             Self::PermissionRequest { .. } => "permission_request",
             Self::ToolResult { .. } => "tool_result",
+            Self::ToolTiming { .. } => "tool_timing",
             Self::Telemetry { .. } => "telemetry",
             Self::Done { .. } => "done",
             Self::Cancelled => "cancelled",
@@ -273,6 +306,75 @@ pub fn interrupted_run(items: &[crate::RunItem]) -> Option<InterruptedRun> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_refreshes_running_timing_and_retains_completed_duration_on_replay() {
+        let mut snapshot = RunSnapshot::default();
+        snapshot.apply(&RunEvent::ToolCall {
+            id: "tool".into(),
+            name: "host_info".into(),
+            summary: "host".into(),
+        });
+        let timing = crate::ToolTiming::start(1000);
+        snapshot.apply(&RunEvent::ToolTiming {
+            id: "tool".into(),
+            timing,
+        });
+        snapshot.refresh_tool_timings(4200);
+        let RunItem::Step(step) = &snapshot.items[0] else {
+            panic!("missing step");
+        };
+        assert_eq!(step.timing.unwrap().elapsed_ms, 3200);
+        let completed = timing.sample(4300, true);
+        snapshot.apply(&RunEvent::ToolTiming {
+            id: "tool".into(),
+            timing: completed,
+        });
+        snapshot.apply(&RunEvent::ToolTiming {
+            id: "tool".into(),
+            timing,
+        });
+        snapshot.refresh_tool_timings(9999);
+        let RunItem::Step(step) = &snapshot.items[0] else {
+            panic!("missing step");
+        };
+        assert_eq!(step.timing, Some(completed));
+        let decoded: RunSnapshot =
+            serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn snapshot_does_not_restart_partial_timing_after_completion_or_interruption() {
+        for completed in [false, true] {
+            let mut snapshot = RunSnapshot::default();
+            snapshot.apply(&RunEvent::ToolCall {
+                id: "t".into(),
+                name: "shell".into(),
+                summary: "command".into(),
+            });
+            snapshot.apply(&RunEvent::ToolTiming {
+                id: "t".into(),
+                timing: crate::ToolTiming::start(1000),
+            });
+            if completed {
+                snapshot.apply(&RunEvent::ToolResult {
+                    id: "t".into(),
+                    name: "shell".into(),
+                    ok: true,
+                    summary: "done".into(),
+                    diff: None,
+                });
+            } else {
+                snapshot.apply(&RunEvent::Cancelled);
+            }
+            snapshot.refresh_tool_timings(9999);
+            let RunItem::Step(step) = &snapshot.items[0] else {
+                panic!("missing step")
+            };
+            assert!(step.timing.is_none());
+        }
+    }
 
     #[test]
     fn legacy_permission_requests_and_snapshots_default_the_preview() {

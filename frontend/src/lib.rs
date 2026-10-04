@@ -36,6 +36,8 @@ pub mod terminal_output;
 #[cfg(all(target_arch = "wasm32", any(test, feature = "test-support")))]
 pub mod testing;
 pub mod text;
+pub mod tool_output;
+pub mod turn_summary;
 #[cfg(target_arch = "wasm32")]
 pub mod util;
 #[cfg(target_arch = "wasm32")]

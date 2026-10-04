@@ -404,6 +404,12 @@ pub trait Backend {
         summary: &'a str,
         diff: Option<&'a FileDiff>,
     ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn save_tool_timing<'a>(
+        &'a self,
+        session: i64,
+        id: &'a str,
+        timing: &'a openwebide_core::ToolTiming,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
     fn save_project_checkpoint<'a>(
         &'a self,
         _session: i64,
@@ -1026,6 +1032,14 @@ impl Backend for BackendApi {
             summary,
             diff,
         ))
+    }
+    fn save_tool_timing<'a>(
+        &'a self,
+        session: i64,
+        id: &'a str,
+        timing: &'a openwebide_core::ToolTiming,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::save_tool_timing(self, session, id, timing))
     }
     fn save_project_checkpoint<'a>(
         &'a self,

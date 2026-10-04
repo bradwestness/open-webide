@@ -236,6 +236,22 @@ pub(crate) struct SessionPersistence {
     pub(crate) anchor: i64,
 }
 impl openwebide_agent::session::RunPersistence for SessionPersistence {
+    fn now_ms(&self) -> u64 {
+        u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX)
+    }
+    async fn timing(&self, id: &str, timing: &openwebide_core::ToolTiming) -> Result<(), String> {
+        self.store
+            .save_tool_timing(self.user, self.session, id, timing)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     fn now(&self) -> i64 {
         now()
     }
@@ -913,6 +929,17 @@ mod tests {
             )
             .collect::<Vec<_>>()
             .await;
+            assert_eq!(
+                mapped
+                    .iter()
+                    .filter(|event| matches!(event, RunEvent::ToolTiming { .. }))
+                    .count(),
+                4
+            );
+            let mapped: Vec<_> = mapped
+                .into_iter()
+                .filter(|event| !matches!(event, RunEvent::ToolTiming { .. }))
+                .collect();
             assert!(matches!(&mapped[1], RunEvent::Delta { content: text } if text == "checking"));
             assert!(matches!(&mapped[2], RunEvent::Telemetry { usage } if *usage == first_usage));
             let RunEvent::Interim { message: interim } = &mapped[3] else {
@@ -927,6 +954,11 @@ mod tests {
             assert_eq!(steps[1].tool_call_id, after);
             assert_eq!(steps[1].anchor_message_id, interim.id);
             assert_eq!(steps[1].ok, Some(true));
+            assert!(
+                steps
+                    .iter()
+                    .all(|step| step.timing.is_some_and(|timing| timing.finished))
+            );
             let RunEvent::Done {
                 message: final_message,
             } = mapped.last().unwrap()

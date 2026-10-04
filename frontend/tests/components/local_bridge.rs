@@ -1413,6 +1413,7 @@ async fn rewind_restores_files_conversation_and_prompt_in_both_modes() {
                     message(2, Role::Assistant, "old reply"),
                     message(3, Role::User, "change a file"),
                     ConversationEntry::ToolStep(ToolStep {
+                        timing: None,
                         tool_call_id: "write".into(),
                         name: "write_file".into(),
                         summary: "file.txt".into(),

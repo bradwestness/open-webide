@@ -66,3 +66,6 @@ mod notifications;
 
 #[path = "components/todos.rs"]
 mod todos;
+
+#[path = "components/tool_steps.rs"]
+mod tool_steps;

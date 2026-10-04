@@ -7,6 +7,7 @@ mod reviews;
 mod rewind;
 mod rows;
 mod todos;
+mod tool_timing;
 
 use rows::*;
 
@@ -1216,7 +1217,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT tool_call_id, name, summary, ok, result_summary, diff, anchor_message_id, checkpoint
+                "SELECT tool_call_id, name, summary, ok, result_summary, diff, anchor_message_id, checkpoint, timing
                  FROM tool_steps WHERE session_id = ? ORDER BY id",
                 &[DbValue::Int(session_id)],
             )

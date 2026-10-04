@@ -583,6 +583,7 @@ mod tests {
     }
     fn edit(anchor: i64, old: Option<&str>, new: &str) -> ConversationEntry {
         ConversationEntry::ToolStep(ToolStep {
+            timing: None,
             tool_call_id: format!("call{anchor}"),
             name: "write_file".into(),
             summary: "edit".into(),

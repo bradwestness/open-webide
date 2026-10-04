@@ -980,6 +980,7 @@ mod tests {
                 }),
             ),
             ConversationEntry::ToolStep(ToolStep {
+                timing: None,
                 anchor_message_id: 1,
                 checkpoint: None,
                 tool_call_id: "call_1".into(),
@@ -1059,6 +1060,7 @@ mod tests {
                 usage: None,
             }),
             ConversationEntry::ToolStep(ToolStep {
+                timing: None,
                 anchor_message_id: 1,
                 checkpoint: None,
                 tool_call_id: "call_1".into(),

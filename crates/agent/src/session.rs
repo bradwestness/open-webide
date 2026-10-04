@@ -152,6 +152,12 @@ pub fn conversation_history(entries: Vec<openwebide_core::ConversationEntry>) ->
 
 pub trait RunPersistence: Send + Sync {
     fn now(&self) -> i64;
+    fn now_ms(&self) -> u64;
+    fn timing(
+        &self,
+        id: &str,
+        timing: &openwebide_core::ToolTiming,
+    ) -> impl Future<Output = Result<(), String>> + Send;
     fn message(
         &self,
         role: Role,
@@ -196,6 +202,7 @@ pub struct RunRecorder<P> {
     anchor: i64,
     reasoning: String,
     usage: Option<TurnTelemetry>,
+    timings: std::collections::BTreeMap<String, openwebide_core::ToolTiming>,
     checkpoint_warnings: std::collections::BTreeMap<String, String>,
 }
 impl<P: RunPersistence> RunRecorder<P> {
@@ -206,9 +213,32 @@ impl<P: RunPersistence> RunRecorder<P> {
             reasoning: String::new(),
             usage: None,
             checkpoint_warnings: Default::default(),
+            timings: Default::default(),
         }
     }
     pub async fn record(&mut self, event: AgentEvent) -> Recorded {
+        let mut recorded = self.record_inner(event).await;
+        if recorded.terminal {
+            let mut timing_events = self.finish_timings().await;
+            let terminal = recorded.events.pop();
+            recorded.events.append(&mut timing_events);
+            recorded.events.extend(terminal);
+        }
+        recorded
+    }
+    async fn finish_timings(&mut self) -> Vec<RunEvent> {
+        let mut events = Vec::new();
+        for (id, timing) in std::mem::take(&mut self.timings) {
+            let timing = timing.sample(self.persistence.now_ms(), true);
+            // Timing is optional metadata; a failed save must not interrupt a
+            // command or replace its terminal outcome. Live clients still get
+            // the measured final duration even when history cannot retain it.
+            let _ = self.persistence.timing(&id, &timing).await;
+            events.push(RunEvent::ToolTiming { id, timing });
+        }
+        events
+    }
+    async fn record_inner(&mut self, event: AgentEvent) -> Recorded {
         let mut terminal = false;
         let mut preceding = Vec::new();
         let event = match event {
@@ -295,7 +325,16 @@ impl<P: RunPersistence> RunRecorder<P> {
                         terminal: true,
                     };
                 }
-                RunEvent::ToolCall { id, name, summary }
+                let timing = *self.timings.entry(id.clone()).or_insert_with(|| {
+                    openwebide_core::ToolTiming::start(self.persistence.now_ms())
+                });
+                preceding.push(RunEvent::ToolCall {
+                    id: id.clone(),
+                    name,
+                    summary,
+                });
+                let _ = self.persistence.timing(&id, &timing).await;
+                RunEvent::ToolTiming { id, timing }
             }
             AgentEvent::PermissionRequest {
                 id,
@@ -393,14 +432,23 @@ impl<P: RunPersistence> RunRecorder<P> {
                     .result(&id, ok, &summary, diff.as_ref())
                     .await;
                 let result = RunEvent::ToolResult {
-                    id,
+                    id: id.clone(),
                     name,
                     ok,
                     summary,
                     diff,
                 };
                 match saved {
-                    Ok(()) => result,
+                    Ok(()) => {
+                        if let Some(timing) = self.timings.remove(&id) {
+                            let timing = timing.sample(self.persistence.now_ms(), true);
+                            preceding.push(result);
+                            let _ = self.persistence.timing(&id, &timing).await;
+                            RunEvent::ToolTiming { id, timing }
+                        } else {
+                            result
+                        }
+                    }
                     Err(error) => {
                         preceding.push(result);
                         terminal = true;
@@ -529,8 +577,10 @@ pub fn events<'a, P: RunPersistence + 'a>(
                     None => return None,
                 };
                 let Some(next) = next else {
+                    input.take();
+                    pending.extend(recorder.finish_timings().await);
                     recorder.persistence.finish().await;
-                    return None;
+                    continue;
                 };
                 let recorded = recorder.record(next).await;
                 if recorded.terminal {
@@ -571,6 +621,16 @@ mod tests {
         fn now(&self) -> i64 {
             0
         }
+        fn now_ms(&self) -> u64 {
+            0
+        }
+        async fn timing(
+            &self,
+            _id: &str,
+            _timing: &openwebide_core::ToolTiming,
+        ) -> Result<(), String> {
+            Ok(())
+        }
         async fn message(
             &self,
             _role: Role,
@@ -602,6 +662,164 @@ mod tests {
         async fn finish(&self) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[derive(Default)]
+    struct TimedPersistence {
+        clock: std::sync::atomic::AtomicU64,
+        saved: std::sync::Mutex<Vec<(String, openwebide_core::ToolTiming)>>,
+        fail: AtomicBool,
+    }
+    impl RunPersistence for TimedPersistence {
+        fn now(&self) -> i64 {
+            0
+        }
+        fn now_ms(&self) -> u64 {
+            self.clock.load(Ordering::Relaxed)
+        }
+        async fn timing(
+            &self,
+            id: &str,
+            timing: &openwebide_core::ToolTiming,
+        ) -> Result<(), String> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err("offline".into());
+            }
+            self.saved.lock().unwrap().push((id.into(), *timing));
+            Ok(())
+        }
+        async fn message(
+            &self,
+            _: Role,
+            _: &str,
+            _: Option<&TurnTelemetry>,
+            _: Option<&[ToolCall]>,
+        ) -> Result<ChatMessage, String> {
+            Err("unused".into())
+        }
+        async fn step(
+            &self,
+            _: i64,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&FileDiff>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn result(
+            &self,
+            _: &str,
+            _: bool,
+            _: &str,
+            _: Option<&FileDiff>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    fn tool_call(id: &str) -> AgentEvent {
+        AgentEvent::ToolCall {
+            id: id.into(),
+            name: "host_info".into(),
+            summary: "host".into(),
+        }
+    }
+    #[test]
+    fn recorder_times_execution_after_approval_and_persists_before_publishing() {
+        futures::executor::block_on(async {
+            let mut recorder = RunRecorder::new(TimedPersistence::default(), 1, 1);
+            recorder.persistence.clock.store(1000, Ordering::Relaxed);
+            let permission = recorder
+                .record(AgentEvent::PermissionRequest {
+                    id: "t".into(),
+                    name: "host_info".into(),
+                    summary: "host".into(),
+                    diff: None,
+                    note: None,
+                })
+                .await;
+            assert_eq!(permission.events.len(), 1);
+            assert!(recorder.persistence.saved.lock().unwrap().is_empty());
+            recorder.persistence.clock.store(5000, Ordering::Relaxed);
+            let started = recorder.record(tool_call("t")).await;
+            assert!(
+                matches!(started.events.as_slice(), [RunEvent::ToolCall { .. }, RunEvent::ToolTiming { timing, .. }] if timing.elapsed_ms == 0 && !timing.finished)
+            );
+            assert_eq!(recorder.persistence.saved.lock().unwrap().len(), 1);
+            recorder.persistence.clock.store(6500, Ordering::Relaxed);
+            let result = recorder
+                .record(AgentEvent::ToolResult {
+                    id: "t".into(),
+                    name: "host_info".into(),
+                    ok: false,
+                    summary: "failed".into(),
+                    diff: None,
+                })
+                .await;
+            assert!(
+                matches!(result.events.as_slice(), [RunEvent::ToolResult { ok:false, .. }, RunEvent::ToolTiming { timing, .. }] if timing.elapsed_ms == 1500 && timing.finished)
+            );
+            assert_eq!(
+                recorder.persistence.saved.lock().unwrap()[1].1.elapsed_ms,
+                1500
+            );
+            recorder.record(tool_call("cancelled")).await;
+            recorder.persistence.clock.store(7000, Ordering::Relaxed);
+            let stopped = recorder.record(AgentEvent::Cancelled).await;
+            assert!(
+                matches!(stopped.events.as_slice(), [RunEvent::ToolTiming { timing, .. }, RunEvent::Cancelled] if timing.finished && timing.elapsed_ms == 500)
+            );
+            assert!(stopped.terminal);
+        });
+    }
+    #[test]
+    fn timing_write_failure_preserves_execution_and_denied_calls_have_no_execution_time() {
+        futures::executor::block_on(async {
+            let mut recorder = RunRecorder::new(TimedPersistence::default(), 1, 1);
+            let denied = recorder
+                .record(AgentEvent::ToolResult {
+                    id: "denied".into(),
+                    name: "host_info".into(),
+                    ok: false,
+                    summary: "denied".into(),
+                    diff: None,
+                })
+                .await;
+            assert!(matches!(
+                denied.events.as_slice(),
+                [RunEvent::ToolResult { .. }]
+            ));
+            assert!(recorder.persistence.saved.lock().unwrap().is_empty());
+            recorder.persistence.fail.store(true, Ordering::Relaxed);
+            let started = recorder.record(tool_call("t")).await;
+            assert!(!started.terminal);
+            assert!(
+                matches!(started.events.as_slice(), [RunEvent::ToolCall { .. }, RunEvent::ToolTiming { timing, .. }] if !timing.finished)
+            );
+            recorder.persistence.clock.store(1500, Ordering::Relaxed);
+            let completed = recorder
+                .record(AgentEvent::ToolResult {
+                    id: "t".into(),
+                    name: "host_info".into(),
+                    ok: true,
+                    summary: "host".into(),
+                    diff: None,
+                })
+                .await;
+            assert!(!completed.terminal);
+            assert!(
+                matches!(completed.events.as_slice(), [RunEvent::ToolResult { ok: true, .. }, RunEvent::ToolTiming { timing, .. }] if timing.finished && timing.elapsed_ms == 1500)
+            );
+            assert!(recorder.timings.is_empty());
+            recorder.record(tool_call("cancelled")).await;
+            recorder.persistence.clock.store(2000, Ordering::Relaxed);
+            let cancelled = recorder.record(AgentEvent::Cancelled).await;
+            assert!(cancelled.terminal);
+            assert!(
+                matches!(cancelled.events.as_slice(), [RunEvent::ToolTiming { timing, .. }, RunEvent::Cancelled] if timing.finished && timing.elapsed_ms == 500)
+            );
+            assert!(recorder.persistence.saved.lock().unwrap().is_empty());
+        });
     }
     struct DropGuard(Arc<AtomicBool>);
     impl Drop for DropGuard {

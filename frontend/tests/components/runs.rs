@@ -306,6 +306,7 @@ async fn history_discovers_run_and_merges_awaiting_snapshot_twice() {
         items: vec![
             RunItem::Message(message(7, Role::User, "hello")),
             RunItem::Step(RunStep {
+                timing: None,
                 id: "a7t0c0".into(),
                 name: "write_file".into(),
                 summary: "file".into(),
@@ -704,6 +705,7 @@ async fn adversarial_snapshot_autoapproval_is_idempotent() {
         items: vec![
             RunItem::Message(message(7, Role::User, "hello")),
             RunItem::Step(RunStep {
+                timing: None,
                 id: "a7t0c0".into(),
                 name: "write_file".into(),
                 summary: "file".into(),
@@ -970,6 +972,7 @@ async fn permission_snapshot_restores_retry(auto_approve: bool) {
             items: vec![
                 RunItem::Message(message(7, Role::User, "hello")),
                 RunItem::Step(RunStep {
+                    timing: None,
                     id: "a7t0c0".into(),
                     name: "write_file".into(),
                     summary: "file".into(),

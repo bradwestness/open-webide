@@ -88,11 +88,13 @@ impl Run {
         }
     }
     fn snapshot_message(&self, delivery: &Delivery) -> BridgeServerMessage {
+        let mut snapshot = delivery.snapshot.clone();
+        snapshot.refresh_tool_timings(wall_time_ms());
         BridgeServerMessage::RunSnapshot {
             run_id: self.run_id.clone(),
             session_id: self.session_id,
             seq: delivery.seq,
-            snapshot: delivery.snapshot.clone(),
+            snapshot,
         }
     }
     pub(crate) async fn forward(
@@ -526,6 +528,15 @@ struct SessionPersistence<'a, B> {
     backend: &'a B,
 }
 impl<B: RunBackend> openwebide_agent::session::RunPersistence for SessionPersistence<'_, B> {
+    fn now_ms(&self) -> u64 {
+        wall_time_ms()
+    }
+    async fn timing(&self, id: &str, timing: &openwebide_core::ToolTiming) -> Result<(), String> {
+        self.backend
+            .save_tool_timing(self.run.owner, self.run.session_id, id, timing)
+            .await
+    }
+
     fn now(&self) -> i64 {
         i64::try_from(now()).unwrap_or(i64::MAX)
     }
@@ -634,3 +645,13 @@ impl<B: RunBackend> openwebide_agent::todo::TodoStore for TodoPersistence<B> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+fn wall_time_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
