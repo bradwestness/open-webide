@@ -60,3 +60,6 @@ mod queue;
 
 #[path = "components/branches.rs"]
 mod branches;
+
+#[path = "components/notifications.rs"]
+mod notifications;

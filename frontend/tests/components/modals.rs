@@ -110,7 +110,7 @@ async fn stacked_prompt_submits_once_and_returns_focus_to_settings() {
     let mounted = mount_test(|state| {
         view! {
             <Show when=move || state.settings.show_settings.get()>
-                <Settings on_set_theme=Callback::new(|_| ()) on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) />
+                <Settings on_set_notifications=Callback::new(|_| ()) on_set_theme=Callback::new(|_| ()) on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) />
             </Show>
             <PromptDialog /> <ConfirmDialog />
         }

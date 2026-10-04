@@ -26,6 +26,8 @@ for what's still ahead.
 
 ### Added
 
+- Add opt-in browser notifications for finished runs and approval requests in local, remote and projectless chats. Notify for chats that are out of focus, collapsed or inactive; clicking opens the owning project and session. Save the preference per user in the database, request browser permission only from Settings, explain unsupported/blocked browsers, and keep approvals available in the app. Suppress duplicate/replayed events and automatic approvals; guard pending permission responses and notification clicks across account changes, and close notifications on logout. Keep the app open to receive notifications; Web Push remains planned separately.
+
 - Queue prompts while a run is active, edit/remove pending prompts, pause or continue the queue, and steer by saving priority guidance before stopping the current run. Persist captured attachments and queue revisions in the database; consume each prompt atomically when its user message is saved, keep failed sends queued, and restore pending queues paused after reload or session changes. Add Edit and Fork on earlier prompts: copy the conversation prefix into a new branch while preserving the original session, images, editor context, model selection and approval mode. Share these workflows across local, remote and projectless chats; branching leaves project files unchanged.
 
 

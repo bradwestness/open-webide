@@ -208,6 +208,27 @@ pub fn App() -> impl IntoView {
         on_delete_project,
     } = project_actions;
 
+    let notifications = crate::notifications::RunNotifications::new(
+        std::rc::Rc::new(crate::notifications::BrowserNotificationHost::default()),
+        auth,
+        Callback::new(move |session_id: i64| {
+            if let Some(project) = chat_state.sessions.with_untracked(|sessions| {
+                sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .map(|session| session.project_id)
+            }) {
+                match project {
+                    Some(project) => on_open_project.run(project),
+                    None => select_chat.run(()),
+                }
+                layout_actions.show.run(Panel::Chat);
+                chat_state.active_session.set(Some(session_id));
+            }
+        }),
+    );
+    provide_context(notifications);
+
     let settings_actions = build_settings_actions(SettingsActionContext { api, settings, ui });
     let SettingsActions {
         on_new_prompt,
@@ -221,6 +242,7 @@ pub fn App() -> impl IntoView {
         on_delete_connection,
         on_open_settings,
         on_set_theme,
+        on_set_notifications,
         on_set_default_connection: _,
         on_set_default_prompt,
         on_set_bridge_url,
@@ -391,6 +413,7 @@ pub fn App() -> impl IntoView {
             <Show when=move || show_settings.get() fallback=|| ()>
                 <Settings
                     on_set_theme=on_set_theme
+                    on_set_notifications=on_set_notifications
 
                     on_set_default_prompt=on_set_default_prompt
                     on_set_bridge_url=on_set_bridge_url

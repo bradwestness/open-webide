@@ -69,8 +69,10 @@ async fn startup_retains_prepaint_theme_until_database_settings_arrive() {
     assert!(html.contains("<script src=\"/api/theme.js\"></script>"));
     assert!(!html.contains("localStorage"));
     let (release, pending) = futures::channel::oneshot::channel();
+    let notifications = RwSignal::new(false);
     let mounted = mount_test(move |mut state| {
         state.settings = SettingsState::new(Theme::from_root(), "ws://localhost:3001".into());
+        state.settings.browser_notifications = notifications;
         build_settings_actions(SettingsActionContext {
             api: state.api,
             settings: state.settings,
@@ -103,10 +105,10 @@ async fn startup_retains_prepaint_theme_until_database_settings_arrive() {
     settle().await;
     assert_eq!(root.get_attribute("data-theme").as_deref(), Some("light"));
     release
-        .send(Ok(std::collections::BTreeMap::from([(
-            "theme".into(),
-            "dark".into(),
-        )])))
+        .send(Ok(std::collections::BTreeMap::from([
+            ("theme".into(), "dark".into()),
+            ("browser_notifications".into(), "true".into()),
+        ])))
         .unwrap();
     // Startup includes an IndexedDB await before the independent settings reads.
     for _ in 0..100 {
@@ -116,6 +118,7 @@ async fn startup_retains_prepaint_theme_until_database_settings_arrive() {
         }
     }
     assert_eq!(root.get_attribute("data-theme").as_deref(), Some("dark"));
+    assert!(notifications.get_untracked());
     drop(mounted);
     storage.remove_item("owide-theme").unwrap();
     if let Some(original) = original {
@@ -137,7 +140,7 @@ async fn typed_theme_controls_update_and_save_the_same_database_values() {
             ui: state.ui,
         });
         view! {
-            <Settings on_set_theme=actions.on_set_theme
+            <Settings on_set_notifications=actions.on_set_notifications on_set_theme=actions.on_set_theme
 
                 on_set_default_prompt=actions.on_set_default_prompt
                 on_set_bridge_url=actions.on_set_bridge_url />

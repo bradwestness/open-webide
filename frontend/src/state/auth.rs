@@ -89,6 +89,7 @@ impl AuthState {
         chat.prompt_edit.set(None);
         chat.branching.set(false);
         chat.reading_images.set(false);
+        settings.browser_notifications.set(false);
         chat.send_generation
             .update_value(|generation| *generation += 1);
         chat.active_run.set(None);

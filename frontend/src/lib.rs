@@ -19,6 +19,7 @@ pub mod local_fs;
 pub mod markdown;
 #[cfg(target_arch = "wasm32")]
 pub mod model_setup;
+pub mod notifications;
 pub mod pending;
 #[cfg(target_arch = "wasm32")]
 pub mod project_git;

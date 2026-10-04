@@ -2672,3 +2672,5 @@ button.browser-item {
 .tui-queue-kind { color: var(--accent); font-size: 11px; }
 .tui-queue-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; }
 .tui-prompt-edit { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; color: var(--text-muted); background: var(--bg-panel); border-top: 1px solid var(--border); font-size: 12px; }
+
+.notification-status { color: var(--text-muted); font-size: 12px; margin: 0 0 16px; }

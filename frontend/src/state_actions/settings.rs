@@ -28,6 +28,7 @@ pub struct SettingsActions {
     pub on_delete_connection: Callback<i64>,
     pub on_open_settings: Callback<()>,
     pub on_set_theme: Callback<Theme>,
+    pub on_set_notifications: Callback<bool>,
     pub on_set_default_connection: Callback<Option<i64>>,
     pub on_set_default_prompt: Callback<Option<i64>>,
     pub on_set_bridge_url: Callback<String>,
@@ -147,7 +148,89 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         });
     });
 
+    let notifications = crate::notifications::RunNotifications::from_context();
+    let auth = expect_context::<crate::state::auth::AuthState>();
+    let on_set_notifications = Callback::new(move |enabled: bool| {
+        use crate::notifications::NotificationPermission;
+        if notifications.configuring.get_untracked() {
+            return;
+        }
+        notifications.refresh_permission();
+        let permission = notifications.permission.get_untracked();
+        if enabled
+            && matches!(
+                permission,
+                NotificationPermission::Unsupported | NotificationPermission::Denied
+            )
+        {
+            ui.notify(
+                "Allow notifications in this browser's site settings, using HTTPS or localhost.",
+            );
+            return;
+        }
+        let account = auth.generation.get_untracked();
+        notifications.revision.update_value(|value| *value += 1);
+        let revision = notifications.revision.get_value();
+        notifications.configuring.set(true);
+        let requested = if enabled && permission != NotificationPermission::Granted {
+            Some(notifications.host().request_permission())
+        } else {
+            None
+        };
+        spawn_local(async move {
+            let current = || {
+                auth.generation.try_get_untracked() == Some(account)
+                    && notifications.revision.try_get_value() == Some(revision)
+            };
+            if let Some(requested) = requested {
+                let result = requested.await;
+                if !current() {
+                    return;
+                }
+                match result {
+                    Ok(NotificationPermission::Granted) => notifications
+                        .permission
+                        .set(NotificationPermission::Granted),
+                    Ok(permission) => {
+                        notifications.permission.set(permission);
+                        notifications.configuring.set(false);
+                        ui.notify("Notifications were not enabled. You can allow them in this browser's site settings.");
+                        return;
+                    }
+                    Err(error) => {
+                        notifications.configuring.set(false);
+                        ui.notify(format!("Could not enable notifications: {error}"));
+                        return;
+                    }
+                }
+            }
+            if !current() {
+                return;
+            }
+            let result = api
+                .with_value(Clone::clone)
+                .set_setting(
+                    "browser_notifications",
+                    if enabled { "true" } else { "false" },
+                )
+                .await;
+            if !current() {
+                return;
+            }
+            notifications.configuring.set(false);
+            match result {
+                Ok(()) => {
+                    settings.browser_notifications.set(enabled);
+                    if !enabled {
+                        notifications.host().close();
+                    }
+                }
+                Err(error) => ui.notify(format!("Could not save notification preference: {error}")),
+            }
+        });
+    });
     let on_open_settings = Callback::new(move |()| {
+        notifications.refresh_permission();
         settings.show_settings.set(true);
     });
 
@@ -214,6 +297,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         on_delete_connection,
         on_open_settings,
         on_set_theme,
+        on_set_notifications,
         on_set_default_connection,
         on_set_default_prompt,
         on_set_bridge_url,

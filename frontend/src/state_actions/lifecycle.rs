@@ -258,6 +258,11 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                         })
                         .collect(),
                 );
+                settings.browser_notifications.set(
+                    values
+                        .get("browser_notifications")
+                        .is_some_and(|value| value == "true"),
+                );
                 if let Some(theme) = values.get("theme") {
                     settings.theme.set(Theme::parse(theme));
                 }

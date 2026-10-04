@@ -570,7 +570,7 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
                 <Sidebar on_new_connection=unit on_edit_connection=edit on_cancel_connection=Callback::new(move |()| state.settings.show_conn_form.set(false)) on_delete_connection=id
                     on_select_session=id on_new_session=unit on_rename_session=id on_delete_session=id
                     on_new_prompt=unit on_edit_prompt=id on_save_prompt=unit on_cancel_prompt=unit on_delete_prompt=id />
-                <Show when=move || state.settings.show_settings.get()><Settings on_set_theme=Callback::new(|_| ()) on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) /></Show>
+                <Show when=move || state.settings.show_settings.get()><Settings on_set_notifications=Callback::new(|_| ()) on_set_theme=Callback::new(|_| ()) on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) /></Show>
             }
         });
         settle().await;

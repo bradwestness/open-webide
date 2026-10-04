@@ -124,6 +124,9 @@ impl ChatActions {
             })
         };
 
+        let notifications = crate::notifications::RunNotifications::from_context();
+        let notification_layout = use_context::<crate::state::layout::LayoutState>();
+        let notification_auth = expect_context::<crate::state::auth::AuthState>();
         let refresh_pending = super::workspace::pending_refresh(api, projects, workspace, ui);
         let apply_stream_event = Callback::new(
             move |(session_id, event, replayed): (i64, openwebide_core::RunEvent, bool)| {
@@ -145,6 +148,19 @@ impl ChatActions {
                         .update(|entries| entries.retain(|entry| entry.key() != key));
                     chat.queue_delivering.set(None);
                 }
+                notifications.event(
+                    crate::notifications::NotificationContext {
+                        chat_visible: notification_layout
+                            .is_none_or(|layout| layout.visible_panels.get_untracked().chat),
+                        auth: notification_auth,
+                        chat,
+                        settings,
+                        ui,
+                    },
+                    session_id,
+                    &event,
+                    replayed,
+                );
                 let run_project_id = chat
                     .sessions
                     .get_untracked()

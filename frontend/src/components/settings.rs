@@ -7,11 +7,13 @@ use web_sys::wasm_bindgen::JsCast;
 #[component]
 pub fn Settings(
     on_set_theme: Callback<Theme>,
+    on_set_notifications: Callback<bool>,
     on_set_default_prompt: Callback<Option<i64>>,
     on_set_bridge_url: Callback<String>,
 ) -> impl IntoView {
     let settings = expect_context::<SettingsState>();
     let theme = settings.theme.read_only();
+    let notifications = crate::notifications::RunNotifications::from_context();
     let default_prompt = settings.default_prompt.read_only();
     let system_prompts = settings.system_prompts.read_only();
     let bridge_url = settings.bridge_url.read_only();
@@ -100,6 +102,23 @@ pub fn Settings(
                     </div>
                 </div>
 
+                <div class="setting-row">
+                    <span class="setting-label">"Browser notifications"</span>
+                    <button class="btn ghost notification-toggle" disabled=move || notifications.configuring.get()
+                        on:click=move |_| on_set_notifications.run(!(settings.browser_notifications.get_untracked() && notifications.permission.get_untracked() != crate::notifications::NotificationPermission::Default))>
+                        {move || if notifications.configuring.get() { "Saving…" } else if settings.browser_notifications.get() && notifications.permission.get() != crate::notifications::NotificationPermission::Default { "Disable" } else { "Enable" }}
+                    </button>
+                </div>
+                <p class="muted notification-status">{move || {
+                    use crate::notifications::NotificationPermission;
+                    match notifications.permission.get() {
+                        NotificationPermission::Unsupported => "Notifications need a supported browser on HTTPS or localhost. Chat approvals remain available in the app.",
+                        NotificationPermission::Denied => "Notifications are blocked in this browser's site settings.",
+                        NotificationPermission::Default if settings.browser_notifications.get() => "Enable on this browser to receive run and approval notifications.",
+                        _ if settings.browser_notifications.get() => "Notify when a run finishes or needs approval while its chat is out of focus. Keep this app open to receive notifications.",
+                        _ => "Enable notifications for finished runs and approval requests. Browser permission is required on each device.",
+                    }
+                }}</p>
                 <ModelSetupPanel defaults_only=true />
                 <div class="setting-row">
                     <span class="setting-label">"Default system prompt"</span>

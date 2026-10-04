@@ -114,22 +114,20 @@ terminal pane are done and in the changelog, but:
 
 ### Fully fleshed-out TUI
 
-The chat/TUI surface grows into a full agent workspace. Rewind, per-run review, queued prompts, steering and conversation branches are shipped; shell checkpoints honor project `.gitignore` rules and report snapshot coverage limits without blocking runs. Remaining work, in priority order:
+The chat/TUI surface grows into a full agent workspace. Rewind, per-run review, queued prompts, steering, conversation branches and browser notifications are shipped; shell checkpoints honor project `.gitignore` rules and report snapshot coverage limits without blocking runs. Remaining work, in priority order:
 
-1. **Browser notifications** when a run finishes or needs approval (pairs
-   with the phone layout).
-2. **Todo/plan panel** — an agent-maintained checklist via a `todo_write`
+1. **Todo/plan panel** — an agent-maintained checklist via a `todo_write`
    tool, pinned above the composer.
-3. **Reasoning polish** — a live timer and token count while the model
+2. **Reasoning polish** — a live timer and token count while the model
    thinks, and a collapsed "Thought for 3.2s · 1.4k tokens" summary
    (extends the inline `<think>` blocks and streamed provider reasoning).
-4. **Tool-step polish** — a running spinner with elapsed time, durations,
+3. **Tool-step polish** — a running spinner with elapsed time, durations,
    show-more for long output, ANSI colors, a copy button, and a per-turn
    summary line ("5 tools · 2 files changed · 12.3s").
-5. **Command palette** (`Ctrl+Shift+P`) and a keyboard-shortcut overlay.
-6. **Session management** — search, pin/archive, fast-model auto-titles,
+4. **Command palette** (`Ctrl+Shift+P`) and a keyboard-shortcut overlay.
+5. **Session management** — search, pin/archive, fast-model auto-titles,
     and export to Markdown.
-7. **Sub-agents** — a `task` tool that spawns child agents with their own
+6. **Sub-agents** — a `task` tool that spawns child agents with their own
     context, shown as nested collapsible runs with status, elapsed time,
     tokens and tool count, runnable in parallel.
 
