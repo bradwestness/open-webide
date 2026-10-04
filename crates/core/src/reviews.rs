@@ -302,6 +302,7 @@ impl RunChange {
         );
         Ok(ReviewPlan {
             restore: RewindPlan {
+                skipped: Default::default(),
                 message_id: self.message_id,
                 prompt: String::new(),
                 files: vec![file],

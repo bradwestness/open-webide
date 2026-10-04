@@ -326,6 +326,7 @@ mod tests {
                     .await
                     .unwrap();
                 let checkpoint = openwebide_core::rewind::ProjectCheckpoint {
+                    skipped: Default::default(),
                     before: [("file.txt".into(), STANDARD.encode("one\r\nkeep\nthree"))].into(),
                     after: Some(
                         [

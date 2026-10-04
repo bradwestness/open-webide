@@ -49,6 +49,7 @@ pub async fn rewind_contract(files: &impl crate::rewind::RewindFiles) {
     files.write("existing.txt", "after").await.unwrap();
     files.write("created.txt", "created").await.unwrap();
     let plan = RewindPlan {
+        skipped: Default::default(),
         message_id: 1,
         prompt: "change files".into(),
         files: vec![
@@ -95,6 +96,7 @@ pub async fn rewind_contract(files: &impl crate::rewind::RewindFiles) {
     restore_files(files, &plan, || true).await.unwrap();
     files.write_bytes("binary.dat", &[0, 254]).await.unwrap();
     let binary_plan = RewindPlan {
+        skipped: Default::default(),
         message_id: 1,
         prompt: "binary and deleted files".into(),
         files: vec![
@@ -134,6 +136,7 @@ pub async fn rewind_contract(files: &impl crate::rewind::RewindFiles) {
 /// leaving Git metadata and generated output outside the restoration boundary.
 pub async fn project_checkpoint_contract(vfs: &impl Vfs) {
     use crate::rewind::{ProjectCheckpoint, capture_project};
+    vfs.write(".gitignore", "target/\n").await.unwrap();
     vfs.write("source.txt", "before").await.unwrap();
     vfs.write_bytes("binary.dat", &[0, 255, 1]).await.unwrap();
     vfs.write("nested/deleted.txt", "restore me").await.unwrap();
@@ -147,10 +150,7 @@ pub async fn project_checkpoint_contract(vfs: &impl Vfs) {
     vfs.write(".git/HEAD", "second commit").await.unwrap();
     vfs.write("target/generated", "new artifact").await.unwrap();
     let after = capture_project(vfs).await.unwrap();
-    let mut checkpoint = ProjectCheckpoint {
-        before,
-        after: Some(after),
-    };
+    let mut checkpoint = ProjectCheckpoint::from_snapshots(before, Some(after));
     checkpoint.compact();
     let changes = checkpoint.changes().unwrap();
     assert_eq!(changes.len(), 4);
@@ -174,7 +174,99 @@ pub async fn project_checkpoint_contract(vfs: &impl Vfs) {
         deleted.before_bytes().unwrap(),
         Some(b"restore me".to_vec())
     );
-    for path in ["source.txt", "binary.dat", "created.txt", ".git", "target"] {
+    for path in [
+        "source.txt",
+        "binary.dat",
+        "created.txt",
+        ".git",
+        "target",
+        ".gitignore",
+    ] {
+        vfs.delete(path).await.unwrap();
+    }
+}
+
+/// Git ignore rules and checkpoint limits behave identically on browser and host filesystems.
+pub async fn checkpoint_coverage_contract(vfs: &impl Vfs) {
+    use crate::rewind::{ProjectCheckpoint, capture_file, capture_project};
+    vfs.write(
+        ".gitignore",
+        "**/[Bb]in/\n**/[Oo]bj/\n*.cache\n!keep.cache\n/root-only.txt\npruned/\n# comment\n\n",
+    )
+    .await
+    .unwrap();
+    vfs.write("source.csproj", "before").await.unwrap();
+    vfs.write("app/.gitignore", "!local.cache\n/nested-only.txt\n")
+        .await
+        .unwrap();
+    for path in [
+        "app/bin/artifact",
+        "app/obj/artifact",
+        "drop.cache",
+        "keep.cache",
+        "app/local.cache",
+        "app/drop.cache",
+        "root-only.txt",
+        "app/root-only.txt",
+        "app/nested-only.txt",
+        "pruned/.gitignore",
+        "pruned/keep.cache",
+    ] {
+        vfs.write(path, "unchanged").await.unwrap();
+    }
+    let large = vec![0u8; usize::try_from(crate::vfs::MAX_READ_BYTES).unwrap() + 1];
+    vfs.write_bytes("large.bin", &large).await.unwrap();
+    vfs.write_bytes("app/obj/large.bin", &large).await.unwrap();
+    let before = capture_project(vfs).await.unwrap();
+    assert!(before.files.contains_key("source.csproj"));
+    for path in ["keep.cache", "app/local.cache", "app/root-only.txt"] {
+        assert!(before.files.contains_key(path), "{path}");
+    }
+    for path in [
+        "drop.cache",
+        "app/drop.cache",
+        "root-only.txt",
+        "app/nested-only.txt",
+        "app/bin/artifact",
+        "app/obj/artifact",
+        "pruned/keep.cache",
+    ] {
+        assert!(!before.files.contains_key(path), "{path}");
+    }
+    assert_eq!(before.skipped["large.bin"], "file exceeds 10 MiB");
+    assert_eq!(before.skipped["app/obj/"], "gitignored");
+    // Explicit file edits still checkpoint ignored paths.
+    assert!(
+        capture_file(vfs, "drop.cache")
+            .await
+            .unwrap()
+            .files
+            .contains_key("drop.cache")
+    );
+    // Crossing the size limit or changing ignore rules must never look like creation/deletion.
+    vfs.write("large.bin", "now small").await.unwrap();
+    vfs.write("source.csproj", "after").await.unwrap();
+    vfs.write(".gitignore", "*.cache\nsource.csproj\n")
+        .await
+        .unwrap();
+    let mut checkpoint =
+        ProjectCheckpoint::from_snapshots(before, Some(capture_project(vfs).await.unwrap()));
+    checkpoint.compact();
+    let changes = checkpoint.changes().unwrap();
+    assert!(changes.iter().all(|file| file.path != "large.bin"
+        && file.path != "source.csproj"
+        && !file.path.starts_with("app/bin/")
+        && !file.path.starts_with("app/obj/")));
+    for path in [
+        ".gitignore",
+        "source.csproj",
+        "app",
+        "large.bin",
+        "drop.cache",
+        "keep.cache",
+        "root-only.txt",
+        "pruned",
+    ] {
         vfs.delete(path).await.unwrap();
     }
 }

@@ -114,7 +114,7 @@ terminal pane are done and in the changelog, but:
 
 ### Fully fleshed-out TUI
 
-The chat/TUI surface grows into a full agent workspace. In priority order:
+The chat/TUI surface grows into a full agent workspace. Rewind and per-run review are shipped; shell checkpoints honor project `.gitignore` rules and report snapshot coverage limits without blocking runs. Remaining work, in priority order:
 
 1. **`@`-mentions** (`@file`, `@folder`, `@diff`, with autocomplete) and
    drag/drop or paste of images for vision models.

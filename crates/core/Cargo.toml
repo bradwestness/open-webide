@@ -10,6 +10,7 @@ authors.workspace = true
 [dependencies]
 base64 = { workspace = true }
 html5ever = "0.40"
+ignore = "0.4.33"
 serde = { workspace = true }
 serde_json = { workspace = true }
 

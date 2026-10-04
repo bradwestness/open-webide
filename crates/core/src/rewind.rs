@@ -28,10 +28,25 @@ pub struct RewindFile {
 pub struct ProjectCheckpoint {
     pub before: BTreeMap<String, String>,
     pub after: Option<BTreeMap<String, String>>,
+    /// Paths outside snapshot coverage, with the reason. A trailing slash covers a directory.
+    #[serde(default)]
+    pub skipped: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProjectSnapshot {
+    pub files: BTreeMap<String, String>,
+    pub skipped: BTreeMap<String, String>,
+}
+
+fn excluded(path: &str, skipped: &BTreeMap<String, String>) -> bool {
+    skipped
+        .keys()
+        .any(|skip| skip == "/" || path == skip || path.starts_with(skip) && skip.ends_with('/'))
 }
 
 /// Direct file edits also checkpoint files inside generated folders.
-pub async fn capture_file(vfs: &impl Vfs, path: &str) -> Result<BTreeMap<String, String>, String> {
+pub async fn capture_file(vfs: &impl Vfs, path: &str) -> Result<ProjectSnapshot, String> {
     let path = workspace_path(path).map_err(|e| e.to_string())?;
     let canonical = vfs.canonicalize(&path).await.map_err(|e| e.to_string())?;
     if canonical
@@ -41,20 +56,28 @@ pub async fn capture_file(vfs: &impl Vfs, path: &str) -> Result<BTreeMap<String,
         return Err("Cannot checkpoint Git internals".into());
     }
     match vfs.read_bytes(&path).await {
-        Ok(bytes) => Ok([(path, STANDARD.encode(bytes))].into()),
-        Err(crate::VfsError::NotFound(_)) => Ok(BTreeMap::new()),
-        Err(error) => Err(error.to_string()),
+        Ok(bytes) => Ok(ProjectSnapshot {
+            files: [(path, STANDARD.encode(bytes))].into(),
+            skipped: BTreeMap::new(),
+        }),
+        Err(crate::VfsError::NotFound(_)) => Ok(ProjectSnapshot::default()),
+        Err(error) => Ok(ProjectSnapshot {
+            files: BTreeMap::new(),
+            skipped: [(path, error.to_string())].into(),
+        }),
     }
 }
 
-/// Shared traversal policy; adapters only enumerate and read bytes. Refuse to
-/// execute a mutating tool when a complete checkpoint cannot fit the limit.
-pub async fn capture_project(vfs: &impl Vfs) -> Result<BTreeMap<String, String>, String> {
-    let mut directories = vec![String::new()];
+/// Shared best-effort traversal; limits never prevent the requested tool from running.
+/// Excluded paths are recorded so missing snapshots cannot become false deletions.
+pub async fn capture_project(vfs: &impl Vfs) -> Result<ProjectSnapshot, String> {
+    let mut directories = vec![(String::new(), Vec::<ignore::gitignore::Gitignore>::new())];
     let mut files = BTreeMap::new();
     let mut visited = std::collections::BTreeSet::new();
     let mut total = 0usize;
-    while let Some(dir) = directories.pop() {
+    let mut inventory = 0usize;
+    let mut skipped = BTreeMap::new();
+    while let Some((dir, mut ignores)) = directories.pop() {
         let canonical = match vfs.canonicalize(&dir).await {
             Ok(path) => path,
             Err(crate::VfsError::PathEscape(_)) => continue,
@@ -63,13 +86,38 @@ pub async fn capture_project(vfs: &impl Vfs) -> Result<BTreeMap<String, String>,
         if canonical != dir {
             continue;
         }
-        if canonical.split('/').any(|part| {
-            part.eq_ignore_ascii_case(".git") || crate::vfs::SEARCH_SKIP_DIRS.contains(&part)
-        }) || !visited.insert(canonical)
+        if canonical
+            .split('/')
+            .any(|part| part.eq_ignore_ascii_case(".git"))
+            || !visited.insert(canonical)
         {
             continue;
         }
-        for entry in vfs.list(&dir).await.map_err(|e| e.to_string())? {
+        let ignore_path = if dir.is_empty() {
+            ".gitignore".into()
+        } else {
+            format!("{dir}/.gitignore")
+        };
+        match vfs.read(&ignore_path).await {
+            Ok(content) => {
+                let mut builder =
+                    ignore::gitignore::GitignoreBuilder::new(format!("/checkpoint/{dir}"));
+                for line in content.lines() {
+                    // Git tolerates malformed patterns; retain all valid rules.
+                    let _ = builder.add_line(None, line);
+                }
+                ignores.push(builder.build().map_err(|error| error.to_string())?);
+            }
+            Err(crate::VfsError::NotFound(_)) => (),
+            Err(error) => return Err(error.to_string()),
+        }
+        let mut entries = vfs.list(&dir).await.map_err(|e| e.to_string())?;
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        for entry in entries {
+            inventory += 1;
+            if inventory > 20_000 {
+                return Err("Project checkpoint inventory exceeds 20,000 paths".into());
+            }
             if entry.name == ".spin" {
                 continue;
             }
@@ -79,10 +127,29 @@ pub async fn capture_project(vfs: &impl Vfs) -> Result<BTreeMap<String, String>,
             }) {
                 continue;
             }
+            if path.starts_with(&format!("{}/", crate::vfs::AGENT_BACKUP_DIR))
+                || path == crate::vfs::AGENT_BACKUP_DIR
+            {
+                continue;
+            }
+            let matched = ignores
+                .iter()
+                .rev()
+                .map(|ignore| ignore.matched(format!("/checkpoint/{path}"), entry.is_dir))
+                .find(|matched| !matched.is_none());
+            if matched.is_some_and(|matched| matched.is_ignore()) {
+                skipped.insert(
+                    if entry.is_dir {
+                        format!("{path}/")
+                    } else {
+                        path
+                    },
+                    "gitignored".into(),
+                );
+                continue;
+            }
             if entry.is_dir {
-                if !crate::vfs::SEARCH_SKIP_DIRS.contains(&entry.name.as_str()) {
-                    directories.push(path);
-                }
+                directories.push((path, ignores.clone()));
                 continue;
             }
             // Snapshot physical project files once; aliases and escaping links
@@ -101,21 +168,82 @@ pub async fn capture_project(vfs: &impl Vfs) -> Result<BTreeMap<String, String>,
             {
                 continue;
             }
-            let bytes = vfs.read_bytes(&path).await.map_err(|e| e.to_string())?;
-            total += bytes.len();
-            if total > 32 * 1024 * 1024 || files.len() >= 10000 {
-                return Err("Project checkpoint exceeds 32 MiB or 10,000 files".into());
+            let reason = if entry.size > crate::vfs::MAX_READ_BYTES {
+                Some("file exceeds 10 MiB")
+            } else if entry.size > (32 * 1024 * 1024usize).saturating_sub(total) as u64
+                || files.len() >= 10000
+            {
+                Some("project checkpoint exceeds 32 MiB or 10,000 files")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                skipped.insert(path, reason.into());
+                continue;
             }
+            let bytes = match vfs.read_bytes(&path).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    skipped.insert(path, error.to_string());
+                    continue;
+                }
+            };
+            if bytes.len() > (32 * 1024 * 1024usize).saturating_sub(total) {
+                skipped.insert(path, "project checkpoint exceeds 32 MiB".into());
+                continue;
+            }
+            total += bytes.len();
             files.insert(path, STANDARD.encode(bytes));
         }
     }
-    Ok(files)
+    Ok(ProjectSnapshot { files, skipped })
+}
+
+/// Summarize exceptional coverage gaps; ordinary Git exclusions need no warning.
+pub fn coverage_warning(skipped: &BTreeMap<String, String>) -> Option<String> {
+    let gaps: Vec<_> = skipped
+        .iter()
+        .filter(|(_, reason)| reason.as_str() != "gitignored")
+        .collect();
+    if gaps.is_empty() {
+        return None;
+    }
+    let details = gaps
+        .iter()
+        .take(5)
+        .map(|(path, reason)| format!("{path}: {reason}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!(
+        "Rewind cannot restore {} excluded path(s): {details}{}",
+        gaps.len(),
+        if gaps.len() > 5 {
+            "; additional paths were excluded"
+        } else {
+            ""
+        }
+    ))
 }
 
 impl ProjectCheckpoint {
+    pub fn from_snapshots(before: ProjectSnapshot, after: Option<ProjectSnapshot>) -> Self {
+        let mut skipped = before.skipped;
+        let after = after.map(|after| {
+            skipped.extend(after.skipped);
+            after.files
+        });
+        Self {
+            before: before.files,
+            after,
+            skipped,
+        }
+    }
+
     /// Persist only changed paths once the tool has finished.
     pub fn compact(&mut self) {
+        self.before.retain(|path, _| !excluded(path, &self.skipped));
         if let Some(after) = &mut self.after {
+            after.retain(|path, _| !excluded(path, &self.skipped));
             let unchanged: Vec<_> = self
                 .before
                 .iter()
@@ -137,7 +265,9 @@ impl ProjectCheckpoint {
         let paths: std::collections::BTreeSet<_> = self.before.keys().chain(after.keys()).collect();
         paths
             .into_iter()
-            .filter(|path| self.before.get(*path) != after.get(*path))
+            .filter(|path| {
+                !excluded(path, &self.skipped) && self.before.get(*path) != after.get(*path)
+            })
             .map(|path| {
                 let before = self
                     .before
@@ -203,6 +333,8 @@ pub struct RewindPlan {
     pub message_id: i64,
     pub prompt: String,
     pub files: Vec<RewindFile>,
+    #[serde(default)]
+    pub skipped: BTreeMap<String, String>,
 }
 
 impl RewindPlan {
@@ -221,6 +353,32 @@ impl RewindPlan {
                 _ => None,
             })
             .ok_or("Checkpoint prompt is no longer available")?;
+        let skipped: BTreeMap<_, _> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ConversationEntry::ToolStep(step) if step.anchor_message_id >= message_id => {
+                    step.checkpoint.as_ref()
+                }
+                _ => None,
+            })
+            .flat_map(|checkpoint| checkpoint.skipped.clone())
+            .fold(BTreeMap::new(), |mut skipped, (path, reason)| {
+                if skipped
+                    .get(&path)
+                    .is_none_or(|previous: &String| previous == "gitignored")
+                {
+                    skipped.insert(path, reason);
+                }
+                skipped
+            });
+        // Ignore rules bound shell snapshots; they must not discard a separately
+        // captured, explicit edit of an ignored file. Conflict verification still
+        // protects that file if an untracked shell operation subsequently changed it.
+        let gaps = skipped
+            .iter()
+            .filter(|(_, reason)| reason.as_str() != "gitignored")
+            .map(|(path, reason)| (path.clone(), reason.clone()))
+            .collect();
         let mut files = BTreeMap::<String, RewindFile>::new();
         for entry in entries {
             let ConversationEntry::ToolStep(step) = entry else {
@@ -234,6 +392,9 @@ impl RewindPlan {
             }
             if let Some(checkpoint) = &step.checkpoint {
                 for change in checkpoint.changes()? {
+                    if excluded(&change.path, &gaps) {
+                        continue;
+                    }
                     let path = workspace_path(&change.path).map_err(|e| e.to_string())?;
                     if path
                         .split('/')
@@ -308,7 +469,11 @@ impl RewindPlan {
         Ok(Self {
             message_id,
             prompt,
-            files: files.into_values().collect(),
+            files: files
+                .into_values()
+                .filter(|file| !excluded(&file.path, &gaps))
+                .collect(),
+            skipped,
         })
     }
 }
@@ -434,6 +599,76 @@ mod tests {
             checkpoint: None,
         })
     }
+    #[test]
+    fn aggregate_and_file_count_limits_preserve_partial_coverage() {
+        futures::executor::block_on(async {
+            use crate::{MemoryVfs, Vfs};
+            let vfs = MemoryVfs::new();
+            let bytes = vec![1u8; 9 * 1024 * 1024];
+            for name in ["a", "b", "c", "d"] {
+                vfs.write_bytes(name, &bytes).await.unwrap();
+            }
+            let snapshot = capture_project(&vfs).await.unwrap();
+            assert_eq!(snapshot.files.len(), 3);
+            assert!(snapshot.skipped["d"].contains("32 MiB"));
+            let vfs = MemoryVfs::new();
+            for number in 0..10_001 {
+                vfs.write(&format!("file{number:05}"), "x").await.unwrap();
+            }
+            let snapshot = capture_project(&vfs).await.unwrap();
+            assert_eq!(snapshot.files.len(), 10_000);
+            assert!(snapshot.skipped["file10000"].contains("10,000 files"));
+        });
+    }
+
+    #[test]
+    fn shell_ignore_rules_do_not_discard_explicit_file_edit_checkpoints() {
+        let mut shell = edit(1, None, "ignored shell output");
+        let ConversationEntry::ToolStep(step) = &mut shell else {
+            unreachable!()
+        };
+        step.name = "run_command".into();
+        step.checkpoint = Some(ProjectCheckpoint {
+            before: BTreeMap::new(),
+            after: Some(BTreeMap::new()),
+            skipped: [("file.txt".into(), "gitignored".into())].into(),
+        });
+        let plan =
+            RewindPlan::from_conversation(&[prompt(1), shell, edit(1, Some("before"), "after")], 1)
+                .unwrap();
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.files[0].before.as_deref(), Some("before"));
+    }
+
+    #[test]
+    fn uncovered_later_shell_changes_cannot_restore_an_earlier_file_snapshot() {
+        let mut earlier = edit(1, Some("original"), "one");
+        let ConversationEntry::ToolStep(step) = &mut earlier else {
+            unreachable!()
+        };
+        step.checkpoint = Some(ProjectCheckpoint {
+            before: [("file.txt".into(), STANDARD.encode("original"))].into(),
+            after: Some([("file.txt".into(), STANDARD.encode("one"))].into()),
+            skipped: BTreeMap::new(),
+        });
+        let mut later = edit(2, Some("one"), "unknown");
+        let ConversationEntry::ToolStep(step) = &mut later else {
+            unreachable!()
+        };
+        step.name = "run_command".into();
+        step.checkpoint = Some(ProjectCheckpoint {
+            before: BTreeMap::new(),
+            after: Some(BTreeMap::new()),
+            skipped: [("file.txt".into(), "file exceeds 10 MiB".into())].into(),
+        });
+        let plan =
+            RewindPlan::from_conversation(&[prompt(1), earlier, prompt(2), later], 1).unwrap();
+        assert!(plan.files.is_empty());
+        assert!(plan.skipped.contains_key("file.txt"));
+        let old: ProjectCheckpoint = serde_json::from_str(r#"{"before":{},"after":{}}"#).unwrap();
+        assert!(old.skipped.is_empty());
+    }
+
     #[test]
     fn checkpoints_coalesce_writes_across_turns_and_detect_intervening_edits() {
         let mut entries = vec![

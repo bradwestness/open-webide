@@ -192,6 +192,7 @@ pub struct RunRecorder<P> {
     anchor: i64,
     reasoning: String,
     usage: Option<TurnTelemetry>,
+    checkpoint_warnings: std::collections::BTreeMap<String, String>,
 }
 impl<P: RunPersistence> RunRecorder<P> {
     pub fn new(persistence: P, _session: i64, anchor: i64) -> Self {
@@ -200,6 +201,7 @@ impl<P: RunPersistence> RunRecorder<P> {
             anchor,
             reasoning: String::new(),
             usage: None,
+            checkpoint_warnings: Default::default(),
         }
     }
     pub async fn record(&mut self, event: AgentEvent) -> Recorded {
@@ -321,6 +323,11 @@ impl<P: RunPersistence> RunRecorder<P> {
                 }
             }
             AgentEvent::ProjectCheckpoint { id, checkpoint } => {
+                if let Some(warning) =
+                    openwebide_core::rewind::coverage_warning(&checkpoint.skipped)
+                {
+                    self.checkpoint_warnings.insert(id.clone(), warning);
+                }
                 return match self.persistence.checkpoint(&id, &checkpoint).await {
                     Ok(()) => Recorded {
                         events: vec![],
@@ -373,6 +380,10 @@ impl<P: RunPersistence> RunRecorder<P> {
                 summary,
                 diff,
             } => {
+                let summary = match self.checkpoint_warnings.remove(&id) {
+                    Some(warning) => format!("{summary}\n{warning}"),
+                    None => summary,
+                };
                 let saved = self
                     .persistence
                     .result(&id, ok, &summary, diff.as_ref())

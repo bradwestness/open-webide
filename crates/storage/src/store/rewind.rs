@@ -238,6 +238,7 @@ mod tests {
                     .await
                     .unwrap();
                 let checkpoint = openwebide_core::rewind::ProjectCheckpoint {
+                    skipped: [("large.bin".into(), "file exceeds 10 MiB".into())].into(),
                     before: [("a.txt".into(), "YWZ0ZXI=".into())].into(),
                     after: Some(
                         [
@@ -274,6 +275,7 @@ mod tests {
                     .await
                     .unwrap();
                 assert_eq!(plan.files.len(), 2);
+                assert_eq!(plan.skipped["large.bin"], "file exceeds 10 MiB");
                 assert_eq!(plan.files[0].before.as_deref(), Some("before"));
                 assert_eq!(plan.files[0].after, "shell");
                 assert_eq!(plan.files[1].after_bytes().unwrap(), Some(vec![0, 255]));

@@ -36,9 +36,31 @@ pub fn actions(
                 && chat.active_session.try_get_untracked() == Some(Some(session))
                 && projects.active_project.try_get_untracked() == Some(project)
         };
-        ui.set_confirm(ConfirmRequest {
+        spawn_local(async move {
+            let backend = api.with_value(Clone::clone);
+            let preview = match backend.list_messages(session).await.and_then(|entries| {
+                openwebide_core::RewindPlan::from_conversation(&entries, message)
+            }) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    if current() {
+                        ui.notify(error);
+                    }
+                    return;
+                }
+            };
+            if !current() {
+                return;
+            }
+            let mut explanation = "Restore project files and the conversation to before this prompt, including shell-made file changes. Git history and external effects stay intact. Gitignored paths are excluded from shell checkpoints. The prompt will replace the current draft. Files must match their recorded snapshots.".to_string();
+            if let Some(warning) = openwebide_core::rewind::coverage_warning(&preview.skipped) {
+                explanation.push_str(&format!(
+                    "\n\n{warning}. These files will keep their current contents."
+                ));
+            }
+            ui.set_confirm(ConfirmRequest {
             title: "Rewind to this prompt?".into(),
-            message: "Restore project files and the conversation to before this prompt, including shell-made file changes. Git history and external effects stay intact. Generated folders are excluded. The prompt will replace the current draft. Files must match their recorded snapshots.".into(),
+            message: explanation,
             confirm_label: "Rewind".into(),
             action: Callback::new(move |()| {
                 if !current() || chat.streaming.get_untracked() || chat.rewinding.get_untracked() { return; }
@@ -106,6 +128,7 @@ pub fn actions(
                     }
                 });
             }),
+        });
         });
     })
 }

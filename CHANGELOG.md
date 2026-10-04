@@ -30,7 +30,7 @@ for what's still ahead.
 
 - Add a changes panel beneath each new agent run’s prompt in local and remote projects. Review text changes per file or hunk, and created/deleted or binary files as a whole. Persist decisions in the database, mark pending lines in the editor, preserve accepted hunks during later edits, and keep rewind consistent after rejection. Capture shell changes even when a command fails; stale revisions and later manual edits cannot be overwritten.
 
-- Add **Rewind to here** on chat prompts in local, remote and projectless sessions. Restore project file contents and conversation together, including shell/Git working-tree changes, created/deleted files and binary contents. Keep Git history, external effects and generated folders intact. Checkpoint snapshots and recovery history live in the database; conflict checks protect later edits, interrupted restores can resume, and unfinished or missing checkpoints refuse unsafe rewinds. Checkpoints cover up to 32 MiB and 10,000 project files, with the existing 10 MiB single-file limit.
+- Add **Rewind to here** on chat prompts in local, remote and projectless sessions. Restore project file contents and conversation together, including shell/Git working-tree changes, created/deleted files and binary contents. Keep Git history, external effects and gitignored paths intact during shell rewind. Checkpoint snapshots and recovery history live in the database; conflict checks protect later edits, interrupted restores can resume, and unfinished or missing checkpoints refuse unsafe rewinds. Checkpoints capture up to 32 MiB and 10,000 project files, with a 10 MiB single-file limit; excluded paths remain unchanged.
 
 - Keep a permanent speech-bubble chat tab at the right of the project tabs. Chat without a project using web search, page fetching and read-only `host_info`, with file, Git and shell access disabled. Save sessions and the selected chat in user-scoped database settings, restore them across devices, and preserve open project workspaces when switching back. Both bridge WebSocket and backend SSE runs use the same tool restrictions, permissions and compaction. Collapse and disable Files and Editor in projectless chat, restoring their saved visibility on return to a project. Remove the redundant open-project panel from chat.
 
@@ -229,6 +229,8 @@ for what's still ahead.
 - Reconcile setup, architecture, bridge protocol, roadmap, changelog, and `/help` documentation with current behavior.
 
 ### Fixed
+
+- Honor project and nested `.gitignore` rules in shell/Git checkpoints in local and remote projects, including negated patterns. Keep explicit file-edit snapshots for ignored files. Skip oversized or unreadable files without stopping the turn, persist coverage gaps, warn in tool results and rewind confirmation, and leave excluded paths untouched even when file sizes or ignore rules change.
 
 - Delete nested remote files with writable directory descriptors and support recursive folder deletion without following symlinks, matching browser/native adapters.
 

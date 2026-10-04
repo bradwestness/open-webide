@@ -1422,7 +1422,11 @@ async fn rewind_restores_files_conversation_and_prompt_in_both_modes() {
                             backup_path: None,
                         }),
                         anchor_message_id: 3,
-                        checkpoint: None,
+                        checkpoint: Some(openwebide_core::rewind::ProjectCheckpoint {
+                            before: [("file.txt".into(), "YmVmb3Jl".into())].into(),
+                            after: Some([("file.txt".into(), "YWZ0ZXI=".into())].into()),
+                            skipped: [("large.bin".into(), "file exceeds 10 MiB".into())].into(),
+                        }),
                     }),
                     message(4, Role::Assistant, "edited"),
                 ],
@@ -1431,6 +1435,10 @@ async fn rewind_restores_files_conversation_and_prompt_in_both_modes() {
         });
         let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
         files.write("file.txt", "after").await.unwrap();
+        files
+            .write("large.bin", "keep current contents")
+            .await
+            .unwrap();
         settle().await;
         assert!(
             mounted
@@ -1442,6 +1450,13 @@ async fn rewind_restores_files_conversation_and_prompt_in_both_modes() {
         mounted.click(".tui-rewind[data-message-id='3']");
         settle().await;
         assert_eq!(files.read("file.txt").await.unwrap(), "after");
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("large.bin: file exceeds 10 MiB")
+        );
         mounted.click(".modal-footer .danger");
         for _ in 0..100 {
             sleep_ms(5).await;
@@ -1451,6 +1466,10 @@ async fn rewind_restores_files_conversation_and_prompt_in_both_modes() {
         }
         settle().await;
         assert_eq!(files.read("file.txt").await.unwrap(), "before");
+        assert_eq!(
+            files.read("large.bin").await.unwrap(),
+            "keep current contents"
+        );
         assert_eq!(mounted.state.chat.draft.get_untracked(), "change a file");
         assert!(!mounted.state.chat.rewinding.get_untracked());
         assert_eq!(mounted.state.fake.messages.borrow()[&1].len(), 2);
@@ -1506,6 +1525,7 @@ async fn browser_project_checkpoint_contract() {
     let fixture = contractFolder().await;
     let vfs = BrowserFsaVfs::new(contractHandle(&fixture).unchecked_into());
     openwebide_core::testing::project_checkpoint_contract(&vfs).await;
+    openwebide_core::testing::checkpoint_coverage_contract(&vfs).await;
     contractCleanup(&fixture).await;
 }
 

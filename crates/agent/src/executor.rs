@@ -724,7 +724,7 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> ToolExecutor for VfsToolExecutor<V, 
     async fn project_checkpoint(
         &self,
         call: &ToolCall,
-    ) -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
+    ) -> Result<Option<openwebide_core::rewind::ProjectSnapshot>, String> {
         if let Ok(Tool::WriteFile(args)) = tools::parse(call) {
             return openwebide_core::rewind::capture_file(&self.vfs, &args.path)
                 .await
@@ -838,7 +838,7 @@ impl<E: ToolExecutor + Sync, W: WebClient, B: BridgeClient> ToolExecutor
     async fn project_checkpoint(
         &self,
         call: &ToolCall,
-    ) -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
+    ) -> Result<Option<openwebide_core::rewind::ProjectSnapshot>, String> {
         match &self.workspace {
             Some(workspace) => workspace.project_checkpoint(call).await,
             None => Ok(None),

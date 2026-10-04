@@ -420,5 +420,6 @@ mod creation_contract {
         };
         openwebide_core::testing::vfs_creation_contract(&vfs).await;
         openwebide_core::testing::project_checkpoint_contract(&vfs).await;
+        openwebide_core::testing::checkpoint_coverage_contract(&vfs).await;
     }
 }

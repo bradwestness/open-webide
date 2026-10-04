@@ -172,7 +172,7 @@ pub trait ToolExecutor: Send {
     fn project_checkpoint(
         &self,
         _call: &ToolCall,
-    ) -> impl Future<Output = Result<Option<std::collections::BTreeMap<String, String>>, String>> + Send
+    ) -> impl Future<Output = Result<Option<openwebide_core::rewind::ProjectSnapshot>, String>> + Send
     {
         std::future::ready(Ok(None))
     }
@@ -759,6 +759,7 @@ where
                                     checkpoint: openwebide_core::rewind::ProjectCheckpoint {
                                         before: Default::default(),
                                         after: Some(Default::default()),
+                                        skipped: Default::default(),
                                     },
                                 },
                                 state,
@@ -814,29 +815,26 @@ where
                                         AgentEvent::ProjectCheckpoint {
                                             id,
                                             checkpoint:
-                                                openwebide_core::rewind::ProjectCheckpoint {
-                                                    before,
-                                                    after: None,
-                                                },
+                                                openwebide_core::rewind::ProjectCheckpoint::from_snapshots(before, None),
                                         },
                                         state,
                                     ));
                                 }
                             }
                             Err(error) => {
-                                let message =
-                                    format!("Could not capture project checkpoint: {error}");
-                                state.next = Next::Failure(message.clone());
-                                return Some((
-                                    AgentEvent::ToolResult {
-                                        id: pending.call.id,
-                                        name: pending.call.name,
-                                        ok: false,
-                                        summary: message,
-                                        diff: None,
-                                    },
-                                    state,
-                                ));
+                                let snapshot = openwebide_core::rewind::ProjectSnapshot {
+                                    files: Default::default(),
+                                    skipped: [(
+                                        "/".into(),
+                                        format!("Checkpoint unavailable: {error}"),
+                                    )]
+                                    .into(),
+                                };
+                                let id = pending.call.id.clone();
+                                state.next = Next::RunTool(pending, Some(snapshot.clone()));
+                                return Some((AgentEvent::ProjectCheckpoint {
+                                    id, checkpoint: openwebide_core::rewind::ProjectCheckpoint::from_snapshots(snapshot, None),
+                                }, state));
                             }
                         }
                     }
@@ -859,10 +857,11 @@ where
                             };
                             if let Some(before) = before {
                                 state.next = Next::FinishedTool(event, true);
-                                let mut checkpoint = openwebide_core::rewind::ProjectCheckpoint {
-                                    after: Some(before.clone()),
-                                    before,
-                                };
+                                let mut checkpoint =
+                                    openwebide_core::rewind::ProjectCheckpoint::from_snapshots(
+                                        before.clone(),
+                                        Some(before),
+                                    );
                                 checkpoint.compact();
                                 return Some((
                                     AgentEvent::ProjectCheckpoint {
@@ -924,40 +923,26 @@ where
                         if let Some(before) = before {
                             let after = match state.executor.project_checkpoint(&call).await {
                                 Ok(Some(after)) => after,
-                                Ok(None) => {
-                                    let message = "Project checkpoint disappeared".to_string();
-                                    state.next = Next::Failure(message.clone());
-                                    return Some((
-                                        AgentEvent::ToolResult {
-                                            id: call.id,
-                                            name: call.name,
-                                            ok: false,
-                                            summary: message,
-                                            diff: None,
+                                result => openwebide_core::rewind::ProjectSnapshot {
+                                    files: Default::default(),
+                                    skipped: [(
+                                        "/".into(),
+                                        match result {
+                                            Err(error) => {
+                                                format!("Checkpoint unavailable: {error}")
+                                            }
+                                            _ => "Project checkpoint disappeared".into(),
                                         },
-                                        state,
-                                    ));
-                                }
-                                Err(error) => {
-                                    let message = format!("Checkpoint needs recovery: {error}");
-                                    state.next = Next::Failure(message.clone());
-                                    return Some((
-                                        AgentEvent::ToolResult {
-                                            id: call.id,
-                                            name: call.name,
-                                            ok: false,
-                                            summary: message,
-                                            diff: None,
-                                        },
-                                        state,
-                                    ));
-                                }
+                                    )]
+                                    .into(),
+                                },
                             };
                             state.next = Next::FinishedTool(event, interrupted);
-                            let mut checkpoint = openwebide_core::rewind::ProjectCheckpoint {
-                                before,
-                                after: Some(after),
-                            };
+                            let mut checkpoint =
+                                openwebide_core::rewind::ProjectCheckpoint::from_snapshots(
+                                    before,
+                                    Some(after),
+                                );
                             checkpoint.compact();
                             return Some((
                                 AgentEvent::ProjectCheckpoint {
@@ -1070,7 +1055,7 @@ enum Next {
     SnapshotTool(PendingCall),
     RunTool(
         PendingCall,
-        Option<std::collections::BTreeMap<String, String>>,
+        Option<openwebide_core::rewind::ProjectSnapshot>,
     ),
     FinishedTool(AgentEvent, bool),
     Failure(String),
@@ -1208,11 +1193,18 @@ mod tests {
                 ) -> Result<openwebide_core::CommandOutcome, String> {
                     self.0.write("file.txt", "shell output").await.unwrap();
                     self.0.write("created.txt", "created").await.unwrap();
+                    self.0.write("large.bin", "now small").await.unwrap();
                     Err("command failed after writing".into())
                 }
             }
             let vfs = MemoryVfs::new();
             vfs.write("file.txt", "before").await.unwrap();
+            vfs.write_bytes(
+                "large.bin",
+                &vec![0; usize::try_from(openwebide_core::vfs::MAX_READ_BYTES).unwrap() + 1],
+            )
+            .await
+            .unwrap();
             let (provider, _) = FakeProvider::new(vec![
                 Ok(no_usage(ChatResponse::ToolCalls(vec![call(
                     "shell",
@@ -1251,11 +1243,79 @@ mod tests {
             };
             assert_eq!(vfs.read("file.txt").await.unwrap(), "shell output");
             assert_eq!(after.changes().unwrap().len(), 2);
+            assert!(after.skipped.contains_key("large.bin"));
             assert!(matches!(
                 events.next().await,
                 Some(AgentEvent::ToolResult { ok: false, .. })
             ));
         });
+    }
+
+    #[test]
+    fn checkpoint_io_failures_do_not_stop_tool_execution_or_claim_full_coverage() {
+        struct Unavailable;
+        impl ToolExecutor for Unavailable {
+            fn describe(&self, _: &ToolCall) -> String {
+                "run command".into()
+            }
+            async fn project_checkpoint(
+                &self,
+                _: &ToolCall,
+            ) -> Result<Option<openwebide_core::rewind::ProjectSnapshot>, String> {
+                Err("unreadable directory".into())
+            }
+            async fn execute(&self, _: &ToolCall) -> ToolOutcome {
+                ToolOutcome {
+                    ok: true,
+                    content: "executed".into(),
+                    summary: "executed".into(),
+                    diff: None,
+                }
+            }
+        }
+        let (provider, _) = FakeProvider::new(vec![
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "shell",
+                "run_command",
+                r#"{"command":"test"}"#,
+            )]))),
+            Ok(no_usage(ChatResponse::Text("done".into()))),
+        ]);
+        let events = collect(run(
+            provider,
+            Unavailable,
+            request(),
+            AgentConfig::default(),
+            NoopCancel,
+            NoopGate,
+            1,
+        ));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ToolResult { ok: true, .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::FinalText(text) if text == "done"))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Error(_)))
+        );
+        let checkpoint = events
+            .iter()
+            .find_map(|event| match event {
+                AgentEvent::ProjectCheckpoint { checkpoint, .. } if checkpoint.after.is_some() => {
+                    Some(checkpoint)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(checkpoint.skipped.contains_key("/"));
+        assert!(checkpoint.changes().unwrap().is_empty());
     }
 
     /// An executor that pops queued outcomes, records the names of the calls
@@ -1871,7 +1931,8 @@ mod tests {
                     id: "a1t1c0".into(),
                     checkpoint: openwebide_core::rewind::ProjectCheckpoint {
                         before: Default::default(),
-                        after: Some(Default::default())
+                        after: Some(Default::default()),
+                        skipped: Default::default(),
                     }
                 },
                 AgentEvent::ToolResult {
