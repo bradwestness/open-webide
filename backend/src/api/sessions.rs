@@ -923,3 +923,24 @@ mod timing_tests {
         });
     }
 }
+
+#[derive(Deserialize)]
+pub(super) struct TaskBody {
+    anchor_message_id: i64,
+    snapshot: openwebide_core::TaskSnapshot,
+}
+pub(crate) async fn save_task(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let session = session_id(path)?;
+    state.store.get_session(session, user.id).await?;
+    let body: TaskBody = parse_json(read_body(req, CHAT_BODY_LIMIT).await?)?;
+    state
+        .store
+        .save_task(user.id, session, body.anchor_message_id, &body.snapshot)
+        .await?;
+    Ok(json_response(200, &json!({"ok":true})))
+}

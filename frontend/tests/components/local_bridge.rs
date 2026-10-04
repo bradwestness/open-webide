@@ -1319,7 +1319,7 @@ async fn browser_chat_and_agent_compact_before_reply_and_keep_history() {
             .iter()
             .filter_map(|entry| match entry {
                 ConversationEntry::Message(message) => Some(message),
-                ConversationEntry::ToolStep(_) => None,
+                ConversationEntry::ToolStep(_) | ConversationEntry::Task(_) => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(messages[0].content, "original history ".repeat(4000));
@@ -1958,4 +1958,141 @@ async fn queued_local_prompt_is_consumed_once_with_its_captured_images_and_refer
     openwebide_frontend::idb::set_bridge_pairing_token(previous.as_deref().unwrap_or(""))
         .await
         .unwrap();
+}
+
+#[wasm_bindgen_test]
+async fn browser_child_task_uses_inherited_files_manual_approval_and_durable_nested_history() {
+    use openwebide_core::{ChatCompletion, ChatResponse, StopReason, TaskStatus, ToolCall};
+    let fixture = contractFolder().await;
+    let handle: web_sys::FileSystemDirectoryHandle = contractHandle(&fixture).unchecked_into();
+    let vfs = BrowserFsaVfs::new(handle.clone());
+    vfs.write("child.txt", "before").await.unwrap();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        state.seed_connection();
+        state.seed_session();
+        state
+            .projects
+            .projects
+            .update(|projects| projects[0].mode = openwebide_core::WorkspaceMode::Local);
+        state.projects.local_handles.update(|handles| {
+            handles.insert(1, handle.clone());
+        });
+        state
+            .chat
+            .set_approval_mode(1, openwebide_core::ApprovalMode::Default);
+        state.fake.settings.borrow_mut().insert(
+            openwebide_core::ApprovalMode::setting_key(1),
+            serde_json::to_string(&openwebide_core::ApprovalMode::Default).unwrap(),
+        );
+        let completion = |response| ChatCompletion {
+            reasoning: String::new(),
+            preamble: String::new(),
+            response,
+            stop_reason: StopReason::Complete,
+            usage: None,
+        };
+        state.fake.scripted_completions.borrow_mut().extend([
+            completion(ChatResponse::ToolCalls(vec![ToolCall { id: "parent-wire".into(), name: "task".into(), arguments: serde_json::json!({"tasks":[{"description":"Delegated edit","prompt":"Write child.txt with after"}]}).to_string() }])),
+            completion(ChatResponse::ToolCalls(vec![ToolCall { id: "child-wire".into(), name: "write_file".into(), arguments: serde_json::json!({"path":"child.txt","content":"after"}).to_string() }])),
+            completion(ChatResponse::Text("Child finished".into())),
+            completion(ChatResponse::Text("Parent finished".into())),
+        ]);
+        chat_view(state)
+    });
+    settle().await;
+    mounted.input("Delegate this edit");
+    mounted.key("Enter", "Enter", false);
+    for _ in 0..400 {
+        settle().await;
+        if mounted
+            .root
+            .query_selector(".tui-task-content .btn.approve")
+            .unwrap()
+            .is_some()
+        {
+            break;
+        }
+        sleep_ms(5).await;
+    }
+    assert_eq!(vfs.read("child.txt").await.unwrap(), "before");
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Waiting for approval")
+    );
+    let child = mounted
+        .state
+        .chat
+        .messages
+        .get_untracked()
+        .into_iter()
+        .find_map(|item| match item {
+            openwebide_frontend::conversation::ConversationItem::Task(task) => Some(task),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(child.task.status, TaskStatus::WaitingForApproval);
+    let (permission, _) = child.pending_permission().unwrap();
+    assert!(permission.contains(".task1."));
+    mounted.click(".tui-task-content .btn.approve");
+    for _ in 0..1000 {
+        sleep_ms(5).await;
+        settle().await;
+        if !mounted.state.chat.streaming.get_untracked() {
+            break;
+        }
+    }
+    assert!(
+        mounted.state.chat.error.get_untracked().is_none(),
+        "{:?}",
+        mounted.state.chat.error.get_untracked()
+    );
+    assert!(!mounted.state.chat.streaming.get_untracked());
+    assert_eq!(vfs.read("child.txt").await.unwrap(), "after");
+    let entries = mounted.state.fake.messages.borrow()[&1].clone();
+    let saved = entries
+        .iter()
+        .find_map(|entry| match entry {
+            openwebide_core::ConversationEntry::Task(task) => Some(task),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(saved.snapshot.task.status, TaskStatus::Completed);
+    assert!(saved.snapshot.pending_permission().is_none());
+    {
+        let requests = mounted.state.fake.completion_requests.borrow();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[1].messages.len(), 1);
+        assert_eq!(
+            requests[1].messages[0].content,
+            "Write child.txt with after"
+        );
+        assert!(
+            !requests[1]
+                .tools
+                .iter()
+                .any(|tool| tool.name == "todo_write")
+        );
+        assert!(
+            requests[3]
+                .messages
+                .iter()
+                .all(|message| message.content != "Write child.txt with after")
+        );
+    }
+    assert!(
+        mounted
+            .state
+            .fake
+            .tool_sources
+            .borrow()
+            .get(&(1, permission))
+            .copied()
+            .unwrap()
+    );
+    drop(mounted);
+    contractCleanup(&fixture).await;
 }

@@ -11,6 +11,7 @@ use openwebide_core::{ChatMessage, FileDiff, Role};
 /// stop marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversationItem {
+    Task(Box<openwebide_core::TaskSnapshot>),
     /// A user or assistant chat message.
     Message(ChatMessage),
     /// An agent tool step: the call (always known) and, once it finishes, its
@@ -31,9 +32,14 @@ pub enum ConversationItem {
     },
     /// A marker that the user stopped the run. The nonce keeps the item key
     /// unique when a conversation has several stops.
-    Stopped { nonce: u64 },
+    Stopped {
+        nonce: u64,
+    },
     /// A transient notice generated locally by the frontend.
-    Notice { nonce: u64, text: String },
+    Notice {
+        nonce: u64,
+        text: String,
+    },
 }
 
 /// A fresh "stopped" marker for the conversation list.
@@ -146,6 +152,11 @@ pub fn merge_snapshot(items: &mut Vec<ConversationItem>, snapshot: &openwebide_c
             }
         }
     }
+    for task in &snapshot.tasks {
+        if let Some(ConversationItem::Task(existing)) = items.iter_mut().find(|item| matches!(item, ConversationItem::Task(existing) if existing.task.id == task.task.id)) {
+            **existing = task.clone();
+        } else { items.push(ConversationItem::Task(Box::new(task.clone()))); }
+    }
     if !snapshot.text.is_empty() || !snapshot.reasoning.is_empty() {
         let content = if snapshot.text.is_empty() && !snapshot.reasoning.is_empty() {
             format!(
@@ -176,6 +187,7 @@ pub fn merge_snapshot(items: &mut Vec<ConversationItem>, snapshot: &openwebide_c
 /// Payload identity for reconciliation; UI handles also survive server-ID assignment.
 pub fn item_key(item: &ConversationItem) -> String {
     match item {
+        ConversationItem::Task(task) => format!("task-{}", task.task.id),
         ConversationItem::Message(m) => format!("m-{}", m.id),
         ConversationItem::ToolStep { key, .. } => format!("t-{key}"),
         ConversationItem::Stopped { nonce } => format!("s-{nonce}"),

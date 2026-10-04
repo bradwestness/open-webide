@@ -18,6 +18,10 @@ pub fn session_markdown(session: &ChatSession, entries: &[ConversationEntry]) ->
         inline(&session.name),
         format_utc_timestamp(session.created_at)
     );
+    conversation_markdown(&mut output, entries);
+    output
+}
+fn conversation_markdown(output: &mut String, entries: &[ConversationEntry]) {
     for entry in entries {
         match entry {
             ConversationEntry::Message(message) => {
@@ -34,7 +38,7 @@ pub fn session_markdown(session: &ChatSession, entries: &[ConversationEntry]) ->
                     output.push_str("\n\n");
                     if let Some(context) = context {
                         output.push_str("### Editor context\n\n");
-                        fenced(&mut output, context, "text");
+                        fenced(output, context, "text");
                     }
                     for reference in prompt.references {
                         let _ = writeln!(
@@ -42,7 +46,7 @@ pub fn session_markdown(session: &ChatSession, entries: &[ConversationEntry]) ->
                             "### Reference: {}\n",
                             inline(&reference.mention.path)
                         );
-                        fenced(&mut output, &reference.content, "text");
+                        fenced(output, &reference.content, "text");
                     }
                     for image in prompt.images {
                         let _ = writeln!(output, "![{}]({})\n", inline(&image.name), image.url());
@@ -51,27 +55,94 @@ pub fn session_markdown(session: &ChatSession, entries: &[ConversationEntry]) ->
                     let parsed = parse_thinking(&message.content);
                     if let Some(thinking) = parsed.thinking {
                         output.push_str("### Reasoning\n\n");
-                        fenced(&mut output, &thinking, "text");
+                        fenced(output, &thinking, "text");
                     }
                     output.push_str(&parsed.answer);
                     output.push_str("\n\n");
                 } else {
-                    fenced(&mut output, &message.content, "text");
+                    fenced(output, &message.content, "text");
                 }
                 if let Some(calls) = &message.tool_calls {
                     output.push_str("### Tool calls\n\n");
                     fenced(
-                        &mut output,
+                        output,
                         &serde_json::to_string_pretty(calls)
                             .expect("String-only tool calls serialize"),
                         "json",
                     );
                 }
             }
-            ConversationEntry::ToolStep(step) => tool_step(&mut output, step),
+            ConversationEntry::Task(task) => task_markdown(output, &task.snapshot),
+            ConversationEntry::ToolStep(step) => {
+                if crate::tasks::task_step_scope(&step.tool_call_id).is_none() {
+                    tool_step(output, step);
+                }
+            }
         }
     }
-    output
+}
+fn task_markdown(output: &mut String, task: &crate::TaskSnapshot) {
+    let _ = writeln!(
+        output,
+        "### Child task: {}\n\nStatus: {:?} · Tokens: {} · Tools: {}\n",
+        inline(&task.task.description),
+        task.task.status,
+        task.total_tokens(),
+        task.task.tool_count
+    );
+    let mut entries: Vec<_> = task
+        .run
+        .items
+        .iter()
+        .map(|item| match item {
+            crate::RunItem::Message(message) => ConversationEntry::Message(message.clone()),
+            crate::RunItem::Step(step) => ConversationEntry::ToolStep(ToolStep {
+                timing: step.timing,
+                tool_call_id: step.id.clone(),
+                name: step.name.clone(),
+                summary: step.summary.clone(),
+                ok: step.result.as_ref().map(|result| result.ok),
+                result_summary: step.result.as_ref().map(|result| result.summary.clone()),
+                diff: step
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.diff.clone())
+                    .or_else(|| step.diff.as_deref().cloned()),
+                anchor_message_id: 0,
+                checkpoint: None,
+            }),
+        })
+        .collect();
+    if let Some(crate::RunEvent::Done { message }) = &task.run.finished {
+        entries.push(ConversationEntry::Message(message.clone()));
+    } else if !task.run.text.is_empty() || !task.run.reasoning.is_empty() {
+        entries.push(ConversationEntry::Message(crate::ChatMessage {
+            id: 0,
+            session_id: 0,
+            role: Role::Assistant,
+            content: crate::with_reasoning(&task.run.reasoning, &task.run.text),
+            created_at: 0,
+            tool_calls: None,
+            tool_call_id: None,
+            usage: None,
+        }));
+    }
+    for entry in entries {
+        // Scoped tool rows are intentionally rendered only within their child.
+        if let ConversationEntry::ToolStep(step) = &entry {
+            tool_step(output, step);
+        } else {
+            conversation_markdown(output, &[entry]);
+        }
+    }
+    if let Some(result) = &task.task.result
+        && !matches!(task.run.finished, Some(crate::RunEvent::Done { .. }))
+    {
+        let _ = writeln!(output, "{result}\n");
+    }
+    for child in &task.children {
+        task_markdown(output, child);
+    }
 }
 pub fn session_markdown_filename(session: &ChatSession) -> String {
     let name: String = session

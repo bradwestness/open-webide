@@ -278,6 +278,7 @@ mod tests {
             RunEvent::Message { .. } => Kind::Message,
             RunEvent::Delta { content: d } => Kind::Delta(d.clone()),
             RunEvent::ReasoningDelta { content } => Kind::Reasoning(content.clone()),
+            RunEvent::Task { .. } => panic!("unexpected child task in plain chat"),
             RunEvent::Interim { .. } => panic!("unexpected interim"),
             RunEvent::ToolCall { .. } => panic!("unexpected tool_call"),
             RunEvent::PermissionRequest { .. } => panic!("unexpected permission_request"),

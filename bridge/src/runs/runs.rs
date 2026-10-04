@@ -423,69 +423,44 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
             }
         }
         RunKind::Agent { .. } | RunKind::WebChat => {
-            let workspace = dir.map(|dir| {
+            if let Some(dir) = &dir {
                 plan.environment.project_root = Some(dir.to_string_lossy().into_owned());
                 plan.environment
                     .mode
                     .get_or_insert(openwebide_core::WorkspaceMode::Remote);
-                VfsToolExecutor::with_web_and_bridge(
-                    NativeFsVfs { root: dir.clone() },
-                    BackendWebClient {
-                        backend: backend.clone(),
-                        user_id: run.owner,
-                    },
-                    InProcessBridgeClient {
-                        dir,
-                        execution: execution.clone(),
-                        cancel: run.cancel.clone(),
-                    },
-                )
-                .with_context(plan.environment.clone())
-            });
-            let executor = openwebide_agent::vfs_executor::SessionToolExecutor::new(
-                workspace,
-                BackendWebClient {
-                    backend: backend.clone(),
-                    user_id: run.owner,
+            }
+            let factory = BridgeTaskFactory {
+                run: run.clone(),
+                backend: backend.clone(),
+                dir,
+                execution,
+                anchor: anchor_id,
+                environment: plan.environment.clone(),
+                primary: openwebide_core::ModelRuntime {
+                    connection: plan.connection.clone(),
+                    transport: plan.transport.clone(),
+                    settings: plan.request.model_settings.clone(),
                 },
-                plan.environment,
-            )
-            .with_host(crate::runs::agent_host::HostInfoClient(execution));
-            let executor = openwebide_agent::todo::TodoTools::new(
-                executor,
-                TodoPersistence {
-                    backend: backend.clone(),
-                    user: run.owner,
-                    session: run.session_id,
-                    anchor: anchor_id,
-                },
-            );
+            };
+            let executor = factory.executor();
+            let gate = factory.gate(&plan.request);
             let memo = provider.tool_stream_memo();
             let connection_id = plan.connection.id;
             let tool_stream_revision = plan.connection.tool_stream_revision;
             let memo_model = plan.connection.model.clone();
-            let gate = openwebide_agent::policy::PolicyGate {
-                manual: run.gate.clone(),
-                source: super::backend_client::ApprovalAdapter {
-                    backend: backend.clone(),
-                    user: run.owner,
-                    session: run.session_id,
-                    connection_id,
-                    model: plan.request.model.clone(),
-                },
-            };
-            let events = openwebide_agent::run_with_compaction(
-                provider,
-                executor,
-                plan.request,
-                AgentConfig::default(),
-                run.cancel.clone(),
-                gate,
-                anchor_id,
+            let events = openwebide_agent::tasks::host::run_tree(
+                factory,
                 super::backend_client::ModelSource {
                     backend: backend.clone(),
                     user: run.owner,
                 },
+                run.cancel.clone(),
+                provider,
+                executor,
+                gate,
+                plan.request,
+                AgentConfig::default(),
+                anchor_id,
             );
             let events = events.then(|event| async {
                 if let Some(memo) = &memo {
@@ -528,6 +503,15 @@ struct SessionPersistence<'a, B> {
     backend: &'a B,
 }
 impl<B: RunBackend> openwebide_agent::session::RunPersistence for SessionPersistence<'_, B> {
+    async fn task(
+        &self,
+        anchor: i64,
+        snapshot: &openwebide_core::TaskSnapshot,
+    ) -> Result<(), String> {
+        self.backend
+            .save_task(self.run.owner, self.run.session_id, anchor, snapshot)
+            .await
+    }
     fn now_ms(&self) -> u64 {
         wall_time_ms()
     }
@@ -654,4 +638,121 @@ fn wall_time_ms() -> u64 {
             .as_millis(),
     )
     .unwrap_or(u64::MAX)
+}
+
+type BridgeTaskExecutor<B> = openwebide_agent::todo::TodoTools<
+    openwebide_agent::vfs_executor::SessionToolExecutor<
+        VfsToolExecutor<NativeFsVfs, BackendWebClient<B>, InProcessBridgeClient>,
+        BackendWebClient<B>,
+        crate::runs::agent_host::HostInfoClient,
+    >,
+    TodoPersistence<B>,
+>;
+type BridgeTaskGate<B> =
+    openwebide_agent::policy::PolicyGate<BridgeGate, super::backend_client::ApprovalAdapter<B>>;
+struct BridgeTaskFactory<B> {
+    run: Arc<Run>,
+    backend: Arc<B>,
+    dir: Option<PathBuf>,
+    execution: Arc<dyn crate::exec::ToolExecution>,
+    anchor: i64,
+    environment: openwebide_core::RunEnvironment,
+    primary: openwebide_core::ModelRuntime,
+}
+impl<B> Clone for BridgeTaskFactory<B> {
+    fn clone(&self) -> Self {
+        Self {
+            run: self.run.clone(),
+            backend: self.backend.clone(),
+            dir: self.dir.clone(),
+            execution: self.execution.clone(),
+            anchor: self.anchor,
+            environment: self.environment.clone(),
+            primary: self.primary.clone(),
+        }
+    }
+}
+impl<B: RunBackend> BridgeTaskFactory<B> {
+    fn executor(&self) -> BridgeTaskExecutor<B> {
+        let workspace = self.dir.as_ref().map(|dir| {
+            VfsToolExecutor::with_web_and_bridge(
+                NativeFsVfs { root: dir.clone() },
+                BackendWebClient {
+                    backend: self.backend.clone(),
+                    user_id: self.run.owner,
+                },
+                InProcessBridgeClient {
+                    dir: dir.clone(),
+                    execution: self.execution.clone(),
+                    cancel: self.run.cancel.clone(),
+                },
+            )
+            .with_context(self.environment.clone())
+        });
+        let executor = openwebide_agent::vfs_executor::SessionToolExecutor::new(
+            workspace,
+            BackendWebClient {
+                backend: self.backend.clone(),
+                user_id: self.run.owner,
+            },
+            self.environment.clone(),
+        )
+        .with_host(crate::runs::agent_host::HostInfoClient(
+            self.execution.clone(),
+        ));
+        openwebide_agent::todo::TodoTools::new(
+            executor,
+            TodoPersistence {
+                backend: self.backend.clone(),
+                user: self.run.owner,
+                session: self.run.session_id,
+                anchor: self.anchor,
+            },
+        )
+    }
+    fn gate(&self, request: &openwebide_core::ChatRequest) -> BridgeTaskGate<B> {
+        openwebide_agent::policy::PolicyGate {
+            manual: self.run.gate.clone(),
+            source: super::backend_client::ApprovalAdapter {
+                backend: self.backend.clone(),
+                user: self.run.owner,
+                session: self.run.session_id,
+                connection_id: request.connection_id,
+                model: request.model.clone(),
+            },
+        }
+    }
+}
+impl<B: RunBackend + 'static> openwebide_agent::tasks::host::TaskFactory for BridgeTaskFactory<B> {
+    type Provider = openwebide_llm::registry::Provider<super::http_client::ReqwestHttpClient>;
+    type Executor = BridgeTaskExecutor<B>;
+    type Gate = BridgeTaskGate<B>;
+    fn now_ms(&self) -> u64 {
+        wall_time_ms()
+    }
+    async fn prepare(
+        &self,
+        request: &openwebide_core::ChatRequest,
+    ) -> Result<(Self::Provider, Self::Executor, Self::Gate), String> {
+        let runtime = if request.connection_id == self.primary.connection.id
+            && request.model == self.primary.connection.model
+        {
+            self.primary.clone()
+        } else {
+            self.backend
+                .model_runtime(
+                    self.run.owner,
+                    &openwebide_core::ModelSelection {
+                        server_id: request.connection_id,
+                        model: request.model.clone().ok_or("Child model is missing")?,
+                    },
+                )
+                .await?
+        };
+        let provider = openwebide_llm::registry::Provider::for_connection(
+            &runtime.connection,
+            super::http_client::ReqwestHttpClient::default().with_transport(runtime.transport),
+        );
+        Ok((provider, self.executor(), self.gate(request)))
+    }
 }

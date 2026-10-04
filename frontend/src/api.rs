@@ -983,6 +983,20 @@ impl BackendApi {
         let _: serde_json::Value = self.post(&format!("/sessions/{session}/tool-steps/upsert"), &json!({"anchor_message_id":0,"tool_call_id":id,"name":"","summary":"","checkpoint":checkpoint})).await?;
         Ok(())
     }
+    pub async fn save_task(
+        &self,
+        session: i64,
+        anchor: i64,
+        snapshot: &openwebide_core::TaskSnapshot,
+    ) -> Result<(), String> {
+        let _: serde_json::Value = self
+            .post(
+                &format!("/sessions/{session}/tasks"),
+                &json!({"anchor_message_id":anchor,"snapshot":snapshot}),
+            )
+            .await?;
+        Ok(())
+    }
     pub async fn save_tool_timing(
         &self,
         session: i64,

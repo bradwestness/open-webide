@@ -369,7 +369,10 @@ pub fn tool_history(messages: Vec<ChatMessage>, steps: &[ToolStep]) -> Vec<ChatM
         }
         let matching: Vec<_> = steps
             .iter()
-            .filter(|step| step.anchor_message_id == message.id)
+            .filter(|step| {
+                step.anchor_message_id == message.id
+                    && crate::tasks::task_step_scope(&step.tool_call_id).is_none()
+            })
             .collect();
         let calls = if message.role == Role::Assistant {
             message
@@ -409,6 +412,7 @@ pub fn tool_history(messages: Vec<ChatMessage>, steps: &[ToolStep]) -> Vec<ChatM
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConversationEntry {
+    Task(Box<crate::TaskHistory>),
     /// A user or assistant chat message.
     Message(ChatMessage),
     /// An agent tool step and, once it finished, its result.

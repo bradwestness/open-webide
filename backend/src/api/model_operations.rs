@@ -4,6 +4,7 @@ use crate::state::AppDb;
 use openwebide_agent::compaction::CompactionSource;
 use openwebide_storage::Store;
 
+#[derive(Clone)]
 pub(crate) struct ModelSource<S> {
     pub store: S,
     pub user: UserId,

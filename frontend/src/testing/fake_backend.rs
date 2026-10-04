@@ -1510,6 +1510,7 @@ impl Backend for FakeBackend {
             entries.retain(|entry| match entry {
                 ConversationEntry::Message(m) => m.id < message,
                 ConversationEntry::ToolStep(step) => step.anchor_message_id < message,
+                ConversationEntry::Task(task) => task.anchor_message_id < message,
             });
             if let Some(project) = self
                 .sessions
@@ -1698,6 +1699,13 @@ impl Backend for FakeBackend {
                         .await?;
                     ids.insert(message.id, copy.id);
                     copied.push(ConversationEntry::Message(copy));
+                }
+            }
+            for entry in entries.iter().filter(|entry| matches!(entry, ConversationEntry::Task(task) if task.anchor_message_id < target)) {
+                if let ConversationEntry::Task(task) = entry {
+                    let mut task = task.clone();
+                    task.anchor_message_id = ids.get(&task.anchor_message_id).copied().ok_or("Missing task anchor")?;
+                    copied.push(ConversationEntry::Task(task));
                 }
             }
             for entry in entries.iter().filter(|entry| matches!(entry, ConversationEntry::ToolStep(step) if step.anchor_message_id < target)) {
@@ -1947,6 +1955,27 @@ impl Backend for FakeBackend {
                 .borrow_mut()
                 .entry((session_id, tool_call_id.into()))
                 .or_insert(false);
+            Ok(())
+        })
+    }
+    fn save_task<'a>(
+        &'a self,
+        session: i64,
+        anchor: i64,
+        snapshot: &'a openwebide_core::TaskSnapshot,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "save_task",
+            });
+            if let Some(error) = self.step_save_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
+            let mut messages = self.messages.borrow_mut();
+            let entries = messages.entry(session).or_default();
+            if let Some(ConversationEntry::Task(task)) = entries.iter_mut().find(|entry| matches!(entry, ConversationEntry::Task(task) if task.snapshot.task.id == snapshot.task.id)) {
+                task.snapshot = snapshot.clone();
+            } else { entries.push(ConversationEntry::Task(Box::new(openwebide_core::TaskHistory { anchor_message_id: anchor, snapshot: snapshot.clone() }))); }
             Ok(())
         })
     }

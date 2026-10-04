@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 27;
+pub const SCHEMA_VERSION: i64 = 28;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -252,6 +252,31 @@ async fn apply_step<D: Db>(
                 }
             }
             db.execute("CREATE INDEX IF NOT EXISTS idx_sessions_owner_project_archived ON sessions(user_id, project_id, archived)", &[]).await?;
+            Ok(())
+        }
+        28 => {
+            if db
+                .execute(
+                    "SELECT 1 FROM pragma_table_info('tool_steps') WHERE name = 'execution_order'",
+                    &[],
+                )
+                .await?
+                .rows
+                .is_empty()
+            {
+                db.execute(
+                    "ALTER TABLE tool_steps ADD COLUMN execution_order INTEGER",
+                    &[],
+                )
+                .await?;
+                db.execute(
+                    "UPDATE tool_steps SET execution_order = id WHERE checkpoint IS NOT NULL",
+                    &[],
+                )
+                .await?;
+            }
+            db.execute("CREATE TABLE IF NOT EXISTS task_runs (session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, task_id TEXT NOT NULL, anchor_message_id INTEGER NOT NULL, snapshot TEXT NOT NULL, PRIMARY KEY(session_id, task_id))", &[]).await?;
+            db.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_anchor ON task_runs(session_id, anchor_message_id)", &[]).await?;
             Ok(())
         }
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),

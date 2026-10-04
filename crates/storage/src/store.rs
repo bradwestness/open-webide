@@ -7,6 +7,7 @@ mod reviews;
 mod rewind;
 mod rows;
 mod sessions;
+mod tasks;
 mod todos;
 mod tool_timing;
 
@@ -1249,7 +1250,7 @@ impl<D: Db> Store<D> {
             .db
             .execute(
                 "SELECT tool_call_id, name, summary, ok, result_summary, diff, anchor_message_id, checkpoint, timing
-                 FROM tool_steps WHERE session_id = ? ORDER BY id",
+                 FROM tool_steps WHERE session_id = ? ORDER BY anchor_message_id, COALESCE(execution_order, id), id",
                 &[DbValue::Int(session_id)],
             )
             .await?;
@@ -1272,18 +1273,46 @@ impl<D: Db> Store<D> {
                 .or_default()
                 .push(step);
         }
+        let mut task_groups: BTreeMap<String, Vec<openwebide_core::TaskHistory>> = BTreeMap::new();
+        for task in self.list_tasks(session_id).await? {
+            task_groups
+                .entry(task.snapshot.task.parent_tool_call_id.clone())
+                .or_default()
+                .push(task);
+        }
+        fn append_steps(
+            out: &mut Vec<ConversationEntry>,
+            groups: &mut BTreeMap<String, Vec<openwebide_core::TaskHistory>>,
+            steps: Vec<ToolStep>,
+        ) {
+            for step in steps {
+                let tasks = groups.remove(&step.tool_call_id).unwrap_or_default();
+                out.push(ConversationEntry::ToolStep(step));
+                out.extend(
+                    tasks
+                        .into_iter()
+                        .map(|task| ConversationEntry::Task(Box::new(task))),
+                );
+            }
+        }
         let mut out: Vec<ConversationEntry> = Vec::new();
         for message in messages {
             let anchor = message.id;
             out.push(ConversationEntry::Message(message));
             if let Some(steps) = by_anchor.remove(&anchor) {
-                out.extend(steps.into_iter().map(ConversationEntry::ToolStep));
+                append_steps(&mut out, &mut task_groups, steps);
             }
         }
         // Steps whose anchor message is gone (shouldn't happen) go at the end.
         for steps in by_anchor.into_values() {
-            out.extend(steps.into_iter().map(ConversationEntry::ToolStep));
+            append_steps(&mut out, &mut task_groups, steps);
         }
+        out.extend(
+            task_groups
+                .into_values()
+                .flatten()
+                .map(|task| ConversationEntry::Task(Box::new(task))),
+        );
         Ok(out)
     }
 
@@ -2967,7 +2996,7 @@ mod tests {
                     assert_eq!(ts.anchor_message_id, user1.id);
                     assert!(ts.diff.is_some());
                 }
-                other @ ConversationEntry::Message(_) => {
+                other @ (ConversationEntry::Message(_) | ConversationEntry::Task(_)) => {
                     panic!("expected tool step, got {other:?}")
                 }
             }
@@ -2986,7 +3015,7 @@ mod tests {
                     assert_eq!(ts.ok, Some(true));
                     assert!(ts.diff.is_none());
                 }
-                other @ ConversationEntry::Message(_) => {
+                other @ (ConversationEntry::Message(_) | ConversationEntry::Task(_)) => {
                     panic!("expected tool step, got {other:?}")
                 }
             }

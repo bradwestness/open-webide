@@ -653,6 +653,7 @@ impl CancelCheck for LocalCancelCheck {
 }
 
 /// Local-mode permission gate requiring approval for file modifications.
+#[derive(Clone)]
 pub struct LocalPermissionGate {
     pub decisions: Arc<Mutex<HashMap<String, bool>>>,
     pub cancel: Arc<AtomicBool>,
@@ -703,6 +704,7 @@ impl openwebide_agent::policy::ApprovalSource for ApprovalAdapter {
 }
 
 /// Model I/O primitives for the shared compaction workflow.
+#[derive(Clone)]
 pub struct BrowserModelSource {
     pub api: SendWrapper<Api>,
 }
@@ -857,8 +859,7 @@ pub async fn run_local_agent(
         (anchor_id, 1)
     };
 
-    let web = BrowserWebClient::new(api);
-    let provider = BrowserLlmProvider::new(api, ProviderKind::Ollama, bridge_connection);
+    let provider = BrowserLlmProvider::new(api, runtime.connection.kind, bridge_connection);
     let cancel = LocalCancelCheck {
         flag: cancel_flag.clone(),
     };
@@ -907,20 +908,6 @@ pub async fn run_local_agent(
         }
         return Ok(());
     }
-    let gate = openwebide_agent::policy::PolicyGate {
-        manual: LocalPermissionGate {
-            decisions: local_decisions,
-            cancel: cancel_flag,
-        },
-        source: ApprovalAdapter {
-            api: SendWrapper::new(api),
-            session: session_id,
-            connection_id,
-            model: request.model.clone(),
-        },
-    };
-
-    // 4. Drive agent stream
     let config = AgentConfig {
         first_turn,
         ..AgentConfig::default()
@@ -929,24 +916,33 @@ pub async fn run_local_agent(
         crate::project_host::ProjectExecution::Local(bridge) => Some(bridge),
         crate::project_host::ProjectExecution::Remote { .. } => None,
     });
-    let stream = openwebide_agent::run_with_compaction(
-        provider,
-        openwebide_agent::todo::TodoTools::new(
-            VfsToolExecutor::with_web_and_bridge(vfs, web, bridge).with_context(environment),
-            TodoPersistence {
-                api: SendWrapper::new(api),
-                session: session_id,
-                anchor: anchor_id,
-            },
-        ),
-        request,
-        config,
-        cancel,
-        gate,
-        anchor_id,
+    let factory = BrowserTaskFactory {
+        api: SendWrapper::new(api),
+        vfs,
+        bridge,
+        environment,
+        session: session_id,
+        anchor: anchor_id,
+        manual: LocalPermissionGate {
+            decisions: local_decisions,
+            cancel: cancel_flag,
+        },
+        connection: provider.bridge.clone(),
+    };
+    let executor = factory.executor();
+    let gate = factory.gate(&request);
+    let stream = openwebide_agent::tasks::host::run_tree(
+        factory,
         BrowserModelSource {
             api: SendWrapper::new(api),
         },
+        cancel,
+        provider,
+        executor,
+        gate,
+        request,
+        config,
+        anchor_id,
     );
 
     let mut stream = Box::pin(openwebide_agent::session::events(
@@ -969,6 +965,18 @@ struct SessionPersistence {
     session: i64,
 }
 impl openwebide_agent::session::RunPersistence for SessionPersistence {
+    fn task(
+        &self,
+        anchor: i64,
+        snapshot: &openwebide_core::TaskSnapshot,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .save_task(self.session, anchor, snapshot)
+                .await
+        })
+    }
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1075,6 +1083,83 @@ impl openwebide_agent::todo::TodoStore for TodoPersistence {
                 .with_value(Clone::clone)
                 .write_todo_plan(self.session, self.anchor, plan)
                 .await
+        })
+    }
+}
+
+type BrowserTaskExecutor = openwebide_agent::todo::TodoTools<
+    VfsToolExecutor<BrowserFsaVfs, BrowserWebClient, Option<BrowserBridgeClient>>,
+    TodoPersistence,
+>;
+type BrowserTaskGate = openwebide_agent::policy::PolicyGate<LocalPermissionGate, ApprovalAdapter>;
+#[derive(Clone)]
+struct BrowserTaskFactory {
+    api: SendWrapper<Api>,
+    vfs: BrowserFsaVfs,
+    bridge: Option<BrowserBridgeClient>,
+    environment: openwebide_core::RunEnvironment,
+    session: i64,
+    anchor: i64,
+    manual: LocalPermissionGate,
+    connection: SendWrapper<Option<crate::bridge::BridgeConn>>,
+}
+impl BrowserTaskFactory {
+    fn executor(&self) -> BrowserTaskExecutor {
+        openwebide_agent::todo::TodoTools::new(
+            VfsToolExecutor::with_web_and_bridge(
+                self.vfs.clone(),
+                BrowserWebClient::new(*self.api),
+                self.bridge.clone(),
+            )
+            .with_context(self.environment.clone()),
+            TodoPersistence {
+                api: self.api.clone(),
+                session: self.session,
+                anchor: self.anchor,
+            },
+        )
+    }
+    fn gate(&self, request: &ChatRequest) -> BrowserTaskGate {
+        openwebide_agent::policy::PolicyGate {
+            manual: self.manual.clone(),
+            source: ApprovalAdapter {
+                api: self.api.clone(),
+                session: self.session,
+                connection_id: request.connection_id,
+                model: request.model.clone(),
+            },
+        }
+    }
+}
+impl openwebide_agent::tasks::host::TaskFactory for BrowserTaskFactory {
+    type Provider = BrowserLlmProvider;
+    type Executor = BrowserTaskExecutor;
+    type Gate = BrowserTaskGate;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Browser epoch milliseconds are positive and fit in u64"
+    )]
+    fn now_ms(&self) -> u64 {
+        js_sys::Date::now() as u64
+    }
+    fn prepare(
+        &self,
+        request: &ChatRequest,
+    ) -> impl Future<Output = Result<openwebide_agent::tasks::host::TaskPrimitives<Self>, String>> + Send
+    {
+        SendWrapper::new(async move {
+            let runtime = self
+                .api
+                .with_value(Clone::clone)
+                .model_runtime(request.connection_id, request.model.as_deref())
+                .await?;
+            let provider = BrowserLlmProvider::new(
+                *self.api,
+                runtime.connection.kind,
+                self.connection.clone().take(),
+            );
+            Ok((provider, self.executor(), self.gate(request)))
         })
     }
 }

@@ -196,7 +196,7 @@ impl<D: Db> Store<D> {
             store.project_review_file(user, project, &plan.reviewed).await?;
             // A rejection is itself a project file transition. Reflect it in
             // the latest checkpoint so later rewind sees the actual contents.
-            let latest = store.db.execute("SELECT state FROM run_changes WHERE project_id = ? AND path = ? ORDER BY json_extract(state, '$.source_step') DESC LIMIT 1", &[DbValue::Int(project), DbValue::Text(request.path.clone())]).await?;
+            let latest = store.db.execute("SELECT state FROM run_changes WHERE project_id = ? AND path = ? ORDER BY COALESCE((SELECT execution_order FROM tool_steps WHERE id = json_extract(state, '$.source_step')), json_extract(state, '$.source_step')) DESC LIMIT 1", &[DbValue::Int(project), DbValue::Text(request.path.clone())]).await?;
             if let Some(row) = latest.rows.first() {
                 let latest = record(row.get_text(0)?)?;
                 let source = store.db.execute("SELECT checkpoint FROM tool_steps WHERE id = ?", &[DbValue::Int(latest.source_step)]).await?;
@@ -236,7 +236,7 @@ impl<D: Db> Store<D> {
             {
                 continue;
             }
-            let rows = self.db.execute("SELECT state FROM run_changes WHERE project_id = ? AND path = ? ORDER BY json_extract(state, '$.source_step') DESC", &[DbValue::Int(project), DbValue::Text(file.path.clone())]).await?;
+            let rows = self.db.execute("SELECT state FROM run_changes WHERE project_id = ? AND path = ? ORDER BY COALESCE((SELECT execution_order FROM tool_steps WHERE id = json_extract(state, '$.source_step')), json_extract(state, '$.source_step')) DESC", &[DbValue::Int(project), DbValue::Text(file.path.clone())]).await?;
             let mut remaining = None;
             for row in &rows.rows {
                 let record = record(row.get_text(0)?)?;

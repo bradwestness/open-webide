@@ -5,7 +5,9 @@ use std::{
 
 use leptos::prelude::*;
 use openwebide_agent::policy::ApprovalMode;
-use openwebide_core::{ChatSession, FileDiff, ModelInfo, RunEvent, SessionTelemetry};
+use openwebide_core::{
+    ChatSession, FileDiff, ModelInfo, RunEvent, SessionTelemetry, TurnTelemetry,
+};
 
 use crate::conversation::{
     ConversationItem, ToolStepResult, local_message, next_item_nonce, notice, stopped_marker,
@@ -120,6 +122,7 @@ impl ConversationStore {
 
     fn permission(item: &ConversationItem) -> Option<(String, String)> {
         match item {
+            ConversationItem::Task(task) => task.pending_permission(),
             ConversationItem::ToolStep {
                 id,
                 name,
@@ -272,10 +275,14 @@ impl ConversationStore {
     pub fn clear_prompt(self, id: &str, first_only: bool) {
         let handles = self.handles.get_untracked();
         for handle in handles {
-            if handle.item.with_untracked(
-                |item| matches!(item, ConversationItem::ToolStep { id: step, .. } if step == id),
-            ) {
+            if handle.item.with_untracked(|item| {
+                matches!(item, ConversationItem::ToolStep { id: step, .. } if step == id)
+                    || matches!(item, ConversationItem::Task(task) if task.contains_tool(id))
+            }) {
                 self.update_item(handle, |item| {
+                    if let ConversationItem::Task(task) = item {
+                        task.clear_permission(id);
+                    }
                     if let ConversationItem::ToolStep {
                         awaiting_permission,
                         ..
@@ -574,7 +581,7 @@ impl ChatState {
     pub fn cancel_run_prompts(&self, anchor: i64) {
         let prefix = openwebide_agent::step_id_prefix(anchor);
         for handle in self.messages.handles.get_untracked() {
-            if handle.item.with_untracked(|item| matches!(item, ConversationItem::ToolStep { id, result: None, .. } if id.starts_with(&prefix))) {
+            if handle.item.with_untracked(|item| matches!(item, ConversationItem::ToolStep { id, result: None, .. } if id.starts_with(&prefix)) || matches!(item, ConversationItem::Task(task) if task.task.parent_tool_call_id.starts_with(&prefix))) {
                 self.messages.update_item(handle, |item| cancel_run_prompts(std::slice::from_mut(item), anchor));
             }
         }
@@ -646,6 +653,14 @@ impl ChatState {
             effects.push(ChatEffect::ToolDiff(diff.clone()));
         }
 
+        if let RunEvent::Task { update } = &event
+            && let openwebide_core::TaskEvent::Run { event } = update.leaf_event()
+            && let RunEvent::ToolResult {
+                diff: Some(diff), ..
+            } = &**event
+        {
+            effects.push(ChatEffect::ToolDiff(diff.clone()));
+        }
         if run_session.is_some() && self.active_session.get_untracked() != run_session {
             return effects;
         }
@@ -656,10 +671,89 @@ impl ChatState {
         let close_reasoning = self.reasoning_active.get_untracked();
         match &event {
             RunEvent::ReasoningDelta { .. } => self.reasoning_active.set(true),
-            RunEvent::Telemetry { .. } | RunEvent::ToolTiming { .. } => {}
+            RunEvent::Task { .. } | RunEvent::Telemetry { .. } | RunEvent::ToolTiming { .. } => {}
             _ => self.reasoning_active.set(false),
         }
         match event {
+            RunEvent::Task { update } => {
+                let existing = self.messages.handles.with_untracked(|handles| handles.iter().copied().find(|handle| handle.item.with_untracked(|item| matches!(item, ConversationItem::Task(task) if task.task.id == update.task.id))));
+                if existing.is_some_and(|handle| handle.item.with_untracked(|item| matches!(item, ConversationItem::Task(task) if task.find_task(&update.leaf_update().task.id).is_some_and(|leaf| leaf.run.finished.is_some())))) {
+                    return Vec::new();
+                }
+                let old_usage = existing.map_or_else(Vec::new, |handle| {
+                    handle.item.with_untracked(|item| match item {
+                        ConversationItem::Task(task) => task.usages(),
+                        _ => Vec::new(),
+                    })
+                });
+                if let openwebide_core::TaskEvent::Run { event } = update.leaf_event() {
+                    match &**event {
+                        RunEvent::PermissionRequest { id, name, .. } => {
+                            let mode = self.approval_mode.with_untracked(|modes| {
+                                modes.get(&session_id).copied().unwrap_or_default()
+                            });
+                            if mode == ApprovalMode::AlwaysForSession && mode.auto_approves(name) {
+                                effects.push(ChatEffect::ApprovePermission { id: id.clone() });
+                            }
+                        }
+                        RunEvent::ToolCall { .. } => self
+                            .session_telemetry
+                            .update(|telemetry| telemetry.tool_calls_count += 1),
+                        RunEvent::ToolResult { .. } => {
+                            self.finished_tools.update(|count| *count += 1);
+                        }
+                        _ => (),
+                    }
+                }
+
+                if let Some(handle) = existing {
+                    self.messages.update_item(handle, |item| {
+                        if let ConversationItem::Task(task) = item {
+                            task.apply(&update);
+                        }
+                    });
+                } else {
+                    let mut task = openwebide_core::TaskSnapshot::new(update.task.clone());
+                    task.apply(&update);
+                    self.messages.push(ConversationItem::Task(Box::new(task)));
+                }
+                let new_usage = self.messages.handles.with_untracked(|handles| {
+                    handles
+                        .iter()
+                        .find_map(|handle| {
+                            handle.item.with_untracked(|item| match item {
+                                ConversationItem::Task(task) if task.task.id == update.task.id => {
+                                    Some(task.usages())
+                                }
+                                _ => None,
+                            })
+                        })
+                        .unwrap_or_default()
+                });
+                let totals = |usages: &[TurnTelemetry]| {
+                    usages
+                        .iter()
+                        .fold((0usize, 0usize), |(prompt, completion), usage| {
+                            (
+                                prompt.saturating_add(usage.prompt_tokens),
+                                completion.saturating_add(usage.completion_tokens),
+                            )
+                        })
+                };
+                let (old_prompt, old_completion) = totals(&old_usage);
+                let (new_prompt, new_completion) = totals(&new_usage);
+                self.session_telemetry.update(|telemetry| {
+                    telemetry.total_prompt_tokens = telemetry
+                        .total_prompt_tokens
+                        .saturating_sub(old_prompt)
+                        .saturating_add(new_prompt);
+                    telemetry.total_completion_tokens = telemetry
+                        .total_completion_tokens
+                        .saturating_sub(old_completion)
+                        .saturating_add(new_completion);
+                    telemetry.totals_estimated |= new_usage.iter().any(|usage| usage.estimated);
+                });
+            }
             RunEvent::ToolTiming { id, timing } => {
                 if let Some(handle) = self.messages.tool(&id) {
                     self.messages.update_item(handle, |item| {
@@ -832,6 +926,14 @@ impl Default for ChatState {
 fn cancel_run_prompts(items: &mut [ConversationItem], anchor: i64) {
     let prefix = openwebide_agent::step_id_prefix(anchor);
     for item in items {
+        if let ConversationItem::Task(task) = item
+            && task.task.parent_tool_call_id.starts_with(&prefix)
+        {
+            let now = task.task.timing.map_or(0, |timing| {
+                timing.started_at_ms.saturating_add(timing.elapsed_ms)
+            });
+            task.stop(now);
+        }
         if let ConversationItem::ToolStep {
             id,
             awaiting_permission,
@@ -1443,6 +1545,41 @@ mod tests {
                 chat.apply_event(RunEvent::Delta { content: content.into() });
             }
             assert!(matches!(&chat.messages.get_untracked()[0], ConversationItem::Message(m) if m.content == "<think>r</think>answer"));
+        });
+    }
+    #[test]
+    fn child_progress_is_scoped_and_stopped_tasks_ignore_late_permissions_and_usage() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            chat.active_session.set(Some(7));
+            chat.streaming_session.set(Some(7));
+            chat.streaming.set(true);
+            chat.current_run_anchor.set(Some(1));
+            chat.set_approval_mode(7, ApprovalMode::AlwaysForSession);
+            let task = openwebide_core::NewAgentTask { description: "Inspect".into(), prompt: "Inspect".into() };
+            let mut child = openwebide_agent::tasks::TaskRun::new("a1t1c0.task1".into(), "a1t1c0".into(), &task, 1000);
+            let start = RunEvent::Task { update: Box::new(child.started(&task, 1000)) };
+            assert!(chat.apply_event_for_session(8, start.clone()).is_empty());
+            assert!(chat.messages.get_untracked().is_empty());
+            chat.apply_event_for_session(7, start);
+            for update in child.observe(openwebide_agent::AgentEvent::Telemetry(TurnTelemetry { prompt_tokens: 10, completion_tokens: 2, ..Default::default() }), 1000) {
+                let event = RunEvent::Task { update: Box::new(update) };
+                chat.apply_event_for_session(7, event.clone());
+                chat.apply_event_for_session(7, event);
+            }
+            assert_eq!(chat.session_telemetry.get_untracked().total_prompt_tokens, 10);
+            assert_eq!(chat.session_telemetry.get_untracked().total_completion_tokens, 2);
+            let id = "a1t1c0.task1.a1t1c0";
+            let permission = child.observe(openwebide_agent::AgentEvent::PermissionRequest { id: id.into(), name: "write_file".into(), summary: "write".into(), diff: None, note: None }, 1000).pop().unwrap();
+            chat.apply_event_for_session(7, RunEvent::Task { update: Box::new(permission.clone()) });
+            let handle = chat.messages.handles.get_untracked()[0];
+            assert_eq!(handle.permission.get_untracked(), Some((id.into(), "write_file".into())));
+            chat.messages.clear_prompt(id, true);
+            assert!(handle.permission.get_untracked().is_none());
+            chat.cancel_run_prompts(1);
+            assert!(matches!(&chat.messages.get_untracked()[0], ConversationItem::Task(task) if task.task.status == openwebide_core::TaskStatus::Cancelled && task.task.timing.unwrap().finished));
+            assert!(chat.apply_event_for_session(7, RunEvent::Task { update: Box::new(permission) }).is_empty());
+            assert!(handle.permission.get_untracked().is_none());
         });
     }
 }

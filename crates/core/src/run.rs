@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEvent {
+    Task {
+        update: Box<crate::TaskUpdate>,
+    },
     Message {
         message: ChatMessage,
     },
@@ -57,6 +60,8 @@ pub enum RunEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RunSnapshot {
+    #[serde(default)]
+    pub tasks: Vec<crate::TaskSnapshot>,
     pub items: Vec<RunItem>,
     pub text: String,
     #[serde(default)]
@@ -111,6 +116,22 @@ impl RunSnapshot {
 
     pub fn apply(&mut self, event: &RunEvent) {
         match event {
+            RunEvent::Task { update } => {
+                if self.finished.is_some() {
+                    return;
+                }
+                if let Some(task) = self
+                    .tasks
+                    .iter_mut()
+                    .find(|task| task.task.id == update.task.id)
+                {
+                    task.apply(update);
+                } else {
+                    let mut task = crate::TaskSnapshot::new(update.task.clone());
+                    task.apply(update);
+                    self.tasks.push(task);
+                }
+            }
             RunEvent::ToolTiming { id, timing } => {
                 if let Some(RunItem::Step(step)) = self
                     .items
@@ -197,6 +218,12 @@ impl RunSnapshot {
             }
             RunEvent::Done { .. } | RunEvent::Cancelled | RunEvent::Error { .. } => {
                 self.finished = Some(event.clone());
+                for task in &mut self.tasks {
+                    let now = task.task.timing.map_or(0, |timing| {
+                        timing.started_at_ms.saturating_add(timing.elapsed_ms)
+                    });
+                    task.stop(now);
+                }
             }
         }
     }
@@ -205,6 +232,7 @@ impl RunSnapshot {
 impl RunEvent {
     pub fn kind_str(&self) -> &'static str {
         match self {
+            Self::Task { .. } => "task",
             Self::Message { .. } => "message",
             Self::Delta { .. } => "delta",
             Self::ReasoningDelta { .. } => "reasoning_delta",

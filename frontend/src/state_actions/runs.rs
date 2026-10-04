@@ -249,6 +249,14 @@ impl RunActions {
                             .snapshot()
                             .into_iter()
                             .filter_map(|item| match item {
+                                ConversationItem::Task(task) => {
+                                    Some(openwebide_core::ConversationEntry::Task(Box::new(
+                                        openwebide_core::TaskHistory {
+                                            anchor_message_id: 0,
+                                            snapshot: *task,
+                                        },
+                                    )))
+                                }
                                 ConversationItem::Message(m) if m.id > 0 => {
                                     Some(openwebide_core::ConversationEntry::Message(m))
                                 }
@@ -262,15 +270,20 @@ impl RunActions {
                                 .messages
                                 .snapshot()
                                 .iter()
-                                .filter(|item| matches!(item, ConversationItem::ToolStep { .. }))
-                                .count();
+                                .map(|item| match item {
+                                    ConversationItem::ToolStep { .. } => 1,
+                                    ConversationItem::Task(task) => task.total_tools(),
+                                    _ => 0,
+                                })
+                                .sum();
                             if let Some(usage) = snapshot.telemetry
                                 && snapshot.telemetry_after_message_id
                                     == entries.iter().rev().find_map(|entry| match entry {
                                         openwebide_core::ConversationEntry::Message(m) => {
                                             Some(m.id)
                                         }
-                                        openwebide_core::ConversationEntry::ToolStep(_) => None,
+                                        openwebide_core::ConversationEntry::ToolStep(_)
+                                        | openwebide_core::ConversationEntry::Task(_) => None,
                                     })
                             {
                                 telemetry.record_turn(&usage);

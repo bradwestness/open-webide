@@ -228,6 +228,11 @@ impl RunBackend for FakeBackend {
 }
 
 fn plan(kind: RunKind, content: &str) -> RunPlan {
+    let tools = match &kind {
+        RunKind::Agent { .. } => openwebide_agent::vfs_tools(),
+        RunKind::WebChat => openwebide_agent::session::projectless_tools(),
+        RunKind::Chat => Vec::new(),
+    };
     RunPlan {
         transport: Default::default(),
         environment: openwebide_core::RunEnvironment::default(),
@@ -239,7 +244,7 @@ fn plan(kind: RunKind, content: &str) -> RunPlan {
             system_prompt: None,
             model: None,
             messages: vec![],
-            tools: vec![],
+            tools,
         },
         connection: Connection {
             id: 1,
@@ -958,12 +963,12 @@ async fn agent_body_executes_native_tools_and_persists_interim_then_final() {
     });
     let first = TurnTelemetry {
         context: None,
-        prompt_tokens: 10,
+        prompt_tokens: 1000,
         ..Default::default()
     };
     let last = TurnTelemetry {
         context: None,
-        prompt_tokens: 20,
+        prompt_tokens: 2000,
         ..Default::default()
     };
     let provider = FakeProvider {
@@ -1370,6 +1375,7 @@ async fn http_and_agent_run_use_configured_execution() {
         *execution.calls.lock().unwrap(),
         [
             ("touch http-marker".into(), root.clone()),
+            ("git status".into(), root.clone()),
             ("git status".into(), root.clone()),
             ("touch run-marker".into(), root.clone()),
             ("git status".into(), root.clone()),

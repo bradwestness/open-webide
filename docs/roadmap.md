@@ -112,17 +112,6 @@ terminal pane are done and in the changelog, but:
   `browser_console_logs` tools, failing open to `fetch_web_page` when no CDP
   browser is reachable.
 
-### Fully fleshed-out TUI
-
-The chat/TUI surface grows into a full agent workspace. Rewind, per-run review, queued prompts, steering, conversation branches, browser notifications, agent checklists, live reasoning summaries, tool-step timing/output summaries, the command palette/shortcut overlay, and session search, pin/archive, automatic titles and Markdown export are shipped; shell checkpoints honor project `.gitignore` rules and report snapshot coverage limits without blocking runs. Remaining work, in priority order:
-
-1. **Sub-agents** — a `task` tool that spawns child agents with their own
-    context, shown as nested collapsible runs with status, elapsed time,
-    tokens and tool count, runnable in parallel.
-
-Build on the existing fast-model selection and primary fallback, WebSocket
-streaming, and frontend state stores.
-
 ### Mobile support & collapsible tool windows
 
 - **Tool windows:** Sessions, Files, Editor and Chat now share a left vertical tab bar to
@@ -186,7 +175,7 @@ after the first account):
 - **Alternative:** Caddy with an internal CA. Built-in bridge TLS
   (`--tls-cert`/`--tls-key` via tokio-rustls) only if a need appears.
 - **Optional:** Web Push for "run finished / needs approval" (installed
-  PWAs, including iOS 16.4+), tied to the TUI notifications item.
+  PWAs, including iOS 16.4+), extending the existing browser run notifications.
 
 ### Sandboxed tool execution (optional)
 

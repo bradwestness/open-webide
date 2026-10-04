@@ -103,6 +103,15 @@ pub trait RunBackend: Send + Sync {
         summary: &str,
         diff: Option<&FileDiff>,
     ) -> impl Future<Output = Result<(), String>> + Send;
+    fn save_task(
+        &self,
+        _user: i64,
+        _session: i64,
+        _anchor: i64,
+        _snapshot: &openwebide_core::TaskSnapshot,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        std::future::ready(Err("Child task persistence unavailable".into()))
+    }
     fn save_tool_timing(
         &self,
         user: i64,
@@ -385,6 +394,23 @@ impl RunBackend for BackendClient {
         let _: Value = self.call(user_id, "POST", &format!("/sessions/{session_id}/tool-steps/upsert"), json!({"anchor_message_id":anchor_id,"tool_call_id":id,"name":name,"summary":summary,"diff":diff})).await?;
         Ok(())
     }
+    async fn save_task(
+        &self,
+        user: i64,
+        session: i64,
+        anchor: i64,
+        snapshot: &openwebide_core::TaskSnapshot,
+    ) -> Result<(), String> {
+        let _: Value = self
+            .call(
+                user,
+                "POST",
+                &format!("/sessions/{session}/tasks"),
+                json!({"anchor_message_id":anchor,"snapshot":snapshot}),
+            )
+            .await?;
+        Ok(())
+    }
     async fn save_tool_timing(
         &self,
         user: i64,
@@ -509,6 +535,14 @@ impl<B: RunBackend> openwebide_agent::policy::ApprovalSource for ApprovalAdapter
 pub struct ModelSource<B> {
     pub backend: Arc<B>,
     pub user: i64,
+}
+impl<B> Clone for ModelSource<B> {
+    fn clone(&self) -> Self {
+        Self {
+            backend: self.backend.clone(),
+            user: self.user,
+        }
+    }
 }
 impl<B: RunBackend> openwebide_agent::compaction::CompactionSource for ModelSource<B> {
     fn available(&self) -> bool {

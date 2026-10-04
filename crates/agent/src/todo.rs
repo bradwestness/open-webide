@@ -38,6 +38,7 @@ impl<E: ToolExecutor + Sync, S: TodoStore> ToolExecutor for TodoTools<E, S> {
     ) -> Option<String> {
         let mut context = self.executor.context(definitions, call).await;
         if call.is_none()
+            && definitions.iter().any(|tool| tool.name == "todo_write")
             && let Ok(Some(update)) = self.store.read().await
             && !update.plan.todos.is_empty()
         {
@@ -151,7 +152,7 @@ mod tests {
             );
             assert!(
                 tools
-                    .context(&[], None)
+                    .context(&crate::vfs_tools(), None)
                     .await
                     .unwrap()
                     .contains("Inspect the code")

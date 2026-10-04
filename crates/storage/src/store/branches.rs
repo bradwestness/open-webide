@@ -42,10 +42,13 @@ impl<D: Db> Store<D> {
                 let anchor = ids.get(&step.anchor_message_id).ok_or_else(|| StorageError::Conflict("Tool references missing branch history".into()))?;
                 // Copy history/checkpoints without applying edits or duplicating
                 // project review decisions. Tool wire IDs remain session scoped.
-                store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, ok, result_summary, diff, created_at, completion_applied, checkpoint, timing) SELECT ?, ?, tool_call_id, name, summary, ok, result_summary, diff, created_at, completion_applied, checkpoint, timing FROM tool_steps WHERE session_id = ? AND tool_call_id = ?", &[DbValue::Int(session.id), DbValue::Int(*anchor), DbValue::Int(source), DbValue::Text(step.tool_call_id.clone())]).await?;
+                store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, ok, result_summary, diff, created_at, completion_applied, checkpoint, timing, execution_order) SELECT ?, ?, tool_call_id, name, summary, ok, result_summary, diff, created_at, completion_applied, checkpoint, timing, execution_order FROM tool_steps WHERE session_id = ? AND tool_call_id = ?", &[DbValue::Int(session.id), DbValue::Int(*anchor), DbValue::Int(source), DbValue::Text(step.tool_call_id.clone())]).await?;
             }
             for (original, copied) in &ids {
                 store.db.execute("INSERT INTO todo_updates (session_id, anchor_message_id, plan, created_at) SELECT ?, ?, plan, created_at FROM todo_updates WHERE session_id = ? AND anchor_message_id = ? ORDER BY id", &[DbValue::Int(session.id), DbValue::Int(*copied), DbValue::Int(source), DbValue::Int(*original)]).await?;
+            }
+            for (original, copied) in &ids {
+                store.db.execute("INSERT INTO task_runs (session_id, task_id, anchor_message_id, snapshot) SELECT ?, task_id, ?, snapshot FROM task_runs WHERE session_id = ? AND anchor_message_id = ?", &[DbValue::Int(session.id), DbValue::Int(*copied), DbValue::Int(source), DbValue::Int(*original)]).await?;
             }
             let history = store.list_conversation(session.id).await?;
             Ok(ForkedSession { session, prompt: prompt.content.clone(), history })

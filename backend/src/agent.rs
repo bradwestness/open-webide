@@ -30,6 +30,7 @@ pub fn workspace_tools() -> Vec<ToolDefinition> {
 /// separate Spin request (stateless, possibly another component instance),
 /// so the flag lives in the database; the in-flight stream polls it at step
 /// boundaries and during interruptible tools.
+#[derive(Clone)]
 pub struct CancelFlag {
     store: Arc<Store<AppDb>>,
     session_id: i64,
@@ -93,6 +94,7 @@ const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// as a separate Spin request (stateless, possibly another component
 /// instance), so the in-flight stream polls the database until the decision
 /// is recorded, the run is cancelled, or the wait times out.
+#[derive(Clone)]
 pub struct PermissionPoller {
     store: Arc<Store<AppDb>>,
     session_id: i64,
@@ -171,54 +173,31 @@ pub fn agent_stream(
     cancel: CancelFlag,
     gate: PermissionPoller,
 ) -> Pin<Box<dyn Stream<Item = RunEvent> + Send + 'static>> {
-    let workspace = base.map(|base| {
-        VfsToolExecutor::with_web_and_bridge(
-            HostFsVfs::new(base.clone()),
-            crate::web::SpinWebClient,
-            crate::bridge_client::SpinBridgeClient::for_project(store.clone(), base),
-        )
-        .with_context(environment.clone())
-    });
-    let executor = openwebide_agent::vfs_executor::SessionToolExecutor::new(
-        workspace,
-        crate::web::SpinWebClient,
-        environment,
-    )
-    .with_host(crate::bridge_client::SpinBridgeClient::for_host(
-        store.clone(),
-    ));
-    let gate = openwebide_agent::policy::PolicyGate {
-        manual: gate,
-        source: crate::api::approvals::ApprovalAdapter {
-            store: store.clone(),
-            user: user_id,
-            session: session_id,
-            connection_id: request.connection_id,
-            model: request.model.clone(),
-        },
-    };
     let anchor_id = user_message.id;
-    let executor = openwebide_agent::todo::TodoTools::new(
-        executor,
-        TodoPersistence {
-            store: store.clone(),
-            user: user_id,
-            session: session_id,
-            anchor: anchor_id,
-        },
-    );
-    let events = openwebide_agent::run_with_compaction(
-        provider,
-        executor,
-        request,
-        config,
-        cancel,
-        gate,
-        anchor_id,
+    let factory = SpinTaskFactory {
+        store: store.clone(),
+        user: user_id,
+        session: session_id,
+        anchor: anchor_id,
+        base,
+        environment,
+        manual: gate,
+    };
+    let executor = factory.executor();
+    let gate = factory.gate(&request);
+    let events = openwebide_agent::tasks::host::run_tree(
+        factory,
         crate::api::model_operations::ModelSource {
             store: store.clone(),
             user: user_id,
         },
+        cancel,
+        provider,
+        executor,
+        gate,
+        request,
+        config,
+        anchor_id,
     );
     let tail = map_agent_events(store, user_id, session_id, anchor_id, events);
     Box::pin(
@@ -236,6 +215,16 @@ pub(crate) struct SessionPersistence {
     pub(crate) anchor: i64,
 }
 impl openwebide_agent::session::RunPersistence for SessionPersistence {
+    async fn task(
+        &self,
+        anchor: i64,
+        snapshot: &openwebide_core::TaskSnapshot,
+    ) -> Result<(), String> {
+        self.store
+            .save_task(self.user, self.session, anchor, snapshot)
+            .await
+            .map_err(|error| error.to_string())
+    }
     fn now_ms(&self) -> u64 {
         u64::try_from(
             std::time::SystemTime::now()
@@ -1159,5 +1148,106 @@ mod tests {
             assert_eq!(messages[0].content, "<think>first</think>checking");
             assert_eq!(messages[1].content, format!("<think>r</think>{answer}"));
         });
+    }
+}
+
+type SpinTaskExecutor = openwebide_agent::todo::TodoTools<
+    openwebide_agent::vfs_executor::SessionToolExecutor<
+        VfsToolExecutor<
+            HostFsVfs,
+            crate::web::SpinWebClient,
+            crate::bridge_client::SpinBridgeClient,
+        >,
+        crate::web::SpinWebClient,
+        crate::bridge_client::SpinBridgeClient,
+    >,
+    TodoPersistence,
+>;
+type SpinTaskGate =
+    openwebide_agent::policy::PolicyGate<PermissionPoller, crate::api::approvals::ApprovalAdapter>;
+#[derive(Clone)]
+struct SpinTaskFactory {
+    store: Arc<Store<AppDb>>,
+    user: openwebide_core::UserId,
+    session: i64,
+    anchor: i64,
+    base: Option<String>,
+    environment: openwebide_core::RunEnvironment,
+    manual: PermissionPoller,
+}
+impl SpinTaskFactory {
+    fn executor(&self) -> SpinTaskExecutor {
+        let workspace = self.base.as_ref().map(|base| {
+            VfsToolExecutor::with_web_and_bridge(
+                HostFsVfs::new(base.clone()),
+                crate::web::SpinWebClient,
+                crate::bridge_client::SpinBridgeClient::for_project(
+                    self.store.clone(),
+                    base.clone(),
+                ),
+            )
+            .with_context(self.environment.clone())
+        });
+        let executor = openwebide_agent::vfs_executor::SessionToolExecutor::new(
+            workspace,
+            crate::web::SpinWebClient,
+            self.environment.clone(),
+        )
+        .with_host(crate::bridge_client::SpinBridgeClient::for_host(
+            self.store.clone(),
+        ));
+        openwebide_agent::todo::TodoTools::new(
+            executor,
+            TodoPersistence {
+                store: self.store.clone(),
+                user: self.user,
+                session: self.session,
+                anchor: self.anchor,
+            },
+        )
+    }
+    fn gate(&self, request: &ChatRequest) -> SpinTaskGate {
+        openwebide_agent::policy::PolicyGate {
+            manual: self.manual.clone(),
+            source: crate::api::approvals::ApprovalAdapter {
+                store: self.store.clone(),
+                user: self.user,
+                session: self.session,
+                connection_id: request.connection_id,
+                model: request.model.clone(),
+            },
+        }
+    }
+}
+impl openwebide_agent::tasks::host::TaskFactory for SpinTaskFactory {
+    type Provider = Provider<SpinHttpClient>;
+    type Executor = SpinTaskExecutor;
+    type Gate = SpinTaskGate;
+    fn now_ms(&self) -> u64 {
+        u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX)
+    }
+    async fn prepare(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<(Self::Provider, Self::Executor, Self::Gate), String> {
+        let runtime = crate::api::model_setup::runtime_store(
+            &self.store,
+            self.user,
+            request.connection_id,
+            request.model.as_deref(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        let provider = Provider::for_connection(
+            &runtime.connection,
+            SpinHttpClient::default().with_transport(runtime.transport),
+        );
+        Ok((provider, self.executor(), self.gate(request)))
     }
 }

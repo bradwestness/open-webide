@@ -305,6 +305,16 @@ impl SessionTelemetry {
                         self.record_turn(usage);
                     }
                 }
+                crate::ConversationEntry::Task(task) => {
+                    for usage in task.snapshot.usages() {
+                        self.total_prompt_tokens =
+                            self.total_prompt_tokens.saturating_add(usage.prompt_tokens);
+                        self.total_completion_tokens = self
+                            .total_completion_tokens
+                            .saturating_add(usage.completion_tokens);
+                        self.totals_estimated |= usage.estimated;
+                    }
+                }
                 crate::ConversationEntry::ToolStep(_) => {
                     self.tool_calls_count += 1;
                 }
@@ -585,6 +595,12 @@ pub fn calculate_conversation_telemetry(
                         prompt_tokens += count;
                         tool_calls += 1;
                     }
+                }
+            }
+            crate::ConversationEntry::Task(task) => {
+                for usage in task.snapshot.usages() {
+                    prompt_tokens += usage.prompt_tokens;
+                    completion_tokens += usage.completion_tokens;
                 }
             }
             crate::ConversationEntry::ToolStep(ts) => {

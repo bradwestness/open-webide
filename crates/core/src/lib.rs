@@ -534,3 +534,9 @@ mod tests {
 
 pub mod todo;
 pub use todo::{TodoItem, TodoPlan, TodoStatus, TodoUpdate};
+
+pub mod tasks;
+pub use tasks::{
+    AgentTask, NewAgentTask, TaskEvent, TaskHistory, TaskRequest, TaskSnapshot, TaskStatus,
+    TaskUpdate,
+};

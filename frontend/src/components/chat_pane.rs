@@ -723,6 +723,7 @@ pub fn ChatPane(
                         children=move |handle| {
                             let item = handle.item;
                             match item.get_untracked() {
+                                ConversationItem::Task(_) => render_task_run(Memo::new(move |_| item.with(|item| match item { ConversationItem::Task(task) => (**task).clone(), _ => unreachable!() })), awaiting_step, on_permission, on_permission_always).into_any(),
                                 ConversationItem::Stopped { .. } => view! { <div class="stopped-marker tui-stopped-marker">"⏹ execution aborted"</div> }.into_any(),
                                 ConversationItem::ToolStep { .. } => render_tool_step(item, awaiting_step, on_permission, on_permission_always).into_any(),
                                 ConversationItem::Message(_) | ConversationItem::Notice { .. } => {
@@ -1013,4 +1014,82 @@ fn PromptQueueControls(
             </section>
         </Show>
     }
+}
+
+fn render_task_run(
+    task: Memo<openwebide_core::TaskSnapshot>,
+    awaiting_step: Memo<Option<(String, String)>>,
+    on_permission: Callback<(String, bool)>,
+    on_permission_always: Callback<String>,
+) -> AnyView {
+    let expanded = RwSignal::new(false);
+    let timing = Memo::new(move |_| task.with(|task| task.task.timing));
+    let status = Memo::new(move |_| {
+        task.with(|task| match task.task.status {
+            openwebide_core::TaskStatus::Queued => "Queued",
+            openwebide_core::TaskStatus::Running => "Running",
+            openwebide_core::TaskStatus::WaitingForApproval => "Waiting for approval",
+            openwebide_core::TaskStatus::Completed => "Completed",
+            openwebide_core::TaskStatus::Failed => "Failed",
+            openwebide_core::TaskStatus::Cancelled => "Cancelled",
+        })
+    });
+    let active_approval = Memo::new(move |_| task.with(|task| task.pending_permission().is_some()));
+    let live_text = Memo::new(move |_| {
+        task.with(|task| {
+            if let Some(openwebide_core::RunEvent::Done { message }) = &task.run.finished {
+                message.content.clone()
+            } else if task.run.text.is_empty() && !task.run.reasoning.is_empty() {
+                format!(
+                    "{}{}",
+                    openwebide_core::ESCAPED_REASONING_OPEN,
+                    openwebide_core::escape_reasoning(&task.run.reasoning)
+                )
+            } else {
+                openwebide_core::with_reasoning(&task.run.reasoning, &task.run.text)
+            }
+        })
+    });
+    view! {
+        <div class="tui-task-run">
+            <button class="btn tui-task-heading" aria-expanded=move || expanded.get() || active_approval.get() on:click=move |_| expanded.update(|value| *value = !*value)>
+                <span>{move || if expanded.get() || active_approval.get() { "▾" } else { "▸" }}</span>
+                <strong>{move || task.with(|task| task.task.description.clone())}</strong>
+                <span class="muted">{status}</span>
+                <super::tool_duration::ToolDuration timing=timing title="Child task elapsed time, including approval waiting" />
+                <span class="muted">{move || task.with(|task| format!("{}{} tokens · {} tools", if task.usages().iter().any(|usage| usage.estimated) { "~" } else { "" }, task.total_tokens(), task.task.tool_count))}</span>
+            </button>
+            <div class="tui-task-content" hidden=move || !expanded.get() && !active_approval.get()>
+                <For each=move || task.with(|task| (0..task.run.items.len()).collect::<Vec<_>>()) key=|index| *index children=move |index| {
+                    let initial = task.with_untracked(|task| task.run.items[index].clone());
+                    match initial {
+                        openwebide_core::RunItem::Message(message) => {
+                            let content = Memo::new(move |_| task.with(|task| match &task.run.items[index] { openwebide_core::RunItem::Message(message) => message.content.clone(), openwebide_core::RunItem::Step(_) => String::new() }));
+                            if message.role == Role::User { render_user_message(content) }
+                            else if message.role == Role::System { view! { <details class="tui-system-context"><summary>"Child context"</summary><pre>{content}</pre></details> }.into_any() }
+                            else { render_assistant_message(content) }
+                        }
+                        openwebide_core::RunItem::Step(step) => {
+                            let row = |step: &openwebide_core::RunStep| ConversationItem::ToolStep {
+                                timing: step.timing, key: 0, id: step.id.clone(), name: step.name.clone(), summary: step.summary.clone(),
+                                result: step.result.as_ref().map(|result| ToolStepResult { ok: result.ok, summary: result.summary.clone(), diff: result.diff.clone() }),
+                                diff: step.diff.as_deref().cloned(), note: step.note.clone(), awaiting_permission: step.awaiting_permission,
+                            };
+                            let item = RwSignal::new(row(&step));
+                            Effect::new(move |_| task.with(|task| { if let openwebide_core::RunItem::Step(step) = &task.run.items[index] { item.set(row(step)); } }));
+                            render_tool_step(item, awaiting_step, on_permission, on_permission_always).into_any()
+                        }
+                    }
+                } />
+                {render_assistant_message(live_text)}
+                <Show when=move || task.with(|task| matches!(task.task.status, openwebide_core::TaskStatus::Failed | openwebide_core::TaskStatus::Cancelled))>
+                    <div class="form-hint">{move || task.with(|task| task.task.result.clone().unwrap_or_default())}</div>
+                </Show>
+                <For each=move || task.with(|task| task.children.iter().map(|child| child.task.id.clone()).collect::<Vec<_>>()) key=|id| id.clone() children=move |id| {
+                    let child = Memo::new(move |_| task.with(|task| task.children.iter().find(|child| child.task.id == id).expect("Child retained in history").clone()));
+                    render_task_run(child, awaiting_step, on_permission, on_permission_always)
+                } />
+            </div>
+        </div>
+    }.into_any()
 }

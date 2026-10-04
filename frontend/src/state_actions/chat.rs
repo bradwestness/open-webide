@@ -1363,7 +1363,9 @@ fn derive_session_name(prompt: &str) -> String {
 pub(crate) fn history_items(entries: Vec<ConversationEntry>) -> Vec<ConversationItem> {
     entries
         .into_iter()
+        .filter(|entry| !matches!(entry, ConversationEntry::ToolStep(step) if openwebide_core::tasks::task_step_scope(&step.tool_call_id).is_some()))
         .map(|entry| match entry {
+            ConversationEntry::Task(task) => ConversationItem::Task(Box::new(task.snapshot)),
             ConversationEntry::Message(message) => ConversationItem::Message(message),
             ConversationEntry::ToolStep(step) => ConversationItem::ToolStep {
                 timing: step.timing,

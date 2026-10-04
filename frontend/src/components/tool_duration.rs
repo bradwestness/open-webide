@@ -3,7 +3,11 @@ use openwebide_core::{ToolTiming, tool_timing::LiveToolTiming};
 use std::time::Duration;
 
 #[component]
-pub fn ToolDuration(timing: Memo<Option<ToolTiming>>) -> impl IntoView {
+pub fn ToolDuration(
+    timing: Memo<Option<ToolTiming>>,
+    #[prop(default = "Tool execution time, including checkpoints; approval waiting is excluded")]
+    title: &'static str,
+) -> impl IntoView {
     let clock = RwSignal::new(LiveToolTiming::default());
     let now = RwSignal::new(js_sys::Date::now());
     let timer = StoredValue::<Option<IntervalHandle>>::new(None);
@@ -36,7 +40,7 @@ pub fn ToolDuration(timing: Memo<Option<ToolTiming>>) -> impl IntoView {
         }
     });
     view! { <Show when=move || timing.get().is_some()>
-        <span class="tui-tool-duration muted" title="Tool execution time, including checkpoints; approval waiting is excluded">
+        <span class="tui-tool-duration muted" title=title>
             {move || format!("{:.1}s", clock.get().elapsed_ms(now.get()).unwrap_or_default() / 1000.0)}
         </span>
     </Show> }

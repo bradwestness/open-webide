@@ -5,6 +5,7 @@ use openwebide_core::{
 use openwebide_llm::LlmProvider;
 
 pub use crate::model::ModelSource as CompactionSource;
+#[derive(Clone, Copy)]
 pub struct NoopCompactionSource;
 impl CompactionSource for NoopCompactionSource {}
 

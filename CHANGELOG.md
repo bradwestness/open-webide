@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Add a `task` tool for parallel child agents with independent contexts in local, remote and projectless chats. Show nested collapsible runs with live status, elapsed time, tokens, tool counts, reasoning, output and inherited approvals; preserve child history through reload, Markdown export, fork and rewind. Use the fast model with primary fallback before any tool request, propagate cancellation, and bound recursion, model concurrency and tool/output budgets. Serialize file mutations through durable checkpoint/result recording so child edits participate in the parent’s review and rewind in execution order.
+
 - Add session search across names and messages, durable pin/archive/restore controls, and full Markdown export in local, remote and projectless chats. Generate titles from the initial exchange using the fast model with primary fallback; serialize background attempts, preserve manual names and ignore stale account results. Keep pinned sessions first, archived history accessible, and metadata intact through rewind; forks start unpinned and unarchived with manual branch names.
 
 - Add a searchable command palette (`Ctrl/⌘+Shift+P`) and keyboard-shortcut overlay (`Ctrl/⌘+/`), with a Commands button in the top bar. Support arrow keys, Enter, Escape and restored focus; reuse shared session, project, settings, model, panel and slash-command actions. Disable project-only commands in projectless chat, preserve drafts and close stale dialogs on account, project or session changes.

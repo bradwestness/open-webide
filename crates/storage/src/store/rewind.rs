@@ -12,7 +12,7 @@ impl<D: Db> Store<D> {
         self.ensure_not_rewinding(session).await?;
         let json =
             serde_json::to_string(checkpoint).map_err(|e| StorageError::Db(e.to_string()))?;
-        let result = self.db.execute("UPDATE tool_steps SET checkpoint = ? WHERE session_id = ? AND tool_call_id = ? AND completion_applied = 0", &[DbValue::Text(json), DbValue::Int(session), DbValue::Text(id.into())]).await?;
+        let result = self.db.execute("UPDATE tool_steps SET checkpoint = ?, execution_order = COALESCE(execution_order, (SELECT MAX(COALESCE(execution_order, id)) + 1 FROM tool_steps)) WHERE session_id = ? AND tool_call_id = ? AND completion_applied = 0", &[DbValue::Text(json), DbValue::Int(session), DbValue::Text(id.into())]).await?;
         if result.changes != 1 {
             return Err(StorageError::Conflict(
                 "Tool checkpoint is no longer pending".into(),
@@ -109,7 +109,7 @@ impl<D: Db> Store<D> {
                             if current.after_bytes().map_err(StorageError::Conflict)? != file.after_bytes().map_err(StorageError::Conflict)? { return Err(StorageError::Conflict(format!("{} has a newer review revision", file.path))); }
                             continue;
                         }
-                        let last_diff = expected.iter().rev().find_map(|entry| match entry { ConversationEntry::ToolStep(step) => step.diff.as_ref().filter(|diff| diff.path == file.path), ConversationEntry::Message(_) => None });
+                        let last_diff = expected.iter().rev().find_map(|entry| match entry { ConversationEntry::ToolStep(step) => step.diff.as_ref().filter(|diff| diff.path == file.path), ConversationEntry::Message(_) | ConversationEntry::Task(_) => None });
                         if last_diff.is_some_and(|diff| diff.new != edit.diff.new) {
                             return Err(StorageError::Conflict(format!("{} has a newer review revision", file.path)));
                         }
@@ -124,6 +124,7 @@ impl<D: Db> Store<D> {
                 }
             }
             store.db.execute("INSERT INTO rewind_history (session_id, message_id, conversation) VALUES (?, ?, ?)", &[DbValue::Int(session), DbValue::Int(message), DbValue::Text(row.get_text(1)?.into())]).await?;
+            store.db.execute("DELETE FROM task_runs WHERE session_id = ? AND anchor_message_id >= ?", &[DbValue::Int(session), DbValue::Int(message)]).await?;
             store.db.execute("DELETE FROM tool_steps WHERE session_id = ? AND anchor_message_id >= ?", &[DbValue::Int(session), DbValue::Int(message)]).await?;
             store.db.execute("DELETE FROM messages WHERE session_id = ? AND id >= ?", &[DbValue::Int(session), DbValue::Int(message)]).await?;
             if let Some(project) = owned.project_id { store.reconcile_review_rewind(user, project, &plan.files).await?; }

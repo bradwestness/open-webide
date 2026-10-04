@@ -145,6 +145,7 @@ pub fn conversation_history(entries: Vec<openwebide_core::ConversationEntry>) ->
         match entry {
             openwebide_core::ConversationEntry::Message(message) => messages.push(message),
             openwebide_core::ConversationEntry::ToolStep(step) => steps.push(step),
+            openwebide_core::ConversationEntry::Task(_) => (),
         }
     }
     history(messages, &steps)
@@ -187,6 +188,13 @@ pub trait RunPersistence: Send + Sync {
     ) -> impl Future<Output = Result<(), String>> + Send {
         std::future::ready(Ok(()))
     }
+    fn task(
+        &self,
+        _anchor: i64,
+        _snapshot: &openwebide_core::TaskSnapshot,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        std::future::ready(Err("Child task persistence unavailable".into()))
+    }
     fn prepare_permission(&self, _id: &str) {}
     fn finish(&self) -> impl Future<Output = ()> + Send {
         async {}
@@ -204,6 +212,7 @@ pub struct RunRecorder<P> {
     usage: Option<TurnTelemetry>,
     timings: std::collections::BTreeMap<String, openwebide_core::ToolTiming>,
     checkpoint_warnings: std::collections::BTreeMap<String, String>,
+    tasks: std::collections::BTreeMap<String, openwebide_core::TaskSnapshot>,
 }
 impl<P: RunPersistence> RunRecorder<P> {
     pub fn new(persistence: P, _session: i64, anchor: i64) -> Self {
@@ -214,17 +223,206 @@ impl<P: RunPersistence> RunRecorder<P> {
             usage: None,
             checkpoint_warnings: Default::default(),
             timings: Default::default(),
+            tasks: Default::default(),
         }
     }
     pub async fn record(&mut self, event: AgentEvent) -> Recorded {
         let mut recorded = self.record_inner(event).await;
         if recorded.terminal {
-            let mut timing_events = self.finish_timings().await;
+            let mut timing_events = self.finish_tasks().await;
+            timing_events.extend(self.finish_timings().await);
             let terminal = recorded.events.pop();
             recorded.events.append(&mut timing_events);
             recorded.events.extend(terminal);
         }
         recorded
+    }
+    async fn record_task(
+        &mut self,
+        mut update: openwebide_core::TaskUpdate,
+    ) -> Result<Vec<RunEvent>, String> {
+        use openwebide_core::TaskEvent;
+        // Nested contexts keep their own history; only their tool effects use the
+        // parent's owned persistence boundary. Never publish raw checkpoints.
+        fn leaf(update: &mut openwebide_core::TaskUpdate) -> &mut openwebide_core::TaskUpdate {
+            if matches!(update.event, TaskEvent::Nested { .. }) {
+                let TaskEvent::Nested { update } = &mut update.event else {
+                    unreachable!()
+                };
+                leaf(update)
+            } else {
+                update
+            }
+        }
+        let root_id = update.task.id.clone();
+        let leaf = leaf(&mut update);
+        let mut visible = true;
+        let mut durable = true;
+        match &mut leaf.event {
+            TaskEvent::Run { event } => match &mut **event {
+                RunEvent::ToolCall { id, name, summary } => {
+                    self.persistence
+                        .step(self.anchor, id, name, summary, None)
+                        .await?;
+                }
+                RunEvent::PermissionRequest {
+                    id,
+                    name,
+                    summary,
+                    diff,
+                    ..
+                } => {
+                    self.persistence.prepare_permission(id);
+                    self.persistence
+                        .step(self.anchor, id, name, summary, diff.as_ref())
+                        .await?;
+                }
+                RunEvent::ToolResult {
+                    id,
+                    ok,
+                    summary,
+                    diff,
+                    ..
+                } => {
+                    if let Some(warning) = self.checkpoint_warnings.remove(id) {
+                        *summary = format!("{summary}\n{warning}");
+                    }
+                    self.persistence
+                        .result(id, *ok, summary, diff.as_ref())
+                        .await?;
+                }
+                RunEvent::ToolTiming { id, timing } => {
+                    // Optional timing metadata must never interrupt a mutation.
+                    let _ = self.persistence.timing(id, timing).await;
+                }
+                RunEvent::Done { .. } | RunEvent::Cancelled | RunEvent::Error { .. } => {
+                    let pending = self
+                        .tasks
+                        .get(&root_id)
+                        .and_then(|root| root.find_task(&leaf.task.id))
+                        .map_or_else(Vec::new, |task| {
+                            task.run
+                                .items
+                                .iter()
+                                .filter_map(|item| match item {
+                                    openwebide_core::RunItem::Step(step)
+                                        if step.result.is_none() =>
+                                    {
+                                        Some((step.id.clone(), step.timing))
+                                    }
+                                    _ => None,
+                                })
+                                .collect()
+                        });
+                    for (id, timing) in pending {
+                        self.persistence
+                            .result(
+                                &id,
+                                false,
+                                "Child stopped before a result was recorded",
+                                None,
+                            )
+                            .await?;
+                        if let Some(timing) = timing {
+                            let _ = self
+                                .persistence
+                                .timing(&id, &timing.sample(self.persistence.now_ms(), true))
+                                .await;
+                        }
+                    }
+                }
+                RunEvent::Delta { .. }
+                | RunEvent::ReasoningDelta { .. }
+                | RunEvent::Telemetry { .. } => durable = false,
+                _ => (),
+            },
+            TaskEvent::FileCheckpoint { id, diff } => {
+                self.persistence
+                    .step(
+                        self.anchor,
+                        id,
+                        "write_file",
+                        &format!("write {}", diff.path),
+                        Some(diff),
+                    )
+                    .await?;
+                visible = false;
+            }
+            TaskEvent::ProjectCheckpoint { id, checkpoint } => {
+                if let Some(warning) =
+                    openwebide_core::rewind::coverage_warning(&checkpoint.skipped)
+                {
+                    self.checkpoint_warnings.insert(id.clone(), warning);
+                }
+                self.persistence.checkpoint(id, checkpoint).await?;
+                visible = false;
+            }
+            TaskEvent::Nested { .. } => unreachable!("Nested events flattened"),
+        }
+        let snapshot = self
+            .tasks
+            .entry(update.task.id.clone())
+            .or_insert_with(|| openwebide_core::TaskSnapshot::new(update.task.clone()));
+        snapshot.apply(&update);
+        if durable {
+            self.persistence.task(self.anchor, snapshot).await?;
+        }
+        Ok(if visible {
+            vec![RunEvent::Task {
+                update: Box::new(update),
+            }]
+        } else {
+            vec![]
+        })
+    }
+    async fn finish_tasks(&mut self) -> Vec<RunEvent> {
+        let now = self.persistence.now_ms();
+        let mut events = Vec::new();
+        for task in self
+            .tasks
+            .values_mut()
+            .filter(|task| task.run.finished.is_none())
+        {
+            let mut pending = vec![&*task];
+            let mut steps = Vec::new();
+            while let Some(child) = pending.pop() {
+                for item in &child.run.items {
+                    if let openwebide_core::RunItem::Step(step) = item
+                        && step.result.is_none()
+                    {
+                        steps.push((step.id.clone(), step.timing));
+                    }
+                }
+                pending.extend(&child.children);
+            }
+            for (id, timing) in steps {
+                let _ = self
+                    .persistence
+                    .result(&id, false, "Interrupted before a result was recorded", None)
+                    .await;
+                if let Some(timing) = timing {
+                    let _ = self
+                        .persistence
+                        .timing(&id, &timing.sample(now, true))
+                        .await;
+                }
+            }
+            task.stop(now);
+            if let Err(error) = self.persistence.task(self.anchor, task).await {
+                events.push(RunEvent::Error {
+                    message: format!("Could not persist stopped child task: {error}"),
+                });
+            }
+            events.push(RunEvent::Task {
+                update: Box::new(openwebide_core::TaskUpdate {
+                    task: task.task.clone(),
+                    event: openwebide_core::TaskEvent::Run {
+                        event: Box::new(RunEvent::Cancelled),
+                    },
+                }),
+            });
+        }
+        events
     }
     async fn finish_timings(&mut self) -> Vec<RunEvent> {
         let mut events = Vec::new();
@@ -242,6 +440,20 @@ impl<P: RunPersistence> RunRecorder<P> {
         let mut terminal = false;
         let mut preceding = Vec::new();
         let event = match event {
+            AgentEvent::TaskUpdate(update) => {
+                return match self.record_task(*update).await {
+                    Ok(events) => Recorded {
+                        events,
+                        terminal: false,
+                    },
+                    Err(error) => Recorded {
+                        events: vec![RunEvent::Error {
+                            message: format!("Could not persist child task: {error}"),
+                        }],
+                        terminal: true,
+                    },
+                };
+            }
             AgentEvent::Context(content) => {
                 let content = format!("{}{content}", openwebide_core::RUN_CONTEXT_PREFIX);
                 match self
@@ -931,6 +1143,178 @@ mod tests {
             assert!(matches!(output.next().await, Some(RunEvent::Error { .. })));
             assert!(output.next().await.is_none());
             assert_eq!(polled.load(Ordering::Relaxed), 1);
+        });
+    }
+    #[test]
+    fn nested_task_checkpoints_are_acknowledged_privately_and_cancelled_approvals_are_finalized() {
+        #[derive(Clone, Default)]
+        struct TaskPersistence {
+            logs: Arc<std::sync::Mutex<Vec<String>>>,
+            snapshots: Arc<std::sync::Mutex<Vec<openwebide_core::TaskSnapshot>>>,
+        }
+        impl RunPersistence for TaskPersistence {
+            fn now(&self) -> i64 {
+                1
+            }
+            fn now_ms(&self) -> u64 {
+                2000
+            }
+            async fn timing(
+                &self,
+                id: &str,
+                _: &openwebide_core::ToolTiming,
+            ) -> Result<(), String> {
+                self.logs.lock().unwrap().push(format!("timing:{id}"));
+                Ok(())
+            }
+            async fn message(
+                &self,
+                _: Role,
+                _: &str,
+                _: Option<&TurnTelemetry>,
+                _: Option<&[ToolCall]>,
+            ) -> Result<ChatMessage, String> {
+                Err("Root messages not needed".into())
+            }
+            async fn step(
+                &self,
+                _: i64,
+                id: &str,
+                _: &str,
+                _: &str,
+                _: Option<&FileDiff>,
+            ) -> Result<(), String> {
+                self.logs.lock().unwrap().push(format!("step:{id}"));
+                Ok(())
+            }
+            async fn result(
+                &self,
+                id: &str,
+                ok: bool,
+                _: &str,
+                _: Option<&FileDiff>,
+            ) -> Result<(), String> {
+                self.logs.lock().unwrap().push(format!("result:{id}:{ok}"));
+                Ok(())
+            }
+            async fn checkpoint(
+                &self,
+                id: &str,
+                _: &openwebide_core::rewind::ProjectCheckpoint,
+            ) -> Result<(), String> {
+                self.logs.lock().unwrap().push(format!("checkpoint:{id}"));
+                Ok(())
+            }
+            async fn task(
+                &self,
+                _: i64,
+                snapshot: &openwebide_core::TaskSnapshot,
+            ) -> Result<(), String> {
+                self.snapshots.lock().unwrap().push(snapshot.clone());
+                Ok(())
+            }
+            fn prepare_permission(&self, id: &str) {
+                self.logs.lock().unwrap().push(format!("permission:{id}"));
+            }
+        }
+        futures::executor::block_on(async {
+            let persistence = TaskPersistence::default();
+            let mut recorder = RunRecorder::new(persistence.clone(), 1, 1);
+            let task = openwebide_core::NewAgentTask {
+                description: "Inspect".into(),
+                prompt: "Inspect".into(),
+            };
+            let mut parent =
+                crate::tasks::TaskRun::new("a1t1c0.task1".into(), "a1t1c0".into(), &task, 1000);
+            let start = recorder
+                .record(AgentEvent::TaskUpdate(Box::new(
+                    parent.started(&task, 1000),
+                )))
+                .await;
+            assert!(!start.terminal && matches!(start.events.as_slice(), [RunEvent::Task { .. }]));
+            let nested_parent = "a1t1c0.task1.a1t1c0";
+            for update in parent.observe(
+                AgentEvent::ToolCall {
+                    id: nested_parent.into(),
+                    name: "task".into(),
+                    summary: "Delegate".into(),
+                },
+                1000,
+            ) {
+                recorder
+                    .record(AgentEvent::TaskUpdate(Box::new(update)))
+                    .await;
+            }
+            let mut child = crate::tasks::TaskRun::new(
+                format!("{nested_parent}.task1"),
+                nested_parent.into(),
+                &task,
+                1000,
+            );
+            for update in parent.observe(
+                AgentEvent::TaskUpdate(Box::new(child.started(&task, 1000))),
+                1000,
+            ) {
+                recorder
+                    .record(AgentEvent::TaskUpdate(Box::new(update)))
+                    .await;
+            }
+            let id = format!("{nested_parent}.task1.a1t1c0");
+            let events = [
+                AgentEvent::PermissionRequest {
+                    id: id.clone(),
+                    name: "write_file".into(),
+                    summary: "write".into(),
+                    diff: None,
+                    note: None,
+                },
+                AgentEvent::ProjectCheckpoint {
+                    id: id.clone(),
+                    checkpoint: openwebide_core::rewind::ProjectCheckpoint {
+                        before: Default::default(),
+                        after: None,
+                        skipped: Default::default(),
+                    },
+                },
+                AgentEvent::Cancelled,
+            ];
+            for event in events {
+                let checkpoint = matches!(event, AgentEvent::ProjectCheckpoint { .. });
+                for update in child.observe(event, 1500) {
+                    for update in parent.observe(AgentEvent::TaskUpdate(Box::new(update)), 1500) {
+                        let recorded = recorder
+                            .record(AgentEvent::TaskUpdate(Box::new(update)))
+                            .await;
+                        assert!(!recorded.terminal);
+                        if checkpoint {
+                            assert!(recorded.events.is_empty());
+                        }
+                    }
+                }
+            }
+            {
+                let logs = persistence.logs.lock().unwrap();
+                assert!(logs.contains(&format!("permission:{id}")));
+                assert!(logs.contains(&format!("checkpoint:{id}")));
+                assert!(logs.contains(&format!("result:{id}:false")));
+            }
+            let final_event = recorder.record(AgentEvent::Cancelled).await;
+            assert!(final_event.terminal);
+            let snapshots = persistence.snapshots.lock().unwrap();
+            let snapshot = snapshots.last().unwrap();
+            assert_eq!(snapshot.task.status, openwebide_core::TaskStatus::Cancelled);
+            assert_eq!(
+                snapshot.children[0].task.status,
+                openwebide_core::TaskStatus::Cancelled
+            );
+            assert!(snapshot.pending_permission().is_none());
+            assert!(
+                persistence
+                    .logs
+                    .lock()
+                    .unwrap()
+                    .contains(&format!("result:{nested_parent}:false"))
+            );
         });
     }
 }

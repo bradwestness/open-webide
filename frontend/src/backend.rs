@@ -421,6 +421,14 @@ pub trait Backend {
         summary: &'a str,
         diff: Option<&'a FileDiff>,
     ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn save_task<'a>(
+        &'a self,
+        _session: i64,
+        _anchor: i64,
+        _snapshot: &'a openwebide_core::TaskSnapshot,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("Child task persistence unavailable".into()) })
+    }
     fn save_tool_timing<'a>(
         &'a self,
         session: i64,
@@ -1074,6 +1082,14 @@ impl Backend for BackendApi {
             summary,
             diff,
         ))
+    }
+    fn save_task<'a>(
+        &'a self,
+        session: i64,
+        anchor: i64,
+        snapshot: &'a openwebide_core::TaskSnapshot,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::save_task(self, session, anchor, snapshot))
     }
     fn save_tool_timing<'a>(
         &'a self,

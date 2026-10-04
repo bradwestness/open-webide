@@ -2733,3 +2733,20 @@ button.browser-item {
 .session-list .session-actions { margin-left: auto; }
 .session-list .session-actions { display: inline-flex; visibility: hidden; }
 .session-list .session:hover .session-actions, .session-list .session.active .session-actions, .session-list .session:focus-within .session-actions { visibility: visible; }
+
+.tui-task-run {
+  margin: 0.5rem 0;
+  border-left: 2px solid var(--border);
+  padding-left: 0.6rem;
+}
+.tui-task-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+}
+.tui-task-content {
+  padding: 0.5rem 0 0.25rem 0.4rem;
+}

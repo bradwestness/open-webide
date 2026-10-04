@@ -26,6 +26,7 @@ pub mod executor;
 pub mod model;
 pub mod policy;
 pub mod session;
+pub mod tasks;
 pub mod title;
 pub mod todo;
 pub mod tools;
@@ -77,6 +78,7 @@ pub struct ToolOutcome {
 /// `TurnCalls` carries the wire ids the model saw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
+    TaskUpdate(Box<openwebide_core::TaskUpdate>),
     /// Generated instructions added to this run, persisted by its host.
     Context(String),
     Compacted(openwebide_core::Compaction),
@@ -139,6 +141,14 @@ pub struct ToolPreview {
     pub note: Option<String>,
 }
 
+/// Progress from a tool whose work includes independent agent runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolExecutionEvent {
+    Progress(AgentEvent),
+    Finished(ToolOutcome),
+}
+pub type ToolExecutionStream = Pin<Box<dyn Stream<Item = ToolExecutionEvent> + Send + 'static>>;
+
 /// Executes the tool calls the model requests.
 ///
 /// Implementations are responsible for confining their work (e.g. to a
@@ -181,6 +191,19 @@ pub trait ToolExecutor: Send {
     }
     /// Run the call and report the outcome.
     fn execute(&self, call: &ToolCall) -> impl Future<Output = ToolOutcome> + Send;
+
+    /// Called after the host has persisted the tool result and requests the next event.
+    fn acknowledge(&self, _id: &str) {}
+
+    /// Runtime primitive for streaming tools; ordinary tools retain their existing outcome contract.
+    fn execute_stream(self: std::sync::Arc<Self>, call: ToolCall) -> ToolExecutionStream
+    where
+        Self: Sync + 'static,
+    {
+        Box::pin(stream::once(async move {
+            ToolExecutionEvent::Finished(self.execute(&call).await)
+        }))
+    }
 }
 
 /// Decides whether the current run should stop.
@@ -283,7 +306,7 @@ pub fn run<P, T, C, G>(
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send + 'static>>
 where
     P: LlmProvider + 'static,
-    T: ToolExecutor + 'static,
+    T: ToolExecutor + Sync + 'static,
     C: CancelCheck + Sync + 'static,
     G: PermissionGate + 'static,
 {
@@ -306,7 +329,7 @@ where
 pub fn run_with_compaction<P, T, C, G, S>(
     provider: P,
     executor: T,
-    mut request: ChatRequest,
+    request: ChatRequest,
     config: AgentConfig,
     cancel: C,
     gate: G,
@@ -315,7 +338,35 @@ pub fn run_with_compaction<P, T, C, G, S>(
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send + 'static>>
 where
     P: LlmProvider + 'static,
-    T: ToolExecutor + 'static,
+    T: ToolExecutor + Sync + 'static,
+    C: CancelCheck + Sync + 'static,
+    G: PermissionGate + 'static,
+    S: compaction::CompactionSource + 'static,
+{
+    run_scoped(
+        provider, executor, request, config, cancel, gate, anchor_id, compaction, None,
+    )
+}
+
+/// Run an independent context with tool and approval IDs scoped to its parent task.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The child scope accompanies the existing host primitives"
+)]
+pub fn run_scoped<P, T, C, G, S>(
+    provider: P,
+    executor: T,
+    mut request: ChatRequest,
+    config: AgentConfig,
+    cancel: C,
+    gate: G,
+    anchor_id: i64,
+    compaction: S,
+    tool_scope: Option<String>,
+) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send + 'static>>
+where
+    P: LlmProvider + 'static,
+    T: ToolExecutor + Sync + 'static,
     C: CancelCheck + Sync + 'static,
     G: PermissionGate + 'static,
     S: compaction::CompactionSource + 'static,
@@ -335,12 +386,14 @@ where
         LoopState {
             provider,
             compaction,
-            executor,
+            executor: std::sync::Arc::new(executor),
             cancel,
             gate,
             request,
             config,
             anchor_id,
+            tool_scope,
+            tool_stream: None,
             turn: config.first_turn.saturating_sub(1),
             tool_calls: 0,
             instructions_need_review: false,
@@ -366,8 +419,11 @@ where
                             continue;
                         }
                         let context = {
-                            let context =
-                                Box::pin(state.executor.context(&state.request.tools, None));
+                            let context = Box::pin(
+                                std::sync::Arc::get_mut(&mut state.executor)
+                                    .expect("Tool stream released its executor")
+                                    .context(&state.request.tools, None),
+                            );
                             let cancel = Box::pin(state.cancel.cancelled());
                             match futures::future::select(context, cancel).await {
                                 futures::future::Either::Left((context, _)) => context,
@@ -443,12 +499,25 @@ where
                             state.next = Next::Stop;
                             return Some((AgentEvent::Cancelled, state));
                         }
-                        let chunk = state
-                            .model_stream
-                            .as_mut()
-                            .expect("StreamModel without a stream")
-                            .next()
-                            .await;
+                        let chunk = {
+                            let next = Box::pin(
+                                state
+                                    .model_stream
+                                    .as_mut()
+                                    .expect("StreamModel without a stream")
+                                    .next(),
+                            );
+                            let cancel = Box::pin(state.cancel.cancelled());
+                            match futures::future::select(next, cancel).await {
+                                futures::future::Either::Left((chunk, _)) => Some(chunk),
+                                futures::future::Either::Right(_) => None,
+                            }
+                        };
+                        let Some(chunk) = chunk else {
+                            state.model_stream = None;
+                            state.next = Next::Stop;
+                            return Some((AgentEvent::Cancelled, state));
+                        };
                         match chunk {
                             Some(Ok(ToolStreamChunk::Delta(delta))) => {
                                 state.turn_text.push_str(&delta);
@@ -510,7 +579,16 @@ where
                                 return Some((AgentEvent::FinalText(text), state));
                             }
                             ChatResponse::ToolCalls(calls) => {
-                                let pending = pending_calls(state.anchor_id, state.turn, calls);
+                                let pending = if let Some(scope) = &state.tool_scope {
+                                    pending_calls_scoped(
+                                        state.anchor_id,
+                                        state.turn,
+                                        calls,
+                                        Some(scope),
+                                    )
+                                } else {
+                                    pending_calls(state.anchor_id, state.turn, calls)
+                                };
                                 state.request.messages.push(ChatMessage {
                                     id: 0,
                                     session_id: 0,
@@ -575,8 +653,8 @@ where
                         }
                         let context = {
                             let context = Box::pin(
-                                state
-                                    .executor
+                                std::sync::Arc::get_mut(&mut state.executor)
+                                    .expect("Tool stream released its executor")
                                     .context(&state.request.tools, Some(&pending.call)),
                             );
                             let cancel = Box::pin(state.cancel.cancelled());
@@ -841,16 +919,23 @@ where
                             }
                         }
                     }
-                    Next::FinishedTool(event, interrupted) => {
+                    Next::ReleaseTool(id, interrupted) => {
+                        state.executor.acknowledge(&id);
                         state.next = if interrupted {
                             Next::Cancelled
                         } else {
                             Next::EmitToolCall
                         };
+                    }
+                    Next::FinishedTool(event, interrupted) => {
+                        let AgentEvent::ToolResult { id, .. } = &event else {
+                            unreachable!("Finished tool must have a result")
+                        };
+                        state.next = Next::ReleaseTool(id.clone(), interrupted);
                         return Some((event, state));
                     }
                     Next::RunTool(pending, before) => {
-                        if state.cancel.check().await {
+                        if state.tool_stream.is_none() && state.cancel.check().await {
                             let event = AgentEvent::ToolResult {
                                 id: pending.call.id.clone(),
                                 name: pending.call.name,
@@ -877,35 +962,64 @@ where
                             state.next = Next::Cancelled;
                             return Some((event, state));
                         }
-                        let PendingCall { call, wire_id } = pending;
-                        state.tool_calls += 1;
-                        let interrupted;
-                        let outcome = if call
+                        let PendingCall { call, wire_id } = pending.clone();
+                        if state.tool_stream.is_none() {
+                            state.tool_calls += 1;
+                            state.tool_stream =
+                                Some(state.executor.clone().execute_stream(call.clone()));
+                        }
+                        let cancellable = call
                             .name
                             .parse::<tools::ToolName>()
-                            .is_ok_and(tools::ToolName::cancellable)
-                        {
-                            let execute = Box::pin(state.executor.execute(&call));
+                            .is_ok_and(tools::ToolName::cancellable);
+                        let (next, interrupted) = if cancellable {
+                            let execute = Box::pin(
+                                state
+                                    .tool_stream
+                                    .as_mut()
+                                    .expect("Tool stream started")
+                                    .next(),
+                            );
                             let cancel = Box::pin(state.cancel.cancelled());
                             match futures::future::select(execute, cancel).await {
-                                futures::future::Either::Left((outcome, _)) => {
-                                    interrupted = false;
-                                    outcome
-                                }
-                                futures::future::Either::Right(((), _)) => {
-                                    interrupted = true;
-                                    ToolOutcome {
-                                        ok: false,
-                                        content: "cancelled".into(),
-                                        summary: "cancelled".into(),
-                                        diff: None,
-                                    }
-                                }
+                                futures::future::Either::Left((event, _)) => (event, false),
+                                futures::future::Either::Right(_) => (None, true),
                             }
                         } else {
-                            interrupted = false;
-                            state.executor.execute(&call).await
+                            (
+                                state
+                                    .tool_stream
+                                    .as_mut()
+                                    .expect("Tool stream started")
+                                    .next()
+                                    .await,
+                                false,
+                            )
                         };
+                        let outcome = match next {
+                            Some(ToolExecutionEvent::Progress(event)) => {
+                                state.next = Next::RunTool(pending, before);
+                                return Some((event, state));
+                            }
+                            Some(ToolExecutionEvent::Finished(outcome)) => outcome,
+                            None => ToolOutcome {
+                                ok: false,
+                                content: if interrupted {
+                                    "cancelled"
+                                } else {
+                                    "Tool ended without a result"
+                                }
+                                .into(),
+                                summary: if interrupted {
+                                    "cancelled"
+                                } else {
+                                    "Tool ended without a result"
+                                }
+                                .into(),
+                                diff: None,
+                            },
+                        };
+                        state.tool_stream = None;
                         state.request.messages.push(ChatMessage {
                             id: 0,
                             session_id: 0,
@@ -955,11 +1069,7 @@ where
                                 state,
                             ));
                         }
-                        state.next = if interrupted {
-                            Next::Cancelled
-                        } else {
-                            Next::EmitToolCall
-                        };
+                        state.next = Next::ReleaseTool(call.id, interrupted);
                         return Some((event, state));
                     }
                 }
@@ -983,10 +1093,19 @@ pub use openwebide_core::{parse_step_id, step_id_prefix};
 
 /// Assign step ids and wire ids to one response's tool calls.
 fn pending_calls(anchor_id: i64, turn: usize, calls: Vec<ToolCall>) -> Vec<PendingCall> {
+    pending_calls_scoped(anchor_id, turn, calls, None)
+}
+fn pending_calls_scoped(
+    anchor_id: i64,
+    turn: usize,
+    calls: Vec<ToolCall>,
+    scope: Option<&str>,
+) -> Vec<PendingCall> {
     let mut pending: Vec<PendingCall> = Vec::with_capacity(calls.len());
     for (idx, call) in calls.into_iter().enumerate() {
         let used = |id: &str| pending.iter().any(|p| p.wire_id == id);
         let step_id = format!("{}{turn}c{idx}", step_id_prefix(anchor_id));
+        let step_id = scope.map_or_else(|| step_id.clone(), |scope| format!("{scope}.{step_id}"));
         let wire_id = if call.id.is_empty() || used(&call.id) {
             let mut wire_id = step_id.clone();
             let mut n = 1;
@@ -1014,13 +1133,15 @@ fn pending_calls(anchor_id: i64, turn: usize, calls: Vec<ToolCall>) -> Vec<Pendi
 struct LoopState<P, T, C, G, S> {
     provider: P,
     compaction: S,
-    executor: T,
+    executor: std::sync::Arc<T>,
     cancel: C,
     gate: G,
     request: ChatRequest,
     config: AgentConfig,
     /// Namespaces this run's step ids; see [`run`].
     anchor_id: i64,
+    tool_scope: Option<String>,
+    tool_stream: Option<ToolExecutionStream>,
     turn: usize,
     tool_calls: usize,
     instructions_need_review: bool,
@@ -1061,6 +1182,7 @@ enum Next {
         Option<openwebide_core::rewind::ProjectSnapshot>,
     ),
     FinishedTool(AgentEvent, bool),
+    ReleaseTool(String, bool),
     Failure(String),
     Cancelled,
     Stop,
@@ -1095,6 +1217,7 @@ mod tests {
         requests: Arc<Mutex<Vec<ChatRequest>>>,
         scripts: Mutex<VecDeque<Vec<Result<ToolStreamChunk, ProviderError>>>>,
         dropped: Arc<std::sync::atomic::AtomicBool>,
+        stall: bool,
     }
 
     impl FakeProvider {
@@ -1108,6 +1231,7 @@ mod tests {
                     requests: requests.clone(),
                     scripts: Mutex::new(VecDeque::new()),
                     dropped: Arc::default(),
+                    stall: false,
                 },
                 requests,
             )
@@ -1156,6 +1280,13 @@ mod tests {
         ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>>
         {
             self.requests.lock().unwrap().push(request.clone());
+            if self.stall {
+                let guard = StreamDrop(self.dropped.clone());
+                return Box::pin(stream::pending().map(move |chunk| {
+                    let _ = &guard;
+                    chunk
+                }));
+            }
             if let Some(chunks) = self.scripts.lock().unwrap().pop_front() {
                 let guard = StreamDrop(self.dropped.clone());
                 return Box::pin(stream::iter(chunks).map(move |chunk| {
@@ -1538,7 +1669,9 @@ mod tests {
         let (release, receiver) = futures::channel::oneshot::channel();
         let cancel = TimedCancel {
             flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            receiver: Mutex::new(Some(receiver)),
+            receiver: futures::FutureExt::shared(futures::FutureExt::boxed(async move {
+                let _ = receiver.await;
+            })),
         };
         let dropped = Arc::new(Mutex::new(false));
         let (provider, requests) = FakeProvider::new(vec![]);
@@ -2843,17 +2976,14 @@ mod tests {
     }
     struct TimedCancel {
         flag: Arc<std::sync::atomic::AtomicBool>,
-        receiver: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
+        receiver: futures::future::Shared<futures::future::BoxFuture<'static, ()>>,
     }
     impl CancelCheck for TimedCancel {
         async fn check(&self) -> bool {
             self.flag.load(std::sync::atomic::Ordering::SeqCst)
         }
         fn cancelled(&self) -> impl Future<Output = ()> + Send {
-            let receiver = self.receiver.lock().unwrap().take().unwrap();
-            async move {
-                let _ = receiver.await;
-            }
+            self.receiver.clone()
         }
     }
     #[test]
@@ -2910,7 +3040,9 @@ mod tests {
             AgentConfig::default(),
             TimedCancel {
                 flag,
-                receiver: Mutex::new(Some(receiver)),
+                receiver: futures::FutureExt::shared(futures::FutureExt::boxed(async move {
+                    let _ = receiver.await;
+                })),
             },
             RecordingPreviewGate(approved.clone()),
             7,
@@ -2952,7 +3084,9 @@ mod tests {
         });
         TimedCancel {
             flag,
-            receiver: Mutex::new(Some(receiver)),
+            receiver: futures::FutureExt::shared(futures::FutureExt::boxed(async move {
+                let _ = receiver.await;
+            })),
         }
     }
     #[test]
@@ -3292,5 +3426,271 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AgentEvent::Error(_)));
         assert!(requests.lock().unwrap().is_empty());
+    }
+
+    struct StreamingExecutor {
+        finish: Mutex<Option<futures::channel::oneshot::Receiver<ToolOutcome>>>,
+    }
+    impl ToolExecutor for StreamingExecutor {
+        fn describe(&self, _: &ToolCall) -> String {
+            "Delegate task".into()
+        }
+        async fn execute(&self, _: &ToolCall) -> ToolOutcome {
+            panic!("Streaming executor must use its stream")
+        }
+        fn execute_stream(self: Arc<Self>, _: ToolCall) -> ToolExecutionStream {
+            let finish = self.finish.lock().unwrap().take().unwrap();
+            Box::pin(
+                stream::once(async {
+                    ToolExecutionEvent::Progress(AgentEvent::ReasoningDelta(
+                        "child progress".into(),
+                    ))
+                })
+                .chain(stream::once(async move {
+                    ToolExecutionEvent::Finished(finish.await.unwrap())
+                })),
+            )
+        }
+    }
+    #[test]
+    fn streamed_tool_progress_is_live_and_only_its_result_enters_parent_context() {
+        futures::executor::block_on(async {
+            let (finish, receiver) = futures::channel::oneshot::channel();
+            let (provider, requests) = FakeProvider::new(vec![
+                Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                    "wire-0", "task", "{}",
+                )]))),
+                Ok(no_usage(ChatResponse::Text("done".into()))),
+            ]);
+            let mut events = run_scoped(
+                provider,
+                StreamingExecutor {
+                    finish: Mutex::new(Some(receiver)),
+                },
+                request(),
+                AgentConfig {
+                    max_tool_calls: 1,
+                    ..Default::default()
+                },
+                NoopCancel,
+                NoopGate,
+                12,
+                compaction::NoopCompactionSource,
+                Some("a1t1c0.task1".into()),
+            );
+            loop {
+                let event = events.next().await.unwrap();
+                if let AgentEvent::ToolCall { id, .. } = &event {
+                    assert_eq!(id, "a1t1c0.task1.a12t1c0");
+                }
+                if matches!(event, AgentEvent::ReasoningDelta(_)) {
+                    break;
+                }
+            }
+            assert_eq!(
+                requests.lock().unwrap().len(),
+                1,
+                "Progress arrives while the tool is unfinished"
+            );
+            finish
+                .send(ToolOutcome {
+                    ok: true,
+                    content: "Task summary".into(),
+                    summary: "Completed".into(),
+                    diff: None,
+                })
+                .unwrap();
+            let tail: Vec<_> = events.collect().await;
+            assert!(
+                tail.iter()
+                    .any(|event| matches!(event, AgentEvent::FinalText(text) if text == "done"))
+            );
+            let requests = requests.lock().unwrap();
+            let last = requests.last().unwrap();
+            assert!(
+                !last
+                    .messages
+                    .iter()
+                    .any(|message| message.content.contains("child progress"))
+            );
+            let result = last
+                .messages
+                .iter()
+                .find(|message| message.role == Role::Tool)
+                .unwrap();
+            assert_eq!(result.content, "Task summary");
+            assert_eq!(result.tool_call_id.as_deref(), Some("wire-0"));
+        });
+    }
+    #[test]
+    fn cancellation_interrupts_a_model_that_stops_sending_chunks() {
+        futures::executor::block_on(async {
+            let (mut provider, _) = FakeProvider::new(Vec::new());
+            provider.stall = true;
+            let dropped = provider.dropped.clone();
+            let (send, receive) = futures::channel::oneshot::channel();
+            let cancel = TimedCancel {
+                flag: Arc::default(),
+                receiver: futures::FutureExt::shared(futures::FutureExt::boxed(async move {
+                    let _ = receive.await;
+                })),
+            };
+            let mut events = run(
+                provider,
+                FakeExecutor::new(Vec::new()),
+                request(),
+                AgentConfig::default(),
+                cancel,
+                NoopGate,
+                1,
+            );
+            assert!(futures::FutureExt::now_or_never(events.next()).is_none());
+            send.send(()).unwrap();
+            assert_eq!(events.next().await, Some(AgentEvent::Cancelled));
+            assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        });
+    }
+    #[test]
+    fn model_admission_precedes_stream_start_and_dropping_a_stream_releases_it() {
+        futures::executor::block_on(async {
+            use futures::FutureExt;
+            let budget = tasks::model_budget::ModelBudget::default();
+            let mut permits = Vec::new();
+            for _ in 0..openwebide_core::tasks::MAX_PARALLEL_TASKS {
+                permits.push(budget.acquire().await);
+            }
+            let (provider, requests) =
+                FakeProvider::new(vec![Ok(no_usage(ChatResponse::Text("work".into())))]);
+            let provider = tasks::model_budget::LimitedProvider::new(provider, budget.clone());
+            let mut source = provider.chat_tools_stream(&request());
+            assert!(source.next().now_or_never().is_none());
+            assert!(requests.lock().unwrap().is_empty());
+            permits.pop();
+            assert!(matches!(
+                source.next().await,
+                Some(Ok(ToolStreamChunk::Delta(_)))
+            ));
+            assert_eq!(requests.lock().unwrap().len(), 1);
+            assert!(budget.acquire().now_or_never().is_none());
+            drop(source);
+            assert!(budget.acquire().now_or_never().is_some());
+        });
+    }
+    #[test]
+    fn delegated_loops_inherit_files_and_emit_recoverable_scoped_progress_without_parent_history() {
+        type ChildRequests = Arc<Mutex<Vec<Arc<Mutex<Vec<ChatRequest>>>>>>;
+        #[derive(Clone)]
+        struct Factory {
+            vfs: openwebide_core::MemoryVfs,
+            requests: ChildRequests,
+        }
+        impl tasks::host::TaskFactory for Factory {
+            type Provider = FakeProvider;
+            type Executor = VfsToolExecutor<openwebide_core::MemoryVfs>;
+            type Gate = NoopGate;
+            fn now_ms(&self) -> u64 {
+                1000
+            }
+            async fn prepare(
+                &self,
+                request: &ChatRequest,
+            ) -> Result<(Self::Provider, Self::Executor, Self::Gate), String> {
+                let prompt = request.messages[0].content.clone();
+                let (provider, seen) = FakeProvider::new(vec![
+                    Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                        "child-wire",
+                        "write_file",
+                        &serde_json::json!({"path":"shared.txt","content":prompt}).to_string(),
+                    )]))),
+                    Ok(no_usage(ChatResponse::Text(format!("Finished {prompt}")))),
+                ]);
+                self.requests.lock().unwrap().push(seen);
+                Ok((provider, VfsToolExecutor::new(self.vfs.clone()), NoopGate))
+            }
+        }
+        futures::executor::block_on(async {
+            use openwebide_core::{TaskEvent, Vfs};
+            let vfs = openwebide_core::MemoryVfs::new();
+            vfs.write("shared.txt", "before").await.unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let factory = Factory {
+                vfs: vfs.clone(),
+                requests: seen.clone(),
+            };
+            let mut parent = request();
+            parent.tools = vfs_tools();
+            let (provider, parent_seen) = FakeProvider::new(vec![
+                Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                    "parent-wire",
+                    "task",
+                    r#"{"tasks":[{"description":"A","prompt":"A"},{"description":"B","prompt":"B"}]}"#,
+                )]))),
+                Ok(no_usage(ChatResponse::Text("Parent done".into()))),
+            ]);
+            let mut events = Box::pin(tasks::host::run_tree(
+                factory,
+                compaction::NoopCompactionSource,
+                NoopCancel,
+                provider,
+                VfsToolExecutor::new(vfs.clone()),
+                NoopGate,
+                parent,
+                AgentConfig::default(),
+                1,
+            ));
+            let mut checkpoints = Vec::new();
+            let mut child_ids = std::collections::BTreeSet::new();
+            let mut completed = 0;
+            while let Some(event) = events.next().await {
+                if let AgentEvent::TaskUpdate(update) = event {
+                    child_ids.insert(update.task.id.clone());
+                    match update.leaf_event() {
+                        TaskEvent::ProjectCheckpoint { checkpoint, .. }
+                            if checkpoint.after.is_some() =>
+                        {
+                            checkpoints.push(checkpoint.clone());
+                        }
+                        TaskEvent::Run { event }
+                            if matches!(**event, openwebide_core::RunEvent::Done { .. }) =>
+                        {
+                            completed += 1;
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            assert_eq!(completed, 2);
+            assert_eq!(child_ids.len(), 2);
+            assert_eq!(checkpoints.len(), 2);
+            let first = checkpoints[0].changes().unwrap().pop().unwrap();
+            let second = checkpoints[1].changes().unwrap().pop().unwrap();
+            assert_eq!(first.before_bytes().unwrap(), Some(b"before".to_vec()));
+            assert_eq!(first.after_bytes().unwrap(), second.before_bytes().unwrap());
+            assert_eq!(
+                second.after_bytes().unwrap(),
+                Some(vfs.read_bytes("shared.txt").await.unwrap())
+            );
+            for child in seen.lock().unwrap().iter() {
+                let child = child.lock().unwrap();
+                assert_eq!(child[0].messages.len(), 1);
+                assert!(matches!(child[0].messages[0].content.as_str(), "A" | "B"));
+                assert!(!child[0].tools.iter().any(|tool| tool.name == "todo_write"));
+                assert!(child[0].tools.iter().any(|tool| tool.name == "task"));
+            }
+            let parent = parent_seen.lock().unwrap();
+            assert!(
+                parent[1]
+                    .messages
+                    .iter()
+                    .all(|message| message.content != "A" && message.content != "B")
+            );
+            let result = parent[1]
+                .messages
+                .iter()
+                .find(|message| message.role == Role::Tool)
+                .unwrap();
+            assert_eq!(result.tool_call_id.as_deref(), Some("parent-wire"));
+            assert!(result.content.contains("Finished A") && result.content.contains("Finished B"));
+        });
     }
 }
