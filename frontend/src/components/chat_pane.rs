@@ -16,17 +16,6 @@ pub use crate::conversation::{ConversationItem, ToolStepResult};
 
 pub(crate) use crate::markdown::render as render_markdown;
 
-/// Format elapsed seconds as `Xs`, `YmXs`, or `ZhYmXs` depending on magnitude.
-fn format_elapsed(secs: u32) -> String {
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m{}s", secs / 60, secs % 60)
-    } else {
-        format!("{}h{}m{}s", secs / 3600, (secs % 3600) / 60, secs % 60)
-    }
-}
-
 /// Render the diff for a file edit: the changed path and the removed/added lines.
 fn render_diff_view(diff: FileDiff) -> impl IntoView {
     let lines = diff_inline_lines(&diff);
@@ -90,32 +79,26 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
     let is_thinking_active = Memo::new(move |_| parsed.with(|parsed| parsed.is_thinking));
     let thinking_expanded = RwSignal::new(false);
 
-    // Elapsed time of the live thinking phase: the timer runs only while the
-    // model streams reasoning, then the last value is frozen for the summary.
-    // `std::time::Instant` is unimplemented on wasm32, so track the start as
-    // `Date::now()` milliseconds instead.
-    let started: StoredValue<Option<f64>> = StoredValue::new(None);
-    let elapsed_secs = RwSignal::new(0u32);
+    let timing = RwSignal::new(openwebide_core::tui::ReasoningTiming::default());
+    let now = RwSignal::new(Date::now());
     let timer: StoredValue<Option<IntervalHandle>> = StoredValue::new(None);
-    let update_elapsed = move || {
-        if let Some(started_at) = started.get_value() {
-            // Elapsed time is non-negative and far below u32::MAX seconds,
-            // so the float-to-int cast is safe.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let secs = ((Date::now() - started_at) / 1000.0) as u32;
-            elapsed_secs.set(secs);
-        }
-    };
     Effect::new(move |_| {
-        if is_thinking_active.get() {
-            started.set_value(Some(Date::now()));
-            elapsed_secs.set(0);
-            timer.set_value(
-                set_interval_with_handle(update_elapsed, Duration::from_millis(500)).ok(),
-            );
+        let active = is_thinking_active.get();
+        let timestamp = Date::now();
+        timing.update(|timing| timing.observe(active, timestamp));
+        now.set(timestamp);
+        if active {
+            // Keep one interval through all chunks of this reasoning phase.
+            if timer.get_value().is_none() {
+                timer.set_value(
+                    set_interval_with_handle(
+                        move || now.set(Date::now()),
+                        Duration::from_millis(100),
+                    )
+                    .ok(),
+                );
+            }
         } else {
-            update_elapsed();
-            started.set_value(None);
             timer.update_value(|timer| {
                 if let Some(handle) = timer.take() {
                     handle.clear();
@@ -128,55 +111,33 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
             handle.clear();
         }
     });
+    let tokens =
+        Memo::new(move |_| thinking_sig.with(|text| openwebide_core::tui::estimate_tokens(text)));
+    let summary = move || {
+        openwebide_core::tui::reasoning_summary(
+            is_thinking_active.get(),
+            timing.get().elapsed_ms(now.get()),
+            tokens.get(),
+        )
+    };
 
     view! {
         <div class="tui-stream-line tui-assistant">
             <Show when=move || !thinking_sig.with(String::is_empty) fallback=|| ()>
                 <div class="tui-thinking-box">
-                    <Show
-                        when=move || is_thinking_active.get()
-                        fallback=move || {
-                            let tok_approx = move || thinking_sig.with(|t| t.split_whitespace().count() * 4 / 3);
-                            view! {
-                                <div
-                                    class="tui-thinking-summary"
-                                    on:click=move |_| thinking_expanded.update(|e| *e = !*e)
-                                    title="Click to toggle reasoning trace"
-                                >
-                                    <span class="tui-think-caret">
-                                        {move || if thinking_expanded.get() { "▼" } else { "▶" }}
-                                    </span>
-                                    <span class="tui-think-badge">"💭 Thought"</span>
-                                    <span class="tui-think-meta">
-                                        {move || {
-                                            let tokens = tok_approx();
-                                            let secs = elapsed_secs.get();
-                                            if secs > 0 {
-                                                format!("(~{tokens} tokens · {})", format_elapsed(secs))
-                                            } else {
-                                                format!("(~{tokens} tokens)")
-                                            }
-                                        }}
-                                    </span>
-                                </div>
-                            }
-                        }
+                    <button
+                        class="btn ghost tui-thinking-summary"
+                        class:active=move || is_thinking_active.get()
+                        aria-expanded=move || thinking_expanded.get().to_string()
+                        on:click=move |_| thinking_expanded.update(|expanded| *expanded = !*expanded)
+                        title="Toggle reasoning trace; token counts are estimated"
                     >
-                        <div
-                            class="tui-thinking-summary active"
-                            on:click=move |_| thinking_expanded.update(|e| *e = !*e)
-                            title="Click to toggle reasoning trace"
-                        >
-                            <span class="tui-think-caret">
-                                {move || if thinking_expanded.get() { "▼" } else { "▶" }}
-                            </span>
-                            <span class="tui-think-badge">"💭 Thinking..."</span>
-                            <span class="tui-spinner"/>
-                            <span class="tui-think-meta">
-                                {move || format_elapsed(elapsed_secs.get())}
-                            </span>
-                        </div>
-                    </Show>
+                        <span class="tui-think-caret" aria-hidden="true">
+                            {move || if thinking_expanded.get() { "▼" } else { "▶" }}
+                        </span>
+                        <span class="tui-think-meta">{summary}</span>
+                        <Show when=move || is_thinking_active.get()><span class="tui-spinner" aria-hidden="true"/></Show>
+                    </button>
 
                     <Show when=move || thinking_expanded.get() fallback=|| ()>
                         <div class="tui-thinking-trace">

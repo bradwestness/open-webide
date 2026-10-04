@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Show live reasoning time to tenths of a second and estimated tokens for inline `<think>` blocks and provider reasoning in every chat mode. Freeze a compact “Thought for 3.2s · ~1.4k tokens” summary on completion, cancellation or provider failure, keep traces collapsed until expanded, and support keyboard toggling. Historical traces without observed timing show their token estimate without inventing a duration.
+
 - Default new sessions to **Auto** approval mode and label the former Default choice **Manual**. Preserve saved modes and keep older sessions without a saved choice manual.
 
 - Simplify model setup to one **Detect settings** action per chat model and a single modal **Cancel / Save**. Preview and testing leave configuration untouched until Save atomically commits server options, credentials, profiles and initial defaults. Keep only **Edit** on server rows and **New server** in the Servers heading.

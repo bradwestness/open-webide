@@ -391,6 +391,61 @@ pub struct ParsedThinking {
     pub answer: String,
 }
 
+/// Timing of an observed reasoning phase. The host supplies milliseconds so
+/// browser and native clocks share the same transition rules.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ReasoningTiming {
+    started_ms: Option<f64>,
+    elapsed_ms: Option<f64>,
+}
+
+impl ReasoningTiming {
+    /// Repeated chunks do not restart the clock. A completed historical trace
+    /// has no observed duration; do not invent one from its generation usage.
+    pub fn observe(&mut self, active: bool, now_ms: f64) {
+        if !now_ms.is_finite() {
+            return;
+        }
+        if active {
+            self.started_ms.get_or_insert(now_ms);
+            self.elapsed_ms.get_or_insert(0.0);
+        } else if let Some(started) = self.started_ms.take() {
+            self.elapsed_ms =
+                Some(self.elapsed_ms.unwrap_or_default() + (now_ms - started).max(0.0));
+        }
+    }
+
+    pub fn elapsed_ms(self, now_ms: f64) -> Option<f64> {
+        self.elapsed_ms.map(|elapsed| {
+            elapsed
+                + self.started_ms.map_or(0.0, |start| {
+                    if now_ms.is_finite() {
+                        (now_ms - start).max(0.0)
+                    } else {
+                        0.0
+                    }
+                })
+        })
+    }
+}
+
+/// Reasoning counts are estimates: providers report whole-generation usage,
+/// which cannot safely be attributed to the reasoning portion alone.
+pub fn reasoning_summary(active: bool, elapsed_ms: Option<f64>, tokens: usize) -> String {
+    let tokens = if tokens >= 1000 {
+        #[allow(clippy::cast_precision_loss)] // Display precision is intentionally one decimal.
+        let thousands = tokens as f64 / 1000.0;
+        format!("~{thousands:.1}k tokens")
+    } else {
+        format!("~{tokens} tokens")
+    };
+    let label = if active { "Thinking" } else { "Thought" };
+    match elapsed_ms.filter(|elapsed| elapsed.is_finite()) {
+        Some(elapsed) => format!("{label} for {:.1}s · {tokens}", elapsed.max(0.0) / 1000.0),
+        None => format!("{label} · {tokens}"),
+    }
+}
+
 /// Extract thinking content (`<think> ... </think>`) from an assistant text stream.
 pub fn parse_thinking(raw: &str) -> ParsedThinking {
     const OPEN_TAG: &str = "<think>";
@@ -547,6 +602,46 @@ pub fn calculate_conversation_telemetry(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reasoning_timing_survives_chunks_and_freezes_on_completion() {
+        let mut timing = super::ReasoningTiming::default();
+        timing.observe(false, 100.0);
+        assert_eq!(timing.elapsed_ms(200.0), None);
+        timing.observe(true, 1000.0);
+        timing.observe(true, 2000.0);
+        assert_eq!(timing.elapsed_ms(4200.0), Some(3200.0));
+        timing.observe(false, 4200.0);
+        assert_eq!(timing.elapsed_ms(9000.0), Some(3200.0));
+        timing.observe(false, 10000.0);
+        assert_eq!(timing.elapsed_ms(11000.0), Some(3200.0));
+        timing.observe(true, 12000.0);
+        timing.observe(false, 12500.0);
+        assert_eq!(timing.elapsed_ms(15000.0), Some(3700.0));
+        assert_eq!(
+            super::reasoning_summary(false, Some(3200.0), 1400),
+            "Thought for 3.2s · ~1.4k tokens"
+        );
+        assert_eq!(
+            super::reasoning_summary(true, Some(200.0), 2),
+            "Thinking for 0.2s · ~2 tokens"
+        );
+        assert_eq!(
+            super::reasoning_summary(false, None, 2),
+            "Thought · ~2 tokens"
+        );
+    }
+
+    #[test]
+    fn reasoning_clock_rejects_invalid_and_backward_time() {
+        let mut timing = super::ReasoningTiming::default();
+        timing.observe(true, f64::NAN);
+        assert_eq!(timing.elapsed_ms(1.0), None);
+        timing.observe(true, 100.0);
+        assert_eq!(timing.elapsed_ms(50.0), Some(0.0));
+        assert_eq!(timing.elapsed_ms(f64::INFINITY), Some(0.0));
+        timing.observe(false, 50.0);
+        assert_eq!(timing.elapsed_ms(500.0), Some(0.0));
+    }
     use super::*;
     use crate::{ChatMessage, ConversationEntry, Role, ToolStep};
 

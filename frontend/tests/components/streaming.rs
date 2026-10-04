@@ -28,6 +28,117 @@ fn message(id: i64, role: Role, content: &str) -> ChatMessage {
 }
 
 #[wasm_bindgen_test]
+async fn reasoning_summary_counts_live_tokens_for_both_stream_formats_in_all_modes() {
+    use leptos::prelude::*;
+    use openwebide_core::WorkspaceMode;
+    for mode in [
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+        None,
+    ] {
+        for provider_reasoning in [false, true] {
+            let mounted = mount_test(move |state| {
+                if let Some(mode) = mode {
+                    state.seed_project();
+                    state
+                        .projects
+                        .projects
+                        .update(|projects| projects[0].mode = mode);
+                }
+                state.seed_connection();
+                state.seed_session();
+                if mode.is_none() {
+                    state
+                        .chat
+                        .sessions
+                        .update(|sessions| sessions[0].project_id = None);
+                }
+                chat_view(state)
+            });
+            settle().await;
+            let chat = mounted.state.chat;
+            chat.apply_event(if provider_reasoning {
+                RunEvent::ReasoningDelta {
+                    content: "first".into(),
+                }
+            } else {
+                RunEvent::Delta {
+                    content: "<thi".into(),
+                }
+            });
+            if !provider_reasoning {
+                settle().await;
+                chat.apply_event(RunEvent::Delta {
+                    content: "nk>first".into(),
+                });
+            }
+            settle().await;
+            let initial = mounted.element(".tui-think-meta").text_content().unwrap();
+            assert!(
+                initial.contains("Thinking for 0.0s · ~2 tokens"),
+                "{initial}"
+            );
+            openwebide_frontend::util::sleep_ms(220).await;
+            chat.apply_event(if provider_reasoning {
+                RunEvent::ReasoningDelta {
+                    content: "x".repeat(5600),
+                }
+            } else {
+                RunEvent::Delta {
+                    content: "x".repeat(5600),
+                }
+            });
+            settle().await;
+            let live = mounted.element(".tui-think-meta").text_content().unwrap();
+            assert!(live.contains("~1.4k tokens"), "{live}");
+            assert!(!live.contains("for 0.0s"), "clock restarted: {live}");
+            // Failure freezes partial traces just like cancellation and completion.
+            chat.apply_event(RunEvent::Error {
+                message: "provider disconnected".into(),
+            });
+            settle().await;
+            let summary = mounted.element(".tui-think-meta").text_content().unwrap();
+            assert!(summary.starts_with("Thought for "), "{summary}");
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".tui-thinking-summary.active")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                mounted
+                    .element(".tui-thinking-summary")
+                    .get_attribute("aria-expanded")
+                    .as_deref(),
+                Some("false")
+            );
+            openwebide_frontend::util::sleep_ms(220).await;
+            assert_eq!(
+                mounted.element(".tui-think-meta").text_content().unwrap(),
+                summary
+            );
+            mounted.click(".tui-thinking-summary");
+            settle().await;
+            assert_eq!(
+                mounted
+                    .element(".tui-thinking-summary")
+                    .get_attribute("aria-expanded")
+                    .as_deref(),
+                Some("true")
+            );
+            assert!(
+                mounted
+                    .element(".tui-thinking-pre")
+                    .text_content()
+                    .unwrap()
+                    .starts_with("first")
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn interim_text_renders_above_tool_and_final_reply_below() {
     let mounted = mount_test(|state| {
         state.seed_project();

@@ -2189,6 +2189,8 @@ button.browser-item {
   cursor: pointer;
   background: var(--bg-panel);
   user-select: none;
+  width: 100%;
+  text-align: left;
 }
 
 .tui-thinking-summary:hover {

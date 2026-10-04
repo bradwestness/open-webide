@@ -782,6 +782,7 @@ impl ChatState {
                 self.mark_stopped();
             }
             RunEvent::Error { message: error } => {
+                self.close_open_reasoning();
                 if let Some(anchor) = self.current_run_anchor.get_untracked() {
                     self.cancel_run_prompts(anchor);
                 }

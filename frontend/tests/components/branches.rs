@@ -186,6 +186,19 @@ async fn fork_restores_the_selected_draft_and_images_without_sending_or_changing
         let original = mounted.state.fake.messages.borrow()[&1].clone();
         mounted.click(".tui-fork-prompt[data-message-id='3']");
         idle(&mounted).await;
+        // Installing the new session yields once so composer context effects
+        // can discard the old attachments before the fork restores its draft.
+        // The run is idle before that restoration; wait for the user-visible
+        // result rather than treating the transport's idle flag as completion.
+        for _ in 0..400 {
+            if mounted.state.chat.draft.get_untracked() == "original prompt"
+                && mounted.state.chat.prompt_images.get_untracked().len() == 1
+            {
+                break;
+            }
+            sleep_ms(5).await;
+            settle().await;
+        }
         let branch = mounted.state.chat.active_session.get_untracked().unwrap();
         assert_ne!(branch, 1);
         assert_eq!(mounted.state.chat.draft.get_untracked(), "original prompt");
