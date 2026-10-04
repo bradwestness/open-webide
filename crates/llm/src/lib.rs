@@ -206,6 +206,7 @@ impl UsageAcc {
                 _ => 0,
             });
         TurnTelemetry {
+            context: None,
             prompt_tokens,
             completion_tokens,
             eval_duration_ms,
@@ -526,6 +527,7 @@ mod tests {
     fn completion_queue_replays_preamble_text_usage_and_errors() {
         use openwebide_core::{ChatResponse, ToolCall};
         let usage = TurnTelemetry {
+            context: None,
             prompt_tokens: 10,
             completion_tokens: 2,
             eval_duration_ms: 4,

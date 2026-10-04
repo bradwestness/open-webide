@@ -1,5 +1,7 @@
 //! Shared domain types used across the Open WebIDE frontend, backend, and crates.
 
+pub mod context;
+pub use context::ContextBreakdown;
 pub mod compaction;
 pub use compaction::*;
 pub mod approval;
@@ -460,6 +462,7 @@ mod tests {
             (ToolStreamChunk::Delta("hello".into()), "delta"),
             (
                 ToolStreamChunk::Usage(TurnTelemetry {
+                    context: None,
                     prompt_tokens: 3,
                     completion_tokens: 2,
                     eval_duration_ms: 5,

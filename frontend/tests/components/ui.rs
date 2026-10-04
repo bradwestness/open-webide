@@ -188,6 +188,7 @@ async fn statusline_preserves_compact_telemetry_text() {
     let mounted = mount_test(super::support::chat_view);
     settle().await;
     mounted.state.chat.session_telemetry.set(SessionTelemetry {
+        context: None,
         model: "café".into(),
         context_tokens: 12345,
         context_limit: 65536,

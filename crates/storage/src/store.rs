@@ -848,7 +848,7 @@ impl<D: Db> Store<D> {
             .db
             .execute(
                 "SELECT id, session_id, role, content, created_at,
-                        prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated, tool_calls
+                        prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated, tool_calls, context_breakdown
                  FROM messages WHERE session_id = ? ORDER BY id",
                 &[DbValue::Int(session_id)],
             )
@@ -925,8 +925,8 @@ impl<D: Db> Store<D> {
             .execute(
                 "INSERT INTO messages
                      (session_id, role, content, created_at,
-                      prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated, tool_calls)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      prompt_tokens, completion_tokens, eval_duration_ms, usage_estimated, tool_calls, context_breakdown)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 &[
                     DbValue::Int(session_id),
                     DbValue::Text(role.as_str().into()),
@@ -945,6 +945,7 @@ impl<D: Db> Store<D> {
                         .map(|u| DbValue::Int(i64::from(u.estimated)))
                         .unwrap_or(DbValue::Null),
                     calls_json.map(DbValue::Text).unwrap_or(DbValue::Null),
+                    usage.and_then(|usage| usage.context).map(|context| serde_json::to_string(&context)).transpose().map_err(|error| StorageError::InvalidValue(error.to_string()))?.map(DbValue::Text).unwrap_or(DbValue::Null),
                 ],
             )
             .await?;
@@ -2677,6 +2678,13 @@ mod tests {
                 .await
                 .unwrap();
             let usage = TurnTelemetry {
+                context: Some(openwebide_core::ContextBreakdown {
+                    system: 20,
+                    files: 30,
+                    tool_output: 10,
+                    history: 50,
+                    tools: 10,
+                }),
                 prompt_tokens: 120,
                 completion_tokens: 30,
                 eval_duration_ms: 900,

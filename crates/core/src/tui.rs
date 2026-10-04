@@ -92,6 +92,8 @@ impl EditorContext {
 /// Real-time telemetry metrics for a single agent turn or LLM completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TurnTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::ContextBreakdown>,
     #[serde(default)]
     pub prompt_tokens: usize,
     #[serde(default)]
@@ -127,6 +129,8 @@ pub const DEFAULT_CONTEXT_LIMIT: usize = 4_096;
 /// Cumulative session-level telemetry for the statusline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionTelemetry {
+    #[serde(default)]
+    pub context: Option<crate::ContextBreakdown>,
     pub model: String,
     /// Cumulative prompt tokens across every call this session, for
     /// `/tokens`'s "Input" total.
@@ -162,6 +166,7 @@ pub struct SessionTelemetry {
 impl Default for SessionTelemetry {
     fn default() -> Self {
         Self {
+            context: None,
             model: "default".into(),
             total_prompt_tokens: 0,
             total_completion_tokens: 0,
@@ -260,6 +265,7 @@ impl SessionTelemetry {
     /// Record one turn's usage: the gauge tracks the latest call, while the
     /// `/tokens` totals accumulate.
     pub fn record_turn(&mut self, t: &TurnTelemetry) {
+        self.context = t.context;
         self.context_tokens = t.context_tokens();
         self.context_estimated = t.estimated;
         self.total_prompt_tokens = self.total_prompt_tokens.saturating_add(t.prompt_tokens);
@@ -327,6 +333,7 @@ pub enum SlashCommand {
     Diff(Option<String>),
     Test(Option<String>),
     Tokens,
+    Context,
     Stop,
     Commit(Option<String>),
     Checkout(Option<String>),
@@ -361,7 +368,8 @@ impl SlashCommand {
             "/clear" => Some(SlashCommand::Clear),
             "/diff" => Some(SlashCommand::Diff(args)),
             "/test" => Some(SlashCommand::Test(args)),
-            "/tokens" | "/context" => Some(SlashCommand::Tokens),
+            "/tokens" => Some(SlashCommand::Tokens),
+            "/context" => Some(SlashCommand::Context),
             "/stop" => Some(SlashCommand::Stop),
             "/commit" => Some(SlashCommand::Commit(args)),
             "/checkout" => Some(SlashCommand::Checkout(args)),
@@ -537,6 +545,7 @@ mod tests {
     #[test]
     fn telemetry_text_preserves_precision_estimates_and_missing_speed() {
         let mut telemetry = SessionTelemetry {
+            context: None,
             model: "café".into(),
             context_tokens: 12345,
             context_limit: 65536,
@@ -634,7 +643,7 @@ mod tests {
         );
         assert_eq!(SlashCommand::parse("/clear"), Some(SlashCommand::Clear));
         assert_eq!(SlashCommand::parse("/tokens"), Some(SlashCommand::Tokens));
-        assert_eq!(SlashCommand::parse("/context"), Some(SlashCommand::Tokens));
+        assert_eq!(SlashCommand::parse("/context"), Some(SlashCommand::Context));
         assert_eq!(
             SlashCommand::parse("/test openwebide-auth"),
             Some(SlashCommand::Test(Some("openwebide-auth".into())))
@@ -693,6 +702,7 @@ mod tests {
     #[test]
     fn test_session_telemetry_gauge() {
         let telem = SessionTelemetry {
+            context: None,
             model: "qwen2.5-coder:7b".into(),
             total_prompt_tokens: 16_384,
             total_completion_tokens: 0,
@@ -731,6 +741,7 @@ mod tests {
     #[test]
     fn test_tokens_per_second() {
         let t = TurnTelemetry {
+            context: None,
             prompt_tokens: 100,
             completion_tokens: 50,
             eval_duration_ms: 2_000,
@@ -757,6 +768,7 @@ mod tests {
     fn test_record_turn_tracks_latest_context_and_accumulates_totals() {
         let mut telem = SessionTelemetry::default();
         telem.record_turn(&TurnTelemetry {
+            context: None,
             prompt_tokens: 100,
             completion_tokens: 20,
             eval_duration_ms: 1_000,
@@ -767,6 +779,7 @@ mod tests {
         assert_eq!(telem.total_completion_tokens, 20);
 
         telem.record_turn(&TurnTelemetry {
+            context: None,
             prompt_tokens: 130,
             completion_tokens: 10,
             eval_duration_ms: 500,
@@ -783,6 +796,7 @@ mod tests {
     fn record_turn_saturates_context_and_cumulative_tokens() {
         let mut telemetry = SessionTelemetry::default();
         let usage = TurnTelemetry {
+            context: None,
             prompt_tokens: usize::MAX,
             completion_tokens: 1,
             ..TurnTelemetry::default()
@@ -791,6 +805,7 @@ mod tests {
         assert_eq!(telemetry.context_tokens, usize::MAX);
         assert_eq!(telemetry.gauge_bar(), "[==========]");
         telemetry.record_turn(&TurnTelemetry {
+            context: None,
             prompt_tokens: 1,
             completion_tokens: usize::MAX,
             ..TurnTelemetry::default()
@@ -804,6 +819,7 @@ mod tests {
     fn test_record_turn_estimated_flags() {
         let mut telem = SessionTelemetry::default();
         telem.record_turn(&TurnTelemetry {
+            context: None,
             prompt_tokens: 0,
             completion_tokens: 10,
             eval_duration_ms: 100,
@@ -816,6 +832,7 @@ mod tests {
         // A following exact turn clears the per-call flags but the
         // cumulative totals-estimated flag stays set.
         telem.record_turn(&TurnTelemetry {
+            context: None,
             prompt_tokens: 50,
             completion_tokens: 10,
             eval_duration_ms: 100,
@@ -852,6 +869,7 @@ mod tests {
                 Role::User,
                 "hi",
                 Some(TurnTelemetry {
+                    context: None,
                     prompt_tokens: 10,
                     completion_tokens: 0,
                     eval_duration_ms: 0,
@@ -873,6 +891,7 @@ mod tests {
                 Role::Assistant,
                 "done",
                 Some(TurnTelemetry {
+                    context: None,
                     prompt_tokens: 30,
                     completion_tokens: 12,
                     eval_duration_ms: 400,

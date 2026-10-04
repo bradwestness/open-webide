@@ -7,6 +7,7 @@ use super::{chat::ChatState, git::GitState, workspace::WorkspaceState};
 /// need network or terminal access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SlashAction {
+    Context,
     Notify(String),
     SelectModel(String),
     DefaultModel,
@@ -129,6 +130,7 @@ pub fn dispatch(
             project_id,
             filter: filter.unwrap_or_default(),
         },
+        SlashCommand::Context => SlashAction::Context,
         SlashCommand::Tokens => SlashAction::Notify(
             chat.session_telemetry
                 .with_untracked(SessionTelemetry::tokens_report),
@@ -178,14 +180,15 @@ const HELP_TEXT: &str = "**Open WebIDE Terminal Execution & Slash Commands**\n\n
                         * `/branch [name]` — List branches, or create and switch to a new branch\n\
                         * `/sync` — Synchronize upstream commits (pull & push)\n\
                         * `/test [filter]` — run cargo test in the terminal\n\
-                        * `/tokens` or `/context` — Show session token accounting\n\
+                        * `/tokens` — Show session token accounting\n\
+                        * `/context` — Show the latest model input breakdown\n\
                         * `/stop` — Abort active execution\n\n\
                         **Keybindings:**\n\
                         * `Cmd+L` / `Ctrl+L` — Capture active editor file & selection into context pill\n\
                         * `Ctrl+Backtick` / `Cmd+Backtick` — Toggle bottom terminal dock\n\
                         * `Ctrl+K` / `Cmd+K` — Cycle focus between chat, editor, file explorer, and terminal\n\
                         * `Up` / `Down` — Readline prompt history navigation\n\
-                        * `Shift+Tab` — Cycle approval modes (Default, Auto-accept edits, Auto, YOLO)\n\
+                        * `Shift+Tab` — Cycle approval modes (Manual, Auto-accept edits, Auto, YOLO)\n\
                         * `Alt+Y` / `Alt+N` / `Alt+A` — Approve / deny / auto-accept file edits for this session\n\
                         * `Ctrl+C` / `Cmd+C` — Cancel streaming when no composer text is selected\n\
                         * `Esc` — Detach context when the draft is empty, otherwise cancel streaming";
@@ -204,7 +207,8 @@ mod tests {
         Owner::new().with(|| {
             let chat = ChatState::new();
             chat.session_telemetry.set(SessionTelemetry {
-                model: "café".into(),
+                context: None,
+            model: "café".into(),
                 context_tokens: 12345,
                 context_limit: 65536,
                 total_prompt_tokens: 12345,
@@ -347,6 +351,7 @@ mod tests {
                     SlashCommand::Tokens,
                     SlashAction::Notify(SessionTelemetry::default().tokens_report()),
                 ),
+                (SlashCommand::Context, SlashAction::Context),
                 (SlashCommand::Stop, SlashAction::Stop),
                 (
                     SlashCommand::Commit(Some("message".into())),

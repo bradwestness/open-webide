@@ -780,6 +780,7 @@ async fn adversarial_snapshot_counts_distinct_turns_with_equal_usage() {
     });
     settle().await;
     let usage = TurnTelemetry {
+        context: None,
         prompt_tokens: 10,
         completion_tokens: 3,
         eval_duration_ms: 100,

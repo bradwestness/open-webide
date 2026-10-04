@@ -278,3 +278,111 @@ async fn new_projectless_session_preserves_an_explicit_manual_choice() {
         Some("\"default\"")
     );
 }
+
+#[wasm_bindgen_test]
+async fn context_command_shows_saved_breakdown_in_both_modes_and_projectless_chat() {
+    use openwebide_core::{ContextBreakdown, TurnTelemetry, WorkspaceMode};
+    for mode in [
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+        None,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_connection();
+            state.seed_session();
+            if let Some(mode) = mode {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+            } else {
+                state
+                    .chat
+                    .sessions
+                    .update(|sessions| sessions[0].project_id = None);
+            }
+            state.fake.messages.borrow_mut().insert(
+                1,
+                vec![ConversationEntry::Message(ChatMessage {
+                    id: 2,
+                    session_id: 1,
+                    role: Role::Assistant,
+                    content: "Saved reply".into(),
+                    created_at: 0,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    usage: Some(TurnTelemetry {
+                        context: Some(ContextBreakdown {
+                            system: 100,
+                            files: 50,
+                            tool_output: 25,
+                            history: 200,
+                            tools: 125,
+                        }),
+                        prompt_tokens: 500,
+                        completion_tokens: 100,
+                        ..Default::default()
+                    }),
+                })],
+            );
+            chat_view(state)
+        });
+        settle().await;
+        mounted.input("/context");
+        mounted.key("Enter", "Enter", false);
+        settle().await;
+        let modal = mounted.element(".context-usage");
+        let text = modal.text_content().unwrap();
+        for label in [
+            "System instructions",
+            "Files",
+            "Tool output",
+            "History",
+            "Tool schemas",
+            "Generated reply",
+            "~200",
+            "600",
+        ] {
+            assert!(text.contains(label), "{text}");
+        }
+        assert!(
+            modal
+                .query_selector(".context-breakdown-bar")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            !mounted
+                .state
+                .fake
+                .calls
+                .borrow()
+                .iter()
+                .any(|call| matches!(call, Call::SendMessage { .. }))
+        );
+        if mode.is_some() {
+            mounted.state.projects.active_project.set(None);
+            settle().await;
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".context-usage")
+                    .unwrap()
+                    .is_none()
+            );
+            mounted.input("/context");
+            mounted.key("Enter", "Enter", false);
+            settle().await;
+        }
+        mounted.state.auth.generation.update(|value| *value += 1);
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".context-usage")
+                .unwrap()
+                .is_none()
+        );
+    }
+}

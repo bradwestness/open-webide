@@ -245,6 +245,7 @@ mod tests {
     #[test]
     fn snapshot_telemetry_tracks_message_order_for_equal_turn_usage() {
         let usage = TurnTelemetry {
+            context: None,
             prompt_tokens: 10,
             completion_tokens: 3,
             ..Default::default()
@@ -590,6 +591,7 @@ mod tests {
                 .all(|item| matches!(item, RunItem::Message(_)))
         );
         let usage = TurnTelemetry {
+            context: None,
             prompt_tokens: 10,
             ..Default::default()
         };

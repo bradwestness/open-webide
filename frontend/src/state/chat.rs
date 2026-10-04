@@ -1101,6 +1101,7 @@ mod tests {
                 ]);
                 let mut incoming = existing;
                 incoming.usage = Some(TurnTelemetry {
+                    context: None,
                     prompt_tokens: 100,
                     ..Default::default()
                 });
@@ -1350,6 +1351,7 @@ mod tests {
             chat.active_session.set(Some(7));
             chat.apply_event(RunEvent::Telemetry {
                 usage: TurnTelemetry {
+                    context: None,
                     prompt_tokens: 3,
                     completion_tokens: 2,
                     estimated: false,

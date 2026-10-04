@@ -893,6 +893,7 @@ pub async fn run_local_agent(
             },
             provider.chat_stream(&request),
             cancel,
+            &request,
         ));
         while let Some(event) = events.next().await {
             on_event(event);

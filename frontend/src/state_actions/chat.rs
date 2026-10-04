@@ -603,6 +603,7 @@ impl ChatActions {
         let slash_command = {
             Callback::new(move |command: SlashCommand| {
                 match dispatch_slash(command, &chat, &git, &workspace) {
+                    SlashAction::Context => ui.context_open.set(true),
                     SlashAction::Notify(text) => chat.notify(text),
                     SlashAction::SelectModel(name) => {
                         select_model.run(Some(name.clone()));

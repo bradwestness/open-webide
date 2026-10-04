@@ -345,6 +345,7 @@ pub(crate) async fn send_session_message(
                 user_message,
                 provider.chat_stream(&request),
                 started_ms,
+                &request,
             );
             let first = stream.next().await;
             Box::pin(

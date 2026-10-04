@@ -347,10 +347,12 @@ async fn agent_mapping_persists_in_order_and_reanchors_with_last_usage() {
     let backend = FakeBackend::default();
     let run = Run::new("r".into(), 1, 1, 4096);
     let first = TurnTelemetry {
+        context: None,
         prompt_tokens: 10,
         ..Default::default()
     };
     let last = TurnTelemetry {
+        context: None,
         prompt_tokens: 20,
         ..Default::default()
     };
@@ -550,6 +552,7 @@ async fn chat_success_truncation_and_errors() {
         let registry = RunRegistry::default();
         let backend = Arc::new(FakeBackend::default());
         let usage = TurnTelemetry {
+            context: None,
             prompt_tokens: 10,
             ..Default::default()
         };
@@ -581,7 +584,7 @@ async fn chat_success_truncation_and_errors() {
         assert_eq!(messages.len(), if expected.is_some() { 3 } else { 2 });
         if let Some(text) = expected {
             assert_eq!(messages[2].content, text);
-            assert_eq!(messages[2].usage, Some(usage));
+            assert_context_usage(messages[2].usage, usage);
         }
     }
 }
@@ -894,10 +897,12 @@ async fn agent_body_executes_native_tools_and_persists_interim_then_final() {
         project_path: "".into(),
     });
     let first = TurnTelemetry {
+        context: None,
         prompt_tokens: 10,
         ..Default::default()
     };
     let last = TurnTelemetry {
+        context: None,
         prompt_tokens: 20,
         ..Default::default()
     };
@@ -943,8 +948,9 @@ async fn agent_body_executes_native_tools_and_persists_interim_then_final() {
     );
     assert_eq!(messages[1].role, Role::System);
     assert!(messages[1].content.contains("Native root instruction"));
-    assert_eq!(messages[2].usage, Some(first));
-    assert_eq!(messages[3].usage, Some(last));
+    assert_context_usage(messages[2].usage, first);
+    assert_context_usage(messages[3].usage, last);
+    assert!(messages[3].usage.unwrap().context.unwrap().files > 0);
     assert_eq!(
         *backend.operations.lock().unwrap(),
         [
@@ -1520,4 +1526,14 @@ async fn projectless_run_uses_web_tools_and_rejects_workspace_calls() {
             .iter()
             .any(|message| message.content.contains("secret"))
     );
+}
+
+fn assert_context_usage(actual: Option<TurnTelemetry>, expected: TurnTelemetry) {
+    let mut actual = actual.unwrap();
+    let context = actual
+        .context
+        .take()
+        .expect("run must persist its request breakdown");
+    assert_eq!(context.total(), actual.prompt_tokens);
+    assert_eq!(actual, expected);
 }

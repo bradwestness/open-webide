@@ -1166,6 +1166,7 @@ async fn browser_chat_only_run_uses_shared_reply_lifecycle() {
                     response: openwebide_core::ChatResponse::Text("reply".into()),
                     stop_reason: openwebide_core::StopReason::Length,
                     usage: Some(openwebide_core::TurnTelemetry {
+                        context: None,
                         prompt_tokens: 10,
                         ..Default::default()
                     }),
@@ -1219,6 +1220,9 @@ async fn browser_chat_only_run_uses_shared_reply_lifecycle() {
             .ends_with(openwebide_core::REPLY_CUT_OFF_MARKER)
     );
     assert_eq!(reply.usage.unwrap().prompt_tokens, 10);
+    let context = reply.usage.unwrap().context.unwrap();
+    assert_eq!(context.total(), 10);
+    assert!(context.system > 0);
 }
 
 #[wasm_bindgen_test]

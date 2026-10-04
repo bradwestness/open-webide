@@ -88,6 +88,11 @@ pub(super) fn message_from_row(row: &QueryRow) -> Result<ChatMessage, StorageErr
     let completion_tokens = row.get_int_opt(6);
     let usage = if prompt_tokens.is_some() || completion_tokens.is_some() {
         Some(TurnTelemetry {
+            context: row
+                .get_text_opt(10)
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|error| StorageError::InvalidValue(error.to_string()))?,
             prompt_tokens: usize::try_from(prompt_tokens.unwrap_or(0).max(0)).unwrap_or(usize::MAX),
             completion_tokens: usize::try_from(completion_tokens.unwrap_or(0).max(0))
                 .unwrap_or(usize::MAX),

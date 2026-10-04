@@ -2640,3 +2640,15 @@ button.browser-item {
 .editor-pending-gutter.changed { border-left-color: var(--git-modified); }
 .editor-pending-gutter.removed { border-left-color: var(--offline); }
 .editor-pending-text { white-space: pre; }
+
+.context-breakdown-bar { display: flex; height: 18px; overflow: hidden; border-radius: 4px; background: var(--bg-hover); border: 1px solid var(--border); }
+.context-segment { display: block; height: 100%; }
+.context-key { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; }
+.context-category-0 { background: var(--accent); }
+.context-category-1 { background: var(--online); }
+.context-category-2 { background: var(--warn); }
+.context-category-3 { background: var(--text-muted); }
+.context-category-4 { background: var(--git-modified); }
+.context-generated { background: var(--offline); }
+.context-breakdown-list > div { display: flex; justify-content: space-between; gap: 12px; margin: 8px 0; }
+.context-breakdown-list dd { font-family: var(--mono); margin: 0; }

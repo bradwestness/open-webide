@@ -458,7 +458,11 @@ where
                             Some(Ok(ToolStreamChunk::Stop(reason))) => {
                                 state.stop_reason = reason;
                             }
-                            Some(Ok(ToolStreamChunk::Usage(usage))) => {
+                            Some(Ok(ToolStreamChunk::Usage(mut usage))) => {
+                                usage.context = Some(
+                                    openwebide_core::ContextBreakdown::for_request(&state.request)
+                                        .with_total(usage.prompt_tokens),
+                                );
                                 return Some((AgentEvent::Telemetry(usage), state));
                             }
                             Some(Ok(ToolStreamChunk::Response(response))) => {
@@ -1559,12 +1563,14 @@ mod tests {
     fn emits_telemetry_before_each_response_with_usage() {
         let read = call("call_0", "read_file", r#"{"path":"src/main.rs"}"#);
         let usage_1 = TurnTelemetry {
+            context: None,
             prompt_tokens: 100,
             completion_tokens: 10,
             eval_duration_ms: 500,
             estimated: false,
         };
         let usage_2 = TurnTelemetry {
+            context: None,
             prompt_tokens: 150,
             completion_tokens: 20,
             eval_duration_ms: 400,
@@ -1588,7 +1594,7 @@ mod tests {
         ]);
         let executor = FakeExecutor::new(vec![outcome("fn main() {}", "read src/main.rs")]);
 
-        let events = collect(run(
+        let mut events = collect(run(
             provider,
             executor,
             request(),
@@ -1598,6 +1604,18 @@ mod tests {
             1,
         ));
 
+        let contexts: Vec<_> = events
+            .iter_mut()
+            .filter_map(|event| match event {
+                AgentEvent::Telemetry(usage) => {
+                    let context = usage.context.take().unwrap();
+                    assert_eq!(context.total(), usage.prompt_tokens);
+                    Some(context)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(contexts[0].files == 0 && contexts[1].files > 0);
         assert_eq!(
             events,
             vec![
@@ -2522,11 +2540,12 @@ mod tests {
     #[test]
     fn streams_deltas_usage_and_final_text() {
         let usage = TurnTelemetry {
+            context: None,
             prompt_tokens: 10,
             completion_tokens: 2,
             ..Default::default()
         };
-        let events = collect(run(
+        let mut events = collect(run(
             scripted(vec![
                 Ok(ToolStreamChunk::Delta("hel".into())),
                 Ok(ToolStreamChunk::Delta("lo".into())),
@@ -2542,6 +2561,18 @@ mod tests {
             NoopGate,
             7,
         ));
+        let contexts: Vec<_> = events
+            .iter_mut()
+            .filter_map(|event| match event {
+                AgentEvent::Telemetry(usage) => {
+                    let context = usage.context.take().unwrap();
+                    assert_eq!(context.total(), usage.prompt_tokens);
+                    Some(context)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(contexts.len(), 1);
         assert_eq!(
             events,
             vec![

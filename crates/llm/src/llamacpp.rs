@@ -1180,6 +1180,7 @@ mod tests {
         assert_eq!(
             items[2].as_ref().unwrap(),
             &ToolStreamChunk::Usage(TurnTelemetry {
+                context: None,
                 prompt_tokens: 12,
                 completion_tokens: 8,
                 eval_duration_ms: 123,
@@ -1327,6 +1328,7 @@ mod tests {
                 arguments: "{}".into(),
             }]),
             usage: Some(TurnTelemetry {
+                context: None,
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 eval_duration_ms: 50,

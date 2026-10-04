@@ -33,12 +33,7 @@ pub struct NoopCompactionSource;
 impl CompactionSource for NoopCompactionSource {}
 
 pub fn conservative_tokens(request: &ChatRequest) -> usize {
-    serde_json::to_vec(request).map_or(usize::MAX, |bytes| {
-        bytes
-            .len()
-            .div_ceil(3)
-            .saturating_add(request.messages.len().saturating_mul(16))
-    })
+    openwebide_core::context::conservative_tokens(request)
 }
 fn response_reserve(request: &ChatRequest, limit: usize) -> usize {
     request

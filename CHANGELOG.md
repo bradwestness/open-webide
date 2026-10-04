@@ -26,6 +26,8 @@ for what's still ahead.
 
 ### Added
 
+- Add `/context` with a themed breakdown bar for the latest model request: system instructions, files, tool output, history and tool schemas, plus generated reply and free context. Share accounting with the compaction engine, scale estimated categories to the provider’s input count, and persist the breakdown with reply telemetry for reloads. Support local, remote and projectless runs through both streaming transports; retain `/tokens` for cumulative accounting.
+
 - Add a changes panel beneath each new agent run’s prompt in local and remote projects. Review text changes per file or hunk, and created/deleted or binary files as a whole. Persist decisions in the database, mark pending lines in the editor, preserve accepted hunks during later edits, and keep rewind consistent after rejection. Capture shell changes even when a command fails; stale revisions and later manual edits cannot be overwritten.
 
 - Add **Rewind to here** on chat prompts in local, remote and projectless sessions. Restore project file contents and conversation together, including shell/Git working-tree changes, created/deleted files and binary contents. Keep Git history, external effects and generated folders intact. Checkpoint snapshots and recovery history live in the database; conflict checks protect later edits, interrupted restores can resume, and unfinished or missing checkpoints refuse unsafe rewinds. Checkpoints cover up to 32 MiB and 10,000 project files, with the existing 10 MiB single-file limit.

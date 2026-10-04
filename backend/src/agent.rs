@@ -752,11 +752,13 @@ mod tests {
             let before = format!("a{anchor_id}t1c0");
             let after = format!("a{anchor_id}t2c0");
             let first_usage = TurnTelemetry {
+                context: None,
                 prompt_tokens: 10,
                 completion_tokens: 2,
                 ..Default::default()
             };
             let last_usage = TurnTelemetry {
+                context: None,
                 prompt_tokens: 20,
                 completion_tokens: 3,
                 ..Default::default()
@@ -849,6 +851,7 @@ mod tests {
                     .await
                     .unwrap();
                 let usage = TurnTelemetry {
+                    context: None,
                     prompt_tokens: 100,
                     completion_tokens: 20,
                     ..Default::default()

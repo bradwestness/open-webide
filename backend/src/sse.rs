@@ -155,6 +155,7 @@ pub fn message_stream(
     user_message: ChatMessage,
     chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
     started_ms: i64,
+    request: &openwebide_core::ChatRequest,
 ) -> Pin<Box<dyn Stream<Item = RunEvent> + Send + 'static>> {
     let cancel = ChatCancel {
         store: store.clone(),
@@ -169,6 +170,7 @@ pub fn message_stream(
         },
         chunks,
         cancel,
+        request,
     );
     Box::pin(
         stream::iter([RunEvent::Message {
@@ -298,9 +300,23 @@ mod tests {
             .insert_message(session_id, Role::User, "hello", now())
             .await
             .unwrap();
-        let events = message_stream(store, session_id, user_message, fake_chunks(items), 1000)
-            .collect::<Vec<_>>()
-            .await;
+        let events = message_stream(
+            store,
+            session_id,
+            user_message,
+            fake_chunks(items),
+            1000,
+            &openwebide_core::ChatRequest {
+                connection_id: 1,
+                model: None,
+                system_prompt: None,
+                model_settings: Default::default(),
+                messages: vec![],
+                tools: vec![],
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
         events.iter().map(kind).collect()
     }
 
@@ -454,6 +470,10 @@ mod tests {
         block_on(async {
             let (store, session_id) = test_store().await;
             let usage = TurnTelemetry {
+                context: Some(openwebide_core::ContextBreakdown {
+                    history: 10,
+                    ..Default::default()
+                }),
                 prompt_tokens: 10,
                 completion_tokens: 20,
                 eval_duration_ms: 100,

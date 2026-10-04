@@ -407,6 +407,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 },
                 provider.chat_stream(&plan.request),
                 run.cancel.clone(),
+                &plan.request,
             ));
             while let Some(event) = events.next().await {
                 run.emit(event);

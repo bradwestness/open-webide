@@ -45,7 +45,9 @@ pub fn chat_events<'a, P: ChatPersistence + 'a, C: CancelCheck + Sync + 'a>(
     persistence: P,
     chunks: ChatStream<'a>,
     cancel: C,
+    request: &openwebide_core::ChatRequest,
 ) -> impl Stream<Item = RunEvent> + Send + 'a {
+    let context = openwebide_core::ContextBreakdown::for_request(request);
     stream::unfold(
         State {
             persistence,
@@ -56,7 +58,7 @@ pub fn chat_events<'a, P: ChatPersistence + 'a, C: CancelCheck + Sync + 'a>(
             usage: None,
             done: false,
         },
-        |mut state| async move {
+        move |mut state| async move {
             if state.done {
                 return None;
             }
@@ -93,7 +95,8 @@ pub fn chat_events<'a, P: ChatPersistence + 'a, C: CancelCheck + Sync + 'a>(
                             state.text.push_str(REPLY_CUT_OFF_MARKER);
                         }
                     }
-                    Some(Ok(StreamChunk::Usage(usage))) => {
+                    Some(Ok(StreamChunk::Usage(mut usage))) => {
+                        usage.context = Some(context.with_total(usage.prompt_tokens));
                         state.usage = Some(usage);
                         return Some((RunEvent::Telemetry { usage }, state));
                     }

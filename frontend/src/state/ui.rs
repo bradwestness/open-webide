@@ -26,6 +26,7 @@ pub struct PromptRequest {
 /// Signals shared by app-level notices and dialogs.
 #[derive(Clone, Copy)]
 pub struct UiState {
+    pub context_open: RwSignal<bool>,
     pub toast: RwSignal<Option<String>>,
     pub confirm: RwSignal<Option<ConfirmRequest>>,
     pub prompt: RwSignal<Option<PromptRequest>>,
@@ -34,6 +35,7 @@ pub struct UiState {
 impl UiState {
     pub fn new() -> Self {
         Self {
+            context_open: RwSignal::new(false),
             toast: RwSignal::new(None),
             confirm: RwSignal::new(None),
             prompt: RwSignal::new(None),
