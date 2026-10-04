@@ -2725,3 +2725,11 @@ button.browser-item {
 .shortcut-row { display: flex; gap: 16px; margin: 10px 0; }
 .shortcut-row dt { min-width: 130px; }
 .shortcut-row dd { margin: 0; }
+
+.session-search { margin-bottom: 6px; }
+.session-filters { margin-bottom: 6px; }
+.session-list .session { flex-wrap: wrap; }
+.session-list .session-name { flex: 1 1 100%; min-width: 0; justify-content: flex-start; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+.session-list .session-actions { margin-left: auto; }
+.session-list .session-actions { display: inline-flex; visibility: hidden; }
+.session-list .session:hover .session-actions, .session-list .session.active .session-actions, .session-list .session:focus-within .session-actions { visibility: visible; }

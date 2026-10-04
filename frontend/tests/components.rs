@@ -72,3 +72,6 @@ mod tool_steps;
 
 #[path = "components/commands.rs"]
 mod commands;
+
+#[path = "components/sessions.rs"]
+mod sessions;

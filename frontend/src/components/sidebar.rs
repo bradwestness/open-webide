@@ -1,9 +1,7 @@
 use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
 
-use crate::state::{
-    chat::ChatState, layout::LayoutState, projects::ProjectsState, settings::SettingsState,
-};
+use crate::state::{layout::LayoutState, settings::SettingsState};
 
 #[component]
 pub fn Sidebar(
@@ -22,15 +20,10 @@ pub fn Sidebar(
     on_delete_prompt: Callback<i64>,
 ) -> impl IntoView {
     let settings = expect_context::<SettingsState>();
-    let projects = expect_context::<ProjectsState>();
-    let chat = expect_context::<ChatState>();
     let layout = expect_context::<LayoutState>();
 
     let connections = settings.connections.read_only();
     let show_conn_form = settings.show_conn_form.read_only();
-    let sessions = chat.sessions.read_only();
-    let active_project = projects.active_project.read_only();
-    let active_session = chat.active_session.read_only();
     let system_prompts = settings.system_prompts.read_only();
     let show_prompt_form = settings.show_prompt_form.read_only();
     let prompt_edit_id = settings.prompt_edit_id.read_only();
@@ -56,76 +49,7 @@ pub fn Sidebar(
             class="sidebar"
             style=move || format!("width: {}px; flex: none;", sidebar_width.get())
         >
-            // -- sessions (scoped to the active project) ---------------------
-            <div class="sidebar-section">
-                <div class="section-header">
-                    <h2>"Sessions"</h2>
-                    <button
-                        class="icon-btn"
-                        title="New chat"
-                        disabled=move || chat.creating_session.get() || chat.streaming.get()
-                        on:click=move |_| on_new_session.run(())
-                    >
-                        "+"
-                    </button>
-                </div>
-                    <For
-                        each=move || {
-                            let active = active_project.get();
-                            sessions
-                                .get()
-                                .into_iter()
-                                .filter(|s| s.project_id == active)
-                                .collect::<Vec<_>>()
-                        }
-                        key=|s| (s.id, s.name.clone())
-                        children=move |s| {
-                            view! {
-                                <div
-                                    class=move || {
-                                        if active_session.get() == Some(s.id) {
-                                            "session active".to_string()
-                                        } else {
-                                            "session".to_string()
-                                        }
-                                    }
-                                >
-                                    <span
-                                        class="session-name"
-                                        on:click=move |_| on_select_session.run(s.id)
-                                    >
-                                        {s.name}
-                                    </span>
-                                    <span class="session-actions">
-                                        <button
-                                            class="icon-btn"
-                                            title="Rename"
-                                            on:click=move |_| on_rename_session.run(s.id)
-                                        >
-                                            "✎"
-                                        </button>
-                                        <button
-                                            class="icon-btn"
-                                            title="Delete"
-                                            on:click=move |_| on_delete_session.run(s.id)
-                                        >
-                                            "✕"
-                                        </button>
-                                    </span>
-                                </div>
-                            }
-                        }
-                    />
-                    <Show
-                        when=move || {
-                            let active = active_project.get();
-                            sessions.get().iter().all(|s| s.project_id != active)
-                        }
-                        fallback=|| ()
-                    >
-                        <p class="empty">"No sessions yet — start chatting to create one."</p>
-                    </Show>
-            </div>
+            <super::session_list::SessionList on_select=on_select_session on_new=on_new_session on_rename=on_rename_session on_delete=on_delete_session />
 
             // -- connections --------------------------------------------------
             <div class="sidebar-section">

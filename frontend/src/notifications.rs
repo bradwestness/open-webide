@@ -370,6 +370,10 @@ mod tests {
                 let settings = SettingsState::new(Theme::Dark, String::new());
                 let ui = UiState::new();
                 chat.sessions.set(vec![ChatSession {
+                    pinned: false,
+                    archived: false,
+                    auto_title: false,
+                    title_revision: 0,
                     id: 1,
                     name: "chat".into(),
                     project_id: mode.map(|_| 1),

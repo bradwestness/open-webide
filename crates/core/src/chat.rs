@@ -76,6 +76,15 @@ pub struct ChatMessage {
 /// A chat session bound to an optional LLM connection and project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatSession {
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub archived: bool,
+    /// Automatic titles may replace the initial name until the user renames it.
+    #[serde(default)]
+    pub auto_title: bool,
+    #[serde(default)]
+    pub title_revision: i64,
     pub id: i64,
     pub name: String,
     pub connection_id: Option<i64>,
@@ -102,11 +111,37 @@ pub struct ForkedSession {
 /// Payload for creating a new chat session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewSession {
+    #[serde(default)]
+    pub auto_title: bool,
     pub name: String,
     pub connection_id: Option<i64>,
     pub system_prompt_id: Option<i64>,
     #[serde(default)]
     pub project_id: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPreferences {
+    pub pinned: Option<bool>,
+    pub archived: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSearch {
+    pub project_id: Option<i64>,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub archived: bool,
+}
+impl SessionSearch {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.query.trim().chars().count() > 256 {
+            Err("Session search is limited to 256 characters".into())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// A named system prompt the user can attach to a session.

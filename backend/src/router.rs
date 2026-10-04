@@ -44,6 +44,10 @@ enum Route {
     DeleteProject,
     Browse,
     ListSessions,
+    SearchSessions,
+    SessionPreferences,
+    ExportSession,
+    SessionTitle,
     CreateSession,
     RenameSession,
     SetSessionConnection,
@@ -146,6 +150,10 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         }
         ("GET", ["browse"]) => Some(Route::Browse),
         ("GET", ["sessions"]) => Some(Route::ListSessions),
+        ("POST", ["sessions", "search"]) => Some(Route::SearchSessions),
+        ("PUT", ["sessions", _, "preferences"]) => Some(Route::SessionPreferences),
+        ("POST", ["sessions", _, "title"]) => Some(Route::SessionTitle),
+        ("GET", ["sessions", _, "export"]) => Some(Route::ExportSession),
         ("POST", ["sessions"]) => Some(Route::CreateSession),
         ("PUT", ["sessions", id]) if numeric_id(id) => Some(Route::RenameSession),
         ("PUT", ["sessions", id, "connection"]) if numeric_id(id) => {
@@ -344,6 +352,18 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::Browse), Some(user)) => api::projects::browse(req, &state, user).await,
         (Some(Route::ListSessions), Some(user)) => api::sessions::list_sessions(&state, user).await,
+        (Some(Route::SearchSessions), Some(user)) => {
+            api::sessions::search_sessions(req, &state, user).await
+        }
+        (Some(Route::SessionPreferences), Some(user)) => {
+            api::sessions::session_preferences(req, &state, &path, user).await
+        }
+        (Some(Route::SessionTitle), Some(user)) => {
+            api::sessions::session_title(&state, &path, user).await
+        }
+        (Some(Route::ExportSession), Some(user)) => {
+            api::sessions::export_session(&state, &path, user).await
+        }
         (Some(Route::CreateSession), Some(user)) => {
             api::sessions::create_session(req, &state, user).await
         }
@@ -757,6 +777,10 @@ mod tests {
             ("DELETE", "projects/5", Route::DeleteProject),
             ("GET", "browse", Route::Browse),
             ("GET", "sessions", Route::ListSessions),
+            ("POST", "sessions/search", Route::SearchSessions),
+            ("PUT", "sessions/5/preferences", Route::SessionPreferences),
+            ("GET", "sessions/5/export", Route::ExportSession),
+            ("POST", "sessions/5/title", Route::SessionTitle),
             ("POST", "sessions", Route::CreateSession),
             ("PUT", "sessions/5", Route::RenameSession),
             ("PUT", "sessions/5/connection", Route::SetSessionConnection),

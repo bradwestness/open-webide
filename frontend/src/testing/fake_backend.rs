@@ -56,6 +56,9 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub session_search_results: RefCell<VecDeque<Deferred<Vec<ChatSession>>>>,
+    pub session_export_results: RefCell<VecDeque<Deferred<openwebide_core::SessionExport>>>,
+    pub title_results: RefCell<VecDeque<Deferred<Option<ChatSession>>>>,
     pub todo_updates: RefCell<BTreeMap<i64, Vec<openwebide_core::TodoUpdate>>>,
     pub todo_load_results: RefCell<VecDeque<Deferred<Option<openwebide_core::TodoUpdate>>>>,
     pub todo_errors: RefCell<VecDeque<String>>,
@@ -550,6 +553,100 @@ impl Backend for FakeBackend {
             Ok(self.sessions.borrow().clone())
         })
     }
+    fn search_sessions<'a>(
+        &'a self,
+        search: &'a openwebide_core::SessionSearch,
+    ) -> LocalBoxFuture<'a, Result<Vec<ChatSession>, String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "search_sessions",
+            });
+            let pending = self.session_search_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .map_err(|_| "search response dropped".to_string())?;
+            }
+            search.validate()?;
+            let query = search.query.trim().to_ascii_lowercase();
+            let mut sessions:Vec<_>=self.sessions.borrow().iter().filter(|session| session.project_id==search.project_id && session.archived==search.archived
+                && (query.is_empty() || session.name.to_ascii_lowercase().contains(&query) || self.messages.borrow().get(&session.id).is_some_and(|entries| entries.iter().any(|entry| matches!(entry,ConversationEntry::Message(message) if message.content.to_ascii_lowercase().contains(&query)))))).cloned().collect();
+            sessions.sort_by_key(|session| {
+                (
+                    std::cmp::Reverse(session.pinned),
+                    std::cmp::Reverse(session.id),
+                )
+            });
+            Ok(sessions)
+        })
+    }
+    fn session_preferences<'a>(
+        &'a self,
+        id: i64,
+        preferences: &'a openwebide_core::SessionPreferences,
+    ) -> LocalBoxFuture<'a, Result<ChatSession, String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "session_preferences",
+            });
+            let mut sessions = self.sessions.borrow_mut();
+            let session = sessions
+                .iter_mut()
+                .find(|session| session.id == id)
+                .ok_or("not found")?;
+            if let Some(value) = preferences.pinned {
+                session.pinned = value;
+            }
+            if let Some(value) = preferences.archived {
+                session.archived = value;
+            }
+            Ok(session.clone())
+        })
+    }
+    fn session_title<'a>(
+        &'a self,
+        _id: i64,
+    ) -> LocalBoxFuture<'a, Result<Option<ChatSession>, String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "session_title",
+            });
+            let pending = self.title_results.borrow_mut().pop_front();
+            match pending {
+                Some(pending) => pending
+                    .await
+                    .map_err(|_| "title response dropped".to_string())?,
+                None => Ok(None),
+            }
+        })
+    }
+    fn export_session<'a>(
+        &'a self,
+        id: i64,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::SessionExport, String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "export_session",
+            });
+            let pending = self.session_export_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .map_err(|_| "export response dropped".to_string())?;
+            }
+            let sessions = self.sessions.borrow();
+            let session = sessions
+                .iter()
+                .find(|session| session.id == id)
+                .ok_or("not found")?;
+            let messages = self.messages.borrow();
+            let entries = messages.get(&id).cloned().unwrap_or_default();
+            Ok(openwebide_core::SessionExport {
+                filename: openwebide_core::session_markdown_filename(session),
+                markdown: openwebide_core::session_markdown(session, &entries),
+            })
+        })
+    }
     fn list_models<'a>(
         &'a self,
         connection_id: i64,
@@ -712,6 +809,10 @@ impl Backend for FakeBackend {
                 method: "create_session",
             });
             let session = ChatSession {
+                pinned: false,
+                archived: false,
+                auto_title: true,
+                title_revision: 0,
                 id: self
                     .sessions
                     .borrow()
@@ -1202,6 +1303,8 @@ impl Backend for FakeBackend {
                 .find(|item| item.id == id)
                 .ok_or("not found")?;
             item.name = name.into();
+            item.auto_title = false;
+            item.title_revision += 1;
             Ok(item.clone())
         })
     }

@@ -114,11 +114,9 @@ terminal pane are done and in the changelog, but:
 
 ### Fully fleshed-out TUI
 
-The chat/TUI surface grows into a full agent workspace. Rewind, per-run review, queued prompts, steering, conversation branches, browser notifications, agent checklists, live reasoning summaries tool-step timing/output summaries and the command palette/shortcut overlay are shipped; shell checkpoints honor project `.gitignore` rules and report snapshot coverage limits without blocking runs. Remaining work, in priority order:
+The chat/TUI surface grows into a full agent workspace. Rewind, per-run review, queued prompts, steering, conversation branches, browser notifications, agent checklists, live reasoning summaries, tool-step timing/output summaries, the command palette/shortcut overlay, and session search, pin/archive, automatic titles and Markdown export are shipped; shell checkpoints honor project `.gitignore` rules and report snapshot coverage limits without blocking runs. Remaining work, in priority order:
 
-1. **Session management** — search, pin/archive, fast-model auto-titles,
-    and export to Markdown.
-2. **Sub-agents** — a `task` tool that spawns child agents with their own
+1. **Sub-agents** — a `task` tool that spawns child agents with their own
     context, shown as nested collapsible runs with status, elapsed time,
     tokens and tool count, runnable in parallel.
 

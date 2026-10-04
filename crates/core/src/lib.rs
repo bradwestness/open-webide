@@ -26,6 +26,8 @@ pub mod rewind;
 pub mod run;
 pub use rewind::{RewindFile, RewindPlan};
 pub mod search;
+pub mod session_export;
+pub use session_export::{SessionExport, session_markdown, session_markdown_filename};
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 pub mod tool_timing;

@@ -46,6 +46,10 @@ pub(super) fn opt_int(
 
 pub(super) fn session_from_row(row: &QueryRow) -> Result<ChatSession, StorageError> {
     Ok(ChatSession {
+        pinned: row.get_int(7)? != 0,
+        archived: row.get_int(8)? != 0,
+        auto_title: row.get_int(9)? != 0,
+        title_revision: row.get_int(10)?,
         id: row.get_int(0)?,
         name: row.get_text(1)?.to_string(),
         connection_id: opt_int(row, 2, "connection_id")?,

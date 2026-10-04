@@ -10,16 +10,105 @@ pub(crate) async fn list_sessions(
     Ok(json_response(200, &sessions))
 }
 
-#[derive(Deserialize)]
-pub(super) struct CreateSessionBody {
-    name: String,
-    #[serde(default)]
-    connection_id: Option<i64>,
-    #[serde(default)]
-    system_prompt_id: Option<i64>,
-    #[serde(default)]
-    project_id: Option<i64>,
+pub(crate) async fn search_sessions(
+    req: Request,
+    state: &AppState,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
+    let search: openwebide_core::SessionSearch = parse_json(body)?;
+    search.validate().map_err(ApiError::bad_request)?;
+    let sessions = state
+        .store
+        .search_sessions(user.id, search.project_id, &search.query, search.archived)
+        .await?;
+    Ok(json_response(200, &sessions))
 }
+
+pub(crate) async fn session_preferences(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let id = session_id(path)?;
+    state.store.get_session(id, user.id).await?;
+    let body = read_body(req, JSON_BODY_LIMIT).await?;
+    let preferences: openwebide_core::SessionPreferences = parse_json(body)?;
+    let session = state
+        .store
+        .set_session_preferences(user.id, id, &preferences)
+        .await?;
+    Ok(json_response(200, &session))
+}
+
+pub(crate) async fn export_session(
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let id = session_id(path)?;
+    let export = state.store.export_session(user.id, id).await?;
+    Ok(json_response(200, &export))
+}
+
+/// Titles are best-effort and committed only while the original name is still automatic.
+pub(crate) async fn session_title(
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let id = session_id(path)?;
+    let session = state.store.get_session(id, user.id).await?;
+    if !session.auto_title {
+        return Ok(json_response(200, &Some(session)));
+    }
+    let messages = state.store.list_messages(id).await?;
+    let Some(exchange) = openwebide_agent::title::initial_exchange(&messages) else {
+        return Ok(json_response(
+            200,
+            &Option::<openwebide_core::ChatSession>::None,
+        ));
+    };
+    let setup = state.store.model_setup(user.id).await?;
+    let connection = session.connection_id.or_else(|| {
+        setup
+            .defaults
+            .primary
+            .as_ref()
+            .map(|selection| selection.server_id)
+    });
+    let Some(connection) = connection else {
+        return Ok(json_response(
+            200,
+            &Option::<openwebide_core::ChatSession>::None,
+        ));
+    };
+    let Ok(runtime) =
+        super::model_setup::runtime_store(&state.store, user.id, connection, None).await
+    else {
+        return Ok(json_response(
+            200,
+            &Option::<openwebide_core::ChatSession>::None,
+        ));
+    };
+    let source = super::model_operations::ModelSource {
+        store: &state.store,
+        user: user.id,
+    };
+    let title = match openwebide_agent::title::generate(&source, runtime, exchange).await {
+        Ok(title) => {
+            state
+                .store
+                .apply_session_title(user.id, id, session.title_revision, &title)
+                .await?
+        }
+        Err(_) => None,
+    };
+    Ok(json_response(200, &title))
+}
+
+pub(super) type CreateSessionBody = openwebide_core::NewSession;
 
 pub(crate) async fn create_session(
     req: Request,
@@ -31,14 +120,7 @@ pub(crate) async fn create_session(
     let new: CreateSessionBody = parse_json(body)?;
     let session = state
         .store
-        .create_session(
-            &new.name,
-            new.connection_id,
-            new.system_prompt_id,
-            new.project_id,
-            user_id,
-            now(),
-        )
+        .create_session_request(&new, user_id, now())
         .await?;
     Ok(json_response(201, &session))
 }

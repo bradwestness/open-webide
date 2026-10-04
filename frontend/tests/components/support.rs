@@ -30,6 +30,7 @@ pub struct TestState {
     pub api: Api,
     pub fake: Rc<FakeBackend>,
     pub chat: ChatState,
+    pub session_management: openwebide_frontend::state::sessions::SessionsState,
     pub projects: ProjectsState,
     pub workspace: WorkspaceState,
     pub settings: SettingsState,
@@ -60,6 +61,9 @@ impl TestState {
         provide_context(workspace);
         provide_context(git);
         provide_context(chat);
+        let session_management =
+            openwebide_frontend::state::sessions::SessionsState::new(chat, projects.active_project);
+        provide_context(session_management);
         provide_context(settings);
         provide_context(openwebide_frontend::project_git::ProjectGit::new(
             api,
@@ -72,6 +76,7 @@ impl TestState {
             api,
             fake,
             chat,
+            session_management,
             projects,
             workspace,
             settings,
@@ -114,6 +119,10 @@ impl TestState {
 
     pub fn seed_session(&self) {
         let session = ChatSession {
+            pinned: false,
+            archived: false,
+            auto_title: false,
+            title_revision: 0,
             id: 1,
             name: "test".into(),
             connection_id: Some(1),

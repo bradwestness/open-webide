@@ -179,6 +179,27 @@ impl BackendApi {
     pub async fn list_sessions(&self) -> Result<Vec<ChatSession>, String> {
         self.get("/sessions").await
     }
+    pub async fn search_sessions(
+        &self,
+        search: &openwebide_core::SessionSearch,
+    ) -> Result<Vec<ChatSession>, String> {
+        self.post("/sessions/search", search).await
+    }
+    pub async fn session_preferences(
+        &self,
+        id: i64,
+        preferences: &openwebide_core::SessionPreferences,
+    ) -> Result<ChatSession, String> {
+        self.put(&format!("/sessions/{id}/preferences"), preferences)
+            .await
+    }
+    pub async fn session_title(&self, id: i64) -> Result<Option<ChatSession>, String> {
+        self.post(&format!("/sessions/{id}/title"), &serde_json::json!({}))
+            .await
+    }
+    pub async fn export_session(&self, id: i64) -> Result<openwebide_core::SessionExport, String> {
+        self.get(&format!("/sessions/{id}/export")).await
+    }
 
     /// List the models a connection's provider reports.
     pub async fn list_models(&self, connection_id: i64) -> Result<Vec<ModelInfo>, String> {
@@ -364,6 +385,7 @@ impl BackendApi {
         project_id: Option<i64>,
     ) -> Result<ChatSession, String> {
         let body = NewSession {
+            auto_title: true,
             name: name.to_string(),
             connection_id,
             system_prompt_id,

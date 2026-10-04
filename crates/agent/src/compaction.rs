@@ -1,34 +1,10 @@
 //! One compaction policy for every execution host. Sources supply model I/O only.
 use openwebide_core::{
-    ChatCompletion, ChatMessage, ChatRequest, ChatResponse, Compaction, ModelRuntime,
-    ModelSelection, Role, StopReason,
+    ChatMessage, ChatRequest, ChatResponse, Compaction, ModelRuntime, Role, StopReason,
 };
 use openwebide_llm::LlmProvider;
-use std::future::Future;
 
-pub trait CompactionSource: Send + Sync {
-    fn available(&self) -> bool {
-        false
-    }
-    fn runtime(
-        &self,
-        _selection: &ModelSelection,
-    ) -> impl Future<Output = Result<ModelRuntime, String>> + Send {
-        async { Err("Model runtime unavailable".into()) }
-    }
-    fn complete(
-        &self,
-        _request: &ChatRequest,
-    ) -> impl Future<Output = Result<ChatCompletion, String>> + Send {
-        async { Err("Model completion unavailable".into()) }
-    }
-    fn context_limit(&self, _request: &ChatRequest) -> impl Future<Output = Option<usize>> + Send {
-        async { None }
-    }
-    fn tokens(&self, _request: &ChatRequest) -> impl Future<Output = Option<usize>> + Send {
-        async { None }
-    }
-}
+pub use crate::model::ModelSource as CompactionSource;
 pub struct NoopCompactionSource;
 impl CompactionSource for NoopCompactionSource {}
 

@@ -3,6 +3,7 @@ pub mod chat;
 pub mod git;
 pub mod layout;
 pub mod projects;
+pub mod sessions;
 pub mod settings;
 pub mod slash;
 pub mod ui;

@@ -52,6 +52,17 @@ pub fn App() -> impl IntoView {
     provide_context(workspace_state);
     provide_context(git_state);
     provide_context(chat_state);
+    let sessions_state = crate::state::sessions::SessionsState::new(chat_state, active_project);
+    provide_context(sessions_state);
+    provide_context(crate::state_actions::sessions::SessionActions::new(
+        api,
+        auth,
+        chat_state,
+        projects_state,
+        sessions_state,
+        ui,
+        std::rc::Rc::new(crate::state_actions::sessions::BrowserSessionDownload),
+    ));
 
     // -- auth --------------------------------------------------------------
     // The signed-in account, once the cached token has been verified (or the

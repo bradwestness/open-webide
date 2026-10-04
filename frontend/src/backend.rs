@@ -98,6 +98,23 @@ pub trait Backend {
     ) -> LocalBoxFuture<'a, Result<Connection, String>>;
     fn delete_connection<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>>;
     fn list_sessions<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<ChatSession>, String>>;
+    fn search_sessions<'a>(
+        &'a self,
+        search: &'a openwebide_core::SessionSearch,
+    ) -> LocalBoxFuture<'a, Result<Vec<ChatSession>, String>>;
+    fn session_preferences<'a>(
+        &'a self,
+        id: i64,
+        preferences: &'a openwebide_core::SessionPreferences,
+    ) -> LocalBoxFuture<'a, Result<ChatSession, String>>;
+    fn session_title<'a>(
+        &'a self,
+        id: i64,
+    ) -> LocalBoxFuture<'a, Result<Option<ChatSession>, String>>;
+    fn export_session<'a>(
+        &'a self,
+        id: i64,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::SessionExport, String>>;
     fn list_models<'a>(
         &'a self,
         connection_id: i64,
@@ -602,6 +619,31 @@ impl Backend for BackendApi {
     }
     fn list_sessions<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<ChatSession>, String>> {
         Box::pin(BackendApi::list_sessions(self))
+    }
+    fn search_sessions<'a>(
+        &'a self,
+        search: &'a openwebide_core::SessionSearch,
+    ) -> LocalBoxFuture<'a, Result<Vec<ChatSession>, String>> {
+        Box::pin(BackendApi::search_sessions(self, search))
+    }
+    fn session_preferences<'a>(
+        &'a self,
+        id: i64,
+        preferences: &'a openwebide_core::SessionPreferences,
+    ) -> LocalBoxFuture<'a, Result<ChatSession, String>> {
+        Box::pin(BackendApi::session_preferences(self, id, preferences))
+    }
+    fn session_title<'a>(
+        &'a self,
+        id: i64,
+    ) -> LocalBoxFuture<'a, Result<Option<ChatSession>, String>> {
+        Box::pin(BackendApi::session_title(self, id))
+    }
+    fn export_session<'a>(
+        &'a self,
+        id: i64,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::SessionExport, String>> {
+        Box::pin(BackendApi::export_session(self, id))
     }
     fn list_models<'a>(
         &'a self,

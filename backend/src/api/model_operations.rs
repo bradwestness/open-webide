@@ -4,11 +4,11 @@ use crate::state::AppDb;
 use openwebide_agent::compaction::CompactionSource;
 use openwebide_storage::Store;
 
-pub(crate) struct ModelSource {
-    pub store: Arc<Store<AppDb>>,
+pub(crate) struct ModelSource<S> {
+    pub store: S,
     pub user: UserId,
 }
-impl CompactionSource for ModelSource {
+impl<S: std::ops::Deref<Target = Store<AppDb>> + Send + Sync> CompactionSource for ModelSource<S> {
     fn available(&self) -> bool {
         true
     }
@@ -33,9 +33,22 @@ impl CompactionSource for ModelSource {
             .await
             .map_err(|error| error.to_string())
     }
+    async fn complete_with_timeout(
+        &self,
+        request: &ChatRequest,
+        timeout_seconds: u32,
+    ) -> Result<openwebide_core::ChatCompletion, String> {
+        let mut request = request.clone();
+        provider(&self.store, self.user, &mut request, Some(timeout_seconds))
+            .await
+            .map_err(|error| error.to_string())?
+            .chat_tools(&request)
+            .await
+            .map_err(|error| error.to_string())
+    }
     async fn context_limit(&self, request: &ChatRequest) -> Option<usize> {
         let mut request = request.clone();
-        provider(&self.store, self.user, &mut request, true)
+        provider(&self.store, self.user, &mut request, Some(5))
             .await
             .ok()?
             .context_limit(request.model.as_deref())
@@ -54,7 +67,7 @@ async fn provider(
     store: &Store<AppDb>,
     user: UserId,
     request: &mut ChatRequest,
-    quick: bool,
+    timeout_seconds: Option<u32>,
 ) -> Result<Provider<SpinHttpClient>, ApiError> {
     request
         .model_settings
@@ -67,8 +80,8 @@ async fn provider(
         request.model.as_deref(),
     )
     .await?;
-    if quick {
-        runtime.transport.timeout_seconds = runtime.transport.timeout_seconds.min(5);
+    if let Some(timeout_seconds) = timeout_seconds {
+        runtime.transport.timeout_seconds = runtime.transport.timeout_seconds.min(timeout_seconds);
     }
     // Explicit operation settings are already resolved by the shared workflow.
     request.model = runtime.connection.model.clone();
@@ -89,7 +102,7 @@ pub(crate) async fn complete(
     user: UserId,
     mut request: ChatRequest,
 ) -> Result<openwebide_core::ChatCompletion, ApiError> {
-    provider(store, user, &mut request, false)
+    provider(store, user, &mut request, None)
         .await?
         .chat_tools(&request)
         .await
@@ -100,7 +113,7 @@ pub(crate) async fn tokens(
     user: UserId,
     mut request: ChatRequest,
 ) -> Result<Option<usize>, ApiError> {
-    Ok(provider(store, user, &mut request, true)
+    Ok(provider(store, user, &mut request, Some(5))
         .await?
         .request_tokens(&request)
         .await)

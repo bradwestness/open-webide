@@ -1246,6 +1246,10 @@ mod tests {
         Owner::new().with(|| {
             let chat = ChatState::new();
             let session = |id, project_id| ChatSession {
+                pinned: false,
+                archived: false,
+                auto_title: false,
+                title_revision: 0,
                 id,
                 project_id: Some(project_id),
                 name: "test".into(),

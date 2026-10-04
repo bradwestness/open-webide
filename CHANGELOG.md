@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Add session search across names and messages, durable pin/archive/restore controls, and full Markdown export in local, remote and projectless chats. Generate titles from the initial exchange using the fast model with primary fallback; serialize background attempts, preserve manual names and ignore stale account results. Keep pinned sessions first, archived history accessible, and metadata intact through rewind; forks start unpinned and unarchived with manual branch names.
+
 - Add a searchable command palette (`Ctrl/⌘+Shift+P`) and keyboard-shortcut overlay (`Ctrl/⌘+/`), with a Commands button in the top bar. Support arrow keys, Enter, Escape and restored focus; reuse shared session, project, settings, model, panel and slash-command actions. Disable project-only commands in projectless chat, preserve drafts and close stale dialogs on account, project or session changes.
 
 - Polish tool steps in local, remote and projectless chats with live elapsed time, persisted final durations, expandable ANSI-colored output and plain-text Copy (including an HTTP LAN fallback). Add per-prompt tool/file counts, including shell changes, and recorded model/tool time; mark incomplete timing as a lower bound. Exclude approval waits, freeze cancelled tools, preserve timing through reload, fork and rewind, and keep timing-save failures from stopping runs.

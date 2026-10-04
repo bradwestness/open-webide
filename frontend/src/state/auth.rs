@@ -269,6 +269,10 @@ mod tests {
             );
             git.status.set(Some(GitRepoStatus::default()));
             chat.sessions.set(vec![ChatSession {
+                pinned: false,
+                archived: false,
+                auto_title: false,
+                title_revision: 0,
                 id: 2,
                 name: "session".into(),
                 connection_id: Some(3),

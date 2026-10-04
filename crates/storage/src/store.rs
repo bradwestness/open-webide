@@ -6,6 +6,7 @@ mod model_setup;
 mod reviews;
 mod rewind;
 mod rows;
+mod sessions;
 mod todos;
 mod tool_timing;
 
@@ -15,8 +16,8 @@ use std::collections::BTreeMap;
 
 use openwebide_core::{
     ChatMessage, ChatSession, Connection, ConversationEntry, EditDecision, FileDiff, NewConnection,
-    NewProject, PersistedEdit, Project, ProviderKind, ResolveEditRequest, Role, SystemPrompt,
-    ToolCall, ToolStep, TurnTelemetry, User, UserId, UserRole, WorkspaceMode,
+    NewProject, NewSession, PersistedEdit, Project, ProviderKind, ResolveEditRequest, Role,
+    SystemPrompt, ToolCall, ToolStep, TurnTelemetry, User, UserId, UserRole, WorkspaceMode,
 };
 
 use crate::db::{Db, DbValue};
@@ -695,8 +696,7 @@ impl<D: Db> Store<D> {
     // Sessions are owned by a user (set at creation); every lookup filters by
     // `user_id` so one account never reads another's conversations.
 
-    const SESSION_COLUMNS: &'static str =
-        "id, name, connection_id, system_prompt_id, project_id, user_id, created_at";
+    const SESSION_COLUMNS: &'static str = "id, name, connection_id, system_prompt_id, project_id, user_id, created_at, pinned, archived, auto_title, title_revision";
 
     pub async fn list_sessions(&self, user_id: UserId) -> Result<Vec<ChatSession>, StorageError> {
         let res = self
@@ -757,18 +757,49 @@ impl<D: Db> Store<D> {
         user_id: UserId,
         created_at: i64,
     ) -> Result<ChatSession, StorageError> {
+        self.create_session_request(
+            &NewSession {
+                auto_title: false,
+                name: name.into(),
+                connection_id,
+                system_prompt_id,
+                project_id,
+            },
+            user_id,
+            created_at,
+        )
+        .await
+    }
+
+    pub async fn create_session_request(
+        &self,
+        request: &NewSession,
+        user_id: UserId,
+        created_at: i64,
+    ) -> Result<ChatSession, StorageError> {
         self.db
             .transaction(|tx| async move {
-                Store::new(tx)
+                let store = Store::new(tx);
+                let session = store
                     .create_session_unlocked(
-                        name,
-                        connection_id,
-                        system_prompt_id,
-                        project_id,
+                        &request.name,
+                        request.connection_id,
+                        request.system_prompt_id,
+                        request.project_id,
                         user_id,
                         created_at,
                     )
-                    .await
+                    .await?;
+                if request.auto_title {
+                    store
+                        .db
+                        .execute(
+                            "UPDATE sessions SET auto_title = 1 WHERE id = ? AND user_id = ?",
+                            &[DbValue::Int(session.id), DbValue::Int(user_id.get())],
+                        )
+                        .await?;
+                }
+                store.get_session(session.id, user_id).await
             })
             .await
     }
@@ -846,7 +877,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "UPDATE sessions SET name = ? WHERE id = ? AND user_id = ?",
+                "UPDATE sessions SET name = ?, auto_title = 0, title_revision = title_revision + 1 WHERE id = ? AND user_id = ?",
                 &[
                     DbValue::Text(name.into()),
                     DbValue::Int(id),
@@ -1986,18 +2017,16 @@ mod tests {
                 .unwrap()
                 .id;
             let project = edit_project(&store, user).await;
-            let session = store
-                .create_session("s", None, None, Some(project.id), user, 1)
-                .await
-                .unwrap();
+            // Seed with the old schema rather than today's session decoder.
+            let session_id = store.db.execute("INSERT INTO sessions (name, project_id, user_id, created_at) VALUES ('s', ?, ?, 1)", &[DbValue::Int(project.id), DbValue::Int(user.get())]).await.unwrap().last_insert_rowid;
             let diff = edit(Some("a"), "b");
             // Old builds stored completed history and permission previews in the same diff column.
-            store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, ok, diff, created_at) VALUES (?, 1, 'history', 'write_file', 'write', 1, ?, 1)", &[DbValue::Int(session.id), DbValue::Text(serde_json::to_string(&diff).unwrap())]).await.unwrap();
-            store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, diff, created_at) VALUES (?, 1, 'preview', 'write_file', 'write', ?, 1)", &[DbValue::Int(session.id), DbValue::Text(serde_json::to_string(&diff).unwrap())]).await.unwrap();
+            store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, ok, diff, created_at) VALUES (?, 1, 'history', 'write_file', 'write', 1, ?, 1)", &[DbValue::Int(session_id), DbValue::Text(serde_json::to_string(&diff).unwrap())]).await.unwrap();
+            store.db.execute("INSERT INTO tool_steps (session_id, anchor_message_id, tool_call_id, name, summary, diff, created_at) VALUES (?, 1, 'preview', 'write_file', 'write', ?, 1)", &[DbValue::Int(session_id), DbValue::Text(serde_json::to_string(&diff).unwrap())]).await.unwrap();
             store.migrate().await.unwrap();
             assert_eq!(schema_version(&store.db).await, migrations::SCHEMA_VERSION);
             store
-                .complete_tool_step(user, session.id, "history", true, "replay", Some(&diff))
+                .complete_tool_step(user, session_id, "history", true, "replay", Some(&diff))
                 .await
                 .unwrap();
             assert!(
@@ -2008,7 +2037,7 @@ mod tests {
                     .is_empty()
             );
             store
-                .complete_tool_step(user, session.id, "preview", true, "written", Some(&diff))
+                .complete_tool_step(user, session_id, "preview", true, "written", Some(&diff))
                 .await
                 .unwrap();
             let pending = store.list_pending_edits(user, project.id).await.unwrap();
@@ -3639,26 +3668,24 @@ mod tests {
                 .insert_user("alice", "hash", UserRole::Admin, 1)
                 .await
                 .unwrap();
-            let session = store
-                .create_session("s", None, None, None, user.id, 1)
-                .await
-                .unwrap();
+            // Seed with the old schema rather than today's session decoder.
+            let session_id = store.db.execute("INSERT INTO sessions (name, project_id, user_id, created_at) VALUES ('s', ?, ?, 1)", &[DbValue::Null, DbValue::Int(user.id.get())]).await.unwrap().last_insert_rowid;
             store
                 .db
                 .execute(
                     "INSERT INTO run_cancels (session_id) VALUES (?)",
-                    &[DbValue::Int(session.id)],
+                    &[DbValue::Int(session_id)],
                 )
                 .await
                 .unwrap();
             store.migrate().await.unwrap();
             assert_eq!(schema_version(&store.db).await, migrations::SCHEMA_VERSION);
-            assert!(!store.cancel_requested_since(session.id, 0).await.unwrap());
-            store.request_cancel(session.id, 1000).await.unwrap();
+            assert!(!store.cancel_requested_since(session_id, 0).await.unwrap());
+            store.request_cancel(session_id, 1000).await.unwrap();
             migrations::apply_through(&store.db, 17).await.unwrap();
-            assert!(store.cancel_requested_since(session.id, 999).await.unwrap());
+            assert!(store.cancel_requested_since(session_id, 999).await.unwrap());
             store.migrate().await.unwrap();
-            assert!(store.cancel_requested_since(session.id, 999).await.unwrap());
+            assert!(store.cancel_requested_since(session_id, 999).await.unwrap());
         });
     }
 

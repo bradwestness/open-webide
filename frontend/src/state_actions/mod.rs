@@ -7,6 +7,7 @@ pub mod lifecycle;
 pub mod projects;
 pub mod prompt_queue;
 pub mod runs;
+pub mod sessions;
 pub mod settings;
 mod tree;
 pub mod workspace;
