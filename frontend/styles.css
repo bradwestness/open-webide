@@ -2621,3 +2621,22 @@ button.browser-item {
   font-size: 11px;
   margin-top: -8px;
 }
+
+/* Run file review shares the chat surface and theme palette. */
+.run-changes { margin: 6px 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); }
+.run-changes > summary, .run-change-hunk > summary { cursor: pointer; padding: 8px; color: var(--text-muted); }
+.run-change { border-top: 1px solid var(--border); padding: 8px; }
+.run-change-header, .run-change-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.run-change-path { margin-right: auto; font-family: var(--mono); overflow-wrap: anywhere; text-align: left; }
+.run-change-hunk { margin-top: 6px; }
+.run-change-hunk pre { font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 4px 8px; }
+.run-change-removed { color: var(--offline); background: var(--bg); }
+.run-change-added { color: var(--online); background: var(--bg); }
+.run-change-actions { padding: 4px 8px; }
+
+.editor-pending-content { white-space: pre; }
+.editor-pending-line { display: flex; min-height: 1.5em; }
+.editor-pending-gutter { flex: 0 0 4ch; margin-right: 1ch; padding-right: 1ch; border-left: 3px solid transparent; text-align: right; color: var(--text-muted); user-select: none; }
+.editor-pending-gutter.changed { border-left-color: var(--git-modified); }
+.editor-pending-gutter.removed { border-left-color: var(--offline); }
+.editor-pending-text { white-space: pre; }

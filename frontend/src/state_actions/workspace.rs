@@ -442,6 +442,15 @@ impl WorkspaceActions {
             });
         });
 
+        let review_actions = super::reviews::ReviewActions::new(
+            api,
+            projects,
+            workspace,
+            ui,
+            request_open,
+            refresh_git,
+        );
+        provide_context(review_actions);
         let resolve = Callback::new(move |(edit, decision): (PersistedEdit, EditDecision)| {
             let project_id = edit.project_id;
             let path = edit.path.clone();
@@ -650,7 +659,13 @@ impl WorkspaceActions {
                 .persisted_edits
                 .with_untracked(|edits| edits.get(&path).cloned())
             {
-                resolve.run((edit, EditDecision::Accepted));
+                if edit.file.is_some() {
+                    if !review_actions.for_file.run((path, EditDecision::Accepted)) {
+                        ui.notify("Review the current file version in the changes panel.");
+                    }
+                } else {
+                    resolve.run((edit, EditDecision::Accepted));
+                }
             }
         });
 
@@ -664,6 +679,12 @@ impl WorkspaceActions {
             else {
                 return;
             };
+            if edit.file.is_some() {
+                if !review_actions.for_file.run((path, EditDecision::Rejected)) {
+                    ui.notify("Review the current file version in the changes panel.");
+                }
+                return;
+            }
             if workspace.is_resolving() {
                 return;
             }

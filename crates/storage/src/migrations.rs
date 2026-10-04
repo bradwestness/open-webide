@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -168,6 +168,24 @@ async fn apply_step<D: Db>(
                 &[],
             )
             .await?;
+            Ok(())
+        }
+        22 => {
+            if db
+                .execute(
+                    "SELECT 1 FROM pragma_table_info('pending_edits') WHERE name = 'file'",
+                    &[],
+                )
+                .await?
+                .rows
+                .is_empty()
+            {
+                db.execute("ALTER TABLE pending_edits ADD COLUMN file TEXT", &[])
+                    .await?;
+            }
+            db.execute("CREATE TABLE IF NOT EXISTS run_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE, path TEXT NOT NULL, state TEXT NOT NULL, UNIQUE(session_id, message_id, path))", &[]).await?;
+            db.execute("CREATE TABLE IF NOT EXISTS project_reviews (project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, plan TEXT NOT NULL)", &[]).await?;
+            db.execute("CREATE TABLE IF NOT EXISTS run_review_history (project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE, path TEXT NOT NULL, revision INTEGER NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY (session_id, message_id, path, revision))", &[]).await?;
             Ok(())
         }
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),

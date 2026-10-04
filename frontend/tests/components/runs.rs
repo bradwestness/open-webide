@@ -1120,6 +1120,7 @@ async fn completed_snapshots_refresh_db_state_without_resurrecting_resolved_edit
         mounted.state.fake.persisted_edits.borrow_mut().insert(
             (1, "file.rs".into()),
             PersistedEdit {
+                file: None,
                 project_id: 1,
                 path: "file.rs".into(),
                 revision: 2,
@@ -1219,6 +1220,7 @@ async fn replay_during_resolution(rejected: bool, seen_live: bool) -> (String, b
         u64::from(seen_live)
     );
     let edit = PersistedEdit {
+        file: None,
         project_id: 1,
         path: "file.rs".into(),
         revision: 1,

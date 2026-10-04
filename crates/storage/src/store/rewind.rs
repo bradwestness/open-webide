@@ -30,9 +30,11 @@ impl<D: Db> Store<D> {
              WHERE locked.id = current.id OR (locked.project_id IS NOT NULL AND locked.project_id = current.project_id)",
             &[DbValue::Int(session)],
         ).await?;
-        if !result.rows.is_empty() {
+        let reviews = self.db.execute("SELECT 1 FROM project_reviews r JOIN sessions locked ON locked.id = r.session_id JOIN sessions current ON current.id = ? WHERE locked.id = current.id OR locked.project_id = current.project_id", &[DbValue::Int(session)]).await?;
+        if !result.rows.is_empty() || !reviews.rows.is_empty() {
             return Err(StorageError::Conflict(
-                "Finish the prepared rewind before starting another run in this project".into(),
+                "Finish the prepared review or rewind before starting another run in this project"
+                    .into(),
             ));
         }
         Ok(())
@@ -103,6 +105,10 @@ impl<D: Db> Store<D> {
                 let pending = store.list_pending_edits(user, project).await?;
                 for file in &plan.files {
                     if let Some(edit) = pending.iter().find(|edit| edit.path == file.path) {
+                        if let Some(current) = &edit.file {
+                            if current.after_bytes().map_err(StorageError::Conflict)? != file.after_bytes().map_err(StorageError::Conflict)? { return Err(StorageError::Conflict(format!("{} has a newer review revision", file.path))); }
+                            continue;
+                        }
                         let last_diff = expected.iter().rev().find_map(|entry| match entry { ConversationEntry::ToolStep(step) => step.diff.as_ref().filter(|diff| diff.path == file.path), ConversationEntry::Message(_) => None });
                         if last_diff.is_some_and(|diff| diff.new != edit.diff.new) {
                             return Err(StorageError::Conflict(format!("{} has a newer review revision", file.path)));
@@ -120,6 +126,7 @@ impl<D: Db> Store<D> {
             store.db.execute("INSERT INTO rewind_history (session_id, message_id, conversation) VALUES (?, ?, ?)", &[DbValue::Int(session), DbValue::Int(message), DbValue::Text(row.get_text(1)?.into())]).await?;
             store.db.execute("DELETE FROM tool_steps WHERE session_id = ? AND anchor_message_id >= ?", &[DbValue::Int(session), DbValue::Int(message)]).await?;
             store.db.execute("DELETE FROM messages WHERE session_id = ? AND id >= ?", &[DbValue::Int(session), DbValue::Int(message)]).await?;
+            if let Some(project) = owned.project_id { store.reconcile_review_rewind(user, project, &plan.files).await?; }
             store.db.execute("DELETE FROM session_rewinds WHERE session_id = ?", &[DbValue::Int(session)]).await?;
             store.db.execute("DELETE FROM tool_permissions WHERE session_id = ?", &[DbValue::Int(session)]).await?;
             store.list_conversation(session).await
@@ -319,7 +326,7 @@ mod tests {
                         .await
                         .unwrap()
                         .len(),
-                    1
+                    2
                 );
                 store
                     .db

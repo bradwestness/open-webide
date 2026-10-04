@@ -14,6 +14,8 @@ pub mod highlight;
 pub mod host;
 pub mod html;
 pub use host::*;
+pub mod reviews;
+pub use reviews::{ReviewHunk, ReviewPlan, ReviewRequest, RunChange};
 pub mod rewind;
 pub mod run;
 pub use rewind::{RewindFile, RewindPlan};

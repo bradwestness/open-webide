@@ -37,6 +37,8 @@ enum Route {
     ListProjects,
     CreateProject,
     ListPendingEdits,
+    ListRunChanges,
+    RunReview,
     ResolvePendingEdit,
     RenameProject,
     DeleteProject,
@@ -164,6 +166,10 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("POST", ["chat-tools"]) => Some(Route::ChatTools),
         ("GET", ["web", "search"]) => Some(Route::WebSearch),
         ("GET", ["web", "fetch"]) => Some(Route::WebFetch),
+        ("GET", ["projects", _, "run-changes"]) => Some(Route::ListRunChanges),
+        ("POST", ["projects", _, "reviews", "preview" | "prepare" | "complete"]) => {
+            Some(Route::RunReview)
+        }
         ("GET", ["projects", _, "files"]) => Some(Route::FilesGet),
         ("GET", ["projects", _, "files", "context"]) => Some(Route::FilesGet),
         ("GET", ["projects", _, "files", "read"]) => Some(Route::FilesGet),
@@ -307,6 +313,10 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::DeleteProject), Some(user)) => {
             api::projects::delete_project(&state, &path, user).await
+        }
+        (Some(Route::ListRunChanges), Some(user)) => api::reviews::list(&state, &path, user).await,
+        (Some(Route::RunReview), Some(user)) => {
+            api::reviews::review(req, &state, &path, user).await
         }
         (Some(Route::ListPendingEdits), Some(user)) => {
             api::projects::list_pending_edits(&state, &path, user).await
@@ -683,6 +693,10 @@ mod tests {
             ("GET", "projects", Route::ListProjects),
             ("POST", "projects", Route::CreateProject),
             ("GET", "projects/5/pending-edits", Route::ListPendingEdits),
+            ("GET", "projects/5/run-changes", Route::ListRunChanges),
+            ("POST", "projects/5/reviews/preview", Route::RunReview),
+            ("POST", "projects/5/reviews/prepare", Route::RunReview),
+            ("POST", "projects/5/reviews/complete", Route::RunReview),
             (
                 "POST",
                 "projects/5/pending-edits/resolve",

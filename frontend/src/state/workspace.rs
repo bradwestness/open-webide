@@ -302,6 +302,7 @@ mod tests {
     }
     fn record(project_id: i64, revision: i64) -> PersistedEdit {
         PersistedEdit {
+            file: None,
             project_id,
             path: "main.rs".into(),
             revision,

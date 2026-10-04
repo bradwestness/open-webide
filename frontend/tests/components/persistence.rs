@@ -809,6 +809,7 @@ async fn pending_reload_and_decisions_survive_remount_with_shared_backend() {
     use openwebide_core::{EditDecision, FileDiff, PersistedEdit};
     let mounted = mount_test(|state| {
         let edit = PersistedEdit {
+            file: None,
             project_id: 1,
             path: "file.rs".into(),
             revision: 1,
@@ -919,6 +920,7 @@ async fn pending_refresh_discards_stale_results_after_logout_and_project_deletio
         }
         release
             .send(Ok(vec![openwebide_core::PersistedEdit {
+                file: None,
                 project_id: 1,
                 path: "file.rs".into(),
                 revision: 1,

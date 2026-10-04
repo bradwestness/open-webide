@@ -56,6 +56,16 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub run_changes: RefCell<BTreeMap<i64, Vec<openwebide_core::RunChange>>>,
+    pub reviews: RefCell<BTreeMap<i64, openwebide_core::ReviewPlan>>,
+    pub review_results: RefCell<VecDeque<Deferred<openwebide_core::ReviewPlan>>>,
+    pub review_history: RefCell<
+        Vec<(
+            i64,
+            openwebide_core::ReviewRequest,
+            openwebide_core::RunChange,
+        )>,
+    >,
     pub rewinds: RefCell<BTreeMap<i64, openwebide_core::RewindPlan>>,
     pub git_statuses: RefCell<VecDeque<Deferred<GitRepoStatus>>>,
     pub git_status_requests: RefCell<Vec<Option<i64>>>,
@@ -1229,6 +1239,123 @@ impl Backend for FakeBackend {
                 .unwrap_or_default())
         })
     }
+    fn list_run_changes(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::RunChange>, String>> {
+        Box::pin(async move {
+            Ok(self
+                .run_changes
+                .borrow()
+                .get(&project)
+                .cloned()
+                .unwrap_or_default())
+        })
+    }
+    fn preview_run_review<'a>(
+        &'a self,
+        project: i64,
+        request: &'a openwebide_core::ReviewRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ReviewPlan, String>> {
+        Box::pin(async move {
+            let deferred = self.review_results.borrow_mut().pop_front();
+            if let Some(deferred) = deferred {
+                return deferred.await.map_err(|_| "review cancelled".to_string())?;
+            }
+            if let Some(plan) = self.reviews.borrow().get(&project) {
+                return if plan.request == *request {
+                    Ok(plan.clone())
+                } else {
+                    Err("Review in progress".into())
+                };
+            }
+            self.run_changes
+                .borrow()
+                .get(&project)
+                .and_then(|records| {
+                    records.iter().find(|record| {
+                        record.session_id == request.session_id
+                            && record.message_id == request.message_id
+                            && record.file.path == request.path
+                    })
+                })
+                .ok_or("Review not found")?
+                .prepare(request.clone())
+        })
+    }
+    fn prepare_run_review<'a>(
+        &'a self,
+        project: i64,
+        request: &'a openwebide_core::ReviewRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ReviewPlan, String>> {
+        Box::pin(async move {
+            let plan = self.preview_run_review(project, request).await?;
+            self.reviews.borrow_mut().insert(project, plan.clone());
+            Ok(plan)
+        })
+    }
+    fn complete_run_review<'a>(
+        &'a self,
+        project: i64,
+        request: &'a openwebide_core::ReviewRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::RunChange, String>> {
+        Box::pin(async move {
+            if let Some(error) = self.resolution_error.borrow().clone() {
+                return Err(error);
+            }
+            let plan = self.reviews.borrow().get(&project).cloned();
+            let Some(plan) = plan else {
+                return self
+                    .review_history
+                    .borrow()
+                    .iter()
+                    .find(|(id, previous, _)| *id == project && previous == request)
+                    .map(|(_, _, record)| record.clone())
+                    .ok_or("Review not prepared".into());
+            };
+            if plan.request != *request {
+                return Err("Review changed".into());
+            }
+            let reviewed = plan.reviewed;
+            let file = reviewed.pending_file()?;
+            let mut edits = self.persisted_edits.borrow_mut();
+            let revision = edits
+                .get(&(project, request.path.clone()))
+                .map_or(1, |edit| edit.revision + 1);
+            edits.insert(
+                (project, request.path.clone()),
+                PersistedEdit {
+                    project_id: project,
+                    path: request.path.clone(),
+                    revision,
+                    decision: if reviewed.pending() > 0 {
+                        EditDecision::Pending
+                    } else {
+                        request.decision
+                    },
+                    diff: file.preview(),
+                    file: Some(file),
+                },
+            );
+            let mut records = self.run_changes.borrow_mut();
+            let record = records
+                .get_mut(&project)
+                .and_then(|records| {
+                    records.iter_mut().find(|record| {
+                        record.session_id == request.session_id
+                            && record.message_id == request.message_id
+                            && record.file.path == request.path
+                    })
+                })
+                .ok_or("Review not found")?;
+            *record = reviewed.clone();
+            self.reviews.borrow_mut().remove(&project);
+            self.review_history
+                .borrow_mut()
+                .push((project, request.clone(), reviewed.clone()));
+            Ok(reviewed)
+        })
+    }
     fn prepare_rewind(
         &self,
         session: i64,
@@ -1461,6 +1588,7 @@ impl Backend for FakeBackend {
                 edits.insert(
                     key,
                     PersistedEdit {
+                        file: None,
                         project_id,
                         path: diff.path.clone(),
                         revision,

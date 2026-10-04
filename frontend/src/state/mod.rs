@@ -7,3 +7,5 @@ pub mod settings;
 pub mod slash;
 pub mod ui;
 pub mod workspace;
+
+pub mod reviews;

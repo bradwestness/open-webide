@@ -233,6 +233,8 @@ pub enum EditDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedEdit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<crate::RewindFile>,
     pub project_id: i64,
     pub path: String,
     pub revision: i64,

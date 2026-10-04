@@ -186,6 +186,7 @@ impl ChatActions {
         project_runs_slot.set_value(Some(project_runs));
 
         let start = {
+            let reviews = use_context::<crate::state::reviews::ReviewsState>();
             let auth = expect_context::<crate::state::auth::AuthState>();
             let local_cancel = chat.local_cancel_flag.get_value();
             let local_permissions = chat.local_permissions.get_value();
@@ -194,6 +195,7 @@ impl ChatActions {
                 if (resume.is_none() && content.is_empty())
                     || chat.streaming.get()
                     || chat.rewinding.get()
+                    || reviews.is_some_and(|state| state.busy.get().is_some())
                     || chat.connection_changing.get()
                     || chat.creating_session.get()
                 {

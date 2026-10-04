@@ -281,6 +281,33 @@ pub trait Backend {
         &'a self,
         session_id: i64,
     ) -> LocalBoxFuture<'a, Result<Vec<ConversationEntry>, String>>;
+    fn list_run_changes(
+        &self,
+        _project: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::RunChange>, String>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+    fn preview_run_review<'a>(
+        &'a self,
+        _project: i64,
+        _request: &'a openwebide_core::ReviewRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ReviewPlan, String>> {
+        Box::pin(async { Err("Run review unavailable".into()) })
+    }
+    fn prepare_run_review<'a>(
+        &'a self,
+        _project: i64,
+        _request: &'a openwebide_core::ReviewRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ReviewPlan, String>> {
+        Box::pin(async { Err("Run review unavailable".into()) })
+    }
+    fn complete_run_review<'a>(
+        &'a self,
+        _project: i64,
+        _request: &'a openwebide_core::ReviewRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::RunChange, String>> {
+        Box::pin(async { Err("Run review unavailable".into()) })
+    }
     fn prepare_rewind(
         &self,
         session: i64,
@@ -797,6 +824,33 @@ impl Backend for BackendApi {
         request: &'a ChatRequest,
     ) -> LocalBoxFuture<'a, Result<Option<usize>, String>> {
         Box::pin(BackendApi::model_tokens(self, request))
+    }
+    fn list_run_changes(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::RunChange>, String>> {
+        Box::pin(BackendApi::list_run_changes(self, project))
+    }
+    fn preview_run_review<'a>(
+        &'a self,
+        project: i64,
+        request: &'a openwebide_core::ReviewRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ReviewPlan, String>> {
+        Box::pin(BackendApi::preview_run_review(self, project, request))
+    }
+    fn prepare_run_review<'a>(
+        &'a self,
+        project: i64,
+        request: &'a openwebide_core::ReviewRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ReviewPlan, String>> {
+        Box::pin(BackendApi::prepare_run_review(self, project, request))
+    }
+    fn complete_run_review<'a>(
+        &'a self,
+        project: i64,
+        request: &'a openwebide_core::ReviewRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::RunChange, String>> {
+        Box::pin(BackendApi::complete_run_review(self, project, request))
     }
     fn prepare_rewind(
         &self,

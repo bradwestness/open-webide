@@ -324,6 +324,7 @@ pub struct ChatState {
     pub creating_session: RwSignal<bool>,
     pub streaming: RwSignal<bool>,
     pub rewinding: RwSignal<bool>,
+    pub finished_tools: RwSignal<u64>,
     pub reasoning_active: RwSignal<bool>,
     pub active_run: RwSignal<Option<(i64, String, u64)>>,
     pub notice: RwSignal<Option<String>>,
@@ -396,6 +397,7 @@ impl ChatState {
             creating_session: RwSignal::new(false),
             streaming: RwSignal::new(false),
             rewinding: RwSignal::new(false),
+            finished_tools: RwSignal::new(0),
             reasoning_active: RwSignal::new(false),
             active_run: RwSignal::new(None),
             notice: RwSignal::new(None),
@@ -693,6 +695,7 @@ impl ChatState {
                 summary,
                 diff,
             } => {
+                self.finished_tools.update(|count| *count += 1);
                 if let Some(handle) = self.messages.tool(&id) {
                     self.messages.update_item(handle, |item| {
                         if let ConversationItem::ToolStep {

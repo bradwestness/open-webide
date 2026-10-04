@@ -616,6 +616,7 @@ pub fn ChatPane(
     on_slash_command: Callback<SlashCommand>,
     #[prop(optional)] on_rewind: Option<Callback<i64>>,
 ) -> impl IntoView {
+    let reviews = use_context::<crate::state::reviews::ReviewsState>();
     let chat = expect_context::<ChatState>();
     let layout = expect_context::<LayoutState>();
     let projects = expect_context::<ProjectsState>();
@@ -745,6 +746,7 @@ pub fn ChatPane(
                                         <Show when=move || system.get() fallback=move || view! {
                                             <Show when=move || assistant.get() fallback=move || view! {
                                                 {render_user_message(content)}
+                                                {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 => view! { <crate::components::RunChangesPanel message=message.id /> }.into_any(), _ => ().into_any() })}
                                                 <Show when=move || on_rewind.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
                                                     <button class="btn ghost tui-rewind" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get()
                                                         on:click=move |_| {
@@ -947,7 +949,7 @@ pub fn ChatPane(
                         view! {
                             <button
                                 class="btn send tui-btn-send"
-                                disabled=move || chat.rewinding.get() || chat.creating_session.get() || draft.with(|d| d.trim().is_empty())
+                                disabled=move || chat.rewinding.get() || reviews.is_some_and(|state| state.busy.get().is_some()) || chat.creating_session.get() || draft.with(|d| d.trim().is_empty())
                                 on:click=move |_| submit()
                             >
                                 "Send"

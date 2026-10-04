@@ -323,6 +323,27 @@ fn render_content_view(content: String) -> impl IntoView {
     }
 }
 
+/// Full pending contents with stable line numbers and review markers.
+fn render_pending_content(diff: FileDiff) -> impl IntoView {
+    let markers = openwebide_core::reviews::pending_lines(&diff);
+    let mut lines = openwebide_core::diff::split_lines(&diff.new)
+        .into_iter()
+        .map(|line| line.text.to_string())
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    let count = lines.len();
+    view! { <div class="editor-content-view editor-pending-content">
+        {lines.into_iter().enumerate().map(|(index, text)| {
+            let line = index + 1;
+            let mark = markers.iter().find(|(number, _)| (*number).min(count) == line).map(|(_, deleted)| *deleted);
+            let class = match mark { Some(true) => "editor-pending-gutter removed", Some(false) => "editor-pending-gutter changed", None => "editor-pending-gutter" };
+            view! { <div class="editor-pending-line" data-line=line><span class=class title=if mark.is_some() { "Pending agent change" } else { "" }>{line}</span><span class="editor-pending-text">{text}</span></div> }
+        }).collect_view()}
+    </div> }
+}
+
 /// Render a friendly placeholder for binary or non-previewable files.
 fn render_placeholder_view(
     path: &str,
@@ -458,6 +479,7 @@ pub fn Editor(
     on_reject: Callback<()>,
 ) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
+    let read_only = Signal::derive(move || read_only.get() || workspace.is_resolving());
     let projects = expect_context::<ProjectsState>();
     let git = expect_context::<GitState>();
 
@@ -525,9 +547,10 @@ pub fn Editor(
         }
     });
 
-    // When a pending edit appears, default to the inline diff view.
+    // Keep the selected view while hunk decisions update the same file.
+    let pending_path = Memo::new(move |_| pending_diff.get().map(|diff| diff.path));
     Effect::new(move || {
-        if pending_diff.get().is_some() {
+        if pending_path.get().is_some() {
             view_mode.set(ViewMode::InlineDiff);
         }
     });
@@ -656,7 +679,7 @@ pub fn Editor(
                                 {move || {
                                     if let Some(d) = pending_diff.get() {
                                         if d.old_unavailable {
-                                            "Warning: Unreadable file was modified. The old contents were not sent to the agent and could not be included in this preview. Rejecting will restore the file from backup."
+                                            "Warning: Unreadable file was modified. The old contents were not sent to the agent and could not be included in this preview. Rejecting will restore the previous contents."
                                         } else {
                                             "New file created."
                                         }
@@ -704,10 +727,15 @@ pub fn Editor(
                 {move || {
                     let mode = view_mode.get();
                     if let Some(diff) = pending_diff.get() {
-                        match mode {
+                        let metadata = workspace.open_file.get().and_then(|path| workspace.persisted_edits.with(|edits| edits.get(&path).and_then(|edit| edit.file.clone())));
+                        if metadata.as_ref().is_some_and(|file| file.deleted) {
+                            view! { <p class="empty editor-empty">"File deleted. Reject the file changes to restore it."</p> }.into_any()
+                        } else if metadata.as_ref().is_some_and(|file| file.binary_after.is_some()) {
+                            view! { <p class="empty editor-empty">"Binary contents changed. Use Accept or Reject to review this file."</p> }.into_any()
+                        } else { match mode {
                             ViewMode::InlineDiff => render_inline_diff(diff).into_any(),
                             ViewMode::SideBySide => render_side_by_side(diff).into_any(),
-                            ViewMode::Content => render_content_view(diff.new).into_any(),
+                            ViewMode::Content => render_pending_content(diff).into_any(),
                             ViewMode::Preview => {
                                 let path = open_file.get().unwrap_or_default();
                                 render_preview_view(
@@ -719,7 +747,8 @@ pub fn Editor(
                                 )
                                 .into_any()
                             }
-                            ViewMode::Code => render_content_view(diff.new).into_any(),
+                            ViewMode::Code => render_pending_content(diff).into_any(),
+                        }
                         }
                     } else if (mode == ViewMode::InlineDiff || mode == ViewMode::SideBySide) && binary_head.get() {
                         view! { <p class="empty editor-empty">"Binary file — no text diff"</p> }.into_any()

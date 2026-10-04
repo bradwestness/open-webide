@@ -178,3 +178,105 @@ pub async fn project_checkpoint_contract(vfs: &impl Vfs) {
         vfs.delete(path).await.unwrap();
     }
 }
+
+/// The same hunk restore, manual-edit conflict, binary and deleted-file review
+/// contract runs against local and remote workspace adapters.
+pub async fn review_contract(files: &impl crate::rewind::RewindFiles) {
+    use crate::{EditDecision, ReviewRequest, RewindFile, RunChange, rewind::restore_files};
+    files
+        .write("review.txt", "ONE\r\nkeep\nTHREE\n")
+        .await
+        .unwrap();
+    let record = RunChange::new(
+        1,
+        2,
+        RewindFile::from_bytes(
+            "review.txt".into(),
+            Some(b"one\r\nkeep\nthree".to_vec()),
+            Some(b"ONE\r\nkeep\nTHREE\n".to_vec()),
+        ),
+    )
+    .unwrap();
+    let request = |revision, decision, hunk| ReviewRequest {
+        session_id: 1,
+        message_id: 2,
+        path: "review.txt".into(),
+        revision,
+        decision,
+        hunk,
+    };
+    let accepted = record
+        .prepare(request(1, EditDecision::Accepted, Some(0)))
+        .unwrap();
+    restore_files(files, &accepted.restore, || true)
+        .await
+        .unwrap();
+    assert_eq!(
+        files.read("review.txt").await.unwrap().unwrap(),
+        b"ONE\r\nkeep\nTHREE\n"
+    );
+    let rejected = accepted
+        .reviewed
+        .prepare(request(2, EditDecision::Rejected, Some(1)))
+        .unwrap();
+    files.write("review.txt", "manual change").await.unwrap();
+    assert!(
+        restore_files(files, &rejected.restore, || true)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        files.read("review.txt").await.unwrap().unwrap(),
+        b"manual change"
+    );
+    files
+        .write("review.txt", "ONE\r\nkeep\nTHREE\n")
+        .await
+        .unwrap();
+    assert!(
+        restore_files(files, &rejected.restore, || false)
+            .await
+            .is_err()
+    );
+    restore_files(files, &rejected.restore, || true)
+        .await
+        .unwrap();
+    restore_files(files, &rejected.restore, || true)
+        .await
+        .unwrap();
+    assert_eq!(
+        files.read("review.txt").await.unwrap().unwrap(),
+        b"ONE\r\nkeep\nthree"
+    );
+    for (path, before, after) in [
+        ("binary.dat", Some(vec![0, 255]), Some(vec![0, 254])),
+        ("deleted/nested.txt", Some(b"restore".to_vec()), None),
+        ("created.txt", None, Some(b"created".to_vec())),
+    ] {
+        if let Some(bytes) = &after {
+            files.write_bytes(path, bytes).await.unwrap();
+        }
+        let record = RunChange::new(
+            1,
+            2,
+            RewindFile::from_bytes(path.into(), before.clone(), after),
+        )
+        .unwrap();
+        let plan = record
+            .prepare(ReviewRequest {
+                session_id: 1,
+                message_id: 2,
+                path: path.into(),
+                revision: 1,
+                decision: EditDecision::Rejected,
+                hunk: None,
+            })
+            .unwrap();
+        restore_files(files, &plan.restore, || true).await.unwrap();
+        assert_eq!(files.read(path).await.unwrap(), before);
+        if before.is_some() {
+            files.delete(path).await.unwrap();
+        }
+    }
+    files.delete("review.txt").await.unwrap();
+}

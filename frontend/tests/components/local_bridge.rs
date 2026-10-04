@@ -776,6 +776,7 @@ async fn resume_after_failed_history_persistence_reuses_write_id() {
         state.workspace.content.set("dirty draft".into());
         state.workspace.dirty.set(true);
         let edit = PersistedEdit {
+            file: None,
             project_id: 1,
             path: "file.rs".into(),
             revision: 1,
@@ -1359,6 +1360,7 @@ async fn rewind_uses_the_same_workspace_contract_in_both_modes() {
         });
         let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
         openwebide_core::testing::rewind_contract(&files).await;
+        openwebide_core::testing::review_contract(&files).await;
         drop(mounted);
         contractCleanup(&fixture).await;
     }
@@ -1501,4 +1503,198 @@ async fn browser_project_checkpoint_contract() {
     let vfs = BrowserFsaVfs::new(contractHandle(&fixture).unchecked_into());
     openwebide_core::testing::project_checkpoint_contract(&vfs).await;
     contractCleanup(&fixture).await;
+}
+
+#[wasm_bindgen_test]
+async fn run_changes_review_hunks_and_editor_markers_in_both_modes() {
+    use openwebide_core::{EditDecision, PersistedEdit, RewindFile, RunChange};
+    use openwebide_frontend::{components::RunChangesPanel, workspace::Workspace};
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let fixture = contractFolder().await;
+        let handle = contractHandle(&fixture);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, handle.unchecked_into());
+            });
+            let record = RunChange::new(
+                1,
+                3,
+                RewindFile::from_bytes(
+                    "review.txt".into(),
+                    Some(b"one\r\nkeep\nthree".to_vec()),
+                    Some(b"ONE\r\nkeep\nTHREE\n".to_vec()),
+                ),
+            )
+            .unwrap();
+            let file = record.pending_file().unwrap();
+            let edit = PersistedEdit {
+                project_id: 1,
+                path: file.path.clone(),
+                revision: 1,
+                decision: EditDecision::Pending,
+                diff: file.preview(),
+                file: Some(file),
+            };
+            state
+                .fake
+                .persisted_edits
+                .borrow_mut()
+                .insert((1, edit.path.clone()), edit.clone());
+            state.fake.run_changes.borrow_mut().insert(1, vec![record]);
+            state.workspace.set_persisted_edits(1, vec![edit]);
+            state.workspace.open_file.set(Some("review.txt".into()));
+            state.workspace.content.set("ONE\r\nkeep\nTHREE\n".into());
+            let editor = super::support::editor_view(state);
+            view! { {editor} <RunChangesPanel message=3/> }
+        });
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        files
+            .write("review.txt", "ONE\r\nkeep\nTHREE\n")
+            .await
+            .unwrap();
+        settle().await;
+        mounted.click_text("Content");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-line='1'] .editor-pending-gutter.changed")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-line='3'] .editor-pending-gutter.changed")
+                .unwrap()
+                .is_some()
+        );
+        mounted.click(".run-change-hunk[data-hunk='0'] .approve");
+        for _ in 0..50 {
+            sleep_ms(5).await;
+            if mounted.state.fake.run_changes.borrow()[&1][0].revision == 2 {
+                break;
+            }
+        }
+        settle().await;
+        assert_eq!(
+            files.read("review.txt").await.unwrap(),
+            "ONE\r\nkeep\nTHREE\n"
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-line='1'] .editor-pending-gutter.changed")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-line='3'] .editor-pending-gutter.changed")
+                .unwrap()
+                .is_some()
+        );
+        mounted.click(".run-change-hunk[data-hunk='1'] .deny");
+        settle().await;
+        assert_eq!(
+            files.read("review.txt").await.unwrap(),
+            "ONE\r\nkeep\nTHREE\n"
+        );
+        mounted.click(".modal-footer .danger");
+        for _ in 0..50 {
+            sleep_ms(5).await;
+            if mounted.state.fake.run_changes.borrow()[&1][0].revision == 3 {
+                break;
+            }
+        }
+        settle().await;
+        assert_eq!(
+            files.read("review.txt").await.unwrap(),
+            "ONE\r\nkeep\nthree"
+        );
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "ONE\r\nkeep\nthree"
+        );
+        assert!(
+            !mounted
+                .state
+                .workspace
+                .pending_edits
+                .get_untracked()
+                .contains_key("review.txt")
+        );
+        assert!(mounted.root.text_content().unwrap().contains("Reviewed"));
+        files.delete("review.txt").await.unwrap();
+        drop(mounted);
+        contractCleanup(&fixture).await;
+    }
+}
+
+#[wasm_bindgen_test]
+async fn run_review_preserves_manual_edits_and_ignores_a_previous_account() {
+    use openwebide_core::{EditDecision, ReviewRequest, RewindFile, RunChange};
+    use openwebide_frontend::{components::RunChangesPanel, workspace::Workspace};
+    let record = RunChange::new(
+        1,
+        3,
+        RewindFile::from_bytes(
+            "review.txt".into(),
+            Some(b"before".to_vec()),
+            Some(b"after".to_vec()),
+        ),
+    )
+    .unwrap();
+    let request = ReviewRequest {
+        session_id: 1,
+        message_id: 3,
+        path: "review.txt".into(),
+        revision: 1,
+        decision: EditDecision::Accepted,
+        hunk: None,
+    };
+    let plan = record.prepare(request).unwrap();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        state.seed_session();
+        state.fake.run_changes.borrow_mut().insert(1, vec![record]);
+        let editor = super::support::editor_view(state);
+        view! { {editor} <RunChangesPanel message=3/> }
+    });
+    let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+    files.write("review.txt", "manual").await.unwrap();
+    settle().await;
+    mounted.click(".run-change-header .deny");
+    settle().await;
+    mounted.click(".modal-footer .danger");
+    settle().await;
+    assert_eq!(files.read("review.txt").await.unwrap(), "manual");
+    assert!(mounted.state.fake.reviews.borrow().is_empty());
+    files.write("review.txt", "after").await.unwrap();
+    let (sender, receiver) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .review_results
+        .borrow_mut()
+        .push_back(receiver);
+    mounted.click(".run-change-header .approve");
+    settle().await;
+    mounted.state.auth.generation.update(|value| *value += 1);
+    settle().await;
+    sender.send(Ok(plan)).unwrap();
+    settle().await;
+    assert!(mounted.state.fake.reviews.borrow().is_empty());
+    assert_eq!(mounted.state.fake.run_changes.borrow()[&1][0].revision, 1);
+    assert_eq!(files.read("review.txt").await.unwrap(), "after");
 }

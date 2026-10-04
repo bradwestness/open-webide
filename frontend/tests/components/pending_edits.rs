@@ -23,6 +23,7 @@ fn mount_diff(diff: FileDiff) -> Mounted {
         state.workspace.open_file.set(Some(diff.path.clone()));
         state.workspace.content.set(diff.new.clone());
         let edit = PersistedEdit {
+            file: None,
             project_id: 1,
             path: diff.path.clone(),
             revision: 1,
@@ -582,6 +583,7 @@ async fn accept_finishes_editor_transition_after_early_authoritative_refresh() {
                 state.seed_project();
                 slot.set(Some(expect_context::<AuthState>()));
                 let edit = PersistedEdit {
+                    file: None,
                     project_id: 1,
                     path: "file.rs".into(),
                     revision: 1,
@@ -749,6 +751,7 @@ async fn interrupted_delete_listing_does_not_mutate_files() {
                 ..original_diff()
             };
             let edit = PersistedEdit {
+                file: None,
                 project_id: 1,
                 path: diff.path.clone(),
                 revision: 1,
@@ -834,6 +837,7 @@ async fn delayed_resolution_after_agent_write(dirty: bool, rejected: bool) {
         state.seed_connection();
         auth_copy.set(Some(expect_context::<AuthState>()));
         let edit = PersistedEdit {
+            file: None,
             project_id: 1,
             path: "file.rs".into(),
             revision: 1,
@@ -1073,6 +1077,7 @@ async fn delayed_accept_preserves_editor_after_newer_revision_hydrates() {
         state.seed_project();
         slot.set(Some(expect_context::<AuthState>()));
         let edit = PersistedEdit {
+            file: None,
             project_id: 1,
             path: "file.rs".into(),
             revision: 1,

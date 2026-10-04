@@ -41,3 +41,6 @@ pub mod model_wizard;
 
 mod tool_panel;
 pub use tool_panel::{PanelRail, ToolPanel};
+
+mod run_changes;
+pub use run_changes::RunChangesPanel;

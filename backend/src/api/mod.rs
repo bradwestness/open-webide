@@ -127,6 +127,7 @@ mod paths;
 pub(super) mod projects;
 pub(super) mod prompts;
 mod query;
+pub(super) mod reviews;
 pub(super) mod sessions;
 pub(super) mod settings;
 pub(super) mod web;

@@ -763,6 +763,36 @@ impl BackendApi {
         self.get(&format!("/sessions/{session_id}/messages")).await
     }
 
+    pub async fn list_run_changes(
+        &self,
+        project: i64,
+    ) -> Result<Vec<openwebide_core::RunChange>, String> {
+        self.get(&format!("/projects/{project}/run-changes")).await
+    }
+    pub async fn preview_run_review(
+        &self,
+        project: i64,
+        request: &openwebide_core::ReviewRequest,
+    ) -> Result<openwebide_core::ReviewPlan, String> {
+        self.post(&format!("/projects/{project}/reviews/preview"), request)
+            .await
+    }
+    pub async fn prepare_run_review(
+        &self,
+        project: i64,
+        request: &openwebide_core::ReviewRequest,
+    ) -> Result<openwebide_core::ReviewPlan, String> {
+        self.post(&format!("/projects/{project}/reviews/prepare"), request)
+            .await
+    }
+    pub async fn complete_run_review(
+        &self,
+        project: i64,
+        request: &openwebide_core::ReviewRequest,
+    ) -> Result<openwebide_core::RunChange, String> {
+        self.post(&format!("/projects/{project}/reviews/complete"), request)
+            .await
+    }
     pub async fn prepare_rewind(
         &self,
         session: i64,

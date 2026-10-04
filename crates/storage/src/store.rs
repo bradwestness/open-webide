@@ -1,6 +1,7 @@
 //! Typed repositories over a [`Db`].
 
 mod model_setup;
+mod reviews;
 mod rewind;
 mod rows;
 
@@ -1061,7 +1062,7 @@ impl<D: Db> Store<D> {
                         store.get_project(project, user_id).await?;
                     }
                     let source = store.db.execute(
-                        "SELECT completion_applied FROM tool_steps WHERE session_id = ? AND tool_call_id = ?",
+                        "SELECT completion_applied, checkpoint, anchor_message_id, id FROM tool_steps WHERE session_id = ? AND tool_call_id = ?",
                         &[DbValue::Int(session_id), DbValue::Text(tool_call_id.into())],
                     ).await?;
                     let row = source.rows.first().ok_or_else(|| StorageError::NotFound("tool step".into()))?;
@@ -1077,8 +1078,15 @@ impl<D: Db> Store<D> {
                           diff_json.map(DbValue::Text).unwrap_or(DbValue::Null),
                           DbValue::Int(session_id), DbValue::Text(tool_call_id.into())],
                     ).await?;
-                    if let (true, Some(project_id), Some(diff)) = (ok, session.project_id, diff) {
-                        store.merge_completed_edit(user_id, project_id, diff).await?;
+                    if let Some(project_id) = session.project_id {
+                        if let Some(checkpoint) = row.get_text_opt(1) {
+                            let checkpoint: openwebide_core::rewind::ProjectCheckpoint = serde_json::from_str(checkpoint).map_err(|e| StorageError::Db(e.to_string()))?;
+                            if checkpoint.after.is_some() {
+                                store.record_run_changes(user_id, project_id, session_id, row.get_int(2)?, row.get_int(3)?, &checkpoint).await?;
+                            }
+                        } else if let (true, Some(diff)) = (ok, diff) {
+                            store.merge_completed_edit(user_id, project_id, diff).await?;
+                        }
                     }
                     Ok(())
                 })
@@ -1093,7 +1101,7 @@ impl<D: Db> Store<D> {
         diff: &FileDiff,
     ) -> Result<(), StorageError> {
         let previous = self.db.execute(
-            "SELECT project_id, path, revision, decision, diff FROM pending_edits WHERE project_id = ? AND path = ? AND user_id = ?",
+            "SELECT project_id, path, revision, decision, diff, file FROM pending_edits WHERE project_id = ? AND path = ? AND user_id = ?",
             &[DbValue::Int(project_id), DbValue::Text(diff.path.clone()), DbValue::Int(user_id.get())],
         ).await?;
         let previous = previous
@@ -1128,7 +1136,7 @@ impl<D: Db> Store<D> {
     ) -> Result<Vec<PersistedEdit>, StorageError> {
         self.get_project(project_id, user_id).await?;
         let rows = self.db.execute(
-            "SELECT project_id, path, revision, decision, diff FROM pending_edits WHERE project_id = ? AND user_id = ? AND decision = 'pending' ORDER BY path",
+            "SELECT project_id, path, revision, decision, diff, file FROM pending_edits WHERE project_id = ? AND user_id = ? AND decision = 'pending' ORDER BY path",
             &[DbValue::Int(project_id), DbValue::Int(user_id.get())],
         ).await?;
         rows.rows.iter().map(persisted_edit_from_row).collect()
@@ -1147,11 +1155,12 @@ impl<D: Db> Store<D> {
             let store = Store::new(tx);
             store.get_project(project_id, user_id).await?;
             let rows = store.db.execute(
-                "SELECT project_id, path, revision, decision, diff FROM pending_edits WHERE project_id = ? AND path = ? AND user_id = ?",
+                "SELECT project_id, path, revision, decision, diff, file FROM pending_edits WHERE project_id = ? AND path = ? AND user_id = ?",
                 &[DbValue::Int(project_id), DbValue::Text(request.path.clone()), DbValue::Int(user_id.get())],
             ).await?;
             let mut edit = rows.rows.first().map(persisted_edit_from_row).transpose()?
                 .ok_or_else(|| StorageError::NotFound("pending edit".into()))?;
+            if edit.file.is_some() { return Err(StorageError::Conflict("Use the run changes review for this file".into())); }
             if edit.revision != request.revision || (edit.decision != EditDecision::Pending && edit.decision != request.decision) {
                 return Err(StorageError::Conflict("edit revision or decision changed".into()));
             }

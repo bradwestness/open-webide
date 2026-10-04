@@ -161,6 +161,11 @@ pub(super) fn persisted_edit_from_row(row: &QueryRow) -> Result<PersistedEdit, S
         _ => return Err(StorageError::InvalidValue("invalid edit decision".into())),
     };
     Ok(PersistedEdit {
+        file: row
+            .get_text_opt(5)
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| StorageError::InvalidValue(e.to_string()))?,
         project_id: row.get_int(0)?,
         path: row.get_text(1)?.into(),
         revision: row.get_int(2)?,
