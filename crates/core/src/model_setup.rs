@@ -23,6 +23,7 @@ pub struct ModelSettings {
     pub context_limit: Option<usize>,
     pub max_output_tokens: Option<usize>,
     pub sampling: BTreeMap<String, serde_json::Value>,
+    pub vision: Option<bool>,
     pub thinking: Option<bool>,
     pub tools: Option<bool>,
     pub stream_tools: Option<bool>,
@@ -335,6 +336,11 @@ impl ModelDetection {
                 .or_insert_with(|| value.clone());
         }
         if !self.capabilities.is_empty() {
+            settings.vision = settings.vision.or(Some(
+                self.capabilities
+                    .iter()
+                    .any(|capability| capability == "vision"),
+            ));
             settings.tools = settings.tools.or(Some(
                 self.capabilities
                     .iter()

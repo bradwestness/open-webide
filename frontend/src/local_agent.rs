@@ -834,6 +834,7 @@ pub async fn run_local_agent(
     if !current() {
         return Err("Project access changed".into());
     }
+    plan.validate_prompt()?;
     let mut request = plan.request;
     let (anchor_id, first_turn) = if let Some(resume) = resume {
         (resume.anchor_id, resume.first_turn)

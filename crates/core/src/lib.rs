@@ -1,5 +1,7 @@
 //! Shared domain types used across the Open WebIDE frontend, backend, and crates.
 
+pub mod prompt;
+pub use prompt::{PromptContent, PromptImage};
 pub mod context;
 pub use context::ContextBreakdown;
 pub mod compaction;

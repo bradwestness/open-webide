@@ -1000,6 +1000,8 @@ async fn visibility_retains_shell_output_and_hidden_reconnect_sequence() {
             .any(|message| matches!(message, BridgeClientMessage::Kill { .. }))
     );
     drop(mounted);
+    settle().await;
+
     assert!(
         fake.sent()
             .contains(&BridgeClientMessage::Kill { id, signal: None })

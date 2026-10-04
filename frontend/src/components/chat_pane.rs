@@ -198,15 +198,16 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
 
 /// Render a single user message with extracted editor context pill if present.
 fn render_user_message(content: Memo<String>) -> AnyView {
+    let prompt = Memo::new(move |_| openwebide_core::PromptContent::decode(&content.get()));
     let pill_sig = Memo::new(move |_| {
-        content.with(|content| {
-            extract_editor_context_prelude(content)
+        prompt.with(|prompt| {
+            extract_editor_context_prelude(&prompt.text)
                 .0
                 .map(ToString::to_string)
         })
     });
     let text_sig = Memo::new(move |_| {
-        content.with(|content| extract_editor_context_prelude(content).1.to_string())
+        prompt.with(|prompt| extract_editor_context_prelude(&prompt.text).1.to_string())
     });
 
     view! {
@@ -217,6 +218,7 @@ fn render_user_message(content: Memo<String>) -> AnyView {
                     <span class="tui-pill-text">{move || pill_sig.get().unwrap_or_default()}</span>
                 </div>
             </Show>
+            <crate::prompt::PromptHistory content=content />
             <div class="tui-user-prompt">
                 <span class="tui-glyph user">"❯"</span>
                 <span class="tui-user-text">{move || text_sig.get()}</span>
@@ -632,6 +634,7 @@ pub fn ChatPane(
     let local_mode = Signal::from(projects.local_mode);
     let scroll_ref = NodeRef::<leptos::html::Div>::new();
     let input_ref = NodeRef::<leptos::html::Textarea>::new();
+    let prompt_composer = crate::prompt::Composer::new(input_ref);
 
     // Readline prompt history state
     let prompt_history = chat.prompt_history;
@@ -672,14 +675,15 @@ pub fn ChatPane(
     let submit_or_command = {
         move || {
             let current = draft.get().trim().to_string();
-            if current.is_empty() {
+            if current.is_empty() && chat.prompt_images.with(Vec::is_empty) {
                 return;
             }
 
             prompt_history.update(|history| crate::history::push_history(history, current.clone()));
             history_index.set(None);
 
-            if current.starts_with('/')
+            if chat.prompt_images.with(Vec::is_empty)
+                && current.starts_with('/')
                 && let Some(cmd) = SlashCommand::parse(&current)
             {
                 set_draft.set(String::new());
@@ -807,7 +811,11 @@ pub fn ChatPane(
                 </div>
             </Show>
 
-            <div class="composer tui-composer">
+            <crate::prompt::PromptControls composer=prompt_composer />
+            <div class="composer tui-composer"
+                on:dragover=move |event: web_sys::DragEvent| { if event.data_transfer().is_some_and(|transfer| transfer.types().includes(&wasm_bindgen::JsValue::from_str("Files"), 0)) { event.prevent_default(); } }
+                on:drop=move |event: web_sys::DragEvent| { if let Some(files) = event.data_transfer().and_then(|transfer| transfer.files()) { event.prevent_default(); prompt_composer.import(files); } }
+            >
                 <span class="tui-prompt-glyph">"❯"</span>
                 <textarea
                     class="composer-input tui-input"
@@ -825,17 +833,22 @@ pub fn ChatPane(
                             "Start a session or /help (Enter to send, Shift+Enter for newline)"
                         }
                     }
+                    on:paste=move |event: web_sys::ClipboardEvent| { if let Some(files) = event.clipboard_data().and_then(|data| data.files()) && files.length() > 0 { event.prevent_default(); prompt_composer.import(files); } }
+                    on:click=move |_| prompt_composer.update()
+                    on:keyup=move |event: web_sys::KeyboardEvent| { if !["ArrowUp", "ArrowDown", "Escape", "Enter", "Tab"].contains(&event.key().as_str()) { prompt_composer.update(); } }
                     on:input=move |e: web_sys::Event| {
                         if let Some(target) = e.target()
                             && let Some(textarea) = target.dyn_ref::<web_sys::HtmlTextAreaElement>()
                         {
                             set_draft.set(textarea.value());
+                            prompt_composer.update();
                         }
                     }
                     on:keydown={
                         let submit = submit_or_command;
                         move |e: leptos::ev::KeyboardEvent| {
                             if e.is_composing() { return; }
+                            if prompt_composer.key(&e) { return; }
                             let key = e.key();
                             // Intercept permission handshake if waiting for approval
                             if let Some((id, name)) = awaiting_step.get()
@@ -949,7 +962,7 @@ pub fn ChatPane(
                         view! {
                             <button
                                 class="btn send tui-btn-send"
-                                disabled=move || chat.rewinding.get() || reviews.is_some_and(|state| state.busy.get().is_some()) || chat.creating_session.get() || draft.with(|d| d.trim().is_empty())
+                                disabled=move || chat.rewinding.get() || reviews.is_some_and(|state| state.busy.get().is_some()) || chat.creating_session.get() || chat.reading_images.get() || (draft.with(|d| d.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty))
                                 on:click=move |_| submit()
                             >
                                 "Send"

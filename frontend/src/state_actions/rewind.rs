@@ -99,7 +99,9 @@ pub fn actions(
                             chat.interrupted_run.set(None);
                             chat.active_run.set(None);
                             chat.active_editor_context.set(None);
-                            chat.draft.set(openwebide_core::tui::extract_editor_context_prelude(&plan.prompt).1.to_string());
+                            let prompt = openwebide_core::PromptContent::decode(&plan.prompt);
+                            chat.prompt_images.set(prompt.images);
+                            chat.draft.set(openwebide_core::tui::extract_editor_context_prelude(&prompt.text).1.to_string());
                             if let Some(id) = project {
                                 super::workspace::refresh_pending(api, projects, workspace, ui, auth, id).await;
                                 if current() {

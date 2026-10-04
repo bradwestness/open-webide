@@ -358,6 +358,15 @@ pub(crate) fn apply_model_settings(
     }
 }
 
+/// Validate shared attachment policy before either protocol can make an HTTP call.
+fn validated_model<'a>(
+    request: &'a ChatRequest,
+    configured: Option<&'a str>,
+) -> Result<&'a str, ProviderError> {
+    openwebide_core::prompt::validate_request(request).map_err(ProviderError::Parse)?;
+    request_model(request.model.as_deref(), configured)
+}
+
 /// Request override takes precedence over the saved connection model in every provider call.
 fn request_model<'a>(
     requested: Option<&'a str>,

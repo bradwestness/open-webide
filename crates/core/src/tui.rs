@@ -477,7 +477,15 @@ pub fn estimate_chat_request_tokens(request: &crate::ChatRequest) -> usize {
         tokens += estimate_tokens(sys) + 4;
     }
     for msg in &request.messages {
-        tokens += estimate_tokens(&msg.content) + 4;
+        let prompt = if msg.role == crate::Role::User {
+            crate::PromptContent::decode(&msg.content)
+        } else {
+            crate::PromptContent {
+                text: msg.content.clone(),
+                ..Default::default()
+            }
+        };
+        tokens += estimate_tokens(&prompt.model_text()) + 4 + prompt.image_tokens();
         if let Some(calls) = &msg.tool_calls {
             for call in calls {
                 tokens += estimate_tokens(&call.name) + estimate_tokens(&call.arguments) + 6;

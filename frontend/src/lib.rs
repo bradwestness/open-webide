@@ -92,3 +92,6 @@ mod probe_tests {
         }
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub mod prompt;

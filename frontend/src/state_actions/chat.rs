@@ -192,7 +192,9 @@ impl ChatActions {
             let local_permissions = chat.local_permissions.get_value();
             Callback::new(move |resume: Option<InterruptedRun>| {
                 let content = chat.draft.with(|draft| draft.trim().to_string());
-                if (resume.is_none() && content.is_empty())
+                let images = chat.prompt_images.get_untracked();
+                if (resume.is_none() && content.is_empty() && images.is_empty())
+                    || chat.reading_images.get_untracked()
                     || chat.streaming.get()
                     || chat.rewinding.get()
                     || reviews.is_some_and(|state| state.busy.get().is_some())
@@ -211,20 +213,62 @@ impl ChatActions {
                 // send can't fire while the session is (possibly) created.
                 if resume.is_none() {
                     chat.draft.set(String::new());
+                    chat.prompt_images.set(Vec::new());
                     chat.interrupted_run.set(None);
                 }
                 chat.streaming.set(true);
                 chat.error.set(None);
                 chat.notice.set(None);
                 let generation = auth.generation.get_untracked();
+                chat.send_generation.update_value(|ticket| *ticket += 1);
+                let ticket = chat.send_generation.get_value();
                 let project = projects.active_project.get_untracked();
                 let active_session = chat.active_session.get_untracked();
-                let current = move || {
+                let expected_session = std::rc::Rc::new(std::cell::Cell::new(active_session));
+                let expected = expected_session.clone();
+                let same_run = move || {
                     auth.generation.try_get_untracked() == Some(generation)
+                        && chat.send_generation.try_get_value() == Some(ticket)
+                };
+                let current = move || {
+                    same_run()
                         && projects.active_project.try_get_untracked() == Some(project)
-                        && chat.active_session.try_get_untracked() == Some(active_session)
+                        && chat.active_session.try_get_untracked() == Some(expected.get())
+                };
+                let local_cancel = local_cancel.clone();
+                let prompt = openwebide_core::PromptContent {
+                    text: content,
+                    images,
+                    ..Default::default()
                 };
                 spawn_local(async move {
+                    let content = if resume.is_none() {
+                        match crate::prompt::prepare(
+                            api,
+                            projects,
+                            project_git,
+                            prompt.clone(),
+                            || current() && !local_cancel.load(Ordering::Relaxed),
+                        )
+                        .await
+                        {
+                            Ok(content) => content,
+                            Err(error) => {
+                                if current() {
+                                    crate::prompt::restore_draft(chat, &prompt);
+                                    if !local_cancel.load(Ordering::Relaxed) {
+                                        chat.error.set(Some(error));
+                                    }
+                                }
+                                if same_run() {
+                                    chat.streaming.set(false);
+                                }
+                                return;
+                            }
+                        }
+                    } else {
+                        prompt.text.clone()
+                    };
                     // Use the active session, or create one named from the first
                     // prompt when a fresh chat has no session selected.
                     let session_id = match active_session {
@@ -259,9 +303,12 @@ impl ChatActions {
                                 .await
                             {
                                 Ok(session) => {
-                                    if !current() {
-                                        if auth.generation.try_get_untracked() == Some(generation) {
+                                    if !current() || local_cancel.load(Ordering::Relaxed) {
+                                        if same_run() {
                                             chat.streaming.set(false);
+                                            if current() {
+                                                crate::prompt::restore_draft(chat, &prompt);
+                                            }
                                         }
                                         return;
                                     }
@@ -270,13 +317,21 @@ impl ChatActions {
                                         super::approvals::save_session_mode(api, session.id, mode)
                                             .await
                                     {
-                                        chat.streaming.set(false);
-                                        chat.error.set(Some(error));
+                                        if current() {
+                                            chat.error.set(Some(error));
+                                            crate::prompt::restore_draft(chat, &prompt);
+                                        }
+                                        if same_run() {
+                                            chat.streaming.set(false);
+                                        }
                                         return;
                                     }
-                                    if !current() {
-                                        if auth.generation.try_get_untracked() == Some(generation) {
+                                    if !current() || local_cancel.load(Ordering::Relaxed) {
+                                        if same_run() {
                                             chat.streaming.set(false);
+                                            if current() {
+                                                crate::prompt::restore_draft(chat, &prompt);
+                                            }
                                         }
                                         return;
                                     }
@@ -284,6 +339,7 @@ impl ChatActions {
                                     chat.sessions
                                         .update(|sessions| sessions.push(session.clone()));
                                     chat.skip_history_load.set_value(Some(session.id));
+                                    expected_session.set(Some(session.id));
                                     chat.active_session.set(Some(session.id));
                                     if let Some(model) = chat.selected_model.get() {
                                         chat.session_model.update(|models| {
@@ -295,6 +351,7 @@ impl ChatActions {
                                 Err(error) => {
                                     if current() {
                                         chat.error.set(Some(error));
+                                        crate::prompt::restore_draft(chat, &prompt);
                                         chat.streaming.set(false);
                                     }
                                     return;
@@ -302,6 +359,15 @@ impl ChatActions {
                             }
                         }
                     };
+                    if !current() || local_cancel.load(Ordering::Relaxed) {
+                        if current() {
+                            crate::prompt::restore_draft(chat, &prompt);
+                        }
+                        if same_run() {
+                            chat.streaming.set(false);
+                        }
+                        return;
+                    }
                     let model = chat
                         .session_model
                         .get()
@@ -310,13 +376,22 @@ impl ChatActions {
                         .flatten()
                         .or_else(|| chat.selected_model.get());
                     let Ok(controller) = AbortController::new() else {
+                        if current() {
+                            crate::prompt::restore_draft(chat, &prompt);
+                        }
                         chat.streaming.set(false);
                         return;
                     };
                     chat.abort.set(Some(controller.clone()));
                     chat.streaming_session.set(Some(session_id));
 
+                    let prompt_saved = std::rc::Rc::new(std::cell::Cell::new(false));
+                    let saved = prompt_saved.clone();
                     let on_event = move |event| {
+                        if matches!(&event, openwebide_core::RunEvent::Message { message } if message.role == openwebide_core::Role::User)
+                        {
+                            saved.set(true);
+                        }
                         if resume.is_some()
                             && matches!(event, openwebide_core::RunEvent::Done { .. })
                             && chat.active_session.get_untracked() == Some(session_id)
@@ -349,15 +424,20 @@ impl ChatActions {
                         .await;
                     if let Err(error) = result
                         && !controller.signal().aborted()
+                        && current()
                     {
+                        if resume.is_none() && !prompt_saved.get() {
+                            crate::prompt::restore_draft(chat, &prompt);
+                        }
                         chat.error.set(Some(error));
                     }
 
-                    if chat
-                        .abort
-                        .get_untracked()
-                        .as_ref()
-                        .is_none_or(|active| active == &controller)
+                    if same_run()
+                        && chat
+                            .abort
+                            .get_untracked()
+                            .as_ref()
+                            .is_none_or(|active| active == &controller)
                     {
                         chat.streaming.set(false);
                         chat.abort.set(None);
@@ -1058,11 +1138,16 @@ fn install_effects(
 }
 
 fn derive_session_name(prompt: &str) -> String {
+    let prompt = openwebide_core::PromptContent::decode(prompt);
     let line = prompt
+        .text
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or("")
         .trim();
+    if line.is_empty() {
+        return "Image chat".into();
+    }
     let mut name: String = line.chars().take(40).collect();
     if line.chars().count() > 40 {
         name.push('…');

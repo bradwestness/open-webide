@@ -121,7 +121,14 @@ pub async fn prepare<P: LlmProvider, S: CompactionSource>(
         settings: request.model_settings.clone(),
         transport: Default::default(),
     };
-    let serialized = serde_json::to_string(&request.messages).map_err(|error| error.to_string())?;
+    let mut history = request.messages.clone();
+    for message in &mut history {
+        if message.role == Role::User {
+            message.content =
+                openwebide_core::PromptContent::decode(&message.content).summary_text();
+        }
+    }
+    let serialized = serde_json::to_string(&history).map_err(|error| error.to_string())?;
     let mut runtimes = Vec::new();
     if let Some(fast) = &request.model_settings.fast
         && (fast.server_id != request.connection_id || Some(&fast.model) != request.model.as_ref())

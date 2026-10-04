@@ -49,7 +49,7 @@ impl<C: HttpClient> LlamaCppProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
-        let model = match crate::request_model(request.model.as_deref(), self.model.as_deref()) {
+        let model = match crate::validated_model(request, self.model.as_deref()) {
             Ok(model) => model,
             Err(error) => return Box::pin(stream::once(async move { Err(error) })),
         };
@@ -121,13 +121,16 @@ fn usage_fields(value: &Value, acc: &mut UsageAcc) {
 
 impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
     async fn request_tokens(&self, request: &ChatRequest) -> Option<usize> {
+        openwebide_core::prompt::validate_request(request).ok()?;
+        let image_tokens = openwebide_core::prompt::image_tokens(request);
+        let text_request = openwebide_core::prompt::text_request(request);
         let rendered = self
             .http
             .post_json(
                 &url_for(&self.base_url, "/apply-template"),
                 &json!({
                     "model": request.model.as_ref().or(self.model.as_ref()),
-                    "messages": tool_messages(request, ProviderKind::LlamaCpp),
+                    "messages": tool_messages(&text_request, ProviderKind::LlamaCpp),
                     "tools": tools_wire(&request.tools),
                 }),
             )
@@ -152,7 +155,12 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
                 .div_ceil(3)
         };
         let count = counted.get("tokens")?.as_array()?.len();
-        (count > 0).then(|| count.saturating_add(schemas).saturating_add(32))
+        (count > 0).then(|| {
+            count
+                .saturating_add(schemas)
+                .saturating_add(32)
+                .saturating_add(image_tokens)
+        })
     }
 
     fn tool_stream_memo(&self) -> Option<ToolStreamMemo> {
@@ -185,10 +193,10 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
     }
 
     async fn chat(&self, request: &ChatRequest) -> Result<String, ProviderError> {
-        let model = crate::request_model(request.model.as_deref(), self.model.as_deref())?;
+        let model = crate::validated_model(request, self.model.as_deref())?;
         let mut body = json!({
             "model": model,
-            "messages": chat_messages(request),
+            "messages": chat_messages(request, ProviderKind::LlamaCpp),
             "stream": false,
         });
         crate::apply_model_settings(&mut body, request, ProviderKind::LlamaCpp);
@@ -215,13 +223,13 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
-        let model = match crate::request_model(request.model.as_deref(), self.model.as_deref()) {
+        let model = match crate::validated_model(request, self.model.as_deref()) {
             Ok(model) => model,
             Err(error) => return Box::pin(stream::once(async move { Err(error) })),
         };
         let mut body = json!({
             "model": model,
-            "messages": chat_messages(request),
+            "messages": chat_messages(request, ProviderKind::LlamaCpp),
             "stream": true,
             "stream_options": { "include_usage": true },
         });
@@ -232,7 +240,7 @@ impl<C: HttpClient + 'static> LlmProvider for LlamaCppProvider<C> {
     }
 
     async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
-        let model = crate::request_model(request.model.as_deref(), self.model.as_deref())?;
+        let model = crate::validated_model(request, self.model.as_deref())?;
         let mut body = json!({
             "model": model,
             "messages": tool_messages(request, ProviderKind::LlamaCpp),

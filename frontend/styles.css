@@ -2652,3 +2652,16 @@ button.browser-item {
 .context-generated { background: var(--offline); }
 .context-breakdown-list > div { display: flex; justify-content: space-between; gap: 12px; margin: 8px 0; }
 .context-breakdown-list dd { font-family: var(--mono); margin: 0; }
+
+.prompt-attachments { position: relative; padding: 6px 10px; border-top: 1px solid var(--border); background: var(--bg-panel); }
+.prompt-attachments > .muted { margin-left: 8px; font-size: 11px; }
+.prompt-image-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.prompt-image { display: flex; align-items: center; gap: 6px; margin-top: 6px; border: 1px solid var(--border); padding: 4px; max-width: 100%; }
+.prompt-image img { width: 56px; height: 56px; object-fit: contain; }
+.prompt-image span { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.prompt-history-image { max-width: 240px; max-height: 180px; object-fit: contain; border: 1px solid var(--border); }
+.prompt-reference { margin: 6px 0; color: var(--text-muted); }
+.prompt-reference pre { max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); background: var(--bg-panel); padding: 8px; }
+.mention-choices { position: absolute; bottom: 100%; left: 10px; right: 10px; max-height: 240px; overflow: auto; z-index: 20; background: var(--bg-panel); border: 1px solid var(--border); padding: 4px; }
+.mention-choices .btn { display: block; width: 100%; text-align: left; }
+.mention-choices .active { background: var(--bg-hover); color: var(--accent); }

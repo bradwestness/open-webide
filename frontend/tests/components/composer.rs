@@ -386,3 +386,295 @@ async fn context_command_shows_saved_breakdown_in_both_modes_and_projectless_cha
         );
     }
 }
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function attachTestImage(element, method, invalid, webp) {
+    const transfer = new DataTransfer();
+    let data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jG1sAAAAASUVORK5CYII=';
+    { const canvas=document.createElement('canvas');canvas.width=2;canvas.height=2;data=canvas.toDataURL(webp ? 'image/webp' : 'image/png').split(',')[1]; }
+    const bytes=invalid ? new Uint8Array([1,2,3]) : Uint8Array.from(atob(data), c=>c.charCodeAt(0));
+    transfer.items.add(new File([bytes], webp ? 'test.webp' : 'test.png', {type:webp?'image/webp':'image/png'}));
+    if (method==='picker') { element.files=transfer.files;element.dispatchEvent(new Event('change',{bubbles:true})); }
+    else if (method==='paste') element.dispatchEvent(new ClipboardEvent('paste',{clipboardData:transfer,bubbles:true,cancelable:true}));
+    else element.dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true}));
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = attachTestImage)]
+    fn attach_test_image(element: &web_sys::HtmlElement, method: &str, invalid: bool, webp: bool);
+}
+
+#[wasm_bindgen_test]
+async fn images_paste_drop_pick_remove_normalize_and_send_in_projectless_chat() {
+    for method in ["paste", "drop", "picker"] {
+        let mounted = mount_test(|state| {
+            state.seed_connection();
+            chat_view(state)
+        });
+        settle().await;
+        let selector = if method == "picker" {
+            ".prompt-attachments input"
+        } else {
+            ".composer-input"
+        };
+        attach_test_image(&mounted.element(selector), method, false, method == "drop");
+        for _ in 0..100 {
+            sleep_ms(5).await;
+            if !mounted.state.chat.reading_images.get_untracked() {
+                break;
+            }
+        }
+        settle().await;
+        assert_eq!(mounted.state.chat.prompt_images.get_untracked().len(), 1);
+        assert_eq!(
+            mounted.state.chat.prompt_images.get_untracked()[0].mime,
+            "image/png"
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".prompt-image img")
+                .unwrap()
+                .is_some()
+        );
+        mounted.click(".prompt-image button");
+        settle().await;
+        assert!(mounted.state.chat.prompt_images.get_untracked().is_empty());
+        attach_test_image(&mounted.element(selector), method, false, false);
+        for _ in 0..100 {
+            sleep_ms(5).await;
+            if !mounted.state.chat.reading_images.get_untracked() {
+                break;
+            }
+        }
+        mounted.key("Enter", "Enter", false);
+        settle().await;
+        let calls = mounted.state.fake.calls.borrow();
+        let content = calls
+            .iter()
+            .find_map(|call| match call {
+                Call::SendMessage { content, .. } => Some(content),
+                _ => None,
+            })
+            .unwrap();
+        let prompt = openwebide_core::PromptContent::parse(content).unwrap();
+        assert_eq!(prompt.images.len(), 1);
+        assert!(prompt.text.is_empty());
+        assert!(mounted.state.chat.prompt_images.get_untracked().is_empty());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn invalid_images_and_projectless_mentions_preserve_draft_and_do_not_send() {
+    let mounted = mount_test(|state| {
+        state.seed_connection();
+        chat_view(state)
+    });
+    settle().await;
+    attach_test_image(&mounted.element(".composer-input"), "paste", true, false);
+    for _ in 0..100 {
+        sleep_ms(5).await;
+        if !mounted.state.chat.reading_images.get_untracked() {
+            break;
+        }
+    }
+    assert!(mounted.state.chat.prompt_images.get_untracked().is_empty());
+    assert!(mounted.state.chat.error.get_untracked().is_some());
+    mounted.input("Explain @file:secret.rs");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    assert_eq!(
+        mounted.state.chat.draft.get_untracked(),
+        "Explain @file:secret.rs"
+    );
+    assert!(mounted.state.fake.sessions.borrow().is_empty());
+    assert!(!mounted.state.chat.streaming.get_untracked());
+    assert!(
+        !mounted
+            .state
+            .fake
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| matches!(call, Call::SendMessage { .. }))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn mention_completion_selects_directory_and_file_before_send() {
+    let mounted = mount_test(|state| {
+        state.seed_project();
+        state.seed_connection();
+        chat_view(state)
+    });
+    let files = openwebide_frontend::workspace::Workspace::for_project(
+        mounted.state.api,
+        mounted.state.projects,
+        1,
+    )
+    .unwrap();
+    files.write("src/main.rs", "fn main() {}").await.unwrap();
+    settle().await;
+    mounted.input("@fi");
+    settle().await;
+    assert!(mounted.root.text_content().unwrap().contains("file"));
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    assert_eq!(mounted.state.chat.draft.get_untracked(), "@file:");
+    mounted.click(".mention-choices button");
+    settle().await;
+    assert_eq!(mounted.state.chat.draft.get_untracked(), "@file:src/");
+    mounted.key("Tab", "Tab", false);
+    settle().await;
+    assert_eq!(
+        mounted.state.chat.draft.get_untracked(),
+        "@file:src/main.rs "
+    );
+    assert!(
+        !mounted
+            .state
+            .fake
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| matches!(call, Call::SendMessage { .. }))
+    );
+    mounted.input("Explain @file:src/main.rs");
+    mounted.key("Enter", "Enter", false);
+    settle().await;
+    let calls = mounted.state.fake.calls.borrow();
+    let content = calls
+        .iter()
+        .find_map(|call| match call {
+            Call::SendMessage { content, .. } => Some(content),
+            _ => None,
+        })
+        .unwrap();
+    let prompt = openwebide_core::PromptContent::parse(content).unwrap();
+    assert_eq!(prompt.references[0].content, "fn main() {}");
+}
+
+#[wasm_bindgen_test]
+async fn attachment_history_renders_and_rewind_restores_text_and_images() {
+    let image =
+        openwebide_core::PromptImage::from_bytes("image.png".into(), b"\x89PNG\r\n\x1a\n").unwrap();
+    let prompt = openwebide_core::PromptContent {
+        text: "Describe this".into(),
+        images: vec![image.clone()],
+        ..Default::default()
+    };
+    let content = prompt.encode().unwrap();
+    let mounted = mount_test(move |state| {
+        state.seed_session();
+        state
+            .chat
+            .sessions
+            .update(|sessions| sessions[0].project_id = None);
+        state.fake.messages.borrow_mut().insert(
+            1,
+            vec![ConversationEntry::Message(ChatMessage {
+                id: 1,
+                session_id: 1,
+                role: Role::User,
+                content,
+                created_at: 0,
+                tool_calls: None,
+                tool_call_id: None,
+                usage: None,
+            })],
+        );
+        view! { {chat_view(state)} <openwebide_frontend::components::ConfirmDialog/> }
+    });
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".prompt-history-image")
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Describe this")
+    );
+    assert!(
+        !mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("[Open WebIDE prompt]")
+    );
+    mounted.click(".tui-rewind");
+    settle().await;
+    mounted.click(".modal-footer .danger");
+    settle().await;
+    assert_eq!(mounted.state.chat.draft.get_untracked(), "Describe this");
+    assert_eq!(
+        mounted.state.chat.prompt_images.get_untracked(),
+        vec![image]
+    );
+}
+
+#[wasm_bindgen_test]
+async fn imported_images_cannot_cross_project_session_or_account_switches() {
+    for change in ["project", "session", "account"] {
+        let mounted = mount_test(|state| {
+            state.seed_connection();
+            chat_view(state)
+        });
+        settle().await;
+        attach_test_image(&mounted.element(".composer-input"), "paste", false, false);
+        match change {
+            "project" => mounted.state.projects.active_project.set(Some(2)),
+            "session" => mounted.state.chat.active_session.set(Some(2)),
+            _ => mounted
+                .state
+                .auth
+                .generation
+                .update(|generation| *generation += 1),
+        }
+        sleep_ms(20).await;
+        settle().await;
+        assert!(mounted.state.chat.prompt_images.get_untracked().is_empty());
+        assert!(!mounted.state.chat.reading_images.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn stopping_mention_preparation_restores_the_prompt_without_starting_a_turn() {
+    let (response, waiting) = futures::channel::oneshot::channel();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        state.seed_connection();
+        state.fake.file_list_results.borrow_mut().push_back(waiting);
+        chat_view(state)
+    });
+    settle().await;
+    mounted.state.chat.draft.set("Attach @folder:src".into());
+    settle().await;
+    mounted.click_text("Send");
+    settle().await;
+    assert!(mounted.state.chat.streaming.get_untracked());
+    mounted.click_text("Stop");
+    response.send(Ok(vec![])).unwrap();
+    settle().await;
+    assert_eq!(
+        mounted.state.chat.draft.get_untracked(),
+        "Attach @folder:src"
+    );
+    assert!(mounted.state.fake.sessions.borrow().is_empty());
+    assert!(!mounted.state.chat.streaming.get_untracked());
+    assert!(mounted.state.chat.error.get_untracked().is_none());
+    assert!(
+        !mounted
+            .state
+            .fake
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| matches!(call, Call::SendMessage { .. }))
+    );
+}

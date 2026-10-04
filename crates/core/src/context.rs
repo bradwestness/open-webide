@@ -3,11 +3,14 @@ use crate::{ChatRequest, Role};
 use serde::{Deserialize, Serialize};
 
 pub fn conservative_tokens(request: &ChatRequest) -> usize {
-    serde_json::to_vec(request).map_or(usize::MAX, |bytes| {
+    let normalized = crate::prompt::text_request(request);
+    let image_tokens = crate::prompt::image_tokens(request);
+    serde_json::to_vec(&normalized).map_or(usize::MAX, |bytes| {
         bytes
             .len()
             .div_ceil(3)
             .saturating_add(request.messages.len().saturating_mul(16))
+            .saturating_add(image_tokens)
     })
 }
 
@@ -43,7 +46,20 @@ impl ContextBreakdown {
             ..Self::default()
         };
         for message in &request.messages {
-            let size = bytes(message).saturating_add(48);
+            let mut normalized = message.clone();
+            if message.role == Role::User
+                && let Some(prompt) = crate::PromptContent::parse(&message.content)
+            {
+                let attached = prompt
+                    .references
+                    .iter()
+                    .map(|reference| bytes(&reference.content))
+                    .sum::<usize>()
+                    .saturating_add(prompt.image_tokens() * 3);
+                result.files = result.files.saturating_add(attached);
+                normalized.content = prompt.text;
+            }
+            let size = bytes(&normalized).saturating_add(48);
             match message.role {
                 Role::System if !message.content.starts_with("Previous conversation summary") => {
                     result.system = result.system.saturating_add(size);
@@ -129,6 +145,37 @@ impl ContextBreakdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn images_count_as_file_context_without_tokenizing_base64_pixels() {
+        let mut request: ChatRequest = serde_json::from_value(serde_json::json!({ "connection_id":1, "messages":[{"id":1,"session_id":1,"role":"user","content":"Explain","created_at":0}] })).unwrap();
+        let mut bytes = vec![0u8; 1024 * 1024];
+        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let large = crate::PromptImage::from_bytes("image.png".into(), &bytes).unwrap();
+        let small = crate::PromptImage::from_bytes("image.png".into(), &bytes[..8]).unwrap();
+        request.messages[0].content = crate::PromptContent {
+            text: "Explain".into(),
+            images: vec![large],
+            ..Default::default()
+        }
+        .encode()
+        .unwrap();
+        let tokens = conservative_tokens(&request);
+        assert!(tokens < 5000);
+        assert!(ContextBreakdown::for_request(&request).files > 4000);
+        request.messages[0].content = crate::PromptContent {
+            text: "Explain".into(),
+            images: vec![small],
+            ..Default::default()
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(tokens, conservative_tokens(&request));
+        request.model_settings.vision = Some(false);
+        assert!(crate::prompt::validate_request(&request).is_err());
+        request.model_settings.vision = Some(true);
+        assert!(crate::prompt::validate_request(&request).is_ok());
+    }
+
     #[test]
     fn accounting_includes_schemas_files_results_and_compacted_history() {
         let request: ChatRequest = serde_json::from_value(serde_json::json!({

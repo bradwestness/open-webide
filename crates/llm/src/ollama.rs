@@ -89,10 +89,10 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
     }
 
     async fn chat(&self, request: &ChatRequest) -> Result<String, ProviderError> {
-        let model = crate::request_model(request.model.as_deref(), self.model.as_deref())?;
+        let model = crate::validated_model(request, self.model.as_deref())?;
         let mut body = json!({
             "model": model,
-            "messages": chat_messages(request),
+            "messages": chat_messages(request, ProviderKind::Ollama),
             "stream": false,
         });
         if let Some(n) = self.num_ctx {
@@ -117,13 +117,13 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static>> {
-        let model = match crate::request_model(request.model.as_deref(), self.model.as_deref()) {
+        let model = match crate::validated_model(request, self.model.as_deref()) {
             Ok(model) => model,
             Err(error) => return Box::pin(stream::once(async move { Err(error) })),
         };
         let mut body = json!({
             "model": model,
-            "messages": chat_messages(request),
+            "messages": chat_messages(request, ProviderKind::Ollama),
             "stream": true,
         });
         if let Some(n) = self.num_ctx {
@@ -136,7 +136,7 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
     }
 
     async fn chat_tools(&self, request: &ChatRequest) -> Result<ChatCompletion, ProviderError> {
-        let model = crate::request_model(request.model.as_deref(), self.model.as_deref())?;
+        let model = crate::validated_model(request, self.model.as_deref())?;
         let mut body = json!({
             "model": model,
             "messages": tool_messages(request, ProviderKind::Ollama),
@@ -213,7 +213,7 @@ impl<C: HttpClient> LlmProvider for OllamaProvider<C> {
         &self,
         request: &ChatRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send + 'static>> {
-        let model = match crate::request_model(request.model.as_deref(), self.model.as_deref()) {
+        let model = match crate::validated_model(request, self.model.as_deref()) {
             Ok(model) => model,
             Err(error) => return Box::pin(stream::once(async move { Err(error) })),
         };

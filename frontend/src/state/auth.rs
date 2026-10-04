@@ -76,6 +76,10 @@ impl AuthState {
         chat.creating_session.set(false);
         chat.streaming.set(false);
         chat.rewinding.set(false);
+        chat.prompt_images.set(Vec::new());
+        chat.reading_images.set(false);
+        chat.send_generation
+            .update_value(|generation| *generation += 1);
         chat.active_run.set(None);
         chat.notice.set(None);
         chat.interrupted_run.set(None);

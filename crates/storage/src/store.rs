@@ -916,6 +916,10 @@ impl<D: Db> Store<D> {
         usage: Option<&TurnTelemetry>,
         tool_calls: Option<&[ToolCall]>,
     ) -> Result<ChatMessage, StorageError> {
+        if role == Role::User {
+            openwebide_core::PromptContent::attachments(content)
+                .map_err(StorageError::InvalidValue)?;
+        }
         let calls_json = tool_calls
             .map(serde_json::to_string)
             .transpose()
@@ -2595,6 +2599,67 @@ mod tests {
                     .is_err()
             );
             assert_eq!(store.list_sessions(user).await.unwrap(), before);
+        });
+    }
+
+    #[test]
+    fn prompt_attachments_persist_reload_and_rewind_without_losing_images_or_snapshots() {
+        let store = test_store();
+        let user = test_user(&store, "attachments", UserRole::Admin);
+        block_on(async {
+            let session = store
+                .create_session("images", None, None, None, user, 1)
+                .await
+                .unwrap();
+            let image =
+                openwebide_core::PromptImage::from_bytes("test.png".into(), b"\x89PNG\r\n\x1a\n")
+                    .unwrap();
+            let prompt = openwebide_core::PromptContent {
+                text: "Explain @file:source.rs".into(),
+                images: vec![image],
+                references: vec![openwebide_core::prompt::PromptReference {
+                    mention: openwebide_core::prompt::Mention {
+                        kind: openwebide_core::prompt::MentionKind::File,
+                        path: "source.rs".into(),
+                    },
+                    content: "original contents".into(),
+                }],
+            };
+            let message = store
+                .insert_message(session.id, Role::User, &prompt.encode().unwrap(), 2)
+                .await
+                .unwrap();
+            store
+                .insert_message(session.id, Role::Assistant, "description", 3)
+                .await
+                .unwrap();
+            let messages = store.list_messages(session.id).await.unwrap();
+            assert_eq!(
+                openwebide_core::PromptContent::parse(&messages[0].content).unwrap(),
+                prompt
+            );
+            let plan = store
+                .prepare_rewind(user, session.id, message.id)
+                .await
+                .unwrap();
+            assert_eq!(
+                openwebide_core::PromptContent::parse(&plan.prompt).unwrap(),
+                prompt
+            );
+            assert!(
+                store
+                    .complete_rewind(user, session.id, message.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .insert_message(session.id, Role::User, "[Open WebIDE prompt]\n{invalid}", 4)
+                    .await
+                    .is_err()
+            );
+            assert!(store.list_messages(session.id).await.unwrap().is_empty());
         });
     }
 

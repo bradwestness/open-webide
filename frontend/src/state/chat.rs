@@ -320,6 +320,7 @@ pub struct ChatState {
     pub has_session: Memo<bool>,
     pub messages: ConversationStore,
     pub history_gen: StoredValue<u64>,
+    pub send_generation: StoredValue<u64>,
     pub skip_history_load: StoredValue<Option<i64>>,
     pub creating_session: RwSignal<bool>,
     pub streaming: RwSignal<bool>,
@@ -333,6 +334,8 @@ pub struct ChatState {
     pub dismissed_interruptions: StoredValue<HashSet<i64>>,
     pub error: RwSignal<Option<String>>,
     pub draft: RwSignal<String>,
+    pub prompt_images: RwSignal<Vec<openwebide_core::PromptImage>>,
+    pub reading_images: RwSignal<bool>,
     pub prompt_history: RwSignal<Vec<String>>,
     pub show_terminal: RwSignal<bool>,
     #[cfg(target_arch = "wasm32")]
@@ -393,6 +396,7 @@ impl ChatState {
             has_session,
             messages,
             history_gen: StoredValue::new(0),
+            send_generation: StoredValue::new(0),
             skip_history_load: StoredValue::new(None),
             creating_session: RwSignal::new(false),
             streaming: RwSignal::new(false),
@@ -406,6 +410,8 @@ impl ChatState {
             dismissed_interruptions: StoredValue::new(HashSet::new()),
             error,
             draft: RwSignal::new(String::new()),
+            prompt_images: RwSignal::new(Vec::new()),
+            reading_images: RwSignal::new(false),
             prompt_history: RwSignal::new(Vec::new()),
             show_terminal: RwSignal::new(false),
             #[cfg(target_arch = "wasm32")]

@@ -53,7 +53,11 @@ pub fn history(messages: Vec<ChatMessage>, steps: &[ToolStep]) -> Vec<ChatMessag
 }
 pub fn user_content(content: String, editor: Option<&EditorContext>) -> String {
     match editor {
-        Some(editor) => format!("{}{content}", editor.format_prompt_injection()),
+        Some(editor) => {
+            let mut prompt = openwebide_core::PromptContent::decode(&content);
+            prompt.text = format!("{}{}", editor.format_prompt_injection(), prompt.text);
+            prompt.encode().unwrap_or(content)
+        }
         None => content,
     }
 }

@@ -67,6 +67,7 @@ pub struct FakeBackend {
         )>,
     >,
     pub rewinds: RefCell<BTreeMap<i64, openwebide_core::RewindPlan>>,
+    pub git_diffs: RefCell<VecDeque<Result<String, String>>>,
     pub git_statuses: RefCell<VecDeque<Deferred<GitRepoStatus>>>,
     pub git_status_requests: RefCell<Vec<Option<i64>>>,
     pub model_setup: RefCell<openwebide_core::ModelSetup>,
@@ -1095,7 +1096,10 @@ impl Backend for FakeBackend {
             self.calls
                 .borrow_mut()
                 .push(Call::Request { method: "git_diff" });
-            Ok(String::new())
+            self.git_diffs
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or_else(|| Ok(String::new()))
         })
     }
     fn git_file_head<'a>(

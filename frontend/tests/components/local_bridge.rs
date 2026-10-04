@@ -60,6 +60,7 @@ export function fakeBridgeHttp() {
             if (request.signal.aborted) abort();
             else request.signal.addEventListener('abort', abort, { once: true });
         });
+        if (path === '/git/diff' && !mock.invalid) return new Response(JSON.stringify({diff:mock.diff || ''}));
         if (mock.invalid) return new Response(JSON.stringify({ error: 'cwd does not exist: repos/x' }), { status: 400 });
         if (body.branch === 'fix-cwd..mapping') return new Response(JSON.stringify({ error: `invalid branch name '${body.branch}': invalid ref` }), { status: 400 });
         const probe = body.command?.match(/\.openwebide-probe-[0-9a-f]+/)?.[0];
@@ -68,6 +69,7 @@ export function fakeBridgeHttp() {
     };
     return mock;
 }
+export function setBridgeDiff(mock, diff) { mock.diff = diff; }
 export function restoreBridgeHttp(mock) { mock.restore(); }
 export function bridgeCalls(mock) { return JSON.stringify(mock.calls); }
 export function bridgeFound(mock, found) { mock.found = found; }
@@ -85,6 +87,8 @@ export function probeDeleted(folder, name) {
 extern "C" {
     #[wasm_bindgen(js_name = fakeBridgeHttp)]
     fn fake_bridge_http() -> JsValue;
+    #[wasm_bindgen(js_name = setBridgeDiff)]
+    fn set_bridge_diff(mock: &JsValue, diff: &str);
     #[wasm_bindgen(js_name = restoreBridgeHttp)]
     fn restore_bridge_http(mock: &JsValue);
     #[wasm_bindgen(js_name = bridgeCalls)]
@@ -1721,4 +1725,120 @@ async fn run_review_preserves_manual_edits_and_ignores_a_previous_account() {
     assert!(mounted.state.fake.reviews.borrow().is_empty());
     assert_eq!(mounted.state.fake.run_changes.borrow()[&1][0].revision, 1);
     assert_eq!(files.read("review.txt").await.unwrap(), "after");
+}
+
+#[wasm_bindgen_test]
+async fn prompt_mentions_capture_files_folders_and_git_diff_in_both_modes() {
+    use openwebide_core::{
+        PromptContent,
+        prompt::{attach, complete},
+    };
+    use openwebide_frontend::{
+        project_git::ProjectGit, prompt::ProjectPromptSource, workspace::Workspace,
+    };
+    let previous_token = openwebide_frontend::idb::get_bridge_pairing_token()
+        .await
+        .unwrap();
+    openwebide_frontend::idb::set_bridge_pairing_token("prompt-test-token")
+        .await
+        .unwrap();
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let http = HttpGuard(fake_bridge_http());
+        set_bridge_diff(&http.0, "diff --git a/source.rs b/source.rs\n+new");
+        let fixture = contractFolder().await;
+        let handle = contractHandle(&fixture);
+        let git = std::rc::Rc::new(std::cell::Cell::new(None));
+        let saved_git = git.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, handle.unchecked_into());
+            });
+            state
+                .settings
+                .bridge_url
+                .set("ws://bridge.test:3001".into());
+            state
+                .fake
+                .git_diffs
+                .borrow_mut()
+                .push_back(Ok("diff --git a/source.rs b/source.rs\n+new".into()));
+            saved_git.set(Some(expect_context::<ProjectGit>()));
+            view! { <div/> }
+        });
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        files
+            .write("src/space name.rs", "original source")
+            .await
+            .unwrap();
+        let source = ProjectPromptSource::new(
+            mounted.state.api,
+            mounted.state.projects,
+            git.get().unwrap(),
+            Some(1),
+        )
+        .unwrap();
+        let choices = complete(&source, "file:src/").await.unwrap();
+        assert_eq!(choices[0].insertion, "@file:\"src/space name.rs\" ");
+        let captured = attach(
+            &source,
+            PromptContent {
+                text: "@file:\"src/space name.rs\" @folder:src @diff".into(),
+                ..Default::default()
+            },
+            || true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(captured.references[0].content, "original source");
+        assert!(captured.references[1].content.contains("src/space name.rs"));
+        assert!(captured.references[2].content.contains("+new"));
+        files
+            .write("src/space name.rs", "changed later")
+            .await
+            .unwrap();
+        assert_eq!(
+            PromptContent::parse(&captured.encode().unwrap())
+                .unwrap()
+                .references[0]
+                .content,
+            "original source"
+        );
+        assert!(
+            attach(
+                &source,
+                PromptContent {
+                    text: "@file:missing".into(),
+                    ..Default::default()
+                },
+                || true
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            attach(
+                &source,
+                PromptContent {
+                    text: "@file:src/space".into(),
+                    ..Default::default()
+                },
+                || false
+            )
+            .await
+            .is_err()
+        );
+        drop(mounted);
+        contractCleanup(&fixture).await;
+    }
+    openwebide_frontend::idb::set_bridge_pairing_token(previous_token.as_deref().unwrap_or(""))
+        .await
+        .unwrap();
 }

@@ -290,6 +290,7 @@ pub(crate) fn ModelSettingsEditor(
     );
     let thinking = RwSignal::new(saved.thinking);
     let tools = RwSignal::new(saved.tools);
+    let vision = RwSignal::new(saved.vision);
     let sampling = [
         "temperature",
         "top_p",
@@ -355,6 +356,7 @@ pub(crate) fn ModelSettingsEditor(
                     if let Some(value) = detected.tools {
                         tools.set(Some(value));
                     }
+                    vision.set(detected.vision);
                     stream_tools.set(None);
                     tested.set(None);
                     detection.set(Some(result));
@@ -410,6 +412,7 @@ pub(crate) fn ModelSettingsEditor(
             max_output_tokens: number(output)?,
             thinking: thinking.get_untracked(),
             tools: tools.get_untracked(),
+            vision: vision.get_untracked(),
             stream_tools: stream_tools.get_untracked(),
             auto_compact_threshold: number(threshold)?
                 .map(u8::try_from)
@@ -439,6 +442,7 @@ pub(crate) fn ModelSettingsEditor(
             threshold.track();
             thinking.track();
             tools.track();
+            vision.track();
             stream_tools.track();
             for (_, value) in sampling {
                 value.track();
@@ -459,6 +463,7 @@ pub(crate) fn ModelSettingsEditor(
             <TextSetting label="Context tokens" value=context input_type="number" placeholder="Detect from server" />
             <TextSetting label="Max output tokens" value=output input_type="number" placeholder="Model default" />
             {sampling.into_iter().map(|(name, value)| view! { <TextSetting label=name value=value placeholder="Model default" /> }).collect::<Vec<_>>()}
+            <BooleanSetting label="Vision (image input)" value=vision />
             <Show when=move || detection.get().is_none_or(|result| result.capabilities.is_empty() || result.capabilities.iter().any(|capability| capability == "thinking"))><BooleanSetting label="Thinking" value=thinking /></Show>
             <Show when=move || detection.get().is_none_or(|result| result.capabilities.is_empty() || result.capabilities.iter().any(|capability| capability == "tools"))><BooleanSetting label="Tool calling" value=tools /></Show>
             <TextSetting label="Auto-compact (%)" value=threshold input_type="number" placeholder="85 (default)" />

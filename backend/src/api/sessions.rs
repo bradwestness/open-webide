@@ -218,7 +218,7 @@ pub(super) async fn build_run_plan(
     } else {
         Vec::new()
     };
-    Ok(openwebide_agent::session::plan(
+    let plan = openwebide_agent::session::plan(
         &runtime,
         openwebide_agent::session::PlanInput {
             environment,
@@ -228,7 +228,9 @@ pub(super) async fn build_run_plan(
             content: send.content,
             editor: send.editor_context,
         },
-    ))
+    );
+    plan.validate_prompt().map_err(ApiError::bad_request)?;
+    Ok(plan)
 }
 
 pub(crate) async fn run_plan(
@@ -411,6 +413,9 @@ pub(crate) async fn persist_message(
     state.store.get_session(id, user_id).await?;
     let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let msg: PersistMessageBody = parse_json(body)?;
+    if msg.role == Role::User {
+        openwebide_core::PromptContent::attachments(&msg.content).map_err(ApiError::bad_request)?;
+    }
     let message = state
         .store
         .insert_interim_message(
