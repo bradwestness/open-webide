@@ -54,3 +54,9 @@ mod project_git;
 
 #[path = "components/panels.rs"]
 mod panels;
+
+#[path = "components/queue.rs"]
+mod queue;
+
+#[path = "components/branches.rs"]
+mod branches;

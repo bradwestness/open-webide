@@ -91,6 +91,14 @@ pub struct ChatSession {
     pub created_at: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkedSession {
+    pub session: ChatSession,
+    /// The selected prompt is restored as a draft, outside the copied history.
+    pub prompt: String,
+    pub history: Vec<ConversationEntry>,
+}
+
 /// Payload for creating a new chat session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewSession {

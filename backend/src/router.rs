@@ -57,6 +57,12 @@ enum Route {
     RunPlan,
     CancelSession,
     PersistMessage,
+    ListQueuedPrompts,
+    EnqueuePrompt,
+    UpdateQueuedPrompt,
+    RemoveQueuedPrompt,
+    ConsumeQueuedPrompt,
+    ForkSession,
     UpsertToolStep,
     CompleteToolStep,
     ListModels,
@@ -152,6 +158,12 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("POST", ["sessions", _, "run-plan"]) => Some(Route::RunPlan),
         ("POST", ["sessions", _, "cancel"]) => Some(Route::CancelSession),
         ("POST", ["sessions", _, "messages", "persist"]) => Some(Route::PersistMessage),
+        ("GET", ["sessions", _, "queue"]) => Some(Route::ListQueuedPrompts),
+        ("POST", ["sessions", _, "queue"]) => Some(Route::EnqueuePrompt),
+        ("PUT", ["sessions", _, "queue"]) => Some(Route::UpdateQueuedPrompt),
+        ("DELETE", ["sessions", _, "queue"]) => Some(Route::RemoveQueuedPrompt),
+        ("POST", ["sessions", _, "queue", "send"]) => Some(Route::ConsumeQueuedPrompt),
+        ("POST", ["sessions", _, "fork"]) => Some(Route::ForkSession),
         ("POST", ["sessions", _, "tool-steps", "upsert"]) => Some(Route::UpsertToolStep),
         ("POST", ["sessions", _, "tool-steps", "complete"]) => Some(Route::CompleteToolStep),
         ("GET", ["models"]) => Some(Route::ListModels),
@@ -364,6 +376,30 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::PersistMessage), Some(user)) => {
             api::sessions::persist_message(req, &state, &path, user).await
+        }
+        (Some(Route::ForkSession), Some(user)) => {
+            api::sessions::fork_session(req, &state, &path, user).await
+        }
+        (
+            Some(
+                route @ (Route::ListQueuedPrompts
+                | Route::EnqueuePrompt
+                | Route::UpdateQueuedPrompt
+                | Route::RemoveQueuedPrompt
+                | Route::ConsumeQueuedPrompt),
+            ),
+            Some(user),
+        ) => {
+            use api::sessions::QueueAction;
+            let action = match route {
+                Route::ListQueuedPrompts => QueueAction::List,
+                Route::EnqueuePrompt => QueueAction::Add,
+                Route::UpdateQueuedPrompt => QueueAction::Update,
+                Route::RemoveQueuedPrompt => QueueAction::Remove,
+                Route::ConsumeQueuedPrompt => QueueAction::Consume,
+                _ => unreachable!(),
+            };
+            api::sessions::queued_prompts(req, &state, &path, user, action).await
         }
         (Some(Route::UpsertToolStep), Some(user)) => {
             api::sessions::upsert_tool_step(req, &state, &path, user).await
@@ -720,6 +756,12 @@ mod tests {
             ("POST", "sessions/5/run-plan", Route::RunPlan),
             ("POST", "sessions/5/cancel", Route::CancelSession),
             ("POST", "sessions/5/messages/persist", Route::PersistMessage),
+            ("GET", "sessions/5/queue", Route::ListQueuedPrompts),
+            ("POST", "sessions/5/queue", Route::EnqueuePrompt),
+            ("PUT", "sessions/5/queue", Route::UpdateQueuedPrompt),
+            ("DELETE", "sessions/5/queue", Route::RemoveQueuedPrompt),
+            ("POST", "sessions/5/queue/send", Route::ConsumeQueuedPrompt),
+            ("POST", "sessions/5/fork", Route::ForkSession),
             (
                 "POST",
                 "sessions/5/tool-steps/upsert",

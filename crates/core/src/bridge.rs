@@ -20,6 +20,8 @@ pub enum BridgeClientMessage {
         content: String,
         model: Option<String>,
         editor_context: Option<EditorContext>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queued_prompt: Option<crate::QueuedPromptKey>,
     },
     RunAttach {
         run_id: String,
@@ -412,6 +414,7 @@ mod tests {
                     content: "hello".into(),
                     model: None,
                     editor_context: None,
+                    queued_prompt: None,
                 },
             ),
             (

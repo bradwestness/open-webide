@@ -158,6 +158,7 @@ pub struct StartRun {
     pub content: String,
     pub model: Option<String>,
     pub editor_context: Option<EditorContext>,
+    pub queued_prompt: Option<openwebide_core::QueuedPromptKey>,
 }
 
 impl RunRegistry {
@@ -305,17 +306,23 @@ impl RunRegistry {
                         .map_err(|e| (RunRejectCode::ProjectUnavailable, e))?,
                 ),
             };
-            let message = backend
-                .persist_message(
-                    user_id,
-                    start.session_id,
-                    Role::User,
-                    &plan.user_content,
-                    None,
-                    None,
-                )
-                .await
-                .map_err(|e| (RunRejectCode::PlanFailed, e))?;
+            let message = if let Some(key) = start.queued_prompt {
+                backend
+                    .consume_queued_prompt(user_id, start.session_id, key, &plan.user_content)
+                    .await
+            } else {
+                backend
+                    .persist_message(
+                        user_id,
+                        start.session_id,
+                        Role::User,
+                        &plan.user_content,
+                        None,
+                        None,
+                    )
+                    .await
+            }
+            .map_err(|e| (RunRejectCode::PlanFailed, e))?;
             plan.request.messages.push(message.clone());
             Ok((plan, dir, message))
         }

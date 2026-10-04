@@ -397,6 +397,7 @@ impl Connection {
             content,
             model,
             editor_context,
+            queued_prompt,
         } = message
         else {
             unreachable!()
@@ -434,6 +435,7 @@ impl Connection {
             content,
             model,
             editor_context,
+            queued_prompt,
         };
         let run = match config.runs.reserve(&principal, &start) {
             Ok(run) => run,

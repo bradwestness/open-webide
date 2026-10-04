@@ -1,5 +1,7 @@
 //! Typed repositories over a [`Db`].
 
+mod branches;
+mod chat_queue;
 mod model_setup;
 mod reviews;
 mod rewind;
@@ -753,11 +755,35 @@ impl<D: Db> Store<D> {
         user_id: UserId,
         created_at: i64,
     ) -> Result<ChatSession, StorageError> {
-        if let Some(p) = project_id {
-            self.get_project(p, user_id).await?;
+        self.db
+            .transaction(|tx| async move {
+                Store::new(tx)
+                    .create_session_unlocked(
+                        name,
+                        connection_id,
+                        system_prompt_id,
+                        project_id,
+                        user_id,
+                        created_at,
+                    )
+                    .await
+            })
+            .await
+    }
+
+    async fn create_session_unlocked(
+        &self,
+        name: &str,
+        connection_id: Option<i64>,
+        system_prompt_id: Option<i64>,
+        project_id: Option<i64>,
+        user_id: UserId,
+        created_at: i64,
+    ) -> Result<ChatSession, StorageError> {
+        if let Some(project) = project_id {
+            self.get_project(project, user_id).await?;
         }
-        let id = self.db.transaction(|tx| async move {
-            let res = tx.execute(
+        let res = self.db.execute(
                 "INSERT INTO sessions (name, connection_id, system_prompt_id, project_id, user_id, created_at)
                  VALUES (?, ?, ?, ?, ?, ?)",
                 &[
@@ -770,17 +796,22 @@ impl<D: Db> Store<D> {
                 ],
             )
             .await?;
-            tx.execute(
+        self.db
+            .execute(
                 "INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)",
                 &[
                     DbValue::Int(user_id.get()),
-                    DbValue::Text(openwebide_core::ApprovalMode::setting_key(res.last_insert_rowid)),
-                    DbValue::Text(serde_json::to_string(&openwebide_core::ApprovalMode::NEW_SESSION).expect("approval mode serializes")),
+                    DbValue::Text(openwebide_core::ApprovalMode::setting_key(
+                        res.last_insert_rowid,
+                    )),
+                    DbValue::Text(
+                        serde_json::to_string(&openwebide_core::ApprovalMode::NEW_SESSION)
+                            .expect("approval mode serializes"),
+                    ),
                 ],
-            ).await?;
-            Ok(res.last_insert_rowid)
-        }).await?;
-        self.get_session(id, user_id).await
+            )
+            .await?;
+        self.get_session(res.last_insert_rowid, user_id).await
     }
 
     pub async fn set_session_connection(

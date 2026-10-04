@@ -763,6 +763,73 @@ impl BackendApi {
         self.get(&format!("/sessions/{session_id}/messages")).await
     }
 
+    pub async fn fork_session(
+        &self,
+        session: i64,
+        message: i64,
+    ) -> Result<openwebide_core::ForkedSession, String> {
+        self.post(
+            &format!("/sessions/{session}/fork"),
+            &json!({"message_id":message}),
+        )
+        .await
+    }
+    pub async fn list_queued_prompts(
+        &self,
+        session: i64,
+    ) -> Result<Vec<openwebide_core::QueuedPrompt>, String> {
+        self.get(&format!("/sessions/{session}/queue")).await
+    }
+    pub async fn enqueue_prompt(
+        &self,
+        session: i64,
+        content: &str,
+        guidance: bool,
+    ) -> Result<openwebide_core::QueuedPrompt, String> {
+        self.post(
+            &format!("/sessions/{session}/queue"),
+            &json!({"content":content,"guidance":guidance}),
+        )
+        .await
+    }
+    pub async fn update_queued_prompt(
+        &self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &str,
+    ) -> Result<openwebide_core::QueuedPrompt, String> {
+        self.put(
+            &format!("/sessions/{session}/queue"),
+            &json!({"key":key,"content":content}),
+        )
+        .await
+    }
+    pub async fn remove_queued_prompt(
+        &self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+    ) -> Result<(), String> {
+        self.request(
+            Method::DELETE,
+            &format!("/sessions/{session}/queue"),
+            Some(&json!({"key":key})),
+            false,
+        )
+        .await
+    }
+    pub async fn consume_queued_prompt(
+        &self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &str,
+    ) -> Result<ChatMessage, String> {
+        self.post(
+            &format!("/sessions/{session}/queue/send"),
+            &json!({"key":key,"content":content}),
+        )
+        .await
+    }
+
     pub async fn list_run_changes(
         &self,
         project: i64,
@@ -975,12 +1042,17 @@ impl BackendApi {
     ///
     /// `on_event` is invoked for every event as it arrives. Returns `Err` on
     /// transport failure (including abort) once the stream ends.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Streaming transport carries prompt delivery metadata and callbacks"
+    )]
     pub async fn send_message(
         &self,
         session_id: i64,
         content: &str,
         model: Option<&str>,
         editor_context: Option<&EditorContext>,
+        queued_prompt: Option<openwebide_core::QueuedPromptKey>,
         signal: Option<&AbortSignal>,
         mut on_event: impl FnMut(RunEvent),
     ) -> Result<(), String> {
@@ -992,6 +1064,7 @@ impl BackendApi {
                 "content": content,
                 "model": model,
                 "editor_context": editor_context,
+                "queued_prompt": queued_prompt,
             }))
             .map_err(|e| e.to_string())?;
 
@@ -1238,7 +1311,9 @@ mod streaming_tests {
             let restore = stream_fetch(&wire);
             let mut events = Vec::new();
             let result = api
-                .send_message(1, "hello", None, None, None, |event| events.push(event))
+                .send_message(1, "hello", None, None, None, None, |event| {
+                    events.push(event);
+                })
                 .await;
             restore.call0(&JsValue::UNDEFINED).unwrap();
             result.unwrap();

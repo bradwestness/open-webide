@@ -367,6 +367,8 @@ pub fn App() -> impl IntoView {
                 <PanelResizer kind=ActiveResizer::Chat />
                 <ChatPane
                     on_select_connection_model=chat_actions.select_connection_model
+                    conversation_actions=chat_actions.conversation
+                    queue_actions=chat_actions.queue
                     on_send=on_send
                     on_resume_run=chat_actions.resume_run
                     on_stop=on_stop

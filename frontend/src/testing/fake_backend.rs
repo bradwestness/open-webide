@@ -56,6 +56,12 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub fork_results: RefCell<VecDeque<Deferred<openwebide_core::ForkedSession>>>,
+    pub fork_errors: RefCell<VecDeque<String>>,
+    pub queued_prompts: RefCell<BTreeMap<i64, Vec<openwebide_core::QueuedPrompt>>>,
+    pub queue_load_results: RefCell<VecDeque<Deferred<Vec<openwebide_core::QueuedPrompt>>>>,
+    pub queue_errors: RefCell<VecDeque<String>>,
+    pub queue_next_id: std::cell::Cell<i64>,
     pub run_changes: RefCell<BTreeMap<i64, Vec<openwebide_core::RunChange>>>,
     pub reviews: RefCell<BTreeMap<i64, openwebide_core::ReviewPlan>>,
     pub review_results: RefCell<VecDeque<Deferred<openwebide_core::ReviewPlan>>>,
@@ -1201,6 +1207,7 @@ impl Backend for FakeBackend {
             });
             self.sessions.borrow_mut().retain(|item| item.id != id);
             self.messages.borrow_mut().remove(&id);
+            self.queued_prompts.borrow_mut().remove(&id);
             Ok(())
         })
     }
@@ -1455,6 +1462,221 @@ impl Backend for FakeBackend {
                 .ok_or_else(|| "chat_tools has no scripted response".into())
         })
     }
+    fn fork_session<'a>(
+        &'a self,
+        source: i64,
+        target: i64,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ForkedSession, String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "fork_session",
+            });
+            let pending = self.fork_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            if let Some(error) = self.fork_errors.borrow_mut().pop_front() {
+                return Err(error);
+            }
+
+            let source_session = self
+                .sessions
+                .borrow()
+                .iter()
+                .find(|session| session.id == source)
+                .cloned()
+                .ok_or("Session missing")?;
+            let entries = self
+                .messages
+                .borrow()
+                .get(&source)
+                .cloned()
+                .unwrap_or_default();
+            let prompt = entries
+                .iter()
+                .find_map(|entry| match entry {
+                    ConversationEntry::Message(message)
+                        if message.id == target && message.role == Role::User =>
+                    {
+                        Some(message.content.clone())
+                    }
+                    _ => None,
+                })
+                .ok_or("Prompt missing")?;
+            let session = self
+                .create_session(
+                    &format!("{} (branch)", source_session.name),
+                    source_session.connection_id,
+                    source_session.system_prompt_id,
+                    source_session.project_id,
+                )
+                .await?;
+            let mut ids = BTreeMap::new();
+            let mut copied = Vec::new();
+            for entry in entries.iter().filter(
+                |entry| matches!(entry, ConversationEntry::Message(message) if message.id < target),
+            ) {
+                if let ConversationEntry::Message(message) = entry {
+                    let copy = self
+                        .persist_message(
+                            session.id,
+                            message.role,
+                            &message.content,
+                            message.usage.as_ref(),
+                            message.tool_calls.as_deref(),
+                        )
+                        .await?;
+                    ids.insert(message.id, copy.id);
+                    copied.push(ConversationEntry::Message(copy));
+                }
+            }
+            for entry in entries.iter().filter(|entry| matches!(entry, ConversationEntry::ToolStep(step) if step.anchor_message_id < target)) {
+                if let ConversationEntry::ToolStep(step) = entry { let mut step = step.clone(); step.anchor_message_id = ids.get(&step.anchor_message_id).copied().ok_or("Missing tool anchor")?; copied.push(ConversationEntry::ToolStep(step)); }
+            }
+            self.messages
+                .borrow_mut()
+                .insert(session.id, copied.clone());
+            let mode = self
+                .settings
+                .borrow()
+                .get(&openwebide_core::ApprovalMode::setting_key(source))
+                .cloned();
+            if let Some(mode) = mode {
+                self.settings
+                    .borrow_mut()
+                    .insert(openwebide_core::ApprovalMode::setting_key(session.id), mode);
+            }
+            Ok(openwebide_core::ForkedSession {
+                session,
+                prompt,
+                history: copied,
+            })
+        })
+    }
+    fn list_queued_prompts<'a>(
+        &'a self,
+        session: i64,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::QueuedPrompt>, String>> {
+        Box::pin(async move {
+            let pending = self.queue_load_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            Ok(self
+                .queued_prompts
+                .borrow()
+                .get(&session)
+                .cloned()
+                .unwrap_or_default())
+        })
+    }
+    fn enqueue_prompt<'a>(
+        &'a self,
+        session: i64,
+        content: &'a str,
+        guidance: bool,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::QueuedPrompt, String>> {
+        Box::pin(async move {
+            if let Some(error) = self.queue_errors.borrow_mut().pop_front() {
+                return Err(error);
+            }
+            openwebide_core::chat_queue::validate_content(content)?;
+            let id = self.queue_next_id.get() + 1;
+            self.queue_next_id.set(id);
+            let prompt = openwebide_core::QueuedPrompt {
+                id,
+                session_id: session,
+                revision: 1,
+                content: content.into(),
+                created_at: 0,
+                guidance,
+            };
+            self.queued_prompts
+                .borrow_mut()
+                .entry(session)
+                .or_default()
+                .push(prompt.clone());
+            self.queued_prompts
+                .borrow_mut()
+                .get_mut(&session)
+                .unwrap()
+                .sort_by_key(|prompt| (!prompt.guidance, prompt.id));
+            Ok(prompt)
+        })
+    }
+    fn update_queued_prompt<'a>(
+        &'a self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::QueuedPrompt, String>> {
+        Box::pin(async move {
+            if let Some(error) = self.queue_errors.borrow_mut().pop_front() {
+                return Err(error);
+            }
+            openwebide_core::chat_queue::validate_content(content)?;
+            let mut all = self.queued_prompts.borrow_mut();
+            let prompt = all
+                .entry(session)
+                .or_default()
+                .iter_mut()
+                .find(|entry| entry.key() == key)
+                .ok_or("Queued prompt changed")?;
+            prompt.revision += 1;
+            prompt.content = content.into();
+            Ok(prompt.clone())
+        })
+    }
+    fn remove_queued_prompt<'a>(
+        &'a self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            if let Some(error) = self.queue_errors.borrow_mut().pop_front() {
+                return Err(error);
+            }
+            let mut all = self.queued_prompts.borrow_mut();
+            let queue = all.entry(session).or_default();
+            let index = queue
+                .iter()
+                .position(|entry| entry.key() == key)
+                .ok_or("Queued prompt changed")?;
+            queue.remove(index);
+            Ok(())
+        })
+    }
+    fn consume_queued_prompt<'a>(
+        &'a self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<ChatMessage, String>> {
+        Box::pin(async move {
+            if let Some(error) = self.queue_errors.borrow_mut().pop_front() {
+                return Err(error);
+            }
+            let first = self
+                .queued_prompts
+                .borrow()
+                .get(&session)
+                .and_then(|queue| queue.first())
+                .cloned()
+                .ok_or("Queued prompt missing")?;
+            if first.key() != key || first.content != content {
+                return Err("Queued prompt changed".into());
+            }
+            let message = self
+                .persist_message(session, Role::User, content, None, None)
+                .await?;
+            self.queued_prompts
+                .borrow_mut()
+                .get_mut(&session)
+                .unwrap()
+                .remove(0);
+            Ok(message)
+        })
+    }
     fn persist_message<'a>(
         &'a self,
         session_id: i64,
@@ -1696,16 +1918,26 @@ impl Backend for FakeBackend {
             Err("fetch_web_page has no scripted response".into())
         })
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Streaming transport carries prompt delivery metadata and callbacks"
+    )]
     fn send_message<'a>(
         &'a self,
         session_id: i64,
         content: &'a str,
         model: Option<&'a str>,
         _editor_context: Option<&'a EditorContext>,
+        queued_prompt: Option<openwebide_core::QueuedPromptKey>,
         signal: Option<&'a AbortSignal>,
         mut on_event: Box<dyn FnMut(RunEvent) + 'a>,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            if let Some(key) = queued_prompt {
+                let message = self.consume_queued_prompt(session_id, key, content).await?;
+                on_event(RunEvent::Message { message });
+            }
+
             self.calls.borrow_mut().push(Call::SendMessage {
                 session: session_id,
                 content: content.into(),
@@ -1716,18 +1948,20 @@ impl Backend for FakeBackend {
                 .borrow_mut()
                 .pop_front()
                 .unwrap_or_default();
-            if let Some(message) = events.iter().find_map(|event| match event {
-                RunEvent::Message { message } if message.role == Role::User => Some(message),
-                _ => None,
-            }) {
-                self.messages
-                    .borrow_mut()
-                    .entry(session_id)
-                    .or_default()
-                    .push(ConversationEntry::Message(message.clone()));
-            } else {
-                self.persist_message(session_id, Role::User, content, None, None)
-                    .await?;
+            if queued_prompt.is_none() {
+                if let Some(message) = events.iter().find_map(|event| match event {
+                    RunEvent::Message { message } if message.role == Role::User => Some(message),
+                    _ => None,
+                }) {
+                    self.messages
+                        .borrow_mut()
+                        .entry(session_id)
+                        .or_default()
+                        .push(ConversationEntry::Message(message.clone()));
+                } else {
+                    self.persist_message(session_id, Role::User, content, None, None)
+                        .await?;
+                }
             }
             let mut assistant = None;
             let mut deltas = String::new();

@@ -35,6 +35,7 @@ pub struct RunInput {
     pub editor: Option<EditorContext>,
     pub controller: AbortController,
     pub resume: Option<InterruptedRun>,
+    pub queued_prompt: Option<openwebide_core::QueuedPromptKey>,
 }
 
 enum RunHost {
@@ -271,6 +272,7 @@ impl ProjectRuns {
                     self.host,
                     self.bridge.get_untracked(),
                     input.resume,
+                    input.queued_prompt,
                     current,
                 )
                 .await
@@ -290,6 +292,7 @@ impl ProjectRuns {
                         content: input.content.clone(),
                         model: input.model.clone(),
                         editor_context: input.editor.clone(),
+                        queued_prompt: input.queued_prompt,
                     })
                     .await;
                 if started || !current() {
@@ -302,6 +305,7 @@ impl ProjectRuns {
                         &input.content,
                         input.model.as_deref(),
                         input.editor.as_ref(),
+                        input.queued_prompt,
                         Some(&input.controller.signal()),
                         Box::new(on_event),
                     )

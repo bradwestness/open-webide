@@ -13,6 +13,15 @@ use serde_json::{Value, json};
 use crate::runs::http_client::ReqwestHttpClient;
 
 pub trait RunBackend: Send + Sync {
+    fn consume_queued_prompt(
+        &self,
+        _user: i64,
+        _session: i64,
+        _key: openwebide_core::QueuedPromptKey,
+        _content: &str,
+    ) -> impl Future<Output = Result<ChatMessage, String>> + Send {
+        async { Err("Queued prompt persistence unavailable".into()) }
+    }
     fn model_runtime(
         &self,
         _user: i64,
@@ -274,6 +283,21 @@ impl RunBackend for BackendClient {
             "POST",
             &format!("/sessions/{session_id}/run-plan"),
             json!({"content":content,"model":model,"editor_context":editor_context}),
+        )
+        .await
+    }
+    async fn consume_queued_prompt(
+        &self,
+        user: i64,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &str,
+    ) -> Result<ChatMessage, String> {
+        self.call(
+            user,
+            "POST",
+            &format!("/sessions/{session}/queue/send"),
+            json!({"key":key,"content":content}),
         )
         .await
     }

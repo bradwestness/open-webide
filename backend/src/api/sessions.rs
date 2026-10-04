@@ -165,6 +165,104 @@ pub(crate) async fn list_messages(
     Ok(json_response(200, &conversation))
 }
 
+pub(crate) enum QueueAction {
+    List,
+    Add,
+    Update,
+    Remove,
+    Consume,
+}
+
+pub(crate) async fn fork_session(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let session = session_id(path)?;
+    let body: RewindBody = parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
+    Ok(json_response(
+        201,
+        &state
+            .store
+            .fork_session(user.id, session, body.message_id, now())
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct QueueBody {
+    #[serde(default)]
+    guidance: bool,
+    #[serde(default)]
+    key: Option<openwebide_core::QueuedPromptKey>,
+    #[serde(default)]
+    content: String,
+}
+
+pub(crate) async fn queued_prompts(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+    action: QueueAction,
+) -> Result<JsonResp, ApiError> {
+    let session = session_id(path)?;
+    state.store.get_session(session, user.id).await?;
+    if matches!(action, QueueAction::List) {
+        return Ok(json_response(
+            200,
+            &state.store.list_queued_prompts(user.id, session).await?,
+        ));
+    }
+    let body: QueueBody = parse_json(read_body(req, CHAT_BODY_LIMIT).await?)?;
+    if !matches!(action, QueueAction::Remove) {
+        openwebide_core::chat_queue::validate_content(&body.content)
+            .map_err(ApiError::bad_request)?;
+    }
+    if matches!(action, QueueAction::Add) {
+        let prompt = if body.guidance {
+            state
+                .store
+                .enqueue_guidance(user.id, session, &body.content, now())
+                .await?
+        } else {
+            state
+                .store
+                .enqueue_prompt(user.id, session, &body.content, now())
+                .await?
+        };
+        return Ok(json_response(201, &prompt));
+    }
+    let key = body
+        .key
+        .ok_or_else(|| ApiError::bad_request("queued prompt key is required"))?;
+    match action {
+        QueueAction::Update => Ok(json_response(
+            200,
+            &state
+                .store
+                .update_queued_prompt(user.id, session, key, &body.content)
+                .await?,
+        )),
+        QueueAction::Remove => {
+            state
+                .store
+                .remove_queued_prompt(user.id, session, key)
+                .await?;
+            Ok(json_response(200, &json!({"ok":true})))
+        }
+        QueueAction::Consume => Ok(json_response(
+            201,
+            &state
+                .store
+                .consume_queued_prompt(user.id, session, key, &body.content, now())
+                .await?,
+        )),
+        QueueAction::List | QueueAction::Add => unreachable!(),
+    }
+}
+
 #[derive(Deserialize)]
 pub(super) struct SendMessageBody {
     pub(super) content: String,
@@ -172,6 +270,8 @@ pub(super) struct SendMessageBody {
     pub(super) model: Option<String>,
     #[serde(default)]
     pub(super) editor_context: Option<EditorContext>,
+    #[serde(default)]
+    pub(super) queued_prompt: Option<openwebide_core::QueuedPromptKey>,
 }
 
 pub(super) async fn build_run_plan(
@@ -266,12 +366,19 @@ pub(crate) async fn send_session_message(
     let session_id = session_id(path)?;
     let body = read_body(req, CHAT_BODY_LIMIT).await?;
     let send: SendMessageBody = parse_json(body)?;
-
+    let queued_prompt = send.queued_prompt;
     let plan = build_run_plan(&state, user_id, session_id, send).await?;
-    let user_message = state
-        .store
-        .insert_message(session_id, Role::User, &plan.user_content, now())
-        .await?;
+    let user_message = if let Some(key) = queued_prompt {
+        state
+            .store
+            .consume_queued_prompt(user_id, session_id, key, &plan.user_content, now())
+            .await?
+    } else {
+        state
+            .store
+            .insert_message(session_id, Role::User, &plan.user_content, now())
+            .await?
+    };
     let mut request = plan.request;
     request.messages.push(user_message.clone());
     let memo = ToolStreamMemo::new(plan.connection.tool_stream_unsupported);

@@ -20,11 +20,27 @@ struct FakeBackend {
     fail_completion: AtomicBool,
     fail_interim: AtomicBool,
     fail_plan: AtomicBool,
+    fail_queue: AtomicBool,
+    queue_deliveries: Mutex<Vec<openwebide_core::QueuedPromptKey>>,
     approval_mode: Mutex<openwebide_core::ApprovalMode>,
     approval_checks: Mutex<Vec<openwebide_core::ApprovalCheck>>,
 }
 
 impl RunBackend for FakeBackend {
+    async fn consume_queued_prompt(
+        &self,
+        user: i64,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &str,
+    ) -> Result<ChatMessage, String> {
+        if self.fail_queue.load(Ordering::SeqCst) {
+            return Err("Queued prompt changed".into());
+        }
+        self.queue_deliveries.lock().unwrap().push(key);
+        self.persist_message(user, session, Role::User, content, None, None)
+            .await
+    }
     async fn model_complete(
         &self,
         _user: i64,
@@ -248,6 +264,7 @@ fn start(id: &str) -> StartRun {
         content: "go".into(),
         model: None,
         editor_context: None,
+        queued_prompt: None,
     }
 }
 fn user(id: i64) -> Principal {
@@ -296,6 +313,7 @@ async fn buffered_start_cancel_survives_delayed_start_task() {
                 content,
                 model,
                 editor_context,
+                queued_prompt,
             } => {
                 let start = StartRun {
                     run_id,
@@ -303,6 +321,7 @@ async fn buffered_start_cancel_survives_delayed_start_task() {
                     content,
                     model,
                     editor_context,
+                    queued_prompt,
                 };
                 let run = registry.reserve(&user(1), &start).unwrap();
                 let registry = registry.clone();
@@ -1536,4 +1555,74 @@ fn assert_context_usage(actual: Option<TurnTelemetry>, expected: TurnTelemetry) 
         .expect("run must persist its request breakdown");
     assert_eq!(context.total(), actual.prompt_tokens);
     assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+async fn queued_run_uses_atomic_delivery_after_preflight_and_never_falls_back_to_plain_insert() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = RunRegistry::default();
+    let backend = Arc::new(FakeBackend::default());
+    let key = openwebide_core::QueuedPromptKey { id: 8, revision: 2 };
+    let queued_start = |id| StartRun {
+        queued_prompt: Some(key),
+        ..start(id)
+    };
+    backend.fail_plan.store(true, Ordering::SeqCst);
+    assert!(
+        registry
+            .start(
+                &user(1),
+                queued_start("preflight"),
+                dir.path(),
+                backend.clone(),
+                |_| FakeProvider::default()
+            )
+            .await
+            .is_err()
+    );
+    assert!(backend.queue_deliveries.lock().unwrap().is_empty());
+    assert!(backend.messages.lock().unwrap().is_empty());
+    backend.fail_plan.store(false, Ordering::SeqCst);
+    backend.fail_queue.store(true, Ordering::SeqCst);
+    assert!(
+        registry
+            .start(
+                &user(1),
+                queued_start("stale"),
+                dir.path(),
+                backend.clone(),
+                |_| FakeProvider::default()
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        backend.messages.lock().unwrap().is_empty(),
+        "a stale queue revision must not fall back to an ordinary send"
+    );
+    backend.fail_queue.store(false, Ordering::SeqCst);
+    let run = registry
+        .start(
+            &user(1),
+            queued_start("delivery"),
+            dir.path(),
+            backend.clone(),
+            |_| FakeProvider {
+                chat: Mutex::new(vec![Ok(StreamChunk::Delta("reply".into()))]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    finished(&run).await;
+    assert_eq!(*backend.queue_deliveries.lock().unwrap(), [key]);
+    let messages = backend.messages.lock().unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.role == Role::User)
+            .count(),
+        1
+    );
+    assert_eq!(messages[0].content, "go");
 }

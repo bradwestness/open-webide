@@ -339,6 +339,38 @@ pub trait Backend {
         &'a self,
         request: &'a ChatRequest,
     ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>>;
+    fn fork_session<'a>(
+        &'a self,
+        session: i64,
+        message: i64,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ForkedSession, String>>;
+    fn list_queued_prompts<'a>(
+        &'a self,
+        session: i64,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::QueuedPrompt>, String>>;
+    fn enqueue_prompt<'a>(
+        &'a self,
+        session: i64,
+        content: &'a str,
+        guidance: bool,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::QueuedPrompt, String>>;
+    fn update_queued_prompt<'a>(
+        &'a self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::QueuedPrompt, String>>;
+    fn remove_queued_prompt<'a>(
+        &'a self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+    ) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn consume_queued_prompt<'a>(
+        &'a self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<ChatMessage, String>>;
     fn persist_message<'a>(
         &'a self,
         session_id: i64,
@@ -396,12 +428,17 @@ pub trait Backend {
         &'a self,
         target_url: &'a str,
     ) -> LocalBoxFuture<'a, Result<String, String>>;
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Streaming transport carries prompt delivery metadata and callbacks"
+    )]
     fn send_message<'a>(
         &'a self,
         session_id: i64,
         content: &'a str,
         model: Option<&'a str>,
         editor_context: Option<&'a EditorContext>,
+        queued_prompt: Option<openwebide_core::QueuedPromptKey>,
         signal: Option<&'a AbortSignal>,
         on_event: Box<dyn FnMut(RunEvent) + 'a>,
     ) -> LocalBoxFuture<'a, Result<(), String>>;
@@ -879,6 +916,54 @@ impl Backend for BackendApi {
     ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
         Box::pin(BackendApi::chat_tools(self, request))
     }
+    fn fork_session<'a>(
+        &'a self,
+        session: i64,
+        message: i64,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ForkedSession, String>> {
+        Box::pin(BackendApi::fork_session(self, session, message))
+    }
+    fn list_queued_prompts<'a>(
+        &'a self,
+        session: i64,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::QueuedPrompt>, String>> {
+        Box::pin(BackendApi::list_queued_prompts(self, session))
+    }
+    fn enqueue_prompt<'a>(
+        &'a self,
+        session: i64,
+        content: &'a str,
+        guidance: bool,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::QueuedPrompt, String>> {
+        Box::pin(BackendApi::enqueue_prompt(self, session, content, guidance))
+    }
+    fn update_queued_prompt<'a>(
+        &'a self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::QueuedPrompt, String>> {
+        Box::pin(BackendApi::update_queued_prompt(
+            self, session, key, content,
+        ))
+    }
+    fn remove_queued_prompt<'a>(
+        &'a self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::remove_queued_prompt(self, session, key))
+    }
+    fn consume_queued_prompt<'a>(
+        &'a self,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+        content: &'a str,
+    ) -> LocalBoxFuture<'a, Result<ChatMessage, String>> {
+        Box::pin(BackendApi::consume_queued_prompt(
+            self, session, key, content,
+        ))
+    }
     fn persist_message<'a>(
         &'a self,
         session_id: i64,
@@ -971,12 +1056,17 @@ impl Backend for BackendApi {
     ) -> LocalBoxFuture<'a, Result<String, String>> {
         Box::pin(BackendApi::fetch_web_page(self, target_url))
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Streaming transport carries prompt delivery metadata and callbacks"
+    )]
     fn send_message<'a>(
         &'a self,
         session_id: i64,
         content: &'a str,
         model: Option<&'a str>,
         editor_context: Option<&'a EditorContext>,
+        queued_prompt: Option<openwebide_core::QueuedPromptKey>,
         signal: Option<&'a AbortSignal>,
         on_event: Box<dyn FnMut(RunEvent) + 'a>,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
@@ -986,6 +1076,7 @@ impl Backend for BackendApi {
             content,
             model,
             editor_context,
+            queued_prompt,
             signal,
             on_event,
         ))

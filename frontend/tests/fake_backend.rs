@@ -64,7 +64,7 @@ async fn sent_prompts_and_delta_replies_survive_history_reload() {
             content: "world".into(),
         },
     ]);
-    fake.send_message(1, "question", None, None, None, Box::new(|_| {}))
+    fake.send_message(1, "question", None, None, None, None, Box::new(|_| {}))
         .await
         .unwrap();
     let history = fake.list_messages(1).await.unwrap();
@@ -122,6 +122,7 @@ async fn scripted_messages_are_persisted_once_with_final_metadata() {
     fake.send_message(
         1,
         "question",
+        None,
         None,
         None,
         None,

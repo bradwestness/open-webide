@@ -617,6 +617,10 @@ pub fn ChatPane(
     on_permission_always: Callback<String>,
     on_slash_command: Callback<SlashCommand>,
     #[prop(optional)] on_rewind: Option<Callback<i64>>,
+    #[prop(optional)] queue_actions: Option<crate::state_actions::prompt_queue::PromptQueueActions>,
+    #[prop(optional)] conversation_actions: Option<
+        crate::state_actions::conversation::ConversationActions,
+    >,
 ) -> impl IntoView {
     let reviews = use_context::<crate::state::reviews::ReviewsState>();
     let chat = expect_context::<ChatState>();
@@ -691,7 +695,13 @@ pub fn ChatPane(
                 return;
             }
 
-            on_send.run(());
+            if (streaming.get_untracked() || chat.queue_edit.get_untracked().is_some())
+                && let Some(queue) = queue_actions
+            {
+                queue.enqueue.run(());
+            } else if !streaming.get_untracked() {
+                on_send.run(());
+            }
         }
     };
 
@@ -751,6 +761,14 @@ pub fn ChatPane(
                                             <Show when=move || assistant.get() fallback=move || view! {
                                                 {render_user_message(content)}
                                                 {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 => view! { <crate::components::RunChangesPanel message=message.id /> }.into_any(), _ => ().into_any() })}
+                                                <Show when=move || conversation_actions.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
+                                                    <button class="btn ghost tui-edit-prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
+                                                        if let (Some(actions), Some(id)) = (conversation_actions, item.with_untracked(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { actions.edit.run(id); }
+                                                    }>"Edit"</button>
+                                                    <button class="btn ghost tui-fork-prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) title="Copy the history before this prompt into a new conversation" disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
+                                                        if let (Some(actions), Some(id)) = (conversation_actions, item.with_untracked(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { actions.fork.run(id); }
+                                                    }>"Fork"</button>
+                                                </Show>
                                                 <Show when=move || on_rewind.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
                                                     <button class="btn ghost tui-rewind" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get()
                                                         on:click=move |_| {
@@ -812,6 +830,13 @@ pub fn ChatPane(
             </Show>
 
             <crate::prompt::PromptControls composer=prompt_composer />
+            <Show when=move || chat.prompt_edit.get().is_some()>
+                <div class="tui-prompt-edit"><span>"Editing an earlier prompt. Send starts a new branch."</span>
+                    {conversation_actions.map(|actions| view! { <button class="btn ghost" disabled=move || streaming.get() on:click=move |_| actions.cancel_edit.run(())>"Cancel edit"</button> })}
+                </div>
+            </Show>
+            <Show when=move || chat.branching.get()><div class="tui-prompt-edit">"Copying conversation…"</div></Show>
+            {queue_actions.map(|actions| view! { <crate::components::chat_pane::PromptQueueControls actions=actions /> })}
             <div class="composer tui-composer"
                 on:dragover=move |event: web_sys::DragEvent| { if event.data_transfer().is_some_and(|transfer| transfer.types().includes(&wasm_bindgen::JsValue::from_str("Files"), 0)) { event.prevent_default(); } }
                 on:drop=move |event: web_sys::DragEvent| { if let Some(files) = event.data_transfer().and_then(|transfer| transfer.files()) { event.prevent_default(); prompt_composer.import(files); } }
@@ -827,6 +852,8 @@ pub fn ChatPane(
                             } else {
                                 "? Tool awaiting approval: press [Alt+Y]es, or [Alt+N]o..."
                             }
+                        } else if streaming.get() {
+                            "Queue a follow-up (Enter), or use Steer to interrupt with guidance"
                         } else if has_session.get() {
                             "Ask a question or /command (Enter to send, Shift+Enter for newline, Up/Down for history)"
                         } else {
@@ -962,17 +989,49 @@ pub fn ChatPane(
                         view! {
                             <button
                                 class="btn send tui-btn-send"
-                                disabled=move || chat.rewinding.get() || reviews.is_some_and(|state| state.busy.get().is_some()) || chat.creating_session.get() || chat.reading_images.get() || (draft.with(|d| d.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty))
+                                disabled=move || chat.branching.get() || chat.queue_busy.get() || chat.rewinding.get() || reviews.is_some_and(|state| state.busy.get().is_some()) || chat.creating_session.get() || chat.reading_images.get() || (draft.with(|d| d.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty))
                                 on:click=move |_| submit()
                             >
-                                "Send"
+                                {move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else if chat.prompt_edit.get().is_some() { "Send edit" } else { "Send" }}
                             </button>
                         }
                     }
                 >
+                    {queue_actions.map(|actions| view! {
+                        <button class="btn send tui-btn-queue" disabled=move || chat.queue_busy.get() || chat.reading_images.get() || chat.rewinding.get() || (draft.with(|draft| draft.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty)) on:click=move |_| actions.enqueue.run(())>{move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else { "Queue" }}</button>
+                        <button class="btn ghost tui-btn-steer" title="Stop the current run and send this guidance before queued follow-ups" disabled=move || chat.queue_busy.get() || chat.reading_images.get() || chat.queue_edit.get().is_some() || (draft.with(|draft| draft.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty)) on:click=move |_| actions.steer.run(())>"Steer"</button>
+                    })}
                     <button class="btn stop tui-btn-stop" on:click=move |_| on_stop.run(())>"Stop"</button>
                 </Show>
             </div>
         </main>
+    }
+}
+
+#[component]
+fn PromptQueueControls(
+    actions: crate::state_actions::prompt_queue::PromptQueueActions,
+) -> impl IntoView {
+    let chat = expect_context::<ChatState>();
+    view! {
+        <Show when=move || !chat.queued_prompts.with(Vec::is_empty) || chat.queue_edit.get().is_some()>
+            <section class="tui-prompt-queue" aria-label="Queued prompts">
+                <div class="tui-queue-heading"><strong>"Queued prompts"</strong>
+                    <button class="btn ghost tui-queue-toggle" disabled=move || chat.queue_busy.get() || chat.queue_loading.get() || chat.queue_edit.get().is_some() on:click=move |_| actions.toggle.run(())>{move || if chat.active_session.get().is_some_and(|session| chat.queue_running.with(|sessions| sessions.contains(&session))) { "Pause queue" } else { "Run queue" }}</button>
+                    <Show when=move || chat.queue_edit.get().is_some()><button class="btn ghost" on:click=move |_| actions.cancel_edit.run(())>"Cancel edit"</button></Show>
+                </div>
+                <For each=move || chat.queued_prompts.get() key=|prompt| (prompt.id, prompt.revision) children=move |prompt| {
+                    let key = prompt.key();
+                    let content = openwebide_core::PromptContent::decode(&prompt.content);
+                    let text = extract_editor_context_prelude(&content.text).1.chars().take(200).collect::<String>();
+                    let label = if text.trim().is_empty() { format!("{} image(s)", content.images.len()) } else if content.images.is_empty() { text } else { format!("{text} · {} image(s)", content.images.len()) };
+                    view! { <div class="tui-queued-prompt" data-queue-id=prompt.id>
+                        <span class="tui-queue-kind">{if prompt.guidance { "Guidance" } else { "Next" }}</span><span class="tui-queue-label">{label}</span>
+                        <button class="btn ghost" disabled=move || chat.queue_busy.get() || chat.queue_delivering.get().is_some_and(|(_, delivering)| delivering == key) on:click=move |_| actions.edit.run(key)>"Edit"</button>
+                        <button class="btn ghost" disabled=move || chat.queue_busy.get() || chat.queue_delivering.get().is_some_and(|(_, delivering)| delivering == key) on:click=move |_| actions.remove.run(key)>"Remove"</button>
+                    </div> }
+                } />
+            </section>
+        </Show>
     }
 }

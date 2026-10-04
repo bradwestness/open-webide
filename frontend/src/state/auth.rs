@@ -77,6 +77,17 @@ impl AuthState {
         chat.streaming.set(false);
         chat.rewinding.set(false);
         chat.prompt_images.set(Vec::new());
+        chat.queued_prompts.set(Vec::new());
+        chat.queue_busy.set(false);
+        chat.queue_loading.set(false);
+        chat.queue_running.set(Default::default());
+        chat.queue_edit.set(None);
+        chat.queue_steering.set(None);
+        chat.queue_delivering.set(None);
+        chat.queue_epoch.update_value(|epoch| *epoch += 1);
+        chat.loading_history.set(None);
+        chat.prompt_edit.set(None);
+        chat.branching.set(false);
         chat.reading_images.set(false);
         chat.send_generation
             .update_value(|generation| *generation += 1);

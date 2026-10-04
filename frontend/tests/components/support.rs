@@ -205,6 +205,8 @@ pub fn chat_view(state: TestState) -> impl IntoView {
         <ChatPane
             on_select_connection_model=actions.select_connection_model
             on_send=actions.send on_resume_run=actions.resume_run on_stop=actions.stop
+            conversation_actions=actions.conversation
+            queue_actions=actions.queue
             on_permission=actions.permission on_permission_always=actions.permission_always on_slash_command=actions.slash_command on_rewind=actions.rewind />
     }
 }

@@ -99,6 +99,7 @@ fn run_plan_rebuilds_tool_history_and_falls_back_across_gaps() {
                     content: "next".into(),
                     model: None,
                     editor_context: None,
+                    queued_prompt: None,
                 },
             )
             .await
@@ -267,6 +268,7 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                 content: "go".into(),
                 model: Some("chosen".into()),
                 editor_context: Some(context.clone()),
+                queued_prompt: None,
             };
             let plan = build_run_plan(&state, user.id, session.id, make_body())
                 .await
@@ -561,6 +563,7 @@ fn project_database_error_does_not_downgrade_to_chat() {
                 content: "hello".into(),
                 model: None,
                 editor_context: None,
+                queued_prompt: None,
             },
         )
         .await;

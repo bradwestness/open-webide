@@ -776,6 +776,7 @@ pub async fn run_local_agent(
     project_host: crate::project_host::ProjectHost,
     bridge_connection: Option<crate::bridge::BridgeConn>,
     resume: Option<crate::state::chat::InterruptedRun>,
+    queued_prompt: Option<openwebide_core::QueuedPromptKey>,
     current: impl Fn() -> bool + Clone + 'static,
 ) -> Result<(), String> {
     let host = project_host
@@ -839,10 +840,15 @@ pub async fn run_local_agent(
     let (anchor_id, first_turn) = if let Some(resume) = resume {
         (resume.anchor_id, resume.first_turn)
     } else {
-        let user_message = api
-            .with_value(Clone::clone)
-            .persist_message(session_id, Role::User, &plan.user_content, None, None)
-            .await?;
+        let user_message = if let Some(key) = queued_prompt {
+            api.with_value(Clone::clone)
+                .consume_queued_prompt(session_id, key, &plan.user_content)
+                .await?
+        } else {
+            api.with_value(Clone::clone)
+                .persist_message(session_id, Role::User, &plan.user_content, None, None)
+                .await?
+        };
         let anchor_id = user_message.id;
         on_event(RunEvent::Message {
             message: user_message.clone(),

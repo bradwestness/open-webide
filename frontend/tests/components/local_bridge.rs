@@ -1842,3 +1842,119 @@ async fn prompt_mentions_capture_files_folders_and_git_diff_in_both_modes() {
         .await
         .unwrap();
 }
+
+#[wasm_bindgen_test]
+async fn queued_local_prompt_is_consumed_once_with_its_captured_images_and_references() {
+    let http = HttpGuard(fake_bridge_http());
+    bridge_found(&http.0, true);
+    let previous = openwebide_frontend::idb::get_bridge_pairing_token()
+        .await
+        .unwrap();
+    openwebide_frontend::idb::set_bridge_pairing_token("queue-test-token")
+        .await
+        .unwrap();
+    let folder = probe_folder();
+    let handle = folder.clone();
+    let prompt = openwebide_core::PromptContent {
+        text: "queued work".into(),
+        references: vec![openwebide_core::prompt::PromptReference {
+            mention: openwebide_core::prompt::Mention {
+                kind: openwebide_core::prompt::MentionKind::File,
+                path: "a.txt".into(),
+            },
+            content: "immutable capture".into(),
+        }],
+        images: vec![
+            openwebide_core::PromptImage::from_bytes("test.png".into(), b"\x89PNG\r\n\x1a\n")
+                .unwrap(),
+        ],
+    }
+    .encode()
+    .unwrap();
+    let content = prompt.clone();
+    let mounted =
+        mount_test(move |state| {
+            state.seed_project();
+            state.seed_connection();
+            state.fake.connections.borrow_mut()[0].context_limit = Some(32768);
+            state
+                .settings
+                .connections
+                .update(|connections| connections[0].context_limit = Some(32768));
+
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = openwebide_core::WorkspaceMode::Local);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, handle.unchecked_into());
+            });
+            state
+                .settings
+                .bridge_url
+                .set("ws://bridge.test:3001".into());
+            state.fake.queued_prompts.borrow_mut().insert(
+                1,
+                vec![openwebide_core::QueuedPrompt {
+                    id: 1,
+                    session_id: 1,
+                    revision: 1,
+                    content,
+                    created_at: 0,
+                    guidance: false,
+                }],
+            );
+            state.fake.scripted_completions.borrow_mut().push_back(
+                openwebide_core::ChatCompletion {
+                    response: openwebide_core::ChatResponse::Text("Reply".into()),
+                    preamble: String::new(),
+                    reasoning: String::new(),
+                    stop_reason: openwebide_core::StopReason::Complete,
+                    usage: None,
+                },
+            );
+            chat_view(state)
+        });
+    settle().await;
+    mounted.input("next draft");
+    settle().await;
+    mounted.click(".tui-queue-toggle");
+    for _ in 0..400 {
+        sleep_ms(5).await;
+        settle().await;
+        if !mounted.state.fake.completion_requests.borrow().is_empty()
+            && !mounted.state.chat.streaming.get_untracked()
+        {
+            break;
+        }
+    }
+    assert!(mounted.state.fake.queued_prompts.borrow()[&1].is_empty());
+    {
+        let entries = mounted.state.fake.messages.borrow();
+        let users = entries[&1]
+            .iter()
+            .filter_map(|entry| match entry {
+                openwebide_core::ConversationEntry::Message(message)
+                    if message.role == openwebide_core::Role::User =>
+                {
+                    Some(message)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].content, prompt);
+    }
+    assert_eq!(mounted.state.chat.draft.get_untracked(), "next draft");
+    assert!(folder_empty(&folder));
+    assert_eq!(
+        mounted.state.fake.completion_requests.borrow().len(),
+        1,
+        "queued run error: {:?}",
+        mounted.state.chat.error.get_untracked()
+    );
+    openwebide_frontend::idb::set_bridge_pairing_token(previous.as_deref().unwrap_or(""))
+        .await
+        .unwrap();
+}
