@@ -287,6 +287,59 @@ impl EditorActions {
         (line, column, source[selection.range()].chars().count())
     }
 
+    pub fn search(
+        self,
+        source: &str,
+        query: &str,
+        options: openwebide_core::editor::SearchOptions,
+        scope: Option<std::ops::Range<usize>>,
+    ) -> Result<Vec<openwebide_core::editor::SearchMatch>, openwebide_core::editor::SearchError>
+    {
+        openwebide_core::editor::SearchPattern::new(query, options)?.find(source, scope)
+    }
+
+    pub fn replace_search(
+        self,
+        source: &str,
+        query: &str,
+        options: openwebide_core::editor::SearchOptions,
+        scope: Option<std::ops::Range<usize>>,
+        replacement: &str,
+        index: Option<usize>,
+    ) -> Result<Option<Selection>, openwebide_core::editor::SearchError> {
+        use openwebide_core::editor::{SearchError, SearchPattern};
+        if self.workspace.is_resolving() || self.workspace.pending_diff.get_untracked().is_some() {
+            return Err(SearchError::ReadOnly);
+        }
+        if self.source() != source {
+            return Err(SearchError::ChangedDocument);
+        }
+        let Some(key) = self.key() else {
+            return Ok(None);
+        };
+        let pattern = SearchPattern::new(query, options)?;
+        self.typing.set(None);
+        let result = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| {
+                let document = self.document(documents, key.clone());
+                if document.replace_search(&pattern, scope, replacement, index)? == 0 {
+                    return Ok(None);
+                }
+                Ok(Some((
+                    document.text().to_string(),
+                    document.selections()[0],
+                )))
+            })
+            .unwrap_or(Ok(None));
+        if let Ok(Some((text, _))) = &result {
+            self.workspace.content.set(text.clone());
+            self.publish_dirty(key);
+        }
+        result.map(|result| result.map(|(_, selection)| selection))
+    }
+
     pub fn navigation_target(self, query: &str) -> Option<usize> {
         openwebide_core::editor::navigation_target(&self.source(), query)
     }

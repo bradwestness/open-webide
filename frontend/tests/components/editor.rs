@@ -2648,3 +2648,172 @@ async fn editor_navigation_status_and_decorations_share_source_coordinates_in_bo
         assert_eq!(textarea.selection_start().unwrap(), Some(1007));
     }
 }
+
+#[wasm_bindgen_test]
+async fn search_replace_options_scope_captures_and_failures_share_both_modes() {
+    use openwebide_core::editor::{SearchOptions, Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = "😀 café caféine CAFÉ\r\ncafé\r\n";
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("search.rs".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        settle().await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        textarea.set_selection_range(3, 7).unwrap();
+        textarea
+            .dispatch_event(&web_sys::Event::new("select").unwrap())
+            .unwrap();
+        mounted.click("button[aria-label^='Find in file']");
+        settle().await;
+        let search: web_sys::HtmlInputElement =
+            mounted.element(".editor-find input").unchecked_into();
+        let set_query = |value: &str| {
+            search.set_value(value);
+            search
+                .dispatch_event(&web_sys::Event::new("input").unwrap())
+                .unwrap();
+        };
+        let toggle = |label: &str| {
+            let labels = mounted
+                .root
+                .query_selector_all(".editor-find-options label")
+                .unwrap();
+            for index in 0..labels.length() {
+                let node = labels.item(index).unwrap();
+                if node.text_content().as_deref() == Some(label) {
+                    let label: web_sys::HtmlElement = node.unchecked_into();
+                    label.click();
+                    return;
+                }
+            }
+            panic!("Missing search option {label}");
+        };
+        set_query("café");
+        settle().await;
+        assert!(
+            mounted
+                .element(".editor-find")
+                .text_content()
+                .unwrap()
+                .contains("1 / 3")
+        );
+        toggle("Match case");
+        toggle("Whole word");
+        settle().await;
+        assert!(
+            mounted
+                .element(".editor-find")
+                .text_content()
+                .unwrap()
+                .contains("1 / 3")
+        );
+        toggle("In selection");
+        settle().await;
+        assert!(
+            mounted
+                .element(".editor-find")
+                .text_content()
+                .unwrap()
+                .contains("1 / 1")
+        );
+        mounted.click_text("Replace");
+        settle().await;
+        let replacement: web_sys::HtmlInputElement = mounted
+            .element("input[aria-label='Replace with']")
+            .unchecked_into();
+        let set_replacement = |value: &str| {
+            replacement.set_value(value);
+            replacement
+                .dispatch_event(&web_sys::Event::new("input").unwrap())
+                .unwrap();
+        };
+        set_replacement("tea😀");
+        mounted.click_text("Replace all");
+        settle().await;
+        assert_eq!(actions.source(), "😀 tea😀 caféine CAFÉ\r\ncafé\r\n");
+        assert!(mounted.state.workspace.dirty.get_untracked());
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert_eq!(actions.source(), source);
+        // Undo invalidates the old captured scope; full-document replacement remains atomic.
+        toggle("Regex");
+        set_query("(?P<word>café)");
+        set_replacement("${word}!");
+        settle().await;
+        mounted.click_text("Replace all");
+        settle().await;
+        assert_eq!(actions.source(), "😀 café! caféine CAFÉ!\r\ncafé!\r\n");
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert_eq!(actions.source(), source);
+        set_query("[");
+        settle().await;
+        assert!(
+            mounted
+                .element("[role='alert']")
+                .text_content()
+                .unwrap()
+                .contains("Invalid search pattern")
+        );
+        let replace_all: web_sys::HtmlButtonElement = mounted
+            .element(".editor-replace button:last-child")
+            .unchecked_into();
+        assert!(replace_all.disabled());
+        assert_eq!(actions.source(), source);
+        set_query("^");
+        set_replacement(">");
+        settle().await;
+        toggle("Whole word");
+        settle().await;
+        mounted.click_text("Replace all");
+        settle().await;
+        assert_eq!(actions.source(), ">😀 café caféine CAFÉ\r\n>café\r\n>");
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert_eq!(actions.source(), source);
+        assert!(
+            actions
+                .replace_search("stale", "café", SearchOptions::default(), None, "x", None)
+                .is_err()
+        );
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        mounted.state.workspace.content.set("other".into());
+        settle().await;
+        assert_eq!(actions.source(), "other");
+        assert_eq!(actions.selection("other"), Some(Selection::caret(0)));
+        mounted.state.workspace.merge_pending(
+            1,
+            openwebide_core::FileDiff {
+                path: "other.rs".into(),
+                old: Some("other".into()),
+                new: "pending".into(),
+                old_unavailable: false,
+                backup_path: None,
+            },
+        );
+        settle().await;
+        assert!(replace_all.disabled());
+        assert_eq!(
+            actions.replace_search("other", "other", SearchOptions::default(), None, "x", None),
+            Err(openwebide_core::editor::SearchError::ReadOnly)
+        );
+        assert_eq!(actions.source(), "other");
+    }
+}

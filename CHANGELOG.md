@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Extend Find with case, Unicode whole-word and Rust regex options, source selection scope and match counts. Add next/all replacement with regex captures and atomic undo; retain Unicode/CRLF, reveal folded matches and reject invalid/stale queries or excessive match/output sizes. Keep pending review, read-only files and diff views protected, and share search/replacement policy in both modes.
+
 - Add Edit navigation through the shared Rust editor facade: Ctrl/Cmd+G goes to a line/column and Ctrl/Cmd+Shift+\ jumps between matching code brackets. Reveal folded destinations, scroll long lines into view, show source cursor/selection status, and paint active lines, matching brackets and indentation guides. Preserve Unicode/CRLF source coordinates and reject delayed navigation after file/project changes in both modes.
 
 - Retain unaffected collapsed blocks during native typing, editor commands, paste/cut, composition and undo/redo. Reveal only the source lines selected for a native edit; revalidate rebased fold anchors before restoring projected text and source selections. Keep unchanged native composition values and carets intact, including Unicode and CRLF, and share the behavior in both modes.

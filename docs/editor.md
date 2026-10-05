@@ -154,3 +154,29 @@ source columns; blank lines continue the common surrounding indentation.
 These controls also work in read-only files and share the same source-coordinate
 facade in both modes. Horizontal scrolling remains the default; wrapping and
 whitespace visibility remain under development.
+
+## Find and replace
+
+Ctrl/Cmd+F opens Find; Ctrl+H or Cmd+Alt+F opens Replace. Enter and Shift+Enter
+move to the next/previous match. Search starts case-sensitive; **Match case**,
+**Whole word** and **Regex** are explicit options with visible match counts.
+Whole-word boundaries include Unicode letters and combining marks. Regex mode
+uses [Rust regex syntax](https://docs.rs/regex/1.13.1/regex/): look-around and backreferences in the pattern are not
+supported, and invalid patterns display an error. Line anchors understand LF/CRLF.
+
+Select source text before opening Find to enable **In selection**. Search keeps
+full-source context, so the selection edges do not create artificial word or line
+boundaries. Replacement adjusts that scope; ordinary edits or switching files
+clear it. Find reveals folded matches and works in numbered diff views.
+
+**Replace next** changes the current match; **Replace all** changes all matches
+in scope in one undo step. Enter in Replace performs next; Ctrl/Cmd+Enter performs
+all. Regex replacement accepts `$1`, `${name}` and `$$` for a literal dollar;
+literal replacement leaves dollar signs unchanged. Pending review, read-only
+files and diff views disable replacement. Invalid patterns/scopes and size errors
+leave text and history intact.
+
+Search is bounded to 2 MiB source files, 64 KiB patterns and 100,000 matches;
+replacement output is limited to 32 MiB. Empty search input has no matches.
+Zero-width regex matches advance at Unicode boundaries and replacement is one
+finite transaction. Large-file worker/viewport support remains roadmap work.

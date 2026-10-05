@@ -88,9 +88,6 @@ Then add structure and navigation:
   bracket jumps, go to line/column and compact cursor/selection status are in place.
   Preserve the horizontal-scroll default; finish explicit word-wrap and whitespace
   visibility options with correct gutters, folded rows and caret mapping.
-- **Find/Replace:** extend existing Find with case/whole-word/regex options, selection
-  scope, replace-next/all and visible match counts. Replacement is one undoable
-  transaction; invalid regexes and zero-width matches cannot hang the UI.
 - **Second pass:** multiple cursors, next/all matching-occurrence selection, column
   selection and expand/shrink selection; file tabs with independent dirty buffers,
   history, caret and scroll state. Coordinate draft/reload recovery with the existing

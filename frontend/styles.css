@@ -3171,3 +3171,7 @@ button.browser-item {
 .editor-bracket-match { position:absolute; border:1px solid var(--accent); border-radius:2px; transform:translate(var(--editor-scroll-x, 0px), var(--editor-scroll-y, 0px)); }
 
 .editor-source-line::after { content:""; position:absolute; left:0; top:0; bottom:0; width:calc(var(--editor-indent-columns, 0) * 1ch); pointer-events:none; background:repeating-linear-gradient(to right,var(--border) 0,var(--border) 1px,transparent 1px,transparent calc(var(--editor-indent-step, 4) * 1ch)); }
+
+.editor-find-options, .editor-replace { flex: none; flex-wrap: wrap; }
+.editor-find-options .ui-check { white-space: nowrap; }
+.editor-replace .panel-search-input { min-width: 8ch; }

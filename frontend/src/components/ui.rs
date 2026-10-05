@@ -237,10 +237,11 @@ pub fn CheckboxField(
     label: &'static str,
     checked: Signal<bool>,
     on_change: Callback<bool>,
+    #[prop(into, optional)] disabled: Option<Signal<bool>>,
 ) -> impl IntoView {
     view! {
         <label class="ui-check">
-            <input type="checkbox" prop:checked=move || checked.get()
+            <input type="checkbox" prop:checked=move || checked.get() disabled=move || disabled.is_some_and(|disabled| disabled.get())
                 on:change=move |event| on_change.run(event_target_checked(&event)) />
             <span>{label}</span>
         </label>

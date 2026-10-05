@@ -7,8 +7,8 @@ use web_sys::wasm_bindgen::JsCast;
 
 use crate::components::chat_pane::render_markdown;
 use crate::components::ui::{
-    Button, ButtonSize, ButtonVariant, Icon, IconButton, IconName, PanelSearchRow, SegmentOption,
-    SegmentedControl,
+    Button, ButtonSize, ButtonVariant, CheckboxField, Icon, IconButton, IconName, PanelSearchRow,
+    SegmentOption, SegmentedControl,
 };
 use crate::state::{git::GitState, projects::ProjectsState, workspace::WorkspaceState};
 use crate::state_actions::editor::{EditorActions, EditorCommand};
@@ -318,28 +318,24 @@ fn clear_find_marks(root: &web_sys::HtmlElement) {
     }
 }
 
-/// Literal, case-sensitive matches with browser selection offsets and logical lines.
-fn find_matches(text: &str, query: &str) -> Vec<(u32, u32, usize)> {
-    if query.is_empty() {
-        return Vec::new();
-    }
+/// Browser offsets are adapter data; matching policy belongs to the shared engine.
+fn browser_matches(
+    text: &str,
+    matches: &[openwebide_core::editor::SearchMatch],
+) -> Vec<(u32, u32, usize)> {
     let mut byte = 0;
     let mut utf16 = 0;
-    let mut line = 1;
-    text.match_indices(query)
-        .map(|(start, matched)| {
-            let gap = &text[byte..start];
-            utf16 += gap.encode_utf16().count();
-            line += gap.bytes().filter(|value| *value == b'\n').count();
-            let begin = utf16;
-            let match_line = line;
-            utf16 += matched.encode_utf16().count();
-            line += matched.bytes().filter(|value| *value == b'\n').count();
-            byte = start + matched.len();
+    matches
+        .iter()
+        .map(|matched| {
+            utf16 += text[byte..matched.range.start].encode_utf16().count();
+            let start = utf16;
+            utf16 += text[matched.range.clone()].encode_utf16().count();
+            byte = matched.range.end;
             (
-                u32::try_from(begin).unwrap_or(u32::MAX),
+                u32::try_from(start).unwrap_or(u32::MAX),
                 u32::try_from(utf16).unwrap_or(u32::MAX),
-                match_line,
+                matched.line,
             )
         })
         .collect()
@@ -1010,6 +1006,13 @@ pub fn Editor(
     let find_input = NodeRef::<leptos::html::Input>::new();
     let find_open = RwSignal::new(false);
     let query = RwSignal::new(String::new());
+    let search_options = RwSignal::new(openwebide_core::editor::SearchOptions::default());
+    let replacement_text = RwSignal::new(String::new());
+    let replace_open = RwSignal::new(false);
+    let replacement_error = RwSignal::new(None::<String>);
+    let search_scope = RwSignal::new(None::<(String, std::ops::Range<usize>)>);
+    let scope_candidate = RwSignal::new(None::<(String, std::ops::Range<usize>)>);
+
     let go_open = RwSignal::new(false);
     let go_query = RwSignal::new(String::new());
     let go_input = NodeRef::<leptos::html::Input>::new();
@@ -1145,7 +1148,104 @@ pub fn Editor(
             .get()
             .map_or_else(|| content.get(), |diff| diff.new)
     });
-    let matches = Memo::new(move |_| find_matches(&find_source.get(), &query.get()));
+    let search_result = Memo::new(move |_| {
+        let source = find_source.get();
+        let scope = search_scope
+            .get()
+            .filter(|(snapshot, _)| snapshot == &source)
+            .map(|(_, scope)| scope);
+        editor_actions.search(&source, &query.get(), search_options.get(), scope)
+    });
+    let matches = Memo::new(move |_| {
+        search_result.with(|result| {
+            result
+                .as_ref()
+                .map(|matches| browser_matches(&find_source.get(), matches))
+                .unwrap_or_default()
+        })
+    });
+    Effect::new(move || {
+        let source = find_source.get();
+        if search_scope.with_untracked(|scope| {
+            scope
+                .as_ref()
+                .is_some_and(|(snapshot, _)| snapshot != &source)
+        }) {
+            search_scope.set(None);
+        }
+        replacement_error.set(None);
+    });
+    Effect::new(move || {
+        open_file.track();
+        workspace.active_project.track();
+        search_scope.set(None);
+        scope_candidate.set(None);
+        replacement_error.set(None);
+    });
+    Effect::new(move || {
+        if find_open.get() {
+            let source = content.get_untracked();
+            let selection = ta
+                .get_untracked()
+                .filter(|textarea| current_editor_target(editor_actions, textarea))
+                .map(|textarea| projected_selection(editor_actions, &textarea, &source));
+            scope_candidate.set(
+                selection
+                    .filter(|selection| !selection.range().is_empty())
+                    .map(|selection| (source, selection.range())),
+            );
+        }
+    });
+    let replace = Callback::new(move |all: bool| {
+        if read_only.get_untracked()
+            || view_mode.get_untracked() != ViewMode::Code
+            || pending_diff.get_untracked().is_some()
+        {
+            return;
+        }
+        let Some(textarea) = ta
+            .get_untracked()
+            .filter(|textarea| current_editor_target(editor_actions, textarea))
+        else {
+            return;
+        };
+        let source = content.get_untracked();
+        let scope = search_scope
+            .get_untracked()
+            .filter(|(snapshot, _)| snapshot == &source)
+            .map(|(_, scope)| scope);
+        let count = matches.get_untracked().len();
+        if count == 0 {
+            return;
+        }
+        let index = (!all).then(|| match_index.get_untracked() % count);
+        match editor_actions.replace_search(
+            &source,
+            &query.get_untracked(),
+            search_options.get_untracked(),
+            scope.clone(),
+            &replacement_text.get_untracked(),
+            index,
+        ) {
+            Ok(Some(selection)) => {
+                let updated = editor_actions.source();
+                if let Some(scope) = scope {
+                    // Retain the selection span by subtracting its unchanged suffix.
+                    let end = updated
+                        .len()
+                        .saturating_sub(source.len() - scope.end)
+                        .max(scope.start);
+                    search_scope.set(Some((updated, scope.start..end)));
+                }
+                refresh_editor_folds(editor_actions);
+                render_editor_selection(editor_actions, &textarea, selection, true);
+                match_index.set(index.unwrap_or(0));
+                replacement_error.set(None);
+            }
+            Ok(None) => (),
+            Err(error) => replacement_error.set(Some(error.to_string())),
+        }
+    });
     let navigate = Callback::new(move |forward: bool| {
         let count = matches.get_untracked().len();
         if count > 0 {
@@ -1160,6 +1260,8 @@ pub fn Editor(
     });
     Effect::new(move || {
         query.track();
+        search_options.track();
+        search_scope.track();
         open_file.track();
         projects.active_project.track();
         match_index.set(0);
@@ -1189,12 +1291,16 @@ pub fn Editor(
         let project = projects.active_project.get();
         let source = find_source.get();
         let search = query.get();
+        let options = search_options.get();
+        let scope = search_scope.get();
         let index = match_index.get();
         leptos::leptos_dom::helpers::queue_microtask(move || {
             if open_file.try_get_untracked() != Some(path)
                 || projects.active_project.try_get_untracked() != Some(project)
                 || find_source.try_with_untracked(|current| current == &source) != Some(true)
                 || query.try_get_untracked() != Some(search)
+                || search_options.try_get_untracked() != Some(options)
+                || search_scope.try_get_untracked() != Some(scope)
                 || match_index.try_get_untracked() != Some(index)
                 || view_mode.try_get_untracked() != Some(mode)
                 || find_open.try_get_untracked() != Some(active)
@@ -1329,9 +1435,11 @@ pub fn Editor(
                 event.prevent_default(); event.stop_propagation(); jump_bracket.run(());
             } else if event.key() == "Escape" && go_open.get_untracked() {
                 event.prevent_default(); event.stop_propagation(); go_open.set(false); if let Some(textarea) = ta.get_untracked() { let _ = textarea.focus(); }
-            } else if (event.ctrl_key() || event.meta_key()) && event.key().eq_ignore_ascii_case("f") && view_mode.get_untracked() != ViewMode::Preview {
+            } else if (event.ctrl_key() || event.meta_key()) && !event.alt_key() && event.key().eq_ignore_ascii_case("f") && view_mode.get_untracked() != ViewMode::Preview {
                 event.prevent_default(); event.stop_propagation(); find_open.set(true);
                 if let Some(input) = find_input.get_untracked() { let _ = input.focus(); input.select(); }
+            } else if ((event.ctrl_key() && event.key().eq_ignore_ascii_case("h")) || (event.meta_key() && event.alt_key() && event.key().eq_ignore_ascii_case("f"))) && view_mode.get_untracked() != ViewMode::Preview {
+                event.prevent_default(); event.stop_propagation(); find_open.set(true); replace_open.set(true);
             } else if event.key() == "Escape" && find_open.get_untracked() {
                 event.prevent_default(); event.stop_propagation(); find_open.set(false);
                 if let Some(textarea) = ta.get_untracked() { let _ = textarea.focus(); }
@@ -1538,14 +1646,31 @@ pub fn Editor(
             </Show>
             <Show when=move || find_open.get() && open_file.get().is_some() && view_mode.get() != ViewMode::Preview>
                 <PanelSearchRow class="editor-find">
-                    <input class="form-input panel-search-input" type="search" node_ref=find_input placeholder="Find in file" aria-label="Find in file" title="Literal, case-sensitive search" prop:value=move || query.get() on:input=move |event| query.set(event_target_value(&event)) on:keydown=move |event: web_sys::KeyboardEvent| {
+                    <input class="form-input panel-search-input" type="search" node_ref=find_input placeholder="Find in file" aria-label="Find in file" title="Find text or a regular expression" prop:value=move || query.get() on:input=move |event| query.set(event_target_value(&event)) on:keydown=move |event: web_sys::KeyboardEvent| {
                         if event.key() == "Enter" { event.prevent_default(); navigate.run(!event.shift_key()); }
                     } />
                     <span class="form-hint" aria-live="polite">{move || { let count = matches.get().len(); format!("{} / {count}", if count == 0 { 0 } else { match_index.get() % count + 1 }) }}</span>
                     <IconButton label="Previous match" disabled=Signal::derive(move || matches.get().is_empty()) on_click=Callback::new(move |_| navigate.run(false))><Icon name=IconName::ChevronUp /></IconButton>
                     <IconButton label="Next match" disabled=Signal::derive(move || matches.get().is_empty()) on_click=Callback::new(move |_| navigate.run(true))><Icon name=IconName::ChevronDown /></IconButton>
+                    <Button size=ButtonSize::Sm variant=ButtonVariant::Ghost on_click=Callback::new(move |_| replace_open.update(|open| *open = !*open))>"Replace"</Button>
                     <IconButton label="Close find" on_click=Callback::new(move |_| find_open.set(false))><Icon name=IconName::X /></IconButton>
                 </PanelSearchRow>
+                <PanelSearchRow class="editor-find-options">
+                    <CheckboxField label="Match case" checked=Signal::derive(move || search_options.get().case_sensitive) on_change=Callback::new(move |checked| search_options.update(|options| options.case_sensitive = checked)) />
+                    <CheckboxField label="Whole word" checked=Signal::derive(move || search_options.get().whole_word) on_change=Callback::new(move |checked| search_options.update(|options| options.whole_word = checked)) />
+                    <CheckboxField label="Regex" checked=Signal::derive(move || search_options.get().regex) on_change=Callback::new(move |checked| search_options.update(|options| options.regex = checked)) />
+                    <CheckboxField label="In selection" checked=Signal::derive(move || search_scope.get().is_some()) disabled=Signal::derive(move || search_scope.get().is_none() && scope_candidate.with(|candidate| candidate.as_ref().is_none_or(|(snapshot, _)| snapshot != &content.get())) || view_mode.get() != ViewMode::Code || pending_diff.get().is_some()) on_change=Callback::new(move |checked| search_scope.set(if checked { scope_candidate.get_untracked() } else { None })) />
+                </PanelSearchRow>
+                <Show when=move || replace_open.get()>
+                    <PanelSearchRow class="editor-replace">
+                        <input class="form-input panel-search-input" aria-label="Replace with" placeholder="Replace with" prop:value=move || replacement_text.get() on:input=move |event| replacement_text.set(event_target_value(&event)) on:keydown=move |event: web_sys::KeyboardEvent| { if event.key() == "Enter" { event.prevent_default(); replace.run(event.ctrl_key() || event.meta_key()); } } />
+                        <Button size=ButtonSize::Sm disabled=Signal::derive(move || read_only.get() || view_mode.get() != ViewMode::Code || pending_diff.get().is_some() || matches.get().is_empty()) on_click=Callback::new(move |_| replace.run(false))>"Replace next"</Button>
+                        <Button size=ButtonSize::Sm disabled=Signal::derive(move || read_only.get() || view_mode.get() != ViewMode::Code || pending_diff.get().is_some() || matches.get().is_empty()) on_click=Callback::new(move |_| replace.run(true))>"Replace all"</Button>
+                    </PanelSearchRow>
+                </Show>
+                <Show when=move || search_result.with(Result::is_err) || replacement_error.get().is_some()>
+                    <p class="form-error" role="alert">{move || search_result.with(|result| result.as_ref().err().map(ToString::to_string)).or_else(|| replacement_error.get()).unwrap_or_default()}</p>
+                </Show>
             </Show>
             <Show
                 when=move || open_file.get().is_some()
@@ -1789,7 +1914,12 @@ pub fn Editor(
 
 #[cfg(test)]
 mod tests {
-    use super::find_matches;
+    use super::browser_matches;
+    fn find_matches(text: &str, query: &str) -> Vec<(u32, u32, usize)> {
+        let pattern =
+            openwebide_core::editor::SearchPattern::new(query, Default::default()).unwrap();
+        browser_matches(text, &pattern.find(text, None).unwrap())
+    }
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn find_uses_utf16_offsets_and_logical_lines() {

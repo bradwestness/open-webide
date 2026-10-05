@@ -6,9 +6,11 @@ use std::ops::Range;
 mod fold_providers;
 pub use fold_providers::fold_ranges;
 mod navigation;
+mod search;
 pub use navigation::{
     indent_guide_columns, line_column, matching_bracket, navigation_target, offset_at_line_column,
 };
+pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
 mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
 mod projection;
