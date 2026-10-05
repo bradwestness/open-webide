@@ -50,6 +50,7 @@ pub fn Button(
     #[prop(into, optional)] class: Option<String>,
     #[prop(into, optional)] disabled: Option<Signal<bool>>,
     #[prop(into, optional)] on_click: Option<Callback<web_sys::MouseEvent>>,
+    #[prop(default = "button")] button_type: &'static str,
     children: Children,
 ) -> impl IntoView {
     let extra_class = class.unwrap_or_default();
@@ -57,6 +58,7 @@ pub fn Button(
 
     view! {
         <button
+            type=button_type
             class=format!("btn {} {} {}", variant.class_name(), size.class_name(), extra_class)
             disabled=is_disabled
             on:click=move |e| {
@@ -131,4 +133,181 @@ pub fn SegmentedControl<T: Clone + PartialEq + Send + Sync + 'static>(
             }).collect::<Vec<_>>()}
         </div>
     }
+}
+
+/// Scrollable dialog content; the header and actions remain visible.
+#[component]
+pub fn DialogBody(#[prop(default = "")] class: &'static str, children: Children) -> impl IntoView {
+    view! { <div class=format!("modal-body {class}")>{children()}</div> }
+}
+
+/// The dialog's final actions, ordered secondary first and primary last.
+#[component]
+pub fn DialogActions(children: Children) -> impl IntoView {
+    view! { <div class="modal-footer ui-actions">{children()}</div> }
+}
+
+/// A named group of related fields with optional supporting guidance.
+#[component]
+pub fn FormSection(
+    title: &'static str,
+    #[prop(default = "")] description: &'static str,
+    #[prop(default = "")] class: &'static str,
+    children: Children,
+) -> impl IntoView {
+    view! {
+        <section class=format!("ui-section {class}") aria-label=title>
+            <header class="ui-section-heading">
+                <h3>{title}</h3>
+                {(!description.is_empty()).then(|| view! { <p class="form-hint">{description}</p> })}
+            </header>
+            <div class="ui-section-content">{children()}</div>
+        </section>
+    }
+}
+
+/// Label one native control, or use a fieldset for a group of radio choices.
+/// Keep buttons outside a single-control field to avoid nested labelable elements.
+#[component]
+pub fn FormField(
+    label: &'static str,
+    #[prop(default = false)] group: bool,
+    children: Children,
+) -> impl IntoView {
+    if group {
+        view! {
+            <fieldset class="setting-row ui-field ui-field-group">
+                <legend class="setting-label">{label}</legend>
+                {children()}
+            </fieldset>
+        }
+        .into_any()
+    } else {
+        view! {
+            <label class="setting-row ui-field">
+                <span class="setting-label">{label}</span>
+                {children()}
+            </label>
+        }
+        .into_any()
+    }
+}
+
+/// Related inline actions, distinct from a dialog's final commit action.
+#[component]
+pub fn InlineActions(children: Children) -> impl IntoView {
+    view! { <div class="ui-inline-actions">{children()}</div> }
+}
+
+#[derive(Clone, Copy, Default)]
+pub enum NoticeTone {
+    #[default]
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+/// Supporting feedback with shared theme colors and announcement semantics.
+#[component]
+pub fn FormNotice(
+    #[prop(default = NoticeTone::Info)] tone: NoticeTone,
+    children: Children,
+) -> impl IntoView {
+    let (class, role) = match tone {
+        NoticeTone::Info => ("ui-notice", None),
+        NoticeTone::Success => ("ui-notice ui-notice-success", Some("status")),
+        NoticeTone::Warning => ("ui-notice ui-notice-warning", None),
+        NoticeTone::Error => ("ui-notice form-error", Some("alert")),
+    };
+    view! { <div class=class role=role>{children()}</div> }
+}
+
+/// A native checkbox with a descriptive label and shared control spacing.
+#[component]
+pub fn CheckboxField(
+    label: &'static str,
+    checked: Signal<bool>,
+    on_change: Callback<bool>,
+) -> impl IntoView {
+    view! {
+        <label class="ui-check">
+            <input type="checkbox" prop:checked=move || checked.get()
+                on:change=move |event| on_change.run(event_target_checked(&event)) />
+            <span>{label}</span>
+        </label>
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub enum DialogSize {
+    Small,
+    #[default]
+    Standard,
+    Wide,
+}
+impl DialogSize {
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::Small => "modal-sm",
+            Self::Standard => "",
+            Self::Wide => "modal-wide",
+        }
+    }
+}
+
+/// A compact labeled action. The glyph is decorative; its accessible name is explicit.
+#[component]
+pub fn IconButton(
+    #[prop(into)] label: Signal<String>,
+    on_click: Callback<web_sys::MouseEvent>,
+    #[prop(default = "")] class: &'static str,
+    #[prop(into, optional)] disabled: Option<Signal<bool>>,
+    children: Children,
+) -> impl IntoView {
+    view! {
+        <button type="button" class=format!("icon-btn ui-icon {class}")
+            title=move || label.get() aria-label=move || label.get()
+            disabled=move || disabled.is_some_and(|disabled| disabled.get())
+            on:click=move |event| on_click.run(event)>
+            <span aria-hidden="true">{children()}</span>
+        </button>
+    }
+}
+
+static NEXT_DISCLOSURE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A disclosure that retains mounted content, including live tool state.
+/// Approval requests can force it open without changing the user's expansion choice.
+#[component]
+pub fn DisclosurePanel(
+    #[prop(into)] summary: ViewFn,
+    #[prop(default = "")] class: &'static str,
+    #[prop(into, optional)] force_open: Option<Signal<bool>>,
+    children: Children,
+) -> impl IntoView {
+    let content_id = format!(
+        "disclosure-{}",
+        NEXT_DISCLOSURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let expanded = RwSignal::new(false);
+    let open = move || expanded.get() || force_open.is_some_and(|force| force.get());
+    view! {
+        <div class=format!("ui-disclosure-panel {class}")>
+            <button type="button" class="ui-disclosure-toggle" aria-expanded=move || open().to_string() aria-controls=content_id.clone()
+                on:click=move |_| { if !force_open.is_some_and(|force| force.get_untracked()) { expanded.update(|expanded| *expanded = !*expanded); } }>
+                <span class="ui-disclosure-caret" aria-hidden="true"><Icon name=Signal::derive(move || if open() { IconName::ChevronDown } else { IconName::ChevronRight }) /></span>
+                {summary.run()}
+            </button>
+            <div class="ui-disclosure-content" id=content_id hidden=move || !open()>{children()}</div>
+        </div>
+    }
+}
+
+/// One SVG family, color and size contract for application controls.
+pub use lepticons::LucideGlyph as IconName;
+
+#[component]
+pub fn Icon(#[prop(into)] name: Signal<IconName>) -> impl IntoView {
+    view! { <span class="ui-icon-glyph" aria-hidden="true"><lepticons::Icon glyph=name size="20" stroke_width="2" /></span> }
 }

@@ -1,4 +1,5 @@
 use super::modal::Modal;
+use super::ui::{DialogActions, DialogBody};
 use crate::{
     commands::{COMMANDS, COMPOSER_SHORTCUTS, Command, search},
     state::ui::UiState,
@@ -43,7 +44,7 @@ fn CommandPalette() -> impl IntoView {
     let close = Callback::new(move |()| ui.palette_open.set(false));
     view! {
         <Modal title="Command palette".to_string().into() on_close=close class="modal modal-sm" describedby="command-palette-help">
-            <div class="modal-body command-palette">
+            <DialogBody class="command-palette">
                 <label class="form-label" for="command-search">"Search commands"</label>
                 <input id="command-search" class="form-input command-search" type="search" autocomplete="off" placeholder="Type a command…" role="combobox"
                     aria-autocomplete="list" aria-expanded="true" aria-controls="command-results"
@@ -82,11 +83,11 @@ fn CommandPalette() -> impl IntoView {
                     }).collect::<Vec<_>>()}
                     <Show when=move || results.with(Vec::is_empty)><p class="empty" role="status">"No matching commands"</p></Show>
                 </div>
-            </div>
-            <div class="modal-footer">
+            </DialogBody>
+            <DialogActions>
                 <button class="btn ghost" on:click=move |_| actions.run.run(Command::Shortcuts)>"Keyboard shortcuts"</button>
                 <button class="btn" on:click=move |_| close.run(())>"Close"</button>
-            </div>
+            </DialogActions>
         </Modal>
     }
 }
@@ -96,7 +97,7 @@ fn KeyboardShortcuts() -> impl IntoView {
     let close = Callback::new(move |()| ui.shortcuts_open.set(false));
     view! {
         <Modal title="Keyboard shortcuts".to_string().into() on_close=close class="modal modal-sm" describedby="shortcut-help">
-            <div class="modal-body keyboard-shortcuts">
+            <DialogBody class="keyboard-shortcuts">
                 <p id="shortcut-help" class="form-hint">"Use Ctrl on Windows/Linux or ⌘ on macOS. Global commands pause while a dialog is open. Composer bindings apply while the prompt is focused."</p>
                 <h3>"Workspace"</h3>
                 <dl>{COMMANDS.iter().filter(|command| command.shortcut.starts_with("Ctrl")).map(|command| view! { <div class="shortcut-row"><dt><kbd>{command.shortcut}</kbd></dt><dd>{command.label}</dd></div> }).collect::<Vec<_>>()}</dl>
@@ -104,8 +105,8 @@ fn KeyboardShortcuts() -> impl IntoView {
                 <dl>{COMPOSER_SHORTCUTS.iter().map(|(key, action)| view! { <div class="shortcut-row"><dt><kbd>{*key}</kbd></dt><dd>{*action}</dd></div> }).collect::<Vec<_>>()}</dl>
                 <h3>"Command palette"</h3>
                 <dl><div class="shortcut-row"><dt><kbd>"↑ / ↓"</kbd></dt><dd>"Choose a command"</dd></div><div class="shortcut-row"><dt><kbd>"Enter / Escape"</kbd></dt><dd>"Run / close"</dd></div></dl>
-            </div>
-            <div class="modal-footer"><button class="btn" on:click=move |_| close.run(())>"Close"</button></div>
+            </DialogBody>
+            <DialogActions><button class="btn" on:click=move |_| close.run(())>"Close"</button></DialogActions>
         </Modal>
     }
 }

@@ -1,4 +1,5 @@
 use super::modal::Modal;
+use super::ui::{DialogActions, DialogBody};
 pub use crate::state::ui::PromptRequest;
 use crate::state::ui::UiState;
 use leptos::prelude::*;
@@ -25,7 +26,7 @@ pub fn PromptDialog() -> impl IntoView {
     view! {
         <Show when=move || req.get().is_some() fallback=|| ()>
             <Modal title=Signal::derive(move || req.with(|r| r.as_ref().map(|r| r.title.clone()).unwrap_or_default())) on_close=on_close class="modal modal-sm">
-                <div class="modal-body">
+                <DialogBody>
                     <input
                         type="text"
                         class="form-input"
@@ -38,8 +39,8 @@ pub fn PromptDialog() -> impl IntoView {
                             }
                         }
                     />
-                </div>
-                <div class="modal-footer">
+                </DialogBody>
+                <DialogActions>
                     <button class="btn" on:click=move |_| on_close.run(())>"Cancel"</button>
                     <button
                         class="btn send"
@@ -47,7 +48,7 @@ pub fn PromptDialog() -> impl IntoView {
                     >
                         {move || req.with(|r| r.as_ref().map(|r| r.submit_label.clone()).unwrap_or_else(|| "Create".to_string()))}
                     </button>
-                </div>
+                </DialogActions>
             </Modal>
         </Show>
     }

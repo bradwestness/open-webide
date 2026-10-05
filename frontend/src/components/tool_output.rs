@@ -7,7 +7,7 @@ use wasm_bindgen_futures::JsFuture;
 pub fn ToolOutput(text: String) -> impl IntoView {
     let output = StoredValue::new(ToolOutputContent::parse(&text));
     let expanded = RwSignal::new(false);
-    let copy_status = RwSignal::new("Copy");
+    let copy_status = RwSignal::new("Copy output");
     let copy_busy = RwSignal::new(false);
     let has_more = output.with_value(|output| output.lines.len() > PREVIEW_LINES);
     let omitted = output.with_value(|output| output.truncated);
@@ -52,6 +52,10 @@ pub fn ToolOutput(text: String) -> impl IntoView {
     };
     view! {
         <div class="tui-tool-output">
+            <super::ui::IconButton class="tui-output-copy" label=Signal::derive(move || copy_status.get().to_string()) disabled=copy_busy on_click=Callback::new(copy)>
+                <super::ui::Icon name=Signal::derive(move || match copy_status.get() { "Copied" => super::ui::IconName::Check, "Copy failed" => super::ui::IconName::CircleAlert, _ => super::ui::IconName::Copy }) />
+            </super::ui::IconButton>
+            <span class="sr-only" role="status">{move || if copy_status.get() == "Copy output" { "" } else { copy_status.get() }}</span>
             <pre class="tui-tool-summary-out" inner_html=move || output.with_value(|output| output.html(expanded.get())) />
             <div class="tui-tool-output-controls">
                 <Show when=move || has_more>
@@ -59,7 +63,6 @@ pub fn ToolOutput(text: String) -> impl IntoView {
                         {move || if expanded.get() { "Show less".to_string() } else { output.with_value(|output| format!("Show all {} lines", output.lines.len())) }}
                     </button>
                 </Show>
-                <button class="btn ghost tui-output-copy" title="Copy all retained output without ANSI codes" disabled=move || copy_busy.get() on:click=copy>{move || copy_status.get()}</button>
                 <Show when=move || omitted><span class="form-hint">"Output truncated by terminal display limits; Copy includes retained output."</span></Show>
             </div>
         </div>

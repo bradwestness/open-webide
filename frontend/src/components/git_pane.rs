@@ -13,7 +13,10 @@ pub fn GitPane(
     let layout = expect_context::<crate::state::layout::LayoutState>();
     Effect::new(move |_| {
         workspace.open_file.track();
-        if layout.visible_panels.get().git
+        if layout.visible_panels.get().files
+            && layout
+                .preferences
+                .with(|prefs| prefs.files_view == crate::state::responsive::FilesView::Changes)
             && git.status.get().is_some()
             && workspace.open_file.get_untracked().is_some()
         {

@@ -24,7 +24,7 @@ fn mount_search() -> Mounted {
                 on_search_input=actions.on_search_input on_cancel_search=actions.on_cancel_search
                 on_search=actions.on_search on_clear_search=actions.on_clear_search
                 include_ignored=ignored.read_only()
-                on_toggle_include_ignored=Callback::new(move |()| ignored.update(|v| *v = !*v)) />
+                on_toggle_include_ignored=Callback::new(move |()| ignored.update(|v| *v = !*v))><input class="remembered-file-view" value="retained selection" /></SearchPane>
         }
     })
 }
@@ -204,4 +204,33 @@ async fn project_switch_back_and_unmount_cancel_pending_search() {
     drop(mounted);
     sleep_ms(350).await;
     assert_eq!(fake.search_requests.borrow().len(), count);
+}
+
+#[wasm_bindgen_test]
+async fn persistent_search_replaces_file_view_and_clearing_restores_it_in_both_modes() {
+    use leptos::prelude::*;
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_search();
+        mounted
+            .state
+            .projects
+            .projects
+            .update(|projects| projects[0].mode = mode);
+        settle().await;
+        let file_view = mounted.element(".remembered-file-view");
+        let views = mounted.element(".search-file-views");
+        assert!(!views.has_attribute("hidden"));
+        input(&mounted, "needle");
+        settle().await;
+        assert!(views.has_attribute("hidden"));
+        assert!(!mounted.element(".search-results").has_attribute("hidden"));
+        input(&mounted, "");
+        settle().await;
+        assert!(!views.has_attribute("hidden"));
+        assert!(mounted.element(".search-results").has_attribute("hidden"));
+        assert!(file_view.is_same_node(Some(mounted.element(".remembered-file-view").as_ref())));
+        openwebide_frontend::util::sleep_ms(300).await;
+        assert!(mounted.state.fake.search_requests.borrow().is_empty());
+    }
 }

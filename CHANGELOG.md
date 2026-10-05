@@ -11,11 +11,17 @@ for what's still ahead.
 
 ### Changed
 
+- Build dialogs from shared sections, fields, notices and action bars with consistent spacing and visual hierarchy.
+- Consolidate Explorer, Git Changes and persistent search into one resizable Files panel. Searching shows results; clearing restores the selected file view. Share resize handles, limits, keyboard resizing and user-scoped width saves across Sessions, Files, Chat and Terminal; move panel ordering controls into their headers.
+- Use Lucide SVG icons through a shared component, larger action targets, fast accessible tooltips and labeled desktop top-bar actions. Give selected project tabs the same accent/background treatment as expanded panel tabs.
+- Put prompt edit/fork/rewind actions inline, left-align thinking headings and group tool calls into initially collapsed disclosures with per-tool counts. Keep live output and pending approvals available, with inline Copy icons.
+- Grow and shrink the chat composer with its content while reserving transcript space, align action buttons with the short input and allow image drops throughout the chat pane using the same attachment flow in every workspace.
+
 - Keep an installed app's page and cached scripts on the same build during deployments; activate the new build after existing app windows close.
 
 - Keep conversation forking busy until the new branch's draft and attachments are restored, preventing completion from racing the composer reset in every workspace mode.
 
-- Add automatic phone layout with full-screen chat and mounted tool sheets, a saved Automatic/Desktop/Phone override, touch targets, independent Terminal/Git/Search tabs, and per-user left/right pinning. Preserve drafts, terminal output and desktop panel preferences in local, remote and projectless chats.
+- Add automatic phone layout with full-screen chat and mounted tool sheets, a saved Automatic/Desktop/Phone override, touch targets, a Terminal tool window, integrated Files/Changes/search views, and per-user panel ordering. Preserve drafts, terminal output and desktop panel preferences in local, remote and projectless chats.
 
 - Make Open WebIDE installable with a manifest, icons, a versioned shell-only service worker and an offline server-unreachable screen. Add Settings installation guidance and browser prompting; exclude all API/bridge traffic from the cache and default HTTPS pages to same-origin `wss://<host>/bridge` while retaining explicit bridge settings.
 

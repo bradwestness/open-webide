@@ -195,8 +195,45 @@ pub fn item_key(item: &ConversationItem) -> String {
     }
 }
 
+/// Summarize repeated tool uses in first-use order, omitting singular counts.
+pub fn tool_count_labels<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for name in names {
+        if let Some((_, count)) = counts.iter_mut().find(|(tool, _)| *tool == name) {
+            *count += 1;
+        } else {
+            counts.push((name, 1));
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(name, count)| {
+            if count == 1 {
+                name.into()
+            } else {
+                format!("{name} x{count}")
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tool_counts_keep_first_use_order_and_omit_singular_counts() {
+        assert_eq!(
+            super::tool_count_labels([
+                "run_command",
+                "read_file",
+                "run_command",
+                "write_file",
+                "read_file"
+            ]),
+            vec!["run_command x2", "read_file x2", "write_file"]
+        );
+        assert!(super::tool_count_labels([]).is_empty());
+    }
+
     use super::*;
 
     #[test]

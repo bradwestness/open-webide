@@ -530,7 +530,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
         <div class="terminal-dock">
             <div class="terminal-header">
                 <div class="terminal-title">
-                    <span class="terminal-glyph">""</span>
+                    <span class="terminal-glyph"><super::ui::Icon name=super::ui::IconName::Terminal /></span>
                     <span class="terminal-label">"Terminal"</span>
                     <span class=move || match status.get() {
                         BridgeStatus::Ready { .. } | BridgeStatus::Legacy => "term-status online",
@@ -559,21 +559,21 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                         title="Interrupt active process (Ctrl+C)"
                         on:click=move |_| kill_current_btn()
                     >
-                        "■ Kill"
+                        <super::ui::Icon name=super::ui::IconName::Square />"Kill"
                     </button>
                     <button
                         class="btn ghost sm term-btn"
                         title="Clear output (Ctrl+L)"
                         on:click=move |_| clear_output()
                     >
-                        "⌫ Clear"
+                        <super::ui::Icon name=super::ui::IconName::Eraser />"Clear"
                     </button>
                     <button
                         class="icon-btn term-close-btn"
                         title="Close terminal (Ctrl+`)"
                         on:click=move |_| on_close()
                     >
-                        "✕"
+                        <super::ui::Icon name=super::ui::IconName::X />
                     </button>
                 </div>
             </div>
@@ -596,7 +596,7 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                 <input
                     type="text"
                     class="terminal-input"
-                    placeholder="Type command or shell input... (Enter to send, Ctrl+C to interrupt)"
+                    placeholder="Command or shell input…"
                     prop:value=move || input_text.get()
                     on:input=move |ev| {
                         let target = ev.target().unwrap().unchecked_into::<web_sys::HtmlInputElement>();

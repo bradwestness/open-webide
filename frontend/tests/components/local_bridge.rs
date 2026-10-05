@@ -888,7 +888,7 @@ async fn resume_after_failed_history_persistence_reuses_write_id() {
         .resolution_response_results
         .borrow_mut()
         .push_back(response);
-    mounted.click_text("✓ Accept");
+    mounted.click_text("Accept");
     settle().await;
     assert_eq!(
         mounted.state.fake.persisted_edits.borrow()[&(1, "file.rs".into())].decision,

@@ -40,9 +40,7 @@ pub fn InstallApp() -> impl IntoView {
     );
     on_cleanup(move || listener.remove());
     view! {
-        <div class="setting-row install-app-setting">
-            <span class="setting-label">"Install app"</span>
-            <div>
+        <div class="install-app-setting">
                 <Show when=move || state.get().installed fallback=move || view! {
                     <Show when=move || state.get().secure fallback=|| view! {
                         <p>"To install Open WebIDE, open it over HTTPS. Tailscale Serve can provide a private HTTPS address without managing certificates."</p>
@@ -66,7 +64,6 @@ pub fn InstallApp() -> impl IntoView {
                     </Show>
                 }> <p>"Open WebIDE is installed."</p> </Show>
                 <Show when=move || error.get().is_some()><p role="alert">{move || error.get().unwrap_or_default()}</p></Show>
-            </div>
         </div>
     }
 }

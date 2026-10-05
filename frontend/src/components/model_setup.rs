@@ -1,3 +1,4 @@
+use super::ui::{CheckboxField, FormField, FormNotice, FormSection, InlineActions, NoticeTone};
 use crate::{
     backend::Api,
     state::{auth::AuthState, settings::SettingsState},
@@ -34,7 +35,7 @@ fn ModelChoice(
         }
     });
     view! {
-        <label class="setting-row"><span class="setting-label">{label}</span>
+        <FormField label=label>
             <select class="form-input" node_ref=node on:change=move |event| value.set(serde_json::from_str(&event_target_value(&event)).ok())>
                 <option value="">{empty}</option>
                 <For each=move || choices.get() key=|item| (item.selection.server_id, item.selection.model.clone()) children=move |item| {
@@ -42,7 +43,7 @@ fn ModelChoice(
                     view! { <option value=encoded>{item.label}</option> }
                 } />
             </select>
-        </label>
+        </FormField>
     }
 }
 
@@ -54,10 +55,10 @@ fn TextSetting(
     #[prop(default = "")] placeholder: &'static str,
 ) -> impl IntoView {
     view! {
-        <label class="setting-row"><span class="setting-label">{label}</span>
+        <FormField label=label>
             <input class="form-input" type=input_type placeholder=placeholder prop:value=move || value.get()
                 on:input=move |event| value.set(event_target_value(&event)) />
-        </label>
+        </FormField>
     }
 }
 
@@ -235,12 +236,10 @@ pub fn ModelSetupPanel(
             <ModelChoice label="Default model" value=primary choices=choices.read_only() empty="Use default server’s model" />
             <ModelChoice label="Fast model" value=fast choices=choices.read_only() empty="Use the primary model" />
             <p class="form-hint">"Used for Auto approvals and context compaction. If unset, the primary model does that work."</p>
-            <div class="form-actions">
-                <button class="btn send" disabled=move || busy.get() on:click=save>"Save model defaults"</button>
-            </div>
+
             </Show>
-            <button class="btn" disabled=move || loading.get() on:click=move |_| reload.update(|value| *value += 1)>"Refresh models"</button>
-            <Show when=move || error.get().is_some()><p class="form-error" role="alert">{move || error.get()}</p></Show>
+            <InlineActions><button class="btn" disabled=move || loading.get() on:click=move |_| reload.update(|value| *value += 1)>"Refresh models"</button><Show when=move || defaults_only><button class="btn send" disabled=move || busy.get() on:click=save>"Save model defaults"</button></Show></InlineActions>
+            <Show when=move || error.get().is_some()><FormNotice tone=NoticeTone::Error>{move || error.get()}</FormNotice></Show>
 
         </div>
     }
@@ -452,23 +451,31 @@ pub(crate) fn ModelSettingsEditor(
     }
     view! {
         <div class="model-settings-editor">
-            <div class="form-actions"><button class="btn" disabled=move || detecting.get() || testing.get() on:click=move |_| detect.run(())>{move || if detecting.get() { "Detecting settings…" } else { "Detect settings" }}</button></div>
-            <button class="btn" disabled=move || testing.get() || detecting.get() on:click=test_model>{move || if testing.get() { "Testing model…" } else { "Test model" }}</button>
+            <InlineActions><button class="btn" disabled=move || detecting.get() || testing.get() on:click=move |_| detect.run(())>{move || if detecting.get() { "Detecting settings…" } else { "Detect settings" }}</button>
+            <button class="btn" disabled=move || testing.get() || detecting.get() on:click=test_model>{move || if testing.get() { "Testing model…" } else { "Test model" }}</button></InlineActions>
             <Show when=move || tested.get().is_some()><p class="form-hint">{move || tested.get().map(|result| format!("Structured tools: {} · Streamed tools: {} · Plain chat first token: {} · {} tokens/sec{}{}", result.structured_tools, result.streamed_tools, result.first_token_ms.map_or_else(|| "unknown".into(), |ms| format!("{ms} ms")), result.tokens_per_second.map_or_else(|| "unknown".into(), |speed| format!("{speed:.1}")), if result.estimated { " (estimated)" } else { "" }, result.notice.map_or_else(String::new, |notice| format!(" · {notice}"))))}</p></Show>
             <Show when=move || detection.get().is_some()>
                 <p class="form-hint">{move || detection.get().map(|result| result.details())}</p>
 
             </Show>
 
+            <FormSection title="Context and output" class="ui-form-grid">
             <TextSetting label="Context tokens" value=context input_type="number" placeholder="Detect from server" />
             <TextSetting label="Max output tokens" value=output input_type="number" placeholder="Model default" />
+            </FormSection>
+            <FormSection title="Sampling" description="Blank values use the server default." class="ui-form-grid">
             {sampling.into_iter().map(|(name, value)| view! { <TextSetting label=name value=value placeholder="Model default" /> }).collect::<Vec<_>>()}
+            </FormSection>
+            <FormSection title="Capabilities" class="ui-form-grid">
             <BooleanSetting label="Vision (image input)" value=vision />
             <Show when=move || detection.get().is_none_or(|result| result.capabilities.is_empty() || result.capabilities.iter().any(|capability| capability == "thinking"))><BooleanSetting label="Thinking" value=thinking /></Show>
             <Show when=move || detection.get().is_none_or(|result| result.capabilities.is_empty() || result.capabilities.iter().any(|capability| capability == "tools"))><BooleanSetting label="Tool calling" value=tools /></Show>
+            </FormSection>
+            <FormSection title="Context compaction">
             <TextSetting label="Auto-compact (%)" value=threshold input_type="number" placeholder="85 (default)" />
-            <p class="form-hint">"Blank fields use the server default. Auto-compact defaults to 85%; 0 disables it. Runs compact before model requests when the context limit is known; original history is retained."</p>
-            <Show when=move || error.get().is_some()><p class="form-error" role="alert">{move || error.get()}</p></Show>
+            <p class="form-hint">"Auto-compact defaults to 85%; 0 disables it. Original conversation history is retained."</p>
+            </FormSection>
+            <Show when=move || error.get().is_some()><FormNotice tone=NoticeTone::Error>{move || error.get()}</FormNotice></Show>
         </div>
     }
 }
@@ -485,9 +492,9 @@ fn BooleanSetting(label: &'static str, value: RwSignal<Option<bool>>) -> impl In
             node.set_value(&value);
         }
     });
-    view! { <label class="setting-row"><span class="setting-label">{label}</span><select class="form-input" node_ref=node on:change=move |event| value.set(event_target_value(&event).parse().ok())>
+    view! { <FormField label=label><select class="form-input" node_ref=node on:change=move |event| value.set(event_target_value(&event).parse().ok())>
         <option value="">"Model default"</option><option value="true">"On"</option><option value="false">"Off"</option>
-    </select></label> }
+    </select></FormField> }
 }
 
 #[component]
@@ -542,12 +549,12 @@ pub fn ServerOptions(
         })();
         on_edit.run(result);
     });
-    view! { <details><summary>"Advanced server options"</summary>
-        <label><input type="checkbox" prop:checked=move || clear_key.get() on:change=move |event| clear_key.set(event_target_checked(&event)) />"Clear stored auth token"</label>
+    view! { <details class="ui-disclosure"><summary>"Advanced server options"</summary>
+        <CheckboxField label="Clear stored auth token" checked=clear_key.into() on_change=Callback::new(move |value| clear_key.set(value)) />
         <TextSetting label="Timeout (seconds)" value=timeout input_type="number" />
         <TextSetting label="Ollama keep alive" value=keep_alive placeholder="Server default (e.g. 5m)" />
-        <label class="setting-row"><span class="setting-label">"Extra headers"</span><textarea class="form-input" placeholder="One Name: Value per line" rows="3" on:input=move |event| headers.set(event_target_value(&event)) /></label>
-        <label><input type="checkbox" prop:checked=move || clear_headers.get() on:change=move |event| clear_headers.set(event_target_checked(&event)) />"Clear stored extra headers"</label>
+        <FormField label="Extra headers"><textarea class="form-input" placeholder="One Name: Value per line" rows="3" on:input=move |event| headers.set(event_target_value(&event)) /></FormField>
+        <CheckboxField label="Clear stored extra headers" checked=clear_headers.into() on_change=Callback::new(move |value| clear_headers.set(value)) />
         <p class="form-hint">"Blank preserves stored headers. New headers replace them; stored values are never read back."</p>
     </details> }
 }

@@ -1,4 +1,5 @@
 use super::modal::Modal;
+use super::ui::{DialogActions, DialogBody};
 use leptos::prelude::*;
 use openwebide_core::FileEntry;
 use wasm_bindgen_futures::spawn_local;
@@ -44,7 +45,7 @@ pub fn FileBrowser(on_close: Callback<()>, on_select: Callback<String>) -> impl 
 
     view! {
         <Modal title=Signal::derive(|| "Choose a folder".to_string()) on_close=on_close description=Signal::derive(|| "On the device hosting Open WebIDE".to_string())>
-            <div class="modal-body">
+            <DialogBody>
                 <div class="browser-path">
                     {move || {
                         let c = current.get();
@@ -75,7 +76,7 @@ pub fn FileBrowser(on_close: Callback<()>, on_select: Callback<String>) -> impl 
                                 });
                             }
                         >
-                            <span class="browser-icon">"⬆"</span>
+                            <span class="browser-icon"><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowUp /></span>
                             <span class="browser-name">".."</span>
                         </button>
                     </Show>
@@ -88,14 +89,14 @@ pub fn FileBrowser(on_close: Callback<()>, on_select: Callback<String>) -> impl 
                             if e.is_dir {
                                 view! {
                                     <button type="button" class="browser-item dir" on:click=move |_| current.set(path.clone())>
-                                        <span class="browser-icon">"📁"</span>
+                                        <span class="browser-icon"><crate::components::ui::Icon name=crate::components::ui::IconName::Folder /></span>
                                         <span class="browser-name">{name}</span>
                                     </button>
                                 }.into_any()
                             } else {
                                 view! {
                                     <div class="browser-item">
-                                        <span class="browser-icon">"📄"</span>
+                                        <span class="browser-icon"><crate::components::ui::Icon name=crate::components::ui::IconName::File /></span>
                                         <span class="browser-name">{name}</span>
                                     </div>
                                 }.into_any()
@@ -103,8 +104,8 @@ pub fn FileBrowser(on_close: Callback<()>, on_select: Callback<String>) -> impl 
                         }
                     />
                 </div>
-            </div>
-            <div class="modal-footer">
+            </DialogBody>
+            <DialogActions>
                 <button class="btn" on:click=move |_| on_close.run(())>"Cancel"</button>
                 <button
                     class="btn send"
@@ -115,7 +116,7 @@ pub fn FileBrowser(on_close: Callback<()>, on_select: Callback<String>) -> impl 
                 >
                     "Select folder"
                 </button>
-            </div>
+            </DialogActions>
         </Modal>
     }
 }

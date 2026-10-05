@@ -83,14 +83,14 @@ pub fn Sidebar(
                                         title="Edit"
                                         on:click=move |_| on_edit_connection.run(id)
                                     >
-                                        "✎"
+                                        <crate::components::ui::Icon name=crate::components::ui::IconName::Pencil />
                                     </button>
                                     <button
                                         class="icon-btn"
                                         title="Delete"
                                         on:click=move |_| on_delete_connection.run(id)
                                     >
-                                        "✕"
+                                        <crate::components::ui::Icon name=crate::components::ui::IconName::X />
                                     </button>
                                 </span>
                             </div>
@@ -179,14 +179,14 @@ pub fn Sidebar(
                                         title="Edit"
                                         on:click=move |_| on_edit_prompt.run(id)
                                     >
-                                        "✎"
+                                        <crate::components::ui::Icon name=crate::components::ui::IconName::Pencil />
                                     </button>
                                     <button
                                         class="icon-btn"
                                         title="Delete"
                                         on:click=move |_| on_delete_prompt.run(id)
                                     >
-                                        "✕"
+                                        <crate::components::ui::Icon name=crate::components::ui::IconName::X />
                                     </button>
                                 </span>
                             </div>

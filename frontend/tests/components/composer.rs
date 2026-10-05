@@ -414,6 +414,8 @@ async fn images_paste_drop_pick_remove_normalize_and_send_in_projectless_chat() 
         settle().await;
         let selector = if method == "picker" {
             ".prompt-attachments input"
+        } else if method == "drop" {
+            ".tui-empty-state"
         } else {
             ".composer-input"
         };
@@ -677,4 +679,47 @@ async fn stopping_mention_preparation_restores_the_prompt_without_starting_a_tur
             .iter()
             .any(|call| matches!(call, Call::SendMessage { .. }))
     );
+}
+
+#[wasm_bindgen_test]
+async fn composer_grows_shrinks_and_caps_height_in_every_workspace() {
+    use super::support::wait_until;
+    for mode in [
+        Some(openwebide_core::WorkspaceMode::Local),
+        Some(openwebide_core::WorkspaceMode::Remote),
+        None,
+    ] {
+        let mounted = mount_test(move |state| {
+            if let Some(mode) = mode {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+            }
+            view! { <style>{include_str!("../../styles.css")}</style><div style="height:600px;display:flex;width:600px">{chat_view(state)}</div> }
+        });
+        settle().await;
+        let pane = mounted.element(".chat-pane");
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".composer-input").unchecked_into();
+        wait_until("short composer height", || input.client_height() >= 42).await;
+        let short = input.get_bounding_client_rect().height();
+        let send = mounted.element(".tui-btn-send");
+        assert!((short - send.get_bounding_client_rect().height()).abs() < 1.0);
+        mounted.input(&"more content\n".repeat(40));
+        wait_until("expanded composer", || {
+            input.get_bounding_client_rect().height() > short
+        })
+        .await;
+        assert!(
+            input.get_bounding_client_rect().height()
+                <= pane.get_bounding_client_rect().height() * 0.8 + 1.0
+        );
+        mounted.state.chat.draft.set(String::new());
+        wait_until("cleared composer", || {
+            input.get_bounding_client_rect().height() <= short
+        })
+        .await;
+    }
 }

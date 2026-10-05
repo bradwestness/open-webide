@@ -48,7 +48,7 @@ pub fn TabBar(
                     }
                     on:click=move |_| show_recent.update(|v| *v = !*v)
                 >
-                    "Recent ▾"
+                    "Recent "<super::ui::Icon name=super::ui::IconName::ChevronDown />
                 </button>
                 <For
                     each=move || open_tabs.get()
@@ -80,7 +80,7 @@ pub fn TabBar(
                                         on_close.run(id);
                                     }
                                 >
-                                    "✕"
+                                    <crate::components::ui::Icon name=crate::components::ui::IconName::X />
                                 </button>
                             </div>
                         }
@@ -94,9 +94,7 @@ pub fn TabBar(
                 aria-pressed=move || active_project.get().is_none().to_string()
                 on:click=move |_| { show_recent.set(false); on_select_chat.run(()); }
             >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
-                    <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 8.7 3.9a8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z" />
-                </svg>
+                <super::ui::Icon name=super::ui::IconName::MessageCircle />
             </button>
             <Show when=move || show_recent.get() fallback=|| ()>
                 <div class="recent-backdrop" on:click=move |_| show_recent.set(false) />
@@ -126,7 +124,7 @@ pub fn TabBar(
                                             on_delete_project.run(id);
                                         }
                                     >
-                                        "✕"
+                                        <crate::components::ui::Icon name=crate::components::ui::IconName::X />
                                     </button>
                                 </div>
                             }

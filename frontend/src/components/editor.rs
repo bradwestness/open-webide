@@ -653,7 +653,7 @@ pub fn Editor(
                                                 })
                                             }
                                         >
-                                            "↺ Revert to HEAD"
+                                            <super::ui::Icon name=super::ui::IconName::Undo2 />"Revert to HEAD"
                                         </Button>
                                     </Show>
                                     <Button
@@ -703,7 +703,7 @@ pub fn Editor(
                             disabled=Signal::derive(move || workspace.is_resolving())
                             on_click=Callback::new(move |_| on_accept.run(()))
                         >
-                            "✓ Accept"
+                            <super::ui::Icon name=super::ui::IconName::Check />"Accept"
                         </Button>
                         <Button
                             variant=ButtonVariant::Danger
@@ -711,7 +711,7 @@ pub fn Editor(
                             disabled=Signal::derive(move || workspace.is_resolving())
                             on_click=Callback::new(move |_| on_reject.run(()))
                         >
-                            "✕ Reject"
+                            <super::ui::Icon name=super::ui::IconName::X />"Reject"
                         </Button>
                     </div>
                 </Show>

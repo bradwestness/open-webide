@@ -1254,6 +1254,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
+name = "lepticons"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cff48a5f023b0830063351174a8f130b6e42194ef6bfa6203a5bc22989ec66c5"
+dependencies = [
+ "lepticons-data",
+ "leptos",
+]
+
+[[package]]
+name = "lepticons-data"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2804abcac9d4be33c3b4b38f65b303847bc5b493f793bfe006ff2b7c042c85db"
+dependencies = [
+ "convert_case 0.11.0",
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
 name = "leptos"
 version = "0.8.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1699,6 +1720,7 @@ dependencies = [
  "futures",
  "gloo-net 0.7.0",
  "js-sys",
+ "lepticons",
  "leptos",
  "openwebide-agent",
  "openwebide-core",
@@ -2703,6 +2725,24 @@ dependencies = [
  "phf_shared",
  "proc-macro2",
  "quote",
+]
+
+[[package]]
+name = "strum"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
+
+[[package]]
+name = "strum_macros"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

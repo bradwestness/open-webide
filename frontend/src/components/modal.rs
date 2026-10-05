@@ -1,3 +1,4 @@
+use super::ui::DialogSize;
 use std::cell::RefCell;
 
 use leptos::prelude::*;
@@ -242,6 +243,7 @@ pub fn Modal(
     #[prop(optional)] description: Option<Signal<String>>,
     #[prop(optional)] describedby: Option<&'static str>,
     #[prop(default = "modal")] class: &'static str,
+    #[prop(default = DialogSize::Standard)] size: DialogSize,
     children: Children,
 ) -> impl IntoView {
     let id = MODALS.with(|stack| {
@@ -266,15 +268,15 @@ pub fn Modal(
         <div class="modal-overlay" on:click=move |_| {
             if panel.get().is_some_and(|panel| top_panel().is_some_and(|top| top.is_same_node(Some(&panel)))) { on_close.run(()); }
         }>
-            <div class=class node_ref=panel tabindex="-1" role="dialog" aria-modal="true"
+            <div class=format!("{class} {}", size.class_name()) node_ref=panel tabindex="-1" role="dialog" aria-modal="true"
                 aria-labelledby=title_id.clone() aria-describedby=describedby.map(str::to_string).or_else(|| description.map(|_| description_id.clone()))
                 on:click=move |event: web_sys::MouseEvent| event.stop_propagation()>
                 <div class="modal-header">
                     <div>
                         <h2 id=title_id.clone()>{move || title.get()}</h2>
-                        {description.map(|description| view! { <p class="empty" id=description_id.clone()>{move || description.get()}</p> })}
+                        {description.map(|description| view! { <p class="modal-description" id=description_id.clone()>{move || description.get()}</p> })}
                     </div>
-                    <button class="icon-btn" title="Close" on:click=move |_| on_close.run(())>"✕"</button>
+                    <button type="button" class="icon-btn" title="Close" aria-label="Close dialog" on:click=move |_| on_close.run(())><crate::components::ui::Icon name=crate::components::ui::IconName::X /></button>
                 </div>
                 {children()}
             </div>

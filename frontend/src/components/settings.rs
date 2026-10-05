@@ -1,4 +1,8 @@
-use super::{modal::Modal, model_setup::ModelSetupPanel};
+use super::{
+    modal::Modal,
+    model_setup::ModelSetupPanel,
+    ui::{Button, DialogActions, DialogBody, DialogSize, FormField, FormSection, InlineActions},
+};
 use crate::state::settings::{SettingsState, Theme};
 use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
@@ -45,11 +49,10 @@ pub fn Settings(
     });
 
     view! {
-        <Modal title=Signal::derive(|| "Settings".to_string()) on_close=on_close>
-            <div class="modal-body">
-                <super::install_app::InstallApp />
-                <div class="setting-row">
-                    <span class="setting-label">"Layout"</span>
+        <Modal title=Signal::derive(|| "Settings".to_string()) on_close=on_close size=DialogSize::Wide>
+            <DialogBody>
+                <FormSection title="Appearance" description="Changes apply immediately." class="ui-form-grid">
+                <FormField label="Layout" group=true>
                     <div class="mode-picker">
                     {[
                         (crate::state::responsive::LayoutMode::Automatic, "Automatic"),
@@ -62,9 +65,8 @@ pub fn Settings(
                         </label>
                     }).collect_view()}
                     </div>
-                </div>
-                <div class="setting-row">
-                    <span class="setting-label">"Theme"</span>
+                </FormField>
+                <FormField label="Theme" group=true>
                     <div class="mode-picker">
                         <label
                             class=move || {
@@ -118,16 +120,18 @@ pub fn Settings(
                             "Light"
                         </label>
                     </div>
-                </div>
+                </FormField>
 
-                <div class="setting-row">
-                    <span class="setting-label">"Browser notifications"</span>
-                    <button class="btn ghost notification-toggle" disabled=move || notifications.configuring.get()
+                </FormSection>
+                <FormSection title="Notifications">
+                <FormField label="Browser notifications" group=true>
+                    <InlineActions><button class="btn ghost notification-toggle" disabled=move || notifications.configuring.get()
                         on:click=move |_| on_set_notifications.run(!(settings.browser_notifications.get_untracked() && notifications.permission.get_untracked() != crate::notifications::NotificationPermission::Default))>
                         {move || if notifications.configuring.get() { "Saving…" } else if settings.browser_notifications.get() && notifications.permission.get() != crate::notifications::NotificationPermission::Default { "Disable" } else { "Enable" }}
                     </button>
-                </div>
-                <p class="muted notification-status">{move || {
+                    </InlineActions>
+                </FormField>
+                <p class="form-hint notification-status">{move || {
                     use crate::notifications::NotificationPermission;
                     match notifications.permission.get() {
                         NotificationPermission::Unsupported => "Notifications need a supported browser on HTTPS or localhost. Chat approvals remain available in the app.",
@@ -137,9 +141,10 @@ pub fn Settings(
                         _ => "Enable notifications for finished runs and approval requests. Browser permission is required on each device.",
                     }
                 }}</p>
+                </FormSection>
+                <FormSection title="Model defaults" description="Choose the models and system prompt used for new chats.">
                 <ModelSetupPanel defaults_only=true />
-                <div class="setting-row">
-                    <span class="setting-label">"Default system prompt"</span>
+                <FormField label="Default system prompt">
                     <select
                         class="form-input"
                         node_ref=prompt_ref
@@ -162,10 +167,14 @@ pub fn Settings(
                             })
                             .collect::<Vec<_>>()}
                     </select>
-                </div>
+                </FormField>
 
-                <div class="setting-row">
-                    <span class="setting-label">"Bridge URL"</span>
+                </FormSection>
+                <FormSection title="Installation">
+                    <super::install_app::InstallApp />
+                </FormSection>
+                <FormSection title="Execution bridge" description="Connect terminal and agent tools to your execution host.">
+                <FormField label="Bridge URL">
                     <input
                         type="text"
                         class="form-input"
@@ -178,15 +187,14 @@ pub fn Settings(
                             }
                         }
                     />
-                </div>
+                </FormField>
 
-                <div class="setting-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
-                    <span class="setting-label">"Bridge pairing token"</span>
-                    <div style="display: flex; gap: 0.5rem; width: 100%;">
+                <FormField label="Bridge pairing token" group=true>
+                    <div class="ui-input-group">
                         <input
                             type="password"
+                            aria-label="Bridge pairing token"
                             class="form-input"
-                            style="flex: 1;"
                             value=pairing_token
                             on:change=move |e: web_sys::Event| {
                                 if let Some(target) = e.target()
@@ -201,7 +209,7 @@ pub fn Settings(
                             }
                         />
                         <button
-                            class="btn stop"
+                            class="btn"
                             on:click=move |_| {
                                 set_pairing_token.set(String::new());
                                 wasm_bindgen_futures::spawn_local(async move {
@@ -212,12 +220,16 @@ pub fn Settings(
                             "Clear"
                         </button>
                     </div>
-                    <div class="form-hint" style="color: var(--border-subtle); font-size: 0.85rem;">
+                    <div class="form-hint">
                         "Required only if your bridge daemon was started with OPENWEBIDE_BRIDGE_TOKEN to allow local execution (the laptop-companion case)."
                     </div>
-                </div>
+                </FormField>
 
-            </div>
+                </FormSection>
+            </DialogBody>
+            <DialogActions>
+                <Button on_click=Callback::new(move |_| on_close.run(()))>"Done"</Button>
+            </DialogActions>
         </Modal>
     }
 }

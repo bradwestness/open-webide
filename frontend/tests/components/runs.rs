@@ -1265,11 +1265,11 @@ async fn replay_during_resolution(rejected: bool, seen_live: bool) -> (String, b
         .push_back(pending);
     settle().await;
     if rejected {
-        mounted.click_text("✕ Reject");
+        mounted.click_text("Reject");
         settle().await;
         mounted.click(".modal-footer .danger");
     } else {
-        mounted.click_text("✓ Accept");
+        mounted.click_text("Accept");
     }
     settle().await;
     if !seen_live {

@@ -237,3 +237,58 @@ async fn statusline_preserves_compact_telemetry_text() {
         Some("-- t/s")
     );
 }
+
+#[wasm_bindgen_test]
+async fn shared_icons_and_tooltips_are_labeled_themeable_and_cleaned_up() {
+    use super::support::wait_until;
+    use openwebide_frontend::components::ui::{Icon, IconButton, IconName};
+    let mounted = mount_test(|_| {
+        openwebide_frontend::viewport::install_action_tooltips();
+        view! {
+            <style>{include_str!("../../styles.css")}</style>
+            <IconButton label="Settings" on_click=Callback::new(|_| ())><Icon name=IconName::Settings /></IconButton>
+        }
+    });
+    settle().await;
+    let button = mounted.element("button");
+    assert_eq!(
+        button.get_attribute("aria-label").as_deref(),
+        Some("Settings")
+    );
+    let icon = mounted.element("svg");
+    assert_eq!(icon.get_attribute("width").as_deref(), Some("20"));
+    assert_eq!(
+        icon.get_attribute("stroke").as_deref(),
+        Some("currentColor")
+    );
+    assert_eq!(
+        mounted
+            .element(".ui-icon-glyph")
+            .get_attribute("aria-hidden")
+            .as_deref(),
+        Some("true")
+    );
+    button.focus().unwrap();
+    button
+        .dispatch_event(&web_sys::Event::new("focus").unwrap())
+        .unwrap();
+    wait_until("keyboard action tooltip", || {
+        web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .get_element_by_id("ui-action-tooltip")
+            .is_some_and(|tip| !tip.has_attribute("hidden"))
+    })
+    .await;
+    let document = web_sys::window().unwrap().document().unwrap();
+    let tooltip = document.get_element_by_id("ui-action-tooltip").unwrap();
+    assert_eq!(tooltip.text_content().as_deref(), Some("Settings"));
+    assert_eq!(
+        button.get_attribute("aria-describedby").as_deref(),
+        Some("ui-action-tooltip")
+    );
+    drop(mounted);
+    assert!(document.get_element_by_id("ui-action-tooltip").is_none());
+    assert_eq!(button.get_attribute("title").as_deref(), Some("Settings"));
+}

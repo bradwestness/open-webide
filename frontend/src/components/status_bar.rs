@@ -54,7 +54,7 @@ pub fn StatusBar(
                                 title="Active Git branch (click to switch)"
                                 on:click=move |_| on_branch_click.run(())
                             >
-                                " " {branch}
+                                <super::ui::Icon name=super::ui::IconName::GitBranch /> {branch}
                             </button>
                             {if ahead > 0 || behind > 0 {
                                 view! {
@@ -97,7 +97,7 @@ pub fn StatusBar(
                 title="Toggle terminal dock (Ctrl+`)"
                 on:click=move |_| on_toggle_terminal()
             >
-                " Terminal"
+                <super::ui::Icon name=super::ui::IconName::Terminal />"Terminal"
             </button>
         </footer>
     }

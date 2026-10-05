@@ -31,11 +31,22 @@ pub enum PanelSide {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesView {
+    #[default]
+    Explorer,
+    Changes,
+    Search,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LayoutPreferences {
     pub mode: LayoutMode,
+    pub files_view: FilesView,
     sides: BTreeMap<String, PanelSide>,
+    order: Vec<String>,
 }
 impl LayoutPreferences {
     pub fn side(&self, panel: &str) -> PanelSide {
@@ -49,6 +60,9 @@ impl LayoutPreferences {
             })
     }
     pub fn order(&self, panel: &str) -> u8 {
+        if let Some(index) = self.order.iter().position(|id| id == panel) {
+            return u8::try_from(index).unwrap_or(255);
+        }
         let rank = match panel {
             "sessions" => 1,
             "files" => 2,
@@ -63,6 +77,39 @@ impl LayoutPreferences {
             Some(PanelSide::Right) => 80 + rank,
             None => rank * 10,
         }
+    }
+    pub fn move_panel(&mut self, panel: &str, right: bool, visible: &[&str]) -> bool {
+        let mut panels = ["sessions", "files", "editor", "terminal", "chat"];
+        panels.sort_by_key(|id| self.order(id));
+        let Some(index) = panels.iter().position(|id| *id == panel) else {
+            return false;
+        };
+        let next = if right {
+            ((index + 1)..panels.len()).find(|next| visible.contains(&panels[*next]))
+        } else {
+            (0..index)
+                .rev()
+                .find(|next| visible.contains(&panels[*next]))
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        panels.swap(index, next);
+        self.order = panels.into_iter().map(String::from).collect();
+        let editor = self.order.iter().position(|id| id == "editor").unwrap_or(2);
+        for (index, id) in self.order.iter().enumerate() {
+            if id != "editor" {
+                self.sides.insert(
+                    id.clone(),
+                    if index < editor {
+                        PanelSide::Left
+                    } else {
+                        PanelSide::Right
+                    },
+                );
+            }
+        }
+        true
     }
     pub fn pin(&mut self, panel: &str, side: PanelSide) -> bool {
         if ![
@@ -90,6 +137,37 @@ mod tests {
         }
         assert!(LayoutMode::Phone.phone(1920.0));
         assert!(!LayoutMode::Desktop.phone(320.0));
+    }
+    #[test]
+    fn moving_panels_updates_order_and_resize_edges_and_roundtrips() {
+        let mut prefs = LayoutPreferences::default();
+        assert!(prefs.move_panel(
+            "terminal",
+            false,
+            &["sessions", "files", "editor", "terminal", "chat"]
+        ));
+        assert!(prefs.order("terminal") < prefs.order("editor"));
+        assert_eq!(prefs.side("terminal"), PanelSide::Left);
+        assert!(prefs.move_panel(
+            "terminal",
+            true,
+            &["sessions", "files", "editor", "terminal", "chat"]
+        ));
+        assert_eq!(prefs.side("terminal"), PanelSide::Right);
+        assert!(!prefs.move_panel(
+            "sessions",
+            false,
+            &["sessions", "files", "editor", "terminal", "chat"]
+        ));
+        let restored: LayoutPreferences =
+            serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(restored, prefs);
+        assert_eq!(
+            serde_json::from_str::<LayoutPreferences>(r#"{"mode":"automatic"}"#)
+                .unwrap()
+                .files_view,
+            FilesView::Explorer
+        );
     }
     #[test]
     fn pin_preferences_keep_defaults_and_roundtrip_without_viewport_state() {

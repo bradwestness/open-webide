@@ -40,7 +40,7 @@ The following checks still require hands-on device or environment testing:
 
 - First-paint theme and both themes visually; terminal dock hide/show.
 - Resume after a mid-run reload with a slow model; pending edits across two browsers.
-- Docker browser terminal and Git panel interactions.
+- Docker browser terminal and Files/Changes interactions.
 - A phone on the LAN; podman/systemd.
 - Editor IME composition, paste and caret behaviour with a real input method.
 - Windows runtime process cleanup. The Windows adapter compiles without TLS locally;
@@ -59,14 +59,6 @@ remote projects through shared workspace and Git facades:
   and similar shortcuts. Inject an editable prompt with the selected paths into
   the chat composer so the user can review and send it.
 - Make menus keyboard-accessible and usable with a touch-friendly alternative.
-
-### File tree: Explorer / Changes mode
-
-Today's file tree (`frontend/src/components/file_tree.rs`) is a single
-"Explorer" view — the full project tree with git status badges inline. Add a
-toggle between **Explorer** (unchanged) and **Changes** (only files with a
-git status, badges still shown), for jumping straight to what's dirty
-without scrolling a large tree.
 
 ### Code intelligence: in-browser WASM linters & LSP
 

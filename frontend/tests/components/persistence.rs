@@ -49,6 +49,14 @@ fn install_with_selection(state: &TestState, select_project: Callback<i64>) {
         role: UserRole::User,
         created_at: 0,
     });
+    provide_context(
+        openwebide_frontend::state_actions::layout::LayoutActions::new(
+            state.api,
+            expect_context::<LayoutState>(),
+            auth,
+            state.ui,
+        ),
+    );
     install_project_effects(ProjectEffectContext {
         api: state.api,
         health: RwSignal::new(None),
@@ -489,6 +497,10 @@ async fn sidebar_drag_does_not_save_fitted_chat_width() {
         .dispatch_event(&web_sys::Event::new("resize").unwrap())
         .unwrap();
     settle().await;
+    mounted
+        .element(".panel-resizer")
+        .dispatch_event(&web_sys::PointerEvent::new("pointerdown").unwrap())
+        .unwrap();
     mounted.click("button");
     web_sys::window()
         .unwrap()
@@ -865,8 +877,8 @@ async fn pending_reload_and_decisions_survive_remount_with_shared_backend() {
     drop(mounted);
     let mounted = super::support::mount_test_with_backend(fake.clone(), pending_editor);
     settle().await;
-    assert!(mounted.root.text_content().unwrap().contains("✓ Accept"));
-    mounted.click_text("✓ Accept");
+    assert!(mounted.root.text_content().unwrap().contains("Accept"));
+    mounted.click_text("Accept");
     settle().await;
     drop(mounted);
     let mounted = super::support::mount_test_with_backend(fake.clone(), pending_editor);
@@ -894,7 +906,7 @@ async fn pending_reload_and_decisions_survive_remount_with_shared_backend() {
         mounted.state.workspace.persisted_edits.get_untracked()["file.rs"].revision,
         2
     );
-    mounted.click_text("✕ Reject");
+    mounted.click_text("Reject");
     settle().await;
     mounted.click(".modal-footer .danger");
     settle().await;

@@ -288,44 +288,42 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 {
                     stored_active_project = Some(id);
                 }
-                let mut widths = [
-                    layout.sidebar_width.get_untracked(),
-                    layout.tree_width.get_untracked(),
-                    layout.chat_width.get_untracked(),
-                ];
-                for (i, key) in [
-                    "panel_sidebar_width",
-                    "panel_tree_width",
-                    "panel_chat_width",
-                ]
-                .iter()
-                .enumerate()
-                {
-                    if let Some(width) =
-                        values.get(*key).and_then(|value| value.parse::<f64>().ok())
+                if layout.width_revision.get_untracked() == 0 {
+                    let mut widths = [
+                        layout.sidebar_width.get_untracked(),
+                        layout.tree_width.get_untracked(),
+                        layout.chat_width.get_untracked(),
+                    ];
+                    for (i, key) in [
+                        "panel_sidebar_width",
+                        "panel_tree_width",
+                        "panel_chat_width",
+                    ]
+                    .iter()
+                    .enumerate()
                     {
-                        widths[i] = width;
+                        if let Some(width) = values
+                            .get(*key)
+                            .and_then(|value| value.parse::<f64>().ok())
+                            .filter(|width| width.is_finite())
+                        {
+                            widths[i] = width;
+                        }
                     }
+                    if let Some(width) = values
+                        .get("panel_terminal_width")
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .filter(|width| width.is_finite())
+                    {
+                        layout.terminal_width.set(width.clamp(240.0, 1000.0));
+                    }
+                    layout.sidebar_width.set(widths[0].clamp(140.0, 480.0));
+                    layout.tree_width.set(widths[1].clamp(160.0, 650.0));
+                    layout.chat_width.set(widths[2].clamp(260.0, 1000.0));
                 }
                 layout.restore_preferences(&values);
-                layout.viewport_width.set(viewport_width());
                 layout.restore_panels(values.get(crate::state::layout::PANEL_VISIBILITY_KEY));
-                let [sidebar, tree, chat_width] = if layout.phone.get_untracked() {
-                    [
-                        widths[0].clamp(140.0, 480.0),
-                        widths[1].clamp(160.0, 650.0),
-                        widths[2].clamp(260.0, 1000.0),
-                    ]
-                } else {
-                    crate::state::layout::fit_visible_panels(
-                        viewport_width(),
-                        widths,
-                        layout.visible_panels.get_untracked(),
-                    )
-                };
-                layout.sidebar_width.set(sidebar);
-                layout.tree_width.set(tree);
-                layout.chat_width.set(chat_width);
+                layout.fit(viewport_width());
 
                 let mut history = values
                     .get("prompt_history")

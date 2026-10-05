@@ -78,10 +78,10 @@ pub fn FileTree(
                 <h2>"Explorer"</h2>
                 <span class="file-tree-actions">
                     <button class="icon-btn" title="New file" on:click=move |_| on_new_file.run(())>
-                        "📄"
+                        <crate::components::ui::Icon name=crate::components::ui::IconName::File />
                     </button>
                     <button class="icon-btn" title="New folder" on:click=move |_| on_new_dir.run(())>
-                        "📁"
+                        <crate::components::ui::Icon name=crate::components::ui::IconName::Folder />
                     </button>
                 </span>
             </div>
@@ -135,15 +135,9 @@ pub fn FileTree(
                                             }
                                         >
                                             <span class="tree-icon">
-                                                {move || if is_dir {
-                                                    if expanded.get().contains(&path_icon) {
-                                                        "▾"
-                                                    } else {
-                                                        "▸"
-                                                    }
-                                                } else {
-                                                    "·"
-                                                }}
+                                                <super::ui::Icon name=Signal::derive(move || if is_dir {
+                                                    if expanded.get().contains(&path_icon) { super::ui::IconName::FolderOpen } else { super::ui::IconName::Folder }
+                                                } else { super::ui::IconName::File }) />
                                             </span>
                                             <span class="tree-name">{name}</span>
                                             {
@@ -188,22 +182,41 @@ pub fn SearchPane(
     include_ignored: ReadSignal<bool>,
     on_toggle_include_ignored: Callback<()>,
     on_clear_search: Callback<()>,
+    #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
     on_cleanup(move || on_cancel_search.run(()));
     let workspace = expect_context::<WorkspaceState>();
     let search_results = workspace.search.read_only();
     let open_file = workspace.open_file.read_only();
+    let query = RwSignal::new(String::new());
     let search_input = NodeRef::<leptos::html::Input>::new();
+    let layout = expect_context::<crate::state::layout::LayoutState>();
+    Effect::new(move |_| {
+        workspace.active_project.track();
+        query.set(String::new());
+        if let Some(input) = search_input.get() {
+            input.set_value("");
+        }
+    });
+    Effect::new(move |_| {
+        if layout
+            .preferences
+            .with(|prefs| prefs.files_view == crate::state::responsive::FilesView::Search)
+            && let Some(input) = search_input.get()
+        {
+            let _ = input.focus();
+        }
+    });
     view! { <div class="search-pane">
-        <div class="file-tree-header"><h2>"Search"</h2></div>
+
             <div
                 class="file-tree-search"
-                style="display: flex; gap: 4px; align-items: center;"
+
             >
                 <input
                     type="text"
                     class="search-input"
-                    style="flex: 1;"
+                    aria-label="Search project files"
                     placeholder="Search files…"
                     node_ref=search_input
                     on:input=move |e: web_sys::Event| {
@@ -211,6 +224,7 @@ pub fn SearchPane(
                             && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
                         {
                             let q = input.value();
+                            query.set(q.clone());
                             if q.is_empty() {
                                 on_clear_search.run(());
                             } else {
@@ -243,10 +257,11 @@ pub fn SearchPane(
                         }
                     }
                 >
-                    "🔦"
+                    <crate::components::ui::Icon name=crate::components::ui::IconName::FolderSearch />
                 </button>
             </div>
-                <div class="tree-root search-results">
+                <div class="search-file-views" hidden=move || !query.get().is_empty()>{children.map(|children| children())}</div>
+                <div class="tree-root search-results" hidden=move || query.get().is_empty()>
                     <For
                         each=move || search_results.get().unwrap_or_default()
                         key=|e| format!("{}:{}", e.path, e.line)

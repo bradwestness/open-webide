@@ -10,8 +10,8 @@ use leptos::prelude::*;
 
 use crate::components::{
     AuthGate, ChatPane, ConfirmDialog, Editor, FileBrowser, FileTree, GitPane, PanelRail,
-    PanelResizer, PromptDialog, SearchPane, Settings, Sidebar, StatusBar, TabBar, TerminalDock,
-    ToolPanel, TopBar,
+    PromptDialog, SearchPane, Settings, Sidebar, StatusBar, TabBar, TerminalDock, ToolPanel,
+    TopBar,
 };
 use crate::state_actions::{
     auth::{AuthActionContext, AuthActions},
@@ -26,6 +26,7 @@ use crate::{api::HealthState, backend::Api};
 
 #[component]
 pub fn App() -> impl IntoView {
+    crate::viewport::install_action_tooltips();
     let api: Api =
         StoredValue::new_local(std::rc::Rc::new(crate::api::BackendApi::from_location()));
     provide_context(api);
@@ -328,154 +329,155 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        <>
-        <Show
-            when=move || auth_checked.get() && current_user.get().is_some()
-            fallback=move || {
-                view! {
+                    <>
                     <Show
-                        when=move || auth_checked.get()
+                        when=move || auth_checked.get() && current_user.get().is_some()
                         fallback=move || {
                             view! {
-                                <div class="auth-gate">
-                                    <div class="auth-loading">"Loading…"</div>
-                                </div>
+                                <Show
+                                    when=move || auth_checked.get()
+                                    fallback=move || {
+                                        view! {
+                                            <div class="auth-gate">
+                                                <div class="auth-loading">"Loading…"</div>
+                                            </div>
+                                        }
+                                    }
+                                >
+                                    <AuthGate />
+                                </Show>
                             }
                         }
                     >
-                        <AuthGate />
+                        <div class="app" class:phone-layout=move || layout.phone.get()>
+                            <crate::components::CommandDialogs />
+                            <TopBar
+                                health=health.read_only()
+                                on_open_settings=on_open_settings
+                                on_logout=on_logout
+                            />
+                            <TabBar
+                                on_select_chat=Callback::new(move |()| { select_chat.run(()); layout_actions.show.run(Panel::Chat); })
+                                on_select=select_project
+                                on_close=close_project
+                                on_open_local=on_open_local
+                                on_open_remote=on_open_remote
+                                on_open_project=on_open_project
+                                on_delete_project=on_delete_project
+                            />
+                            <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.visible_panels.get().editor { "" } else { " editor-collapsed" })>
+                            <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat, Panel::Terminal ] />
+                            <ToolPanel panel=Panel::Sessions>
+                            <Sidebar
+                                on_new_connection=on_new_connection
+                                on_edit_connection=on_edit_connection
+                                on_cancel_connection=on_cancel_connection
+                                on_delete_connection=on_delete_connection
+                                on_select_session=on_select_session
+                                on_new_session=on_new_session
+                                on_rename_session=on_rename_session
+                                on_delete_session=on_delete_session
+                                on_new_prompt=on_new_prompt
+                                on_edit_prompt=on_edit_prompt
+                                on_save_prompt=on_save_prompt
+                                on_cancel_prompt=on_cancel_prompt
+                                on_delete_prompt=on_delete_prompt
+                            />
+                            </ToolPanel>
+                            <ToolPanel panel=Panel::Files>
+    <SearchPane on_open=request_open on_search_input=on_search_input on_cancel_search=on_cancel_search on_search=on_search on_clear_search=on_clear_search include_ignored=include_ignored_search.read_only() on_toggle_include_ignored=Callback::new(move |()| include_ignored_search.update(|v| *v = !*v))>
+    <crate::components::FilesPanel>
+                                <div class="files-view" hidden=move || layout.preferences.with(|p| p.files_view == crate::state::responsive::FilesView::Changes)>
+                            <FileTree
+                                on_toggle=on_toggle
+                                on_open=request_open
+                                on_new_file=on_new_file
+                                on_new_dir=on_new_dir
+                                on_grant_access=on_grant_access
+                            />
+                                </div>
+                                <div class="files-view" hidden=move || layout.preferences.with(|p| p.files_view != crate::state::responsive::FilesView::Changes)>
+            <GitPane on_open=Callback::new(move |path| { request_open.run(path); }) on_load_git_diff=on_load_git_diff on_discard_git_diff=on_discard_git_diff />
+                                </div>
+
+                            </crate::components::FilesPanel>
+    </SearchPane>
+                            </ToolPanel>
+                            <ToolPanel panel=Panel::Editor>
+                            <div class="center-pane">
+                                <Editor
+                                    read_only=Signal::derive(move || ws_read_only.get() || chat_state.rewinding.get())
+                                    on_open_lossy=on_open_lossy
+                                    on_load_git_diff=on_load_git_diff
+                                    on_discard_git_diff=on_discard_git_diff
+                                    on_save=on_save
+                                    on_accept=on_accept
+                                    on_reject=on_reject
+                                />
+
+                            </div>
+                            </ToolPanel>
+                            <ToolPanel panel=Panel::Terminal>
+                                {move || bridge_connection.get().map(|bridge| view! { <TerminalDock bridge=bridge visible=terminal_visible on_close=Callback::new(move |()| layout_actions.toggle.run(Panel::Terminal)) /> })}
+                            </ToolPanel>
+                            <ToolPanel panel=Panel::Chat>
+                            <ChatPane
+                                on_select_connection_model=chat_actions.select_connection_model
+                                conversation_actions=chat_actions.conversation
+                                queue_actions=chat_actions.queue
+                                on_send=on_send
+                                on_resume_run=chat_actions.resume_run
+                                on_stop=on_stop
+                                on_permission=on_permission
+                                on_permission_always=on_permission_always
+                                on_slash_command=on_slash_command
+                                on_rewind=chat_actions.rewind
+                            />
+                            </ToolPanel>
+                            <Show when=move || !layout.phone.get() && !layout.visible_panels.get().editor && !layout.visible_panels.get().chat>
+                                <div class="panel-empty">"Choose a panel tab to expand it."</div>
+                            </Show>
+                        </div>
+                        <StatusBar
+                            health=health.read_only()
+                            on_toggle_terminal=on_toggle_terminal
+                            on_branch_click=on_branch_click
+                            on_sync_click=on_sync_click
+                        />
+                        <Show when=move || show_settings.get() fallback=|| ()>
+                            <Settings
+                                on_set_theme=on_set_theme
+                                on_set_notifications=on_set_notifications
+
+                                on_set_default_prompt=on_set_default_prompt
+                                on_set_bridge_url=on_set_bridge_url
+                            />
+                        </Show>
+                        <crate::components::ContextUsage />
+                        <ConfirmDialog />
+                        <PromptDialog />
+                        <Show when=move || show_browser.get() fallback=|| ()>
+                            <FileBrowser
+                                on_close=on_close_browser
+                                on_select=on_browser_select
+                            />
+                        </Show>
+                    </div>
                     </Show>
+                    <Show when=move || chat_state.notice.get().is_some()>
+                        <div class="toast toast-info" role="status">
+                            <span class="toast-message">{move || chat_state.notice.get().unwrap_or_default()}</span>
+                            <button class="icon-btn toast-close" title="Dismiss" on:click=move |_| chat_state.notice.set(None)>"×"</button>
+                        </div>
+                    </Show>
+                    <Show when=move || error.get().is_some() fallback=|| ()>
+                        <div class="toast" role="alert">
+                            <span class="toast-message">{move || error.get().unwrap_or_default()}</span>
+                            <button class="icon-btn toast-close" title="Dismiss" on:click=move |_| error.set(None)>
+                                "✕"
+                            </button>
+                        </div>
+                    </Show>
+                    </>
                 }
-            }
-        >
-            <div class="app" class:phone-layout=move || layout.phone.get()>
-                <crate::components::CommandDialogs />
-                <TopBar
-                    health=health.read_only()
-                    on_open_settings=on_open_settings
-                    on_logout=on_logout
-                />
-                <TabBar
-                    on_select_chat=Callback::new(move |()| { select_chat.run(()); layout_actions.show.run(Panel::Chat); })
-                    on_select=select_project
-                    on_close=close_project
-                    on_open_local=on_open_local
-                    on_open_remote=on_open_remote
-                    on_open_project=on_open_project
-                    on_delete_project=on_delete_project
-                />
-                <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.visible_panels.get().editor { "" } else { " editor-collapsed" })>
-                <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat, Panel::Terminal, Panel::Git, Panel::Search] />
-                <ToolPanel panel=Panel::Sessions>
-                <Sidebar
-                    on_new_connection=on_new_connection
-                    on_edit_connection=on_edit_connection
-                    on_cancel_connection=on_cancel_connection
-                    on_delete_connection=on_delete_connection
-                    on_select_session=on_select_session
-                    on_new_session=on_new_session
-                    on_rename_session=on_rename_session
-                    on_delete_session=on_delete_session
-                    on_new_prompt=on_new_prompt
-                    on_edit_prompt=on_edit_prompt
-                    on_save_prompt=on_save_prompt
-                    on_cancel_prompt=on_cancel_prompt
-                    on_delete_prompt=on_delete_prompt
-                />
-                <PanelResizer kind=ActiveResizer::Sidebar />
-                </ToolPanel>
-                <ToolPanel panel=Panel::Files>
-                <FileTree
-                    on_toggle=on_toggle
-                    on_open=request_open
-                    on_new_file=on_new_file
-                    on_new_dir=on_new_dir
-                    on_grant_access=on_grant_access
-                />
-                <PanelResizer kind=ActiveResizer::Tree />
-                </ToolPanel>
-                <ToolPanel panel=Panel::Editor>
-                <div class="center-pane">
-                    <Editor
-                        read_only=Signal::derive(move || ws_read_only.get() || chat_state.rewinding.get())
-                        on_open_lossy=on_open_lossy
-                        on_load_git_diff=on_load_git_diff
-                        on_discard_git_diff=on_discard_git_diff
-                        on_save=on_save
-                        on_accept=on_accept
-                        on_reject=on_reject
-                    />
-
-                </div>
-                </ToolPanel>
-                <ToolPanel panel=Panel::Search>
-                    <SearchPane on_open=request_open on_search_input=on_search_input on_cancel_search=on_cancel_search on_search=on_search on_clear_search=on_clear_search include_ignored=include_ignored_search.read_only() on_toggle_include_ignored=Callback::new(move |()| include_ignored_search.update(|v| *v = !*v)) />
-                </ToolPanel>
-                <ToolPanel panel=Panel::Git>
-                    <GitPane on_open=Callback::new(move |path| { request_open.run(path); layout_actions.show.run(Panel::Git); }) on_load_git_diff=on_load_git_diff on_discard_git_diff=on_discard_git_diff />
-                </ToolPanel>
-                <ToolPanel panel=Panel::Terminal>
-                    {move || bridge_connection.get().map(|bridge| view! { <TerminalDock bridge=bridge visible=terminal_visible on_close=Callback::new(move |()| layout_actions.toggle.run(Panel::Terminal)) /> })}
-                </ToolPanel>
-                <ToolPanel panel=Panel::Chat>
-                <PanelResizer kind=ActiveResizer::Chat />
-                <ChatPane
-                    on_select_connection_model=chat_actions.select_connection_model
-                    conversation_actions=chat_actions.conversation
-                    queue_actions=chat_actions.queue
-                    on_send=on_send
-                    on_resume_run=chat_actions.resume_run
-                    on_stop=on_stop
-                    on_permission=on_permission
-                    on_permission_always=on_permission_always
-                    on_slash_command=on_slash_command
-                    on_rewind=chat_actions.rewind
-                />
-                </ToolPanel>
-                <Show when=move || !layout.phone.get() && !layout.visible_panels.get().editor && !layout.visible_panels.get().chat>
-                    <div class="panel-empty">"Choose a panel tab to expand it."</div>
-                </Show>
-            </div>
-            <StatusBar
-                health=health.read_only()
-                on_toggle_terminal=on_toggle_terminal
-                on_branch_click=on_branch_click
-                on_sync_click=on_sync_click
-            />
-            <Show when=move || show_settings.get() fallback=|| ()>
-                <Settings
-                    on_set_theme=on_set_theme
-                    on_set_notifications=on_set_notifications
-
-                    on_set_default_prompt=on_set_default_prompt
-                    on_set_bridge_url=on_set_bridge_url
-                />
-            </Show>
-            <crate::components::ContextUsage />
-            <ConfirmDialog />
-            <PromptDialog />
-            <Show when=move || show_browser.get() fallback=|| ()>
-                <FileBrowser
-                    on_close=on_close_browser
-                    on_select=on_browser_select
-                />
-            </Show>
-        </div>
-        </Show>
-        <Show when=move || chat_state.notice.get().is_some()>
-            <div class="toast toast-info" role="status">
-                <span class="toast-message">{move || chat_state.notice.get().unwrap_or_default()}</span>
-                <button class="icon-btn toast-close" title="Dismiss" on:click=move |_| chat_state.notice.set(None)>"×"</button>
-            </div>
-        </Show>
-        <Show when=move || error.get().is_some() fallback=|| ()>
-            <div class="toast" role="alert">
-                <span class="toast-message">{move || error.get().unwrap_or_default()}</span>
-                <button class="icon-btn toast-close" title="Dismiss" on:click=move |_| error.set(None)>
-                    "✕"
-                </button>
-            </div>
-        </Show>
-        </>
-    }
 }

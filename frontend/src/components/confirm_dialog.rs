@@ -1,4 +1,5 @@
 use super::modal::Modal;
+use super::ui::{DialogActions, DialogBody};
 use crate::state::ui::UiState;
 use leptos::prelude::*;
 
@@ -13,12 +14,12 @@ pub fn ConfirmDialog() -> impl IntoView {
     view! {
         <Show when=move || req.get().is_some() fallback=|| ()>
             <Modal title=Signal::derive(move || req.with(|r| r.as_ref().map(|r| r.title.clone()).unwrap_or_default())) on_close=on_close class="modal modal-sm" describedby="confirm-description">
-                <div class="modal-body">
+                <DialogBody>
                     <p class="confirm-message" id="confirm-description">
                         {move || req.with(|r| r.as_ref().map(|r| r.message.clone()).unwrap_or_default())}
                     </p>
-                </div>
-                <div class="modal-footer">
+                </DialogBody>
+                <DialogActions>
                     <button class="btn" on:click=move |_| on_close.run(())>"Cancel"</button>
                     <button
                         class="btn danger"
@@ -31,7 +32,7 @@ pub fn ConfirmDialog() -> impl IntoView {
                     >
                         {move || req.with(|r| r.as_ref().map(|r| r.confirm_label.clone()).unwrap_or_else(|| "Confirm".to_string()))}
                     </button>
-                </div>
+                </DialogActions>
             </Modal>
         </Show>
     }

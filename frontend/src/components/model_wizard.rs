@@ -1,3 +1,6 @@
+use super::ui::{
+    DialogActions, DialogBody, DialogSize, FormField, FormNotice, FormSection, NoticeTone,
+};
 use crate::{
     backend::Api,
     model_setup::{self, DiscoveredModel},
@@ -168,32 +171,45 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
         });
     };
     view! {
-        <super::modal::Modal title=Signal::derive(|| "Model setup".into()) on_close=on_close>
-            <div class="modal-body model-setup">
-                <p class="form-hint">{move || format!("Step {} of 3 · {}", step.get(), match step.get() { 1 => "Provider", 2 => "Server", _ => "Discover and customize" })}</p>
+        <super::modal::Modal title=Signal::derive(|| "Model setup".into()) on_close=on_close size=DialogSize::Wide>
+            <DialogBody class="model-setup">
+                <ol class="ui-steps" aria-label="Model setup steps">
+                    {[(1, "Provider"), (2, "Server"), (3, "Models")].into_iter().map(|(number, label)| view! {
+                        <li class:is-current=move || step.get() == number aria-current=move || (step.get() == number).then_some("step")>
+                            <span class="ui-step-number">{number}</span>{label}
+                        </li>
+                    }).collect_view()}
+                </ol>
                 <Show when=move || step.get() == 1>
-                    <label class="setting-row"><span class="setting-label">"Provider type"</span>
+                    <FormSection title="Provider">
+                    <FormField label="Provider type">
                         <select class="form-input" prop:value=move || kind.get().as_str() on:change=move |event| { if let Some(value) = ProviderKind::parse(&event_target_value(&event)) { kind.set(value); } }>
                             <option value="ollama">"Ollama"</option><option value="llamacpp">"OpenAI-compatible (llama.cpp, LM Studio, vLLM…)"</option>
                         </select>
-                    </label>
-                    <label class="setting-row"><span class="setting-label">"Server preset"</span><select class="form-input" prop:value=move || serde_json::to_string(&preset.get()).unwrap_or_default().trim_matches('"').to_string() on:change=move |event| {
+                    </FormField>
+                    <FormField label="Server preset"><select class="form-input" prop:value=move || serde_json::to_string(&preset.get()).unwrap_or_default().trim_matches('"').to_string() on:change=move |event| {
                         if let Ok(value) = serde_json::from_str::<openwebide_core::ServerPreset>(&format!("\"{}\"",event_target_value(&event))) {
                             preset_edited.set(true); preset.set(value); if value != openwebide_core::ServerPreset::Auto { kind.set(value.kind()); url.set(value.base_url().into()); }
                         }
                     }>
                         <option value="auto">"Detect automatically"</option><option value="ollama">"Ollama"</option><option value="llama_cpp">"llama.cpp"</option><option value="lm_studio">"LM Studio"</option><option value="vllm">"vLLM"</option><option value="lite_llm">"LiteLLM"</option><option value="open_router">"OpenRouter"</option><option value="sg_lang">"SGLang"</option><option value="kobold_cpp">"KoboldCpp"</option>
-                    </select></label>
-                    <button class="btn send" on:click=move |_| { if url.get_untracked().is_empty() { url.set(if kind.get_untracked() == ProviderKind::Ollama { "http://localhost:11434" } else { "http://localhost:8080" }.into()); } step.set(2); }>"Next: server"</button>
+                    </select></FormField>
+
+
+                    </FormSection>
                 </Show>
                 <Show when=move || step.get() == 2>
-                    <label class="setting-row"><span class="setting-label">"Server URL"</span><input class="form-input" type="url" disabled=move || busy.get() prop:value=move || url.get() on:input=move |event| url.set(event_target_value(&event)) /></label>
-                    <label class="setting-row"><span class="setting-label">"Auth token (optional)"</span><input class="form-input" type="password" disabled=move || busy.get() autocomplete="new-password" prop:value=move || token.get() on:input=move |event| token.set(event_target_value(&event)) /></label>
+                    <FormSection title="Server connection">
+                    <FormField label="Server URL"><input class="form-input" type="url" disabled=move || busy.get() prop:value=move || url.get() on:input=move |event| url.set(event_target_value(&event)) /></FormField>
+                    <FormField label="Auth token (optional)"><input class="form-input" type="password" disabled=move || busy.get() autocomplete="new-password" prop:value=move || token.get() on:input=move |event| token.set(event_target_value(&event)) /></FormField>
                     <p class="form-hint">{move || if has_key.get() { "A token is saved. Leave this blank to keep it." } else { "Leave the token blank for servers without authentication." }}</p>
                     <super::model_setup::ServerOptions id=server_id.get_untracked() on_edit=Callback::new(move |value| options.set(value)) />
-                    <div class="form-actions"><button class="btn" disabled=move || busy.get() on:click=move |_| step.set(1)>"Back"</button><button class="btn send" disabled=move || busy.get() on:click=discover>{move || if busy.get() { "Discovering models and settings…" } else { "Discover models" }}</button></div>
+
+
+                    </FormSection>
                 </Show>
                 <Show when=move || step.get() == 3>
+                    <FormSection title="Models and settings">
                     <p class="form-hint">"Review and customize detected settings. Existing overrides are preserved. Detect settings refreshes a model’s values. Changes are saved together when you choose Save."</p>
                     <For each=move || models.get() key=|model| (model.profile.selection.server_id, model.profile.selection.model.clone()) children=move |model| {
                         let selection = model.profile.selection.clone();
@@ -210,11 +226,19 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
                         </details> }
 
                     } />
-                    <div class="form-actions"><button class="btn" disabled=move || busy.get() on:click=move |_| on_close.run(())>"Cancel"</button><button class="btn send" disabled=move || busy.get() || inflight.with(|values| values.values().any(|busy| *busy)) on:click=apply>"Save"</button></div>
+
+
+                    </FormSection>
                 </Show>
+
+                <Show when=move || error.get().is_some()><FormNotice tone=NoticeTone::Error>{move || error.get()}</FormNotice></Show>
+            </DialogBody>
+            <DialogActions>
                 <Show when=move || step.get() != 3><button class="btn" disabled=move || busy.get() on:click=move |_| on_close.run(())>"Cancel"</button></Show>
-                <Show when=move || error.get().is_some()><p class="form-error" role="alert">{move || error.get()}</p></Show>
-            </div>
+                <Show when=move || step.get() == 1><button class="btn send" on:click=move |_| { if url.get_untracked().is_empty() { url.set(if kind.get_untracked() == ProviderKind::Ollama { "http://localhost:11434" } else { "http://localhost:8080" }.into()); } step.set(2); }>"Next: server"</button></Show>
+                <Show when=move || step.get() == 2><button class="btn" disabled=move || busy.get() on:click=move |_| step.set(1)>"Back"</button><button class="btn send" disabled=move || busy.get() on:click=discover>{move || if busy.get() { "Discovering models and settings…" } else { "Discover models" }}</button></Show>
+                <Show when=move || step.get() == 3><button class="btn" disabled=move || busy.get() on:click=move |_| on_close.run(())>"Cancel"</button><button class="btn send" disabled=move || busy.get() || inflight.with(|values| values.values().any(|busy| *busy)) on:click=apply>"Save"</button></Show>
+            </DialogActions>
         </super::modal::Modal>
     }
 }

@@ -22,19 +22,19 @@ pub fn TopBar(
                 <span class="topbar-user">{move || username.get().unwrap_or_default()}</span>
             </Show>
             <button
-                class="icon-btn"
-                title="Log out"
+                class="btn ghost topbar-action"
+                title="Log out" aria-label="Log out"
                 on:click=move |_| on_logout.run(())
             >
-                "⎋"
+                <crate::components::ui::Icon name=crate::components::ui::IconName::LogOut /><span>"Log out"</span>
             </button>
-            <button class="icon-btn" title="Model setup" on:click=move |_| settings.begin_model_setup(settings.default_connection.get_untracked())>"☷"</button>
+            <button class="btn ghost topbar-action" title="Model setup" aria-label="Model setup" on:click=move |_| settings.begin_model_setup(settings.default_connection.get_untracked())><crate::components::ui::Icon name=crate::components::ui::IconName::SlidersHorizontal /><span>"Models"</span></button>
             <button
-                class="icon-btn"
-                title="Settings"
+                class="btn ghost topbar-action"
+                title="Settings" aria-label="Settings"
                 on:click=move |_| on_open_settings.run(())
             >
-                "⚙"
+                <crate::components::ui::Icon name=crate::components::ui::IconName::Settings /><span>"Settings"</span>
             </button>
             <Show
                 when=move || matches!(health.get(), Some(HealthState::Online { .. }))

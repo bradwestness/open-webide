@@ -12,13 +12,6 @@ pub enum Panel {
     Search,
 }
 impl Panel {
-    pub const fn fixed_width(self) -> f64 {
-        match self {
-            Self::Terminal => 360.0,
-            Self::Git | Self::Search => 320.0,
-            _ => 0.0,
-        }
-    }
     pub const fn requires_project(self) -> bool {
         matches!(
             self,
@@ -117,13 +110,41 @@ pub fn fit_visible_panels(
     widths: [f64; 3],
     visibility: PanelVisibility,
 ) -> [f64; 3] {
-    let panels = [
+    let fitted = fit_open_panels(
+        viewport,
+        [
+            widths[0],
+            widths[1],
+            widths[2],
+            ActiveResizer::Terminal.default(),
+        ],
+        visibility,
+    );
+    [fitted[0], fitted[1], fitted[2]]
+}
+
+/// The same sizing policy applies to every resizable tool window.
+pub fn fit_open_panels(viewport: f64, widths: [f64; 4], visibility: PanelVisibility) -> [f64; 4] {
+    let kinds = [
         ActiveResizer::Sidebar,
         ActiveResizer::Tree,
         ActiveResizer::Chat,
+        ActiveResizer::Terminal,
     ];
-    let visible = [visibility.sessions, visibility.files, visibility.chat];
-    let mut widths = std::array::from_fn(|i| widths[i].clamp(panels[i].min(), panels[i].max()));
+    let visible = [
+        visibility.sessions,
+        visibility.files || visibility.git || visibility.search,
+        visibility.chat,
+        visibility.terminal,
+    ];
+    let mut widths = std::array::from_fn(|i| {
+        let width = if widths[i].is_finite() {
+            widths[i]
+        } else {
+            kinds[i].default()
+        };
+        width.clamp(kinds[i].min(), kinds[i].max())
+    });
     let center = if visibility.editor { CENTER_MIN } else { 0.0 };
     let used = widths
         .iter()
@@ -131,15 +152,10 @@ pub fn fit_visible_panels(
         .filter(|(i, _)| visible[*i])
         .map(|(_, width)| width)
         .sum::<f64>();
-    let tools = [Panel::Terminal, Panel::Git, Panel::Search]
-        .into_iter()
-        .filter(|panel| visibility.visible(*panel))
-        .map(Panel::fixed_width)
-        .sum::<f64>();
-    let mut excess = (used + tools + center + PANEL_RAILS_WIDTH - viewport).max(0.0);
-    for i in [2, 1, 0] {
+    let mut excess = (used + center + PANEL_RAILS_WIDTH - viewport).max(0.0);
+    for i in [2, 3, 1, 0] {
         if visible[i] {
-            let shrink = excess.min(widths[i] - panels[i].min());
+            let shrink = excess.min(widths[i] - kinds[i].min());
             widths[i] -= shrink;
             excess -= shrink;
         }
@@ -164,6 +180,7 @@ pub enum ActiveResizer {
     Sidebar,
     Tree,
     Chat,
+    Terminal,
 }
 
 impl ActiveResizer {
@@ -173,6 +190,7 @@ impl ActiveResizer {
             Self::Sidebar => 140.0,
             Self::Tree => 160.0,
             Self::Chat => 260.0,
+            Self::Terminal => 240.0,
         }
     }
 
@@ -182,6 +200,7 @@ impl ActiveResizer {
             Self::Sidebar => 480.0,
             Self::Tree => 650.0,
             Self::Chat => 1000.0,
+            Self::Terminal => 1000.0,
         }
     }
 
@@ -191,6 +210,7 @@ impl ActiveResizer {
             Self::Sidebar => 240.0,
             Self::Tree => 260.0,
             Self::Chat => 420.0,
+            Self::Terminal => 360.0,
         }
     }
 
@@ -200,17 +220,19 @@ impl ActiveResizer {
             Self::Sidebar => "panel_sidebar_width",
             Self::Tree => "panel_tree_width",
             Self::Chat => "panel_chat_width",
+            Self::Terminal => "panel_terminal_width",
         }
     }
 }
 
-/// User-adjustable widths for the three resizable panels.
+/// User-adjustable widths and shared tool-window layout.
 #[derive(Clone, Copy)]
 pub struct LayoutState {
     pub panels: RwSignal<PanelVisibility>,
     pub visible_panels: Memo<PanelVisibility>,
     pub active_project: RwSignal<Option<i64>>,
     pub panel_revision: RwSignal<u64>,
+    pub width_revision: RwSignal<u64>,
     pub preferences: RwSignal<LayoutPreferences>,
     pub preference_revision: RwSignal<u64>,
     pub viewport_width: RwSignal<f64>,
@@ -220,6 +242,7 @@ pub struct LayoutState {
     pub sidebar_width: RwSignal<f64>,
     pub tree_width: RwSignal<f64>,
     pub chat_width: RwSignal<f64>,
+    pub terminal_width: RwSignal<f64>,
     pub active_resizer: RwSignal<ActiveResizer>,
 }
 
@@ -237,6 +260,9 @@ impl LayoutState {
         let sheet = RwSignal::new(None::<Panel>);
         let visible_panels = Memo::new(move |_| {
             let mut visible = panels.get().for_project(active_project.get().is_some());
+            visible.files |= visible.git || visible.search;
+            visible.git = false;
+            visible.search = false;
             if phone.get() {
                 for panel in [
                     Panel::Sessions,
@@ -261,6 +287,7 @@ impl LayoutState {
             visible_panels,
             active_project,
             panel_revision: RwSignal::new(0),
+            width_revision: RwSignal::new(0),
             preferences,
             preference_revision: RwSignal::new(0),
             viewport_width,
@@ -270,10 +297,20 @@ impl LayoutState {
             sidebar_width: RwSignal::new(ActiveResizer::Sidebar.default()),
             tree_width: RwSignal::new(ActiveResizer::Tree.default()),
             chat_width: RwSignal::new(ActiveResizer::Chat.default()),
+            terminal_width: RwSignal::new(ActiveResizer::Terminal.default()),
             active_resizer: RwSignal::new(ActiveResizer::None),
         }
     }
 
+    pub fn width(&self, kind: ActiveResizer) -> RwSignal<f64> {
+        match kind {
+            ActiveResizer::Sidebar => self.sidebar_width,
+            ActiveResizer::Tree => self.tree_width,
+            ActiveResizer::Chat => self.chat_width,
+            ActiveResizer::Terminal => self.terminal_width,
+            ActiveResizer::None => panic!("a panel width requires a resize target"),
+        }
+    }
     pub fn available(&self, panel: Panel) -> bool {
         !panel.requires_project() || self.active_project.get().is_some()
     }
@@ -283,18 +320,20 @@ impl LayoutState {
         if self.phone.get_untracked() {
             return;
         }
-        let [sidebar, tree, chat] = fit_visible_panels(
+        let kinds = [
+            ActiveResizer::Sidebar,
+            ActiveResizer::Tree,
+            ActiveResizer::Chat,
+            ActiveResizer::Terminal,
+        ];
+        let widths = kinds.map(|kind| self.width(kind).get_untracked());
+        for (kind, width) in kinds.into_iter().zip(fit_open_panels(
             viewport,
-            [
-                self.sidebar_width.get_untracked(),
-                self.tree_width.get_untracked(),
-                self.chat_width.get_untracked(),
-            ],
+            widths,
             self.visible_panels.get_untracked(),
-        );
-        self.sidebar_width.set(sidebar);
-        self.tree_width.set(tree);
-        self.chat_width.set(chat);
+        )) {
+            self.width(kind).set(width);
+        }
     }
 
     pub fn restore_preferences(&self, values: &std::collections::BTreeMap<String, String>) {
@@ -310,11 +349,26 @@ impl LayoutState {
 
     pub fn restore_panels(&self, value: Option<&String>) {
         if self.panel_revision.get_untracked() == 0 {
-            self.panels.set(
-                value
-                    .and_then(|value| serde_json::from_str(value).ok())
-                    .unwrap_or_default(),
-            );
+            let mut panels: PanelVisibility = value
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_default();
+            if panels.git || panels.search {
+                panels.files = true;
+                if self.preference_revision.get_untracked() == 0 {
+                    self.preferences.update(|prefs| {
+                        if prefs.files_view == super::responsive::FilesView::Explorer {
+                            prefs.files_view = if panels.git {
+                                super::responsive::FilesView::Changes
+                            } else {
+                                super::responsive::FilesView::Search
+                            };
+                        }
+                    });
+                }
+                panels.git = false;
+                panels.search = false;
+            }
+            self.panels.set(panels);
         }
     }
 
@@ -335,11 +389,11 @@ impl LayoutState {
         } else {
             0.0
         };
-        let tools = [Panel::Terminal, Panel::Git, Panel::Search]
-            .into_iter()
-            .filter(|panel| panels.visible(*panel))
-            .map(Panel::fixed_width)
-            .sum::<f64>();
+        let tools = if panels.terminal && resizer != ActiveResizer::Terminal {
+            self.terminal_width.get_untracked()
+        } else {
+            0.0
+        };
         let viewport =
             viewport - PANEL_RAILS_WIDTH - tools + if panels.editor { 0.0 } else { CENTER_MIN };
         Self::clamp(resizer, requested, sidebar, tree, chat, viewport)
@@ -364,6 +418,7 @@ impl LayoutState {
             ActiveResizer::Sidebar => tree_width + chat_width,
             ActiveResizer::Tree => sidebar_width + chat_width,
             ActiveResizer::Chat => sidebar_width + tree_width,
+            ActiveResizer::Terminal => sidebar_width + tree_width + chat_width,
         };
         let lower = resizer.min();
         let upper = resizer.max();
@@ -420,13 +475,53 @@ mod tests {
         };
         assert_widths(
             fit_visible_panels(1400.0, [240.0, 260.0, 420.0], visibility),
-            [240.0, 260.0, 284.0],
+            [240.0, 260.0, 420.0],
         );
         visibility.terminal = true;
         assert_widths(
             fit_visible_panels(1400.0, [240.0, 260.0, 420.0], visibility),
-            [140.0, 160.0, 260.0],
+            [240.0, 260.0, 260.0],
         );
+    }
+
+    #[test]
+    fn terminal_uses_shared_fitting_and_collapsed_widths_are_retained() {
+        let visible = PanelVisibility {
+            terminal: true,
+            ..Default::default()
+        };
+        let widths = fit_open_panels(1400.0, [240.0, 260.0, 420.0, 500.0], visible);
+        assert!(
+            (widths.iter().sum::<f64>() + CENTER_MIN + PANEL_RAILS_WIDTH - 1400.0).abs()
+                < f64::EPSILON
+        );
+        let hidden = PanelVisibility {
+            terminal: false,
+            ..visible
+        };
+        assert!(
+            (fit_open_panels(1000.0, [240.0, 260.0, 420.0, 500.0], hidden)[3] - 500.0).abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (fit_open_panels(2400.0, [240.0, 260.0, 420.0, f64::NAN], visible)[3]
+                - ActiveResizer::Terminal.default())
+            .abs()
+                < f64::EPSILON
+        );
+        Owner::new().with(|| {
+            let layout = LayoutState::new();
+            let encoded = r#"{"files":false,"git":true}"#.to_string();
+            layout.restore_panels(Some(&encoded));
+            let restored = layout.panels.get_untracked();
+            assert!(restored.files && !restored.git && !restored.search);
+            assert_eq!(
+                layout.preferences.get_untracked().files_view,
+                super::super::responsive::FilesView::Changes
+            );
+            layout.panels.update(|panels| panels.files = false);
+            assert!(!layout.panels.get_untracked().files);
+        });
     }
 
     #[test]

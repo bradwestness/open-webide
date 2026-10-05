@@ -3,8 +3,8 @@ use crate::{
     backend::Api,
     state::{
         auth::AuthState,
-        layout::{LayoutState, PANEL_VISIBILITY_KEY, Panel, PanelVisibility},
-        responsive::{LAYOUT_PREFERENCES_KEY, LayoutMode, LayoutPreferences, PanelSide},
+        layout::{ActiveResizer, LayoutState, PANEL_VISIBILITY_KEY, Panel, PanelVisibility},
+        responsive::{FilesView, LAYOUT_PREFERENCES_KEY, LayoutMode, LayoutPreferences, PanelSide},
         ui::UiState,
     },
 };
@@ -12,10 +12,13 @@ use leptos::{prelude::*, task::spawn_local};
 
 #[derive(Clone, Copy)]
 pub struct LayoutActions {
+    pub save_width: Callback<ActiveResizer>,
     pub toggle: Callback<Panel>,
+    pub select_files_view: Callback<FilesView>,
     pub show: Callback<Panel>,
     pub set_mode: Callback<LayoutMode>,
     pub pin: Callback<(Panel, PanelSide)>,
+    pub move_panel: Callback<(Panel, bool)>,
 }
 impl LayoutActions {
     pub fn new(api: Api, layout: LayoutState, auth: AuthState, ui: UiState) -> Self {
@@ -25,6 +28,7 @@ impl LayoutActions {
             auth.generation.track();
             layout.panels.set(PanelVisibility::default());
             layout.panel_revision.set(0);
+            layout.width_revision.set(0);
             layout.preferences.set(LayoutPreferences::default());
             layout.preference_revision.set(0);
             layout.sheet.set(None);
@@ -37,6 +41,9 @@ impl LayoutActions {
             layout
                 .chat_width
                 .set(crate::state::layout::ActiveResizer::Chat.default());
+            layout
+                .terminal_width
+                .set(crate::state::layout::ActiveResizer::Terminal.default());
             layout.active_resizer.set(Default::default());
             pending.set_value(None);
         });
@@ -150,7 +157,89 @@ impl LayoutActions {
                 }
             });
         });
+        let select_files_view = Callback::new(move |view| {
+            if !layout.available(Panel::Files) {
+                return;
+            }
+            let mut preferences = layout.preferences.get_untracked();
+            preferences.files_view = view;
+            save_preferences.run(preferences);
+            change.run((Panel::Files, true));
+        });
+        let open = Callback::new(move |(panel, toggle): (Panel, bool)| match panel {
+            Panel::Git => select_files_view.run(FilesView::Changes),
+            Panel::Search => select_files_view.run(FilesView::Search),
+            _ => change.run((
+                panel,
+                !toggle || !layout.visible_panels.get_untracked().visible(panel),
+            )),
+        });
+        let width_pending = StoredValue::new(std::collections::BTreeMap::<String, String>::new());
+        let width_saving = StoredValue::new(None::<u64>);
+        Effect::new(move |_| {
+            auth.generation.track();
+            width_pending.update_value(std::collections::BTreeMap::clear);
+        });
+        let save_width = Callback::new(move |kind: ActiveResizer| {
+            if kind == ActiveResizer::None || auth.user.get_untracked().is_none() {
+                return;
+            }
+            width_pending.update_value(|values| {
+                values.insert(
+                    kind.setting_key().into(),
+                    layout.width(kind).get_untracked().to_string(),
+                );
+            });
+            let epoch = auth.generation.get_untracked();
+            if width_saving.get_value() == Some(epoch) {
+                return;
+            }
+            width_saving.set_value(Some(epoch));
+            spawn_local(async move {
+                while auth.generation.try_get_untracked() == Some(epoch) {
+                    let Some(entry) = width_pending
+                        .try_update_value(std::collections::BTreeMap::pop_first)
+                        .flatten()
+                    else {
+                        break;
+                    };
+                    let result = api
+                        .with_value(Clone::clone)
+                        .set_setting(&entry.0, &entry.1)
+                        .await;
+                    if auth.generation.try_get_untracked() != Some(epoch) {
+                        return;
+                    }
+                    if let Err(message) = result {
+                        ui.notify(format!("Could not save panel width: {message}"));
+                    }
+                }
+                if width_saving.try_get_value() == Some(Some(epoch)) {
+                    width_saving.set_value(None);
+                }
+            });
+        });
         Self {
+            save_width,
+            select_files_view,
+            move_panel: Callback::new(move |(panel, right): (Panel, bool)| {
+                let mut preferences = layout.preferences.get_untracked();
+                let visibility = layout.visible_panels.get_untracked();
+                let visible = [
+                    Panel::Sessions,
+                    Panel::Files,
+                    Panel::Editor,
+                    Panel::Terminal,
+                    Panel::Chat,
+                ]
+                .into_iter()
+                .filter(|panel| visibility.visible(*panel))
+                .map(Panel::id)
+                .collect::<Vec<_>>();
+                if preferences.move_panel(panel.id(), right, &visible) {
+                    save_preferences.run(preferences);
+                }
+            }),
             set_mode: Callback::new(move |mode| {
                 let mut preferences = layout.preferences.get_untracked();
                 preferences.mode = mode;
@@ -163,9 +252,9 @@ impl LayoutActions {
                 }
             }),
             toggle: Callback::new(move |panel| {
-                change.run((panel, !layout.visible_panels.get_untracked().visible(panel)));
+                open.run((panel, true));
             }),
-            show: Callback::new(move |panel| change.run((panel, true))),
+            show: Callback::new(move |panel| open.run((panel, false))),
         }
     }
 }

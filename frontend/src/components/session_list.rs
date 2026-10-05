@@ -27,13 +27,13 @@ pub fn SessionList(
                 let title=session.name.clone();
                 view! {
                     <div class=move || format!("session{}",if chat.active_session.get()==Some(id){" active"}else{""}) data-session-id=id>
-                        <button class="btn ghost session-name" title=title on:click=move |_|on_select.run(id)>{if pinned {"📌 "}else{""}}{session.name}</button>
+                        <button class="btn ghost session-name" title=title on:click=move |_|on_select.run(id)>{pinned.then(|| view! { <crate::components::ui::Icon name=crate::components::ui::IconName::Pin /> })}{session.name}</button>
                         <span class="session-actions">
-                            <button class="icon-btn session-pin" title=if pinned {"Unpin"}else{"Pin"} aria-pressed=pinned.to_string() disabled=move || state.busy.with(|busy|busy.contains(&id)) on:click=move |_|actions.preferences.run((id,SessionPreferences{pinned:Some(!pinned),archived:None}))>"📌"</button>
-                            <button class="icon-btn session-archive" title=if archived {"Restore session"}else{"Archive session"} disabled=move || state.busy.with(|busy|busy.contains(&id)) on:click=move |_|actions.preferences.run((id,SessionPreferences{pinned:None,archived:Some(!archived)}))>{if archived {"↩"}else{"▣"}}</button>
-                            <button class="icon-btn session-export" title="Export Markdown" disabled=move || state.exporting.with(|busy|busy.contains(&id)) on:click=move |_|actions.export.run(id)>"⇩"</button>
-                            <button class="icon-btn" title="Rename" on:click=move |_|on_rename.run(id)>"✎"</button>
-                            <button class="icon-btn" title="Delete" on:click=move |_|on_delete.run(id)>"✕"</button>
+                            <button class="icon-btn session-pin" title=if pinned {"Unpin"}else{"Pin"} aria-pressed=pinned.to_string() disabled=move || state.busy.with(|busy|busy.contains(&id)) on:click=move |_|actions.preferences.run((id,SessionPreferences{pinned:Some(!pinned),archived:None}))><crate::components::ui::Icon name=crate::components::ui::IconName::Pin /></button>
+                            <button class="icon-btn session-archive" title=if archived {"Restore session"}else{"Archive session"} disabled=move || state.busy.with(|busy|busy.contains(&id)) on:click=move |_|actions.preferences.run((id,SessionPreferences{pinned:None,archived:Some(!archived)}))><crate::components::ui::Icon name=if archived {crate::components::ui::IconName::ArchiveRestore}else{crate::components::ui::IconName::Archive} /></button>
+                            <button class="icon-btn session-export" title="Export Markdown" disabled=move || state.exporting.with(|busy|busy.contains(&id)) on:click=move |_|actions.export.run(id)><crate::components::ui::Icon name=crate::components::ui::IconName::Download /></button>
+                            <button class="icon-btn" title="Rename" on:click=move |_|on_rename.run(id)><crate::components::ui::Icon name=crate::components::ui::IconName::Pencil /></button>
+                            <button class="icon-btn" title="Delete" on:click=move |_|on_delete.run(id)><crate::components::ui::Icon name=crate::components::ui::IconName::X /></button>
                         </span>
                     </div>
                 }

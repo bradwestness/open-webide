@@ -133,7 +133,7 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
                         title="Toggle reasoning trace; token counts are estimated"
                     >
                         <span class="tui-think-caret" aria-hidden="true">
-                            {move || if thinking_expanded.get() { "▼" } else { "▶" }}
+                            <super::ui::Icon name=Signal::derive(move || if thinking_expanded.get() { super::ui::IconName::ChevronDown } else { super::ui::IconName::ChevronRight }) />
                         </span>
                         <span class="tui-think-meta">{summary}</span>
                         <Show when=move || is_thinking_active.get()><span class="tui-spinner" aria-hidden="true"/></Show>
@@ -158,7 +158,7 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
 }
 
 /// Render a single user message with extracted editor context pill if present.
-fn render_user_message(content: Memo<String>) -> AnyView {
+fn render_user_message(content: Memo<String>, actions: AnyView) -> AnyView {
     let prompt = Memo::new(move |_| openwebide_core::PromptContent::decode(&content.get()));
     let pill_sig = Memo::new(move |_| {
         prompt.with(|prompt| {
@@ -175,7 +175,7 @@ fn render_user_message(content: Memo<String>) -> AnyView {
         <div class="tui-stream-line tui-user">
             <Show when=move || pill_sig.with(Option::is_some) fallback=|| ()>
                 <div class="tui-attached-pill">
-                    <span class="tui-pill-icon">"📎"</span>
+                    <span class="tui-pill-icon"><crate::components::ui::Icon name=crate::components::ui::IconName::Paperclip /></span>
                     <span class="tui-pill-text">{move || pill_sig.get().unwrap_or_default()}</span>
                 </div>
             </Show>
@@ -184,6 +184,7 @@ fn render_user_message(content: Memo<String>) -> AnyView {
                 <span class="tui-glyph user">"❯"</span>
                 <span class="tui-user-text">{move || text_sig.get()}</span>
             </div>
+            {actions}
         </div>
     }
     .into_any()
@@ -399,6 +400,94 @@ fn render_tool_step(
     }
 }
 
+fn conversation_blocks(
+    messages: crate::state::chat::ConversationStore,
+) -> Vec<crate::state::chat::ConversationHandle> {
+    messages.handles.with(|handles| {
+        let mut previous_tool = false;
+        handles
+            .iter()
+            .copied()
+            .filter(|handle| handle.visible.get())
+            .filter(|handle| {
+                let tool = handle
+                    .item
+                    .with_untracked(|item| matches!(item, ConversationItem::ToolStep { .. }));
+                let include = !tool || !previous_tool;
+                previous_tool = tool;
+                include
+            })
+            .collect()
+    })
+}
+
+/// A stable group anchored to its first call; new live calls join without remounting.
+fn render_tool_group(
+    messages: crate::state::chat::ConversationStore,
+    first: u64,
+    awaiting_step: Memo<Option<(String, String)>>,
+    on_permission: Callback<(String, bool)>,
+    on_permission_always: Callback<String>,
+) -> impl IntoView {
+    let rows = Memo::new(move |_| {
+        messages.handles.with(|handles| {
+            let visible = handles
+                .iter()
+                .copied()
+                .filter(|handle| handle.visible.get());
+            visible
+                .skip_while(|handle| handle.key != first)
+                .take_while(|handle| {
+                    handle
+                        .item
+                        .with_untracked(|item| matches!(item, ConversationItem::ToolStep { .. }))
+                })
+                .collect::<Vec<_>>()
+        })
+    });
+    let names = Memo::new(move |_| {
+        rows.with(|rows| {
+            rows.iter()
+                .map(|handle| {
+                    handle.item.with(|item| match item {
+                        ConversationItem::ToolStep { name, .. } => name.clone(),
+                        _ => String::new(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+    });
+    let counts = Memo::new(move |_| {
+        names.with(|names| crate::conversation::tool_count_labels(names.iter().map(String::as_str)))
+    });
+    let approval = Signal::derive(move || {
+        awaiting_step.with(|awaiting| {
+            awaiting.as_ref().is_some_and(|(id, _)| {
+                rows.with(|rows| {
+                    rows.iter().any(|handle| {
+                        handle.permission.with(|permission| {
+                            permission
+                                .as_ref()
+                                .is_some_and(|(pending, _)| pending == id)
+                        })
+                    })
+                })
+            })
+        })
+    });
+    view! {
+        <super::ui::DisclosurePanel class="tui-tool-group" force_open=approval
+            summary=move || view! {
+                <span class="tui-tool-tag">"[tool]"</span>
+                {move || counts.get().into_iter().map(|label| view! { <code class="tui-tool-count">{label}</code> }).collect_view()}
+            }>
+            <For each=move || rows.get() key=|handle| handle.key children=move |handle| {
+                render_tool_step(handle.item, awaiting_step, on_permission, on_permission_always)
+            } />
+        </super::ui::DisclosurePanel>
+    }
+}
+
 /// Discover models only when a connection is expanded in the picker.
 #[component]
 fn ConnectionModels(
@@ -449,7 +538,7 @@ fn ConnectionModels(
                 aria-expanded=move || expanded.get().to_string()
                 disabled=!enabled
                 on:click=move |_| expanded.update(|value| *value = !*value)>
-                {move || if expanded.get() { "▾" } else { "▸" }} " " {connection.name}
+                <super::ui::Icon name=Signal::derive(move || if expanded.get() { super::ui::IconName::ChevronDown } else { super::ui::IconName::ChevronRight }) /> " " {connection.name}
             </button>
             <Show when=move || expanded.get()>
                 <Show when=move || loading.get()><span class="form-hint">"Loading models…"</span></Show>
@@ -617,6 +706,7 @@ pub fn ChatPane(
     let local_mode = Signal::from(projects.local_mode);
     let scroll_ref = NodeRef::<leptos::html::Div>::new();
     let input_ref = NodeRef::<leptos::html::Textarea>::new();
+    crate::viewport::install_composer(input_ref);
     let prompt_composer = crate::prompt::Composer::new(input_ref);
 
     // Readline prompt history state
@@ -648,10 +738,11 @@ pub fn ChatPane(
     // Mirror the draft signal into the textarea so it clears after a send.
     Effect::new(move || {
         let value = draft.get();
-        if let Some(ta) = input_ref.get()
-            && ta.value() != value
-        {
-            ta.set_value(&value);
+        if let Some(ta) = input_ref.get() {
+            if ta.value() != value {
+                ta.set_value(&value);
+            }
+            crate::viewport::fit_composer(&ta);
         }
     });
 
@@ -687,6 +778,8 @@ pub fn ChatPane(
     view! {
         <main
             class="chat-pane tui-pane"
+                on:dragover=move |event: web_sys::DragEvent| { if event.data_transfer().is_some_and(|transfer| transfer.types().includes(&wasm_bindgen::JsValue::from_str("Files"), 0)) { event.prevent_default(); } }
+                on:drop=move |event: web_sys::DragEvent| { if let Some(files) = event.data_transfer().and_then(|transfer| transfer.files()) && files.length() > 0 { event.prevent_default(); prompt_composer.import(files); } }
             style=move || format!("width: {}px; flex: none;", layout.chat_width.get())
         >
             <Show
@@ -721,14 +814,14 @@ pub fn ChatPane(
                 <div class="messages tui-stream" node_ref=scroll_ref>
                     <div class="tui-stream-spacer"></div>
                     <For
-                        each=move || messages.handles.with(|handles| handles.iter().copied().filter(|handle| handle.visible.get()).collect::<Vec<_>>())
+                        each=move || conversation_blocks(messages)
                         key=|handle| handle.key
                         children=move |handle| {
                             let item = handle.item;
                             match item.get_untracked() {
                                 ConversationItem::Task(_) => render_task_run(Memo::new(move |_| item.with(|item| match item { ConversationItem::Task(task) => (**task).clone(), _ => unreachable!() })), awaiting_step, on_permission, on_permission_always).into_any(),
                                 ConversationItem::Stopped { .. } => view! { <div class="stopped-marker tui-stopped-marker">"⏹ execution aborted"</div> }.into_any(),
-                                ConversationItem::ToolStep { .. } => render_tool_step(item, awaiting_step, on_permission, on_permission_always).into_any(),
+                                ConversationItem::ToolStep { .. } => render_tool_group(messages, handle.key, awaiting_step, on_permission, on_permission_always).into_any(),
                                 ConversationItem::Message(_) | ConversationItem::Notice { .. } => {
                                     let content = Memo::new(move |_| item.with(|item| match item {
                                         ConversationItem::Message(message) => message.content.clone(),
@@ -740,23 +833,24 @@ pub fn ChatPane(
                                     view! {
                                         <Show when=move || system.get() fallback=move || view! {
                                             <Show when=move || assistant.get() fallback=move || view! {
-                                                {render_user_message(content)}
-                                                {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 => view! { <crate::components::RunChangesPanel message=message.id /> }.into_any(), _ => ().into_any() })}
-                                                {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 && message.role == Role::User => view! { <super::turn_summary::TurnSummary message=message.id /> }.into_any(), _ => ().into_any() })}
+                                                {render_user_message(content, view! { <div class="tui-prompt-actions">
                                                 <Show when=move || conversation_actions.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
-                                                    <button class="btn ghost tui-edit-prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
+                                                    <button type="button" class="icon-btn ui-icon tui-edit-prompt" title="Edit prompt" aria-label="Edit prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
                                                         if let (Some(actions), Some(id)) = (conversation_actions, item.with_untracked(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { actions.edit.run(id); }
-                                                    }>"Edit"</button>
-                                                    <button class="btn ghost tui-fork-prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) title="Copy the history before this prompt into a new conversation" disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
+                                                    }><span aria-hidden="true"><crate::components::ui::Icon name=crate::components::ui::IconName::Pencil /></span></button>
+                                                    <button type="button" class="icon-btn ui-icon tui-fork-prompt" aria-label="Fork conversation from this prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) title="Copy the history before this prompt into a new conversation" disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
                                                         if let (Some(actions), Some(id)) = (conversation_actions, item.with_untracked(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { actions.fork.run(id); }
-                                                    }>"Fork"</button>
+                                                    }><span aria-hidden="true"><crate::components::ui::Icon name=crate::components::ui::IconName::GitFork /></span></button>
                                                 </Show>
                                                 <Show when=move || on_rewind.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
-                                                    <button class="btn ghost tui-rewind" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get()
+                                                    <button type="button" class="icon-btn ui-icon tui-rewind" title="Rewind to this prompt" aria-label="Rewind to this prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get()
                                                         on:click=move |_| {
                                                             if let (Some(action), Some(id)) = (on_rewind, item.with(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { action.run(id); }
-                                                        }>"Rewind to here"</button>
+                                                        }><span aria-hidden="true"><crate::components::ui::Icon name=crate::components::ui::IconName::Undo2 /></span></button>
                                                 </Show>
+                                                </div> }.into_any())}
+                                                {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 => view! { <crate::components::RunChangesPanel message=message.id /> }.into_any(), _ => ().into_any() })}
+                                                {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 && message.role == Role::User => view! { <super::turn_summary::TurnSummary message=message.id /> }.into_any(), _ => ().into_any() })}
                                             }>
                                                 {render_assistant_message(content)}
                                             </Show>
@@ -797,7 +891,7 @@ pub fn ChatPane(
 
             <Show when=move || active_context.get().is_some() fallback=|| ()>
                 <div class="tui-active-context-pill">
-                    <span class="pill-icon">"📎"</span>
+                    <span class="pill-icon"><crate::components::ui::Icon name=crate::components::ui::IconName::Paperclip /></span>
                     <span class="pill-text">
                         {move || active_context.get().as_ref().map(openwebide_core::EditorContext::pill_label).unwrap_or_default()}
                     </span>
@@ -806,7 +900,7 @@ pub fn ChatPane(
                         title="Detach editor context (Esc)"
                         on:click=move |_| set_active_context.set(None)
                     >
-                        "×"
+                        <crate::components::ui::Icon name=crate::components::ui::IconName::X />
                     </button>
                 </div>
             </Show>
@@ -820,13 +914,13 @@ pub fn ChatPane(
             </Show>
             <Show when=move || chat.branching.get()><div class="tui-prompt-edit">"Copying conversation…"</div></Show>
             {queue_actions.map(|actions| view! { <crate::components::chat_pane::PromptQueueControls actions=actions /> })}
-            <div class="composer tui-composer"
-                on:dragover=move |event: web_sys::DragEvent| { if event.data_transfer().is_some_and(|transfer| transfer.types().includes(&wasm_bindgen::JsValue::from_str("Files"), 0)) { event.prevent_default(); } }
-                on:drop=move |event: web_sys::DragEvent| { if let Some(files) = event.data_transfer().and_then(|transfer| transfer.files()) { event.prevent_default(); prompt_composer.import(files); } }
-            >
+            <div class="composer tui-composer" class:is-streaming=move || streaming.get()>
                 <span class="tui-prompt-glyph">"❯"</span>
                 <textarea
                     class="composer-input tui-input"
+                    rows="1"
+                    aria-label="Chat message"
+                    title="Enter to send; Shift+Enter for a newline; Up/Down for prompt history"
                     node_ref=input_ref
                     placeholder=move || {
                         if let Some((_, name)) = awaiting_step.get() {
@@ -836,11 +930,11 @@ pub fn ChatPane(
                                 "? Tool awaiting approval: press [Alt+Y]es, or [Alt+N]o..."
                             }
                         } else if streaming.get() {
-                            "Queue a follow-up (Enter), or use Steer to interrupt with guidance"
+                            "Queue a follow-up…"
                         } else if has_session.get() {
-                            "Ask a question or /command (Enter to send, Shift+Enter for newline, Up/Down for history)"
+                            "Ask a question or /command"
                         } else {
-                            "Start a session or /help (Enter to send, Shift+Enter for newline)"
+                            "Start a chat or /help"
                         }
                     }
                     on:paste=move |event: web_sys::ClipboardEvent| { if let Some(files) = event.clipboard_data().and_then(|data| data.files()) && files.length() > 0 { event.prevent_default(); prompt_composer.import(files); } }
@@ -1053,35 +1147,58 @@ fn render_task_run(
             }
         })
     });
+    let history = crate::state::chat::ConversationStore::new();
+    Effect::new(move |_| {
+        let items = task.with(|task| {
+            task.run
+                .items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| match item {
+                    openwebide_core::RunItem::Message(message) => {
+                        ConversationItem::Message(message.clone())
+                    }
+                    openwebide_core::RunItem::Step(step) => ConversationItem::ToolStep {
+                        timing: step.timing,
+                        key: index as u64,
+                        id: step.id.clone(),
+                        name: step.name.clone(),
+                        summary: step.summary.clone(),
+                        result: step.result.as_ref().map(|result| ToolStepResult {
+                            ok: result.ok,
+                            summary: result.summary.clone(),
+                            diff: result.diff.clone(),
+                        }),
+                        diff: step.diff.as_deref().cloned(),
+                        note: step.note.clone(),
+                        awaiting_permission: step.awaiting_permission,
+                    },
+                })
+                .collect()
+        });
+        history.reconcile(move |current| *current = items);
+    });
     view! {
         <div class="tui-task-run">
             <button class="btn tui-task-heading" aria-expanded=move || expanded.get() || active_approval.get() on:click=move |_| expanded.update(|value| *value = !*value)>
-                <span>{move || if expanded.get() || active_approval.get() { "▾" } else { "▸" }}</span>
+                <span><super::ui::Icon name=Signal::derive(move || if expanded.get() || active_approval.get() { super::ui::IconName::ChevronDown } else { super::ui::IconName::ChevronRight }) /></span>
                 <strong>{move || task.with(|task| task.task.description.clone())}</strong>
                 <span class="muted">{status}</span>
                 <super::tool_duration::ToolDuration timing=timing title="Child task elapsed time, including approval waiting" />
                 <span class="muted">{move || task.with(|task| format!("{}{} tokens · {} tools", if task.usages().iter().any(|usage| usage.estimated) { "~" } else { "" }, task.total_tokens(), task.task.tool_count))}</span>
             </button>
             <div class="tui-task-content" hidden=move || !expanded.get() && !active_approval.get()>
-                <For each=move || task.with(|task| (0..task.run.items.len()).collect::<Vec<_>>()) key=|index| *index children=move |index| {
-                    let initial = task.with_untracked(|task| task.run.items[index].clone());
-                    match initial {
-                        openwebide_core::RunItem::Message(message) => {
-                            let content = Memo::new(move |_| task.with(|task| match &task.run.items[index] { openwebide_core::RunItem::Message(message) => message.content.clone(), openwebide_core::RunItem::Step(_) => String::new() }));
-                            if message.role == Role::User { render_user_message(content) }
+                <For each=move || conversation_blocks(history) key=|handle| handle.key children=move |handle| {
+                    let item = handle.item;
+                    match item.get_untracked() {
+                        ConversationItem::ToolStep { .. } => render_tool_group(history, handle.key, awaiting_step, on_permission, on_permission_always).into_any(),
+                        ConversationItem::Message(message) => {
+                            let content = Memo::new(move |_| item.with(|item| match item { ConversationItem::Message(message) => message.content.clone(), _ => String::new() }));
+                            if message.role == Role::User { render_user_message(content, ().into_any()) }
                             else if message.role == Role::System { view! { <details class="tui-system-context"><summary>"Child context"</summary><pre>{content}</pre></details> }.into_any() }
                             else { render_assistant_message(content) }
                         }
-                        openwebide_core::RunItem::Step(step) => {
-                            let row = |step: &openwebide_core::RunStep| ConversationItem::ToolStep {
-                                timing: step.timing, key: 0, id: step.id.clone(), name: step.name.clone(), summary: step.summary.clone(),
-                                result: step.result.as_ref().map(|result| ToolStepResult { ok: result.ok, summary: result.summary.clone(), diff: result.diff.clone() }),
-                                diff: step.diff.as_deref().cloned(), note: step.note.clone(), awaiting_permission: step.awaiting_permission,
-                            };
-                            let item = RwSignal::new(row(&step));
-                            Effect::new(move |_| task.with(|task| { if let openwebide_core::RunItem::Step(step) = &task.run.items[index] { item.set(row(step)); } }));
-                            render_tool_step(item, awaiting_step, on_permission, on_permission_always).into_any()
-                        }
+                        _ => ().into_any(),
                     }
                 } />
                 {render_assistant_message(live_text)}

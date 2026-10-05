@@ -111,7 +111,7 @@ async fn ansi_tool_output_expands_and_copies_full_plain_text_in_every_mode() {
         assert_eq!(
             mounted
                 .element(".tui-output-copy")
-                .text_content()
+                .get_attribute("aria-label")
                 .as_deref(),
             Some("Copied")
         );
@@ -121,7 +121,7 @@ async fn ansi_tool_output_expands_and_copies_full_plain_text_in_every_mode() {
         assert_eq!(
             mounted
                 .element(".tui-output-copy")
-                .text_content()
+                .get_attribute("aria-label")
                 .as_deref(),
             Some("Copy failed")
         );
@@ -131,7 +131,7 @@ async fn ansi_tool_output_expands_and_copies_full_plain_text_in_every_mode() {
         assert_eq!(
             mounted
                 .element(".tui-output-copy")
-                .text_content()
+                .get_attribute("aria-label")
                 .as_deref(),
             Some("Copied")
         );
@@ -483,6 +483,68 @@ async fn turn_summary_counts_unique_tools_and_shell_changes_without_crossing_pro
                 .text_content()
                 .as_deref(),
             Some("1 tool · 0 files changed · ≥0.5s")
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn tool_groups_count_live_calls_stay_mounted_and_default_to_collapsed_in_every_mode() {
+    for mode in [
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+        None,
+    ] {
+        let mounted = mount_test(move |state| {
+            if let Some(mode) = mode {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+            }
+            chat_view(state)
+        });
+        settle().await;
+        for (id, name) in [
+            ("a", "run_command"),
+            ("b", "read_file"),
+            ("c", "run_command"),
+        ] {
+            mounted.state.chat.apply_event(RunEvent::ToolCall {
+                id: id.into(),
+                name: name.into(),
+                summary: id.into(),
+            });
+        }
+        settle().await;
+        let toggle = mounted.element(".tui-tool-group .ui-disclosure-toggle");
+        assert_eq!(
+            toggle.get_attribute("aria-expanded").as_deref(),
+            Some("false")
+        );
+        let text = toggle.text_content().unwrap();
+        assert!(text.contains("run_command x2") && text.contains("read_file"));
+        assert!(!text.contains("read_file x1"));
+        let body = mounted.element(".tui-tool-group .ui-disclosure-content");
+        assert!(body.has_attribute("hidden"));
+        let first = mounted.element(".tui-tool-box");
+        toggle.click();
+        settle().await;
+        mounted.state.chat.apply_event(RunEvent::ToolCall {
+            id: "d".into(),
+            name: "read_file".into(),
+            summary: "d".into(),
+        });
+        settle().await;
+        assert_eq!(
+            toggle.get_attribute("aria-expanded").as_deref(),
+            Some("true")
+        );
+        assert!(toggle.text_content().unwrap().contains("read_file x2"));
+        assert!(first.is_same_node(Some(mounted.element(".tui-tool-box").as_ref())));
+        assert_eq!(
+            body.query_selector_all(".tui-tool-box").unwrap().length(),
+            4
         );
     }
 }

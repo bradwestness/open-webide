@@ -2,10 +2,10 @@ use super::support::{mount_test, settle};
 use leptos::prelude::*;
 use openwebide_core::{User, UserId, UserRole, WorkspaceMode};
 use openwebide_frontend::{
-    components::{PanelRail, PanelResizer, ToolPanel},
+    components::{PanelRail, ToolPanel},
     state::{
         auth::AuthState,
-        layout::{ActiveResizer, LayoutState, PANEL_VISIBILITY_KEY, Panel, PanelVisibility},
+        layout::{LayoutState, PANEL_VISIBILITY_KEY, Panel, PanelVisibility},
     },
     state_actions::{
         layout::LayoutActions,
@@ -39,7 +39,7 @@ async fn panels_collapse_without_unmounting_and_persist_in_both_modes() {
             provide_context(LayoutActions::new(state.api, layout, auth, state.ui));
             view! {
                 <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
-                <ToolPanel panel=Panel::Sessions><input value="server draft" /><PanelResizer kind=ActiveResizer::Sidebar /></ToolPanel>
+                <ToolPanel panel=Panel::Sessions><input value="server draft" /></ToolPanel>
                 <ToolPanel panel=Panel::Files><input value="search draft" /></ToolPanel>
                 <ToolPanel panel=Panel::Editor><textarea>"unsaved editor"</textarea></ToolPanel>
                 <ToolPanel panel=Panel::Chat><textarea>"unsent prompt"</textarea></ToolPanel>
@@ -347,9 +347,23 @@ async fn phone_sheets_keep_drafts_and_desktop_preferences_in_both_modes() {
         for panel in [Panel::Files, Panel::Search, Panel::Git, Panel::Terminal] {
             actions.show.run(panel);
             settle().await;
-            assert!(layout.visible_panels.get_untracked().visible(panel));
+            assert!(layout.visible_panels.get_untracked().visible(
+                if matches!(panel, Panel::Git | Panel::Search) {
+                    Panel::Files
+                } else {
+                    panel
+                }
+            ));
             assert!(!layout.visible_panels.get_untracked().chat);
-            mounted.click(&format!("#panel-{} .tool-panel-heading button", panel.id()));
+            mounted.click(&format!(
+                "#panel-{} .tool-panel-heading > button",
+                if matches!(panel, Panel::Git | Panel::Search) {
+                    Panel::Files
+                } else {
+                    panel
+                }
+                .id()
+            ));
             settle().await;
             assert!(layout.visible_panels.get_untracked().chat);
         }
@@ -401,7 +415,10 @@ async fn git_window_loads_diffs_only_when_open_in_a_repository_in_both_modes() {
         settle().await;
         assert_eq!(loads.get_untracked(), 0);
         let layout = slot.get().unwrap();
-        layout.panels.update(|panels| panels.git = true);
+        layout.preferences.update(|prefs| {
+            prefs.files_view = openwebide_frontend::state::responsive::FilesView::Changes;
+        });
+        layout.panels.update(|panels| panels.files = true);
         settle().await;
         assert_eq!(loads.get_untracked(), 0);
         mounted
@@ -411,7 +428,7 @@ async fn git_window_loads_diffs_only_when_open_in_a_repository_in_both_modes() {
             .set(Some(openwebide_core::GitRepoStatus::default()));
         settle().await;
         assert_eq!(loads.get_untracked(), 1);
-        layout.panels.update(|panels| panels.git = false);
+        layout.panels.update(|panels| panels.files = false);
         settle().await;
         mounted
             .state
@@ -420,11 +437,102 @@ async fn git_window_loads_diffs_only_when_open_in_a_repository_in_both_modes() {
             .set(Some("other.rs".into()));
         settle().await;
         assert_eq!(loads.get_untracked(), 1);
-        layout.panels.update(|panels| panels.git = true);
+        layout.preferences.update(|prefs| {
+            prefs.files_view = openwebide_frontend::state::responsive::FilesView::Changes;
+        });
+        layout.panels.update(|panels| panels.files = true);
         settle().await;
         assert_eq!(loads.get_untracked(), 2);
         mounted.state.projects.active_project.set(None);
         settle().await;
         assert_eq!(loads.get_untracked(), 2);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn shared_panel_resizers_follow_the_panel_side_and_save_widths_in_both_modes() {
+    use openwebide_frontend::state::{
+        layout::ActiveResizer,
+        responsive::{LayoutMode, PanelSide},
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let read = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            let auth = expect_context::<AuthState>();
+            auth.set_user(user(1));
+            let layout = expect_context::<LayoutState>();
+            let actions = LayoutActions::new(state.api, layout, auth, state.ui);
+            provide_context(actions);
+            read.set(Some((layout, actions)));
+            view! {
+                <ToolPanel panel=Panel::Sessions><span>"Sessions"</span></ToolPanel>
+                <ToolPanel panel=Panel::Files><span>"Files"</span></ToolPanel>
+                <ToolPanel panel=Panel::Chat><span>"Chat"</span></ToolPanel>
+                <ToolPanel panel=Panel::Terminal><span>"Terminal"</span></ToolPanel>
+            }
+        });
+        settle().await;
+        let (layout, actions) = slot.get().unwrap();
+        actions.set_mode.run(LayoutMode::Desktop);
+        layout.fit(2400.0);
+        actions.show.run(Panel::Terminal);
+        settle().await;
+        for (panel, kind) in [
+            (Panel::Sessions, ActiveResizer::Sidebar),
+            (Panel::Files, ActiveResizer::Tree),
+            (Panel::Chat, ActiveResizer::Chat),
+            (Panel::Terminal, ActiveResizer::Terminal),
+        ] {
+            let separator = mounted.element(&format!("#panel-{} [role=separator]", panel.id()));
+            for side in [PanelSide::Left, PanelSide::Right] {
+                actions.pin.run((panel, side));
+                settle().await;
+                layout.fit(2400.0);
+                let before = layout.width(kind).get_untracked();
+                let init = web_sys::KeyboardEventInit::new();
+                init.set_key("ArrowRight");
+                init.set_cancelable(true);
+                separator
+                    .dispatch_event(
+                        &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict(
+                            "keydown", &init,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                settle().await;
+                let expected = before + if side == PanelSide::Left { 20.0 } else { -20.0 };
+                assert!((layout.width(kind).get_untracked() - expected).abs() < f64::EPSILON);
+                assert_eq!(
+                    mounted.state.fake.settings.borrow()[kind.setting_key()],
+                    expected.to_string()
+                );
+            }
+        }
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all(".panel-resizer")
+                .unwrap()
+                .length(),
+            4
+        );
+        actions.move_panel.run((Panel::Terminal, false));
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .fake
+                .settings
+                .borrow()
+                .contains_key("workspace_layout")
+        );
+        assert!(mounted.root.query_selector(".panel-pin").unwrap().is_none());
     }
 }

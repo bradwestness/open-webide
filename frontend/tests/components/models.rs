@@ -646,7 +646,13 @@ async fn setup_wizard_discovers_customizes_and_reruns_in_both_modes() {
             view! { <Show when=move || open.get()><ModelSetupWizard on_close=Callback::new(move |()| open.set(false)) /></Show> }
         });
         settle().await;
-        assert!(mounted.root.text_content().unwrap().contains("Step 1 of 3"));
+        assert!(
+            mounted
+                .element("li[aria-current=step]")
+                .text_content()
+                .unwrap()
+                .contains("Provider")
+        );
         mounted.click_text("Next: server");
         settle().await;
         let key: web_sys::HtmlInputElement =
@@ -656,7 +662,13 @@ async fn setup_wizard_discovers_customizes_and_reruns_in_both_modes() {
             .unwrap();
         mounted.click_text("Discover models");
         settle().await;
-        assert!(mounted.root.text_content().unwrap().contains("Step 3 of 3"));
+        assert!(
+            mounted
+                .element("li[aria-current=step]")
+                .text_content()
+                .unwrap()
+                .contains("Models")
+        );
         assert!(mounted.state.fake.server_settings.borrow().is_empty());
         let context: web_sys::HtmlInputElement = mounted
             .element(".model-settings-editor input[type=number]")
@@ -761,7 +773,13 @@ async fn setup_retry_keeps_one_server_and_closed_discovery_cannot_apply() {
             );
             mounted.click_text("Discover models");
             settle().await;
-            assert!(mounted.root.text_content().unwrap().contains("Step 3 of 3"));
+            assert!(
+                mounted
+                    .element("li[aria-current=step]")
+                    .text_content()
+                    .unwrap()
+                    .contains("Models")
+            );
             assert_eq!(mounted.state.fake.connections.borrow().len(), 0);
             mounted.click_text("Save");
             settle().await;
@@ -831,13 +849,13 @@ async fn detection_fills_all_reported_values_and_cancel_discards_them_in_both_mo
         mounted.click_text("Discover models");
         settle().await;
         let context: web_sys::HtmlInputElement = mounted
-            .element(".model-settings-editor label:nth-of-type(1) input")
+            .element(".model-settings-editor section:first-of-type label:first-of-type input")
             .unchecked_into();
         let output: web_sys::HtmlInputElement = mounted
-            .element(".model-settings-editor label:nth-of-type(2) input")
+            .element(".model-settings-editor section:first-of-type label:nth-of-type(2) input")
             .unchecked_into();
         let temperature: web_sys::HtmlInputElement = mounted
-            .element(".model-settings-editor label:nth-of-type(3) input")
+            .element(".model-settings-editor section:nth-of-type(2) label:first-of-type input")
             .unchecked_into();
         assert_eq!(
             (context.value(), output.value(), temperature.value()),

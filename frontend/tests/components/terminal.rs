@@ -947,7 +947,7 @@ async fn visibility_retains_shell_output_and_hidden_reconnect_sequence() {
         .query_selector(".terminal-dock")
         .unwrap()
         .unwrap();
-    mounted.click_text("✕");
+    mounted.click("button.term-close-btn");
     settle().await;
     assert!(
         mounted

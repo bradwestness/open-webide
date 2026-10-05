@@ -78,7 +78,7 @@ pub struct ConversationStore {
 }
 
 impl ConversationStore {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             handles: RwSignal::new(Vec::new()),
             changed: RwSignal::new(0),
