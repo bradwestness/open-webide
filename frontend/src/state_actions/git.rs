@@ -165,14 +165,16 @@ impl GitActions {
             projects.local_handles.track();
             git.reset_branches();
         });
+        let current_branch = Memo::new(move |_| {
+            git.status
+                .with(|status| status.as_ref().map(|status| status.branch.clone()))
+        });
         Effect::new(move |_| {
             active_project.track();
             auth.generation.track();
             settings.bridge_url.track();
             projects.local_handles.track();
-            let branch = git
-                .status
-                .with(|status| status.as_ref().map(|status| status.branch.clone()));
+            let branch = current_branch.get();
             if branch.is_some() {
                 on_load_branches.run(());
             }

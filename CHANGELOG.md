@@ -11,6 +11,10 @@ for what's still ahead.
 
 ### Changed
 
+- Keep Git branch menus open during background status updates and avoid rediscovering branches when only working-tree status changes.
+
+- Keep Run context and other transcript panels at their natural height in overflowing, narrow chat panes. History disclosure arrows point down when collapsed and up when expanded.
+
 - Replace secondary action rows with shared inline overflow menus in chat (Edit/Fork/Rewind), sessions, servers/prompts, dock headings, files, Git diffs, and terminal controls.
 
 - Standardize all dropdowns on the Recent menu’s shared surface, rows, keyboard navigation and dismissal. Use editor-style segmented switches and shared search rows throughout panels and settings; remove repeated reasoning/tool history rules.

@@ -300,7 +300,7 @@ pub fn DisclosurePanel(
         <div class=format!("ui-disclosure-panel {class}")>
             <button type="button" class=format!("ui-disclosure-toggle {toggle_class}") title=title class:active=move || active.is_some_and(|value| value.get()) aria-expanded=move || open().to_string() aria-controls=content_id.clone()
                 on:click=move |_| { if !force_open.is_some_and(|force| force.get_untracked()) { expanded.update(|expanded| *expanded = !*expanded); } }>
-                <span class="ui-disclosure-caret" aria-hidden="true"><Icon name=Signal::derive(move || if open() { IconName::ChevronDown } else { IconName::ChevronRight }) /></span>
+                <span class="ui-disclosure-caret" aria-hidden="true"><Icon name=Signal::derive(move || if open() { IconName::ChevronUp } else { IconName::ChevronDown }) /></span>
                 {summary.run()}
             </button>
             <div class="ui-disclosure-content" id=content_id hidden=move || !open()>{children()}</div>

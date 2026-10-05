@@ -414,6 +414,46 @@ async fn branch_selectors_share_checkout_creation_and_failures_in_both_modes() {
                 .with_untracked(|branches| branches.len() == 2)
         })
         .await;
+        let discovery_count = || {
+            if mode == WorkspaceMode::Remote {
+                mounted
+                    .state
+                    .fake
+                    .calls
+                    .borrow()
+                    .iter()
+                    .filter(|call| {
+                        matches!(
+                            call,
+                            openwebide_frontend::testing::fake_backend::Call::Request {
+                                method: "git_branches"
+                            }
+                        )
+                    })
+                    .count()
+            } else {
+                let calls: Vec<serde_json::Value> =
+                    serde_json::from_str(&gitCalls(&http.0)).unwrap();
+                calls
+                    .iter()
+                    .filter(|call| call["path"] == "/git/branches")
+                    .count()
+            }
+        };
+        let before = discovery_count();
+        for ahead in [1, 2, 0] {
+            mounted
+                .state
+                .git
+                .status
+                .update(|status| status.as_mut().unwrap().ahead = ahead);
+            settle().await;
+        }
+        assert_eq!(
+            discovery_count(),
+            before,
+            "Working-tree refresh should not rediscover branches in {mode:?}"
+        );
         let choose = async |selector: &str, value: &str| {
             super::support::choose_dropdown(&mounted, selector, value).await;
         };
@@ -665,4 +705,75 @@ async fn branch_results_and_new_branch_dialog_ignore_project_and_account_changes
     );
     assert!(!mounted.state.git.branch_busy.get_untracked());
     assert!(mounted.state.ui.toast.get_untracked().is_none());
+}
+
+#[wasm_bindgen_test]
+async fn branch_menus_stay_mounted_during_background_status_and_option_refreshes() {
+    use openwebide_core::GitRepoStatus;
+    use openwebide_frontend::components::{GitPane, StatusBar};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.git.status.set(Some(GitRepoStatus {
+                branch: "main".into(),
+                ..GitRepoStatus::default()
+            }));
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div id="changes-branch"><GitPane on_open=Callback::new(|_: String| ()) on_load_git_diff=Callback::new(|()| ()) on_discard_git_diff=Callback::new(|()| ()) /></div>
+                <div id="footer-branch"><StatusBar health=RwSignal::new(None).read_only() on_toggle_terminal=|| () /></div>
+            }
+        });
+        settle().await;
+        for root in ["#changes-branch", "#footer-branch"] {
+            let selector = format!("{root} .ui-dropdown-trigger");
+            let trigger = mounted.element(&selector);
+            trigger.click();
+            settle().await;
+            let menu = mounted.element(&format!("{root} .ui-dropdown-menu"));
+            for ahead in [1, 2, 0] {
+                mounted
+                    .state
+                    .git
+                    .status
+                    .update(|status| status.as_mut().unwrap().ahead = ahead);
+                mounted.state.git.branches_loading.set(true);
+                settle().await;
+                mounted
+                    .state
+                    .git
+                    .branches
+                    .set(vec![openwebide_core::GitBranchInfo {
+                        name: "feature".into(),
+                        is_current: false,
+                        is_remote: false,
+                        upstream: None,
+                    }]);
+                mounted.state.git.branches_loading.set(false);
+                settle().await;
+                assert!(
+                    trigger.is_same_node(Some(mounted.element(&selector).as_ref())),
+                    "Branch picker remounted during status refresh in {mode:?}"
+                );
+                assert_eq!(
+                    trigger.get_attribute("aria-expanded").as_deref(),
+                    Some("true")
+                );
+                assert!(
+                    menu.is_same_node(Some(
+                        mounted
+                            .element(&format!("{root} .ui-dropdown-menu"))
+                            .as_ref()
+                    ))
+                );
+                assert!(menu.text_content().unwrap().contains("feature"));
+            }
+            mounted.click(&format!("{root} .ui-dropdown-backdrop"));
+            settle().await;
+        }
+    }
 }

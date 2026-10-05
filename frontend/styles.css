@@ -2111,6 +2111,11 @@ button.browser-item {
   gap: 12px;
 }
 
+/* Transcript entries retain their natural height; overflow belongs to the stream. */
+.tui-stream > * {
+  flex-shrink: 0;
+}
+
 .tui-stream-spacer {
   margin-top: auto;
   flex-shrink: 0;

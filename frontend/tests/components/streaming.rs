@@ -1048,3 +1048,105 @@ async fn markdown_tables_render_in_history_and_streaming_in_both_modes() {
         assert_table(".tui-assistant:last-child .tui-assistant-body");
     }
 }
+
+#[wasm_bindgen_test]
+async fn run_context_headers_keep_their_height_in_narrow_overflowing_history() {
+    use leptos::prelude::*;
+    use openwebide_core::{ConversationEntry, WorkspaceMode};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.seed_connection();
+            state.seed_session();
+            state.fake.messages.borrow_mut().insert(
+                1,
+                (0..8)
+                    .flat_map(|index| {
+                        [
+                            ConversationEntry::Message(message(
+                                index * 2 + 1,
+                                Role::System,
+                                &format!(
+                                    "{}{}",
+                                    openwebide_core::RUN_CONTEXT_PREFIX,
+                                    "A long context rule that wraps in a narrow pane. ".repeat(20)
+                                ),
+                            )),
+                            ConversationEntry::Message(message(
+                                index * 2 + 2,
+                                Role::Assistant,
+                                &"An answer with enough content to overflow the history viewport. "
+                                    .repeat(20),
+                            )),
+                        ]
+                    })
+                    .collect(),
+            );
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <style>".context-layout-regression .messages { height: 180px; flex: none; width: 100%; box-sizing: border-box; }"</style>
+                <div class="context-layout-regression">{chat_view(state)}</div>
+            }
+        });
+        settle().await;
+        for width in [220, 360, 900] {
+            mounted
+                .element(".context-layout-regression")
+                .style()
+                .set_property("width", &format!("{width}px"))
+                .unwrap();
+            settle().await;
+            let stream = mounted.element(".messages.tui-stream");
+            assert!(stream.scroll_height() > stream.client_height());
+            let panels = stream
+                .query_selector_all(".ui-disclosure-panel.tui-thinking-box")
+                .unwrap();
+            assert_eq!(panels.length(), 8);
+            for index in 0..panels.length() {
+                use wasm_bindgen::JsCast;
+                let panel = panels
+                    .item(index)
+                    .unwrap()
+                    .unchecked_into::<web_sys::HtmlElement>();
+                let header = panel
+                    .query_selector(".ui-disclosure-toggle")
+                    .unwrap()
+                    .unwrap()
+                    .unchecked_into::<web_sys::HtmlElement>();
+                assert!(
+                    header.get_bounding_client_rect().height() >= 24.0,
+                    "Clipped context header at {width}px in {mode:?}"
+                );
+                assert!(
+                    panel.get_bounding_client_rect().height()
+                        >= header.get_bounding_client_rect().height()
+                );
+                header.click();
+                settle().await;
+                let trace = panel
+                    .query_selector(".tui-thinking-trace")
+                    .unwrap()
+                    .unwrap()
+                    .unchecked_into::<web_sys::HtmlElement>();
+                assert!(trace.get_bounding_client_rect().height() > 20.0);
+                assert!(trace.client_height() <= 240);
+                assert!(
+                    panel.get_bounding_client_rect().height()
+                        >= header.get_bounding_client_rect().height()
+                            + f64::from(trace.client_height())
+                );
+                assert!(stream.scroll_width() <= stream.client_width() + 1);
+                header.click();
+                settle().await;
+                assert_eq!(
+                    header.get_attribute("aria-expanded").as_deref(),
+                    Some("false")
+                );
+            }
+        }
+    }
+}

@@ -40,51 +40,29 @@ pub fn StatusBar(
                 </Show>
             </Show>
 
-            {move || {
-                git_status.get().map(|status| {
-                    let ahead = status.ahead;
-                    let behind = status.behind;
-                    let insertions = status.line_stats.insertions;
-                    let deletions = status.line_stats.deletions;
-                    let is_clean = status.is_clean;
-
-                    view! {
-                        <span class="git-status-widget">
-                            <super::BranchPicker above=true on_load=on_load_branches on_select=on_select_branch on_new=on_branch_click />
-                            {if ahead > 0 || behind > 0 {
-                                view! {
-                                    <span class="git-divergence" title="Ahead/behind upstream commits">
-                                        {format!("↑{ahead} ↓{behind}")}
-                                    </span>
-                                    <button
-                                        class="git-sync-btn"
-                                        title="Sync with upstream (pull & push)"
-                                        on:click=move |_| on_sync_click.run(())
-                                    >
-                                        "Sync"
-                                    </button>
-                                }.into_any()
-                            } else {
-                                view! { <span /> }.into_any()
-                            }}
-                            {if insertions > 0 || deletions > 0 {
-                                view! {
-                                    <span class="git-line-stats" title="Uncommitted line changes">
-                                        <span class="git-insertions">{format!("+{insertions}")}</span>
-                                        <span class="git-deletions">{format!("-{deletions}")}</span>
-                                    </span>
-                                }.into_any()
-                            } else if is_clean {
-                                view! {
-                                    <span class="git-clean" title="Working tree clean">"✓"</span>
-                                }.into_any()
-                            } else {
-                                view! { <span /> }.into_any()
-                            }}
-                        </span>
-                    }
-                })
-            }}
+            <Show when=move || git_status.with(Option::is_some)>
+                <span class="git-status-widget">
+                    <super::BranchPicker above=true on_load=on_load_branches on_select=on_select_branch on_new=on_branch_click />
+                    {move || git_status.get().map(|status| {
+                        let ahead = status.ahead;
+                        let behind = status.behind;
+                        let insertions = status.line_stats.insertions;
+                        let deletions = status.line_stats.deletions;
+                        view! {
+                            <Show when={move || ahead > 0 || behind > 0}>
+                                <span class="git-divergence" title="Ahead/behind upstream commits">{format!("↑{ahead} ↓{behind}")}</span>
+                                <button class="git-sync-btn" title="Sync with upstream (pull & push)" on:click=move |_| on_sync_click.run(())>"Sync"</button>
+                            </Show>
+                            <Show when={move || insertions > 0 || deletions > 0} fallback=move || status.is_clean.then(|| view! { <span class="git-clean" title="Working tree clean">"✓"</span> })>
+                                <span class="git-line-stats" title="Uncommitted line changes">
+                                    <span class="git-insertions">{format!("+{insertions}")}</span>
+                                    <span class="git-deletions">{format!("-{deletions}")}</span>
+                                </span>
+                            </Show>
+                        }
+                    })}
+                </span>
+            </Show>
 
             <span class="spacer" />
             <button

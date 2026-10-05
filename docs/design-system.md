@@ -11,11 +11,11 @@ Use `frontend/src/components/ui.rs` and the tokens in `frontend/styles.css` when
 
 Existing shared CSS classes remain supported while components migrate. Colors, spacing, typography, radii, dialog sizes and control height come from theme/design tokens. Avoid adding private control styles to individual dialogs or panes.
 
-Reasoning, run context and tools use `DisclosurePanel` for left-aligned headers, caret controls and retained collapsed content. Active reasoning adds its timing, token estimate and spinner to the shared header.
+Reasoning, run context and tools use `DisclosurePanel` for left-aligned headers, down/up caret controls and retained collapsed content. Transcript entries do not shrink when history exceeds the viewport; the stream scrolls while each header keeps its natural height. Active reasoning adds its timing, token estimate and spinner to the shared header.
 
 `PanelToolbar` groups contextual information and actions beneath the single `ToolPanel` heading; feature panes do not repeat their panel or selected-view titles. Explorer and Changes share file-row spacing, icons and selection treatment.
 
-`BranchPicker` uses the shared dropdown for branch selection and New branch action in Changes and the footer. `GitActions` owns discovery, checkout and prompt scope, using `ProjectGit` adapters and guarding late results by project, account and host revision.
+`BranchPicker` uses the shared dropdown for branch selection and New branch action in Changes and the footer. Keep the picker mounted across status refreshes; update status badges separately and discover branches on branch/scope changes or explicit menu opening. `GitActions` owns discovery, checkout and prompt scope, using `ProjectGit` adapters and guarding late results by project, account and host revision.
 
 `Dropdown` owns the Recent-style menu surface, viewport fitting, focus, keyboard navigation and dismissal. `DropdownSelect` builds value choices on it. Recent projects, chat models and approval modes, Git branches, wizard choices and settings selectors share those primitives; use `SegmentedControl` for compact mutually exclusive view/mode switches. `PanelSearchRow` gives Files and Sessions the same input and inline-action layout.
 
