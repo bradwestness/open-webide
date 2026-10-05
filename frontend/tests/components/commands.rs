@@ -285,7 +285,12 @@ async fn palette_captures_editor_selection_and_focuses_chat_without_overwriting_
         settle().await;
         mounted.click("#command-capture-editor");
         settle().await;
-        openwebide_frontend::util::sleep_ms(100).await;
+        super::support::wait_until("composer focus after closing the palette", || {
+            document().active_element().is_some_and(|element| {
+                element.is_same_node(Some(&mounted.element(".composer-input")))
+            })
+        })
+        .await;
         let context = mounted
             .state
             .chat

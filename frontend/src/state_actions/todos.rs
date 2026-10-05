@@ -24,7 +24,10 @@ pub fn install(api: Api, chat: ChatState, projects: ProjectsState) -> TodoAction
         let history = chat.history_gen.get_value();
         chat.todo_loading.set(true);
         spawn_local(async move {
-            let result = api.with_value(Clone::clone).get_todo_plan(session).await;
+            let Some(backend) = api.try_with_value(Clone::clone) else {
+                return;
+            };
+            let result = backend.get_todo_plan(session).await;
             if auth.generation.try_get_untracked() != Some(account)
                 || generation.try_get_value() != Some(ticket)
                 || projects.active_project.try_get_untracked() != Some(project)

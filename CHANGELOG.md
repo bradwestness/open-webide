@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Make browser CI checks wait for session restoration, composer focus and persisted approval-mode changes instead of relying on microtask counts or fixed delays. Guard deferred layout saves after owner disposal or account changes.
+
 - Clarify Auto approval policy so routine public-page research can be approved without the user naming an exact URL. Keep destructive actions, secret exposure, unrelated actions and uncertain decisions subject to manual approval; share the classifier prompt across browser, bridge and Spin runs.
 
 - Add a `task` tool for parallel child agents with independent contexts in local, remote and projectless chats. Show nested collapsible runs with live status, elapsed time, tokens, tool counts, reasoning, output and inherited approvals; preserve child history through reload, Markdown export, fork and rewind. Use the fast model with primary fallback before any tool request, propagate cancellation, and bound recursion, model concurrency and tool/output budgets. Serialize file mutations through durable checkpoint/result recording so child edits participate in the parent’s review and rewind in execution order.

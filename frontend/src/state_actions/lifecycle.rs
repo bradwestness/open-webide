@@ -168,7 +168,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         };
         spawn_local(async move {
             let health_result = api.with_value(Clone::clone).health().await;
-            if auth.generation.get_untracked() != generation {
+            if auth.generation.try_get_untracked() != Some(generation) {
                 return;
             }
             let backend_ok = match health_result {
@@ -183,13 +183,13 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                     false
                 }
             };
-            if !backend_ok || auth.generation.get_untracked() != generation {
+            if !backend_ok || auth.generation.try_get_untracked() != Some(generation) {
                 return;
             }
 
             // Snapshot before the request so later saves survive even if the wall clock moves back.
             let candidates = crate::idb::orphan_candidates(user.id).await;
-            if auth.generation.get_untracked() != generation {
+            if auth.generation.try_get_untracked() != Some(generation) {
                 return;
             }
             let backend = api.with_value(Clone::clone);
@@ -208,7 +208,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 backend.list_system_prompts(),
                 backend.model_setup(),
             );
-            if auth.generation.get_untracked() != generation {
+            if auth.generation.try_get_untracked() != Some(generation) {
                 return;
             }
             if let Ok(setup) = model_setup_result {
@@ -380,7 +380,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 .filter(|project| project.mode == WorkspaceMode::Local)
             {
                 let handle_result = crate::idb::load_handle(project.id).await;
-                if auth.generation.get_untracked() != generation {
+                if auth.generation.try_get_untracked() != Some(generation) {
                     return;
                 }
                 if let Ok(Some(handle)) = handle_result {
@@ -518,7 +518,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
             history_saving.set(true);
             spawn_local(async move {
                 loop {
-                    if auth.generation.get_untracked() != generation {
+                    if auth.generation.try_get_untracked() != Some(generation) {
                         return;
                     }
                     let mut next = None;
@@ -531,7 +531,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                         .set_setting("prompt_history", &json)
                         .await
                         .is_ok()
-                        && auth.generation.get_untracked() == generation
+                        && auth.generation.try_get_untracked() == Some(generation)
                         && history_imported.get_untracked()
                     {
                         if let Some(storage) = web_sys::window()
@@ -553,11 +553,12 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         }
         let ids = projects.open_tab_ids.get();
         if let Ok(json) = serde_json::to_string(&ids) {
+            let backend = api.with_value(Clone::clone);
+            let generation = auth.generation.get_untracked();
             spawn_local(async move {
-                let _ = api
-                    .with_value(Clone::clone)
-                    .set_setting("open_tabs", &json)
-                    .await;
+                if auth.generation.try_get_untracked() == Some(generation) {
+                    let _ = backend.set_setting("open_tabs", &json).await;
+                }
             });
         }
     });
@@ -568,11 +569,12 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         }
         let active_project = projects.active_project.get();
         let value = active_project.map(|id| id.to_string()).unwrap_or_default();
+        let backend = api.with_value(Clone::clone);
+        let generation = auth.generation.get_untracked();
         spawn_local(async move {
-            let _ = api
-                .with_value(Clone::clone)
-                .set_setting("active_project", &value)
-                .await;
+            if auth.generation.try_get_untracked() == Some(generation) {
+                let _ = backend.set_setting("active_project", &value).await;
+            }
         });
     });
 }

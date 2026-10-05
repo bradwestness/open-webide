@@ -1234,11 +1234,14 @@ fn install_effects(
             return;
         };
         spawn_local(async move {
-            let result = api
-                .with_value(Clone::clone)
+            let Some(backend) = api.try_with_value(Clone::clone) else {
+                return;
+            };
+            let result = backend
                 .model_context(connection_id, request.1.as_deref())
                 .await;
-            if ctx_request_gen.get_value() != this_gen || context_request.get_untracked() != request
+            if ctx_request_gen.try_get_value() != Some(this_gen)
+                || context_request.try_get_untracked() != Some(request)
             {
                 return;
             }
@@ -1271,10 +1274,13 @@ fn install_effects(
         spawn_local(async move {
             match session_id {
                 Some(id) => {
-                    let result = api.with_value(Clone::clone).list_messages(id).await;
+                    let Some(backend) = api.try_with_value(Clone::clone) else {
+                        return;
+                    };
+                    let result = backend.list_messages(id).await;
                     if account.generation.try_get_untracked() != Some(account_generation)
-                        || history_gen.get_value() != this_gen
-                        || active_session.get_untracked() != Some(id)
+                        || history_gen.try_get_value() != Some(this_gen)
+                        || active_session.try_get_untracked() != Some(Some(id))
                     {
                         return;
                     }
@@ -1308,11 +1314,15 @@ fn install_effects(
         model_request_gen.update_value(|generation| *generation += 1);
         let this_gen = model_request_gen.get_value();
         spawn_local(async move {
+            let Some(backend) = api.try_with_value(Clone::clone) else {
+                return;
+            };
             let result = match request.1 {
-                Some(id) => api.with_value(Clone::clone).list_models(id).await,
+                Some(id) => backend.list_models(id).await,
                 None => Ok(Vec::new()),
             };
-            if model_request_gen.get_value() == this_gen && model_request.get_untracked() == request
+            if model_request_gen.try_get_value() == Some(this_gen)
+                && model_request.try_get_untracked() == Some(request)
             {
                 match result {
                     Ok(models) => chat.models.set(models),

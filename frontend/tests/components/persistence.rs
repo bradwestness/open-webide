@@ -114,6 +114,10 @@ async fn last_session_restores_on_project_open_and_fresh_window_in_both_modes() 
             }
         });
         wait_for_startup_reads(&mounted.state, 1).await;
+        super::support::wait_until("initial selected session", || {
+            mounted.state.chat.active_session.get_untracked() == Some(1)
+        })
+        .await;
         assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(1));
         mounted.state.chat.active_session.set(Some(2));
         settle().await;
@@ -125,8 +129,22 @@ async fn last_session_restores_on_project_open_and_fresh_window_in_both_modes() 
         mounted.click_text("Close fixture");
         settle().await;
         mounted.click_text("Open fixture");
-        settle().await;
+        super::support::wait_until("restored project session", || {
+            mounted.state.chat.active_session.get_untracked() == Some(2)
+        })
+        .await;
         assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(2));
+        super::support::wait_until("durable reopened project layout", || {
+            let settings = mounted.state.fake.settings.borrow();
+            settings
+                .get("active_project")
+                .is_some_and(|value| value == "1")
+                && settings
+                    .get("open_tabs")
+                    .and_then(|value| serde_json::from_str::<Vec<i64>>(value).ok())
+                    .is_some_and(|tabs| tabs.contains(&1))
+        })
+        .await;
         let backend = mounted.state.fake.clone();
         drop(mounted);
         let reopened = mount_test_with_backend(backend, |state| {
@@ -134,6 +152,10 @@ async fn last_session_restores_on_project_open_and_fresh_window_in_both_modes() 
             chat_view(state)
         });
         wait_for_startup_reads(&reopened.state, 2).await;
+        super::support::wait_until("selected session in the fresh window", || {
+            reopened.state.chat.active_session.get_untracked() == Some(2)
+        })
+        .await;
         assert_eq!(reopened.state.chat.active_session.get_untracked(), Some(2));
     }
 }

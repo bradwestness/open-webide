@@ -327,7 +327,11 @@ async fn approval_picker_and_shift_tab_share_database_state_in_both_modes() {
             "[MANUAL]"
         );
         shift_tab(&mounted);
-        settle().await;
+        super::support::wait_until("saved auto-accept mode", || {
+            mounted.state.chat.approval_mode.get_untracked().get(&1)
+                == Some(&ApprovalMode::AutoAcceptEdits)
+        })
+        .await;
         assert_eq!(
             mounted.state.chat.approval_mode.get_untracked().get(&1),
             Some(&ApprovalMode::AutoAcceptEdits)
@@ -339,19 +343,28 @@ async fn approval_picker_and_shift_tab_share_database_state_in_both_modes() {
         mounted.click(".tui-mode-badge");
         settle().await;
         mounted.click(".approval-mode-menu button:nth-child(3)");
-        settle().await;
+        super::support::wait_until("saved auto mode", || {
+            mounted.state.chat.approval_mode.get_untracked().get(&1) == Some(&ApprovalMode::Auto)
+        })
+        .await;
         assert_eq!(
             mounted.state.chat.approval_mode.get_untracked().get(&1),
             Some(&ApprovalMode::Auto)
         );
         shift_tab(&mounted);
-        settle().await;
+        super::support::wait_until("saved YOLO mode", || {
+            mounted.state.chat.approval_mode.get_untracked().get(&1) == Some(&ApprovalMode::Yolo)
+        })
+        .await;
         assert_eq!(
             mounted.element(".tui-mode-badge").text_content().unwrap(),
             "[YOLO]"
         );
         shift_tab(&mounted);
-        settle().await;
+        super::support::wait_until("saved manual mode", || {
+            mounted.state.chat.approval_mode.get_untracked().get(&1) == Some(&ApprovalMode::Default)
+        })
+        .await;
         assert_eq!(
             mounted.state.chat.approval_mode.get_untracked().get(&1),
             Some(&ApprovalMode::Default)

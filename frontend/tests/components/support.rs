@@ -191,6 +191,19 @@ pub async fn settle() {
     }
 }
 
+/// Wait for the observable result, yielding browser tasks and animation frames.
+pub async fn wait_until(description: &str, ready: impl Fn() -> bool) {
+    let deadline = js_sys::Date::now() + 3000.0;
+    while !ready() {
+        assert!(
+            js_sys::Date::now() < deadline,
+            "Timed out waiting for {description}"
+        );
+        openwebide_frontend::util::sleep_ms(10).await;
+        settle().await;
+    }
+}
+
 pub fn chat_actions(state: TestState) -> ChatActions {
     ChatActions::new(ChatActionContext {
         api: state.api,

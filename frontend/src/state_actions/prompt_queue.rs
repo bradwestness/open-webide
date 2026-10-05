@@ -46,10 +46,10 @@ pub fn actions(
         let epoch = chat.queue_epoch.get_value();
         chat.queue_loading.set(true);
         spawn_local(async move {
-            let result = api
-                .with_value(Clone::clone)
-                .list_queued_prompts(session)
-                .await;
+            let Some(backend) = api.try_with_value(Clone::clone) else {
+                return;
+            };
+            let result = backend.list_queued_prompts(session).await;
             if auth.generation.try_get_untracked() != Some(account)
                 || generation.try_get_value() != Some(ticket)
                 || chat.active_session.try_get_untracked() != Some(Some(session))
