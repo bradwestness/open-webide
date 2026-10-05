@@ -1199,18 +1199,41 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_or_missing_tool_results_do_not_offer_resume() {
+    fn incomplete_or_missing_tool_results_offer_a_new_turn_without_replay() {
         let mut items = vec![
             ConversationItem::Message(message(7, Role::User, "go")),
             interim(8),
         ];
-        assert_eq!(interrupted_run(&items), None);
+        assert_eq!(
+            interrupted_run(&items),
+            Some(InterruptedRun {
+                anchor_id: 7,
+                first_turn: 2
+            })
+        );
         let mut step = complete_step("a7t1c0");
         if let ConversationItem::ToolStep { result, .. } = &mut step {
             *result = None;
         }
         items.push(step);
-        assert_eq!(interrupted_run(&items), None);
+        assert_eq!(
+            interrupted_run(&items),
+            Some(InterruptedRun {
+                anchor_id: 7,
+                first_turn: 2
+            })
+        );
+        if let ConversationItem::ToolStep { id, .. } = &mut items[2] {
+            *id = "a7t9c0".into();
+        }
+        items.push(interim(9));
+        assert_eq!(
+            interrupted_run(&items),
+            Some(InterruptedRun {
+                anchor_id: 7,
+                first_turn: 11
+            })
+        );
         cancel_run_prompts(&mut items, 7);
         assert!(
             matches!(&items[2], ConversationItem::ToolStep { result: Some(result), awaiting_permission: false, .. } if result.summary == "cancelled")

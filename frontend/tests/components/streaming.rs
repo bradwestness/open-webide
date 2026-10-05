@@ -1150,3 +1150,80 @@ async fn run_context_headers_keep_their_height_in_narrow_overflowing_history() {
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn reload_during_unfinished_local_tool_offers_resume_without_reexecuting_it() {
+    use leptos::prelude::*;
+    use openwebide_core::{ConversationEntry, ToolCall, ToolStep, UNRECORDED_TOOL_RESULT};
+    for recorded_step in [false, true] {
+        let mounted = mount_test(move |state| {
+            let pane = interrupted_local_view(state.clone());
+            let mut assistant = message(8, Role::Assistant, "checking");
+            assistant.tool_calls = Some(vec![ToolCall {
+                id: "wire-write".into(),
+                name: "write_file".into(),
+                arguments: r#"{"path":"file.txt","content":"must not replay"}"#.into(),
+            }]);
+            state
+                .fake
+                .messages
+                .borrow_mut()
+                .get_mut(&1)
+                .unwrap()
+                .push(ConversationEntry::Message(assistant));
+            if recorded_step {
+                state.fake.messages.borrow_mut().get_mut(&1).unwrap().push(
+                    ConversationEntry::ToolStep(ToolStep {
+                        timing: None,
+                        tool_call_id: "a7t1c0".into(),
+                        name: "write_file".into(),
+                        summary: "write file.txt".into(),
+                        ok: None,
+                        result_summary: None,
+                        diff: None,
+                        anchor_message_id: 8,
+                        checkpoint: None,
+                    }),
+                );
+            }
+            pane
+        });
+        settle().await;
+        assert_eq!(
+            mounted
+                .state
+                .chat
+                .interrupted_run
+                .get_untracked()
+                .unwrap()
+                .first_turn,
+            2
+        );
+        mounted.click_text("Resume");
+        settle_run(&mounted).await;
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Resumed reply")
+        );
+        assert!(
+            !mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Allow write_file")
+        );
+        let requests = mounted.state.fake.completion_requests.borrow();
+        assert_eq!(requests.len(), 1);
+        let tool = requests[0]
+            .messages
+            .iter()
+            .find(|message| message.role == Role::Tool)
+            .unwrap();
+        assert_eq!(tool.tool_call_id.as_deref(), Some("wire-write"));
+        assert_eq!(tool.content, UNRECORDED_TOOL_RESULT);
+        assert_eq!(mounted.state.fake.messages.borrow()[&1].iter().filter(|entry| matches!(entry, ConversationEntry::Message(message) if message.role == Role::User)).count(), 1);
+    }
+}

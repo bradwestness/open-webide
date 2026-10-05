@@ -851,7 +851,7 @@ pub fn ChatPane(
                     />
                     <Show when=move || chat.interrupted_run.get().is_some() && !streaming.get()>
                         <div class="tui-stopped-marker">
-                            "This run was interrupted. "
+                            "This run was interrupted. Resume continues from saved history without replaying unfinished tools. "
                             <button class="btn send" on:click=move |_| on_resume_run.run(())>"Resume"</button>
                             <button class="btn" on:click=move |_| chat.dismiss_interrupted_run()>"Dismiss"</button>
                         </div>

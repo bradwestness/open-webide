@@ -39,7 +39,8 @@ host-owned Git workspaces, supervisor shutdown and bridge-disabled SSE fallback.
 The following checks still require hands-on device or environment testing:
 
 - First-paint theme and both themes visually; terminal dock hide/show.
-- Resume after a mid-run reload with a slow model; pending edits across two browsers.
+- Local folder permission renewal after reload with an actual OS-picked directory;
+  mid-run and multi-window recovery are [verified](reload-recovery.md).
 - Docker browser terminal and Files/Changes interactions.
 - A phone on the LAN; podman/systemd.
 - Editor IME composition, paste and caret behaviour with a real input method.

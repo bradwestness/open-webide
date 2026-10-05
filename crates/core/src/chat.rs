@@ -360,6 +360,9 @@ pub struct ToolStep {
     pub checkpoint: Option<crate::rewind::ProjectCheckpoint>,
 }
 
+/// An interrupted tool may have executed before its result reached storage.
+pub const UNRECORDED_TOOL_RESULT: &str = "Result not recorded: this tool was interrupted and may or may not have executed. Inspect the current state before retrying; do not assume success or blindly repeat side effects.";
+
 /// Reconstruct model history from persisted assistant calls and tool-step summaries.
 pub fn tool_history(messages: Vec<ChatMessage>, steps: &[ToolStep]) -> Vec<ChatMessage> {
     let mut history = Vec::new();
@@ -374,11 +377,11 @@ pub fn tool_history(messages: Vec<ChatMessage>, steps: &[ToolStep]) -> Vec<ChatM
                     && crate::tasks::task_step_scope(&step.tool_call_id).is_none()
             })
             .collect();
+        let indexed = matching
+            .iter()
+            .any(|step| crate::parse_step_id(&step.tool_call_id).is_some());
         let calls = if message.role == Role::Assistant {
-            message
-                .tool_calls
-                .take()
-                .filter(|calls| calls.len() == matching.len())
+            message.tool_calls.take()
         } else {
             None
         };
@@ -386,15 +389,23 @@ pub fn tool_history(messages: Vec<ChatMessage>, steps: &[ToolStep]) -> Vec<ChatM
         let session_id = message.session_id;
         history.push(message);
         if let Some(calls) = calls {
-            for (call, step) in calls.into_iter().zip(matching) {
+            for (index, call) in calls.into_iter().enumerate() {
+                let step = if indexed {
+                    matching.iter().find(|step| {
+                        crate::parse_step_id(&step.tool_call_id)
+                            .is_some_and(|(_, _, call_index)| call_index == index)
+                    })
+                } else {
+                    // Old histories used opaque IDs and preserved call order.
+                    matching.get(index)
+                };
                 history.push(ChatMessage {
                     id: 0,
                     session_id,
                     role: Role::Tool,
                     content: step
-                        .result_summary
-                        .clone()
-                        .unwrap_or_else(|| "result not recorded".into()),
+                        .and_then(|step| step.result_summary.clone())
+                        .unwrap_or_else(|| UNRECORDED_TOOL_RESULT.into()),
                     created_at: 0,
                     tool_calls: None,
                     tool_call_id: Some(call.id),
@@ -434,4 +445,78 @@ pub fn parse_step_id(id: &str) -> Option<(i64, usize, usize)> {
         turn.parse().ok()?,
         index.parse().ok()?,
     ))
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn partial_tool_history_preserves_call_pairing_and_marks_unknown_outcomes() {
+        let mut message = ChatMessage {
+            id: 8,
+            session_id: 1,
+            role: Role::Assistant,
+            content: String::new(),
+            created_at: 0,
+            tool_calls: Some(
+                (0..3)
+                    .map(|index| ToolCall {
+                        id: format!("wire-{index}"),
+                        name: "write_file".into(),
+                        arguments: "{}".into(),
+                    })
+                    .collect(),
+            ),
+            tool_call_id: None,
+            usage: None,
+        };
+        let steps = vec![
+            ToolStep {
+                timing: None,
+                tool_call_id: "a7t1c1".into(),
+                name: "write_file".into(),
+                summary: "second call".into(),
+                ok: Some(true),
+                result_summary: Some("written once".into()),
+                diff: None,
+                anchor_message_id: 8,
+                checkpoint: None,
+            },
+            ToolStep {
+                timing: None,
+                tool_call_id: "a7t1c2".into(),
+                name: "write_file".into(),
+                summary: "third call".into(),
+                ok: None,
+                result_summary: None,
+                diff: None,
+                anchor_message_id: 8,
+                checkpoint: None,
+            },
+        ];
+        let history = tool_history(vec![message.clone()], &steps);
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0], message);
+        assert_eq!(history[1].content, UNRECORDED_TOOL_RESULT);
+        assert_eq!(history[2].content, "written once");
+        assert_eq!(history[3].content, UNRECORDED_TOOL_RESULT);
+        for (index, result) in history[1..].iter().enumerate() {
+            assert_eq!(result.role, Role::Tool);
+            assert_eq!(
+                result.tool_call_id.as_deref(),
+                Some(format!("wire-{index}").as_str())
+            );
+        }
+        let mut legacy_step = steps[0].clone();
+        legacy_step.tool_call_id = "legacy-tool-id".into();
+        let mut legacy_message = message.clone();
+        legacy_message.tool_calls.as_mut().unwrap().truncate(1);
+        assert_eq!(
+            tool_history(vec![legacy_message], &[legacy_step])[1].content,
+            "written once"
+        );
+        message.role = Role::User;
+        assert_eq!(tool_history(vec![message], &[]).len(), 1);
+    }
 }

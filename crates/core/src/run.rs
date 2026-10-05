@@ -287,47 +287,40 @@ pub fn interrupted_run(items: &[crate::RunItem]) -> Option<InterruptedRun> {
     })?;
     if last.role == Role::Assistant {
         let calls = last.tool_calls.as_ref()?;
-        let last_position = items.iter().rposition(
-            |item| matches!(item, crate::RunItem::Message(message) if message.id == last.id),
-        )?;
-        let steps: Vec<_> = items[last_position + 1..]
-            .iter()
-            .filter_map(|item| match item {
-                crate::RunItem::Step(crate::RunStep {
-                    id,
-                    result,
-                    awaiting_permission,
-                    ..
-                }) if crate::parse_step_id(id)
-                    .is_some_and(|(anchor, _, _)| anchor == anchor_id) =>
-                {
-                    Some((result, awaiting_permission))
-                }
-                _ => None,
-            })
-            .collect();
-        if calls.is_empty()
-            || steps.len() != calls.len()
-            || steps
-                .iter()
-                .any(|(result, awaiting)| result.is_none() || **awaiting)
-        {
+        if calls.is_empty() {
             return None;
         }
     }
-    let highest_turn = items
-        .iter()
-        .filter_map(|item| match item {
-            crate::RunItem::Step(crate::RunStep { id, .. }) => crate::parse_step_id(id)
-                .filter(|(anchor, _, _)| *anchor == anchor_id)
-                .map(|(_, turn, _)| turn),
-            crate::RunItem::Message(_) => None,
-        })
-        .max()
-        .unwrap_or(0);
+    // A model turn can be saved before any tool step is recorded. Never reuse
+    // that turn's IDs when continuing an interrupted approval or execution.
+    let anchor_position = items.iter().rposition(
+        |item| matches!(item, crate::RunItem::Message(message) if message.id == anchor_id),
+    )?;
+    let mut last_turn = 0_usize;
+    for item in &items[anchor_position + 1..] {
+        match item {
+            crate::RunItem::Message(message)
+                if message.role == Role::Assistant
+                    && message
+                        .tool_calls
+                        .as_ref()
+                        .is_some_and(|calls| !calls.is_empty()) =>
+            {
+                last_turn = last_turn.checked_add(1)?;
+            }
+            crate::RunItem::Step(crate::RunStep { id, .. }) => {
+                if let Some((anchor, turn, _)) = crate::parse_step_id(id)
+                    && anchor == anchor_id
+                {
+                    last_turn = last_turn.max(turn);
+                }
+            }
+            crate::RunItem::Message(_) => (),
+        }
+    }
     Some(InterruptedRun {
         anchor_id,
-        first_turn: highest_turn.checked_add(1)?,
+        first_turn: last_turn.checked_add(1)?,
     })
 }
 

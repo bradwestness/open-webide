@@ -249,6 +249,10 @@ loads discover running bridge runs and merge snapshots by message and step IDs, 
 approvals and live text. Socket reconnects attach using the last received sequence; an unknown
 run clears streaming, reloads history, and adds an interrupted-run notice if no reply was saved.
 Runs survive socket disconnects; a daemon restart loses its in-memory run registry.
+Browser-owned agents offer Resume after reload, including unfinished tool turns. Shared
+history reconstruction pairs each saved call with its recorded result or an explicit unknown
+outcome; continuation allocates a new turn and never replays those tools automatically.
+See [reload recovery](reload-recovery.md) for behavior and live verification.
 
 ### Virtual File System (VFS) & process execution
 
