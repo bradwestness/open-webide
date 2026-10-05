@@ -1448,3 +1448,210 @@ async fn block_indentation_pairs_and_mobile_input_share_both_workspace_modes() {
         }
     }
 }
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function editorClipboardPaste(target, text) {
+    const data = new DataTransfer(); data.setData('text/plain', text);
+    const event = new ClipboardEvent('paste', {bubbles:true, cancelable:true, clipboardData:data});
+    target.dispatchEvent(event); return event;
+}
+"#)]
+extern "C" {
+    fn editorClipboardPaste(target: &web_sys::HtmlTextAreaElement, text: &str) -> web_sys::Event;
+}
+fn editor_alt_key(
+    textarea: &web_sys::HtmlTextAreaElement,
+    key: &str,
+    shift: bool,
+) -> web_sys::KeyboardEvent {
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_key(key);
+    init.set_alt_key(true);
+    init.set_shift_key(shift);
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let event =
+        web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    textarea.dispatch_event(&event).unwrap();
+    event
+}
+
+#[wasm_bindgen_test]
+async fn line_comment_reindent_and_explicit_paste_commands_share_both_modes() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Remote,
+        openwebide_core::WorkspaceMode::Local,
+    ] {
+        let folder = if mode == openwebide_core::WorkspaceMode::Local {
+            Some(editorConfigFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(editorConfigHandle);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            if let Some(handle) = handle {
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+            }
+            state.fake.files.borrow_mut().extend([
+                (
+                    (1, ".editorconfig".into()),
+                    "root=true\n[*]\nindent_size=2\n".into(),
+                ),
+                ((1, "src/a.rs".into()), "a\n😀\nz".into()),
+            ]);
+            state.workspace.open_file.set(Some("src/a.rs".into()));
+            state.workspace.content.set("a\n😀\nz".into());
+            editor_view(state)
+        });
+        wait_until("line command rules", || {
+            mounted
+                .state
+                .workspace
+                .editor_rules
+                .with_untracked(|rules| {
+                    rules
+                        .get(&(1, "src/a.rs".into()))
+                        .is_some_and(|rules| rules.indentation.width == 2)
+                })
+        })
+        .await;
+        let textarea = mounted
+            .element(".editor-textarea")
+            .unchecked_into::<web_sys::HtmlTextAreaElement>();
+        textarea.set_selection_range(2, 2).unwrap();
+        assert!(editor_alt_key(&textarea, "ArrowUp", false).default_prevented());
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "😀\na\nz");
+        assert_eq!(textarea.selection_start().unwrap(), Some(0));
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "a\n😀\nz");
+        textarea.set_selection_range(2, 2).unwrap();
+        editor_alt_key(&textarea, "ArrowDown", true);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "a\n😀\n😀\nz"
+        );
+        editor_key(&textarea, "z", true, false);
+        textarea.set_selection_range(2, 4).unwrap();
+        editor_key(&textarea, "D", true, true);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "a\n😀😀\nz"
+        );
+        editor_key(&textarea, "z", true, false);
+        textarea.set_selection_range(0, 6).unwrap();
+        editor_key(&textarea, "/", true, false);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "// a\n// 😀\n// z"
+        );
+        editor_key(&textarea, "/", true, false);
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "a\n😀\nz");
+        mounted
+            .state
+            .workspace
+            .content
+            .set("fn f() {\nx();\n}".into());
+        settle().await;
+        let textarea = mounted
+            .element(".editor-textarea")
+            .unchecked_into::<web_sys::HtmlTextAreaElement>();
+        textarea.set_selection_range(0, 15).unwrap();
+        mounted.click("button[aria-label='Editing commands']");
+        settle().await;
+        let items = mounted
+            .root
+            .query_selector_all("[role='menuitem']")
+            .unwrap();
+        let reindent = (0..items.length())
+            .filter_map(|i| items.item(i))
+            .filter_map(|item| item.dyn_into::<web_sys::HtmlElement>().ok())
+            .find(|item| item.text_content().as_deref() == Some("Reindent selected lines"))
+            .unwrap();
+        reindent.click();
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "fn f() {\n  x();\n}"
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".ui-dropdown-menu")
+                .unwrap()
+                .is_none()
+        );
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "fn f() {\nx();\n}"
+        );
+        mounted.state.workspace.content.set("  here\nnext".into());
+        settle().await;
+        let textarea = mounted
+            .element(".editor-textarea")
+            .unchecked_into::<web_sys::HtmlTextAreaElement>();
+        textarea.set_selection_range(2, 6).unwrap();
+        assert!(!editorClipboardPaste(&textarea, "  raw").default_prevented());
+        assert!(!editor_key(&textarea, "v", true, true).default_prevented());
+        assert!(editorClipboardPaste(&textarea, "  😀\n    body").default_prevented());
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "  😀\n    body\nnext"
+        );
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "  here\nnext"
+        );
+        assert!(!editorClipboardPaste(&textarea, "  raw").default_prevented());
+        editor_key(&textarea, "v", true, true);
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("src/a.json".into()));
+        settle().await;
+        let textarea = mounted
+            .element(".editor-textarea")
+            .unchecked_into::<web_sys::HtmlTextAreaElement>();
+        assert!(!editorClipboardPaste(&textarea, "untouched").default_prevented());
+        mounted.click("button[aria-label='Editing commands']");
+        settle().await;
+        let items = mounted
+            .root
+            .query_selector_all("[role='menuitem']")
+            .unwrap();
+        for label in ["Toggle line comment", "Toggle block comment"] {
+            let button = (0..items.length())
+                .filter_map(|i| items.item(i))
+                .filter_map(|item| item.dyn_into::<web_sys::HtmlButtonElement>().ok())
+                .find(|item| item.text_content().as_deref() == Some(label))
+                .unwrap();
+            assert!(button.disabled());
+        }
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("preview.png".into()));
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector("button[aria-label='Editing commands']")
+                .unwrap()
+                .is_none()
+        );
+        drop(mounted);
+        if let Some(folder) = folder {
+            editorConfigCleanup(&folder).await.unwrap();
+        }
+    }
+}

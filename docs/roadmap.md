@@ -57,24 +57,20 @@ Find, pending-edit review and agent editor
 context intact. Editing must work without a host language server in both modes.
 
 The shared Rust document/transaction engine, grouped undo/redo, per-file/project
-history and basic Tab/Shift+Tab/Enter commands are in place. Continue the editing
-foundation with:
+history, indentation/EditorConfig controls, block-aware Enter and paired typing
+are in place. Line movement/duplication/deletion, snippet duplication, line/block
+comments, explicit indentation-matching paste and selected-line reindent use the
+same engine. See [editor controls](editor.md). Continue with:
 
-- **Indentation:** configurable tabs/spaces, independent indentation/tab widths,
-  nested project-bounded `.editorconfig`, detected style, database-backed defaults,
-  explicit indentation conversion and Tab focus escape are in place. Continue with
-  deliberate paste/reindent behavior; block-aware Enter and closing-delimiter
-  outdent are now in place. See [editor controls](editor.md).
 - **Reliable edits and history:** build on grouped transactions and per-document history
   to restore caret/selection/scroll state on switches. Explicit EditorConfig newline,
   line-ending and trailing-whitespace save policies are undoable; finish real
   input-method/clipboard verification, preserving Unicode and LF/CRLF without
   rewriting unrelated text.
-- **Everyday commands:** move/duplicate/delete lines or selections, insert a line
-  above/below and toggle line/block comments. Bracket/quote auto-close, selection
-  wrapping, closing-delimiter skip and empty-pair deletion are in place, using shared
-  lexical language rules. Continue parser integration for richer syntax contexts,
-  including template interpolation, alongside folding.
+- **Syntax-aware editing:** continue parser integration for richer language contexts,
+  including template interpolation, alongside folding. Current reindent uses bounded
+  lexical bracket structure and preserves existing Python block depth; language
+  formatting remains in Code intelligence.
 
 Then add structure and navigation:
 

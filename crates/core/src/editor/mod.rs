@@ -3,9 +3,15 @@
 
 use std::ops::Range;
 
+mod comments;
+pub use comments::{block_comment, line_comment};
+mod lines;
+mod paste;
+mod reindent;
+pub use lines::LineCommand;
 mod pairs;
 mod structure;
-pub use structure::{MAX_STRUCTURE_BYTES, Structure};
+pub use structure::{MAX_STRUCTURE_BYTES, Structure, supports_brackets};
 mod indent;
 pub use indent::{IndentStyle, Indentation};
 mod configuration;

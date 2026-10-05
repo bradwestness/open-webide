@@ -712,6 +712,12 @@ pub fn Editor(
     let workspace = expect_context::<WorkspaceState>();
     let editor_actions = EditorActions::new(workspace);
     let tab_moves_focus = RwSignal::new(false);
+    let paste_matches_indentation = RwSignal::new(false);
+    Effect::new(move |_| {
+        workspace.active_project.track();
+        workspace.open_file.track();
+        paste_matches_indentation.set(false);
+    });
     let file_tree_actions = use_context::<crate::state_actions::file_tree::FileTreeActions>();
     let read_only = Signal::derive(move || {
         read_only.get()
@@ -969,6 +975,35 @@ pub fn Editor(
                         let on_discard = on_discard_git_diff;
                         view! {
                             <div class="editor-header-actions">
+                                <Show when=move || view_mode.get() == ViewMode::Code && open_file.with(|path| path.as_ref().is_some_and(|path| !FileKind::from_path(path).is_non_text()))>
+                                    <super::dropdown::ActionMenu aria_label="Editing commands">
+                                        {[
+                                            ("Move lines up", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveUp), "Alt+Up"),
+                                            ("Move lines down", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveDown), "Alt+Down"),
+                                            ("Duplicate lines above", EditorCommand::Line(openwebide_core::editor::LineCommand::DuplicateAbove), "Alt+Shift+Up"),
+                                            ("Duplicate lines below", EditorCommand::Line(openwebide_core::editor::LineCommand::Duplicate), "Alt+Shift+Down"),
+                                            ("Duplicate selection", EditorCommand::DuplicateSelection, "Ctrl/Cmd+Shift+D"),
+                                            ("Delete lines", EditorCommand::Line(openwebide_core::editor::LineCommand::Delete), "Ctrl/Cmd+Shift+K"),
+                                            ("Insert line above", EditorCommand::Line(openwebide_core::editor::LineCommand::InsertAbove), "Ctrl/Cmd+Shift+Enter"),
+                                            ("Insert line below", EditorCommand::Line(openwebide_core::editor::LineCommand::InsertBelow), "Ctrl/Cmd+Enter"),
+                                            ("Toggle line comment", EditorCommand::LineComment, "Ctrl/Cmd+/"),
+                                            ("Toggle block comment", EditorCommand::BlockComment, "Ctrl/Cmd+Shift+/"),
+                                            ("Reindent selected lines", EditorCommand::Reindent, ""),
+                                        ].into_iter().map(move |(label, command, shortcut)| view! {
+                                            <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title=shortcut disabled=move || read_only.get() || {
+                                                let language = openwebide_core::highlight::language_from_path(&open_file.get().unwrap_or_default());
+                                                match command {
+                                                    EditorCommand::LineComment => openwebide_core::editor::line_comment(language).is_none() && openwebide_core::editor::block_comment(language).is_none(),
+                                                    EditorCommand::BlockComment => openwebide_core::editor::block_comment(language).is_none(),
+                                                    EditorCommand::Reindent => !openwebide_core::editor::supports_brackets(language),
+                                                    _ => false,
+                                                }
+                                            } on:click=move |_| {
+                                                if let Some(textarea) = ta.get() && !read_only.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_editor_command(editor_actions, command, &textarea, &workspace.content.get_untracked()); let _ = textarea.focus(); }
+                                            }>{label}</button>
+                                        }).collect_view()}
+                                    </super::dropdown::ActionMenu>
+                                </Show>
                                 <Show
                                     when=move || view_mode.get() == ViewMode::InlineDiff || view_mode.get() == ViewMode::SideBySide
                                     fallback={
@@ -1191,7 +1226,20 @@ pub fn Editor(
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
                                             }
                                             on:blur=move |event: web_sys::FocusEvent| {
+                                                paste_matches_indentation.set(false);
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
+                                            }
+                                            on:keyup=move |event: web_sys::KeyboardEvent| { if event.key().eq_ignore_ascii_case("v") { paste_matches_indentation.set(false); } }
+                                            on:paste=move |event: web_sys::ClipboardEvent| {
+                                                let matching = paste_matches_indentation.get_untracked(); paste_matches_indentation.set(false);
+                                                if !matching || read_only.get_untracked() { return; }
+                                                let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
+                                                let Some(clipboard) = event.clipboard_data() else { return; };
+                                                let Ok(pasted) = clipboard.get_data("text/plain") else { return; };
+                                                if pasted.is_empty() { return; }
+                                                if let Ok(Some((text, selection))) = editor_actions.paste_with_indentation(&pasted, document_selection(&textarea, &workspace.content.get_untracked())) {
+                                                    event.prevent_default(); textarea.set_value(&text); restore_editor_selection(&textarea, &text, selection);
+                                                }
                                             }
                                             on:beforeinput=move |event: web_sys::InputEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
@@ -1219,13 +1267,22 @@ pub fn Editor(
                                                 if event.is_composing() { return; }
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 let modified = event.ctrl_key() || event.meta_key();
+                                                paste_matches_indentation.set(false);
+                                                if modified && event.shift_key() && !event.alt_key() && event.key().eq_ignore_ascii_case("v") && !read_only.get_untracked() { paste_matches_indentation.set(true); return; }
+
                                                 if modified && event.key().eq_ignore_ascii_case("m") {
                                                     event.prevent_default(); event.stop_propagation(); tab_moves_focus.update(|value| *value = !*value); return;
                                                 }
                                                 if read_only.get_untracked() { return; }
                                                 let command = match event.key().as_str() {
                                                     "Tab" if !tab_moves_focus.get_untracked() && !modified && !event.alt_key() => Some(if event.shift_key() { EditorCommand::Outdent } else { EditorCommand::Tab }),
+                                                    "ArrowUp" if event.alt_key() && !modified => Some(EditorCommand::Line(if event.shift_key() { openwebide_core::editor::LineCommand::DuplicateAbove } else { openwebide_core::editor::LineCommand::MoveUp })),
+                                                    "ArrowDown" if event.alt_key() && !modified => Some(EditorCommand::Line(if event.shift_key() { openwebide_core::editor::LineCommand::Duplicate } else { openwebide_core::editor::LineCommand::MoveDown })),
+                                                    "Enter" if modified && !event.alt_key() => Some(EditorCommand::Line(if event.shift_key() { openwebide_core::editor::LineCommand::InsertAbove } else { openwebide_core::editor::LineCommand::InsertBelow })),
                                                     "Enter" if !modified && !event.alt_key() => Some(EditorCommand::Newline),
+                                                    "/" | "?" if modified && !event.alt_key() => Some(if event.shift_key() { EditorCommand::BlockComment } else { EditorCommand::LineComment }),
+                                                    "K" | "k" if modified && event.shift_key() && !event.alt_key() => Some(EditorCommand::Line(openwebide_core::editor::LineCommand::Delete)),
+                                                    "D" | "d" if modified && event.shift_key() && !event.alt_key() => Some(EditorCommand::DuplicateSelection),
                                                     key if modified && key.eq_ignore_ascii_case("z") => Some(if event.shift_key() { EditorCommand::Redo } else { EditorCommand::Undo }),
                                                     key if modified && key.eq_ignore_ascii_case("y") => Some(EditorCommand::Redo),
                                                     "Backspace" if !modified && !event.alt_key() => Some(EditorCommand::DeletePair),

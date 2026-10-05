@@ -40,7 +40,7 @@ impl Indentation {
     pub fn columns(self, width: usize) -> String {
         self.columns_from(0, width)
     }
-    fn columns_from(self, start: usize, width: usize) -> String {
+    pub(super) fn columns_from(self, start: usize, width: usize) -> String {
         if self.style == IndentStyle::Spaces {
             return " ".repeat(width);
         }
@@ -59,7 +59,7 @@ impl Indentation {
         }
         result
     }
-    fn visual_width(self, text: &str) -> usize {
+    pub(super) fn visual_width(self, text: &str) -> usize {
         text.chars().fold(0, |column, ch| {
             if ch == '\t' {
                 column + self.tab_width() - column % self.tab_width()

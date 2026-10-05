@@ -17,6 +17,27 @@ local and remote projects. The full editor roadmap is still in progress.
 - Ctrl+Z / Cmd+Z undo; Ctrl+Shift+Z / Cmd+Shift+Z redo (Ctrl+Y also works).
 - Ctrl+M toggles whether Tab indents or moves keyboard focus out of the editor.
 
+The editing menu provides line and comment commands and **Reindent selected
+lines**. Keyboard equivalents:
+
+| Command | Shortcut |
+| --- | --- |
+| Move selected lines | Alt+Up / Alt+Down |
+| Duplicate lines above/below | Alt+Shift+Up / Alt+Shift+Down |
+| Duplicate selected text (or current line) | Ctrl/Cmd+Shift+D |
+| Delete selected lines | Ctrl/Cmd+Shift+K |
+| Insert an indented line above/below | Ctrl/Cmd+Shift+Enter / Ctrl/Cmd+Enter |
+| Toggle line/block comments | Ctrl/Cmd+/ / Ctrl/Cmd+Shift+/ |
+| Paste and match indentation | Ctrl/Cmd+Shift+V |
+
+Normal paste preserves clipboard whitespace. Matching indentation is explicit:
+remove the snippet's common leading indentation, preserve relative indentation,
+and rebase subsequent lines to the receiving line. Whitespace-only paste is kept;
+configured line endings apply to inserted text. Paste and reindent each form one
+undo step. Reindent aligns selected bracket-delimited blocks, leaves multiline
+string contents untouched and preserves Python's existing block depth; it is not
+a language formatter. Unsupported comment/reindent actions appear disabled.
+
 The editor footer shows Spaces/Tabs, the indentation width and the tab width.
 These are separate: an indentation step can be four columns while a hard tab
 occupies three. Tabs fill as many complete tab stops as possible, then spaces fill

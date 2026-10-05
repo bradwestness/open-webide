@@ -15,6 +15,11 @@ pub enum EditorCommand {
     ConvertIndentation,
     TypeCharacter(char),
     DeletePair,
+    Line(openwebide_core::editor::LineCommand),
+    DuplicateSelection,
+    LineComment,
+    BlockComment,
+    Reindent,
 }
 
 type TypingState = Option<((i64, String), String, f64)>;
@@ -279,6 +284,28 @@ impl EditorActions {
                             return Ok(None);
                         }
                     }
+                    EditorCommand::Line(command) => {
+                        document.line_command(command, self.rules_untracked().line_ending)?;
+                    }
+                    EditorCommand::DuplicateSelection => {
+                        document.duplicate_selections()?;
+                    }
+                    EditorCommand::LineComment => {
+                        document.toggle_line_comments(
+                            openwebide_core::highlight::language_from_path(&key.1),
+                        )?;
+                    }
+                    EditorCommand::BlockComment => {
+                        document.toggle_block_comments(
+                            openwebide_core::highlight::language_from_path(&key.1),
+                        )?;
+                    }
+                    EditorCommand::Reindent => {
+                        document.reindent(
+                            indentation,
+                            openwebide_core::highlight::language_from_path(&key.1),
+                        )?;
+                    }
                     EditorCommand::Undo => {
                         document.undo();
                     }
@@ -286,6 +313,36 @@ impl EditorActions {
                         document.redo();
                     }
                 }
+                Ok(Some((
+                    document.text().to_string(),
+                    document.selections()[0],
+                )))
+            })
+            .unwrap_or(Ok(None));
+        if let Ok(Some((text, _))) = &result {
+            self.workspace.content.set(text.clone());
+            self.publish_dirty(key);
+        }
+        result
+    }
+
+    pub fn paste_with_indentation(
+        self,
+        text: &str,
+        selection: Selection,
+    ) -> Result<Option<(String, Selection)>, EditError> {
+        let Some(key) = self.key() else {
+            return Ok(None);
+        };
+        self.typing.set(None);
+        let rules = self.rules_untracked();
+        let result = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| {
+                let document = self.document(documents, key.clone());
+                document.set_selections(vec![selection])?;
+                document.paste_with_indentation(text, rules.indentation, rules.line_ending)?;
                 Ok(Some((
                     document.text().to_string(),
                     document.selections()[0],
