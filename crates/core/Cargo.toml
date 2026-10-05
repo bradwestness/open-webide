@@ -15,8 +15,12 @@ ignore = "0.4.33"
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+tree-sitter = { version = "0.27.0", optional = true }
+tree-sitter-rust = { version = "0.24.2", optional = true }
+
 [features]
 test-support = []
+editor-parser = ["dep:tree-sitter", "dep:tree-sitter-rust"]
 
 [dev-dependencies]
 futures = { workspace = true }

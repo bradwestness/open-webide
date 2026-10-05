@@ -210,6 +210,33 @@ impl EditorActions {
         })
     }
 
+    /// Parser-backed folding provider for the active buffer. DOM/worker adapters
+    /// supply a deadline or cancellation primitive; all parsing policy is shared.
+    pub fn syntax_folds(
+        self,
+        should_continue: impl FnMut() -> bool,
+    ) -> Option<(
+        openwebide_core::editor::SyntaxStatus,
+        Vec<openwebide_core::editor::FoldRange>,
+    )> {
+        let key = self.key()?;
+        let language = openwebide_core::highlight::language_from_path(&key.1);
+        let text = self.workspace.content.get_untracked();
+        self.workspace
+            .editor_syntax
+            .try_update(|documents| {
+                let document = match documents.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(openwebide_core::editor::SyntaxDocument::new(language)?)
+                    }
+                };
+                let status = document.update(&text, should_continue);
+                Some((status, document.folds()))
+            })
+            .flatten()
+    }
+
     pub fn native_input(
         self,
         text: String,

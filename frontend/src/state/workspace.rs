@@ -47,6 +47,10 @@ pub struct WorkspaceState {
     pub media_url: RwSignal<Option<String>>,
     pub snapshots: RwSignal<HashMap<i64, WorkspaceSnapshot>>,
     pub editor_documents: RwSignal<HashMap<(i64, String), openwebide_core::editor::Document>>,
+    // Browser parser allocation is thread-local; the wrapper enforces owner-thread access.
+    pub editor_syntax: RwSignal<
+        send_wrapper::SendWrapper<HashMap<(i64, String), openwebide_core::editor::SyntaxDocument>>,
+    >,
     pub editor_scroll: RwSignal<HashMap<(i64, String), EditorScroll>>,
     pub editor_rules: RwSignal<HashMap<(i64, String), openwebide_core::editor::EditorRules>>,
     pub editor_indentation: RwSignal<HashMap<(i64, String), openwebide_core::editor::Indentation>>,
@@ -86,6 +90,7 @@ impl WorkspaceState {
             media_url: RwSignal::new(None),
             snapshots: RwSignal::new(HashMap::new()),
             editor_documents: RwSignal::new(HashMap::new()),
+            editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(HashMap::new())),
             editor_scroll: RwSignal::new(HashMap::new()),
             editor_rules: RwSignal::new(HashMap::new()),
             editor_indentation: RwSignal::new(HashMap::new()),
@@ -143,6 +148,8 @@ impl WorkspaceState {
 
     pub fn reset(&self) {
         self.editor_documents.set(HashMap::new());
+        self.editor_syntax
+            .set(send_wrapper::SendWrapper::new(HashMap::new()));
         self.editor_scroll.set(HashMap::new());
         self.editor_rules.set(HashMap::new());
         self.editor_indentation.set(HashMap::new());

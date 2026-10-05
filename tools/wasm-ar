@@ -1,0 +1,11 @@
+#!/bin/sh
+# Apple's ar/ranlib discards WASM object files. Use the pinned Rust LLVM tools.
+set -eu
+sysroot=$(rustc --print sysroot)
+host=$(rustc -vV | sed -n 's/^host: //p')
+archiver="$sysroot/lib/rustlib/$host/bin/llvm-ar"
+if [ ! -x "$archiver" ]; then
+    echo "Browser WASM C builds require: rustup component add llvm-tools" >&2
+    exit 1
+fi
+exec "$archiver" "$@"

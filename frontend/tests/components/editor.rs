@@ -132,6 +132,95 @@ async fn native_typing_composition_and_invalid_edits_preserve_document_contract(
 }
 
 #[wasm_bindgen_test]
+async fn incremental_syntax_and_fold_provider_share_both_modes_and_account_reset() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{FoldRange, SyntaxDocument, SyntaxStatus},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "// 😀\r\nfn main() {\r\n    let text = r###\" { } \"###;\r\n    /* outer\r\n       /* nested */\r\n    */\r\n}\r\n";
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("syntax.rs".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let (status, folds) = actions.syntax_folds(|| true).unwrap();
+        assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+        assert_eq!(
+            folds,
+            vec![
+                FoldRange {
+                    start_line: 1,
+                    end_line: 6
+                },
+                FoldRange {
+                    start_line: 3,
+                    end_line: 5
+                }
+            ]
+        );
+        let revised = source
+            .replace("    let text", "    if true {\r\n        let text")
+            .replace("    /* outer", "    }\r\n    /* outer");
+        mounted.state.workspace.content.set(revised.clone());
+        let (status, folds) = actions.syntax_folds(|| true).unwrap();
+        assert_eq!(status, SyntaxStatus::Ready { incremental: true });
+        let mut fresh = SyntaxDocument::new(openwebide_core::highlight::Language::Rust).unwrap();
+        fresh.update(&revised, || true);
+        assert_eq!(folds, fresh.folds());
+        mounted.state.workspace.active_project.set(Some(2));
+        assert_eq!(
+            actions.syntax_folds(|| true).unwrap().0,
+            SyntaxStatus::Ready { incremental: false }
+        );
+        mounted.state.workspace.active_project.set(Some(1));
+        assert_eq!(
+            actions.syntax_folds(|| true).unwrap().0,
+            SyntaxStatus::Ready { incremental: true }
+        );
+        assert_eq!(
+            actions.syntax_folds(|| false).unwrap(),
+            (SyntaxStatus::Cancelled, vec![])
+        );
+        assert_eq!(
+            actions.syntax_folds(|| true).unwrap().0,
+            SyntaxStatus::Ready { incremental: false }
+        );
+        mounted
+            .state
+            .workspace
+            .content
+            .set("x".repeat(openwebide_core::editor::MAX_STRUCTURE_BYTES + 1));
+        assert_eq!(
+            actions.syntax_folds(|| true).unwrap(),
+            (SyntaxStatus::TooLarge, vec![])
+        );
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("syntax.py".into()));
+        assert!(actions.syntax_folds(|| true).is_none());
+        mounted.state.workspace.reset();
+        assert_eq!(
+            mounted
+                .state
+                .workspace
+                .editor_syntax
+                .with_untracked(|documents| documents.len()),
+            0
+        );
+    }
+}
+
+#[wasm_bindgen_test]
 async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes() {
     use openwebide_core::WorkspaceMode;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {

@@ -3,6 +3,12 @@
 
 use std::ops::Range;
 
+mod folds;
+pub use folds::{FoldRange, normalize_folds};
+#[cfg(feature = "editor-parser")]
+mod syntax;
+#[cfg(feature = "editor-parser")]
+pub use syntax::{SyntaxDocument, SyntaxStatus};
 mod comments;
 pub use comments::{block_comment, line_comment};
 mod lines;

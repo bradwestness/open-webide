@@ -68,7 +68,9 @@ same engine. See [editor controls](editor.md). Continue with:
   line-ending and trailing-whitespace save policies are undoable; finish real
   input-method/clipboard verification, preserving Unicode and LF/CRLF without
   rewriting unrelated text.
-- **Syntax-aware editing:** continue parser integration for richer language contexts,
+- **Syntax-aware editing:** the shared incremental Rust parser and fold-range
+  provider are in place; continue other-language providers and editor-view integration
+  for richer language contexts,
   including template interpolation, alongside folding. Current reindent uses bounded
   lexical bracket structure and preserves existing Python block depth; language
   formatting remains in Code intelligence.

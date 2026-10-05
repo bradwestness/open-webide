@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Add the shared incremental Rust syntax/folding provider, with Unicode/CRLF-safe tree updates, parser cancellation/size limits and per-file/project/account caches. Supply portable Clang/LLVM builds for browser WASM, CI and Docker; keep backend WASI builds independent of the optional parser. Folding controls and other-language providers remain in progress.
+
 - The editor restores each file’s caret, selection direction and horizontal/vertical scroll position across file, project and edit/diff view switches; detached editor events cannot overwrite another view’s position.
 
 - Add shared editor line movement, duplication/deletion, indented line insertion, snippet duplication and language-aware line/block comments. Expose commands through the existing action menu and familiar shortcuts. Preserve normal paste whitespace; Ctrl/Cmd+Shift+V explicitly matches snippet indentation. Add undoable selected-line reindent that ignores literal contents and preserves Python block depth, with unsupported actions visibly disabled. Share all commands across local and remote projects and retain Unicode, mixed line separators and directional selections.

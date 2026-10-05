@@ -12,4 +12,5 @@ runner = "wasm-bindgen-test-runner"
 # wasm-bindgen-test-runner gives the whole headless test binary one budget
 # (default 20 s), and the stalled-HTTP component tests alone use most of it.
 [env]
+AR_wasm32_unknown_unknown = { value = "tools/wasm-ar", relative = true }
 WASM_BINDGEN_TEST_TIMEOUT = "120"

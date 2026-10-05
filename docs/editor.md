@@ -83,3 +83,14 @@ The edit view retains each file’s caret, selection direction and horizontal/ve
 scroll position within its project while the app is open, including when switching
 to a diff view and back. New files start at the beginning; changing accounts clears
 these positions. Reload persistence is part of the remaining draft-recovery work.
+
+The syntax/folding foundation now includes a shared incremental Rust parser. Its
+previous tree is updated with Unicode-safe byte edits; fold candidates cover code
+blocks, declarations and multiline comments/literals. Cancellation, parser work
+limits and oversized files discard stale results. Other languages, fold controls,
+folded-text/caret mapping and worker/viewport integration remain under development;
+the existing editing commands continue to use their documented lexical structure.
+
+Frontend builds enable the core `editor-parser` feature. Backend WASI builds do not
+need the parser or a WASI C SDK. The Rust grammar’s small build-script patch uses
+upstream WASM headers; see `vendor/tree-sitter-rust/PATCH.md`.

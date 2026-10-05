@@ -68,6 +68,10 @@ is [Tailscale Serve in a separate container](docs/tailscale.md).
 Install [Rust](https://rustup.rs/), [Spin 4.x](https://spinframework.dev/docs/latest/installation/),
 and [Trunk](https://trunkrs.dev/getting-started/install/). Rust's toolchain and WASM
 targets are pinned in `rust-toolchain.toml` and installed by rustup on first build.
+The browser syntax parser also needs Clang (Xcode Command Line Tools on macOS;
+`sudo apt-get install clang` on Debian/Ubuntu). Rust's pinned `llvm-tools` component
+supplies the WASM archiver; the build selects it automatically, including on macOS
+where Apple's archiver does not retain WASM objects.
 Host Git operations require Git 2.23 or newer.
 
 Build from the repository root:

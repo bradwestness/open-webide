@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/ec4rs"]
+exclude = ["vendor/ec4rs", "vendor/tree-sitter-rust"]
 members = [
     "backend",
     "bridge",
@@ -146,3 +146,4 @@ used_underscore_binding = "warn"
 
 [patch.crates-io]
 ec4rs = { path = "vendor/ec4rs" }
+tree-sitter-rust = { path = "vendor/tree-sitter-rust" }
