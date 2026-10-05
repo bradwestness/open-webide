@@ -1802,6 +1802,14 @@ async fn block_indentation_pairs_and_mobile_input_share_both_workspace_modes() {
 }
 
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function editorNativeInput(target, text, type, composing) {
+    target.setRangeText(text, target.selectionStart, target.selectionEnd, 'end');
+    target.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:type, data:text, isComposing:composing}));
+}
+export function editorClipboardCut(target) {
+    const event = new ClipboardEvent('cut', {bubbles:true, cancelable:true, clipboardData:new DataTransfer()});
+    target.dispatchEvent(event); return event;
+}
 export function editorClipboardCopy(target) {
     const data = new DataTransfer();
     const event = new ClipboardEvent('copy', {bubbles:true, cancelable:true, clipboardData:data});
@@ -1814,6 +1822,13 @@ export function editorClipboardPaste(target, text) {
 }
 "#)]
 extern "C" {
+    fn editorNativeInput(
+        target: &web_sys::HtmlTextAreaElement,
+        text: &str,
+        kind: &str,
+        composing: bool,
+    );
+    fn editorClipboardCut(target: &web_sys::HtmlTextAreaElement) -> web_sys::Event;
     fn editorClipboardCopy(target: &web_sys::HtmlTextAreaElement) -> String;
     fn editorClipboardPaste(target: &web_sys::HtmlTextAreaElement, text: &str) -> web_sys::Event;
 }
@@ -2098,33 +2113,24 @@ async fn visible_folding_preserves_source_and_replays_input_in_both_modes() {
             mounted.state.workspace.content.get_untracked(),
             source.replace("// after", "Z// after")
         );
-        assert_eq!(
-            textarea.value(),
-            source
-                .replace("\r\n", "\n")
-                .replace("// after", "Z// after")
-        );
+        assert_eq!(textarea.value(), "fn main() {\nZ// after\n");
         editor_key(&textarea, "z", true, false);
         settle().await;
         assert_eq!(mounted.state.workspace.content.get_untracked(), source);
-        wait_until("fold after undo", || {
+        wait_until("fold retained after undo", || {
             mounted
                 .root
-                .query_selector("button[aria-label='Collapse block at line 1']")
+                .query_selector("button[aria-label='Expand block at line 1']")
                 .unwrap()
                 .is_some()
         })
         .await;
-        mounted.click("button[aria-label='Collapse block at line 1']");
-        settle().await;
         textarea.set_selection_range(12, 12).unwrap();
         let before = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
         textarea.dispatch_event(&before).unwrap();
         assert!(!before.default_prevented());
-        assert_eq!(textarea.value(), source.replace("\r\n", "\n"));
+        assert_eq!(textarea.value(), "fn main() {\n// after\n");
         assert_eq!(mounted.state.workspace.content.get_untracked(), source);
-        settle().await;
-        mounted.click("button[aria-label='Collapse block at line 1']");
         settle().await;
         mounted.click("button[aria-label^='Find in file']");
         settle().await;
@@ -2246,5 +2252,186 @@ async fn fallback_and_region_folds_render_and_reveal_in_both_modes() {
             );
             assert_eq!(mounted.state.workspace.content.get_untracked(), source);
         }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn native_edits_clipboard_commands_and_composition_keep_disjoint_folds_in_both_modes() {
+    use openwebide_core::editor::{FoldCommand, byte_to_textarea};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = "fn first() {\r\n    one();\r\n}\r\nlet middle = 1;\r\nfn second() {\r\n    two();\r\n}\r\n";
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("retained.rs".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        wait_until("sibling fold ranges", || {
+            EditorActions::new(mounted.state.workspace)
+                .fold_state()
+                .is_some_and(|folds| folds.ranges().iter().any(|range| range.start_line == 4))
+        })
+        .await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        actions.fold_command(FoldCommand::CollapseAll);
+        settle().await;
+        let select = |needle: &str| {
+            let view = textarea.value();
+            let offset =
+                u32::try_from(byte_to_textarea(&view, view.find(needle).unwrap()).unwrap())
+                    .unwrap();
+            textarea.set_selection_range(offset, offset).unwrap();
+            textarea
+                .dispatch_event(&web_sys::Event::new("select").unwrap())
+                .unwrap();
+        };
+        select(";\nfn second");
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_input_type("insertText");
+        init.set_data(Some("0"));
+        textarea
+            .dispatch_event(
+                &web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap(),
+            )
+            .unwrap();
+        editorNativeInput(&textarea, "0", "insertText", false);
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            source.replace("middle = 1", "middle = 10")
+        );
+        assert!(!textarea.value().contains("one();"));
+        assert!(!textarea.value().contains("two();"));
+        assert!(actions.fold_state().unwrap().collapsed_at(0).is_some());
+        assert!(actions.fold_state().unwrap().collapsed_at(4).is_some());
+        select(";\nfn second");
+        assert!(editor_key(&textarea, "Enter", false, false).default_prevented());
+        settle().await;
+        assert!(actions.fold_state().unwrap().collapsed_at(5).is_some());
+        assert!(!textarea.value().contains("two();"));
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert!(actions.fold_state().unwrap().collapsed_at(4).is_some());
+        select(";\nfn second");
+        assert!(!editorClipboardPaste(&textarea, "pasted").default_prevented());
+        editorNativeInput(&textarea, "pasted", "insertFromPaste", false);
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .workspace
+                .content
+                .get_untracked()
+                .contains("middle = 10pasted;\r\n")
+        );
+        assert!(!textarea.value().contains("one();"));
+        assert!(!textarea.value().contains("two();"));
+        select(";\nfn second");
+        let before_composition = mounted.state.workspace.content.get_untracked();
+        textarea
+            .dispatch_event(&web_sys::CompositionEvent::new("compositionstart").unwrap())
+            .unwrap();
+        editorNativeInput(&textarea, "文", "insertCompositionText", true);
+        let caret = textarea.selection_start().unwrap().unwrap();
+        textarea.set_selection_range(caret - 1, caret).unwrap();
+        editorNativeInput(&textarea, "文😀", "insertCompositionText", true);
+        textarea
+            .dispatch_event(&web_sys::CompositionEvent::new("compositionend").unwrap())
+            .unwrap();
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .workspace
+                .content
+                .get_untracked()
+                .contains("pasted文😀;\r\n")
+        );
+        assert!(!textarea.value().contains("one();"));
+        assert!(!textarea.value().contains("two();"));
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            before_composition
+        );
+        assert!(actions.fold_state().unwrap().collapsed_at(0).is_some());
+        assert!(actions.fold_state().unwrap().collapsed_at(4).is_some());
+        select("first");
+        textarea
+            .dispatch_event(
+                &web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap(),
+            )
+            .unwrap();
+        assert!(textarea.value().contains("one();"));
+        assert!(!textarea.value().contains("two();"));
+        editorNativeInput(&textarea, "x", "insertText", false);
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .workspace
+                .content
+                .get_untracked()
+                .starts_with("fn xfirst()")
+        );
+        assert!(actions.fold_state().unwrap().collapsed_at(0).is_none());
+        assert!(actions.fold_state().unwrap().collapsed_at(4).is_some());
+        select("fn second");
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .workspace
+                .content
+                .get_untracked()
+                .starts_with("fn first()")
+        );
+        assert!(actions.fold_state().unwrap().collapsed_at(4).is_some());
+        editor_key(&textarea, "z", true, true);
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .workspace
+                .content
+                .get_untracked()
+                .starts_with("fn xfirst()")
+        );
+        assert!(actions.fold_state().unwrap().collapsed_at(4).is_some());
+        actions.fold_command(FoldCommand::CollapseAll);
+        settle().await;
+        let before_cut = mounted.state.workspace.content.get_untracked();
+        let view = textarea.value();
+        let end = u32::try_from(byte_to_textarea(&view, view.find("let middle").unwrap()).unwrap())
+            .unwrap();
+        textarea.set_selection_range(0, end).unwrap();
+        assert!(!editorClipboardCut(&textarea).default_prevented());
+        assert!(textarea.value().contains("one();"));
+        assert!(!textarea.value().contains("two();"));
+        editorNativeInput(&textarea, "", "deleteByCut", false);
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            before_cut[before_cut.find("let middle").unwrap()..]
+        );
+        assert!(actions.fold_state().unwrap().collapsed_at(1).is_some());
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), before_cut);
+        assert!(actions.fold_state().unwrap().collapsed_at(4).is_some());
     }
 }

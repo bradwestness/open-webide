@@ -163,6 +163,23 @@ impl FoldState {
         });
         self.collapsed.len() != before
     }
+    /// Native input reveals selected source lines before the browser edits them,
+    /// including a collapsed header. Disjoint folds remain collapsed.
+    pub fn reveal_lines(&mut self, first: usize, last: usize) -> bool {
+        let before = self.collapsed.len();
+        let candidates = if self.ranges.is_empty() {
+            &self.pending
+        } else {
+            &self.ranges
+        };
+        self.collapsed.retain(|header| {
+            !candidates.iter().any(|range| {
+                range.start_line == *header && range.start_line <= last && first <= range.end_line
+            })
+        });
+        self.collapsed.len() != before
+    }
+
     /// Edited folds open; unaffected headers follow line insertions/removals.
     /// Ranges are invalidated until a provider publishes candidates for the new text.
     pub fn rebase(&mut self, old: &str, new: &str) {

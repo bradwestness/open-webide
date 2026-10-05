@@ -82,8 +82,9 @@ Then add structure and navigation:
   are in place, with language-aware lexical/indentation fallback, consecutive
   comments and explicit regions. Rust parser ranges take precedence; richer
   other-language parser providers remain under Syntax-aware editing. Logical line
-  numbers and Find reveal are supported; finish navigation reveal and retain
-  unaffected folds during native editing, which currently expands the view.
+  numbers, Find reveal and unaffected fold retention through native edits,
+  composition, clipboard commands and history are supported; finish navigation
+  reveal alongside the reading/navigation commands below.
 - **Reading/navigation:** active-line and matching-bracket highlights, indent guides,
   jump to matching bracket, go to line/column, and a compact cursor/selection status.
   Preserve the current horizontal-scroll default; make word wrap and whitespace

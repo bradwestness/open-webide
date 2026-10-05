@@ -173,6 +173,17 @@ impl Document {
         FoldProjection::new(&self.text, &self.folds)
     }
 
+    pub fn reveal_selection(&mut self) -> bool {
+        let rows = lines::lines(&self.text);
+        let mut changed = false;
+        for selected in lines::selected_rows(&rows, &self.selections) {
+            changed |= self
+                .folds
+                .reveal_lines(selected.start, selected.end.saturating_sub(1));
+        }
+        changed
+    }
+
     pub fn fold_command(&mut self, command: FoldCommand) {
         let line = self.text[..self.selections[0].head]
             .bytes()
@@ -446,6 +457,39 @@ pub fn byte_to_textarea(text: &str, offset: usize) -> Result<usize, EditError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn edit_preparation_reveals_selected_headers_but_keeps_disjoint_folds() {
+        use super::*;
+        let source = "first {\r\n body\r\n}\r\nsecond {\r\n body\r\n}\r\n";
+        let mut document = Document::new(source);
+        document.fold_state_mut().set_ranges(
+            vec![
+                FoldRange {
+                    start_line: 0,
+                    end_line: 2,
+                },
+                FoldRange {
+                    start_line: 3,
+                    end_line: 5,
+                },
+            ],
+            7,
+        );
+        document.fold_command(FoldCommand::CollapseAll);
+        document
+            .set_selections(vec![Selection {
+                anchor: source.find("second").unwrap(),
+                head: 0,
+            }])
+            .unwrap();
+        assert!(document.reveal_selection());
+        assert!(document.fold_state().collapsed_at(0).is_none());
+        assert!(document.fold_state().collapsed_at(3).is_some());
+        assert!(!document.reveal_selection());
+        assert_eq!(document.text(), source);
+        assert!(!document.is_dirty());
+    }
+
     use super::*;
 
     #[test]

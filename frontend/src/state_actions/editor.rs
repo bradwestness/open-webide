@@ -280,6 +280,24 @@ impl EditorActions {
         result.map(|(status, _)| status)
     }
 
+    pub fn prepare_edit(self, selection: Selection) -> Result<(), EditError> {
+        self.record_selection(selection)?;
+        let Some(key) = self.key() else {
+            return Ok(());
+        };
+        let changed = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| self.document(documents, key).reveal_selection())
+            .unwrap_or(false);
+        if changed {
+            self.workspace
+                .editor_fold_revision
+                .update(|value| *value = value.wrapping_add(1));
+        }
+        Ok(())
+    }
+
     pub fn fold_command(
         self,
         command: openwebide_core::editor::FoldCommand,
@@ -342,7 +360,6 @@ impl EditorActions {
                 self.selection(&source).unwrap_or_default(),
             )
             .map_err(|_| EditError::InvalidRange)?;
-        self.fold_command(openwebide_core::editor::FoldCommand::ExpandAll);
         self.native_input(value, selection, input_type, timestamp)
     }
 

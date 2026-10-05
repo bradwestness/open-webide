@@ -115,9 +115,13 @@ recursive commands. Fold state belongs to the document, including across view
 and file switches during the current app lifetime.
 
 Hidden lines remain in the source and copied selections. Syntax highlighting
-retains the full file's context, and Find reveals a hidden match. Editing, paste,
-cut and composition currently expand the view before applying the operation;
-input-only browser events replay their change against the complete source.
+retains the full file's context, and Find reveals a hidden match. Native editing,
+paste, cut and composition reveal the selected source lines before the browser
+changes them; disjoint folds remain collapsed. Commands and undo/redo rebase the
+remaining anchors and restore the source caret through the updated projection.
+Input-only browser events replay their change against the complete source.
+Unchanged projected values and selections stay under the native input method's
+control during composition.
 Other files use the shared language-aware lexer for bracket blocks and multiline
 comments/literals, with indentation fallback when no parser is available. Adjacent
 full-line comments can fold as a group. Indentation uses the configured tab width;
@@ -131,5 +135,4 @@ Balanced, nested `region` / `endregion` markers in language comments also fold
 Rust parser ranges take precedence over indentation; all ranges retain one
 control per header and cannot cross one another. Synchronous fallback work is
 limited to 2 MiB, 100,000 lines and the lexer's bracket limit. Richer language
-parsers, native edit fold retention, worker rendering and real-device input
-verification remain roadmap work.
+parsers, worker rendering and real-device input verification remain roadmap work.

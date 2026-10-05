@@ -63,21 +63,42 @@ fn projected_selection(
     document_selection(textarea, source)
 }
 
-fn expand_editor_folds(
+fn prepare_editor_edit(
     actions: EditorActions,
     textarea: &web_sys::HtmlTextAreaElement,
     source: &str,
 ) {
-    if actions
-        .projection()
-        .is_some_and(|projection| projection.is_folded())
+    let selection = projected_selection(actions, textarea, source);
+    if actions.prepare_edit(selection).is_ok() {
+        render_editor_selection(actions, textarea, selection, true);
+    }
+}
+
+fn refresh_editor_folds(actions: EditorActions) {
+    let deadline = js_sys::Date::now() + 12.0;
+    actions.refresh_fold_ranges(|| js_sys::Date::now() <= deadline);
+}
+
+// Avoid replacing an unchanged textarea value/selection while its native IME
+// owns the composition range. Commands explicitly restore their source caret.
+fn render_editor_selection(
+    actions: EditorActions,
+    textarea: &web_sys::HtmlTextAreaElement,
+    selection: openwebide_core::editor::Selection,
+    native: bool,
+) {
+    if let Some(projection) = actions.projection()
+        && let Ok(visible) = projection.visible_selection(selection)
     {
-        let selection = projected_selection(actions, textarea, source);
-        let _ = actions.record_selection(selection);
-        actions.fold_command(openwebide_core::editor::FoldCommand::ExpandAll);
+        let changed =
+            textarea.value() != projection.text().replace("\r\n", "\n").replace('\r', "\n");
         let scroll = (textarea.scroll_top(), textarea.scroll_left());
-        textarea.set_value(source);
-        restore_editor_selection(textarea, source, selection);
+        if changed {
+            textarea.set_value(projection.text());
+        }
+        if changed || !native {
+            restore_editor_selection(textarea, projection.text(), visible);
+        }
         textarea.set_scroll_top(scroll.0);
         textarea.set_scroll_left(scroll.1);
     }
@@ -757,14 +778,13 @@ fn apply_editor_command(
     textarea: &web_sys::HtmlTextAreaElement,
     text: &str,
 ) -> bool {
-    expand_editor_folds(actions, textarea, text);
-    if let Ok(Some((text, selection))) = actions.command(
+    if let Ok(Some((_text, selection))) = actions.command(
         command,
-        document_selection(textarea, text),
+        projected_selection(actions, textarea, text),
         actions.rules_untracked().indentation,
     ) {
-        textarea.set_value(&text);
-        restore_editor_selection(textarea, &text, selection);
+        refresh_editor_folds(actions);
+        render_editor_selection(actions, textarea, selection, false);
         true
     } else {
         false
@@ -834,10 +854,7 @@ pub fn Editor(
         open_file.track();
         workspace.active_project.track();
         editor_actions.rules();
-        let deadline = js_sys::Date::now() + 12.0;
-        untrack(|| {
-            editor_actions.refresh_fold_ranges(|| js_sys::Date::now() <= deadline);
-        });
+        untrack(|| refresh_editor_folds(editor_actions));
     });
     let dirty = workspace.dirty.read_only();
     let pending_diff: Signal<Option<FileDiff>> = Signal::from(workspace.pending_diff);
@@ -1396,15 +1413,15 @@ pub fn Editor(
                                             }
                                             on:keyup=move |event: web_sys::KeyboardEvent| { if event.key().eq_ignore_ascii_case("v") { paste_matches_indentation.set(false); } }
                                             on:paste=move |event: web_sys::ClipboardEvent| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { expand_editor_folds(editor_actions, &textarea, &content.get_untracked()); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
                                                 let matching = paste_matches_indentation.get_untracked(); paste_matches_indentation.set(false);
                                                 if !matching || read_only.get_untracked() { return; }
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 let Some(clipboard) = event.clipboard_data() else { return; };
                                                 let Ok(pasted) = clipboard.get_data("text/plain") else { return; };
                                                 if pasted.is_empty() { return; }
-                                                if let Ok(Some((text, selection))) = editor_actions.paste_with_indentation(&pasted, projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())) {
-                                                    event.prevent_default(); textarea.set_value(&text); restore_editor_selection(&textarea, &text, selection);
+                                                if let Ok(Some((_text, selection))) = editor_actions.paste_with_indentation(&pasted, projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())) {
+                                                    event.prevent_default(); refresh_editor_folds(editor_actions); render_editor_selection(editor_actions, &textarea, selection, false);
                                                 }
                                             }
                                             on:copy=move |event: web_sys::ClipboardEvent| {
@@ -1413,15 +1430,15 @@ pub fn Editor(
                                                 {
                                                     let source = content.get_untracked(); let selection = projected_selection(editor_actions, &textarea, &source);
                                                     if let Some(clipboard) = event.clipboard_data() && clipboard.set_data("text/plain", &source[selection.range()]).is_ok() { event.prevent_default(); }
-                                                    else { expand_editor_folds(editor_actions, &textarea, &source); }
+                                                    else { prepare_editor_edit(editor_actions, &textarea, &source); }
                                                 }
                                             }
                                             on:cut=move |event: web_sys::ClipboardEvent| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { expand_editor_folds(editor_actions, &textarea, &content.get_untracked()); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
                                             }
                                             on:beforeinput=move |event: web_sys::InputEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
-                                                    if !read_only.get_untracked() { expand_editor_folds(editor_actions, &textarea, &content.get_untracked()); }
+                                                    if !read_only.get_untracked() { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
                                                     let selection = projected_selection(editor_actions, &textarea, &workspace.content.get_untracked());
                                                     let _ = editor_actions.record_selection(selection);
                                                     if read_only.get_untracked() || event.is_composing() || !event.cancelable() { return; }
@@ -1436,7 +1453,7 @@ pub fn Editor(
                                             }
                                             on:compositionstart=move |event: web_sys::CompositionEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
-                                                    expand_editor_folds(editor_actions, &textarea, &content.get_untracked());
+                                                    prepare_editor_edit(editor_actions, &textarea, &content.get_untracked());
                                                     let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); editor_actions.begin_composition();
                                                 }
                                             }
@@ -1485,9 +1502,9 @@ pub fn Editor(
                                                     && current_editor_target(editor_actions, textarea)
                                                 {
                                                     let input_type = e.dyn_ref::<web_sys::InputEvent>().map_or_else(String::new, web_sys::InputEvent::input_type);
-                                                    let folded = editor_actions.projection().is_some_and(|projection| projection.is_folded());
-                                                    let _ = editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp());
-                                                    if folded { let text = content.get_untracked(); textarea.set_value(&text); if let Some(selection) = editor_actions.selection(&text) { restore_editor_selection(textarea, &text, selection); } }
+                                                    let result = editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp());
+                                                    refresh_editor_folds(editor_actions);
+                                                    if let Some(selection) = editor_actions.selection(&content.get_untracked()) { render_editor_selection(editor_actions, textarea, selection, result.is_ok()); }
                                                 }
                                             }
                                             on:scroll=move |event: web_sys::Event| {
@@ -1511,9 +1528,8 @@ pub fn Editor(
                 <div class="editor-footer">
                     <super::editor_options::IndentationControls above=true value=Signal::derive(move || editor_actions.rules().indentation) disabled=read_only on_change=Callback::new(move |indentation| editor_actions.set_indentation(indentation)) />
                     <Button size=ButtonSize::Sm variant=ButtonVariant::Ghost disabled=read_only on_click=Callback::new(move |_| {
-                        if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea)
-                            && let Ok(Some((text, selection))) = editor_actions.command(EditorCommand::ConvertIndentation, projected_selection(editor_actions, &textarea, &workspace.content.get_untracked()), editor_actions.rules_untracked().indentation) {
-                                textarea.set_value(&text); restore_editor_selection(&textarea, &text, selection); let _ = textarea.focus();
+                        if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) {
+                            apply_editor_command(editor_actions, EditorCommand::ConvertIndentation, &textarea, &workspace.content.get_untracked()); let _ = textarea.focus();
                         }
                     })>"Convert indentation"</Button>
                     <span class="editor-rules-source" title=move || editor_actions.rules().source.unwrap_or_else(|| "Detected from this file, with editor defaults as fallback".into())>{move || if editor_actions.rules().source.is_some() { "EditorConfig" } else { "Detected / defaults" }}</span>

@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Retain unaffected collapsed blocks during native typing, editor commands, paste/cut, composition and undo/redo. Reveal only the source lines selected for a native edit; revalidate rebased fold anchors before restoring projected text and source selections. Keep unchanged native composition values and carets intact, including Unicode and CRLF, and share the behavior in both modes.
+
 - Extend the shared folding provider with language-aware bracket/literal ranges, indentation fallback, consecutive comment groups and balanced explicit regions. Prefer Rust parser ranges; protect Python multiline strings, JavaScript regex/template literals and YAML block scalars from false folds. Use configured tab stops, preserve shared closing/header rows, bound synchronous work and clear cancelled/stale ranges in both modes. Richer language parsers and worker rendering remain in progress.
 
 - Integrate Rust folding into Edit with gutter controls, cursor/recursive/all commands and keyboard shortcuts. Preserve source line numbers and syntax context, reveal Find matches, copy complete source selections and expand safely for editing/IME/clipboard operations; replay input-only browser events against full source without deleting hidden blocks. Use the shared editor facade in both modes. Other-language providers and advanced folding remain roadmap work.
