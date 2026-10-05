@@ -15,7 +15,7 @@ pub fn TopBar(
     let username = Signal::derive(move || auth.username.get());
     view! {
         <header class="topbar">
-            <span class="logo">"open-webide"</span>
+            <span class="logo">"Open WebIDE"</span>
             <span class="spacer" />
             <button class="btn ghost" title="Command palette (Ctrl/⌘+Shift+P)" on:click=move |_| ui.palette_open.set(true)>"Commands"</button>
             <Show when=move || username.get().is_some() fallback=|| ()>

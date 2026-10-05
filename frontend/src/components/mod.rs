@@ -65,3 +65,6 @@ mod install_app;
 mod git_pane;
 pub use git_pane::GitPane;
 pub use install_app::InstallApp;
+
+pub mod branch_picker;
+pub use branch_picker::BranchPicker;

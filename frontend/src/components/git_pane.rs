@@ -5,6 +5,9 @@ use leptos::prelude::*;
 #[component]
 pub fn GitPane(
     on_open: Callback<String>,
+    #[prop(default = Callback::new(|()| ()))] on_load_branches: Callback<()>,
+    #[prop(default = Callback::new(|_: String| ()))] on_select_branch: Callback<String>,
+    #[prop(default = Callback::new(|()| ()))] on_new_branch: Callback<()>,
     on_load_git_diff: Callback<()>,
     on_discard_git_diff: Callback<()>,
 ) -> impl IntoView {
@@ -24,7 +27,7 @@ pub fn GitPane(
         }
     });
     view! { <div class="git-pane">
-        <super::ui::PanelToolbar class="file-tree-header"><super::ui::Icon name=super::ui::IconName::GitBranch /><span>{move || git.status.get().map(|status| status.branch).unwrap_or_else(|| "No repository".into())}</span></super::ui::PanelToolbar>
+        <super::ui::PanelToolbar class="file-tree-header"><super::BranchPicker on_load=on_load_branches on_select=on_select_branch on_new=on_new_branch /></super::ui::PanelToolbar>
         <div class="git-files">
             <For each=move || {
                 let mut files = git.status.get().map(|status| status.files.into_iter().collect::<Vec<_>>()).unwrap_or_default();

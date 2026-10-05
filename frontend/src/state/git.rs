@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use leptos::prelude::*;
-use openwebide_core::{FileDiff, GitCheckoutResult, GitRepoStatus};
+use openwebide_core::{FileDiff, GitBranchInfo, GitCheckoutResult, GitRepoStatus};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeadContent {
@@ -16,6 +16,11 @@ pub struct GitState {
     pub active_project: RwSignal<Option<i64>>,
     pub status: RwSignal<Option<GitRepoStatus>>,
     pub head_content: RwSignal<Option<HeadContent>>,
+    pub branches: RwSignal<Vec<GitBranchInfo>>,
+    pub branches_loading: RwSignal<bool>,
+    pub branches_error: RwSignal<Option<String>>,
+    pub branch_busy: RwSignal<bool>,
+    pub branch_revision: RwSignal<u64>,
     statuses_by_project: RwSignal<HashMap<i64, Option<GitRepoStatus>>>,
 }
 
@@ -29,6 +34,11 @@ impl GitState {
             active_project,
             status: RwSignal::new(None),
             head_content: RwSignal::new(None),
+            branches: RwSignal::new(Vec::new()),
+            branches_loading: RwSignal::new(false),
+            branches_error: RwSignal::new(None),
+            branch_busy: RwSignal::new(false),
+            branch_revision: RwSignal::new(0),
             statuses_by_project: RwSignal::new(HashMap::new()),
         }
     }
@@ -60,9 +70,18 @@ impl GitState {
         let status = self
             .statuses_by_project
             .with_untracked(|statuses| statuses.get(&target).cloned().flatten());
+        self.reset_branches();
         self.status.set(status);
         self.head_content.set(None);
         self.active_project.set(Some(target));
+    }
+
+    pub fn reset_branches(&self) {
+        self.branch_revision.update(|revision| *revision += 1);
+        self.branches.set(Vec::new());
+        self.branches_loading.set(false);
+        self.branches_error.set(None);
+        self.branch_busy.set(false);
     }
 
     pub fn reset_head_content(&self) {
@@ -77,6 +96,7 @@ impl GitState {
     }
 
     pub fn clear_active(&self) {
+        self.reset_branches();
         self.status.set(None);
         self.head_content.set(None);
     }

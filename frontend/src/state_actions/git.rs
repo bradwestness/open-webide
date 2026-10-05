@@ -26,6 +26,8 @@ pub struct GitActionContext {
 #[derive(Clone, Copy)]
 pub struct GitActions {
     pub on_branch_click: Callback<()>,
+    pub on_load_branches: Callback<()>,
+    pub on_select_branch: Callback<String>,
     pub on_sync_click: Callback<()>,
     pub on_load_diff: Callback<()>,
     pub on_discard_diff: Callback<()>,
@@ -106,39 +108,145 @@ impl GitActions {
             git.reset_head_content();
         });
 
+        let auth = expect_context::<AuthState>();
+        let settings = expect_context::<crate::state::settings::SettingsState>();
+        let on_load_branches = Callback::new(move |()| {
+            let Some(project_id) = active_project.get_untracked() else {
+                return;
+            };
+            if git.branches_loading.get_untracked() {
+                return;
+            }
+            let generation = auth.generation.get_untracked();
+            let host_revision = project_git.revision();
+            let revision = git.branch_revision.get_untracked();
+            git.branches_loading.set(true);
+            git.branches_error.set(None);
+            spawn_local(async move {
+                let result = match futures::future::select(
+                    Box::pin(async {
+                        project_git
+                            .repository(Some(project_id))
+                            .await?
+                            .branches()
+                            .await
+                    }),
+                    Box::pin(crate::util::sleep_ms(5000)),
+                )
+                .await
+                {
+                    futures::future::Either::Left((result, _)) => result,
+                    futures::future::Either::Right(_) => {
+                        Err("Git branch discovery timed out".into())
+                    }
+                };
+                if active_project.try_get_untracked() != Some(Some(project_id))
+                    || auth.generation.try_get_untracked() != Some(generation)
+                    || project_git.revision() != host_revision
+                    || git.branch_revision.try_get_untracked() != Some(revision)
+                {
+                    return;
+                }
+                git.branches_loading.set(false);
+                match result {
+                    Ok(mut branches) => {
+                        branches.retain(|branch| !branch.is_remote);
+                        branches.sort_by(|a, b| a.name.cmp(&b.name));
+                        git.branches.set(branches);
+                    }
+                    Err(error) => git.branches_error.set(Some(error)),
+                }
+            });
+        });
+        Effect::new(move |_| {
+            active_project.track();
+            auth.generation.track();
+            settings.bridge_url.track();
+            projects.local_handles.track();
+            git.reset_branches();
+        });
+        Effect::new(move |_| {
+            active_project.track();
+            auth.generation.track();
+            settings.bridge_url.track();
+            projects.local_handles.track();
+            let branch = git
+                .status
+                .with(|status| status.as_ref().map(|status| status.branch.clone()));
+            if branch.is_some() {
+                on_load_branches.run(());
+            }
+        });
+        let checkout = Callback::new(move |(branch, create_if_missing): (String, bool)| {
+            let Some(project_id) = active_project.get_untracked() else {
+                return;
+            };
+            if git.branch_busy.get_untracked() {
+                return;
+            }
+            let branch = branch.trim().to_string();
+            if branch.is_empty() {
+                return;
+            }
+            let generation = auth.generation.get_untracked();
+            let host_revision = project_git.revision();
+            let revision = git.branch_revision.get_untracked();
+            git.branch_busy.set(true);
+            spawn_local(async move {
+                let result = async {
+                    project_git
+                        .repository(Some(project_id))
+                        .await?
+                        .checkout(&GitCheckoutRequest {
+                            branch,
+                            create_if_missing,
+                        })
+                        .await
+                }
+                .await;
+                if active_project.try_get_untracked() != Some(Some(project_id))
+                    || auth.generation.try_get_untracked() != Some(generation)
+                    || project_git.revision() != host_revision
+                    || git.branch_revision.try_get_untracked() != Some(revision)
+                {
+                    return;
+                }
+                git.branch_busy.set(false);
+                match result {
+                    Ok(result) => {
+                        git.status.update(|status| {
+                            if let Some(status) = status {
+                                status.branch.clone_from(&result.branch);
+                            }
+                        });
+                        git.reset_head_content();
+                        refresh.run(());
+                        on_load_branches.run(());
+                        chat.notify(GitState::checkout_notice(&result));
+                    }
+                    Err(error) => ui.notify(format!("Git checkout failed: {error}")),
+                }
+            });
+        });
+        let on_select_branch = Callback::new(move |branch: String| checkout.run((branch, false)));
         let on_branch_click = Callback::new(move |()| {
-            let project_id = active_project.get();
+            let project_id = active_project.get_untracked();
+            let generation = auth.generation.get_untracked();
+            let host_revision = project_git.revision();
+            let revision = git.branch_revision.get_untracked();
             ui.set_prompt(PromptRequest {
-                title: "Switch or Create Git Branch".to_string(),
+                title: "New Git Branch".to_string(),
                 value: String::new(),
                 placeholder: "Branch name (e.g. feat/my-feature)".to_string(),
-                submit_label: "Switch".to_string(),
+                submit_label: "Create".to_string(),
                 on_submit: Callback::new(move |branch: String| {
-                    let branch = branch.trim().to_string();
-                    if branch.is_empty() {
-                        return;
+                    if active_project.get_untracked() == project_id
+                        && auth.generation.get_untracked() == generation
+                        && project_git.revision() == host_revision
+                        && git.branch_revision.get_untracked() == revision
+                    {
+                        checkout.run((branch, true));
                     }
-                    spawn_local(async move {
-                        let request = GitCheckoutRequest {
-                            branch,
-                            create_if_missing: true,
-                        };
-                        match async {
-                            project_git
-                                .repository(project_id)
-                                .await?
-                                .checkout(&request)
-                                .await
-                        }
-                        .await
-                        {
-                            Ok(result) => {
-                                refresh.run(());
-                                chat.notify(GitState::checkout_notice(&result));
-                            }
-                            Err(error) => ui.notify(format!("Git checkout failed: {error}")),
-                        }
-                    });
                 }),
             });
         });
@@ -260,6 +368,8 @@ impl GitActions {
 
         Self {
             on_branch_click,
+            on_load_branches,
+            on_select_branch,
             on_sync_click,
             on_load_diff,
             on_discard_diff,

@@ -2961,3 +2961,10 @@ button.browser-item {
 .git-diff-path { flex-basis: 100%; overflow-wrap: anywhere; color: var(--text-muted); font-size: var(--font-caption); }
 
 .btn.tree-item:hover, .btn.tree-item.selected { background: var(--bg-hover); }
+
+
+.branch-picker { display: inline-flex; align-items: center; gap: var(--space-1); min-width: 0; max-width: 100%; color: var(--text); }
+.branch-picker .git-branch-select { min-width: 0; width: auto; max-width: 100%; margin: 0; padding: var(--space-1) var(--space-2); font-size: var(--font-caption); cursor: pointer; }
+.statusbar .git-branch-select { border-color: transparent; background: transparent; }
+.branch-picker .git-branch-select:hover { background: var(--bg-hover); }
+.phone-layout .git-branch-select { min-height: 44px; }

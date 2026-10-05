@@ -32,6 +32,7 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
             <div class="tool-panel-actions">
                 <button type="button" class="icon-btn ui-icon" aria-label=format!("Move {} left", panel.label()) title="Move panel left" on:click=move |_| actions.move_panel.run((panel, false))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowLeft /></button>
                 <button type="button" class="icon-btn ui-icon" aria-label=format!("Move {} right", panel.label()) title="Move panel right" on:click=move |_| actions.move_panel.run((panel, true))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowRight /></button>
+                <button type="button" class="icon-btn ui-icon" aria-label=format!("Minimize {}", panel.label()) title="Minimize panel" on:click=move |_| actions.toggle.run(panel)><crate::components::ui::Icon name=crate::components::ui::IconName::Minus /></button>
             </div>
             <button class="btn" title="Return to chat" on:click=move |_| actions.show.run(Panel::Chat)>"Back to chat"</button>
         </div>

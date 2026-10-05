@@ -397,7 +397,7 @@ pub fn App() -> impl IntoView {
                             />
                                 </div>
                                 <div class="files-view" hidden=move || layout.preferences.with(|p| p.files_view != crate::state::responsive::FilesView::Changes)>
-            <GitPane on_open=Callback::new(move |path| { request_open.run(path); }) on_load_git_diff=on_load_git_diff on_discard_git_diff=on_discard_git_diff />
+            <GitPane on_load_branches=git_actions.on_load_branches on_select_branch=git_actions.on_select_branch on_new_branch=on_branch_click on_open=Callback::new(move |path| { request_open.run(path); }) on_load_git_diff=on_load_git_diff on_discard_git_diff=on_discard_git_diff />
                                 </div>
 
                             </crate::components::FilesPanel>
@@ -442,6 +442,8 @@ pub fn App() -> impl IntoView {
                             health=health.read_only()
                             on_toggle_terminal=on_toggle_terminal
                             on_branch_click=on_branch_click
+                            on_load_branches=git_actions.on_load_branches
+                            on_select_branch=git_actions.on_select_branch
                             on_sync_click=on_sync_click
                         />
                         <Show when=move || show_settings.get() fallback=|| ()>

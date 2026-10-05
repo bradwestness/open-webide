@@ -8,6 +8,8 @@ pub fn StatusBar(
     health: ReadSignal<Option<HealthState>>,
     on_toggle_terminal: impl Fn() + Copy + 'static,
     #[prop(default = Callback::new(|_| ()))] on_branch_click: Callback<()>,
+    #[prop(default = Callback::new(|()| ()))] on_load_branches: Callback<()>,
+    #[prop(default = Callback::new(|_: String| ()))] on_select_branch: Callback<String>,
     #[prop(default = Callback::new(|_| ()))] on_sync_click: Callback<()>,
 ) -> impl IntoView {
     let chat = expect_context::<ChatState>();
@@ -40,7 +42,6 @@ pub fn StatusBar(
 
             {move || {
                 git_status.get().map(|status| {
-                    let branch = status.branch.clone();
                     let ahead = status.ahead;
                     let behind = status.behind;
                     let insertions = status.line_stats.insertions;
@@ -49,13 +50,7 @@ pub fn StatusBar(
 
                     view! {
                         <span class="git-status-widget">
-                            <button
-                                class="git-branch-btn"
-                                title="Active Git branch (click to switch)"
-                                on:click=move |_| on_branch_click.run(())
-                            >
-                                <super::ui::Icon name=super::ui::IconName::GitBranch /> {branch}
-                            </button>
+                            <super::BranchPicker on_load=on_load_branches on_select=on_select_branch on_new=on_branch_click />
                             {if ahead > 0 || behind > 0 {
                                 view! {
                                     <span class="git-divergence" title="Ahead/behind upstream commits">

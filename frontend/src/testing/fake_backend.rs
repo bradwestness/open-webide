@@ -82,6 +82,10 @@ pub struct FakeBackend {
     pub rewinds: RefCell<BTreeMap<i64, openwebide_core::RewindPlan>>,
     pub git_diffs: RefCell<VecDeque<Result<String, String>>>,
     pub git_statuses: RefCell<VecDeque<Deferred<GitRepoStatus>>>,
+    pub git_branches: RefCell<Vec<GitBranchInfo>>,
+    pub git_branches_results: RefCell<VecDeque<Deferred<Vec<GitBranchInfo>>>>,
+    pub git_checkout_results: RefCell<VecDeque<Deferred<GitCheckoutResult>>>,
+    pub git_checkout_requests: RefCell<Vec<(Option<i64>, GitCheckoutRequest)>>,
     pub git_status_requests: RefCell<Vec<Option<i64>>>,
     pub model_setup: RefCell<openwebide_core::ModelSetup>,
     pub detections: RefCell<BTreeMap<(i64, String), openwebide_core::ModelDetection>>,
@@ -1234,7 +1238,12 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "git_branches",
             });
-            Ok(Vec::new())
+            let pending = self.git_branches_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                pending.await.map_err(|error| error.to_string())?
+            } else {
+                Ok(self.git_branches.borrow().clone())
+            }
         })
     }
     fn git_commit<'a>(
@@ -1251,14 +1260,22 @@ impl Backend for FakeBackend {
     }
     fn git_checkout<'a>(
         &'a self,
-        _project_id: Option<i64>,
-        _req: &'a GitCheckoutRequest,
+        project_id: Option<i64>,
+        req: &'a GitCheckoutRequest,
     ) -> LocalBoxFuture<'a, Result<GitCheckoutResult, String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {
                 method: "git_checkout",
             });
-            Err("git_checkout has no scripted response".into())
+            self.git_checkout_requests
+                .borrow_mut()
+                .push((project_id, req.clone()));
+            let pending = self.git_checkout_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                pending.await.map_err(|error| error.to_string())?
+            } else {
+                Err("git_checkout has no scripted response".into())
+            }
         })
     }
     fn git_sync<'a>(

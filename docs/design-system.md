@@ -14,3 +14,5 @@ Existing shared CSS classes remain supported while components migrate. Colors, s
 Reasoning, run context and tools use `DisclosurePanel` for left-aligned headers, caret controls and retained collapsed content. Active reasoning adds its timing, token estimate and spinner to the shared header.
 
 `PanelToolbar` groups contextual information and actions beneath the single `ToolPanel` heading; feature panes do not repeat their panel or selected-view titles. Explorer and Changes share file-row spacing, icons and selection treatment.
+
+`BranchPicker` provides the same native branch selection and New branch action in Changes and the footer. `GitActions` owns discovery, checkout and prompt scope, using `ProjectGit` adapters and guarding late results by project, account and host revision.

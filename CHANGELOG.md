@@ -11,6 +11,12 @@ for what's still ahead.
 
 ### Changed
 
+- Display the top-bar wordmark as “Open WebIDE”.
+
+- Add a minimize button beside each dock panel’s move controls; collapsing preserves mounted content and saved layout state.
+
+- Switch Git branches from a shared selector in Changes and the footer, with New branch opening the existing name dialog. Load and switch repository branches through the same Git facade in local and remote projects.
+
 - Keep one heading per tool panel, group session search and New chat together, and align Changes rows, selection, spacing and actions with Explorer.
 
 - Share left-aligned disclosure headers across reasoning, run context and tool groups. Anchor resize handles to the full panel boundary so Terminal and other docked panels remain draggable regardless of their content wrappers.

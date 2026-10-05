@@ -51,7 +51,11 @@ async fn panels_collapse_without_unmounting_and_persist_in_both_modes() {
             let element = mounted.element(&selector);
             let child = element.first_element_child().unwrap();
             let button = format!("button[aria-controls='panel-{}']", panel.id());
-            mounted.click(&button);
+            mounted.click(&format!(
+                "#panel-{} button[aria-label='Minimize {}']",
+                panel.id(),
+                panel.label()
+            ));
             settle().await;
             assert_eq!(
                 mounted
