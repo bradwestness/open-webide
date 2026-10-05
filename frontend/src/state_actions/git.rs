@@ -229,6 +229,7 @@ impl GitActions {
             });
         });
         let on_select_branch = Callback::new(move |branch: String| checkout.run((branch, false)));
+        let prompt_owner = Owner::current().expect("Git actions have an owner");
         let on_branch_click = Callback::new(move |()| {
             let project_id = active_project.get_untracked();
             let generation = auth.generation.get_untracked();
@@ -239,14 +240,16 @@ impl GitActions {
                 value: String::new(),
                 placeholder: "Branch name (e.g. feat/my-feature)".to_string(),
                 submit_label: "Create".to_string(),
-                on_submit: Callback::new(move |branch: String| {
-                    if active_project.get_untracked() == project_id
-                        && auth.generation.get_untracked() == generation
-                        && project_git.revision() == host_revision
-                        && git.branch_revision.get_untracked() == revision
-                    {
-                        checkout.run((branch, true));
-                    }
+                on_submit: prompt_owner.with(|| {
+                    Callback::new(move |branch: String| {
+                        if active_project.get_untracked() == project_id
+                            && auth.generation.get_untracked() == generation
+                            && project_git.revision() == host_revision
+                            && git.branch_revision.get_untracked() == revision
+                        {
+                            checkout.run((branch, true));
+                        }
+                    })
                 }),
             });
         });

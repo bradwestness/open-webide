@@ -119,7 +119,7 @@ async fn stacked_prompt_submits_once_and_returns_focus_to_settings() {
     });
     mounted.state.settings.show_settings.set(true);
     settle().await;
-    let field = mounted.element("input[name=workspace-layout]");
+    let field = mounted.element(".ui-seg-btn");
     assert!(active().is_same_node(Some(&field)));
     mounted.state.ui.set_prompt(PromptRequest {
         title: "Name".into(),

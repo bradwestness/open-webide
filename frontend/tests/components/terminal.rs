@@ -63,7 +63,7 @@ async fn hello_precedes_list_and_unmount_kills_shells() {
         fake.sent().as_slice(),
         [BridgeClientMessage::Hello { .. }, BridgeClientMessage::List]
     ));
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     settle().await;
     let id = fake
         .sent()
@@ -98,7 +98,7 @@ async fn rejected_hello_badge_and_legacy_spawn() {
             .unwrap()
             .contains("sign-in rejected")
     );
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     assert!(
         !fake
             .sent()
@@ -119,7 +119,7 @@ async fn rejected_hello_badge_and_legacy_spawn() {
         slot.borrow().as_ref().unwrap().status().get_untracked(),
         BridgeStatus::Legacy
     );
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     assert!(
         fake.sent()
             .iter()
@@ -135,7 +135,7 @@ async fn reconnect_attaches_last_seq_and_restart_opens_fresh_shell() {
     settle().await;
     ready(&fake);
     settle().await;
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     let id = fake
         .sent()
         .into_iter()
@@ -250,7 +250,7 @@ async fn replacement_after_effect_owner_cleanup_kills_old_shell() {
     settle().await;
     ready(&fake);
     settle().await;
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     let id = fake
         .sent()
         .into_iter()
@@ -294,7 +294,7 @@ async fn logout_kills_shell_before_terminal_unmount() {
     settle().await;
     ready(&fake);
     settle().await;
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     let state = &mounted.state;
     auth_slot.borrow().unwrap().reset_user_state(
         state.projects,
@@ -325,7 +325,7 @@ async fn unmount_during_reconnect_delivers_pending_kill_after_hello() {
     settle().await;
     ready(&fake);
     settle().await;
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     let id = fake
         .sent()
         .into_iter()
@@ -358,7 +358,7 @@ async fn close_during_reconnect_retains_cleanup_without_consumers() {
     settle().await;
     ready(&fake);
     settle().await;
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     fake.disconnect();
     settle().await;
     slot.borrow_mut().take().unwrap().close();
@@ -508,7 +508,11 @@ async fn repeated_test_preserves_output_and_interrupt_until_exit() {
             .unwrap()
             .contains("slow test failed")
     );
-    mounted.click_text("Kill");
+    super::support::click_action(
+        &mounted,
+        r#"button[title="Interrupt active process (Ctrl+C)"]"#,
+    )
+    .await;
     assert!(fake.sent().contains(&BridgeClientMessage::Kill {
         id: first_id.clone(),
         signal: Some("SIGINT".into()),
@@ -635,7 +639,11 @@ async fn reconnect_reconciles_test_spawn_without_acknowledgement() {
                     .unwrap()
                     .contains("recovered test output")
             );
-            mounted.click_text("Kill");
+            super::support::click_action(
+                &mounted,
+                r#"button[title="Interrupt active process (Ctrl+C)"]"#,
+            )
+            .await;
             assert_eq!(
                 fake.sent().last(),
                 Some(&BridgeClientMessage::Kill {
@@ -677,7 +685,7 @@ async fn incremental_lines_batch_clear_scroll_and_cleanup() {
         pty: true,
     });
     settle().await;
-    mounted.click_text("Clear");
+    super::support::click_action(&mounted, r#"button[title="Clear output (Ctrl+L)"]"#).await;
     settle().await;
     let output = mounted
         .root
@@ -752,7 +760,7 @@ async fn incremental_lines_batch_clear_scroll_and_cleanup() {
         f64::from(output.scroll_height() - output.client_height()) - output.scroll_top() <= 1.0
     );
     send(8, "\x1b[31mred\x1b[");
-    mounted.click_text("Clear");
+    super::support::click_action(&mounted, r#"button[title="Clear output (Ctrl+L)"]"#).await;
     send(9, "safe<>&");
     settle().await;
     assert_eq!(output.text_content().unwrap(), "safe<>&");
@@ -925,7 +933,7 @@ async fn visibility_retains_shell_output_and_hidden_reconnect_sequence() {
             .iter()
             .any(|message| matches!(message, BridgeClientMessage::Spawn { .. }))
     );
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     let id = fake
         .sent()
         .into_iter()
@@ -947,7 +955,7 @@ async fn visibility_retains_shell_output_and_hidden_reconnect_sequence() {
         .query_selector(".terminal-dock")
         .unwrap()
         .unwrap();
-    mounted.click("button.term-close-btn");
+    super::support::click_action(&mounted, "button.term-close-btn").await;
     settle().await;
     assert!(
         mounted
@@ -1077,12 +1085,12 @@ async fn every_remote_spawn_uses_request_project_and_existing_shell_stays_put() 
         .projects
         .projects
         .update(|projects| projects[0].path = Some(String::new()));
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     assert!(
         matches!(fake.sent().last(), Some(BridgeClientMessage::Spawn { cwd, .. }) if cwd.as_deref() == Some("."))
     );
     mounted.state.projects.active_project.set(None);
-    mounted.click_text("+ Shell");
+    super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
     assert!(matches!(
         fake.sent().last(),
         Some(BridgeClientMessage::Spawn { cwd: None, .. })
@@ -1113,7 +1121,10 @@ async fn remote_cwd_failure_retries_original_spawn_at_root_once() {
         ready(&fake);
         settle().await;
         match action {
-            "shell" | "escape" => mounted.click_text("+ Shell"),
+            "shell" | "escape" => {
+                super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#)
+                    .await;
+            }
             "test" => {
                 mounted.input("/test");
                 mounted.key("Enter", "Enter", false);
@@ -1204,7 +1215,7 @@ async fn remote_cwd_fallback_ignores_unrelated_errors_and_stale_requests() {
         settle().await;
         ready(&fake);
         settle().await;
-        mounted.click_text("+ Shell");
+        super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#).await;
         let id = fake
             .sent()
             .into_iter()

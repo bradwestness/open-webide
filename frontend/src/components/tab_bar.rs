@@ -38,18 +38,45 @@ pub fn TabBar(
                 >
                     "Open remote"
                 </button>
-                <button
-                    class=move || {
-                        if show_recent.get() {
-                            "tab-action recent open".to_string()
-                        } else {
-                            "tab-action recent".to_string()
+                <super::dropdown::Dropdown aria_label="Recent projects" trigger_class="tab-action recent" open=show_recent label=|| view! { <span>"Recent"</span> }>
+                    <For
+                        each=move || recent_projects.get()
+                        key=|p| p.id
+                        children=move |p| {
+                            let id = p.id;
+                            let name = p.name.clone();
+                            let mode = p.mode;
+                            view! {
+                                <div
+                                    class="ui-dropdown-item recent-item" role="menuitem" tabindex="0" on:keydown=move |event: web_sys::KeyboardEvent| { if matches!(event.key().as_str(), "Enter" | " ") { event.prevent_default(); on_open_project.run(id); show_recent.set(false); } }
+                                    on:click=move |_| {
+                                        on_open_project.run(id);
+                                        show_recent.set(false);
+                                    }
+                                >
+                                    <span class="recent-name">{name}</span>
+                                    <span class="tab-mode">{mode.as_str()}</span>
+                                    <button
+                                        class="icon-btn tab-close"
+                                        title="Delete project"
+                                        on:click=move |e: web_sys::MouseEvent| {
+                                            e.stop_propagation();
+                                            on_delete_project.run(id);
+                                        }
+                                    >
+                                        <crate::components::ui::Icon name=crate::components::ui::IconName::X />
+                                    </button>
+                                </div>
+                            }
                         }
-                    }
-                    on:click=move |_| show_recent.update(|v| *v = !*v)
-                >
-                    "Recent "<super::ui::Icon name=super::ui::IconName::ChevronDown />
-                </button>
+                    />
+                    <Show
+                        when=move || recent_projects.with(Vec::is_empty)
+                        fallback=|| ()
+                    >
+                        <p class="empty">"No other saved projects."</p>
+                    </Show>
+                </super::dropdown::Dropdown>
                 <For
                     each=move || open_tabs.get()
                     key=|p| p.id
@@ -96,48 +123,7 @@ pub fn TabBar(
             >
                 <super::ui::Icon name=super::ui::IconName::MessageCircle />
             </button>
-            <Show when=move || show_recent.get() fallback=|| ()>
-                <div class="recent-backdrop" on:click=move |_| show_recent.set(false) />
-                <div class="recent-menu">
-                    <For
-                        each=move || recent_projects.get()
-                        key=|p| p.id
-                        children=move |p| {
-                            let id = p.id;
-                            let name = p.name.clone();
-                            let mode = p.mode;
-                            view! {
-                                <div
-                                    class="recent-item"
-                                    on:click=move |_| {
-                                        on_open_project.run(id);
-                                        show_recent.set(false);
-                                    }
-                                >
-                                    <span class="recent-name">{name}</span>
-                                    <span class="tab-mode">{mode.as_str()}</span>
-                                    <button
-                                        class="icon-btn tab-close"
-                                        title="Delete project"
-                                        on:click=move |e: web_sys::MouseEvent| {
-                                            e.stop_propagation();
-                                            on_delete_project.run(id);
-                                        }
-                                    >
-                                        <crate::components::ui::Icon name=crate::components::ui::IconName::X />
-                                    </button>
-                                </div>
-                            }
-                        }
-                    />
-                    <Show
-                        when=move || recent_projects.with(Vec::is_empty)
-                        fallback=|| ()
-                    >
-                        <p class="empty">"No other saved projects."</p>
-                    </Show>
-                </div>
-            </Show>
+
         </div>
     }
 }

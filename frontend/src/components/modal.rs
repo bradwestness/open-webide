@@ -28,6 +28,10 @@ pub(crate) fn modal_is_open() -> bool {
     MODALS.with(|stack| !stack.borrow().entries.is_empty())
 }
 
+pub(crate) fn allows_focus(element: &web_sys::Element) -> bool {
+    top_panel().is_none_or(|panel| panel.contains(Some(element)))
+}
+
 fn tabbable(panel: &web_sys::HtmlElement) -> Vec<web_sys::HtmlElement> {
     fn visit(parent: &web_sys::Element, elements: &mut Vec<web_sys::HtmlElement>) {
         let mut child = parent.first_element_child();
@@ -57,7 +61,11 @@ fn focus_initial(panel: &web_sys::HtmlElement) {
     let elements = tabbable(panel);
     let target = elements
         .iter()
-        .find(|element| element.matches("input, select, textarea").unwrap_or(false))
+        .find(|element| {
+            element
+                .matches("input, select, textarea, .ui-dropdown-trigger, .ui-seg-btn")
+                .unwrap_or(false)
+        })
         .or_else(|| {
             elements.iter().find(|element| {
                 element
@@ -84,6 +92,22 @@ fn handle_key(event: &web_sys::Event) {
         return;
     };
     let Some(panel) = top_panel() else { return };
+    // An open dropdown consumes Escape before its containing dialog closes.
+    if matches!(key.key().as_str(), "Escape" | "Tab")
+        && event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .and_then(|target| target.closest(".ui-dropdown").ok().flatten())
+            .is_some_and(|dropdown| {
+                dropdown
+                    .query_selector(".ui-dropdown-menu")
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+    {
+        return;
+    }
     // Capture prevents IDE and underlying modal controls from seeing this keystroke.
     if key.key() == "Escape" {
         event.stop_propagation();

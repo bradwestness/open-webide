@@ -523,7 +523,7 @@ fn ConnectionModels(
     });
     view! {
         <div class="tui-connection-group" data-connection-id=id.to_string()>
-            <button class="btn recent-item tui-connection-heading"
+            <button class="ui-dropdown-item recent-item tui-connection-heading" role="menuitem"
                 aria-expanded=move || expanded.get().to_string()
                 disabled=!enabled
                 on:click=move |_| expanded.update(|value| *value = !*value)>
@@ -539,8 +539,8 @@ fn ConnectionModels(
                     let name = model.name.clone();
                     let active_name = name.clone();
                     view! {
-                        <button class="btn recent-item tui-connection-model"
-                            aria-current=move || (active_connection.get() == Some(id) && chat.session_telemetry.with(|telemetry| telemetry.model == active_name)).to_string()
+                        <button class="ui-dropdown-item recent-item tui-connection-model" role="menuitemradio"
+                            aria-checked=move || (active_connection.get() == Some(id) && chat.session_telemetry.with(|telemetry| telemetry.model == active_name)).to_string()
                             disabled=move || chat.streaming.get() || chat.connection_changing.get()
                             on:click=move |_| on_select.run((id, name.clone()))>
                             {model.name}
@@ -620,22 +620,14 @@ fn TuiStatusLine(
             <super::approval_mode::ApprovalModePicker />
             <Show when=move || streaming.get() || has_awaiting.get()><span class="tui-run-state">{move || if has_awaiting.get() { "Awaiting" } else { "Running" }}</span></Show>
             <span class="tui-sep">"│"</span>
-            <span class="tui-model-picker">
-                <button class="btn ghost tui-model-name" title="Choose connection and model" aria-haspopup="menu" aria-expanded=move || show_model_menu.get() on:click=move |_| show_model_menu.set(!show_model_menu.get())>
-                {move || session_telemetry.with(|telemetry| telemetry.model.clone())}
-                </button>
-                <Show when=move || show_model_menu.get() fallback=|| ()>
-                    <div class="recent-backdrop" on:click=move |e| { e.stop_propagation(); show_model_menu.set(false); } />
-                    <div class="recent-menu tui-model-menu" on:click=move |e| e.stop_propagation()>
-                        <For each=move || settings.connections.get()
-                            key=|connection| (connection.id, connection.name.clone(), connection.base_url.clone(), connection.enabled)
-                            children=move |connection| view! {
-                                <ConnectionModels connection=connection active_connection=active_connection models=models on_select=on_select />
-                            }
-                        />
-                    </div>
-                </Show>
-            </span>
+            <super::dropdown::Dropdown class="tui-model-picker" trigger_class="btn ghost tui-model-name" menu_class="tui-model-menu" aria_label="Choose connection and model" open=show_model_menu above=true label=move || view! { <span>{move || session_telemetry.with(|telemetry| telemetry.model.clone())}</span> }>
+                <For each=move || settings.connections.get()
+                    key=|connection| (connection.id, connection.name.clone(), connection.base_url.clone(), connection.enabled)
+                    children=move |connection| view! {
+                        <ConnectionModels connection=connection active_connection=active_connection models=models on_select=on_select />
+                    }
+                />
+            </super::dropdown::Dropdown>
             <span class="tui-sep">"│"</span>
             <span class=move || format!("tui-ctx-gauge {}", gauge_color_class()) title="Context Window Utilization">
                 "Ctx: "
@@ -822,22 +814,22 @@ pub fn ChatPane(
                                     view! {
                                         <Show when=move || system.get() fallback=move || view! {
                                             <Show when=move || assistant.get() fallback=move || view! {
-                                                {render_user_message(content, view! { <div class="tui-prompt-actions">
+                                                {render_user_message(content, view! { <div class="tui-prompt-actions"><Show when=move || (conversation_actions.is_some() || on_rewind.is_some()) && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))><super::dropdown::ActionMenu aria_label="Message actions">
                                                 <Show when=move || conversation_actions.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
-                                                    <button type="button" class="icon-btn ui-icon tui-edit-prompt" title="Edit prompt" aria-label="Edit prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
+                                                    <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon tui-edit-prompt" title="Edit prompt" aria-label="Edit prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
                                                         if let (Some(actions), Some(id)) = (conversation_actions, item.with_untracked(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { actions.edit.run(id); }
-                                                    }><span aria-hidden="true"><crate::components::ui::Icon name=crate::components::ui::IconName::Pencil /></span></button>
-                                                    <button type="button" class="icon-btn ui-icon tui-fork-prompt" aria-label="Fork conversation from this prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) title="Copy the history before this prompt into a new conversation" disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
+                                                    }><span aria-hidden="true"><crate::components::ui::Icon name=crate::components::ui::IconName::Pencil /></span><span>"Edit prompt"</span></button>
+                                                    <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon tui-fork-prompt" aria-label="Fork conversation from this prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) title="Fork conversation" disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
                                                         if let (Some(actions), Some(id)) = (conversation_actions, item.with_untracked(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { actions.fork.run(id); }
-                                                    }><span aria-hidden="true"><crate::components::ui::Icon name=crate::components::ui::IconName::GitFork /></span></button>
+                                                    }><span aria-hidden="true"><crate::components::ui::Icon name=crate::components::ui::IconName::GitFork /></span><span>"Fork conversation"</span></button>
                                                 </Show>
                                                 <Show when=move || on_rewind.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
-                                                    <button type="button" class="icon-btn ui-icon tui-rewind" title="Rewind to this prompt" aria-label="Rewind to this prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get()
+                                                    <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon tui-rewind" title="Rewind to this prompt" aria-label="Rewind to this prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get()
                                                         on:click=move |_| {
                                                             if let (Some(action), Some(id)) = (on_rewind, item.with(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { action.run(id); }
-                                                        }><span aria-hidden="true"><crate::components::ui::Icon name=crate::components::ui::IconName::Undo2 /></span></button>
+                                                        }><span aria-hidden="true"><crate::components::ui::Icon name=crate::components::ui::IconName::Undo2 /></span><span>"Rewind to this prompt"</span></button>
                                                 </Show>
-                                                </div> }.into_any())}
+                                                </super::dropdown::ActionMenu></Show></div> }.into_any())}
                                                 {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 => view! { <crate::components::RunChangesPanel message=message.id /> }.into_any(), _ => ().into_any() })}
                                                 {move || item.with(|item| match item { ConversationItem::Message(message) if message.id > 0 && message.role == Role::User => view! { <super::turn_summary::TurnSummary message=message.id /> }.into_any(), _ => ().into_any() })}
                                             }>

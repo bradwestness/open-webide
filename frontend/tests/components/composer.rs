@@ -609,7 +609,7 @@ async fn attachment_history_renders_and_rewind_restores_text_and_images() {
             .unwrap()
             .contains("[Open WebIDE prompt]")
     );
-    mounted.click(".tui-rewind");
+    super::support::click_action(&mounted, ".tui-rewind").await;
     settle().await;
     mounted.click(".modal-footer .danger");
     settle().await;

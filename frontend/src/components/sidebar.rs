@@ -77,22 +77,22 @@ pub fn Sidebar(
                             <div class="connection">
                                 <span class="conn-name">{name}</span>
                                 <span class="conn-kind">{kind.display_name()}</span>
-                                <span class="conn-actions">
-                                    <button
-                                        class="icon-btn"
+                                <super::dropdown::ActionMenu aria_label="Server actions">
+                                    <button role="menuitem"
+                                        class="ui-dropdown-item recent-item icon-btn"
                                         title="Edit"
                                         on:click=move |_| on_edit_connection.run(id)
                                     >
                                         <crate::components::ui::Icon name=crate::components::ui::IconName::Pencil />
-                                    </button>
-                                    <button
-                                        class="icon-btn"
+                                    <span>"Edit"</span></button>
+                                    <button role="menuitem"
+                                        class="ui-dropdown-item recent-item icon-btn"
                                         title="Delete"
                                         on:click=move |_| on_delete_connection.run(id)
                                     >
                                         <crate::components::ui::Icon name=crate::components::ui::IconName::X />
-                                    </button>
-                                </span>
+                                    <span>"Delete"</span></button>
+                                </super::dropdown::ActionMenu>
                             </div>
                         }
                     }
@@ -173,22 +173,22 @@ pub fn Sidebar(
                         view! {
                             <div class="session">
                                 <span class="session-name">{name}</span>
-                                <span class="session-actions">
-                                    <button
-                                        class="icon-btn"
+                                <super::dropdown::ActionMenu aria_label="Prompt actions">
+                                    <button role="menuitem"
+                                        class="ui-dropdown-item recent-item icon-btn"
                                         title="Edit"
                                         on:click=move |_| on_edit_prompt.run(id)
                                     >
                                         <crate::components::ui::Icon name=crate::components::ui::IconName::Pencil />
-                                    </button>
-                                    <button
-                                        class="icon-btn"
+                                    <span>"Edit"</span></button>
+                                    <button role="menuitem"
+                                        class="ui-dropdown-item recent-item icon-btn"
                                         title="Delete"
                                         on:click=move |_| on_delete_prompt.run(id)
                                     >
                                         <crate::components::ui::Icon name=crate::components::ui::IconName::X />
-                                    </button>
-                                </span>
+                                    <span>"Delete"</span></button>
+                                </super::dropdown::ActionMenu>
                             </div>
                         }
                     }

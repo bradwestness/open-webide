@@ -75,14 +75,14 @@ pub fn FileTree(
             style=move || format!("width: {}px; flex: none;", tree_width.get())
         >
             <super::ui::PanelToolbar class="file-tree-header">
-                <span class="file-tree-actions">
-                    <button class="icon-btn" title="New file" on:click=move |_| on_new_file.run(())>
+                <super::dropdown::ActionMenu aria_label="File actions">
+                    <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New file" on:click=move |_| on_new_file.run(())>
                         <crate::components::ui::Icon name=crate::components::ui::IconName::File />
-                    </button>
-                    <button class="icon-btn" title="New folder" on:click=move |_| on_new_dir.run(())>
+                    <span>"New file"</span></button>
+                    <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New folder" on:click=move |_| on_new_dir.run(())>
                         <crate::components::ui::Icon name=crate::components::ui::IconName::Folder />
-                    </button>
-                </span>
+                    <span>"New folder"</span></button>
+                </super::dropdown::ActionMenu>
             </super::ui::PanelToolbar>
             <Show when=move || needs_grant.get() fallback=|| ()>
                 <div style="padding: 12px; text-align: center;">
@@ -208,13 +208,10 @@ pub fn SearchPane(
     });
     view! { <div class="search-pane">
 
-            <div
-                class="file-tree-search"
-
-            >
+            <super::ui::PanelSearchRow class="file-tree-search">
                 <input
                     type="text"
-                    class="search-input"
+                    class="form-input panel-search-input search-input"
                     aria-label="Search project files"
                     placeholder="Search files…"
                     node_ref=search_input
@@ -258,7 +255,7 @@ pub fn SearchPane(
                 >
                     <crate::components::ui::Icon name=crate::components::ui::IconName::FolderSearch />
                 </button>
-            </div>
+            </super::ui::PanelSearchRow>
                 <div class="search-file-views" hidden=move || !query.get().is_empty()>{children.map(|children| children())}</div>
                 <div class="tree-root search-results" hidden=move || query.get().is_empty()>
                     <For

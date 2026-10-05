@@ -29,11 +29,11 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
         aria-label=panel.label()>
         <div class="tool-panel-heading">
             <span>{panel.label()}</span>
-            <div class="tool-panel-actions">
-                <button type="button" class="icon-btn ui-icon" aria-label=format!("Move {} left", panel.label()) title="Move panel left" on:click=move |_| actions.move_panel.run((panel, false))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowLeft /></button>
-                <button type="button" class="icon-btn ui-icon" aria-label=format!("Move {} right", panel.label()) title="Move panel right" on:click=move |_| actions.move_panel.run((panel, true))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowRight /></button>
-                <button type="button" class="icon-btn ui-icon" aria-label=format!("Minimize {}", panel.label()) title="Minimize panel" on:click=move |_| actions.toggle.run(panel)><crate::components::ui::Icon name=crate::components::ui::IconName::Minus /></button>
-            </div>
+            <super::dropdown::ActionMenu aria_label="Panel actions">
+                <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Move {} left", panel.label()) title="Move panel left" on:click=move |_| actions.move_panel.run((panel, false))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowLeft /><span>"Move panel left"</span></button>
+                <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Move {} right", panel.label()) title="Move panel right" on:click=move |_| actions.move_panel.run((panel, true))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowRight /><span>"Move panel right"</span></button>
+                <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Minimize {}", panel.label()) title="Minimize panel" on:click=move |_| actions.toggle.run(panel)><crate::components::ui::Icon name=crate::components::ui::IconName::Minus /><span>"Minimize panel"</span></button>
+            </super::dropdown::ActionMenu>
             <button class="btn" title="Return to chat" on:click=move |_| actions.show.run(Panel::Chat)>"Back to chat"</button>
         </div>
         <div class="tool-panel-content">

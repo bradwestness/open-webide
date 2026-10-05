@@ -481,7 +481,6 @@ async fn connection_tree_choice_carries_into_new_session() {
 #[wasm_bindgen_test]
 async fn user_model_defaults_exclude_shared_model_configuration() {
     use openwebide_frontend::components::model_setup::ModelSetupPanel;
-    use wasm_bindgen::JsCast;
     let mounted = mount_test(|state| {
         state.seed_connection();
         *state.fake.models.borrow_mut() = vec![ModelInfo {
@@ -504,20 +503,16 @@ async fn user_model_defaults_exclude_shared_model_configuration() {
             .unwrap()
             .is_none()
     );
-    let primary = mounted
-        .element(".model-setup select")
-        .dyn_into::<web_sys::HtmlSelectElement>()
-        .unwrap();
-    primary.set_value(
+    super::support::choose_dropdown(
+        &mounted,
+        ".model-setup .ui-dropdown-trigger",
         &serde_json::to_string(&openwebide_core::ModelSelection {
             server_id: 1,
             model: "qwen3:8b".into(),
         })
         .unwrap(),
-    );
-    primary
-        .dispatch_event(&web_sys::Event::new("change").unwrap())
-        .unwrap();
+    )
+    .await;
     mounted.click_text("Save model defaults");
     settle().await;
     let setup = mounted.state.fake.model_setup.borrow().clone();
@@ -574,7 +569,7 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
             }
         });
         settle().await;
-        mounted.element("button[title='Edit']").click();
+        super::support::click_action(&mounted, "button[title='Edit']").await;
         settle().await;
         assert_eq!(mounted.state.settings.conn_edit_id.get_untracked(), Some(1));
         mounted.click_text("Next: server");

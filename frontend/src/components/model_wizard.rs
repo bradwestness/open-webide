@@ -183,17 +183,11 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
                 <Show when=move || step.get() == 1>
                     <FormSection title="Provider">
                     <FormField label="Provider type">
-                        <select class="form-input" prop:value=move || kind.get().as_str() on:change=move |event| { if let Some(value) = ProviderKind::parse(&event_target_value(&event)) { kind.set(value); } }>
-                            <option value="ollama">"Ollama"</option><option value="llamacpp">"OpenAI-compatible (llama.cpp, LM Studio, vLLM…)"</option>
-                        </select>
+                        <super::dropdown::DropdownSelect label="Provider type" value=Signal::derive(move || kind.get().as_str().to_string()) options=Signal::derive(|| vec![super::dropdown::SelectOption::new("ollama", "Ollama"), super::dropdown::SelectOption::new("llamacpp", "OpenAI-compatible (llama.cpp, LM Studio, vLLM…)")]) on_change=Callback::new(move |value: String| { if let Some(value) = ProviderKind::parse(&value) { kind.set(value); } }) />
                     </FormField>
-                    <FormField label="Server preset"><select class="form-input" prop:value=move || serde_json::to_string(&preset.get()).unwrap_or_default().trim_matches('"').to_string() on:change=move |event| {
-                        if let Ok(value) = serde_json::from_str::<openwebide_core::ServerPreset>(&format!("\"{}\"",event_target_value(&event))) {
-                            preset_edited.set(true); preset.set(value); if value != openwebide_core::ServerPreset::Auto { kind.set(value.kind()); url.set(value.base_url().into()); }
-                        }
-                    }>
-                        <option value="auto">"Detect automatically"</option><option value="ollama">"Ollama"</option><option value="llama_cpp">"llama.cpp"</option><option value="lm_studio">"LM Studio"</option><option value="vllm">"vLLM"</option><option value="lite_llm">"LiteLLM"</option><option value="open_router">"OpenRouter"</option><option value="sg_lang">"SGLang"</option><option value="kobold_cpp">"KoboldCpp"</option>
-                    </select></FormField>
+                    <FormField label="Server preset"><super::dropdown::DropdownSelect label="Server preset" value=Signal::derive(move || serde_json::to_string(&preset.get()).unwrap_or_default().trim_matches('"').to_string()) options=Signal::derive(|| [("auto", "Detect automatically"), ("ollama", "Ollama"), ("llama_cpp", "llama.cpp"), ("lm_studio", "LM Studio"), ("vllm", "vLLM"), ("lite_llm", "LiteLLM"), ("open_router", "OpenRouter"), ("sg_lang", "SGLang"), ("kobold_cpp", "KoboldCpp")].into_iter().map(|(value, label)| super::dropdown::SelectOption::new(value, label)).collect::<Vec<_>>()) on_change=Callback::new(move |selection: String| {
+                        if let Ok(value) = serde_json::from_str::<openwebide_core::ServerPreset>(&format!("\"{selection}\"")) { preset_edited.set(true); preset.set(value); if value != openwebide_core::ServerPreset::Auto { kind.set(value.kind()); url.set(value.base_url().into()); } }
+                    }) /></FormField>
 
 
                     </FormSection>

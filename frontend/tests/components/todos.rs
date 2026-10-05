@@ -349,10 +349,11 @@ async fn fork_and_rewind_restore_the_plan_before_the_selected_prompt() {
         mounted.state.chat.todo_plan.get_untracked().unwrap().plan,
         plan(TodoStatus::Completed)
     );
-    mounted.click(&format!(
-        ".tui-fork-prompt[data-message-id='{}']",
-        second.id
-    ));
+    super::support::click_action(
+        &mounted,
+        &format!(".tui-fork-prompt[data-message-id='{}']", second.id),
+    )
+    .await;
     idle(&mounted).await;
     assert_ne!(mounted.state.chat.active_session.get_untracked(), Some(1));
     assert_eq!(
@@ -363,7 +364,11 @@ async fn fork_and_rewind_restore_the_plan_before_the_selected_prompt() {
     mounted.state.chat.draft.set(String::new());
     mounted.state.chat.active_session.set(Some(1));
     idle(&mounted).await;
-    mounted.click(&format!(".tui-rewind[data-message-id='{}']", second.id));
+    super::support::click_action(
+        &mounted,
+        &format!(".tui-rewind[data-message-id='{}']", second.id),
+    )
+    .await;
     settle().await;
     mounted.click(".modal-footer .danger");
     idle(&mounted).await;

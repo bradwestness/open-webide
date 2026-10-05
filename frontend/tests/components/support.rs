@@ -335,3 +335,55 @@ pub fn command_actions(
     provide_context(actions);
     actions
 }
+
+pub async fn choose_dropdown(mounted: &Mounted, selector: &str, value: &str) {
+    mounted.click(selector);
+    settle().await;
+    let root = mounted
+        .element(selector)
+        .closest(".ui-dropdown")
+        .unwrap()
+        .unwrap();
+    let options = root.query_selector_all("[data-value]").unwrap();
+    let option = (0..options.length())
+        .filter_map(|index| options.item(index))
+        .filter_map(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+        .find(|option| option.get_attribute("data-value").as_deref() == Some(value))
+        .expect("dropdown option");
+    option.click();
+    settle().await;
+}
+
+/// Activate an action through its visible overflow menu, including repeated message rows.
+pub async fn click_action(mounted: &Mounted, selector: &str) {
+    use wasm_bindgen::JsCast;
+    if let Some(backdrop) = mounted
+        .root
+        .query_selector(".ui-dropdown-backdrop")
+        .unwrap()
+    {
+        backdrop.dyn_into::<web_sys::HtmlElement>().unwrap().click();
+        settle().await;
+    }
+    let triggers = mounted
+        .root
+        .query_selector_all(".ui-action-menu > .ui-dropdown-trigger")
+        .unwrap();
+    for index in 0..triggers.length() {
+        let trigger = triggers
+            .item(index)
+            .unwrap()
+            .dyn_into::<web_sys::HtmlElement>()
+            .unwrap();
+        trigger.click();
+        settle().await;
+        if let Some(action) = mounted.root.query_selector(selector).unwrap() {
+            action.dyn_into::<web_sys::HtmlElement>().unwrap().click();
+            settle().await;
+            return;
+        }
+        trigger.click();
+        settle().await;
+    }
+    panic!("Missing menu action: {selector}");
+}

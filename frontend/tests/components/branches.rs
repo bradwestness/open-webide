@@ -117,7 +117,7 @@ async fn edit_and_resend_branches_the_prefix_preserving_source_images_editor_con
         let mounted = fixture(mode);
         settle().await;
         let original = mounted.state.fake.messages.borrow()[&1].clone();
-        mounted.click(".tui-edit-prompt[data-message-id='3']");
+        super::support::click_action(&mounted, ".tui-edit-prompt[data-message-id='3']").await;
         settle().await;
         assert_eq!(mounted.state.chat.draft.get_untracked(), "original prompt");
         assert_eq!(mounted.state.chat.prompt_images.get_untracked().len(), 1);
@@ -184,7 +184,7 @@ async fn fork_restores_the_selected_draft_and_images_without_sending_or_changing
         let mounted = fixture(mode);
         settle().await;
         let original = mounted.state.fake.messages.borrow()[&1].clone();
-        mounted.click(".tui-fork-prompt[data-message-id='3']");
+        super::support::click_action(&mounted, ".tui-fork-prompt[data-message-id='3']").await;
         idle(&mounted).await;
         // Installing the new session yields once so composer context effects
         // can discard the old attachments before the fork restores its draft.
@@ -222,7 +222,7 @@ async fn fork_restores_the_selected_draft_and_images_without_sending_or_changing
 async fn cancelling_an_edit_keeps_the_source_and_sending_failure_restores_the_edited_draft() {
     let mounted = fixture(None);
     settle().await;
-    mounted.click(".tui-edit-prompt[data-message-id='3']");
+    super::support::click_action(&mounted, ".tui-edit-prompt[data-message-id='3']").await;
     settle().await;
     mounted.click(".tui-prompt-edit .btn");
     settle().await;
@@ -231,7 +231,7 @@ async fn cancelling_an_edit_keeps_the_source_and_sending_failure_restores_the_ed
     mounted.state.chat.draft.set(String::new());
     mounted.state.chat.prompt_images.set(Vec::new());
     settle().await;
-    mounted.click(".tui-edit-prompt[data-message-id='3']");
+    super::support::click_action(&mounted, ".tui-edit-prompt[data-message-id='3']").await;
     settle().await;
     mounted
         .state
@@ -261,7 +261,7 @@ async fn stale_fork_response_cannot_switch_a_new_session_or_account() {
             .fork_results
             .borrow_mut()
             .push_back(receiver);
-        mounted.click(".tui-fork-prompt[data-message-id='3']");
+        super::support::click_action(&mounted, ".tui-fork-prompt[data-message-id='3']").await;
         settle().await;
         let session = mounted.state.chat.sessions.get_untracked()[0].clone();
         if account_change {
@@ -310,7 +310,7 @@ async fn fork_keeps_the_draft_images_and_editor_context_added_while_copying() {
             .fork_results
             .borrow_mut()
             .push_back(receiver);
-        mounted.click(".tui-fork-prompt[data-message-id='3']");
+        super::support::click_action(&mounted, ".tui-fork-prompt[data-message-id='3']").await;
         settle().await;
         mounted.input("next draft");
         let images =

@@ -68,3 +68,7 @@ pub use install_app::InstallApp;
 
 pub mod branch_picker;
 pub use branch_picker::BranchPicker;
+
+pub mod dropdown;
+
+pub use modal::Modal;

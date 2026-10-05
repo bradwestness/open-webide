@@ -591,7 +591,8 @@ async fn terminal_local_spawns_resolve_cwd_and_refuse_stale_probes() {
                 mounted.click_text("Send");
             }
             "restart" => {
-                mounted.click_text("+ Shell");
+                super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#)
+                    .await;
                 let id = fake
                     .sent()
                     .into_iter()
@@ -628,10 +629,15 @@ async fn terminal_local_spawns_resolve_cwd_and_refuse_stale_probes() {
                 .unwrap()
                 .set(Some("cargo test".into())),
             "parallel" => {
-                mounted.click_text("+ Shell");
-                mounted.click_text("+ Shell");
+                super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#)
+                    .await;
+                super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#)
+                    .await;
             }
-            _ => mounted.click_text("+ Shell"),
+            _ => {
+                super::support::click_action(&mounted, r#"button[title="New interactive shell"]"#)
+                    .await;
+            }
         }
         settle().await;
         match scenario {
@@ -1445,14 +1451,7 @@ async fn rewind_restores_files_conversation_and_prompt_in_both_modes() {
             .await
             .unwrap();
         settle().await;
-        assert!(
-            mounted
-                .root
-                .query_selector(".tui-rewind[data-message-id='1']")
-                .unwrap()
-                .is_some()
-        );
-        mounted.click(".tui-rewind[data-message-id='3']");
+        super::support::click_action(&mounted, ".tui-rewind[data-message-id='3']").await;
         settle().await;
         assert_eq!(files.read("file.txt").await.unwrap(), "after");
         assert!(
@@ -1508,7 +1507,7 @@ async fn rewind_confirmation_cannot_change_another_session_project_or_account() 
             view! { {chat_view(state)} <ConfirmDialog/> }
         });
         settle().await;
-        mounted.click(".tui-rewind");
+        super::support::click_action(&mounted, ".tui-rewind").await;
         settle().await;
         match change {
             "session" => mounted.state.chat.active_session.set(Some(2)),

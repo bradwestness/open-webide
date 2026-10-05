@@ -414,12 +414,8 @@ async fn branch_selectors_share_checkout_creation_and_failures_in_both_modes() {
                 .with_untracked(|branches| branches.len() == 2)
         })
         .await;
-        let choose = |selector, value: &str| {
-            let select: web_sys::HtmlSelectElement = mounted.element(selector).unchecked_into();
-            select.set_value(value);
-            select
-                .dispatch_event(&web_sys::Event::new("change").unwrap())
-                .unwrap();
+        let choose = async |selector: &str, value: &str| {
+            super::support::choose_dropdown(&mounted, selector, value).await;
         };
         let (send, receive) = futures::channel::oneshot::channel();
         mounted
@@ -428,7 +424,7 @@ async fn branch_selectors_share_checkout_creation_and_failures_in_both_modes() {
             .git_checkout_results
             .borrow_mut()
             .push_back(receive);
-        choose("#changes-branch select", "branch:feature");
+        choose("#changes-branch .ui-dropdown-trigger", "branch:feature").await;
         if mode == WorkspaceMode::Remote {
             wait_until("checkout request", || {
                 !mounted.state.fake.git_checkout_requests.borrow().is_empty()
@@ -453,14 +449,11 @@ async fn branch_selectors_share_checkout_creation_and_failures_in_both_modes() {
             })
         })
         .await;
-        for selector in ["#changes-branch select", "#footer-branch select"] {
-            assert_eq!(
-                mounted
-                    .element(selector)
-                    .unchecked_into::<web_sys::HtmlSelectElement>()
-                    .value(),
-                "branch:feature"
-            );
+        for selector in [
+            "#changes-branch .ui-dropdown-trigger",
+            "#footer-branch .ui-dropdown-trigger",
+        ] {
+            assert_eq!(mounted.element(selector).text_content().unwrap(), "feature");
         }
         if mode == WorkspaceMode::Remote {
             assert!(
@@ -471,7 +464,7 @@ async fn branch_selectors_share_checkout_creation_and_failures_in_both_modes() {
         } else {
             assert!(gitCalls(&http.0).contains("checkout"));
         }
-        choose("#footer-branch select", "new");
+        choose("#footer-branch .ui-dropdown-trigger", "new").await;
         settle().await;
         let prompt = mounted.state.ui.prompt.get_untracked().unwrap();
         assert_eq!(prompt.title, "New Git Branch");
@@ -524,7 +517,7 @@ async fn branch_selectors_share_checkout_creation_and_failures_in_both_modes() {
                 .borrow_mut()
                 .push_back(receive);
         }
-        choose("#changes-branch select", "branch:main");
+        choose("#changes-branch .ui-dropdown-trigger", "branch:main").await;
         if mode == WorkspaceMode::Remote {
             send.send(Err("uncommitted changes".into())).unwrap();
         }
@@ -552,9 +545,10 @@ async fn branch_selectors_share_checkout_creation_and_failures_in_both_modes() {
                 .push_back(receive);
         }
         mounted
-            .element("#changes-branch select")
-            .dispatch_event(&web_sys::PointerEvent::new("pointerdown").unwrap())
-            .unwrap();
+            .element("#changes-branch .ui-dropdown-trigger")
+            .unchecked_into::<web_sys::HtmlElement>()
+            .click();
+        settle().await;
         if mode == WorkspaceMode::Remote {
             send.send(Err("cannot list branches".into())).unwrap();
         }
@@ -566,11 +560,14 @@ async fn branch_selectors_share_checkout_creation_and_failures_in_both_modes() {
             mounted.state.git.status.get_untracked().unwrap().branch,
             "new-feature"
         );
+        mounted.click("#changes-branch .recent-backdrop");
+        settle().await;
         gitChange(&http.0, "branchesError", false);
         mounted
-            .element("#footer-branch select")
-            .dispatch_event(&web_sys::PointerEvent::new("pointerdown").unwrap())
-            .unwrap();
+            .element("#footer-branch .ui-dropdown-trigger")
+            .unchecked_into::<web_sys::HtmlElement>()
+            .click();
+        settle().await;
         wait_until("branch discovery retry", || {
             !mounted.state.git.branches_loading.get_untracked()
                 && mounted.state.git.branches_error.get_untracked().is_none()

@@ -11,6 +11,10 @@ for what's still ahead.
 
 ### Changed
 
+- Replace secondary action rows with shared inline overflow menus in chat (Edit/Fork/Rewind), sessions, servers/prompts, dock headings, files, Git diffs, and terminal controls.
+
+- Standardize all dropdowns on the Recent menu’s shared surface, rows, keyboard navigation and dismissal. Use editor-style segmented switches and shared search rows throughout panels and settings; remove repeated reasoning/tool history rules.
+
 - Display the top-bar wordmark as “Open WebIDE”.
 
 - Add a minimize button beside each dock panel’s move controls; collapsing preserves mounted content and saved layout state.

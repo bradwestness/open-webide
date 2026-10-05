@@ -151,7 +151,7 @@ async fn typed_theme_controls_update_and_save_the_same_database_values() {
         .enumerate()
     {
         mounted.click(&format!(
-            ".mode-picker label:nth-child({}) input[name=theme]",
+            ".ui-field-group:nth-of-type(2) .ui-seg-btn:nth-child({})",
             index + 1
         ));
         settle().await;
@@ -291,4 +291,285 @@ async fn shared_icons_and_tooltips_are_labeled_themeable_and_cleaned_up() {
     drop(mounted);
     assert!(document.get_element_by_id("ui-action-tooltip").is_none());
     assert_eq!(button.get_attribute("title").as_deref(), Some("Settings"));
+}
+
+#[wasm_bindgen_test]
+async fn shared_dropdowns_fit_the_viewport_skip_disabled_options_and_dismiss_before_modals() {
+    use openwebide_frontend::components::{
+        Modal,
+        dropdown::{DropdownSelect, SelectOption},
+        ui::{DialogBody, PanelSearchRow},
+    };
+    use wasm_bindgen::JsCast;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let shown = RwSignal::new(true);
+        let value = RwSignal::new("b".to_string());
+        let options = RwSignal::new(vec![
+            SelectOption::new("a", "Alpha"),
+            SelectOption::new("b", "Beta"),
+            SelectOption {
+                value: "disabled".into(),
+                label: "Disabled".into(),
+                disabled: true,
+            },
+            SelectOption::new("g", "Gamma"),
+        ]);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            view! { <style>{include_str!("../../styles.css")}</style>
+                <Show when=move || shown.get()>
+                    <Modal title=Signal::derive(|| "Choices".into()) on_close=Callback::new(move |()| shown.set(false))>
+                        <DialogBody>
+                            <DropdownSelect label="Choice" value=Signal::derive(move || value.get()) options=Signal::derive(move || options.get()) on_change=Callback::new(move |selection| value.set(selection)) />
+                            <PanelSearchRow><input class="form-input panel-search-input" aria-label="Files search" /></PanelSearchRow>
+                            <PanelSearchRow><input class="form-input panel-search-input" aria-label="Sessions search" /></PanelSearchRow>
+                        </DialogBody>
+                    </Modal>
+                </Show>
+            }
+        });
+        settle().await;
+        mounted.click(".ui-dropdown-trigger");
+        settle().await;
+        let keyboard = |key: &str| {
+            let init = web_sys::KeyboardEventInit::new();
+            init.set_key(key);
+            init.set_bubbles(true);
+            init.set_cancelable(true);
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .dispatch_event(
+                    &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+                        .unwrap(),
+                )
+                .unwrap();
+        };
+        assert_eq!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .get_attribute("data-value")
+                .as_deref(),
+            Some("b")
+        );
+        keyboard("ArrowDown");
+        assert_eq!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .get_attribute("data-value")
+                .as_deref(),
+            Some("g")
+        );
+        keyboard("Home");
+        assert_eq!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .get_attribute("data-value")
+                .as_deref(),
+            Some("a")
+        );
+        keyboard("b");
+        assert_eq!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .get_attribute("data-value")
+                .as_deref(),
+            Some("b")
+        );
+        options.update(|options| {
+            options.extend(
+                (0..60)
+                    .map(|index| SelectOption::new(index.to_string(), format!("Choice {index}"))),
+            );
+        });
+        settle().await;
+        let menu = mounted
+            .element(".ui-dropdown-menu")
+            .get_bounding_client_rect();
+        let viewport = web_sys::window()
+            .unwrap()
+            .inner_height()
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(menu.top() >= 0.0 && menu.bottom() <= viewport);
+        assert!(menu.height() <= 320.0);
+        for theme in ["", "light"] {
+            let html = web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .document_element()
+                .unwrap();
+            html.set_attribute("data-theme", theme).unwrap();
+            let inputs = mounted
+                .root
+                .query_selector_all(".panel-search-input")
+                .unwrap();
+            let first: web_sys::Element = inputs.item(0).unwrap().unchecked_into();
+            let second: web_sys::Element = inputs.item(1).unwrap().unchecked_into();
+            let style = |element| {
+                web_sys::window()
+                    .unwrap()
+                    .get_computed_style(element)
+                    .unwrap()
+                    .unwrap()
+            };
+            for property in ["padding", "height", "font-size", "background-color"] {
+                assert_eq!(
+                    style(&first).get_property_value(property).unwrap(),
+                    style(&second).get_property_value(property).unwrap()
+                );
+            }
+        }
+        web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .document_element()
+            .unwrap()
+            .remove_attribute("data-theme")
+            .unwrap();
+        keyboard("Escape");
+        settle().await;
+        assert!(shown.get_untracked());
+        assert!(
+            mounted
+                .root
+                .query_selector(".ui-dropdown-menu")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .is_same_node(Some(mounted.element(".ui-dropdown-trigger").as_ref()))
+        );
+        super::support::choose_dropdown(&mounted, ".ui-dropdown-trigger", "g").await;
+        assert_eq!(value.get_untracked(), "g");
+        mounted.click(".ui-dropdown-trigger");
+        settle().await;
+        mounted.click(".ui-dropdown-backdrop");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".ui-dropdown-menu")
+                .unwrap()
+                .is_none()
+        );
+        keyboard("Escape");
+        settle().await;
+        assert!(!shown.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn overflow_actions_close_before_dialogs_and_keep_dialog_callbacks_alive() {
+    use openwebide_frontend::{
+        components::{PromptDialog, dropdown::ActionMenu},
+        state::ui::PromptRequest,
+    };
+    let submitted = RwSignal::new(String::new());
+    let mounted = mount_test(move |state| {
+        let ui = state.ui;
+        view! {
+            <style>{include_str!("../../styles.css")}</style>
+            <ActionMenu aria_label="Example actions">
+                <button role="menuitem" disabled=true>"Unavailable"</button>
+                <button role="menuitem" class="rename" on:click=move |_| ui.set_prompt(PromptRequest {
+                    title: "Rename".into(), value: "Original".into(), placeholder: String::new(), submit_label: "Save".into(),
+                    on_submit: Callback::new(move |value| submitted.set(value)),
+                })>"Rename"</button>
+            </ActionMenu>
+            <PromptDialog />
+        }
+    });
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".ui-dropdown-menu")
+            .unwrap()
+            .is_none()
+    );
+    mounted.click(".ui-dropdown-trigger");
+    settle().await;
+    assert_eq!(
+        web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .active_element()
+            .unwrap(),
+        mounted.element(".rename").into()
+    );
+    mounted.click(".rename");
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".ui-dropdown-menu")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        mounted.element(".modal").contains(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .as_ref()
+                .map(AsRef::as_ref)
+        )
+    );
+    use wasm_bindgen::JsCast;
+    mounted
+        .element(".modal input")
+        .unchecked_into::<web_sys::HtmlInputElement>()
+        .set_value("Changed");
+    mounted.click(".modal-footer .send");
+    settle().await;
+    assert_eq!(submitted.get_untracked(), "Changed");
+    assert!(mounted.root.query_selector(".modal").unwrap().is_none());
+    assert_eq!(
+        web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .active_element()
+            .unwrap(),
+        mounted.element(".ui-dropdown-trigger").into()
+    );
 }

@@ -50,7 +50,7 @@ pub fn StatusBar(
 
                     view! {
                         <span class="git-status-widget">
-                            <super::BranchPicker on_load=on_load_branches on_select=on_select_branch on_new=on_branch_click />
+                            <super::BranchPicker above=true on_load=on_load_branches on_select=on_select_branch on_new=on_branch_click />
                             {if ahead > 0 || behind > 0 {
                                 view! {
                                     <span class="git-divergence" title="Ahead/behind upstream commits">

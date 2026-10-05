@@ -101,7 +101,7 @@ pub fn SegmentedControl<T: Clone + PartialEq + Send + Sync + 'static>(
     let extra_class = class.unwrap_or_default();
 
     view! {
-        <div class=format!("ui-segmented-control {extra_class}")>
+        <div class=format!("ui-segmented-control {extra_class}") role="group">
             {options.into_iter().map(|opt| {
                 let opt_val = opt.value.clone();
                 let opt_val_click = opt.value.clone();
@@ -113,6 +113,7 @@ pub fn SegmentedControl<T: Clone + PartialEq + Send + Sync + 'static>(
                 view! {
                     <button
                         type="button"
+                        aria-pressed=move || (value.get() == opt_val).to_string()
                         class=move || {
                             if is_active() {
                                 "ui-seg-btn active"
@@ -322,4 +323,13 @@ pub fn PanelToolbar(
     children: Children,
 ) -> impl IntoView {
     view! { <div class=format!("panel-toolbar {class}")>{children()}</div> }
+}
+
+/// Consistent search input and inline actions for tool panels.
+#[component]
+pub fn PanelSearchRow(
+    #[prop(default = "")] class: &'static str,
+    children: Children,
+) -> impl IntoView {
+    view! { <div class=format!("panel-search-row {class}")><Icon name=IconName::Search />{children()}</div> }
 }

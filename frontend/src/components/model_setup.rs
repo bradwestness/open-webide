@@ -26,25 +26,10 @@ fn ModelChoice(
     choices: ReadSignal<Vec<ModelOption>>,
     empty: &'static str,
 ) -> impl IntoView {
-    let node = NodeRef::<leptos::html::Select>::new();
-    Effect::new(move |_| {
-        let value = selection_value(&value.get());
-        choices.track();
-        if let Some(node) = node.get() {
-            node.set_value(&value);
-        }
-    });
-    view! {
-        <FormField label=label>
-            <select class="form-input" node_ref=node on:change=move |event| value.set(serde_json::from_str(&event_target_value(&event)).ok())>
-                <option value="">{empty}</option>
-                <For each=move || choices.get() key=|item| (item.selection.server_id, item.selection.model.clone()) children=move |item| {
-                    let encoded = selection_value(&Some(item.selection));
-                    view! { <option value=encoded>{item.label}</option> }
-                } />
-            </select>
-        </FormField>
-    }
+    view! { <FormField label=label><super::dropdown::DropdownSelect label=label value=Signal::derive(move || selection_value(&value.get())) options=Signal::derive(move || {
+        let mut options = vec![super::dropdown::SelectOption::new("", empty)];
+        options.extend(choices.get().into_iter().map(|item| super::dropdown::SelectOption::new(selection_value(&Some(item.selection)), item.label))); options
+    }) on_change=Callback::new(move |selection: String| value.set(serde_json::from_str(&selection).ok())) /></FormField> }
 }
 
 #[component]
@@ -482,19 +467,7 @@ pub(crate) fn ModelSettingsEditor(
 
 #[component]
 fn BooleanSetting(label: &'static str, value: RwSignal<Option<bool>>) -> impl IntoView {
-    let node = NodeRef::<leptos::html::Select>::new();
-    Effect::new(move |_| {
-        let value = value
-            .get()
-            .map(|value| value.to_string())
-            .unwrap_or_default();
-        if let Some(node) = node.get() {
-            node.set_value(&value);
-        }
-    });
-    view! { <FormField label=label><select class="form-input" node_ref=node on:change=move |event| value.set(event_target_value(&event).parse().ok())>
-        <option value="">"Model default"</option><option value="true">"On"</option><option value="false">"Off"</option>
-    </select></FormField> }
+    view! { <FormField label=label><super::dropdown::DropdownSelect label=label value=Signal::derive(move || value.get().map(|value| value.to_string()).unwrap_or_default()) options=Signal::derive(|| vec![super::dropdown::SelectOption::new("", "Model default"), super::dropdown::SelectOption::new("true", "On"), super::dropdown::SelectOption::new("false", "Off")]) on_change=Callback::new(move |selection: String| value.set(selection.parse().ok())) /></FormField> }
 }
 
 #[component]

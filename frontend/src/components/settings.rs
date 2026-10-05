@@ -24,21 +24,6 @@ pub fn Settings(
     let system_prompts = settings.system_prompts.read_only();
     let bridge_url = settings.bridge_url.read_only();
     let on_close = Callback::new(move |()| settings.show_settings.set(false));
-    let prompt_ref = NodeRef::<leptos::html::Select>::new();
-
-    // Leptos 0.8 has no reactive `value` for <select>, so set the DOM value
-    // directly whenever the chosen id or the option list changes.
-    Effect::new(move || {
-        let value = default_prompt
-            .get()
-            .map(|id| id.to_string())
-            .unwrap_or_default();
-        system_prompts.track();
-        if let Some(el) = prompt_ref.get() {
-            el.set_value(&value);
-        }
-    });
-
     let (pairing_token, set_pairing_token) = leptos::prelude::signal(String::new());
     Effect::new(move || {
         wasm_bindgen_futures::spawn_local(async move {
@@ -53,73 +38,10 @@ pub fn Settings(
             <DialogBody>
                 <FormSection title="Appearance" description="Changes apply immediately." class="ui-form-grid">
                 <FormField label="Layout" group=true>
-                    <div class="mode-picker">
-                    {[
-                        (crate::state::responsive::LayoutMode::Automatic, "Automatic"),
-                        (crate::state::responsive::LayoutMode::Desktop, "Desktop"),
-                        (crate::state::responsive::LayoutMode::Phone, "Phone"),
-                    ].into_iter().map(|(mode, label)| view! {
-                        <label class="mode-opt" class:active=move || layout.preferences.with(|prefs| prefs.mode == mode)>
-                            <input type="radio" name="workspace-layout" checked=move || layout.preferences.with(|prefs| prefs.mode == mode) on:click=move |_| { if let Some(actions) = layout_actions { actions.set_mode.run(mode); } } />
-                            {label}
-                        </label>
-                    }).collect_view()}
-                    </div>
+                    <super::ui::SegmentedControl options=vec![super::ui::SegmentOption::new("Automatic", crate::state::responsive::LayoutMode::Automatic), super::ui::SegmentOption::new("Desktop", crate::state::responsive::LayoutMode::Desktop), super::ui::SegmentOption::new("Phone", crate::state::responsive::LayoutMode::Phone)] value=Signal::derive(move || layout.preferences.with(|prefs| prefs.mode)) on_change=Callback::new(move |mode| { if let Some(actions) = layout_actions { actions.set_mode.run(mode); } }) />
                 </FormField>
                 <FormField label="Theme" group=true>
-                    <div class="mode-picker">
-                        <label
-                            class=move || {
-                                if theme.get() == Theme::System {
-                                    "mode-opt active".to_string()
-                                } else {
-                                    "mode-opt".to_string()
-                                }
-                            }
-                        >
-                            <input
-                                type="radio"
-                                name="theme"
-                                checked=move || theme.get() == Theme::System
-                                on:click=move |_| on_set_theme.run(Theme::System)
-                            />
-                            "System"
-                        </label>
-                        <label
-                            class=move || {
-                                if theme.get() == Theme::Dark {
-                                    "mode-opt active".to_string()
-                                } else {
-                                    "mode-opt".to_string()
-                                }
-                            }
-                        >
-                            <input
-                                type="radio"
-                                name="theme"
-                                checked=move || theme.get() == Theme::Dark
-                                on:click=move |_| on_set_theme.run(Theme::Dark)
-                            />
-                            "Dark"
-                        </label>
-                        <label
-                            class=move || {
-                                if theme.get() == Theme::Light {
-                                    "mode-opt active".to_string()
-                                } else {
-                                    "mode-opt".to_string()
-                                }
-                            }
-                        >
-                            <input
-                                type="radio"
-                                name="theme"
-                                checked=move || theme.get() == Theme::Light
-                                on:click=move |_| on_set_theme.run(Theme::Light)
-                            />
-                            "Light"
-                        </label>
-                    </div>
+                    <super::ui::SegmentedControl options=vec![super::ui::SegmentOption::new("System", Theme::System), super::ui::SegmentOption::new("Dark", Theme::Dark), super::ui::SegmentOption::new("Light", Theme::Light)] value=Signal::derive(move || theme.get()) on_change=on_set_theme />
                 </FormField>
 
                 </FormSection>
@@ -145,28 +67,10 @@ pub fn Settings(
                 <FormSection title="Model defaults" description="Choose the models and system prompt used for new chats.">
                 <ModelSetupPanel defaults_only=true />
                 <FormField label="Default system prompt">
-                    <select
-                        class="form-input"
-                        node_ref=prompt_ref
-                        on:change=move |e: web_sys::Event| {
-                            if let Some(target) = e.target()
-                                && let Some(sel) = target.dyn_ref::<web_sys::HtmlSelectElement>()
-                            {
-                                on_set_default_prompt.run(sel.value().parse::<i64>().ok());
-                            }
-                        }
-                    >
-                        <option value="">"(none)"</option>
-                        {system_prompts
-                            .get()
-                            .into_iter()
-                            .map(|p| {
-                                let name = p.name.clone();
-                                let value = p.id.to_string();
-                                view! { <option value=value>{name}</option> }
-                            })
-                            .collect::<Vec<_>>()}
-                    </select>
+                    <super::dropdown::DropdownSelect label="Default system prompt" value=Signal::derive(move || default_prompt.get().map(|id| id.to_string()).unwrap_or_default()) options=Signal::derive(move || {
+                        let mut options = vec![super::dropdown::SelectOption::new("", "(none)")];
+                        options.extend(system_prompts.get().into_iter().map(|prompt| super::dropdown::SelectOption::new(prompt.id.to_string(), prompt.name))); options
+                    }) on_change=Callback::new(move |value: String| on_set_default_prompt.run(value.parse().ok())) />
                 </FormField>
 
                 </FormSection>
