@@ -59,8 +59,8 @@ context intact. Editing must work without a host language server in both modes.
 The shared Rust document/transaction engine, grouped undo/redo, per-file/project
 history, indentation/EditorConfig controls, block-aware Enter and paired typing
 are in place. Line movement/duplication/deletion, snippet duplication, line/block
-comments, explicit indentation-matching paste and selected-line reindent use the
-same engine. See [editor controls](editor.md). Continue with:
+comments, explicit indentation-matching paste, selected-line reindent, folding,
+reading/navigation and Find/Replace use the same engine. See [editor controls](editor.md). Continue with:
 
 - **Reliable edits and history:** build on grouped transactions and per-document history
   with caret/selection/scroll restoration now retained across file, project and view
@@ -75,20 +75,7 @@ same engine. See [editor controls](editor.md). Continue with:
   lexical bracket structure and preserves existing Python block depth; language
   formatting remains in Code intelligence.
 
-Then add structure and navigation:
-
-- **Folding:** shared collapse state, recursive/reveal commands and source/visible
-  offset projection, Rust gutter controls and cursor/recursive/all keyboard commands
-  are in place, with language-aware lexical/indentation fallback, consecutive
-  comments and explicit regions. Rust parser ranges take precedence; richer
-  other-language parser providers remain under Syntax-aware editing. Logical line
-  numbers, Find reveal and unaffected fold retention through native edits,
-  composition, clipboard commands, history and navigation are supported.
-- **Reading/navigation:** active-line and matching-bracket highlights, indent guides,
-  bracket jumps, go to line/column and compact cursor/selection status are in place.
-  Preserve the horizontal-scroll default; finish explicit word-wrap and whitespace
-  visibility options with correct gutters, folded rows and caret mapping.
-- **Second pass:** multiple cursors, next/all matching-occurrence selection, column
+- **Selections and files:** multiple cursors, next/all matching-occurrence selection, column
   selection and expand/shrink selection; file tabs with independent dirty buffers,
   history, caret and scroll state. Coordinate draft/reload recovery with the existing
   Offline & error-state recovery item instead of implementing separate persistence.
@@ -101,8 +88,8 @@ editor component. Evaluate WASM-compatible Rust crates for text storage and synt
 parsing before choosing dependencies. Keep browser glue thin: DOM events, input/IME,
 selection, clipboard, measurements and worker transport; editing policy and algorithms
 belong in Rust. Preserve native browser input behavior where possible, and evaluate
-how to replace the current textarea/paint surface when folding and multiple selections
-require a richer view.
+a richer view for multiple selections beyond the current projected textarea/paint
+surface.
 
 Workspace reads/writes, settings and review policy stay in shared facades. Save user
 preferences in database settings, never localStorage. Verify touch/IME/accessibility,

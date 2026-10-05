@@ -48,7 +48,7 @@ pub fn Settings(
                 </FormField>
 
                 </FormSection>
-                <FormSection title="Editor defaults" description="Files use EditorConfig first, then their detected indentation, then these defaults. Tab indents; Ctrl+M lets Tab move focus.">
+                <FormSection title="Editor defaults" description="Indentation uses EditorConfig first, then detected file style, then these defaults. Reading options apply to Edit. Tab indents; Ctrl+M lets Tab move focus.">
                     <FormField label="Indentation" group=true>
                         <super::editor_options::IndentationControls value=Signal::derive(move || settings.editor_preferences.get().indentation) disabled=Signal::derive(move || on_set_editor_preferences.is_none()) on_change=Callback::new(move |indentation| {
                             if let Some(save) = on_set_editor_preferences {
@@ -56,6 +56,16 @@ pub fn Settings(
                             }
                         }) />
                     </FormField>
+                    <super::ui::CheckboxField label="Word wrap" checked=Signal::derive(move || settings.editor_preferences.get().word_wrap) disabled=Signal::derive(move || on_set_editor_preferences.is_none()) on_change=Callback::new(move |checked| {
+                        if let Some(save) = on_set_editor_preferences {
+                            let mut preferences = settings.editor_preferences.get_untracked(); preferences.word_wrap = checked; save.run(preferences);
+                        }
+                    }) />
+                    <super::ui::CheckboxField label="Show whitespace" checked=Signal::derive(move || settings.editor_preferences.get().show_whitespace) disabled=Signal::derive(move || on_set_editor_preferences.is_none()) on_change=Callback::new(move |checked| {
+                        if let Some(save) = on_set_editor_preferences {
+                            let mut preferences = settings.editor_preferences.get_untracked(); preferences.show_whitespace = checked; save.run(preferences);
+                        }
+                    }) />
                 </FormSection>
                 <FormSection title="Notifications">
                 <FormField label="Browser notifications" group=true>

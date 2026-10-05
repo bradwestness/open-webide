@@ -77,6 +77,12 @@ impl EditorActions {
         rules
     }
 
+    pub fn preferences(self) -> openwebide_core::editor::EditorPreferences {
+        self.preferences
+            .map(|settings| settings.editor_preferences.get())
+            .unwrap_or_default()
+    }
+
     pub fn set_indentation(self, mut indentation: Indentation) {
         indentation.width = indentation.width();
         indentation.tab_width = indentation.tab_width();

@@ -2817,3 +2817,177 @@ async fn search_replace_options_scope_captures_and_failures_share_both_modes() {
         assert_eq!(actions.source(), "other");
     }
 }
+
+#[wasm_bindgen_test]
+async fn wrapping_whitespace_fold_geometry_and_navigation_share_both_modes() {
+    use openwebide_core::editor::{FoldCommand, line_column};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = format!(
+        "fn first() {{\r\n\tlet text = \"{}end\";\r\n}}\r\nfn second() {{\r\n    after();\r\n}}\r\n",
+        "文😀 words ".repeat(45)
+    );
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let source = source.clone();
+        let expected = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("wrapped.rs".into()));
+            state.workspace.content.set(source.clone());
+            state.settings.editor_preferences.update(|preferences| {
+                preferences.word_wrap = true;
+                preferences.show_whitespace = true;
+            });
+            view! { <style>{include_str!("../../styles.css")}</style><div class="wrap-fixture" style="display:flex;width:340px;height:340px">{editor_view(state)}</div> }
+        });
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let actions = EditorActions::new(mounted.state.workspace);
+        wait_until("wrapped line and fold row measurement", || {
+            let row = mounted
+                .root
+                .query_selector(".editor-source-line[data-line='2']")
+                .unwrap();
+            let fold = mounted
+                .root
+                .query_selector(".editor-fold-row:nth-child(2)")
+                .unwrap();
+            row.zip(fold).is_some_and(|(row, fold)| {
+                row.get_bounding_client_rect().height() > 100.0
+                    && (row.get_bounding_client_rect().height()
+                        - fold.get_bounding_client_rect().height())
+                    .abs()
+                        < 1.0
+            })
+        })
+        .await;
+        assert_eq!(textarea.wrap(), "soft");
+        assert!(textarea.scroll_width() <= textarea.client_width() + 1);
+        let paint = mounted.element(".editor-highlight-content");
+        assert_eq!(paint.text_content().unwrap(), textarea.value());
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-space")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-tab")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-line-ending")
+                .unwrap()
+                .is_some()
+        );
+        let full_height = paint.get_bounding_client_rect().height();
+        assert!(
+            (full_height - f64::from(textarea.scroll_height())).abs() < 2.0,
+            "native and paint wrapping differ: {} vs {}",
+            textarea.scroll_height(),
+            full_height
+        );
+        mounted.click_text("Ln 1, Col 1");
+        settle().await;
+        let go: web_sys::HtmlInputElement = mounted
+            .element("input[aria-label='Go to line and column']")
+            .unchecked_into();
+        go.set_value("2:220");
+        go.dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        mounted.click_text("Go");
+        wait_until("wrapped-column navigation scroll", || {
+            textarea.scroll_top() > 100.0
+        })
+        .await;
+        assert_eq!(
+            line_column(&expected, actions.selection(&expected).unwrap().head),
+            (2, 220)
+        );
+        assert_eq!(actions.source(), expected);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        let narrow = mounted
+            .element(".editor-source-line[data-line='2']")
+            .get_bounding_client_rect()
+            .height();
+        mounted
+            .element(".wrap-fixture")
+            .style()
+            .set_property("width", "540px")
+            .unwrap();
+        wait_until("resized wrapped row and fold geometry", || {
+            let row = mounted
+                .element(".editor-source-line[data-line='2']")
+                .get_bounding_client_rect()
+                .height();
+            let fold = mounted
+                .element(".editor-fold-row:nth-child(2)")
+                .get_bounding_client_rect()
+                .height();
+            row < narrow && (row - fold).abs() < 1.0
+        })
+        .await;
+        let before = highlight_count();
+        mounted
+            .state
+            .settings
+            .editor_preferences
+            .update(|preferences| preferences.word_wrap = false);
+        wait_until("horizontal default restored", || {
+            textarea.wrap() == "off" && textarea.scroll_width() > textarea.client_width()
+        })
+        .await;
+        frame().await;
+        frame().await;
+        assert_eq!(highlight_count(), before);
+        assert_eq!(actions.source(), expected);
+        mounted
+            .state
+            .settings
+            .editor_preferences
+            .update(|preferences| {
+                preferences.word_wrap = true;
+                preferences.show_whitespace = false;
+            });
+        wait_until("whitespace disabled", || {
+            mounted
+                .root
+                .query_selector(".editor-space")
+                .unwrap()
+                .is_none()
+        })
+        .await;
+        assert_eq!(paint.text_content().unwrap(), textarea.value());
+        actions.fold_command(FoldCommand::CollapseAll);
+        wait_until("folded wrapped rows align", || {
+            let rows = mounted
+                .root
+                .query_selector_all(".editor-source-line")
+                .unwrap();
+            let folds = mounted.root.query_selector_all(".editor-fold-row").unwrap();
+            rows.length() == 3 && rows.length() == folds.length()
+        })
+        .await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-source-line[data-line='4']")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(actions.source(), expected);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}

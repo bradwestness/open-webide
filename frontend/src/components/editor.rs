@@ -152,11 +152,6 @@ fn navigate_editor(actions: EditorActions, textarea: &web_sys::HtmlTextAreaEleme
                 .and_then(|style| style.get_property_value("line-height").ok())
                 .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
                 .unwrap_or(19.5);
-            textarea.set_scroll_top(
-                (f64::from(u32::try_from(row).unwrap_or(u32::MAX)) * height
-                    - f64::from(textarea.client_height()) / 2.0)
-                    .max(0.0),
-            );
             if let Some(parent) = textarea.parent_element()
                 && let Ok(Some(target)) =
                     parent.query_selector(&format!(".editor-source-line[data-line='{line}']"))
@@ -173,10 +168,26 @@ fn navigate_editor(actions: EditorActions, textarea: &web_sys::HtmlTextAreaEleme
                     .and_then(|style| style.get_property_value("padding-left").ok())
                     .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
                     .unwrap_or(40.0);
+                {
+                    let rect = caret_rect(&target, column)
+                        .unwrap_or_else(|| target.get_bounding_client_rect());
+                    textarea.set_scroll_top(
+                        (textarea.scroll_top() + rect.top()
+                            - textarea.get_bounding_client_rect().top()
+                            - f64::from(textarea.client_height()) / 2.0)
+                            .max(0.0),
+                    );
+                }
                 reveal_match_column(&target.unchecked_into(), &textarea, column, gutter);
                 if let Ok(Some(overlay)) = parent.query_selector(".editor-highlight") {
                     sync_highlight_scroll(&textarea, &overlay.unchecked_into());
                 }
+            } else {
+                textarea.set_scroll_top(
+                    (f64::from(u32::try_from(row).unwrap_or(u32::MAX)) * height
+                        - f64::from(textarea.client_height()) / 2.0)
+                        .max(0.0),
+                );
             }
         });
     });
@@ -261,24 +272,56 @@ pub enum ViewMode {
 }
 
 fn text_position(node: &web_sys::Node, offset: &mut u32) -> Option<(web_sys::Node, u32)> {
-    if node.node_type() == web_sys::Node::TEXT_NODE {
-        let length =
-            u32::try_from(node.node_value().unwrap_or_default().encode_utf16().count()).ok()?;
-        if *offset <= length {
-            return Some((node.clone(), *offset));
+    fn walk(
+        node: &web_sys::Node,
+        offset: &mut u32,
+        end: &mut Option<(web_sys::Node, u32)>,
+    ) -> Option<(web_sys::Node, u32)> {
+        if node.node_type() == web_sys::Node::TEXT_NODE {
+            let length =
+                u32::try_from(node.node_value().unwrap_or_default().encode_utf16().count()).ok()?;
+            if *offset < length {
+                return Some((node.clone(), *offset));
+            }
+            if *offset == length {
+                *end = Some((node.clone(), length));
+            }
+            *offset -= length;
+        } else {
+            let children = node.child_nodes();
+            for index in 0..children.length() {
+                if let Some(child) = children.item(index)
+                    && let Some(position) = walk(&child, offset, end)
+                {
+                    return Some(position);
+                }
+            }
         }
-        *offset -= length;
-    } else {
-        let children = node.child_nodes();
-        for index in 0..children.length() {
-            if let Some(child) = children.item(index)
-                && let Some(position) = text_position(&child, offset)
+        None
+    }
+    let mut end = None;
+    walk(node, offset, &mut end).or(end)
+}
+
+fn caret_rect(text: &web_sys::Element, mut column: u32) -> Option<web_sys::DomRect> {
+    let (node, at) = text_position(text.as_ref(), &mut column)?;
+    let range = document().create_range().ok()?;
+    range.set_start(&node, at).ok()?;
+    range.set_end(&node, at).ok()?;
+    Some(range.get_bounding_client_rect())
+}
+
+fn glyph_rect(range: &web_sys::Range) -> web_sys::DomRect {
+    if let Some(rects) = range.get_client_rects() {
+        for index in 0..rects.length() {
+            if let Some(rect) = rects.item(index)
+                && rect.width() > 0.0
             {
-                return Some(position);
+                return rect;
             }
         }
     }
-    None
+    range.get_bounding_client_rect()
 }
 
 /// Reveal the actual match column, including tabs, Unicode and highlighted tokens.
@@ -299,6 +342,11 @@ fn reveal_match_column(
     }
     let caret = range.get_bounding_client_rect();
     let viewport = body.get_bounding_client_rect();
+    if body.class_list().contains("editor-textarea")
+        && (caret.top() < viewport.top() || caret.bottom() > viewport.bottom())
+    {
+        body.set_scroll_top((body.scroll_top() + caret.top() - viewport.top() - 12.0).max(0.0));
+    }
     let left = viewport.left() + gutter;
     if caret.left() < left || caret.left() > viewport.right() - 16.0 {
         body.set_scroll_left((body.scroll_left() + caret.left() - left).max(0.0));
@@ -374,16 +422,34 @@ pub fn highlight_count() -> usize {
     HIGHLIGHT_COUNT.get()
 }
 
+/// Whitespace markers retain their original text node and therefore source offsets.
+fn paint_text(text: &str, show_whitespace: bool) -> String {
+    if !show_whitespace {
+        return escape_html(text);
+    }
+    let mut html = String::new();
+    for ch in text.chars() {
+        match ch {
+            ' ' => html.push_str("<span class=\"editor-space\"> </span>"),
+            '\t' => html.push_str("<span class=\"editor-tab\">\t</span>"),
+            _ => html.push_str(&escape_html(&ch.to_string())),
+        }
+    }
+    html
+}
+
 /// Render the highlighted source as an HTML string for the overlay.
 fn highlight_html(
     source: &str,
     language: Language,
     visible: &[usize],
     indentation: openwebide_core::editor::Indentation,
+    show_whitespace: bool,
 ) -> String {
     #[cfg(feature = "test-support")]
     HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
-    let lines = highlight_lines(source, language);
+    let normalized = source.replace("\r\n", "\n");
+    let lines = highlight_lines(&normalized, language);
     let guides = openwebide_core::editor::indent_guide_columns(source, indentation);
     let mut html = String::new();
     for &idx in visible {
@@ -396,17 +462,20 @@ fn highlight_html(
         ));
         for tok in line {
             match tok.kind {
-                TokenKind::Plain => html.push_str(&escape_html(&tok.text)),
+                TokenKind::Plain => html.push_str(&paint_text(&tok.text, show_whitespace)),
                 kind => {
                     html.push_str("<span class=\"");
                     html.push_str(token_class(kind));
                     html.push_str("\">");
-                    html.push_str(&escape_html(&tok.text));
+                    html.push_str(&paint_text(&tok.text, show_whitespace));
                     html.push_str("</span>");
                 }
             }
         }
         if idx != *visible.last().unwrap_or(&idx) {
+            if show_whitespace {
+                html.push_str("<span class=\"editor-line-ending\"></span>");
+            }
             html.push('\n');
         }
         html.push_str("</span>");
@@ -450,17 +519,29 @@ fn HighlightOverlay(
     ready: RwSignal<bool>,
     visible: Memo<Vec<usize>>,
     indentation: Signal<openwebide_core::editor::Indentation>,
+    show_whitespace: Signal<bool>,
+    layout_revision: RwSignal<u64>,
 ) -> impl IntoView {
     use wasm_bindgen::closure::Closure;
 
+    let layout_callback = StoredValue::new_local(Closure::<dyn FnMut()>::new(move || {
+        if layout_revision.is_disposed() {
+            return;
+        }
+        layout_revision.update(|value| *value = value.wrapping_add(1));
+    }));
     let viewport_observer = StoredValue::new_local(None::<wasm_bindgen::JsValue>);
     Effect::new(move || {
         if let (Some(input), Some(overlay)) = (textarea_ref.get(), node_ref.get())
             && viewport_observer.get_value().is_none()
         {
-            viewport_observer.set_value(Some(crate::viewport::observe_editor_viewport(
-                &input, &overlay,
-            )));
+            layout_callback.with_value(|callback| {
+                viewport_observer.set_value(Some(crate::viewport::observe_editor_viewport(
+                    &input,
+                    &overlay,
+                    callback.as_ref().unchecked_ref(),
+                )));
+            });
         }
     });
     on_cleanup(move || {
@@ -494,6 +575,7 @@ fn HighlightOverlay(
                 language,
                 &visible.get_untracked(),
                 indentation.get_untracked(),
+                show_whitespace.get_untracked(),
             )
         }));
         ready.set(true);
@@ -517,6 +599,7 @@ fn HighlightOverlay(
     Effect::new(move || {
         content.track();
         indentation.get();
+        show_whitespace.get();
         // Resolve the projection before scheduling paint, so reading it in the
         // frame callback cannot invalidate and queue a second paint afterward.
         visible.with(|_| ());
@@ -894,6 +977,8 @@ pub fn Editor(
 ) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let editor_actions = EditorActions::new(workspace);
+    let paint_indentation = Memo::new(move |_| editor_actions.rules().indentation);
+    let paint_whitespace = Memo::new(move |_| editor_actions.preferences().show_whitespace);
     let tab_moves_focus = RwSignal::new(false);
     let paste_matches_indentation = RwSignal::new(false);
     Effect::new(move |_| {
@@ -999,6 +1084,7 @@ pub fn Editor(
     let ta = NodeRef::<leptos::html::Textarea>::new();
     let hl = NodeRef::<leptos::html::Div>::new();
     let highlight_ready = RwSignal::new(false);
+    let layout_revision = RwSignal::new(0_u64);
     let bracket_marks = RwSignal::new(Vec::<(f64, f64, f64, f64)>::new());
     let view_mode = RwSignal::new(ViewMode::Code);
 
@@ -1029,6 +1115,7 @@ pub fn Editor(
     });
     Effect::new(move || {
         highlight_ready.get();
+        layout_revision.track();
         cursor_status.get();
         open_file.track();
         view_mode.track();
@@ -1088,7 +1175,7 @@ pub fn Editor(
                             && range.set_start(&node, at).is_ok()
                             && range.set_end(&end_node, end_at).is_ok()
                         {
-                            let rect = range.get_bounding_client_rect();
+                            let rect = glyph_rect(&range);
                             let bounds = parent.get_bounding_client_rect();
                             marks.push((
                                 rect.left() - bounds.left() + textarea.scroll_left(),
@@ -1741,8 +1828,8 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get()>
-                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows indentation=Signal::derive(move || editor_actions.rules().indentation) />
+                                    <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
+                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>
                                         <div class="editor-fold-column"><div class="editor-fold-track">{move || {
                                             let state = fold_state.get();
@@ -1768,7 +1855,7 @@ pub fn Editor(
                                             data-editor-project=editor_project.map(|project| project.to_string())
                                             data-editor-path=open_file.get()
                                             class="editor-textarea"
-                                            wrap="off"
+                                            wrap=move || if editor_actions.preferences().word_wrap { "soft" } else { "off" }
                                             spellcheck="false"
                                             readonly=read_only
                                             title="Tab indents; Ctrl+M toggles Tab moving focus"

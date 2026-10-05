@@ -152,8 +152,14 @@ and the footer shows line, column and selected character count. Indentation
 guides use visual tab stops and complete indentation steps, independently of
 source columns; blank lines continue the common surrounding indentation.
 These controls also work in read-only files and share the same source-coordinate
-facade in both modes. Horizontal scrolling remains the default; wrapping and
-whitespace visibility remain under development.
+facade in both modes. Horizontal scrolling remains the default. **Settings → Editor defaults** offers
+**Word wrap** and **Show whitespace**, saved with the existing user-scoped database
+preferences. These reading options affect Edit without changing file content.
+Wrapping keeps one gutter number per logical source line and measures fold-row
+heights after resizing; navigation uses the rendered caret position. Whitespace
+markers show spaces, tabs and line endings while retaining their original text
+nodes and source offsets. The paint adapter normalizes CRLF to match the native
+textarea; the document and saved file retain their original separators.
 
 ## Find and replace
 

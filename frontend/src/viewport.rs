@@ -148,17 +148,34 @@ pub fn install_action_tooltips() {
 }
 
 #[wasm_bindgen(inline_js = r#"
-export function observe_editor_viewport(input, overlay) {
-    const update = () => overlay.style.setProperty('--editor-viewport-height', `${input.clientHeight}px`);
-    const observer = new ResizeObserver(update);
+export function observe_editor_viewport(input, overlay, onLayout) {
+    const pane = input.parentElement;
+    let frame = 0;
+    const update = () => {
+        frame = 0;
+        if (!input.isConnected || !overlay.isConnected) return;
+        overlay.style.setProperty('--editor-viewport-height', `${input.clientHeight}px`);
+        overlay.style.setProperty('--editor-text-width', `${input.clientWidth}px`);
+        const rows = overlay.querySelectorAll('.editor-source-line');
+        const grips = pane.querySelectorAll('.editor-fold-row');
+        rows.forEach((row, index) => grips[index]?.style.setProperty('--editor-row-height', `${row.getBoundingClientRect().height}px`));
+        onLayout();
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
+    const observer = new ResizeObserver(schedule);
     observer.observe(input);
+    const mutation = new MutationObserver(schedule);
+    mutation.observe(overlay, {childList: true, subtree: true});
+    const preferences = new MutationObserver(schedule);
+    preferences.observe(pane, {attributes: true, attributeFilter: ['class']});
     update();
-    return () => observer.disconnect();
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); mutation.disconnect(); preferences.disconnect(); };
 }
 "#)]
 extern "C" {
     pub fn observe_editor_viewport(
         input: &web_sys::HtmlTextAreaElement,
         overlay: &web_sys::HtmlElement,
+        on_layout: &js_sys::Function,
     ) -> JsValue;
 }

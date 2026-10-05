@@ -696,6 +696,28 @@ async fn editor_defaults_serialize_writes_rollback_failures_and_ignore_previous_
     preferences.indentation.width = 2;
     save.run(preferences);
     settle().await;
+    // Reading controls share this database writer and preserve indentation.
+    for label in ["Word wrap", "Show whitespace"] {
+        let labels = mounted.root.query_selector_all("label.ui-check").unwrap();
+        let mut clicked = false;
+        for index in 0..labels.length() {
+            let node = labels.item(index).unwrap();
+            if node.text_content().as_deref() == Some(label) {
+                use wasm_bindgen::JsCast;
+                node.unchecked_into::<web_sys::HtmlElement>().click();
+                clicked = true;
+                break;
+            }
+        }
+        assert!(clicked, "Missing reading control {label}");
+        settle().await;
+    }
+    preferences.word_wrap = true;
+    preferences.show_whitespace = true;
+    assert_eq!(
+        mounted.state.settings.editor_preferences.get_untracked(),
+        preferences
+    );
     let count = || {
         mounted
             .state
@@ -821,6 +843,8 @@ async fn editor_defaults_restore_from_database_without_overwriting_a_newer_choic
         let mut saved = EditorPreferences::default();
         saved.indentation.style = IndentStyle::Tabs;
         saved.indentation.width = 6;
+        saved.word_wrap = true;
+        saved.show_whitespace = true;
         let mut chosen = saved;
         chosen.indentation.width = 2;
         if changed_during_load {
