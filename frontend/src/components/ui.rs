@@ -314,3 +314,12 @@ pub use lepticons::LucideGlyph as IconName;
 pub fn Icon(#[prop(into)] name: Signal<IconName>) -> impl IntoView {
     view! { <span class="ui-icon-glyph" aria-hidden="true"><lepticons::Icon glyph=name size="20" stroke_width="2" /></span> }
 }
+
+/// Actions and contextual information below a panel's single shared heading.
+#[component]
+pub fn PanelToolbar(
+    #[prop(default = "")] class: &'static str,
+    children: Children,
+) -> impl IntoView {
+    view! { <div class=format!("panel-toolbar {class}")>{children()}</div> }
+}

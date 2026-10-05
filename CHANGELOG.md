@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Keep one heading per tool panel, group session search and New chat together, and align Changes rows, selection, spacing and actions with Explorer.
+
 - Share left-aligned disclosure headers across reasoning, run context and tool groups. Anchor resize handles to the full panel boundary so Terminal and other docked panels remain draggable regardless of their content wrappers.
 
 - Build dialogs from shared sections, fields, notices and action bars with consistent spacing and visual hierarchy.

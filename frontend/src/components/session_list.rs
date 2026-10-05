@@ -17,8 +17,10 @@ pub fn SessionList(
     let actions = SessionActions::from_context();
     view! {
         <div class="sidebar-section session-list">
-            <div class="section-header"><h2>"Sessions"</h2><button class="icon-btn" title="New chat" disabled=move || chat.creating_session.get() || chat.streaming.get() on:click=move |_| on_new.run(())>"+"</button></div>
-            <input id="session-search" class="form-input session-search" aria-label="Search session names and messages" type="search" maxlength="256" placeholder="Search sessions…" prop:value=move || state.query.get() on:input=move |event|state.query.set(event_target_value(&event)) />
+            <super::ui::PanelToolbar class="session-search-toolbar">
+                <input id="session-search" class="form-input session-search" aria-label="Search session names and messages" type="search" maxlength="256" placeholder="Search sessions…" prop:value=move || state.query.get() on:input=move |event|state.query.set(event_target_value(&event)) />
+                <button class="icon-btn" title="New chat" aria-label="New chat" disabled=move || chat.creating_session.get() || chat.streaming.get() on:click=move |_| on_new.run(())><super::ui::Icon name=super::ui::IconName::Plus /></button>
+            </super::ui::PanelToolbar>
             <div class="session-filters"><button class="btn ghost" aria-pressed=move || state.archived.get().to_string() on:click=move |_| state.archived.update(|archived|*archived = !*archived)>{move || if state.archived.get() {"Archived sessions"} else {"Active sessions"}}</button></div>
             <Show when=move || state.searching.get()><p class="form-hint" role="status">"Searching…"</p></Show>
             <Show when=move || state.search_error.get().is_some()><p class="form-hint" role="alert">{move || state.search_error.get().unwrap_or_default()}</p></Show>

@@ -74,8 +74,7 @@ pub fn FileTree(
             class="file-tree"
             style=move || format!("width: {}px; flex: none;", tree_width.get())
         >
-            <div class="file-tree-header">
-                <h2>"Explorer"</h2>
+            <super::ui::PanelToolbar class="file-tree-header">
                 <span class="file-tree-actions">
                     <button class="icon-btn" title="New file" on:click=move |_| on_new_file.run(())>
                         <crate::components::ui::Icon name=crate::components::ui::IconName::File />
@@ -84,7 +83,7 @@ pub fn FileTree(
                         <crate::components::ui::Icon name=crate::components::ui::IconName::Folder />
                     </button>
                 </span>
-            </div>
+            </super::ui::PanelToolbar>
             <Show when=move || needs_grant.get() fallback=|| ()>
                 <div style="padding: 12px; text-align: center;">
                     <p>"This browser needs permission to access the project folder. Grant access or select the folder again to reconnect it."</p>

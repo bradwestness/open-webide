@@ -12,3 +12,5 @@ Use `frontend/src/components/ui.rs` and the tokens in `frontend/styles.css` when
 Existing shared CSS classes remain supported while components migrate. Colors, spacing, typography, radii, dialog sizes and control height come from theme/design tokens. Avoid adding private control styles to individual dialogs or panes.
 
 Reasoning, run context and tools use `DisclosurePanel` for left-aligned headers, caret controls and retained collapsed content. Active reasoning adds its timing, token estimate and spinner to the shared header.
+
+`PanelToolbar` groups contextual information and actions beneath the single `ToolPanel` heading; feature panes do not repeat their panel or selected-view titles. Explorer and Changes share file-row spacing, icons and selection treatment.

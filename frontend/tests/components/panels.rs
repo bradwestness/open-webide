@@ -641,3 +641,106 @@ async fn dock_resize_targets_are_visible_and_resize_actual_geometry_in_both_mode
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn changes_and_explorer_share_file_layout_and_single_view_headings_in_both_modes() {
+    use openwebide_core::{FileEntry, GitFileStatus, GitRepoStatus};
+    use openwebide_frontend::components::{FileTree, GitPane};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.entries.update(|entries| {
+                entries.insert(
+                    String::new(),
+                    vec![FileEntry {
+                        name: "demo.rs".into(),
+                        path: "demo.rs".into(),
+                        is_dir: false,
+                        size: 20,
+                    }],
+                );
+            });
+            state.workspace.open_file.set(Some("demo.rs".into()));
+            state.git.status.set(Some(GitRepoStatus {
+                branch: "main".into(),
+                files: [("demo.rs".into(), GitFileStatus::Modified)].into(),
+                ..GitRepoStatus::default()
+            }));
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div style="display:flex;width:700px;height:500px">
+                    <FileTree on_toggle=Callback::new(|_| ()) on_open=Callback::new(|_| ()) on_new_file=Callback::new(|()| ()) on_new_dir=Callback::new(|()| ()) />
+                    <GitPane on_open=Callback::new(move |path| state.workspace.open_file.set(Some(path))) on_load_git_diff=Callback::new(|()| ()) on_discard_git_diff=Callback::new(|()| ()) />
+                </div>
+            }
+        });
+        settle().await;
+        let style = |selector| {
+            web_sys::window()
+                .unwrap()
+                .get_computed_style(&mounted.element(selector))
+                .unwrap()
+                .unwrap()
+        };
+        assert!(mounted.root.query_selector("h2").unwrap().is_none());
+        for property in ["padding-left", "padding-right", "padding-top"] {
+            assert_eq!(
+                style(".file-tree").get_property_value(property).unwrap(),
+                style(".git-pane").get_property_value(property).unwrap()
+            );
+        }
+        for property in [
+            "padding-left",
+            "padding-top",
+            "font-size",
+            "gap",
+            "background-color",
+        ] {
+            assert_eq!(
+                style(".file-tree .tree-item")
+                    .get_property_value(property)
+                    .unwrap(),
+                style(".git-files .tree-item")
+                    .get_property_value(property)
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            style(".git-files .tree-item")
+                .get_property_value("justify-content")
+                .unwrap(),
+            "flex-start"
+        );
+        assert!(
+            mounted
+                .element(".git-files .tree-item")
+                .class_list()
+                .contains("selected")
+        );
+        assert!(
+            mounted
+                .element(".git-files .tree-item .tree-icon")
+                .query_selector("svg")
+                .unwrap()
+                .is_some()
+        );
+        mounted.state.workspace.open_file.set(None);
+        settle().await;
+        assert!(
+            !mounted
+                .element(".git-files .tree-item")
+                .class_list()
+                .contains("selected")
+        );
+        mounted.click(".git-files .tree-item");
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("demo.rs")
+        );
+    }
+}

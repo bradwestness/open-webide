@@ -47,7 +47,7 @@ pub fn TerminalDock(
 }
 
 #[component]
-pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) -> impl IntoView {
+pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) -> impl IntoView {
     let status = RwSignal::from(bridge.status());
     let bridge = StoredValue::new_local(bridge);
     let output = StoredValue::new(crate::terminal_output::TerminalOutput::default());
@@ -528,10 +528,8 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
 
     view! {
         <div class="terminal-dock">
-            <div class="terminal-header">
+            <super::ui::PanelToolbar class="terminal-header">
                 <div class="terminal-title">
-                    <span class="terminal-glyph"><super::ui::Icon name=super::ui::IconName::Terminal /></span>
-                    <span class="terminal-label">"Terminal"</span>
                     <span class=move || match status.get() {
                         BridgeStatus::Ready { .. } | BridgeStatus::Legacy => "term-status online",
                         BridgeStatus::Connecting => "term-status connecting",
@@ -571,12 +569,12 @@ pub fn TerminalPane(bridge: BridgeConn, on_close: impl Fn() + Copy + 'static) ->
                     <button
                         class="icon-btn term-close-btn"
                         title="Close terminal (Ctrl+`)"
-                        on:click=move |_| on_close()
+                        on:click=move |_| on_close.run(())
                     >
                         <super::ui::Icon name=super::ui::IconName::X />
                     </button>
                 </div>
-            </div>
+            </super::ui::PanelToolbar>
 
             <div
                 class="terminal-output"

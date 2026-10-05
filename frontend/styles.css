@@ -2783,8 +2783,8 @@ button.browser-item {
 .phone-layout .modal { width: calc(100% - 16px); max-height: calc(100dvh - 16px); }
 .phone-layout .setting-row { flex-wrap: wrap; }
 .search-pane, .git-pane { display: flex; flex-direction: column; width: var(--tool-window-width, 320px); min-width: 0; min-height: 0; overflow: auto; background: var(--bg-panel); }
-.git-files { max-height: 35%; overflow: auto; flex: none; }
-.git-files .tree-item { display: flex; width: 100%; text-align: left; gap: 8px; border: 0; border-radius: 0; }
+.git-files { flex: none; }
+.btn.tree-item { background: transparent; font-family: inherit; font-weight: normal; color: var(--text); display: flex; justify-content: flex-start; width: 100%; text-align: left; gap: 6px; border: 0; border-radius: 5px; }
 .git-diff-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px; border-block: 1px solid var(--border); }
 #panel-terminal { width: var(--tool-window-width); }
 #panel-terminal .terminal-visibility, #panel-terminal .terminal-dock { width: 100%; height: 100%; min-height: 0; flex: 1; }
@@ -2933,7 +2933,7 @@ button.browser-item {
 .tool-panel-content > .search-pane { width: var(--files-panel-width); flex: none; overflow: hidden; }
 .search-file-views > .files-panel { width: 100%; flex: 1; }
 .phone-layout .tool-panel-content > .search-pane { width: 100%; flex: 1; }
-.btn:has(.ui-icon-glyph), .status-btn:has(.ui-icon-glyph) { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-1); }
+.btn:has(.ui-icon-glyph):not(.tree-item), .status-btn:has(.ui-icon-glyph) { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-1); }
 .tree-icon { min-width: 20px; }
 
 .tool-panel-heading > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -2949,3 +2949,15 @@ button.browser-item {
 .tool-panel:not(.tool-panel-center) { width: var(--tool-window-width); }
 .tool-panel-content > .sidebar, .tool-panel-content > .chat-pane, .tool-panel-content > .tui, .tool-panel-content > .search-pane { width: 100% !important; min-width: 0; flex: 1 !important; }
 .phone-layout .tool-panel:not(.tool-panel-center) { width: 100%; }
+
+
+/* Context toolbars share spacing; ToolPanel supplies the only panel title. */
+.panel-toolbar { display: flex; align-items: center; justify-content: flex-start; gap: var(--space-2); flex: none; }
+.session-search-toolbar { margin-bottom: var(--space-2); }
+.session-search-toolbar .session-search { flex: 1; min-width: 0; margin: 0; }
+.git-pane { padding: var(--space-3); }
+.git-files .tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.git-diff-actions { padding: var(--space-2) 0; margin-top: var(--space-2); gap: var(--space-2); }
+.git-diff-path { flex-basis: 100%; overflow-wrap: anywhere; color: var(--text-muted); font-size: var(--font-caption); }
+
+.btn.tree-item:hover, .btn.tree-item.selected { background: var(--bg-hover); }
