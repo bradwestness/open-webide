@@ -280,6 +280,39 @@ impl EditorActions {
         result.map(|(status, _)| status)
     }
 
+    pub fn cursor_status(self) -> (usize, usize, usize) {
+        let source = self.source();
+        let selection = self.selection(&source).unwrap_or_default();
+        let (line, column) = openwebide_core::editor::line_column(&source, selection.head);
+        (line, column, source[selection.range()].chars().count())
+    }
+
+    pub fn navigation_target(self, query: &str) -> Option<usize> {
+        openwebide_core::editor::navigation_target(&self.source(), query)
+    }
+
+    pub fn matching_bracket(self, offset: usize) -> Option<(usize, usize)> {
+        let key = self.key()?;
+        openwebide_core::editor::matching_bracket(
+            &self.source(),
+            openwebide_core::highlight::language_from_path(&key.1),
+            offset,
+        )
+    }
+
+    pub fn source(self) -> String {
+        self.workspace.content.get_untracked()
+    }
+
+    pub fn navigate(self, offset: usize) -> Result<Selection, EditError> {
+        let source = self.workspace.content.get_untracked();
+        let selection = Selection::caret(offset);
+        self.record_selection(selection)?;
+        let (line, _) = openwebide_core::editor::line_column(&source, offset);
+        self.fold_command(openwebide_core::editor::FoldCommand::Reveal(line - 1));
+        Ok(selection)
+    }
+
     pub fn prepare_edit(self, selection: Selection) -> Result<(), EditError> {
         self.record_selection(selection)?;
         let Some(key) = self.key() else {

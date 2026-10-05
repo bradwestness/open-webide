@@ -110,13 +110,12 @@ async fn startup_retains_prepaint_theme_until_database_settings_arrive() {
             ("browser_notifications".into(), "true".into()),
         ])))
         .unwrap();
-    // Startup includes an IndexedDB await before the independent settings reads.
-    for _ in 0..100 {
-        openwebide_frontend::util::sleep_ms(10).await;
-        if root.get_attribute("data-theme").as_deref() == Some("dark") {
-            break;
-        }
-    }
+    // Startup awaits IndexedDB before settings; wait for the observable state,
+    // using the suite's deadline rather than a one-second scheduling assumption.
+    super::support::wait_until("startup database theme and notifications", || {
+        root.get_attribute("data-theme").as_deref() == Some("dark") && notifications.get_untracked()
+    })
+    .await;
     assert_eq!(root.get_attribute("data-theme").as_deref(), Some("dark"));
     assert!(notifications.get_untracked());
     drop(mounted);

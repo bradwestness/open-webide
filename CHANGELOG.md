@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Add Edit navigation through the shared Rust editor facade: Ctrl/Cmd+G goes to a line/column and Ctrl/Cmd+Shift+\ jumps between matching code brackets. Reveal folded destinations, scroll long lines into view, show source cursor/selection status, and paint active lines, matching brackets and indentation guides. Preserve Unicode/CRLF source coordinates and reject delayed navigation after file/project changes in both modes.
+
 - Retain unaffected collapsed blocks during native typing, editor commands, paste/cut, composition and undo/redo. Reveal only the source lines selected for a native edit; revalidate rebased fold anchors before restoring projected text and source selections. Keep unchanged native composition values and carets intact, including Unicode and CRLF, and share the behavior in both modes.
 
 - Extend the shared folding provider with language-aware bracket/literal ranges, indentation fallback, consecutive comment groups and balanced explicit regions. Prefer Rust parser ranges; protect Python multiline strings, JavaScript regex/template literals and YAML block scalars from false folds. Use configured tab stops, preserve shared closing/header rows, bound synchronous work and clear cancelled/stale ranges in both modes. Richer language parsers and worker rendering remain in progress.

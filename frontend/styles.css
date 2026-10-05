@@ -3165,3 +3165,9 @@ button.browser-item {
 .editor-fold-row { height: 19.5px; }
 .editor-fold-control { width: 18px; height: 19.5px; min-width: 0; min-height: 0; padding: 0; border: 0; color: var(--text-muted); }
 .editor-fold-control:hover, .editor-fold-control:focus-visible { color: var(--accent); background: var(--bg-hover); }
+
+.editor-source-line.editor-active-line { background: var(--bg-hover); }
+.editor-bracket-layer { position:absolute; inset:0; z-index:1; overflow:hidden; pointer-events:none; }
+.editor-bracket-match { position:absolute; border:1px solid var(--accent); border-radius:2px; transform:translate(var(--editor-scroll-x, 0px), var(--editor-scroll-y, 0px)); }
+
+.editor-source-line::after { content:""; position:absolute; left:0; top:0; bottom:0; width:calc(var(--editor-indent-columns, 0) * 1ch); pointer-events:none; background:repeating-linear-gradient(to right,var(--border) 0,var(--border) 1px,transparent 1px,transparent calc(var(--editor-indent-step, 4) * 1ch)); }

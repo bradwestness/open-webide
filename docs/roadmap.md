@@ -83,12 +83,11 @@ Then add structure and navigation:
   comments and explicit regions. Rust parser ranges take precedence; richer
   other-language parser providers remain under Syntax-aware editing. Logical line
   numbers, Find reveal and unaffected fold retention through native edits,
-  composition, clipboard commands and history are supported; finish navigation
-  reveal alongside the reading/navigation commands below.
+  composition, clipboard commands, history and navigation are supported.
 - **Reading/navigation:** active-line and matching-bracket highlights, indent guides,
-  jump to matching bracket, go to line/column, and a compact cursor/selection status.
-  Preserve the current horizontal-scroll default; make word wrap and whitespace
-  visibility explicit options with correct gutters and caret mapping.
+  bracket jumps, go to line/column and compact cursor/selection status are in place.
+  Preserve the horizontal-scroll default; finish explicit word-wrap and whitespace
+  visibility options with correct gutters, folded rows and caret mapping.
 - **Find/Replace:** extend existing Find with case/whole-word/regex options, selection
   scope, replace-next/all and visible match counts. Replacement is one undoable
   transaction; invalid regexes and zero-width matches cannot hang the UI.

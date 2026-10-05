@@ -136,3 +136,21 @@ Rust parser ranges take precedence over indentation; all ranges retain one
 control per header and cannot cross one another. Synchronous fallback work is
 limited to 2 MiB, 100,000 lines and the lexer's bracket limit. Richer language
 parsers, worker rendering and real-device input verification remain roadmap work.
+
+## Reading and navigation
+
+Ctrl/Cmd+G opens **Go to line/column**; enter `line` or `line:column` and press
+Enter. The editing menu and cursor-status footer open the same control. Coordinates
+are one-based logical source lines and Unicode character columns; a tab is one
+source character. Valid coordinates beyond the file clamp to its end. Invalid
+input disables Go. Navigation reveals collapsed destinations and scrolls the
+source caret into view, including long horizontal lines.
+
+Ctrl/Cmd+Shift+\ jumps to the matching bracket beside the caret. Comments and
+literals remain opaque. The active line and matching brackets are highlighted,
+and the footer shows line, column and selected character count. Indentation
+guides use visual tab stops and complete indentation steps, independently of
+source columns; blank lines continue the common surrounding indentation.
+These controls also work in read-only files and share the same source-coordinate
+facade in both modes. Horizontal scrolling remains the default; wrapping and
+whitespace visibility remain under development.

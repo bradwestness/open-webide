@@ -2435,3 +2435,216 @@ async fn native_edits_clipboard_commands_and_composition_keep_disjoint_folds_in_
         assert!(actions.fold_state().unwrap().collapsed_at(4).is_some());
     }
 }
+
+#[wasm_bindgen_test]
+async fn editor_navigation_status_and_decorations_share_source_coordinates_in_both_modes() {
+    use openwebide_core::editor::{FoldCommand, byte_to_textarea};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = "fn main() {\r\n    let text = \"文😀\";\r\n}\r\nafter();\r\n";
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("navigation.rs".into()));
+            state.workspace.content.set(source.into());
+            view! { <style>{include_str!("../../styles.css")}</style> <div style="width:600px;height:320px;display:flex">{editor_view(state)}</div> }
+        });
+        settle().await;
+        frame().await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let before = highlight_count();
+        let offset =
+            u32::try_from(byte_to_textarea(source, source.find('文').unwrap()).unwrap()).unwrap();
+        textarea.set_selection_range(offset, offset + 3).unwrap();
+        textarea
+            .dispatch_event(&web_sys::Event::new("select").unwrap())
+            .unwrap();
+        settle().await;
+        frame().await;
+        assert!(
+            mounted
+                .element(".editor-cursor-status")
+                .text_content()
+                .unwrap()
+                .contains("2 selected")
+        );
+        assert!(
+            mounted
+                .element(".editor-active-line")
+                .get_attribute("data-line")
+                .as_deref()
+                == Some("2")
+        );
+        assert_eq!(
+            highlight_count(),
+            before,
+            "caret decoration must not regenerate syntax paint"
+        );
+        assert_eq!(
+            mounted
+                .element(".editor-source-line[data-line='2']")
+                .style()
+                .get_property_value("--editor-indent-columns")
+                .unwrap(),
+            "4"
+        );
+        let guide = web_sys::window()
+            .unwrap()
+            .get_computed_style_with_pseudo_elt(
+                &mounted.element(".editor-source-line[data-line='2']"),
+                "::after",
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            guide
+                .get_property_value("width")
+                .unwrap()
+                .trim_end_matches("px")
+                .parse::<f64>()
+                .unwrap()
+                > 1.0
+        );
+
+        actions.fold_command(FoldCommand::CollapseAll);
+        settle().await;
+        editor_key(&textarea, "g", true, false);
+        settle().await;
+        let input: web_sys::HtmlInputElement =
+            mounted.element(".editor-navigation input").unchecked_into();
+        input.set_value("2:17");
+        input
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        mounted.click_text("Go");
+        settle().await;
+        frame().await;
+        frame().await;
+        assert!(textarea.value().contains("文😀"));
+        assert_eq!(textarea.selection_start().unwrap(), Some(offset));
+        assert!(
+            mounted
+                .element(".editor-cursor-status")
+                .text_content()
+                .unwrap()
+                .contains("Ln 2, Col 17")
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        let open = source.find('{').unwrap();
+        textarea
+            .set_selection_range(u32::try_from(open).unwrap(), u32::try_from(open).unwrap())
+            .unwrap();
+        textarea
+            .dispatch_event(&web_sys::Event::new("select").unwrap())
+            .unwrap();
+        settle().await;
+        frame().await;
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all(".editor-bracket-match")
+                .unwrap()
+                .length(),
+            2
+        );
+        {
+            let mark = mounted.element(".editor-bracket-match");
+            assert!(mark.get_bounding_client_rect().width() > 1.0);
+            assert!(mark.get_bounding_client_rect().height() > 1.0);
+        }
+        actions.fold_command(FoldCommand::CollapseAll);
+        settle().await;
+        editor_key(&textarea, "\\", true, true);
+        settle().await;
+        frame().await;
+        frame().await;
+        let close = u32::try_from(byte_to_textarea(source, source.find("}\r\n").unwrap()).unwrap())
+            .unwrap();
+        assert_eq!(textarea.selection_start().unwrap(), Some(close));
+        assert!(textarea.value().contains("文😀"));
+        editor_key(&textarea, "\\", true, true);
+        settle().await;
+        assert_eq!(
+            textarea.selection_start().unwrap(),
+            Some(u32::try_from(open).unwrap())
+        );
+        editor_key(&textarea, "g", true, false);
+        settle().await;
+        let input: web_sys::HtmlInputElement =
+            mounted.element(".editor-navigation input").unchecked_into();
+        input.set_value("0:not-a-column");
+        input
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        settle().await;
+        assert!(
+            mounted
+                .element(".editor-navigation button.btn")
+                .has_attribute("disabled")
+        );
+        input.set_value("2:1");
+        input
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        settle().await;
+        mounted.click_text("Go");
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        mounted.state.workspace.content.set("other".into());
+        settle().await;
+        frame().await;
+        frame().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-navigation")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            mounted
+                .element(".editor-textarea")
+                .unchecked_into::<web_sys::HtmlTextAreaElement>()
+                .selection_start()
+                .unwrap(),
+            Some(0)
+        );
+        mounted
+            .state
+            .workspace
+            .content
+            .set(format!("header\n{}\n", "x".repeat(1100)));
+        settle().await;
+        frame().await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        editor_key(&textarea, "g", true, false);
+        settle().await;
+        let input: web_sys::HtmlInputElement =
+            mounted.element(".editor-navigation input").unchecked_into();
+        input.set_value("2:1001");
+        input
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        settle().await;
+        mounted.click_text("Go");
+        settle().await;
+        wait_until("navigation reveals long-line column", || {
+            textarea.scroll_left() > 1000.0
+        })
+        .await;
+        assert_eq!(textarea.selection_start().unwrap(), Some(1007));
+    }
+}

@@ -104,6 +104,84 @@ fn render_editor_selection(
     }
 }
 
+fn navigate_editor(actions: EditorActions, textarea: &web_sys::HtmlTextAreaElement, offset: usize) {
+    let Ok(selection) = actions.navigate(offset) else {
+        return;
+    };
+    render_editor_selection(actions, textarea, selection, false);
+    let _ = textarea.focus();
+    let source_at_navigation = actions.source();
+    let scope = (
+        textarea.get_attribute("data-editor-project"),
+        textarea.get_attribute("data-editor-path"),
+    );
+    let textarea = textarea.clone();
+    // Fold reveal updates syntax paint on the next frame. Measure the target
+    // afterward, with scope and caret guards so late work cannot steal a view.
+    leptos::leptos_dom::helpers::request_animation_frame(move || {
+        leptos::leptos_dom::helpers::request_animation_frame(move || {
+            if !current_editor_target(actions, &textarea)
+                || (
+                    textarea.get_attribute("data-editor-project"),
+                    textarea.get_attribute("data-editor-path"),
+                ) != scope
+                || actions.source() != source_at_navigation
+            {
+                return;
+            }
+            let Some(projection) = actions.projection() else {
+                return;
+            };
+            if projection.visible_selection(selection).is_err() {
+                return;
+            }
+            let source = actions.source();
+            if actions.selection(&source) != Some(selection) {
+                return;
+            }
+            let (line, _) = openwebide_core::editor::line_column(&source, offset);
+            let row = projection
+                .lines()
+                .iter()
+                .position(|row| row.source_line == line - 1)
+                .unwrap_or(0);
+            let height = window()
+                .get_computed_style(&textarea)
+                .ok()
+                .flatten()
+                .and_then(|style| style.get_property_value("line-height").ok())
+                .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
+                .unwrap_or(19.5);
+            textarea.set_scroll_top(
+                (f64::from(u32::try_from(row).unwrap_or(u32::MAX)) * height
+                    - f64::from(textarea.client_height()) / 2.0)
+                    .max(0.0),
+            );
+            if let Some(parent) = textarea.parent_element()
+                && let Ok(Some(target)) =
+                    parent.query_selector(&format!(".editor-source-line[data-line='{line}']"))
+            {
+                let start = source[..offset]
+                    .rfind('\n')
+                    .map_or(0, |newline| newline + 1);
+                let column =
+                    u32::try_from(source[start..offset].encode_utf16().count()).unwrap_or(u32::MAX);
+                let gutter = window()
+                    .get_computed_style(&textarea)
+                    .ok()
+                    .flatten()
+                    .and_then(|style| style.get_property_value("padding-left").ok())
+                    .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
+                    .unwrap_or(40.0);
+                reveal_match_column(&target.unchecked_into(), &textarea, column, gutter);
+                if let Ok(Some(overlay)) = parent.query_selector(".editor-highlight") {
+                    sync_highlight_scroll(&textarea, &overlay.unchecked_into());
+                }
+            }
+        });
+    });
+}
+
 fn apply_fold_command(
     actions: EditorActions,
     textarea: &web_sys::HtmlTextAreaElement,
@@ -301,18 +379,24 @@ pub fn highlight_count() -> usize {
 }
 
 /// Render the highlighted source as an HTML string for the overlay.
-fn highlight_html(source: &str, language: Language, visible: &[usize]) -> String {
+fn highlight_html(
+    source: &str,
+    language: Language,
+    visible: &[usize],
+    indentation: openwebide_core::editor::Indentation,
+) -> String {
     #[cfg(feature = "test-support")]
     HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
     let lines = highlight_lines(source, language);
+    let guides = openwebide_core::editor::indent_guide_columns(source, indentation);
     let mut html = String::new();
     for &idx in visible {
         let Some(line) = lines.get(idx) else {
             continue;
         };
         html.push_str(&format!(
-            "<span class=\"editor-source-line\" data-line=\"{}\">",
-            idx + 1
+            "<span class=\"editor-source-line\" data-line=\"{}\" style=\"--editor-indent-columns:{};--editor-indent-step:{}\">",
+            idx + 1, guides.get(idx).copied().unwrap_or(0), indentation.width()
         ));
         for tok in line {
             match tok.kind {
@@ -349,6 +433,10 @@ fn sync_highlight_scroll(textarea: &web_sys::HtmlTextAreaElement, overlay: &web_
         .and_then(|parent| parent.dyn_into::<web_sys::HtmlElement>().ok())
     {
         let _ = parent.style().set_property(
+            "--editor-scroll-x",
+            &format!("{}px", -textarea.scroll_left()),
+        );
+        let _ = parent.style().set_property(
             "--editor-scroll-y",
             &format!("{}px", -textarea.scroll_top()),
         );
@@ -365,6 +453,7 @@ fn HighlightOverlay(
     textarea_ref: NodeRef<leptos::html::Textarea>,
     ready: RwSignal<bool>,
     visible: Memo<Vec<usize>>,
+    indentation: Signal<openwebide_core::editor::Indentation>,
 ) -> impl IntoView {
     use wasm_bindgen::closure::Closure;
 
@@ -403,9 +492,14 @@ fn HighlightOverlay(
         let language = open_file
             .with_untracked(|path| path.as_deref().map(language_from_path))
             .unwrap_or(Language::Plain);
-        rendered.set(
-            content.with_untracked(|text| highlight_html(text, language, &visible.get_untracked())),
-        );
+        rendered.set(content.with_untracked(|text| {
+            highlight_html(
+                text,
+                language,
+                &visible.get_untracked(),
+                indentation.get_untracked(),
+            )
+        }));
         ready.set(true);
         let published_generation = generation.get_value();
         // Re-align after the highlighted HTML reaches the DOM.
@@ -426,6 +520,7 @@ fn HighlightOverlay(
 
     Effect::new(move || {
         content.track();
+        indentation.get();
         // Resolve the projection before scheduling paint, so reading it in the
         // frame callback cannot invalidate and queue a second paint afterward.
         visible.with(|_| ());
@@ -908,12 +1003,142 @@ pub fn Editor(
     let ta = NodeRef::<leptos::html::Textarea>::new();
     let hl = NodeRef::<leptos::html::Div>::new();
     let highlight_ready = RwSignal::new(false);
+    let bracket_marks = RwSignal::new(Vec::<(f64, f64, f64, f64)>::new());
     let view_mode = RwSignal::new(ViewMode::Code);
 
     let root = NodeRef::<leptos::html::Div>::new();
     let find_input = NodeRef::<leptos::html::Input>::new();
     let find_open = RwSignal::new(false);
     let query = RwSignal::new(String::new());
+    let go_open = RwSignal::new(false);
+    let go_query = RwSignal::new(String::new());
+    let go_input = NodeRef::<leptos::html::Input>::new();
+    let cursor_status = Memo::new(move |_| {
+        content.track();
+        open_file.track();
+        workspace.active_project.track();
+        workspace.editor_documents.track();
+        editor_actions.cursor_status()
+    });
+    let go_target = Memo::new(move |_| {
+        content.track();
+        editor_actions.navigation_target(&go_query.get())
+    });
+    Effect::new(move || {
+        highlight_ready.get();
+        cursor_status.get();
+        open_file.track();
+        view_mode.track();
+        let source = content.get();
+        let path = open_file.get_untracked();
+        let selection = editor_actions.selection(&source).unwrap_or_default();
+        leptos::leptos_dom::helpers::queue_microtask(move || {
+            let Some(Some(textarea)) = ta.try_get_untracked() else {
+                return;
+            };
+            if !current_editor_target(editor_actions, &textarea)
+                || open_file.try_get_untracked() != Some(path.clone())
+                || editor_actions.source() != source
+                || editor_actions.selection(&source).unwrap_or_default() != selection
+            {
+                return;
+            }
+            let Some(parent) = textarea.parent_element() else {
+                return;
+            };
+            if let Ok(rows) = parent.query_selector_all(".editor-active-line") {
+                for index in 0..rows.length() {
+                    if let Some(row) = rows
+                        .item(index)
+                        .and_then(|row| row.dyn_into::<web_sys::Element>().ok())
+                    {
+                        let _ = row.class_list().remove_1("editor-active-line");
+                    }
+                }
+            }
+            let (line, _) = openwebide_core::editor::line_column(&source, selection.head);
+            if let Ok(Some(row)) =
+                parent.query_selector(&format!(".editor-source-line[data-line='{line}']"))
+            {
+                let _ = row.class_list().add_1("editor-active-line");
+            }
+            let mut marks = Vec::new();
+            if highlight_ready.get_untracked()
+                && let Some((first, second)) = editor_actions.matching_bracket(selection.head)
+            {
+                for offset in [first, second] {
+                    let (line, _) = openwebide_core::editor::line_column(&source, offset);
+                    let start = source[..offset]
+                        .rfind('\n')
+                        .map_or(0, |newline| newline + 1);
+                    if let Ok(Some(row)) =
+                        parent.query_selector(&format!(".editor-source-line[data-line='{line}']"))
+                    {
+                        let mut column =
+                            u32::try_from(source[start..offset].encode_utf16().count())
+                                .unwrap_or(u32::MAX);
+                        let mut end_column = column.saturating_add(1);
+                        if let Some((node, at)) = text_position(row.as_ref(), &mut column)
+                            && let Some((end_node, end_at)) =
+                                text_position(row.as_ref(), &mut end_column)
+                            && let Ok(range) = document().create_range()
+                            && range.set_start(&node, at).is_ok()
+                            && range.set_end(&end_node, end_at).is_ok()
+                        {
+                            let rect = range.get_bounding_client_rect();
+                            let bounds = parent.get_bounding_client_rect();
+                            marks.push((
+                                rect.left() - bounds.left() + textarea.scroll_left(),
+                                rect.top() - bounds.top() + textarea.scroll_top(),
+                                rect.width(),
+                                rect.height(),
+                            ));
+                        }
+                    }
+                }
+            }
+            bracket_marks.set(marks);
+        });
+    });
+    let open_go = Callback::new(move |()| {
+        let (line, column, _) = cursor_status.get_untracked();
+        go_query.set(format!("{line}:{column}"));
+        go_open.set(true);
+    });
+    let go = Callback::new(move |()| {
+        if let (Some(offset), Some(textarea)) = (go_target.get_untracked(), ta.get_untracked())
+            && current_editor_target(editor_actions, &textarea)
+        {
+            go_open.set(false);
+            navigate_editor(editor_actions, &textarea, offset);
+        }
+    });
+    let jump_bracket = Callback::new(move |()| {
+        if let Some(textarea) = ta.get_untracked()
+            && current_editor_target(editor_actions, &textarea)
+        {
+            let source = content.get_untracked();
+            let selection = projected_selection(editor_actions, &textarea, &source);
+            if let Some((_, target)) = editor_actions.matching_bracket(selection.head) {
+                navigate_editor(editor_actions, &textarea, target);
+            }
+        }
+    });
+    Effect::new(move || {
+        if go_open.get()
+            && let Some(input) = go_input.get()
+        {
+            let _ = input.focus();
+            input.select();
+        }
+    });
+    Effect::new(move || {
+        open_file.track();
+        workspace.active_project.track();
+        view_mode.track();
+        go_open.set(false);
+    });
+
     let match_index = RwSignal::new(0_usize);
     let find_source = Memo::new(move |_| {
         pending_diff
@@ -1097,7 +1322,14 @@ pub fn Editor(
 
     view! {
         <div class="editor" node_ref=root style=move || format!("--editor-tab-width: {}", editor_actions.rules().indentation.tab_width()) on:keydown=move |event: web_sys::KeyboardEvent| {
-            if (event.ctrl_key() || event.meta_key()) && event.key().eq_ignore_ascii_case("f") && view_mode.get_untracked() != ViewMode::Preview {
+            if event.is_composing() { return; }
+            if (event.ctrl_key() || event.meta_key()) && !event.alt_key() && view_mode.get_untracked() == ViewMode::Code && ta.get_untracked().is_some() && event.key().eq_ignore_ascii_case("g") {
+                event.prevent_default(); event.stop_propagation(); open_go.run(());
+            } else if (event.ctrl_key() || event.meta_key()) && event.shift_key() && !event.alt_key() && view_mode.get_untracked() == ViewMode::Code && (matches!(event.key().as_str(), "\\" | "|") || event.code() == "Backslash") {
+                event.prevent_default(); event.stop_propagation(); jump_bracket.run(());
+            } else if event.key() == "Escape" && go_open.get_untracked() {
+                event.prevent_default(); event.stop_propagation(); go_open.set(false); if let Some(textarea) = ta.get_untracked() { let _ = textarea.focus(); }
+            } else if (event.ctrl_key() || event.meta_key()) && event.key().eq_ignore_ascii_case("f") && view_mode.get_untracked() != ViewMode::Preview {
                 event.prevent_default(); event.stop_propagation(); find_open.set(true);
                 if let Some(input) = find_input.get_untracked() { let _ = input.focus(); input.select(); }
             } else if event.key() == "Escape" && find_open.get_untracked() {
@@ -1127,6 +1359,9 @@ pub fn Editor(
                             <div class="editor-header-actions">
                                 <Show when=move || view_mode.get() == ViewMode::Code && open_file.with(|path| path.as_ref().is_some_and(|path| !FileKind::from_path(path).is_non_text()))>
                                     <super::dropdown::ActionMenu aria_label="Editing commands">
+                                        <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+G" on:click=move |_| open_go.run(())>"Go to line/column"</button>
+                                        <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+Shift+\\" on:click=move |_| jump_bracket.run(())>"Jump to matching bracket"</button>
+
                                         {[
                                             ("Move lines up", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveUp), "Alt+Up"),
                                             ("Move lines down", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveDown), "Alt+Down"),
@@ -1293,6 +1528,14 @@ pub fn Editor(
                 </Show>
                 <IconButton label="Find in file (Ctrl/⌘F)" disabled=Signal::derive(move || open_file.get().is_none() || view_mode.get() == ViewMode::Preview) on_click=Callback::new(move |_| find_open.set(!find_open.get_untracked()))><Icon name=IconName::Search /></IconButton>
             </div>
+            <Show when=move || go_open.get() && open_file.get().is_some() && view_mode.get() == ViewMode::Code>
+                <PanelSearchRow class="editor-navigation">
+                    <input class="form-input panel-search-input" node_ref=go_input aria-label="Go to line and column" placeholder="line:column" prop:value=move || go_query.get() on:input=move |event| go_query.set(event_target_value(&event)) on:keydown=move |event: web_sys::KeyboardEvent| { if event.key() == "Enter" { event.prevent_default(); go.run(()); } } />
+                    <span class="form-hint" aria-live="polite">{move || if go_target.get().is_none() { "Use line or line:column" } else { "" }}</span>
+                    <Button size=ButtonSize::Sm disabled=Signal::derive(move || go_target.get().is_none()) on_click=Callback::new(move |_| go.run(()))>"Go"</Button>
+                    <IconButton label="Close navigation" on_click=Callback::new(move |_| go_open.set(false))><Icon name=IconName::X /></IconButton>
+                </PanelSearchRow>
+            </Show>
             <Show when=move || find_open.get() && open_file.get().is_some() && view_mode.get() != ViewMode::Preview>
                 <PanelSearchRow class="editor-find">
                     <input class="form-input panel-search-input" type="search" node_ref=find_input placeholder="Find in file" aria-label="Find in file" title="Literal, case-sensitive search" prop:value=move || query.get() on:input=move |event| query.set(event_target_value(&event)) on:keydown=move |event: web_sys::KeyboardEvent| {
@@ -1374,7 +1617,8 @@ pub fn Editor(
                             _ => {
                                 view! {
                                     <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get()>
-                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows />
+                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows indentation=Signal::derive(move || editor_actions.rules().indentation) />
+                                        <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>
                                         <div class="editor-fold-column"><div class="editor-fold-track">{move || {
                                             let state = fold_state.get();
                                             let headers: std::collections::HashSet<_> = state.ranges().iter().map(|range| range.start_line).collect();
@@ -1411,7 +1655,9 @@ pub fn Editor(
                                                 paste_matches_indentation.set(false);
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); }
                                             }
-                                            on:keyup=move |event: web_sys::KeyboardEvent| { if event.key().eq_ignore_ascii_case("v") { paste_matches_indentation.set(false); } }
+                                            on:keyup=move |event: web_sys::KeyboardEvent| { if event.key().eq_ignore_ascii_case("v") { paste_matches_indentation.set(false); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &content.get_untracked())); } }
+                                            on:click=move |event: web_sys::MouseEvent| { if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &content.get_untracked())); } }
                                             on:paste=move |event: web_sys::ClipboardEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
                                                 let matching = paste_matches_indentation.get_untracked(); paste_matches_indentation.set(false);
@@ -1526,6 +1772,8 @@ pub fn Editor(
             </Show>
             <Show when=move || open_file.get().is_some() && view_mode.get() == ViewMode::Code && open_file.with(|path| path.as_ref().is_some_and(|path| !FileKind::from_path(path).is_non_text()))>
                 <div class="editor-footer">
+                    <Button class="editor-cursor-status" size=ButtonSize::Sm variant=ButtonVariant::Ghost on_click=Callback::new(move |_| open_go.run(()))>{move || { let (line, column, count) = cursor_status.get(); format!("Ln {line}, Col {column}{}", if count == 0 { String::new() } else { format!(" · {count} selected") }) }}</Button>
+
                     <super::editor_options::IndentationControls above=true value=Signal::derive(move || editor_actions.rules().indentation) disabled=read_only on_change=Callback::new(move |indentation| editor_actions.set_indentation(indentation)) />
                     <Button size=ButtonSize::Sm variant=ButtonVariant::Ghost disabled=read_only on_click=Callback::new(move |_| {
                         if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) {

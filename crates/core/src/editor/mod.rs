@@ -5,6 +5,10 @@ use std::ops::Range;
 
 mod fold_providers;
 pub use fold_providers::fold_ranges;
+mod navigation;
+pub use navigation::{
+    indent_guide_columns, line_column, matching_bracket, navigation_target, offset_at_line_column,
+};
 mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
 mod projection;
