@@ -1346,6 +1346,26 @@ body {
   font-family: var(--mono);
 }
 
+.rich-preview-block {
+  border-left: 3px solid transparent;
+  margin-left: -15px;
+  padding-left: 12px;
+  display: flow-root;
+}
+.rich-preview-block.added { border-color: var(--online); }
+.rich-preview-block.modified { border-color: var(--warn); }
+.rich-preview-block.removed { border-color: var(--offline); }
+.rich-preview-before {
+  background: color-mix(in srgb, var(--offline) 12%, transparent);
+  text-decoration: line-through;
+  display: flow-root;
+}
+.rich-preview-before img { opacity: 0.6; }
+.rich-preview-after, .rich-preview-block.added {
+  background: color-mix(in srgb, var(--online) 12%, transparent);
+  display: flow-root;
+}
+
 .ui-seg-glyph {
   font-size: 11px;
 }

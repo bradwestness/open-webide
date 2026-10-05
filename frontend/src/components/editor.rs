@@ -581,6 +581,15 @@ fn render_preview_view(
     }
 }
 
+fn render_markdown_diff(diff: &FileDiff) -> impl IntoView {
+    let html = if diff.old_unavailable {
+        render_markdown(&diff.new)
+    } else {
+        crate::markdown::render_diff(diff.old.as_deref().unwrap_or_default(), &diff.new)
+    };
+    view! { <div class="editor-preview markdown rich-preview" inner_html=html /> }
+}
+
 /// The code editor: a full-height textarea bound to the open file's content,
 /// with a header showing path, dirty indicator, view mode toggles, and Save button.
 ///
@@ -853,7 +862,7 @@ pub fn Editor(
                                                     ]
                                                     value=view_mode.read_only().into()
                                                     on_change=Callback::new(move |mode| {
-                                                        if mode == ViewMode::InlineDiff
+                                                        if (mode == ViewMode::InlineDiff || (mode == ViewMode::Preview && open_file.with(|path| path.as_ref().is_some_and(|path| FileKind::from_path(path) == FileKind::Markdown))))
                                                             && let Some(cb) = &on_load {
                                                                 cb.run(());
                                                             }
@@ -998,6 +1007,9 @@ pub fn Editor(
                             ViewMode::SideBySide => render_side_by_side(diff).into_any(),
                             ViewMode::Preview => {
                                 let path = open_file.get().unwrap_or_default();
+                                if FileKind::from_path(&path) == FileKind::Markdown {
+                                    return render_markdown_diff(&diff).into_any();
+                                }
                                 render_preview_view(
                                     &path,
                                     &diff.new,
@@ -1023,6 +1035,9 @@ pub fn Editor(
                         match mode {
                             ViewMode::Preview => {
                                 let path = open_file.get().unwrap_or_default();
+                                if FileKind::from_path(&path) == FileKind::Markdown && let Some(diff) = git_head_diff.get() {
+                                    return render_markdown_diff(&diff).into_any();
+                                }
                                 let text = content.get();
                                 render_preview_view(
                                     &path,

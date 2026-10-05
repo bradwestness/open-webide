@@ -92,10 +92,17 @@ thread_local! {
 }
 
 pub fn render(md: &str) -> String {
-    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    use pulldown_cmark::{Options, Parser};
+    render_events(Parser::new_ext(
+        md,
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH,
+    ))
+}
+
+fn render_events<'a>(events: impl Iterator<Item = pulldown_cmark::Event<'a>>) -> String {
+    use pulldown_cmark::{Event, Tag, TagEnd};
     let mut html = String::new();
-    let parser = Parser::new_ext(md, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH);
-    let events = parser.flat_map(|event| {
+    let events = events.flat_map(|event| {
         let pair = match event {
             Event::Start(Tag::Table(_)) => [
                 Some(Event::Html("<div class=\"markdown-table\">".into())),
@@ -110,9 +117,144 @@ pub fn render(md: &str) -> String {
     SANITIZER.with(|b| b.clean(&html).to_string())
 }
 
+/// Render the current Markdown with change bars on its complete top-level blocks.
+/// Preserve removed prose alongside additions so the rendered changes remain reviewable.
+pub fn render_diff(old: &str, new: &str) -> String {
+    use openwebide_core::diff::{LineOp, line_lcs};
+    use std::fmt::Write;
+    let old_blocks = rendered_blocks(old);
+    let new_blocks = rendered_blocks(new);
+    // Give equal rendered blocks equal line tokens so the shared bounded LCS
+    // aligns prose blocks rather than repeated blank Markdown source lines.
+    let mut identities = std::collections::HashMap::new();
+    let mut encode = |blocks: &[String]| {
+        let mut text = String::new();
+        for block in blocks {
+            let next = identities.len();
+            let id = identities.entry(block.clone()).or_insert(next);
+            let _ = writeln!(text, "{id}");
+        }
+        text
+    };
+    let old_tokens = encode(&old_blocks);
+    let new_tokens = encode(&new_blocks);
+    let mut html = String::new();
+    let mut current = 0;
+    let mut inserted = Vec::new();
+    let mut deleted = Vec::new();
+    let mut previous = 0;
+    for op in line_lcs(&old_tokens, &new_tokens) {
+        match op {
+            LineOp::Equal(_) => {
+                render_changed_blocks(&mut html, &mut inserted, &mut deleted);
+                render_block(&mut html, &new_blocks[current], "unchanged");
+                current += 1;
+                previous += 1;
+            }
+            LineOp::Delete(_) => {
+                deleted.push(old_blocks[previous].as_str());
+                previous += 1;
+            }
+            LineOp::Insert(_) => {
+                inserted.push(new_blocks[current].as_str());
+                current += 1;
+            }
+        }
+    }
+    render_changed_blocks(&mut html, &mut inserted, &mut deleted);
+    html
+}
+
+fn render_block(html: &mut String, block: &str, change: &str) {
+    use std::fmt::Write;
+    let _ = write!(
+        html,
+        "<div class=\"rich-preview-block {change}\" title=\"{change}\">{block}</div>"
+    );
+}
+
+fn render_changed_blocks(html: &mut String, inserted: &mut Vec<&str>, deleted: &mut Vec<&str>) {
+    use std::fmt::Write;
+    for index in 0..inserted.len().max(deleted.len()) {
+        match (deleted.get(index), inserted.get(index)) {
+            (Some(old), Some(new)) => {
+                let _ = write!(
+                    html,
+                    "<div class=\"rich-preview-block modified\" title=\"Modified content\"><div class=\"rich-preview-before\" aria-label=\"Removed content\">{old}</div><div class=\"rich-preview-after\" aria-label=\"Added content\">{new}</div></div>"
+                );
+            }
+            (Some(old), None) => {
+                render_block(
+                    html,
+                    &format!(
+                        "<div class=\"rich-preview-before\" aria-label=\"Removed content\">{old}</div>"
+                    ),
+                    "removed",
+                );
+            }
+            (None, Some(new)) => render_block(html, new, "added"),
+            (None, None) => {}
+        }
+    }
+    inserted.clear();
+    deleted.clear();
+}
+
+fn rendered_blocks(md: &str) -> Vec<String> {
+    use pulldown_cmark::{Event, Options, Parser};
+    let mut blocks = Vec::new();
+    let mut events = Vec::new();
+    let mut depth = 0usize;
+    // Parse the whole document once, so reference links and nested structures
+    // retain their full-document context before each complete block is rendered.
+    for event in Parser::new_ext(md, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH) {
+        match &event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        events.push(event);
+        if depth == 0 {
+            let html = render_events(events.drain(..));
+            if !html.trim().is_empty() {
+                blocks.push(html);
+            }
+        }
+    }
+    blocks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rich_preview_marks_blocks_and_preserves_deleted_text() {
+        let html = render_diff(
+            "# Keep\n\nOld text\n\nRemove me\n\nEnd\n",
+            "# Keep\n\nNew text\n\nEnd\n\nAdded\n",
+        );
+        assert!(html.contains("rich-preview-block modified"));
+        assert!(html.contains("rich-preview-block added"), "{html}");
+        assert!(html.contains("rich-preview-block removed"));
+        assert!(html.contains("Remove me"));
+        assert!(html.contains("rich-preview-before"));
+        assert!(html.contains("<h1>Keep</h1>"));
+        assert!(html.contains("<p>End</p>"));
+        assert!(!render_diff("same\n", "same\n").contains("rich-preview-before"));
+        assert!(render_diff("last\n", "").contains("rich-preview-block removed"));
+    }
+
+    #[test]
+    fn rich_preview_keeps_structured_markdown_and_reference_links() {
+        let text = "- One\n- Two\n\n| Name |\n| --- |\n| Value |\n\n[link][ref]\n\n[ref]: https://example.com\n\n```rs\nlet x = 1;\n```\n\n<script>alert(1)</script>\n";
+        let html = render_diff("", text);
+        assert!(html.contains("<ul>"));
+        assert!(html.contains("markdown-table"));
+        assert!(html.contains("href=\"https://example.com\""));
+        assert!(html.contains("language-rs"));
+        assert!(!html.contains("<script>"));
+    }
 
     #[test]
     fn tables_preserve_structure_alignment_and_inline_formatting() {

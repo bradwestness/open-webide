@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Show green added, yellow modified and red removed gutter bars in rendered Markdown Preview for Git HEAD comparisons and pending agent edits, showing removed/replaced prose struck through in red alongside green additions in both modes.
+
 - Refine file menus: enable New folder only on folders; distinguish Explain from Summarize; send chat shortcuts immediately while preserving unsent drafts/images; keep Review available for known changes. Share Git/chat menus with Changes rows and suppress the browser context menu throughout the app.
 - Visibly dim disabled editor Preview options without hover highlighting. Support literal text previews for .txt/.text/.log and extensionless documentation (LICENSE/LICENCE, COPYING, NOTICE, AUTHORS, README and CHANGELOG) in both modes; keep Preview disabled for code and JSON.
 - Enable editor Preview for Markdown, images, PDFs and plain-text documents, render PDFs through the browser viewer in both modes, and keep unsupported binaries in their placeholder view.

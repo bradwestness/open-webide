@@ -15,6 +15,114 @@ fn mount_editor(content: String) -> Mounted {
     })
 }
 
+#[wasm_bindgen_test]
+async fn markdown_preview_gutters_share_git_and_pending_changes_in_both_modes() {
+    use openwebide_core::{FileDiff, WorkspaceMode};
+    use openwebide_frontend::state::git::HeadContent;
+    let old = "# Keep\n\nOld text\n\nEnd\n\nRemove me\n";
+    let new = "# Keep\n\nNew text\n\nAdded\n\nEnd\n";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("README.md".into()));
+            state.workspace.content.set(new.into());
+            state.git.head_content.set(Some(HeadContent {
+                project_id: Some(1),
+                path: "README.md".into(),
+                content: Ok(old.into()),
+            }));
+            view! { <style>{include_str!("../../styles.css")}</style>{editor_view(state)} }
+        });
+        settle().await;
+        mounted.click_text("Preview");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".rich-preview-block.modified")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".rich-preview-block.added")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".rich-preview-block.removed")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mounted
+                .element(".rich-preview")
+                .text_content()
+                .unwrap()
+                .contains("Remove me")
+        );
+        mounted.state.workspace.merge_pending(
+            1,
+            FileDiff {
+                path: "README.md".into(),
+                old: Some(old.into()),
+                new: new.into(),
+                old_unavailable: false,
+                backup_path: None,
+            },
+        );
+        settle().await;
+        mounted.click_text("Preview");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".rich-preview-block.modified")
+                .unwrap()
+                .is_some()
+        );
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .update(|diff| diff.get_mut("README.md").unwrap().old_unavailable = true);
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".rich-preview-block.modified")
+                .unwrap()
+                .is_none()
+        );
+        mounted
+            .state
+            .workspace
+            .pending_edits
+            .set(Default::default());
+        mounted
+            .state
+            .git
+            .head_content
+            .update(|head| head.as_mut().unwrap().project_id = Some(2));
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".rich-preview-block.modified")
+                .unwrap()
+                .is_none(),
+            "Stale HEAD must not mark another project"
+        );
+    }
+}
+
 fn assert_scroll_aligned(mounted: &Mounted, textarea: &web_sys::HtmlTextAreaElement) {
     let overlay = mounted.element(".editor-highlight");
     assert_eq!(
