@@ -19,7 +19,7 @@ for what's still ahead.
 
 - Make Open WebIDE installable with a manifest, icons, a versioned shell-only service worker and an offline server-unreachable screen. Add Settings installation guidance and browser prompting; exclude all API/bridge traffic from the cache and default HTTPS pages to same-origin `wss://<host>/bridge` while retaining explicit bridge settings.
 
-- Make browser CI checks wait for session restoration, composer focus and persisted approval-mode changes instead of relying on microtask counts or fixed delays. Guard deferred layout saves after owner disposal or account changes.
+- Make browser CI checks wait for session restoration, composer focus and persisted approval-mode changes instead of relying on microtask counts or fixed delays. Guard deferred layout saves after owner disposal or account changes. Wait for the HTTPS test's model fixture before streaming, and retain failure diagnostics.
 
 - Clarify Auto approval policy so routine public-page research can be approved without the user naming an exact URL. Keep destructive actions, secret exposure, unrelated actions and uncertain decisions subject to manual approval; share the classifier prompt across browser, bridge and Spin runs.
 

@@ -72,6 +72,13 @@ try:
         cli("run", "-d", "--name", app, "--network", f"container:{proxy}", "-v", f"{workspace}:/workspace", "-v", f"{data_volume}:/app/.spin",
             "-e", "OPENWEBIDE_APP_HOST=127.0.0.1", "-e", "OPENWEBIDE_BRIDGE_HOST=127.0.0.1", "-e", f"OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS={origin}", args.image)
         cli("run", "-d", "--name", model, "--network", f"container:{proxy}", "-v", f"{source / 'model.py'}:/model.py:ro", "python:3-alpine", "python", "/model.py")
+        for _ in range(100):
+            ready = cli("exec", model, "python", "-c", "import json, urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:5005/v1/models', timeout=1))['data'][0]['id'] == 'proxy-test'", check=False)
+            if ready.returncode == 0:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("Model fixture did not become ready: " + ready.stderr)
         ca = root / "ca.crt"
         for _ in range(200):
             result = cli("cp", f"{proxy}:/data/caddy/pki/authorities/local/root.crt", str(ca), check=False)
@@ -98,6 +105,8 @@ try:
                 break
             except (OSError, urllib.error.HTTPError):
                 time.sleep(0.1)
+        else:
+            raise AssertionError("App and bridge did not become ready through HTTPS")
         api("/auth/register", {"username": "https-check", "password": "disposable-https-test-password"})
         assert jar and all(cookie.secure for cookie in jar), "TLS proxy must produce Secure session cookies"
         connection = api("/connections", {"name": "HTTPS fixture", "kind": "llamacpp", "base_url": "http://127.0.0.1:5005", "model": "proxy-test", "context_limit": 8192})
@@ -128,7 +137,7 @@ try:
                 prefix_events = []
                 while True:
                     line = response.readline().decode()
-                    assert line, "SSE ended before its first delta"
+                    assert line, "SSE ended before its first delta: " + "".join(prefix_events)
                     prefix_events.append(line)
                     if line.startswith("data: "):
                         event = json.loads(line[6:])
@@ -166,6 +175,13 @@ try:
         else:
             raise AssertionError("Persistent account did not survive restart")
         print(f"{engine}: TLS, secure cookies, REST, SSE, WSS, guards and persistence passed in both modes")
+except Exception:
+    for container in containers:
+        result = cli("logs", container, check=False)
+        print(f"{container} logs:\n{result.stdout}\n{result.stderr}")
+    result = cli("exec", containers[1], "cat", "/app/.spin/logs/backend_stderr.txt", check=False)
+    print(f"Backend logs:\n{result.stdout}\n{result.stderr}")
+    raise
 finally:
     for container in containers:
         cli("rm", "-f", "-v", container, check=False)
