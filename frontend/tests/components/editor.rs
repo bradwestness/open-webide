@@ -175,6 +175,48 @@ async fn markdown_preview_gutters_share_git_and_pending_changes_in_both_modes() 
                     .as_deref(),
                 Some("compact")
             );
+            assert_eq!(
+                mounted
+                    .root
+                    .query_selector_all(".rich-preview li.rich-preview-item.modified")
+                    .unwrap()
+                    .length(),
+                1
+            );
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".rich-preview-block.modified")
+                    .unwrap()
+                    .is_none(),
+                "The unchanged list container must not have a gutter"
+            );
+            assert!(
+                !mounted
+                    .element(".rich-preview li:first-child")
+                    .has_attribute("class")
+            );
+            assert!(
+                !mounted
+                    .element(".rich-preview li:last-child")
+                    .has_attribute("class")
+            );
+            let item = mounted.element(".rich-preview-item.modified");
+            let marker = web_sys::window()
+                .unwrap()
+                .get_computed_style_with_pseudo_elt(&item, "::before")
+                .unwrap()
+                .unwrap();
+            assert_eq!(marker.get_property_value("width").unwrap(), "3px");
+            assert!(
+                marker
+                    .get_property_value("height")
+                    .unwrap()
+                    .trim_end_matches("px")
+                    .parse::<f64>()
+                    .unwrap()
+                    <= item.get_bounding_client_rect().height() + 1.0
+            );
             let style = web_sys::window()
                 .unwrap()
                 .get_computed_style(&mounted.element(".rich-preview del"))

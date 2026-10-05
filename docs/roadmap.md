@@ -52,7 +52,7 @@ The following checks still require hands-on device or environment testing:
 Build out the existing syntax-highlighted Edit view into a daily-use code editor.
 Keep numbered Inline/Split diffs, previews for supported formats (Markdown/images/PDF
 and plain-text documents),
-including Markdown change gutters and inline prose differences for Git HEAD and pending agent edits,
+including Markdown gutters on changed blocks/items/rows and inline prose differences for Git HEAD and pending agent edits,
 Find, pending-edit review and agent editor
 context intact. Editing must work without a host language server in both modes.
 

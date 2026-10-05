@@ -1355,6 +1355,19 @@ body {
 .rich-preview-block.added { border-color: var(--online); }
 .rich-preview-block.modified { border-color: var(--warn); }
 .rich-preview-block.removed { border-color: var(--offline); }
+.rich-preview-item, .rich-preview-row { position: relative; }
+.rich-preview-item::before, .rich-preview-row::before {
+  content: "";
+  position: absolute;
+  width: 3px;
+  top: 0;
+  bottom: 0;
+  background: var(--warn);
+}
+.rich-preview-item::before { left: -35px; }
+.rich-preview-row::before { left: 0; }
+.rich-preview :is(.rich-preview-item, .rich-preview-row).added::before { background: var(--online); }
+.rich-preview :is(.rich-preview-item, .rich-preview-row).removed::before { background: var(--offline); }
 .rich-preview-block.removed {
   background: color-mix(in srgb, var(--offline) 12%, transparent);
 }
@@ -1362,7 +1375,7 @@ body {
 .rich-preview-block.added {
   background: color-mix(in srgb, var(--online) 12%, transparent);
 }
-.rich-preview-block ins {
+.rich-preview ins {
   text-decoration: none;
 }
 
@@ -1423,13 +1436,13 @@ body {
   color: var(--offline);
 }
 
-.diff-word-del, .rich-preview-block:not(.unchanged) del {
+.diff-word-del, .rich-preview :is(.rich-preview-block, .rich-preview-item, .rich-preview-row):not(.unchanged) del {
   background: color-mix(in srgb, var(--offline) 45%, transparent);
   border-radius: 2px;
   text-decoration: line-through;
 }
 
-.diff-word-add, .rich-preview-block:not(.unchanged) ins {
+.diff-word-add, .rich-preview :is(.rich-preview-block, .rich-preview-item, .rich-preview-row):not(.unchanged) ins {
   background: color-mix(in srgb, var(--online) 45%, transparent);
   border-radius: 2px;
   font-weight: 600;

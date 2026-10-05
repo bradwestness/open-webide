@@ -57,6 +57,8 @@ fn sanitizer() -> ammonia::Builder<'static> {
     b.link_rel(Some("noopener noreferrer"));
     b.add_tag_attributes("code", &["class"]);
     b.add_tag_attributes("div", &["class"]);
+    b.add_tag_attributes("li", &["class"]);
+    b.add_tag_attributes("tr", &["class"]);
     b.add_tag_attributes("th", &["style"]);
     b.add_tag_attributes("td", &["style"]);
     b.attribute_filter(|element, attribute, value| {
@@ -80,6 +82,17 @@ fn sanitizer() -> ammonia::Builder<'static> {
                     | "rich-preview-block modified"
                     | "rich-preview-block added"
                     | "rich-preview-block removed"
+            )
+            .then(|| value.into())
+        } else if matches!(element, "li" | "tr") && attribute == "class" {
+            matches!(
+                value,
+                "rich-preview-item added"
+                    | "rich-preview-item modified"
+                    | "rich-preview-item removed"
+                    | "rich-preview-row added"
+                    | "rich-preview-row modified"
+                    | "rich-preview-row removed"
             )
             .then(|| value.into())
         } else if matches!(element, "th" | "td") && attribute == "style" {
@@ -171,7 +184,13 @@ fn diff_blocks(
         match op {
             LineOp::Equal(_) => {
                 render_changed_blocks(&mut html, &mut inserted, &mut deleted, gutters, depth);
-                render_block(&mut html, &new[current].html, "unchanged", gutters);
+                render_block(
+                    &mut html,
+                    &new[current].html,
+                    "unchanged",
+                    gutters,
+                    &new[current],
+                );
                 current += 1;
                 previous += 1;
             }
@@ -189,8 +208,26 @@ fn diff_blocks(
     html
 }
 
-fn render_block(html: &mut String, block: &str, change: &str, gutters: bool) {
+fn render_block(html: &mut String, block: &str, change: &str, gutters: bool, node: &MarkdownBlock) {
+    use pulldown_cmark::{Event, Tag};
     use std::fmt::Write;
+    let native = match node.events.first() {
+        Some(Event::Start(Tag::Item)) => Some(("li", "rich-preview-item")),
+        Some(Event::Start(Tag::TableRow | Tag::TableHead)) => Some(("tr", "rich-preview-row")),
+        _ => None,
+    };
+    if let Some((tag, class)) = native {
+        if gutters && change != "unchanged" {
+            html.push_str(&block.replacen(
+                &format!("<{tag}>"),
+                &format!("<{tag} class=\"{class} {change}\">"),
+                1,
+            ));
+        } else {
+            html.push_str(block);
+        }
+        return;
+    }
     if gutters {
         let _ = write!(
             html,
@@ -211,15 +248,31 @@ fn render_changed_blocks(
     for index in 0..inserted.len().max(deleted.len()) {
         match (deleted.get(index), inserted.get(index)) {
             (Some(old), Some(new)) => {
-                render_block(html, &diff_block(old, new, depth), "modified", gutters);
+                let change = if depth < 64 && compatible_container(old, new) {
+                    "unchanged"
+                } else {
+                    "modified"
+                };
+                render_block(html, &diff_block(old, new, depth), change, gutters, new);
             }
-            (Some(old), None) => render_block(html, &mark_block(old, "del"), "removed", gutters),
-            (None, Some(new)) => render_block(html, &mark_block(new, "ins"), "added", gutters),
+            (Some(old), None) => {
+                render_block(html, &mark_block(old, "del"), "removed", gutters, old);
+            }
+            (None, Some(new)) => render_block(html, &mark_block(new, "ins"), "added", gutters, new),
             (None, None) => {}
         }
     }
     inserted.clear();
     deleted.clear();
+}
+
+fn compatible_container(old: &MarkdownBlock, new: &MarkdownBlock) -> bool {
+    use pulldown_cmark::{Event, Tag};
+    matches!(
+        new.events.first(),
+        Some(Event::Start(Tag::List(_) | Tag::Table(_)))
+    ) && old.events.first() == new.events.first()
+        && old.events.last() == new.events.last()
 }
 
 fn diff_block(old: &MarkdownBlock, new: &MarkdownBlock, depth: usize) -> String {
@@ -235,7 +288,12 @@ fn diff_block(old: &MarkdownBlock, new: &MarkdownBlock, depth: usize) -> String 
             // table, paragraph or emphasis span when just one child has changed.
             let old_children = event_blocks(old.events[1..old.events.len() - 1].iter().cloned());
             let new_children = event_blocks(new.events[1..new.events.len() - 1].iter().cloned());
-            let inner = diff_blocks(&old_children, &new_children, false, depth + 1);
+            let inner = diff_blocks(
+                &old_children,
+                &new_children,
+                compatible_container(old, new),
+                depth + 1,
+            );
             event_html(
                 [
                     new.events[0].clone(),
@@ -355,8 +413,17 @@ mod tests {
         let html = render_diff(old, &new);
         assert_eq!(html.matches("<h2>").count(), 1, "{html}");
         assert_eq!(html.matches("<ul>").count(), 1, "{html}");
-        assert_eq!(html.matches("<li>").count(), 3, "{html}");
+        assert_eq!(html.matches("<li").count(), 3, "{html}");
         assert_eq!(html.matches("Keep this item.").count(), 1);
+        assert_eq!(
+            html.matches("rich-preview-item modified").count(),
+            1,
+            "{html}"
+        );
+        assert!(
+            !html.contains("rich-preview-block modified"),
+            "The list container must not own the gutter: {html}"
+        );
         assert!(
             html.contains("<strong><del>clear</del><ins>compact</ins></strong>"),
             "{html}"
@@ -375,7 +442,7 @@ mod tests {
             .replace("old child", "new child");
         let html = render_diff(old, &new);
         assert_eq!(html.matches("<table>").count(), 1, "{html}");
-        assert_eq!(html.matches("<tr>").count(), 2, "{html}");
+        assert_eq!(html.matches("<tr").count(), 2, "{html}");
         assert_eq!(html.matches("<ul>").count(), 2, "{html}");
         assert!(
             html.contains("<del>old</del><ins>new</ins> value"),
@@ -384,6 +451,17 @@ mod tests {
         assert!(
             html.contains("<del>old</del><ins>new</ins> child"),
             "{html}"
+        );
+        let header = render_diff(old, &old.replace("Name", "Label"));
+        assert_eq!(header.matches("<table>").count(), 1, "{header}");
+        assert_eq!(
+            header.matches("rich-preview-row modified").count(),
+            1,
+            "{header}"
+        );
+        assert!(
+            header.contains("<th><del>Name</del><ins>Label</ins></th>"),
+            "{header}"
         );
     }
 

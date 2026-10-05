@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Limit rich Markdown gutter bars to changed list items and table rows, instead of marking their entire unchanged container. Keep unchanged changelog items unmarked in both Git and pending-edit previews.
+
 - Diff Markdown prose within its existing lists, tables and inline formatting. Highlight changed words in place, so editing one word in a changelog item no longer duplicates the entire list in rich Preview; share the behavior across Git and pending-edit previews in both modes.
 
 - Show green added, yellow modified and red removed gutter bars in rendered Markdown Preview for Git HEAD comparisons and pending agent edits, showing removed/replaced prose struck through in red alongside green additions in both modes.
