@@ -123,6 +123,20 @@ pub const COMMANDS: &[CommandDefinition] = &[
         ""
     ),
     command!(
+        "git",
+        Command::TogglePanel(Panel::Git),
+        "Toggle Git changes",
+        "diff status changes",
+        ""
+    ),
+    command!(
+        "search",
+        Command::TogglePanel(Panel::Search),
+        "Toggle Search",
+        "find files contents",
+        ""
+    ),
+    command!(
         "terminal",
         Command::ToggleTerminal,
         "Toggle terminal",

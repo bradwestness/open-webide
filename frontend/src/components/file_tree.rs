@@ -17,15 +17,8 @@ pub fn FileTree(
     on_open: Callback<String>,
     on_new_file: Callback<()>,
     on_new_dir: Callback<()>,
-    on_search_input: Callback<(String, SearchOptions)>,
-    on_cancel_search: Callback<()>,
-    on_search: Callback<(String, SearchOptions)>,
-    include_ignored: ReadSignal<bool>,
-    on_toggle_include_ignored: Callback<()>,
-    on_clear_search: Callback<()>,
     #[prop(optional)] on_grant_access: Option<Callback<()>>,
 ) -> impl IntoView {
-    on_cleanup(move || on_cancel_search.run(()));
     let workspace = expect_context::<WorkspaceState>();
     let projects = expect_context::<ProjectsState>();
     let git = expect_context::<GitState>();
@@ -34,7 +27,6 @@ pub fn FileTree(
     let entries = workspace.entries.read_only();
     let expanded = workspace.expanded.read_only();
     let open_file = workspace.open_file.read_only();
-    let search_results = workspace.search.read_only();
     let tree_width = layout.tree_width.read_only();
     let git_status: Signal<Option<openwebide_core::GitRepoStatus>> =
         Signal::derive(move || git.status.get());
@@ -44,7 +36,6 @@ pub fn FileTree(
             .get()
             .is_some_and(|id| projects.needs_grant.with(|ids| ids.contains(&id)))
     });
-    let search_input = NodeRef::<leptos::html::Input>::new();
 
     // Flatten the (lazily loaded) tree into a list of (entry, depth) pairs,
     // following only expanded directories. Recomputes when `entries` or
@@ -94,56 +85,6 @@ pub fn FileTree(
                     </button>
                 </span>
             </div>
-            <div
-                class="file-tree-search"
-                style="display: flex; gap: 4px; align-items: center;"
-            >
-                <input
-                    type="text"
-                    class="search-input"
-                    style="flex: 1;"
-                    placeholder="Search files…"
-                    node_ref=search_input
-                    on:input=move |e: web_sys::Event| {
-                        if let Some(target) = e.target()
-                            && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
-                        {
-                            let q = input.value();
-                            if q.is_empty() {
-                                on_clear_search.run(());
-                            } else {
-                                on_search_input.run((
-                                    q,
-                                    SearchOptions {
-                                        include_ignored: include_ignored.get(),
-                                    },
-                                ));
-                            }
-                        }
-                    }
-                />
-                <button
-                    class="icon-btn"
-                    title="Include ignored folders (.git, target, node_modules, dist)"
-                    aria-pressed=move || include_ignored.get().to_string()
-                    on:click=move |_| {
-                        on_toggle_include_ignored.run(());
-                        if let Some(input) = search_input.get() {
-                            let q = input.value();
-                            if !q.is_empty() {
-                                on_search.run((
-                                    q,
-                                    SearchOptions {
-                                        include_ignored: include_ignored.get(),
-                                    },
-                                ));
-                            }
-                        }
-                    }
-                >
-                    "🔦"
-                </button>
-            </div>
             <Show when=move || needs_grant.get() fallback=|| ()>
                 <div style="padding: 12px; text-align: center;">
                     <p>"This browser needs permission to access the project folder. Grant access or select the folder again to reconnect it."</p>
@@ -160,10 +101,6 @@ pub fn FileTree(
                     </crate::components::Button>
                 </div>
             </Show>
-            <Show
-                when=move || search_results.get().is_some()
-                fallback=move || {
-                    view! {
                         <div class="tree-root">
                             <For
                                 each=move || flat.get()
@@ -236,9 +173,79 @@ pub fn FileTree(
                                 }
                             />
                         </div>
-                    }
-                }
+
+        </div>
+    }
+}
+
+/// Project search shares the workspace search state and actions in both modes.
+#[component]
+pub fn SearchPane(
+    on_open: Callback<String>,
+    on_search_input: Callback<(String, SearchOptions)>,
+    on_cancel_search: Callback<()>,
+    on_search: Callback<(String, SearchOptions)>,
+    include_ignored: ReadSignal<bool>,
+    on_toggle_include_ignored: Callback<()>,
+    on_clear_search: Callback<()>,
+) -> impl IntoView {
+    on_cleanup(move || on_cancel_search.run(()));
+    let workspace = expect_context::<WorkspaceState>();
+    let search_results = workspace.search.read_only();
+    let open_file = workspace.open_file.read_only();
+    let search_input = NodeRef::<leptos::html::Input>::new();
+    view! { <div class="search-pane">
+        <div class="file-tree-header"><h2>"Search"</h2></div>
+            <div
+                class="file-tree-search"
+                style="display: flex; gap: 4px; align-items: center;"
             >
+                <input
+                    type="text"
+                    class="search-input"
+                    style="flex: 1;"
+                    placeholder="Search files…"
+                    node_ref=search_input
+                    on:input=move |e: web_sys::Event| {
+                        if let Some(target) = e.target()
+                            && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
+                        {
+                            let q = input.value();
+                            if q.is_empty() {
+                                on_clear_search.run(());
+                            } else {
+                                on_search_input.run((
+                                    q,
+                                    SearchOptions {
+                                        include_ignored: include_ignored.get(),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                />
+                <button
+                    class="icon-btn"
+                    title="Include ignored folders (.git, target, node_modules, dist)"
+                    aria-pressed=move || include_ignored.get().to_string()
+                    on:click=move |_| {
+                        on_toggle_include_ignored.run(());
+                        if let Some(input) = search_input.get() {
+                            let q = input.value();
+                            if !q.is_empty() {
+                                on_search.run((
+                                    q,
+                                    SearchOptions {
+                                        include_ignored: include_ignored.get(),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                >
+                    "🔦"
+                </button>
+            </div>
                 <div class="tree-root search-results">
                     <For
                         each=move || search_results.get().unwrap_or_default()
@@ -268,7 +275,5 @@ pub fn FileTree(
                         }
                     />
                 </div>
-            </Show>
-        </div>
-    }
+    </div> }
 }

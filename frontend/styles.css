@@ -2750,3 +2750,66 @@ button.browser-item {
 .tui-task-content {
   padding: 0.5rem 0 0.25rem 0.4rem;
 }
+
+/* Tool windows keep their children mounted while moving or collapsing. */
+.tool-panel { flex: none; min-width: 0; min-height: 0; flex-direction: column; }
+.tool-panel-center, .editor-collapsed #panel-chat { flex: 1; }
+.tool-panel-content { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.tool-panel-content > .center-pane { flex: 1; }
+.tool-panel-heading { display: none; }
+.panel-rail { order: 0; }
+.panel-tab-group { display: flex; flex-direction: column; }
+.panel-pin { padding: 2px; border: 0; font-size: 12px; }
+.panel-empty { order: 60; }
+.app-body.editor-collapsed #panel-chat .panel-resizer { display: none; }
+.app { height: 100dvh; }
+.phone-layout .app-body { flex-direction: column; overflow: hidden; }
+.phone-layout .panel-rail { width: 100%; flex: none; flex-direction: row; padding: 2px; overflow-x: auto; overflow-y: hidden; box-sizing: border-box; }
+.phone-layout .panel-tab-group { flex: none; }
+.phone-layout .panel-tab { writing-mode: horizontal-tb; transform: none; min-height: 44px; padding: 8px 12px; }
+.phone-layout .panel-pin { display: none; }
+.phone-layout .tool-panel { width: 100%; flex: 1; overflow: hidden; }
+.phone-layout .tool-panel-content { overflow: hidden; }
+.phone-layout .tool-panel-heading { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; border-bottom: 1px solid var(--border); }
+.phone-layout #panel-chat .tool-panel-heading { display: none; }
+.phone-layout .panel-resizer { display: none; }
+.phone-layout .chat-pane, .phone-layout .sidebar, .phone-layout .file-tree, .phone-layout .center-pane { width: 100% !important; min-width: 0 !important; flex: 1 !important; }
+.phone-layout .btn, .phone-layout .icon-btn, .phone-layout .tree-item, .phone-layout .mode-opt { min-height: 44px; }
+.phone-layout input, .phone-layout textarea, .phone-layout select { font-size: 16px; }
+.phone-layout .topbar, .phone-layout .statusbar { flex-wrap: wrap; }
+.phone-layout .tab-bar { overflow-x: auto; flex-shrink: 0; }
+.phone-layout .modal { width: calc(100% - 16px); max-height: calc(100dvh - 16px); }
+.phone-layout .setting-row { flex-wrap: wrap; }
+.search-pane, .git-pane { display: flex; flex-direction: column; width: var(--tool-window-width, 320px); min-width: 0; min-height: 0; overflow: auto; background: var(--bg-panel); }
+.git-files { max-height: 35%; overflow: auto; flex: none; }
+.git-files .tree-item { display: flex; width: 100%; text-align: left; gap: 8px; border: 0; border-radius: 0; }
+.git-diff-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px; border-block: 1px solid var(--border); }
+#panel-terminal { width: var(--tool-window-width); }
+#panel-terminal .terminal-visibility, #panel-terminal .terminal-dock { width: 100%; height: 100%; min-height: 0; flex: 1; }
+.phone-layout .search-pane, .phone-layout .git-pane { width: 100%; flex: 1; }
+.tui-model-picker { position: relative; min-width: 0; }
+.btn.tui-model-name { font: inherit; padding: 2px 4px; max-width: 100%; overflow-wrap: anywhere; }
+.phone-welcome { display: none; }
+.phone-layout .phone-welcome { display: block; }
+.phone-layout .tui-banner-ascii { display: none; }
+.phone-layout .tui-empty-state { max-width: calc(100% - 32px); }
+.phone-layout .tui-statusline { flex-wrap: wrap; gap: 4px 8px; }
+.phone-layout .tui-statusline .tui-sep { display: none; }
+.phone-layout .tui-model-picker { max-width: calc(100% - 84px); }
+.phone-layout .recent-menu { min-width: min(240px, calc(100vw - 24px)); max-width: calc(100vw - 24px); }
+.phone-layout .topbar { min-height: 44px; height: auto; }
+.phone-layout .topbar .spacer { display: none; }
+.phone-layout .topbar-user { overflow: hidden; text-overflow: ellipsis; max-width: 100px; }
+.phone-layout .statusbar { min-height: 44px; height: auto; gap: 4px 12px; }
+.phone-layout .status-btn, .phone-layout .git-branch-btn, .phone-layout .tab-actions .btn { min-height: 44px; }
+.phone-layout .tui-composer { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+.phone-layout .tui-input { min-width: 0; }
+@media (max-width: 800px) {
+  .auth-box { max-width: calc(100vw - 32px); box-sizing: border-box; }
+}
+.phone-layout .topbar { gap: 4px; }
+.phone-layout .topbar .logo { flex: 1; }
+.phone-layout .topbar-user { display: none; }
+.phone-layout .icon-btn { min-width: 44px; }
+.app:not(.phone-layout) .tool-panel-center { min-width: 260px; }
+.phone-layout { height: var(--visible-height, 100dvh); }

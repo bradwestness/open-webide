@@ -4,6 +4,7 @@ use crate::{
     state::{
         auth::AuthState,
         layout::{LayoutState, PANEL_VISIBILITY_KEY, Panel, PanelVisibility},
+        responsive::{LAYOUT_PREFERENCES_KEY, LayoutMode, LayoutPreferences, PanelSide},
         ui::UiState,
     },
 };
@@ -13,6 +14,8 @@ use leptos::{prelude::*, task::spawn_local};
 pub struct LayoutActions {
     pub toggle: Callback<Panel>,
     pub show: Callback<Panel>,
+    pub set_mode: Callback<LayoutMode>,
+    pub pin: Callback<(Panel, PanelSide)>,
 }
 impl LayoutActions {
     pub fn new(api: Api, layout: LayoutState, auth: AuthState, ui: UiState) -> Self {
@@ -22,6 +25,9 @@ impl LayoutActions {
             auth.generation.track();
             layout.panels.set(PanelVisibility::default());
             layout.panel_revision.set(0);
+            layout.preferences.set(LayoutPreferences::default());
+            layout.preference_revision.set(0);
+            layout.sheet.set(None);
             layout
                 .sidebar_width
                 .set(crate::state::layout::ActiveResizer::Sidebar.default());
@@ -36,6 +42,7 @@ impl LayoutActions {
         });
         Effect::new(move |_| {
             layout.active_project.track();
+            layout.sheet.set(None);
             layout.active_resizer.set(Default::default());
             let viewport = web_sys::window()
                 .and_then(|window| window.inner_width().ok())
@@ -45,6 +52,14 @@ impl LayoutActions {
         });
         let change = Callback::new(move |(panel, visible): (Panel, bool)| {
             if !layout.available(panel) {
+                return;
+            }
+            if layout.phone.get_untracked() {
+                layout.sheet.set(if visible && panel != Panel::Chat {
+                    Some(panel)
+                } else {
+                    None
+                });
                 return;
             }
             let mut panels = layout.panels.get_untracked();
@@ -92,9 +107,63 @@ impl LayoutActions {
                 }
             });
         });
+        let preference_pending = StoredValue::new(None::<LayoutPreferences>);
+        let preference_saving = StoredValue::new(None::<u64>);
+        Effect::new(move |_| {
+            auth.generation.track();
+            preference_pending.set_value(None);
+        });
+        let save_preferences = Callback::new(move |preferences: LayoutPreferences| {
+            layout.preferences.set(preferences.clone());
+            layout.preference_revision.update(|revision| *revision += 1);
+            layout.sheet.set(None);
+            layout.fit(layout.viewport_width.get_untracked());
+            if auth.user.get_untracked().is_none() {
+                return;
+            }
+            preference_pending.set_value(Some(preferences));
+            let epoch = auth.generation.get_untracked();
+            if preference_saving.get_value() == Some(epoch) {
+                return;
+            }
+            preference_saving.set_value(Some(epoch));
+            let backend = api.with_value(Clone::clone);
+            spawn_local(async move {
+                while auth.generation.try_get_untracked() == Some(epoch) {
+                    let Some(preferences) =
+                        preference_pending.try_update_value(Option::take).flatten()
+                    else {
+                        break;
+                    };
+                    let value =
+                        serde_json::to_string(&preferences).expect("layout preferences serialize");
+                    let result = backend.set_setting(LAYOUT_PREFERENCES_KEY, &value).await;
+                    if auth.generation.try_get_untracked() != Some(epoch) {
+                        return;
+                    }
+                    if let Err(message) = result {
+                        ui.notify(format!("Could not save panel layout: {message}"));
+                    }
+                }
+                if preference_saving.try_get_value() == Some(Some(epoch)) {
+                    preference_saving.set_value(None);
+                }
+            });
+        });
         Self {
+            set_mode: Callback::new(move |mode| {
+                let mut preferences = layout.preferences.get_untracked();
+                preferences.mode = mode;
+                save_preferences.run(preferences);
+            }),
+            pin: Callback::new(move |(panel, side): (Panel, PanelSide)| {
+                let mut preferences = layout.preferences.get_untracked();
+                if preferences.pin(panel.id(), side) {
+                    save_preferences.run(preferences);
+                }
+            }),
             toggle: Callback::new(move |panel| {
-                change.run((panel, !layout.panels.get_untracked().visible(panel)));
+                change.run((panel, !layout.visible_panels.get_untracked().visible(panel)));
             }),
             show: Callback::new(move |panel| change.run((panel, true))),
         }

@@ -19,12 +19,12 @@ trap 'shutdown TERM 143' TERM
 trap 'shutdown INT 130' INT
 
 if [[ ${OPENWEBIDE_BRIDGE:-1} != 0 ]]; then
-    openwebide-bridge --host 0.0.0.0 --port 3001 --workspace /workspace \
+    openwebide-bridge --host "${OPENWEBIDE_BRIDGE_HOST:-0.0.0.0}" --port 3001 --workspace /workspace \
         --backend-url http://127.0.0.1:3000/api --secret-file /app/.spin/bridge-secret &
     children+=("$!")
 fi
 
-spin up --listen 0.0.0.0:3000 --direct-mounts --allow-transient-write "$@" &
+spin up --listen "${OPENWEBIDE_APP_HOST:-0.0.0.0}:3000" --direct-mounts --allow-transient-write "$@" &
 children+=("$!")
 
 wait -n "${children[@]}"

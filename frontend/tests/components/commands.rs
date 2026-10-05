@@ -235,6 +235,7 @@ async fn palette_panel_actions_and_direct_shortcuts_use_one_layout_facade() {
             install_keyboard_shortcuts(state.chat);
             let layout = expect_context::<LayoutState>();
             view! { <button class="opener" on:click=move |_| actions.run.run(Command::Palette)>"Commands"</button>
+            <span class="terminal-visible">{move || layout.visible_panels.get().terminal.to_string()}</span>
             <span class="files-visible">{move || layout.visible_panels.get().visible(Panel::Files).to_string()}</span>
             <CommandDialogs/> }
         });
@@ -251,12 +252,24 @@ async fn palette_panel_actions_and_direct_shortcuts_use_one_layout_facade() {
         let opener = mounted.element(".opener");
         assert!(!key(&opener, "`", "Backquote", true, false, false));
         settle().await;
-        assert!(mounted.state.chat.show_terminal.get_untracked());
+        assert_eq!(
+            mounted
+                .element(".terminal-visible")
+                .text_content()
+                .as_deref(),
+            Some("true")
+        );
         opener.click();
         settle().await;
         mounted.click("#command-terminal");
         settle().await;
-        assert!(!mounted.state.chat.show_terminal.get_untracked());
+        assert_eq!(
+            mounted
+                .element(".terminal-visible")
+                .text_content()
+                .as_deref(),
+            Some("false")
+        );
     }
 }
 

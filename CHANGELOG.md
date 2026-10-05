@@ -11,6 +11,10 @@ for what's still ahead.
 
 ### Changed
 
+- Add automatic phone layout with full-screen chat and mounted tool sheets, a saved Automatic/Desktop/Phone override, touch targets, independent Terminal/Git/Search tabs, and per-user left/right pinning. Preserve drafts, terminal output and desktop panel preferences in local, remote and projectless chats.
+
+- Make Open WebIDE installable with a manifest, icons, a versioned shell-only service worker and an offline server-unreachable screen. Add Settings installation guidance and browser prompting; exclude all API/bridge traffic from the cache and default HTTPS pages to same-origin `wss://<host>/bridge` while retaining explicit bridge settings.
+
 - Make browser CI checks wait for session restoration, composer focus and persisted approval-mode changes instead of relying on microtask counts or fixed delays. Guard deferred layout saves after owner disposal or account changes.
 
 - Clarify Auto approval policy so routine public-page research can be approved without the user naming an exact URL. Keep destructive actions, secret exposure, unrelated actions and uncertain decisions subject to manual approval; share the classifier prompt across browser, bridge and Spin runs.
@@ -24,6 +28,8 @@ for what's still ahead.
 - Polish tool steps in local, remote and projectless chats with live elapsed time, persisted final durations, expandable ANSI-colored output and plain-text Copy (including an HTTP LAN fallback). Add per-prompt tool/file counts, including shell changes, and recorded model/tool time; mark incomplete timing as a lower bound. Exclude approval waits, freeze cancelled tools, preserve timing through reload, fork and rewind, and keep timing-save failures from stopping runs.
 
 - Show live reasoning time to tenths of a second and estimated tokens for inline `<think>` blocks and provider reasoning in every chat mode. Freeze a compact “Thought for 3.2s · ~1.4k tokens” summary on completion, cancellation or provider failure, keep traces collapsed until expanded, and support keyboard toggling. Historical traces without observed timing show their token estimate without inventing a duration.
+
+- Add private HTTPS deployment configuration for an external official Tailscale container, persistent same-origin `/bridge` Serve routes, loopback listeners, native and rootless Podman instructions, and a Caddy internal-CA alternative. Verify TLS REST, SSE and WSS in Docker and rootless Podman; keep the backend-only bridge secret bootstrap inaccessible through a proxy.
 
 - Default new sessions to **Auto** approval mode and label the former Default choice **Manual**. Preserve saved modes and keep older sessions without a saved choice manual.
 
@@ -45,7 +51,6 @@ for what's still ahead.
 - Add opt-in browser notifications for finished runs and approval requests in local, remote and projectless chats. Notify for chats that are out of focus, collapsed or inactive; clicking opens the owning project and session. Save the preference per user in the database, request browser permission only from Settings, explain unsupported/blocked browsers, and keep approvals available in the app. Suppress duplicate/replayed events and automatic approvals; guard pending permission responses and notification clicks across account changes, and close notifications on logout. Keep the app open to receive notifications; Web Push remains planned separately.
 
 - Queue prompts while a run is active, edit/remove pending prompts, pause or continue the queue, and steer by saving priority guidance before stopping the current run. Persist captured attachments and queue revisions in the database; consume each prompt atomically when its user message is saved, keep failed sends queued, and restore pending queues paused after reload or session changes. Add Edit and Fork on earlier prompts: copy the conversation prefix into a new branch while preserving the original session, images, editor context, model selection and approval mode. Share these workflows across local, remote and projectless chats; branching leaves project files unchanged.
-
 
 - Attach immutable file contents, folder listings and Git diffs using `@file:path`, `@folder:path` and `@diff[:path]`, with keyboard autocomplete and quoted paths for spaces. Resolve mentions through shared workspace/Git facades in local and remote projects. Add image picker, paste and drag/drop with previews and removal, including projectless chat; persist images and reference snapshots with prompts for reload and rewind. Send real image inputs to Ollama and llama.cpp in plain and tool requests, normalize GIF/WebP and large rasters to PNG, expose detected/custom vision capability in model settings, and keep image pixels out of text compaction. Limit attachments to four images (2 MiB each, 4 MiB total) and reference context to 16 references/128 KiB. Guard preparation against cancellation and account/project/session changes.
 

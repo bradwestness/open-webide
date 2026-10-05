@@ -112,23 +112,6 @@ terminal pane are done and in the changelog, but:
   `browser_console_logs` tools, failing open to `fetch_web_page` when no CDP
   browser is reachable.
 
-### Mobile support & collapsible tool windows
-
-- **Tool windows:** Sessions, Files, Editor and Chat now share a left vertical tab bar to
-  collapse or expand mounted panels, with visibility saved per user. Remaining:
-  independent terminal, Git/diff and search tabs, plus dragging or pinning tool
-  windows to another side.
-- **Phone layout:** the TUI chat is the whole app, like the Claude or Codex
-  mobile apps — a full-screen chat stream and composer, statusline,
-  approvals, and model/approval-mode dropdowns; the other panels open as
-  full-screen sheets (file viewer, diffs, terminal) instead of side by side.
-- Responsive breakpoints pick the layout automatically, with a manual
-  override; touch-friendly targets; works over the LAN through the bridge
-  (the phone/LAN access the hardening sequence keeps working).
-
-The existing per-feature state stores make layouts swappable. Saved panel widths
-already fit the viewport.
-
 ## Later
 
 ### Multi-user
@@ -148,34 +131,20 @@ after the first account):
   bridge token, so one user can't list, attach to or kill another's shells;
   and the bridge's acting-user header limited to the connection's own user.
 
-### Installable PWA & HTTPS
+### Tailscale HTTPS deployment verification
 
-- **PWA:** a web app manifest (name, icons, `display: standalone`, theme
-  colors from the design tokens) and a small JavaScript service worker
-  (copied in by Trunk) that caches only the app shell (wasm/js/css) for a
-  fast launch, never caches `/api` or bridge traffic, shows a "can't reach
-  the server" screen when offline, and busts its cache per build.
-- **HTTPS is required** — browsers only allow install and service workers
-  on secure origins (localhost excepted) — and then the bridge must be
-  `wss://` too, since an https page can't open `ws://`.
-- **Default design:** the bridge sits behind the same HTTPS proxy as the app
-  at the same-origin path `/bridge` (`wss://<host>/bridge`), with the bridge
-  bound to `127.0.0.1` only (no LAN exposure). The frontend defaults the
-  bridge URL to `wss://<same host>/bridge` when the page is served over
-  https. Spin can't proxy WebSockets, so this needs a proxy in front of it
-  rather than living in the Spin app.
-- **Tailscale path:** a one-time tailnet admin toggle (MagicDNS + HTTPS
-  Certificates — manual; the app detects the certificate failure and points
-  to the toggle), then `tailscale serve --bg --https=443
-  http://127.0.0.1:3000` and `--set-path /bridge http://127.0.0.1:3001`.
-  Automation: an opt-in bridge `--tailscale-serve` flag that sets up both
-  routes at startup and prints the URL; for Docker, an optional Tailscale
-  sidecar in `docker-compose.yml` with a checked-in serve config (the user
-  supplies only an auth key).
-- **Alternative:** Caddy with an internal CA. Built-in bridge TLS
-  (`--tls-cert`/`--tls-key` via tokio-rustls) only if a need appears.
-- **Optional:** Web Push for "run finished / needs approval" (installed
-  PWAs, including iOS 16.4+), extending the existing browser run notifications.
+- The app shell, installation guidance, phone layout and same-origin WSS default
+  are implemented. Docker and rootless Podman pass real TLS REST, SSE and WSS
+  checks through Caddy in both workspace modes.
+- Finish live verification of the official external Tailscale Serve deployment:
+  certificate provisioning, persistent Serve JSON, `/bridge` routing and node
+  recreation. This needs Serve enabled in the test tailnet; the
+  [setup guide](tailscale.md) and standalone HTTPS Compose file are ready.
+
+### Web Push (optional)
+
+- Notify installed apps when a run finishes or needs approval, with user-scoped
+  subscriptions and permission controls. This is separate from PWA installation.
 
 ### Sandboxed tool execution (optional)
 

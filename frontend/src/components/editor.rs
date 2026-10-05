@@ -235,7 +235,7 @@ fn whole_file_ending_summary(lines: &[DiffLine]) -> Option<String> {
 }
 
 /// Render the changed middle of a file edit as inline removed/added lines with intra-line word diffs.
-fn render_inline_diff(diff: FileDiff) -> impl IntoView {
+pub(super) fn render_inline_diff(diff: FileDiff) -> impl IntoView {
     let lines = diff_inline_detailed(&diff);
     let body: Vec<AnyView> = if let Some(summary) = whole_file_ending_summary(&lines) {
         vec![

@@ -1,3 +1,4 @@
+use super::responsive::{LAYOUT_PREFERENCES_KEY, LayoutPreferences};
 use leptos::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -6,10 +7,23 @@ pub enum Panel {
     Files,
     Editor,
     Chat,
+    Terminal,
+    Git,
+    Search,
 }
 impl Panel {
+    pub const fn fixed_width(self) -> f64 {
+        match self {
+            Self::Terminal => 360.0,
+            Self::Git | Self::Search => 320.0,
+            _ => 0.0,
+        }
+    }
     pub const fn requires_project(self) -> bool {
-        matches!(self, Self::Files | Self::Editor)
+        matches!(
+            self,
+            Self::Files | Self::Editor | Self::Terminal | Self::Git | Self::Search
+        )
     }
     pub const fn id(self) -> &'static str {
         match self {
@@ -17,6 +31,9 @@ impl Panel {
             Self::Files => "files",
             Self::Editor => "editor",
             Self::Chat => "chat",
+            Self::Terminal => "terminal",
+            Self::Git => "git",
+            Self::Search => "search",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -25,6 +42,9 @@ impl Panel {
             Self::Files => "Files",
             Self::Editor => "Editor",
             Self::Chat => "Chat",
+            Self::Terminal => "Terminal",
+            Self::Git => "Git",
+            Self::Search => "Search",
         }
     }
 }
@@ -36,6 +56,9 @@ pub struct PanelVisibility {
     pub files: bool,
     pub editor: bool,
     pub chat: bool,
+    pub terminal: bool,
+    pub git: bool,
+    pub search: bool,
 }
 impl Default for PanelVisibility {
     fn default() -> Self {
@@ -44,6 +67,9 @@ impl Default for PanelVisibility {
             files: true,
             editor: true,
             chat: true,
+            terminal: false,
+            git: false,
+            search: false,
         }
     }
 }
@@ -52,6 +78,9 @@ impl PanelVisibility {
         if !available {
             self.files = false;
             self.editor = false;
+            self.terminal = false;
+            self.git = false;
+            self.search = false;
         }
         self
     }
@@ -61,6 +90,9 @@ impl PanelVisibility {
             Panel::Files => self.files,
             Panel::Editor => self.editor,
             Panel::Chat => self.chat,
+            Panel::Terminal => self.terminal,
+            Panel::Git => self.git,
+            Panel::Search => self.search,
         }
     }
     pub fn set(&mut self, panel: Panel, visible: bool) {
@@ -69,6 +101,9 @@ impl PanelVisibility {
             Panel::Files => self.files = visible,
             Panel::Editor => self.editor = visible,
             Panel::Chat => self.chat = visible,
+            Panel::Terminal => self.terminal = visible,
+            Panel::Git => self.git = visible,
+            Panel::Search => self.search = visible,
         }
     }
 }
@@ -96,7 +131,12 @@ pub fn fit_visible_panels(
         .filter(|(i, _)| visible[*i])
         .map(|(_, width)| width)
         .sum::<f64>();
-    let mut excess = (used + center + PANEL_RAILS_WIDTH - viewport).max(0.0);
+    let tools = [Panel::Terminal, Panel::Git, Panel::Search]
+        .into_iter()
+        .filter(|panel| visibility.visible(*panel))
+        .map(Panel::fixed_width)
+        .sum::<f64>();
+    let mut excess = (used + tools + center + PANEL_RAILS_WIDTH - viewport).max(0.0);
     for i in [2, 1, 0] {
         if visible[i] {
             let shrink = excess.min(widths[i] - panels[i].min());
@@ -171,6 +211,11 @@ pub struct LayoutState {
     pub visible_panels: Memo<PanelVisibility>,
     pub active_project: RwSignal<Option<i64>>,
     pub panel_revision: RwSignal<u64>,
+    pub preferences: RwSignal<LayoutPreferences>,
+    pub preference_revision: RwSignal<u64>,
+    pub viewport_width: RwSignal<f64>,
+    pub phone: Memo<bool>,
+    pub sheet: RwSignal<Option<Panel>>,
     pub terminal_cmd: RwSignal<Option<String>>,
     pub sidebar_width: RwSignal<f64>,
     pub tree_width: RwSignal<f64>,
@@ -185,13 +230,42 @@ impl LayoutState {
 
     pub fn with_active_project(active_project: RwSignal<Option<i64>>) -> Self {
         let panels = RwSignal::new(PanelVisibility::default());
-        let visible_panels =
-            Memo::new(move |_| panels.get().for_project(active_project.get().is_some()));
+        let preferences = RwSignal::new(LayoutPreferences::default());
+        let viewport_width = RwSignal::new(1200.0);
+        let phone =
+            Memo::new(move |_| preferences.with(|prefs| prefs.mode.phone(viewport_width.get())));
+        let sheet = RwSignal::new(None::<Panel>);
+        let visible_panels = Memo::new(move |_| {
+            let mut visible = panels.get().for_project(active_project.get().is_some());
+            if phone.get() {
+                for panel in [
+                    Panel::Sessions,
+                    Panel::Files,
+                    Panel::Editor,
+                    Panel::Chat,
+                    Panel::Terminal,
+                    Panel::Git,
+                    Panel::Search,
+                ] {
+                    visible.set(
+                        panel,
+                        sheet.get().unwrap_or(Panel::Chat) == panel
+                            && (!panel.requires_project() || active_project.get().is_some()),
+                    );
+                }
+            }
+            visible
+        });
         Self {
             panels,
             visible_panels,
             active_project,
             panel_revision: RwSignal::new(0),
+            preferences,
+            preference_revision: RwSignal::new(0),
+            viewport_width,
+            phone,
+            sheet,
             terminal_cmd: RwSignal::new(None),
             sidebar_width: RwSignal::new(ActiveResizer::Sidebar.default()),
             tree_width: RwSignal::new(ActiveResizer::Tree.default()),
@@ -205,6 +279,10 @@ impl LayoutState {
     }
 
     pub fn fit(&self, viewport: f64) {
+        self.viewport_width.set(viewport);
+        if self.phone.get_untracked() {
+            return;
+        }
         let [sidebar, tree, chat] = fit_visible_panels(
             viewport,
             [
@@ -217,6 +295,17 @@ impl LayoutState {
         self.sidebar_width.set(sidebar);
         self.tree_width.set(tree);
         self.chat_width.set(chat);
+    }
+
+    pub fn restore_preferences(&self, values: &std::collections::BTreeMap<String, String>) {
+        if self.preference_revision.get_untracked() == 0 {
+            self.preferences.set(
+                values
+                    .get(LAYOUT_PREFERENCES_KEY)
+                    .and_then(|value| serde_json::from_str(value).ok())
+                    .unwrap_or_default(),
+            );
+        }
     }
 
     pub fn restore_panels(&self, value: Option<&String>) {
@@ -246,7 +335,13 @@ impl LayoutState {
         } else {
             0.0
         };
-        let viewport = viewport - PANEL_RAILS_WIDTH + if panels.editor { 0.0 } else { CENTER_MIN };
+        let tools = [Panel::Terminal, Panel::Git, Panel::Search]
+            .into_iter()
+            .filter(|panel| panels.visible(*panel))
+            .map(Panel::fixed_width)
+            .sum::<f64>();
+        let viewport =
+            viewport - PANEL_RAILS_WIDTH - tools + if panels.editor { 0.0 } else { CENTER_MIN };
         Self::clamp(resizer, requested, sidebar, tree, chat, viewport)
     }
 
@@ -296,12 +391,54 @@ mod tests {
     }
 
     #[test]
+    fn late_layout_restore_keeps_current_preferences_and_open_tools_keep_editor_space() {
+        Owner::new().with(|| {
+            let layout = LayoutState::new();
+            let mut values = std::collections::BTreeMap::new();
+            values.insert(
+                LAYOUT_PREFERENCES_KEY.into(),
+                r#"{"mode":"desktop","sides":{"chat":"left"}}"#.into(),
+            );
+            layout.restore_preferences(&values);
+            assert_eq!(
+                layout.preferences.get_untracked().side("chat"),
+                super::super::responsive::PanelSide::Left
+            );
+            layout
+                .preferences
+                .update(|prefs| prefs.mode = super::super::responsive::LayoutMode::Phone);
+            layout.preference_revision.set(1);
+            layout.restore_preferences(&values);
+            assert_eq!(
+                layout.preferences.get_untracked().mode,
+                super::super::responsive::LayoutMode::Phone
+            );
+        });
+        let mut visibility = PanelVisibility {
+            git: true,
+            ..PanelVisibility::default()
+        };
+        assert_widths(
+            fit_visible_panels(1400.0, [240.0, 260.0, 420.0], visibility),
+            [240.0, 260.0, 284.0],
+        );
+        visibility.terminal = true;
+        assert_widths(
+            fit_visible_panels(1400.0, [240.0, 260.0, 420.0], visibility),
+            [140.0, 160.0, 260.0],
+        );
+    }
+
+    #[test]
     fn collapsed_panels_keep_their_width_and_release_center_space() {
         let hidden = PanelVisibility {
             sessions: false,
             files: false,
             editor: true,
             chat: true,
+            terminal: false,
+            git: false,
+            search: false,
         };
         assert_widths(
             fit_visible_panels(900.0, [480.0, 650.0, 800.0], hidden),

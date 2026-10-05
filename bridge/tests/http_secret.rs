@@ -141,3 +141,24 @@ async fn browser_origin_exec_requires_token() {
     let res = request(port, req).await;
     assert_eq!(res.status(), 401);
 }
+
+#[tokio::test]
+async fn proxied_loopback_cannot_bootstrap_the_secret() {
+    let (port, _) = start_server().await;
+    for header in [
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+    ] {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(format!("http://127.0.0.1:{port}/secret"))
+            .header("host", format!("127.0.0.1:{port}"))
+            .header(header, "proxy-client")
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .unwrap();
+        let res = request(port, req).await;
+        assert_eq!(res.status(), 403, "{header}");
+    }
+}

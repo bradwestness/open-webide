@@ -67,6 +67,17 @@ pub(super) async fn route(
         ));
     }
 
+    // A reverse proxy connects over loopback on behalf of a network client.
+    // Only a direct backend request may bootstrap the bridge secret.
+    let direct_loopback = addr.ip().is_loopback()
+        && [
+            "forwarded",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+        ]
+        .iter()
+        .all(|header| !req.headers().contains_key(*header));
     let path = req.uri().path().to_string();
 
     let is_api_req = path == "/exec"
@@ -126,7 +137,7 @@ pub(super) async fn route(
             r#"{"status":"ok"}"#,
             allowed_origin,
         )),
-        ("POST", "/secret") if origin.is_none() && addr.ip().is_loopback() => Ok(respond(
+        ("POST", "/secret") if origin.is_none() && direct_loopback => Ok(respond(
             StatusCode::OK,
             serde_json::json!({ "secret": config.secret.as_ref() }).to_string(),
             allowed_origin,

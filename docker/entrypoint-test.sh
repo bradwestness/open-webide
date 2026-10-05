@@ -102,3 +102,11 @@ await_exit 143
 
 [[ $(bash "$root/docker/entrypoint.sh" printf '%s' dispatched) == dispatched ]]
 echo 'Container supervisor tests passed'
+
+# The HTTPS proxy and app share a namespace; only loopback listeners are needed.
+export OPENWEBIDE_BRIDGE=1 OPENWEBIDE_APP_HOST=127.0.0.1 OPENWEBIDE_BRIDGE_HOST=127.0.0.1
+start
+[[ $(cat "$test_dir/spin.args") == 'up --listen 127.0.0.1:3000 --direct-mounts --allow-transient-write --quiet' ]]
+[[ $(cat "$test_dir/openwebide-bridge.args") == '--host 127.0.0.1 --port 3001 --workspace /workspace --backend-url http://127.0.0.1:3000/api --secret-file /app/.spin/bridge-secret' ]]
+kill -TERM "$supervisor"
+await_exit 143

@@ -60,6 +60,8 @@ and use SSE chat instead. If overriding the container command, retain
 Legacy remote paths are migrated automatically on startup.
 
 For Linux services, see the [Podman quadlet guide](docs/podman-quadlet.md).
+For private HTTPS access from phones and other devices, the recommended approach
+is [Tailscale Serve in a separate container](docs/tailscale.md).
 
 ## Run from source
 

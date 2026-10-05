@@ -302,8 +302,129 @@ async fn projectless_chat_hides_and_disables_files_and_editor_without_saving_ove
                 .element("#panel-editor")
                 .get_attribute("style")
                 .unwrap()
-                .contains("contents")
+                .contains("flex")
         );
         assert!(editor.is_same_node(Some(mounted.element("#panel-editor textarea").as_ref())));
+    }
+}
+
+#[wasm_bindgen_test]
+async fn phone_sheets_keep_drafts_and_desktop_preferences_in_both_modes() {
+    use super::support::wait_until;
+    use openwebide_frontend::state::responsive::{LAYOUT_PREFERENCES_KEY, LayoutMode, PanelSide};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let read = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            let auth = expect_context::<AuthState>();
+            auth.set_user(user(1));
+            let layout = expect_context::<LayoutState>();
+            let actions = LayoutActions::new(state.api, layout, auth, state.ui);
+            provide_context(actions);
+            read.set(Some((layout, actions)));
+            view! {
+                <PanelRail panels=vec![Panel::Files, Panel::Chat, Panel::Terminal, Panel::Git, Panel::Search] />
+                <ToolPanel panel=Panel::Files><input value="file draft" /></ToolPanel>
+                <ToolPanel panel=Panel::Chat><textarea>"chat draft"</textarea></ToolPanel>
+                <ToolPanel panel=Panel::Search><input value="query" /></ToolPanel>
+                <ToolPanel panel=Panel::Git><span>"Git"</span></ToolPanel>
+                <ToolPanel panel=Panel::Terminal><input value="command" /></ToolPanel>
+            }
+        });
+        settle().await;
+        let (layout, actions) = slot.get().unwrap();
+        let remembered = layout.panels.get_untracked();
+        let draft = mounted.element("#panel-chat textarea");
+        layout.fit(390.0);
+        settle().await;
+        assert!(layout.phone.get_untracked());
+        assert!(layout.visible_panels.get_untracked().chat);
+        for panel in [Panel::Files, Panel::Search, Panel::Git, Panel::Terminal] {
+            actions.show.run(panel);
+            settle().await;
+            assert!(layout.visible_panels.get_untracked().visible(panel));
+            assert!(!layout.visible_panels.get_untracked().chat);
+            mounted.click(&format!("#panel-{} .tool-panel-heading button", panel.id()));
+            settle().await;
+            assert!(layout.visible_panels.get_untracked().chat);
+        }
+        assert_eq!(layout.panels.get_untracked(), remembered);
+        assert!(draft.is_same_node(Some(mounted.element("#panel-chat textarea").as_ref())));
+        actions.set_mode.run(LayoutMode::Desktop);
+        settle().await;
+        assert!(!layout.phone.get_untracked());
+        assert_eq!(layout.panels.get_untracked(), remembered);
+        actions.pin.run((Panel::Chat, PanelSide::Left));
+        wait_until("saved workspace layout", || {
+            mounted.state.fake.settings.borrow().get(LAYOUT_PREFERENCES_KEY)
+                .and_then(|value| serde_json::from_str::<openwebide_frontend::state::responsive::LayoutPreferences>(value).ok())
+                .is_some_and(|prefs| prefs.mode == LayoutMode::Desktop && prefs.side("chat") == PanelSide::Left)
+        }).await;
+        let saved: openwebide_frontend::state::responsive::LayoutPreferences =
+            serde_json::from_str(&mounted.state.fake.settings.borrow()[LAYOUT_PREFERENCES_KEY])
+                .unwrap();
+        assert_eq!(saved.mode, LayoutMode::Desktop);
+        assert_eq!(saved.side("chat"), PanelSide::Left);
+        layout.active_project.set(None);
+        actions.set_mode.run(LayoutMode::Phone);
+        settle().await;
+        for panel in [Panel::Files, Panel::Terminal, Panel::Git, Panel::Search] {
+            assert!(!layout.available(panel));
+        }
+        assert!(layout.visible_panels.get_untracked().chat);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn git_window_loads_diffs_only_when_open_in_a_repository_in_both_modes() {
+    use openwebide_frontend::components::GitPane;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let loads = RwSignal::new(0);
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let read = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("demo.rs".into()));
+            let layout = expect_context::<LayoutState>();
+            read.set(Some(layout));
+            view! { <GitPane on_open=Callback::new(|_| ()) on_load_git_diff=Callback::new(move |()| loads.update(|value| *value += 1)) on_discard_git_diff=Callback::new(|()| ()) /> }
+        });
+        settle().await;
+        assert_eq!(loads.get_untracked(), 0);
+        let layout = slot.get().unwrap();
+        layout.panels.update(|panels| panels.git = true);
+        settle().await;
+        assert_eq!(loads.get_untracked(), 0);
+        mounted
+            .state
+            .git
+            .status
+            .set(Some(openwebide_core::GitRepoStatus::default()));
+        settle().await;
+        assert_eq!(loads.get_untracked(), 1);
+        layout.panels.update(|panels| panels.git = false);
+        settle().await;
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        settle().await;
+        assert_eq!(loads.get_untracked(), 1);
+        layout.panels.update(|panels| panels.git = true);
+        settle().await;
+        assert_eq!(loads.get_untracked(), 2);
+        mounted.state.projects.active_project.set(None);
+        settle().await;
+        assert_eq!(loads.get_untracked(), 2);
     }
 }

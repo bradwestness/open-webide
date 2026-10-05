@@ -75,6 +75,9 @@ jobs:
           curl -sSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
             | tar -xz -C /usr/local/bin trunk
 
+      - name: Test PWA caching and installation
+        run: node --test frontend/pwa/pwa.test.cjs
+
       - name: Build frontend
         run: cd frontend && trunk build --release
 
@@ -101,7 +104,7 @@ jobs:
         env:
           CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
         run: |
-          printf '{"goog:chromeOptions":{"binary":"%s"}}\n' "$CHROME_PATH" \
+          printf '{"goog:chromeOptions":{"binary":"%s","args":["--window-size=1280,900"]}}\n' "$CHROME_PATH" \
             | tee webdriver.json > frontend/webdriver.json
 
       - name: Install wasm-bindgen test runner
@@ -128,3 +131,15 @@ jobs:
 
       - name: Check host-owned workspace Git access
         run: docker run --rm -v "$PWD/docker/git-ownership-test.sh:/git-ownership-test.sh:ro" open-webide:ci bash /git-ownership-test.sh
+
+      - name: Check HTTPS REST, SSE and WebSocket transport (Docker)
+        run: python3 docker/https-test/check.py docker
+
+      - name: Install rootless Podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Load the same image into rootless Podman
+        run: docker save open-webide:ci | podman load
+
+      - name: Check HTTPS REST, SSE and WebSocket transport (rootless Podman)
+        run: python3 docker/https-test/check.py podman --port 8447

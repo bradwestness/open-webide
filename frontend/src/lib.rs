@@ -6,6 +6,7 @@ pub mod app;
 pub mod backend;
 #[cfg(target_arch = "wasm32")]
 pub mod bridge;
+pub mod bridge_address;
 pub mod commands;
 #[cfg(target_arch = "wasm32")]
 pub mod components;
@@ -99,3 +100,5 @@ mod probe_tests {
 
 #[cfg(target_arch = "wasm32")]
 pub mod prompt;
+
+pub mod viewport;

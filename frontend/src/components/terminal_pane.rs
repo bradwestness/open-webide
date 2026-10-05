@@ -28,7 +28,11 @@ fn next_session_id() -> String {
 }
 
 #[component]
-pub fn TerminalDock(bridge: BridgeConn, visible: RwSignal<bool>) -> impl IntoView {
+pub fn TerminalDock(
+    bridge: BridgeConn,
+    visible: RwSignal<bool>,
+    #[prop(optional)] on_close: Option<Callback<()>>,
+) -> impl IntoView {
     let opened = Memo::new(move |previous: Option<&bool>| {
         visible.get() || previous.copied().unwrap_or(false)
     });
@@ -36,7 +40,7 @@ pub fn TerminalDock(bridge: BridgeConn, visible: RwSignal<bool>) -> impl IntoVie
     view! {
         <Show when=move || opened.get()>
             <div class="terminal-visibility" class:hidden=move || !visible.get()>
-                <TerminalPane bridge=bridge.get_value() on_close=move || visible.set(false) />
+                <TerminalPane bridge=bridge.get_value() on_close=move || { if let Some(close) = on_close { close.run(()); } else { visible.set(false); } } />
             </div>
         </Show>
     }

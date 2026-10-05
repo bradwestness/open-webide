@@ -25,7 +25,7 @@ pub use editor::Editor;
 #[cfg(feature = "test-support")]
 pub use editor::highlight_count;
 pub use file_browser::FileBrowser;
-pub use file_tree::FileTree;
+pub use file_tree::{FileTree, SearchPane};
 pub use panel_resizer::PanelResizer;
 pub use prompt_dialog::PromptDialog;
 pub use session_list::SessionList;
@@ -59,3 +59,9 @@ mod tool_output;
 mod tool_duration;
 
 mod turn_summary;
+
+mod install_app;
+
+mod git_pane;
+pub use git_pane::GitPane;
+pub use install_app::InstallApp;

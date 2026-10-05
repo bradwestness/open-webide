@@ -25,10 +25,17 @@ impl BridgeConfig {
 }
 
 pub fn default_bridge_url() -> String {
-    let hostname = web_sys::window()
-        .and_then(|w| w.location().hostname().ok())
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    format!("ws://{hostname}:3001")
+    web_sys::window().map_or_else(
+        || "ws://127.0.0.1:3001".into(),
+        |window| {
+            let location = window.location();
+            crate::bridge_address::default_address(
+                &location.protocol().unwrap_or_default(),
+                &location.host().unwrap_or_default(),
+                &location.hostname().unwrap_or_else(|_| "127.0.0.1".into()),
+            )
+        },
+    )
 }
 
 #[derive(Clone)]

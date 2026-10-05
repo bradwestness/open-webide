@@ -542,8 +542,10 @@ fn TuiStatusLine(
             <super::approval_mode::ApprovalModePicker />
             <Show when=move || streaming.get() || has_awaiting.get()><span class="tui-run-state">{move || if has_awaiting.get() { "Awaiting" } else { "Running" }}</span></Show>
             <span class="tui-sep">"│"</span>
-            <span class="tui-model-name" title="Choose connection and model" on:click=move |_| show_model_menu.set(!show_model_menu.get())>
+            <span class="tui-model-picker">
+                <button class="btn ghost tui-model-name" title="Choose connection and model" aria-haspopup="menu" aria-expanded=move || show_model_menu.get() on:click=move |_| show_model_menu.set(!show_model_menu.get())>
                 {move || session_telemetry.with(|telemetry| telemetry.model.clone())}
+                </button>
                 <Show when=move || show_model_menu.get() fallback=|| ()>
                     <div class="recent-backdrop" on:click=move |e| { e.stop_propagation(); show_model_menu.set(false); } />
                     <div class="recent-menu tui-model-menu" on:click=move |e| e.stop_propagation()>
@@ -696,6 +698,7 @@ pub fn ChatPane(
                             fallback=move || {
                                 view! {
                                     <div class="empty-state tui-empty-state">
+                                        <h1 class="phone-welcome">"Open WebIDE"</h1>
                                         <div class="tui-banner-ascii">
                                             "┌────────────────────────────────────────────────────────┐\n\
                                              │ Open WebIDE Terminal Execution Surface                 │\n\

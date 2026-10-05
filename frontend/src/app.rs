@@ -9,8 +9,9 @@ use crate::state::workspace::WorkspaceState;
 use leptos::prelude::*;
 
 use crate::components::{
-    AuthGate, ChatPane, ConfirmDialog, Editor, FileBrowser, FileTree, PanelRail, PanelResizer,
-    PromptDialog, Settings, Sidebar, StatusBar, TabBar, TerminalDock, ToolPanel, TopBar,
+    AuthGate, ChatPane, ConfirmDialog, Editor, FileBrowser, FileTree, GitPane, PanelRail,
+    PanelResizer, PromptDialog, SearchPane, Settings, Sidebar, StatusBar, TabBar, TerminalDock,
+    ToolPanel, TopBar,
 };
 use crate::state_actions::{
     auth::{AuthActionContext, AuthActions},
@@ -112,8 +113,7 @@ pub fn App() -> impl IntoView {
     // -- bottom dock terminal & TUI telemetry/context ----------------------
     let show_terminal = chat_state.show_terminal;
     let on_toggle_terminal = move || {
-        layout_actions.show.run(Panel::Editor);
-        show_terminal.update(|v| *v = !*v);
+        layout_actions.toggle.run(Panel::Terminal);
     };
 
     let show_settings = settings.show_settings;
@@ -263,8 +263,14 @@ pub fn App() -> impl IntoView {
     });
     Effect::new(move |_| {
         if show_terminal.get() {
-            layout_actions.show.run(Panel::Editor);
+            layout_actions.show.run(Panel::Terminal);
         }
+    });
+    let terminal_visible = RwSignal::new(false);
+    Effect::new(move |_| {
+        let visible = layout.visible_panels.get().terminal;
+        terminal_visible.set(visible);
+        show_terminal.set(visible);
     });
     let chat_actions = ChatActions::new(ChatActionContext {
         api,
@@ -342,7 +348,7 @@ pub fn App() -> impl IntoView {
                 }
             }
         >
-            <div class="app">
+            <div class="app" class:phone-layout=move || layout.phone.get()>
                 <crate::components::CommandDialogs />
                 <TopBar
                     health=health.read_only()
@@ -359,7 +365,7 @@ pub fn App() -> impl IntoView {
                     on_delete_project=on_delete_project
                 />
                 <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.visible_panels.get().editor { "" } else { " editor-collapsed" })>
-                <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
+                <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat, Panel::Terminal, Panel::Git, Panel::Search] />
                 <ToolPanel panel=Panel::Sessions>
                 <Sidebar
                     on_new_connection=on_new_connection
@@ -384,12 +390,6 @@ pub fn App() -> impl IntoView {
                     on_open=request_open
                     on_new_file=on_new_file
                     on_new_dir=on_new_dir
-                    on_search_input=on_search_input
-                    on_cancel_search=on_cancel_search
-                    on_search=on_search
-                    on_clear_search=on_clear_search
-                    include_ignored=include_ignored_search.read_only()
-                    on_toggle_include_ignored=Callback::new(move |()| include_ignored_search.update(|v| *v = !*v))
                     on_grant_access=on_grant_access
                 />
                 <PanelResizer kind=ActiveResizer::Tree />
@@ -405,10 +405,17 @@ pub fn App() -> impl IntoView {
                         on_accept=on_accept
                         on_reject=on_reject
                     />
-                    {move || bridge_connection.get().map(|bridge| view! {
-                        <TerminalDock bridge=bridge visible=show_terminal />
-                    })}
+
                 </div>
+                </ToolPanel>
+                <ToolPanel panel=Panel::Search>
+                    <SearchPane on_open=request_open on_search_input=on_search_input on_cancel_search=on_cancel_search on_search=on_search on_clear_search=on_clear_search include_ignored=include_ignored_search.read_only() on_toggle_include_ignored=Callback::new(move |()| include_ignored_search.update(|v| *v = !*v)) />
+                </ToolPanel>
+                <ToolPanel panel=Panel::Git>
+                    <GitPane on_open=Callback::new(move |path| { request_open.run(path); layout_actions.show.run(Panel::Git); }) on_load_git_diff=on_load_git_diff on_discard_git_diff=on_discard_git_diff />
+                </ToolPanel>
+                <ToolPanel panel=Panel::Terminal>
+                    {move || bridge_connection.get().map(|bridge| view! { <TerminalDock bridge=bridge visible=terminal_visible on_close=Callback::new(move |()| layout_actions.toggle.run(Panel::Terminal)) /> })}
                 </ToolPanel>
                 <ToolPanel panel=Panel::Chat>
                 <PanelResizer kind=ActiveResizer::Chat />
@@ -425,7 +432,7 @@ pub fn App() -> impl IntoView {
                     on_rewind=chat_actions.rewind
                 />
                 </ToolPanel>
-                <Show when=move || !layout.visible_panels.get().editor && !layout.visible_panels.get().chat>
+                <Show when=move || !layout.phone.get() && !layout.visible_panels.get().editor && !layout.visible_panels.get().chat>
                     <div class="panel-empty">"Choose a panel tab to expand it."</div>
                 </Show>
             </div>

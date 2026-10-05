@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use openwebide_frontend::{
-    components::FileTree, state_actions::workspace::WorkspaceActions, util::sleep_ms,
+    components::SearchPane, state_actions::workspace::WorkspaceActions, util::sleep_ms,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
@@ -20,8 +20,7 @@ fn mount_search() -> Mounted {
         );
         let ignored = RwSignal::new(false);
         view! {
-            <FileTree on_toggle=actions.on_toggle on_open=actions.request_open
-                on_new_file=actions.on_new_file on_new_dir=actions.on_new_dir
+            <SearchPane on_open=actions.request_open
                 on_search_input=actions.on_search_input on_cancel_search=actions.on_cancel_search
                 on_search=actions.on_search on_clear_search=actions.on_clear_search
                 include_ignored=ignored.read_only()

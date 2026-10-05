@@ -76,7 +76,7 @@ impl CommandActions {
                 }
                 Command::TogglePanel(panel) => layout.toggle.run(panel),
                 Command::ToggleTerminal => {
-                    layout.show.run(crate::state::layout::Panel::Editor);
+                    layout.toggle.run(crate::state::layout::Panel::Terminal);
                     chat.show_terminal.update(|visible| *visible = !*visible);
                 }
                 Command::Context => slash.run(SlashCommand::Context),

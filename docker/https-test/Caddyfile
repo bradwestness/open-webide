@@ -1,0 +1,16 @@
+{
+    admin off
+    auto_https disable_redirects
+}
+https://localhost:3443 {
+    tls internal
+    # Exercise the bridge's forwarded-request guard too: no proxy-only block here.
+    @bridge path /bridge /bridge/*
+    handle @bridge {
+        uri strip_prefix /bridge
+        reverse_proxy 127.0.0.1:3001
+    }
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}

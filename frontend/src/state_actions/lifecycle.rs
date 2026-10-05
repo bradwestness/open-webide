@@ -143,6 +143,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
         layout,
         select_project,
     } = context;
+    crate::viewport::install();
     let history_loaded = RwSignal::new(None::<u64>);
     let history_pending = RwSignal::new(None::<String>);
     let history_saving = RwSignal::new(false);
@@ -306,12 +307,22 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                         widths[i] = width;
                     }
                 }
+                layout.restore_preferences(&values);
+                layout.viewport_width.set(viewport_width());
                 layout.restore_panels(values.get(crate::state::layout::PANEL_VISIBILITY_KEY));
-                let [sidebar, tree, chat_width] = crate::state::layout::fit_visible_panels(
-                    viewport_width(),
-                    widths,
-                    layout.visible_panels.get_untracked(),
-                );
+                let [sidebar, tree, chat_width] = if layout.phone.get_untracked() {
+                    [
+                        widths[0].clamp(140.0, 480.0),
+                        widths[1].clamp(160.0, 650.0),
+                        widths[2].clamp(260.0, 1000.0),
+                    ]
+                } else {
+                    crate::state::layout::fit_visible_panels(
+                        viewport_width(),
+                        widths,
+                        layout.visible_panels.get_untracked(),
+                    )
+                };
                 layout.sidebar_width.set(sidebar);
                 layout.tree_width.set(tree);
                 layout.chat_width.set(chat_width);

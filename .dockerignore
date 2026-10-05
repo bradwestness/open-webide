@@ -5,3 +5,6 @@ frontend/dist
 *.db
 *.db-*
 .qwen
+ai_docs
+webdriver.json
+frontend/webdriver.json

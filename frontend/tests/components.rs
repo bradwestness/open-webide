@@ -75,3 +75,6 @@ mod commands;
 
 #[path = "components/sessions.rs"]
 mod sessions;
+
+#[path = "components/installation.rs"]
+mod installation;

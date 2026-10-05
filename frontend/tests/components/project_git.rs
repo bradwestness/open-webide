@@ -116,13 +116,11 @@ async fn local_git_badges_and_all_actions_share_verified_bridge_repository() {
             expect_context::<AuthState>(),
         );
         view! {
-            <button id="refresh" on:click=move |_| refresh.run(())>"Refresh"</button>
-            <FileTree on_toggle=Callback::new(|_| ()) on_open=Callback::new(|_| ())
-                on_new_file=Callback::new(|()| ()) on_new_dir=Callback::new(|()| ())
-                on_search_input=Callback::new(|_| ()) on_cancel_search=Callback::new(|()| ())
-                on_search=Callback::new(|_| ()) include_ignored=RwSignal::new(false).read_only()
-                on_toggle_include_ignored=Callback::new(|()| ()) on_clear_search=Callback::new(|()| ()) />
-        }
+                   <button id="refresh" on:click=move |_| refresh.run(())>"Refresh"</button>
+                   <FileTree on_toggle=Callback::new(|_| ()) on_open=Callback::new(|_| ())
+                       on_new_file=Callback::new(|()| ()) on_new_dir=Callback::new(|()| ())
+        />
+               }
     });
     settle().await;
     mounted.click("#refresh");

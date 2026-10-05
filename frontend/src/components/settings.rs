@@ -11,6 +11,8 @@ pub fn Settings(
     on_set_default_prompt: Callback<Option<i64>>,
     on_set_bridge_url: Callback<String>,
 ) -> impl IntoView {
+    let layout = expect_context::<crate::state::layout::LayoutState>();
+    let layout_actions = use_context::<crate::state_actions::layout::LayoutActions>();
     let settings = expect_context::<SettingsState>();
     let theme = settings.theme.read_only();
     let notifications = crate::notifications::RunNotifications::from_context();
@@ -45,6 +47,22 @@ pub fn Settings(
     view! {
         <Modal title=Signal::derive(|| "Settings".to_string()) on_close=on_close>
             <div class="modal-body">
+                <super::install_app::InstallApp />
+                <div class="setting-row">
+                    <span class="setting-label">"Layout"</span>
+                    <div class="mode-picker">
+                    {[
+                        (crate::state::responsive::LayoutMode::Automatic, "Automatic"),
+                        (crate::state::responsive::LayoutMode::Desktop, "Desktop"),
+                        (crate::state::responsive::LayoutMode::Phone, "Phone"),
+                    ].into_iter().map(|(mode, label)| view! {
+                        <label class="mode-opt" class:active=move || layout.preferences.with(|prefs| prefs.mode == mode)>
+                            <input type="radio" name="workspace-layout" checked=move || layout.preferences.with(|prefs| prefs.mode == mode) on:click=move |_| { if let Some(actions) = layout_actions { actions.set_mode.run(mode); } } />
+                            {label}
+                        </label>
+                    }).collect_view()}
+                    </div>
+                </div>
                 <div class="setting-row">
                     <span class="setting-label">"Theme"</span>
                     <div class="mode-picker">

@@ -1,0 +1,34 @@
+# Standalone private HTTPS deployment; do not merge with docker-compose.yml.
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    hostname: ${OPENWEBIDE_TAILSCALE_NAME:-open-webide}
+    environment:
+      - TS_AUTHKEY
+      - TS_AUTH_ONCE=true
+      - TS_HOSTNAME=${OPENWEBIDE_TAILSCALE_NAME:-open-webide}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=true
+      - TS_SERVE_CONFIG=/config/serve.json
+    volumes:
+      - tailscale-data:/var/lib/tailscale
+      - ${OPENWEBIDE_SERVE_CONFIG_DIR:?Set the directory containing serve.json}:/config:ro
+    restart: unless-stopped
+  open-webide:
+    build: .
+    image: open-webide:local
+    network_mode: service:tailscale
+    depends_on:
+      - tailscale
+    environment:
+      - OPENWEBIDE_APP_HOST=127.0.0.1
+      - OPENWEBIDE_BRIDGE_HOST=127.0.0.1
+      - OPENWEBIDE_BRIDGE_ALLOWED_HOSTS=${OPENWEBIDE_TAILSCALE_HOST:?Set the full MagicDNS hostname}
+      - OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS=https://${OPENWEBIDE_TAILSCALE_HOST}
+    volumes:
+      - openwebide-data:/app/.spin
+      - ${OPENWEBIDE_WORKSPACE:-${HOME}/source}:/workspace
+    restart: unless-stopped
+volumes:
+  tailscale-data:
+  openwebide-data:
