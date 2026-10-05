@@ -126,13 +126,17 @@ pub fn actions(
                 if !current() {
                     return;
                 }
-                chat.branching.set(false);
                 match result {
                     Ok(branch) => {
                         let replace_draft = chat.draft.get_untracked() == draft
                             && chat.prompt_images.get_untracked() == images;
                         let latest_draft = chat.draft.get_untracked();
                         let latest_images = chat.prompt_images.get_untracked();
+                        chat.branch_draft_context.set_value(Some((
+                            account,
+                            project,
+                            branch.session.id,
+                        )));
                         install_branch(chat, source, &branch);
                         let installed = chat.history_gen.get_value();
                         // Let composer context effects discard images belonging to
@@ -161,11 +165,15 @@ pub fn actions(
                         {
                             chat.prompt_images.set(latest_images);
                         }
+                        chat.branch_draft_context.set_value(None);
+                        chat.branching.set(false);
                         ui.notify("Conversation branched. Project files are unchanged.");
                     }
-                    Err(error) => chat
-                        .error
-                        .set(Some(format!("Could not branch this conversation: {error}"))),
+                    Err(error) => {
+                        chat.branching.set(false);
+                        chat.error
+                            .set(Some(format!("Could not branch this conversation: {error}")));
+                    }
                 }
             });
         });

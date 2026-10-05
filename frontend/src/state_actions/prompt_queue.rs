@@ -78,16 +78,24 @@ pub fn actions(
         });
     });
     Effect::new(move |_| {
-        auth.generation.get();
-        projects.active_project.get();
-        chat.active_session.get();
+        let account = auth.generation.get();
+        let project = projects.active_project.get();
+        let session = chat.active_session.get();
         generation.update_value(|value| *value += 1);
         chat.queued_prompts.set(Vec::new());
         chat.queue_busy.set(false);
         chat.queue_loading.set(false);
         chat.queue_edit.set(None);
         chat.prompt_edit.set(None);
-        chat.branching.set(false);
+        // Installing a fork changes session before its composer is restored.
+        // Keep that operation busy; ordinary context switches cancel it.
+        if chat.branch_draft_context.get_value()
+            != session.map(|session| (account, project, session))
+            || session.is_none()
+        {
+            chat.branch_draft_context.set_value(None);
+            chat.branching.set(false);
+        }
         // Returning to a session restores pending prompts without starting work
         // until its history/run recovery is ready and the user continues it.
         chat.queue_running.set(Default::default());

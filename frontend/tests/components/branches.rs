@@ -296,45 +296,69 @@ async fn stale_fork_response_cannot_switch_a_new_session_or_account() {
 
 #[wasm_bindgen_test]
 async fn fork_keeps_the_draft_images_and_editor_context_added_while_copying() {
-    let mounted = fixture(Some(WorkspaceMode::Remote));
-    settle().await;
-    let (sender, receiver) = futures::channel::oneshot::channel();
-    mounted
-        .state
-        .fake
-        .fork_results
-        .borrow_mut()
-        .push_back(receiver);
-    mounted.click(".tui-fork-prompt[data-message-id='3']");
-    settle().await;
-    mounted.input("next draft");
-    let images = vec![PromptImage::from_bytes("next.png".into(), b"\x89PNG\r\n\x1a\n").unwrap()];
-    mounted.state.chat.prompt_images.set(images.clone());
-    let editor = openwebide_core::tui::EditorContext {
-        file_path: "next.txt".into(),
-        cursor_line: 2,
-        cursor_col: 1,
-        selection: None,
-    };
-    mounted
-        .state
-        .chat
-        .active_editor_context
-        .set(Some(editor.clone()));
-    let session = mounted.state.chat.sessions.get_untracked()[0].clone();
-    sender
-        .send(Ok(openwebide_core::ForkedSession {
-            session: openwebide_core::ChatSession { id: 99, ..session },
-            prompt: original_prompt(),
-            history: vec![],
-        }))
-        .unwrap();
-    idle(&mounted).await;
-    assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(99));
-    assert_eq!(mounted.state.chat.draft.get_untracked(), "next draft");
-    assert_eq!(mounted.state.chat.prompt_images.get_untracked(), images);
-    assert_eq!(
-        mounted.state.chat.active_editor_context.get_untracked(),
-        Some(editor)
-    );
+    for mode in [
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+        None,
+    ] {
+        let mounted = fixture(mode);
+        settle().await;
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        mounted
+            .state
+            .fake
+            .fork_results
+            .borrow_mut()
+            .push_back(receiver);
+        mounted.click(".tui-fork-prompt[data-message-id='3']");
+        settle().await;
+        mounted.input("next draft");
+        let images =
+            vec![PromptImage::from_bytes("next.png".into(), b"\x89PNG\r\n\x1a\n").unwrap()];
+        mounted.state.chat.prompt_images.set(images.clone());
+        let editor = openwebide_core::tui::EditorContext {
+            file_path: "next.txt".into(),
+            cursor_line: 2,
+            cursor_col: 1,
+            selection: None,
+        };
+        mounted
+            .state
+            .chat
+            .active_editor_context
+            .set(Some(editor.clone()));
+        let observer = Owner::new();
+        let completed_before_images = std::rc::Rc::new(std::cell::Cell::new(false));
+        observer.with(|| {
+            let chat = mounted.state.chat;
+            let images = images.clone();
+            let completed_before_images = completed_before_images.clone();
+            Effect::new(move |_| {
+                let session = chat.active_session.get();
+                let busy = chat.branching.get();
+                let actual_images = chat.prompt_images.get();
+                if session == Some(99) && !busy && actual_images != images {
+                    completed_before_images.set(true);
+                }
+            });
+        });
+        let session = mounted.state.chat.sessions.get_untracked()[0].clone();
+        sender
+            .send(Ok(openwebide_core::ForkedSession {
+                session: openwebide_core::ChatSession { id: 99, ..session },
+                prompt: original_prompt(),
+                history: vec![],
+            }))
+            .unwrap();
+        idle(&mounted).await;
+        observer.cleanup();
+        assert!(!completed_before_images.get());
+        assert_eq!(mounted.state.chat.active_session.get_untracked(), Some(99));
+        assert_eq!(mounted.state.chat.draft.get_untracked(), "next draft");
+        assert_eq!(mounted.state.chat.prompt_images.get_untracked(), images);
+        assert_eq!(
+            mounted.state.chat.active_editor_context.get_untracked(),
+            Some(editor)
+        );
+    }
 }

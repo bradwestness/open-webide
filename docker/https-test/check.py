@@ -23,6 +23,7 @@ args = parser.parse_args()
 engine = args.engine
 prefix = "webide-https-" + uuid.uuid4().hex[:8]
 containers = [prefix + suffix for suffix in ["-model", "-app", "-proxy"]]
+data_volume = prefix + "-data"
 source = Path(__file__).resolve().parent
 
 def cli(*command, check=True):
@@ -62,12 +63,13 @@ try:
         workspace.mkdir()
         (workspace / "sample").mkdir()
         (workspace / "sample" / "demo.txt").write_text("initial\n")
-        data = root / "data"
-        data.mkdir()
+        # Container-owned logs/database stay in an engine volume, avoiding
+        # root-owned files in the host's temporary directory on Linux Docker.
+        cli("volume", "create", data_volume)
         model, app, proxy = containers
         origin = f"https://localhost:{args.port}"
         cli("run", "-d", "--name", proxy, "-p", f"127.0.0.1:{args.port}:3443", "-v", f"{source / 'Caddyfile'}:/etc/caddy/Caddyfile:ro", "caddy:2")
-        cli("run", "-d", "--name", app, "--network", f"container:{proxy}", "-v", f"{workspace}:/workspace", "-v", f"{data}:/app/.spin",
+        cli("run", "-d", "--name", app, "--network", f"container:{proxy}", "-v", f"{workspace}:/workspace", "-v", f"{data_volume}:/app/.spin",
             "-e", "OPENWEBIDE_APP_HOST=127.0.0.1", "-e", "OPENWEBIDE_BRIDGE_HOST=127.0.0.1", "-e", f"OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS={origin}", args.image)
         cli("run", "-d", "--name", model, "--network", f"container:{proxy}", "-v", f"{source / 'model.py'}:/model.py:ro", "python:3-alpine", "python", "/model.py")
         ca = root / "ca.crt"
@@ -167,3 +169,4 @@ try:
 finally:
     for container in containers:
         cli("rm", "-f", "-v", container, check=False)
+    cli("volume", "rm", data_volume, check=False)

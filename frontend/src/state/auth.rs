@@ -91,6 +91,7 @@ impl AuthState {
         chat.loading_history.set(None);
         chat.prompt_edit.set(None);
         chat.branching.set(false);
+        chat.branch_draft_context.set_value(None);
         chat.reading_images.set(false);
         settings.browser_notifications.set(false);
         chat.send_generation

@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Keep conversation forking busy until the new branch's draft and attachments are restored, preventing completion from racing the composer reset in every workspace mode.
+
 - Add automatic phone layout with full-screen chat and mounted tool sheets, a saved Automatic/Desktop/Phone override, touch targets, independent Terminal/Git/Search tabs, and per-user left/right pinning. Preserve drafts, terminal output and desktop panel preferences in local, remote and projectless chats.
 
 - Make Open WebIDE installable with a manifest, icons, a versioned shell-only service worker and an offline server-unreachable screen. Add Settings installation guidance and browser prompting; exclude all API/bridge traffic from the cache and default HTTPS pages to same-origin `wss://<host>/bridge` while retaining explicit bridge settings.

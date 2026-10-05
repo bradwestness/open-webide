@@ -359,6 +359,8 @@ pub struct ChatState {
     pub loading_history: RwSignal<Option<i64>>,
     pub prompt_edit: RwSignal<Option<(i64, i64)>>,
     pub branching: RwSignal<bool>,
+    /// Account, project and branch awaiting composer restoration.
+    pub branch_draft_context: StoredValue<Option<(u64, Option<i64>, i64)>>,
     pub prompt_history: RwSignal<Vec<String>>,
     pub show_terminal: RwSignal<bool>,
     #[cfg(target_arch = "wasm32")]
@@ -459,6 +461,7 @@ impl ChatState {
             loading_history: RwSignal::new(None),
             prompt_edit: RwSignal::new(None),
             branching: RwSignal::new(false),
+            branch_draft_context: StoredValue::new(None),
             prompt_history: RwSignal::new(Vec::new()),
             show_terminal: RwSignal::new(false),
             #[cfg(target_arch = "wasm32")]
