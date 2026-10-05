@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Add shared Rust block-aware Enter, closing-delimiter outdent and paired typing commands: auto-close language-supported brackets/quotes, wrap directional selections, skip existing closers and delete empty pairs. Keep strings, nested Rust comments/raw strings/lifetimes, Python triple strings and JavaScript regex literals opaque. Handle cancelable mobile input and desktop shortcuts through the same editor facade, retain Unicode/CRLF and atomic undo, and fall back to ordinary editing when synchronous structure limits are reached. Count indentation in visual columns when tab and indentation widths differ, and preserve selection columns inside rewritten indentation.
+
 - Keep directory listings usable when an entry disappears during enumeration, including Chromium writable swap files and temporary bridge discovery probes. Skip missing metadata entries in browser, native bridge and WASI listings.
 
 - Add shared Rust editor indentation settings: independent indentation and tab widths, per-file controls and explicit conversion, with user defaults saved in database settings. Both local and remote workspaces discover nested `.editorconfig` rules with root/section precedence and `unset`, then fall back to detected file style and defaults. Apply configured line endings, final-newline and trailing-whitespace policies as one undoable save command; retain caret positions and distinguish the saved snapshot from newer typing. Keep paint and diff tab widths aligned, and prevent unrelated typing groups from merging after editor remounts.

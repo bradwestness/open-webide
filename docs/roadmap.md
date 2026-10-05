@@ -63,17 +63,18 @@ foundation with:
 - **Indentation:** configurable tabs/spaces, independent indentation/tab widths,
   nested project-bounded `.editorconfig`, detected style, database-backed defaults,
   explicit indentation conversion and Tab focus escape are in place. Continue with
-  block-aware Enter indentation, outdent closing delimiters and deliberate
-  paste/reindent behavior. See [editor controls](editor.md).
+  deliberate paste/reindent behavior; block-aware Enter and closing-delimiter
+  outdent are now in place. See [editor controls](editor.md).
 - **Reliable edits and history:** build on grouped transactions and per-document history
   to restore caret/selection/scroll state on switches. Explicit EditorConfig newline,
   line-ending and trailing-whitespace save policies are undoable; finish real
   input-method/clipboard verification, preserving Unicode and LF/CRLF without
   rewriting unrelated text.
 - **Everyday commands:** move/duplicate/delete lines or selections, insert a line
-  above/below, toggle line/block comments, and auto-close brackets/quotes, surround
-  selections, skip an existing closing delimiter and delete empty pairs. Use language
-  rules so strings/comments and unsupported languages behave sensibly.
+  above/below and toggle line/block comments. Bracket/quote auto-close, selection
+  wrapping, closing-delimiter skip and empty-pair deletion are in place, using shared
+  lexical language rules. Continue parser integration for richer syntax contexts,
+  including template interpolation, alongside folding.
 
 Then add structure and navigation:
 

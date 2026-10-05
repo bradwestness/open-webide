@@ -5,7 +5,15 @@ local and remote projects. The full editor roadmap is still in progress.
 
 - Tab advances to the next indentation stop; Shift+Tab outdents selected lines.
 - Enter retains indentation and uses the configured line ending, or the file's
-  first line ending when no rule is set.
+  first line ending when no rule is set. Supported code languages indent after an
+  opening bracket; Python also indents after a code colon. Enter inside an empty
+  bracket pair puts the closer on its own line. Strings and comments are opaque.
+- Typing a closing bracket on an otherwise empty indented line aligns it with its
+  opener. Brackets and language-supported quotes auto-close in code, wrap selected
+  text, and skip an existing closer. Backspace between an empty pair removes both.
+  Rust apostrophes are inserted without auto-closing so lifetimes remain ordinary
+  typing; selected text can still be wrapped in character quotes. Comments and
+  strings retain ordinary typing behavior.
 - Ctrl+Z / Cmd+Z undo; Ctrl+Shift+Z / Cmd+Shift+Z redo (Ctrl+Y also works).
 - Ctrl+M toggles whether Tab indents or moves keyboard focus out of the editor.
 
@@ -44,3 +52,8 @@ back to the remaining rules, detected indentation and defaults. Configuration
 files are limited to 256 KiB. Saving `.editorconfig` refreshes the active file's
 rules; switching files rediscovers rules. A pending discovery is discarded after
 a project, folder, bridge or account change.
+
+Structural commands currently use bounded lexical analysis: files over 2 MiB or
+65,536 bracket tokens fall back to ordinary indentation and typing. JavaScript
+template strings remain opaque, including their interpolations. Parser-backed
+structure, incremental parsing and large-file benchmarks remain roadmap work.

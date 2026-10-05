@@ -4,7 +4,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 
-use super::support::{Mounted, editor_view, mount_test, settle};
+use super::support::{Mounted, editor_view, mount_test, settle, wait_until};
 
 fn mount_editor(content: String) -> Mounted {
     mount_test(move |state| {
@@ -1211,7 +1211,6 @@ extern "C" {
 
 #[wasm_bindgen_test]
 async fn editorconfig_indentation_conversion_and_save_use_both_real_workspace_adapters() {
-    use super::support::wait_until;
     use openwebide_core::WorkspaceMode;
     use openwebide_core::editor::{EditorPreferences, load_rules};
     use openwebide_frontend::workspace::Workspace;
@@ -1315,6 +1314,134 @@ async fn editorconfig_indentation_conversion_and_save_use_both_real_workspace_ad
                 .await
                 .is_err()
         );
+        drop(mounted);
+        if let Some(folder) = folder {
+            editorConfigCleanup(&folder).await.unwrap();
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn block_indentation_pairs_and_mobile_input_share_both_workspace_modes() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Remote,
+        openwebide_core::WorkspaceMode::Local,
+    ] {
+        let folder = if mode == openwebide_core::WorkspaceMode::Local {
+            Some(editorConfigFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(editorConfigHandle);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            if let Some(handle) = handle {
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+            }
+            state.fake.files.borrow_mut().extend([
+                (
+                    (1, ".editorconfig".into()),
+                    "root=true\n[*]\nindent_size=2\n".into(),
+                ),
+                ((1, "src/a.rs".into()), "fn f() {}".into()),
+            ]);
+            state.workspace.open_file.set(Some("src/a.rs".into()));
+            state.workspace.content.set("fn f() {}".into());
+            editor_view(state)
+        });
+        wait_until("configured block indentation", || {
+            mounted
+                .state
+                .workspace
+                .editor_rules
+                .with_untracked(|rules| {
+                    rules
+                        .get(&(1, "src/a.rs".into()))
+                        .is_some_and(|rules| rules.indentation.width == 2)
+                })
+        })
+        .await;
+        let textarea = mounted
+            .element(".editor-textarea")
+            .unchecked_into::<web_sys::HtmlTextAreaElement>();
+        textarea.set_selection_start(Some(8)).unwrap();
+        textarea.set_selection_end(Some(8)).unwrap();
+        assert!(editor_key(&textarea, "Enter", false, false).default_prevented());
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "fn f() {\n  \n}"
+        );
+        assert_eq!(textarea.selection_start().unwrap(), Some(11));
+        assert!(editor_key(&textarea, "}", false, false).default_prevented());
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "fn f() {\n}\n}"
+        );
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "fn f() {\n  \n}"
+        );
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "fn f() {}");
+        textarea.set_selection_start(Some(8)).unwrap();
+        textarea.set_selection_end(Some(8)).unwrap();
+        assert!(editor_key(&textarea, "[", false, false).default_prevented());
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "fn f() {[]}"
+        );
+        assert!(editor_key(&textarea, "Backspace", false, false).default_prevented());
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "fn f() {}");
+        textarea.set_selection_start(Some(0)).unwrap();
+        textarea.set_selection_end(Some(0)).unwrap();
+        assert!(!editor_key(&textarea, "Backspace", false, false).default_prevented());
+        textarea.set_selection_start(Some(8)).unwrap();
+        textarea.set_selection_end(Some(8)).unwrap();
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_input_type("insertText");
+        init.set_data(Some("["));
+        let input = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        textarea.dispatch_event(&input).unwrap();
+        assert!(input.default_prevented());
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "fn f() {[]}"
+        );
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_input_type("insertText");
+        init.set_data(Some("{"));
+        init.set_is_composing(true);
+        let composition =
+            web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        textarea.dispatch_event(&composition).unwrap();
+        assert!(!composition.default_prevented());
+        mounted.state.workspace.content.set("foobar".into());
+        settle().await;
+        let textarea = mounted
+            .element(".editor-textarea")
+            .unchecked_into::<web_sys::HtmlTextAreaElement>();
+        textarea
+            .set_selection_range_with_direction(3, 6, "backward")
+            .unwrap();
+        assert!(editor_key(&textarea, "'", false, false).default_prevented());
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "foo'bar'");
+        assert_eq!(
+            textarea.selection_direction().unwrap().as_deref(),
+            Some("backward")
+        );
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "foobar");
         drop(mounted);
         if let Some(folder) = folder {
             editorConfigCleanup(&folder).await.unwrap();

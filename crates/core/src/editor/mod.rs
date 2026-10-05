@@ -3,6 +3,9 @@
 
 use std::ops::Range;
 
+mod pairs;
+mod structure;
+pub use structure::{MAX_STRUCTURE_BYTES, Structure};
 mod indent;
 pub use indent::{IndentStyle, Indentation};
 mod configuration;

@@ -96,25 +96,27 @@ impl Document {
         let edits = starts
             .into_iter()
             .filter_map(|start| {
-                if outdent {
-                    let line = &self.text[start..];
-                    let prefix: String = line
-                        .chars()
-                        .take_while(|ch| matches!(ch, ' ' | '\t'))
-                        .collect();
-                    let columns = indentation.visual_width(&prefix);
-                    (!prefix.is_empty()).then(|| {
-                        Edit::replace(
-                            start..start + prefix.len(),
-                            indentation.columns(columns.saturating_sub(indentation.width())),
-                        )
-                    })
-                } else {
-                    Some(Edit::replace(start..start, indentation.unit()))
+                let line = &self.text[start..];
+                let prefix: String = line
+                    .chars()
+                    .take_while(|ch| matches!(ch, ' ' | '\t'))
+                    .collect();
+                let columns = indentation.visual_width(&prefix);
+                if outdent && prefix.is_empty() {
+                    return None;
                 }
+                let target = if outdent {
+                    columns.saturating_sub(indentation.width())
+                } else {
+                    columns + indentation.width()
+                };
+                Some(Edit::replace(
+                    start..start + prefix.len(),
+                    indentation.columns(target),
+                ))
             })
             .collect();
-        self.apply_mapped(edits)
+        self.apply_indent_edits(edits, indentation, indentation, Some(outdent))
     }
 
     /// Tab at carets advances to the next tab stop; a selection indents whole lines.
@@ -150,23 +152,179 @@ impl Document {
         &mut self,
         ending: Option<super::LineEnding>,
     ) -> Result<bool, EditError> {
+        self.newline_with_structure(
+            Indentation::default(),
+            ending,
+            crate::highlight::Language::Plain,
+        )
+    }
+
+    /// Enter increases indentation after a code opener, and splits an empty pair
+    /// into an indented line plus its closing line. Comments/strings remain opaque.
+    pub fn newline_with_structure(
+        &mut self,
+        indentation: Indentation,
+        ending: Option<super::LineEnding>,
+        language: crate::highlight::Language,
+    ) -> Result<bool, EditError> {
         let ending = ending
             .unwrap_or_else(|| super::LineEnding::detect(&self.text))
             .text();
-        let edits = self
+        let syntax = super::Structure::new(&self.text, language);
+        let mut changes = Vec::new();
+        for selection in &self.selections {
+            let range = selection.range();
+            let start = line_start(&self.text, range.start);
+            let prefix: String = self.text[start..range.start]
+                .chars()
+                .take_while(|ch| matches!(ch, ' ' | '\t'))
+                .collect();
+            let opener = syntax.last_code(&self.text, start..range.start);
+            let increase = syntax.allows_newline_indent(range.start)
+                && opener.is_some_and(|(_, ch)| {
+                    super::structure::closing(ch).is_some()
+                        && super::structure::supports_brackets(language)
+                        || language == crate::highlight::Language::Python && ch == ':'
+                });
+            let inner = if increase {
+                format!(
+                    "{prefix}{}",
+                    indentation
+                        .columns_from(indentation.visual_width(&prefix), indentation.width())
+                )
+            } else {
+                prefix.clone()
+            };
+            let line_end = self.text[range.end..]
+                .find('\n')
+                .map_or(self.text.len(), |n| range.end + n);
+            let remaining = &self.text[range.end..line_end];
+            let split_pair = increase
+                && opener.is_some_and(|(position, ch)| {
+                    super::structure::closing(ch).is_some_and(|close| {
+                        remaining.trim().starts_with(close)
+                            && syntax.brackets.iter().any(|&(at, _, pair)| {
+                                at == position
+                                    && pair
+                                        == Some(
+                                            range.end + remaining.len()
+                                                - remaining.trim_start().len(),
+                                        )
+                            })
+                    })
+                });
+            let text = if split_pair {
+                format!("{ending}{inner}{ending}{prefix}")
+            } else {
+                format!("{ending}{inner}")
+            };
+            let end = if split_pair {
+                range.end + remaining.len() - remaining.trim_start().len()
+            } else {
+                range.end
+            };
+            changes.push((
+                Edit::replace(range.start..end, text),
+                ending.len() + inner.len(),
+            ));
+        }
+        self.apply_caret_edits(
+            changes
+                .into_iter()
+                .map(|(edit, caret)| (edit, Selection::caret(caret)))
+                .collect(),
+        )
+    }
+
+    /// Apply replacements with selections relative to their inserted text. Retain
+    /// selection order, and reject overlapping commands before offset arithmetic.
+    pub(super) fn apply_caret_edits(
+        &mut self,
+        changes: Vec<(Edit, Selection)>,
+    ) -> Result<bool, EditError> {
+        let mut changes: Vec<_> = changes.into_iter().enumerate().collect();
+        changes.sort_by_key(|(_, (edit, _))| (edit.range.start, edit.range.end));
+        let mut source = 0;
+        let mut target = 0;
+        let mut selections = vec![Selection::default(); changes.len()];
+        for (index, (edit, selection)) in &changes {
+            if edit.range.start < source {
+                return Err(EditError::OverlappingEdits);
+            }
+            target += edit.range.start - source;
+            selections[*index] = Selection {
+                anchor: target + selection.anchor,
+                head: target + selection.head,
+            };
+            target += edit.text.len();
+            source = edit.range.end;
+        }
+        self.apply(
+            changes.into_iter().map(|(_, (edit, _))| edit).collect(),
+            selections,
+            None,
+        )
+    }
+
+    /// Map carets inside rewritten indentation by visual column rather than
+    /// moving every endpoint to the end of the replacement prefix.
+    pub(super) fn apply_indent_edits(
+        &mut self,
+        edits: Vec<Edit>,
+        before: Indentation,
+        after: Indentation,
+        outdent: Option<bool>,
+    ) -> Result<bool, EditError> {
+        let map = |position| {
+            let mut source = 0;
+            let mut target = 0;
+            for edit in &edits {
+                if position < edit.range.start {
+                    return target + position - source;
+                }
+                target += edit.range.start - source;
+                if position <= edit.range.end {
+                    let columns = before.visual_width(&self.text[edit.range.start..position]);
+                    let columns = match outdent {
+                        Some(true) => columns.saturating_sub(after.width()),
+                        Some(false) => columns + after.width(),
+                        None => columns,
+                    };
+                    let mut column = 0;
+                    for (offset, ch) in edit.text.char_indices() {
+                        let next = if ch == '\t' {
+                            column + after.tab_width() - column % after.tab_width()
+                        } else {
+                            column + 1
+                        };
+                        if columns <= column {
+                            return target + offset;
+                        }
+                        if columns < next {
+                            // A DOM caret cannot sit inside a hard tab. Choose the
+                            // nearest representable boundary, preferring the left.
+                            return target
+                                + offset
+                                + usize::from(columns - column > next - columns);
+                        }
+                        column = next;
+                    }
+                    return target + edit.text.len();
+                }
+                target += edit.text.len();
+                source = edit.range.end;
+            }
+            target + position - source
+        };
+        let selections = self
             .selections
             .iter()
-            .map(|selection| {
-                let range = selection.range();
-                let start = line_start(&self.text, range.start);
-                let prefix: String = self.text[start..range.start]
-                    .chars()
-                    .take_while(|ch| matches!(ch, ' ' | '\t'))
-                    .collect();
-                Edit::replace(range, format!("{ending}{prefix}"))
+            .map(|selection| Selection {
+                anchor: map(selection.anchor),
+                head: map(selection.head),
             })
             .collect();
-        self.apply_mapped(edits)
+        self.apply(edits, selections, None)
     }
 
     pub(super) fn apply_mapped(&mut self, mut edits: Vec<Edit>) -> Result<bool, EditError> {
@@ -183,7 +341,7 @@ impl Document {
     }
 }
 
-fn line_start(text: &str, position: usize) -> usize {
+pub(super) fn line_start(text: &str, position: usize) -> usize {
     text[..position].rfind('\n').map_or(0, |index| index + 1)
 }
 
@@ -207,6 +365,119 @@ fn mapped_position(position: usize, edits: &[Edit]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_enter_preserves_crlf_unicode_pairs_comments_and_single_undo() {
+        let mut doc = Document::new("  fn 😀() { }");
+        doc.set_selections(vec![Selection::caret(13)]).unwrap();
+        doc.newline_with_structure(
+            Indentation::default(),
+            Some(super::super::LineEnding::CrLf),
+            crate::highlight::Language::Rust,
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "  fn 😀() {\r\n      \r\n  }");
+        assert_eq!(doc.selections(), &[Selection::caret(21)]);
+        doc.undo();
+        assert_eq!(doc.text(), "  fn 😀() { }");
+        for (text, expected) in [
+            ("if x { // note", "if x { // note\n    "),
+            ("// if {", "// if {\n"),
+            ("let s = \"{", "let s = \"{\n"),
+        ] {
+            let mut doc = Document::new(text);
+            doc.set_selections(vec![Selection::caret(text.len())])
+                .unwrap();
+            doc.newline_with_structure(
+                Indentation::default(),
+                None,
+                crate::highlight::Language::Rust,
+            )
+            .unwrap();
+            assert_eq!(doc.text(), expected);
+        }
+        let mut doc = Document::new("if ready:");
+        doc.set_selections(vec![Selection::caret(9)]).unwrap();
+        doc.newline_with_structure(
+            Indentation::default(),
+            None,
+            crate::highlight::Language::Python,
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "if ready:\n    ");
+    }
+
+    #[test]
+    fn enter_at_multiple_carets_is_atomic_and_overlaps_are_rejected() {
+        let mut doc = Document::new("{}\r\n{}");
+        doc.set_selections(vec![Selection::caret(5), Selection::caret(1)])
+            .unwrap();
+        doc.newline_with_structure(
+            Indentation::default(),
+            None,
+            crate::highlight::Language::Rust,
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "{\r\n    \r\n}\r\n{\r\n    \r\n}");
+        assert!(doc.selections()[0].head > doc.selections()[1].head);
+        doc.undo();
+        assert_eq!(doc.text(), "{}\r\n{}");
+        doc.set_selections(vec![Selection { anchor: 0, head: 2 }, Selection::caret(1)])
+            .unwrap();
+        let before = doc.clone();
+        assert_eq!(
+            doc.newline_with_structure(
+                Indentation::default(),
+                None,
+                crate::highlight::Language::Rust
+            ),
+            Err(EditError::OverlappingEdits)
+        );
+        assert_eq!(doc, before);
+    }
+
+    #[test]
+    fn indentation_preserves_selection_columns_inside_existing_prefixes() {
+        let mut doc = Document::new("    x");
+        doc.set_selections(vec![Selection { anchor: 1, head: 5 }])
+            .unwrap();
+        doc.indent_lines(Indentation::default(), false).unwrap();
+        assert_eq!(doc.selections(), &[Selection { anchor: 5, head: 9 }]);
+        doc.indent_lines(Indentation::default(), true).unwrap();
+        assert_eq!(doc.selections(), &[Selection { anchor: 1, head: 5 }]);
+        let tabs = Indentation {
+            style: IndentStyle::Tabs,
+            width: 3,
+            tab_width: 3,
+        };
+        doc.convert_indentation(tabs, 4).unwrap();
+        assert_eq!(doc.text(), "\t x");
+        assert_eq!(doc.selections(), &[Selection { anchor: 0, head: 3 }]);
+    }
+
+    #[test]
+    fn block_indent_and_selected_line_indent_use_visual_columns_with_independent_widths() {
+        let indentation = Indentation {
+            style: IndentStyle::Tabs,
+            width: 4,
+            tab_width: 3,
+        };
+        let mut doc = Document::new("  if x {");
+        doc.set_selections(vec![Selection::caret(doc.text().len())])
+            .unwrap();
+        doc.newline_with_structure(indentation, None, crate::highlight::Language::Rust)
+            .unwrap();
+        assert_eq!(doc.text(), "  if x {\n  \t\t");
+        assert_eq!(
+            indentation.visual_width(doc.text().split_once('\n').unwrap().1),
+            6
+        );
+        let mut doc = Document::new("  x");
+        doc.indent_lines(indentation, false).unwrap();
+        assert_eq!(doc.text(), "\t\tx");
+        doc.indent_lines(indentation, true).unwrap();
+        assert_eq!(doc.text(), "  x");
+    }
 
     #[test]
     fn separate_soft_and_hard_tab_stops_round_trip_outdent() {

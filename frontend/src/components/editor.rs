@@ -673,6 +673,32 @@ fn render_markdown_diff(diff: &FileDiff) -> impl IntoView {
 ///
 /// Automatically defaults to Preview mode for non-text files (images, binaries)
 /// with informative placeholders for non-previewable files.
+fn pair_character(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    (chars.next().is_none() && matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '\'' | '"' | '`'))
+        .then_some(ch)
+}
+
+fn apply_editor_command(
+    actions: EditorActions,
+    command: EditorCommand,
+    textarea: &web_sys::HtmlTextAreaElement,
+    text: &str,
+) -> bool {
+    if let Ok(Some((text, selection))) = actions.command(
+        command,
+        document_selection(textarea, text),
+        actions.rules_untracked().indentation,
+    ) {
+        textarea.set_value(&text);
+        restore_editor_selection(textarea, &text, selection);
+        true
+    } else {
+        false
+    }
+}
+
 #[component]
 pub fn Editor(
     #[prop(optional)] on_load_git_diff: Option<Callback<()>>,
@@ -1168,7 +1194,18 @@ pub fn Editor(
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
                                             }
                                             on:beforeinput=move |event: web_sys::InputEvent| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
+                                                    let selection = document_selection(&textarea, &workspace.content.get_untracked());
+                                                    let _ = editor_actions.record_selection(selection);
+                                                    if read_only.get_untracked() || event.is_composing() || !event.cancelable() { return; }
+                                                    let command = match event.input_type().as_str() {
+                                                        "insertLineBreak" | "insertParagraph" => Some(EditorCommand::Newline),
+                                                        "deleteContentBackward" => Some(EditorCommand::DeletePair),
+                                                        "insertText" => event.data().and_then(|text| pair_character(&text)).map(EditorCommand::TypeCharacter),
+                                                        _ => None,
+                                                    };
+                                                    if let Some(command) = command && apply_editor_command(editor_actions, command, &textarea, &workspace.content.get_untracked()) { event.prevent_default(); }
+                                                }
                                             }
                                             on:compositionstart=move |event: web_sys::CompositionEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
@@ -1191,13 +1228,12 @@ pub fn Editor(
                                                     "Enter" if !modified && !event.alt_key() => Some(EditorCommand::Newline),
                                                     key if modified && key.eq_ignore_ascii_case("z") => Some(if event.shift_key() { EditorCommand::Redo } else { EditorCommand::Undo }),
                                                     key if modified && key.eq_ignore_ascii_case("y") => Some(EditorCommand::Redo),
+                                                    "Backspace" if !modified && !event.alt_key() => Some(EditorCommand::DeletePair),
+                                                    key if !modified && !event.alt_key() => pair_character(key).map(EditorCommand::TypeCharacter),
                                                     _ => None,
                                                 };
-                                                if let Some(command) = command {
+                                                if let Some(command) = command && apply_editor_command(editor_actions, command, &textarea, &workspace.content.get_untracked()) {
                                                     event.prevent_default(); event.stop_propagation();
-                                                    if let Ok(Some((text, selection))) = editor_actions.command(command, document_selection(&textarea, &workspace.content.get_untracked()), editor_actions.rules_untracked().indentation) {
-                                                        textarea.set_value(&text); restore_editor_selection(&textarea, &text, selection);
-                                                    }
                                                 }
                                             }
                                             on:input=move |e: web_sys::Event| {

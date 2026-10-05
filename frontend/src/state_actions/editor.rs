@@ -13,6 +13,8 @@ pub enum EditorCommand {
     Undo,
     Redo,
     ConvertIndentation,
+    TypeCharacter(char),
+    DeletePair,
 }
 
 type TypingState = Option<((i64, String), String, f64)>;
@@ -258,7 +260,24 @@ impl EditorActions {
                         document.indent_lines(indentation, true)?;
                     }
                     EditorCommand::Newline => {
-                        document.newline_with_ending(self.rules_untracked().line_ending)?;
+                        document.newline_with_structure(
+                            indentation,
+                            self.rules_untracked().line_ending,
+                            openwebide_core::highlight::language_from_path(&key.1),
+                        )?;
+                    }
+                    EditorCommand::TypeCharacter(ch) => {
+                        document.type_character(
+                            ch,
+                            openwebide_core::highlight::language_from_path(&key.1),
+                        )?;
+                    }
+                    EditorCommand::DeletePair => {
+                        if !document.delete_empty_pairs(
+                            openwebide_core::highlight::language_from_path(&key.1),
+                        )? {
+                            return Ok(None);
+                        }
                     }
                     EditorCommand::Undo => {
                         document.undo();

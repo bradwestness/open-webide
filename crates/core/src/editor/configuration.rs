@@ -319,7 +319,15 @@ impl Document {
             }
             start += line.len();
         }
-        self.apply_mapped(edits)
+        self.apply_indent_edits(
+            edits,
+            Indentation {
+                tab_width: old_tab_width,
+                ..indentation
+            },
+            indentation,
+            None,
+        )
     }
 
     /// Apply explicit save policies as one undoable command. No policy means
