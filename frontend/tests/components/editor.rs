@@ -120,6 +120,73 @@ async fn markdown_preview_gutters_share_git_and_pending_changes_in_both_modes() 
                 .is_none(),
             "Stale HEAD must not mark another project"
         );
+        let changelog =
+            "## Changed\n\n- Keep this item.\n- Make previews **clear**.\n- Keep this too.\n";
+        let revised = changelog.replace("clear", "compact");
+        mounted.state.workspace.content.set(revised.clone());
+        mounted.state.git.head_content.set(Some(HeadContent {
+            project_id: Some(1),
+            path: "README.md".into(),
+            content: Ok(changelog.into()),
+        }));
+        for pending in [false, true] {
+            if pending {
+                mounted.state.workspace.merge_pending(
+                    1,
+                    FileDiff {
+                        path: "README.md".into(),
+                        old: Some(changelog.into()),
+                        new: revised.clone(),
+                        old_unavailable: false,
+                        backup_path: None,
+                    },
+                );
+                settle().await;
+                mounted.click_text("Preview");
+            }
+            settle().await;
+            assert_eq!(
+                mounted
+                    .root
+                    .query_selector_all(".rich-preview h2")
+                    .unwrap()
+                    .length(),
+                1
+            );
+            assert_eq!(
+                mounted
+                    .root
+                    .query_selector_all(".rich-preview li")
+                    .unwrap()
+                    .length(),
+                3
+            );
+            assert_eq!(
+                mounted
+                    .element(".rich-preview del")
+                    .text_content()
+                    .as_deref(),
+                Some("clear")
+            );
+            assert_eq!(
+                mounted
+                    .element(".rich-preview ins")
+                    .text_content()
+                    .as_deref(),
+                Some("compact")
+            );
+            let style = web_sys::window()
+                .unwrap()
+                .get_computed_style(&mounted.element(".rich-preview del"))
+                .unwrap()
+                .unwrap();
+            assert!(
+                style
+                    .get_property_value("text-decoration-line")
+                    .unwrap()
+                    .contains("line-through")
+            );
+        }
     }
 }
 

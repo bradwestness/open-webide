@@ -130,12 +130,7 @@ fn token_class(kind: TokenKind) -> &'static str {
     }
 }
 
-/// Escape the few characters that are special in HTML element content.
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
+use crate::text::escape_html;
 
 #[cfg(feature = "test-support")]
 thread_local! {

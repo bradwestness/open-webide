@@ -1,3 +1,10 @@
+/// Escape characters that are special in HTML element content.
+pub fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 pub fn truncate_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }

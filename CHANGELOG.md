@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Diff Markdown prose within its existing lists, tables and inline formatting. Highlight changed words in place, so editing one word in a changelog item no longer duplicates the entire list in rich Preview; share the behavior across Git and pending-edit previews in both modes.
+
 - Show green added, yellow modified and red removed gutter bars in rendered Markdown Preview for Git HEAD comparisons and pending agent edits, showing removed/replaced prose struck through in red alongside green additions in both modes.
 
 - Refine file menus: enable New folder only on folders; distinguish Explain from Summarize; send chat shortcuts immediately while preserving unsent drafts/images; keep Review available for known changes. Share Git/chat menus with Changes rows and suppress the browser context menu throughout the app.

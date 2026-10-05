@@ -1355,15 +1355,15 @@ body {
 .rich-preview-block.added { border-color: var(--online); }
 .rich-preview-block.modified { border-color: var(--warn); }
 .rich-preview-block.removed { border-color: var(--offline); }
-.rich-preview-before {
+.rich-preview-block.removed {
   background: color-mix(in srgb, var(--offline) 12%, transparent);
-  text-decoration: line-through;
-  display: flow-root;
 }
-.rich-preview-before img { opacity: 0.6; }
-.rich-preview-after, .rich-preview-block.added {
+.rich-preview-block.removed img, .rich-preview-block del img { opacity: 0.6; }
+.rich-preview-block.added {
   background: color-mix(in srgb, var(--online) 12%, transparent);
-  display: flow-root;
+}
+.rich-preview-block ins {
+  text-decoration: none;
 }
 
 .ui-seg-glyph {
@@ -1423,13 +1423,13 @@ body {
   color: var(--offline);
 }
 
-.diff-word-del {
+.diff-word-del, .rich-preview-block:not(.unchanged) del {
   background: color-mix(in srgb, var(--offline) 45%, transparent);
   border-radius: 2px;
   text-decoration: line-through;
 }
 
-.diff-word-add {
+.diff-word-add, .rich-preview-block:not(.unchanged) ins {
   background: color-mix(in srgb, var(--online) 45%, transparent);
   border-radius: 2px;
   font-weight: 600;

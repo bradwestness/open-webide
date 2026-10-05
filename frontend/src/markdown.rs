@@ -1,4 +1,4 @@
-use crate::text::urlenc;
+use crate::text::{escape_html, urlenc};
 use ammonia::UrlRelative;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +73,15 @@ fn sanitizer() -> ammonia::Builder<'static> {
                 None
             }
         } else if element == "div" && attribute == "class" {
-            (value == "markdown-table").then(|| value.into())
+            matches!(
+                value,
+                "markdown-table"
+                    | "rich-preview-block unchanged"
+                    | "rich-preview-block modified"
+                    | "rich-preview-block added"
+                    | "rich-preview-block removed"
+            )
+            .then(|| value.into())
         } else if matches!(element, "th" | "td") && attribute == "style" {
             matches!(
                 value,
@@ -100,6 +108,11 @@ pub fn render(md: &str) -> String {
 }
 
 fn render_events<'a>(events: impl Iterator<Item = pulldown_cmark::Event<'a>>) -> String {
+    let html = event_html(events);
+    SANITIZER.with(|b| b.clean(&html).to_string())
+}
+
+fn event_html<'a>(events: impl Iterator<Item = pulldown_cmark::Event<'a>>) -> String {
     use pulldown_cmark::{Event, Tag, TagEnd};
     let mut html = String::new();
     let events = events.flat_map(|event| {
@@ -114,85 +127,94 @@ fn render_events<'a>(events: impl Iterator<Item = pulldown_cmark::Event<'a>>) ->
         pair.into_iter().flatten()
     });
     pulldown_cmark::html::push_html(&mut html, events);
+    html
+}
+
+/// Render prose changes inside the current document structure, with block gutters.
+/// Lists and tables retain their containers while their children and words are compared.
+pub fn render_diff(old: &str, new: &str) -> String {
+    let html = diff_blocks(&rendered_blocks(old), &rendered_blocks(new), true, 0);
     SANITIZER.with(|b| b.clean(&html).to_string())
 }
 
-/// Render the current Markdown with change bars on its complete top-level blocks.
-/// Preserve removed prose alongside additions so the rendered changes remain reviewable.
-pub fn render_diff(old: &str, new: &str) -> String {
+struct MarkdownBlock {
+    html: String,
+    events: Vec<pulldown_cmark::Event<'static>>,
+}
+
+fn diff_blocks(
+    old: &[MarkdownBlock],
+    new: &[MarkdownBlock],
+    gutters: bool,
+    depth: usize,
+) -> String {
     use openwebide_core::diff::{LineOp, line_lcs};
     use std::fmt::Write;
-    let old_blocks = rendered_blocks(old);
-    let new_blocks = rendered_blocks(new);
-    // Give equal rendered blocks equal line tokens so the shared bounded LCS
-    // aligns prose blocks rather than repeated blank Markdown source lines.
     let mut identities = std::collections::HashMap::new();
-    let mut encode = |blocks: &[String]| {
+    let mut encode = |blocks: &[MarkdownBlock]| {
         let mut text = String::new();
         for block in blocks {
             let next = identities.len();
-            let id = identities.entry(block.clone()).or_insert(next);
+            let id = identities.entry(block.html.clone()).or_insert(next);
             let _ = writeln!(text, "{id}");
         }
         text
     };
-    let old_tokens = encode(&old_blocks);
-    let new_tokens = encode(&new_blocks);
+    let old_tokens = encode(old);
+    let new_tokens = encode(new);
     let mut html = String::new();
     let mut current = 0;
+    let mut previous = 0;
     let mut inserted = Vec::new();
     let mut deleted = Vec::new();
-    let mut previous = 0;
     for op in line_lcs(&old_tokens, &new_tokens) {
         match op {
             LineOp::Equal(_) => {
-                render_changed_blocks(&mut html, &mut inserted, &mut deleted);
-                render_block(&mut html, &new_blocks[current], "unchanged");
+                render_changed_blocks(&mut html, &mut inserted, &mut deleted, gutters, depth);
+                render_block(&mut html, &new[current].html, "unchanged", gutters);
                 current += 1;
                 previous += 1;
             }
             LineOp::Delete(_) => {
-                deleted.push(old_blocks[previous].as_str());
+                deleted.push(&old[previous]);
                 previous += 1;
             }
             LineOp::Insert(_) => {
-                inserted.push(new_blocks[current].as_str());
+                inserted.push(&new[current]);
                 current += 1;
             }
         }
     }
-    render_changed_blocks(&mut html, &mut inserted, &mut deleted);
+    render_changed_blocks(&mut html, &mut inserted, &mut deleted, gutters, depth);
     html
 }
 
-fn render_block(html: &mut String, block: &str, change: &str) {
+fn render_block(html: &mut String, block: &str, change: &str, gutters: bool) {
     use std::fmt::Write;
-    let _ = write!(
-        html,
-        "<div class=\"rich-preview-block {change}\" title=\"{change}\">{block}</div>"
-    );
+    if gutters {
+        let _ = write!(
+            html,
+            "<div class=\"rich-preview-block {change}\" title=\"{change}\">{block}</div>"
+        );
+    } else {
+        html.push_str(block);
+    }
 }
 
-fn render_changed_blocks(html: &mut String, inserted: &mut Vec<&str>, deleted: &mut Vec<&str>) {
-    use std::fmt::Write;
+fn render_changed_blocks(
+    html: &mut String,
+    inserted: &mut Vec<&MarkdownBlock>,
+    deleted: &mut Vec<&MarkdownBlock>,
+    gutters: bool,
+    depth: usize,
+) {
     for index in 0..inserted.len().max(deleted.len()) {
         match (deleted.get(index), inserted.get(index)) {
             (Some(old), Some(new)) => {
-                let _ = write!(
-                    html,
-                    "<div class=\"rich-preview-block modified\" title=\"Modified content\"><div class=\"rich-preview-before\" aria-label=\"Removed content\">{old}</div><div class=\"rich-preview-after\" aria-label=\"Added content\">{new}</div></div>"
-                );
+                render_block(html, &diff_block(old, new, depth), "modified", gutters);
             }
-            (Some(old), None) => {
-                render_block(
-                    html,
-                    &format!(
-                        "<div class=\"rich-preview-before\" aria-label=\"Removed content\">{old}</div>"
-                    ),
-                    "removed",
-                );
-            }
-            (None, Some(new)) => render_block(html, new, "added"),
+            (Some(old), None) => render_block(html, &mark_block(old, "del"), "removed", gutters),
+            (None, Some(new)) => render_block(html, &mark_block(new, "ins"), "added", gutters),
             (None, None) => {}
         }
     }
@@ -200,24 +222,122 @@ fn render_changed_blocks(html: &mut String, inserted: &mut Vec<&str>, deleted: &
     deleted.clear();
 }
 
-fn rendered_blocks(md: &str) -> Vec<String> {
-    use pulldown_cmark::{Event, Options, Parser};
+fn diff_block(old: &MarkdownBlock, new: &MarkdownBlock, depth: usize) -> String {
+    use pulldown_cmark::Event;
+    match (old.events.first(), new.events.first()) {
+        (Some(Event::Start(a)), Some(Event::Start(b)))
+            if a == b
+                && old.events.last() == new.events.last()
+                && depth < 64
+                && !matches!(a, pulldown_cmark::Tag::Image { .. }) =>
+        {
+            // Recurse inside compatible containers instead of replacing a whole list,
+            // table, paragraph or emphasis span when just one child has changed.
+            let old_children = event_blocks(old.events[1..old.events.len() - 1].iter().cloned());
+            let new_children = event_blocks(new.events[1..new.events.len() - 1].iter().cloned());
+            let inner = diff_blocks(&old_children, &new_children, false, depth + 1);
+            event_html(
+                [
+                    new.events[0].clone(),
+                    Event::Html(inner.into()),
+                    new.events.last().unwrap().clone(),
+                ]
+                .into_iter(),
+            )
+        }
+        (Some(Event::Text(a)), Some(Event::Text(b))) => inline_words(a, b),
+        (Some(Event::Code(a)), Some(Event::Code(b))) => {
+            format!("<code>{}</code>", inline_words(a, b))
+        }
+        _ => format!("{}{}", mark_block(old, "del"), mark_block(new, "ins")),
+    }
+}
+
+fn inline_words(old: &str, new: &str) -> String {
+    use openwebide_core::diff::{DiffChunk, compute_word_diff};
+    use std::collections::VecDeque;
+    let (before, after) = compute_word_diff(old, new);
+    let mut before: VecDeque<_> = before.into();
+    let mut after: VecDeque<_> = after.into();
+    let mut html = String::new();
+    while !before.is_empty() || !after.is_empty() {
+        if matches!(before.front(), Some(DiffChunk::Deleted(_))) {
+            if let Some(DiffChunk::Deleted(text)) = before.pop_front() {
+                html.push_str(&format!("<del>{}</del>", escape_html(&text)));
+            }
+        } else if matches!(after.front(), Some(DiffChunk::Inserted(_))) {
+            if let Some(DiffChunk::Inserted(text)) = after.pop_front() {
+                html.push_str(&format!("<ins>{}</ins>", escape_html(&text)));
+            }
+        } else if let (Some(DiffChunk::Unchanged(a)), Some(DiffChunk::Unchanged(b))) =
+            (before.pop_front(), after.pop_front())
+        {
+            let length = a.len().min(b.len());
+            debug_assert_eq!(&a[..length], &b[..length]);
+            html.push_str(&escape_html(&a[..length]));
+            if length < a.len() {
+                before.push_front(DiffChunk::Unchanged(a[length..].into()));
+            }
+            if length < b.len() {
+                after.push_front(DiffChunk::Unchanged(b[length..].into()));
+            }
+        }
+    }
+    html
+}
+
+fn mark_block(block: &MarkdownBlock, marker: &str) -> String {
+    use pulldown_cmark::Event;
+    if matches!(
+        block.events.first(),
+        Some(Event::Start(pulldown_cmark::Tag::Image { .. }))
+    ) {
+        return format!("<{marker}>{}</{marker}>", block.html);
+    }
+    let events = block.events.iter().cloned().map(|event| match event {
+        Event::Text(text) => {
+            Event::Html(format!("<{marker}>{}</{marker}>", escape_html(&text)).into())
+        }
+        Event::Code(text) => {
+            Event::Html(format!("<code><{marker}>{}</{marker}></code>", escape_html(&text)).into())
+        }
+        _ => event,
+    });
+    event_html(events)
+}
+
+fn rendered_blocks(md: &str) -> Vec<MarkdownBlock> {
+    use pulldown_cmark::{Options, Parser};
+    // Parse once so reference links retain full-document context.
+    event_blocks(
+        Parser::new_ext(md, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH)
+            .map(pulldown_cmark::Event::into_static),
+    )
+}
+
+fn event_blocks(
+    events: impl Iterator<Item = pulldown_cmark::Event<'static>>,
+) -> Vec<MarkdownBlock> {
+    use pulldown_cmark::Event;
     let mut blocks = Vec::new();
-    let mut events = Vec::new();
+    let mut current = Vec::new();
     let mut depth = 0usize;
-    // Parse the whole document once, so reference links and nested structures
-    // retain their full-document context before each complete block is rendered.
-    for event in Parser::new_ext(md, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH) {
+    for event in events {
         match &event {
             Event::Start(_) => depth += 1,
             Event::End(_) => depth = depth.saturating_sub(1),
             _ => {}
         }
-        events.push(event);
+        current.push(event);
         if depth == 0 {
-            let html = render_events(events.drain(..));
-            if !html.trim().is_empty() {
-                blocks.push(html);
+            let html = event_html(current.iter().cloned());
+            if !html.is_empty() {
+                blocks.push(MarkdownBlock {
+                    html,
+                    events: std::mem::take(&mut current),
+                });
+            } else {
+                current.clear();
             }
         }
     }
@@ -229,6 +349,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn one_word_in_changelog_keeps_the_section_and_list_once() {
+        let old = "## Changed\n\n- Keep this item.\n- Make previews **clear** with [links](https://example.com).\n- Keep this too.\n";
+        let new = old.replace("clear", "compact");
+        let html = render_diff(old, &new);
+        assert_eq!(html.matches("<h2>").count(), 1, "{html}");
+        assert_eq!(html.matches("<ul>").count(), 1, "{html}");
+        assert_eq!(html.matches("<li>").count(), 3, "{html}");
+        assert_eq!(html.matches("Keep this item.").count(), 1);
+        assert!(
+            html.contains("<strong><del>clear</del><ins>compact</ins></strong>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(" with <a href=\"https://example.com\""),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn changed_table_cell_and_nested_list_preserve_structure() {
+        let old = "| Name | Value |\n| --- | --- |\n| Keep | old value |\n\n- Parent\n  - old child\n  - unchanged\n";
+        let new = old
+            .replace("old value", "new value")
+            .replace("old child", "new child");
+        let html = render_diff(old, &new);
+        assert_eq!(html.matches("<table>").count(), 1, "{html}");
+        assert_eq!(html.matches("<tr>").count(), 2, "{html}");
+        assert_eq!(html.matches("<ul>").count(), 2, "{html}");
+        assert!(
+            html.contains("<del>old</del><ins>new</ins> value"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<del>old</del><ins>new</ins> child"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn inline_word_changes_preserve_unicode_whitespace_and_escape_html() {
+        assert_eq!(
+            inline_words("café 😀 old end", "café 😀 new end"),
+            "café 😀 <del>old</del><ins>new</ins> end"
+        );
+        assert_eq!(inline_words("a b", "a new b"), "a <ins>new </ins>b");
+        assert_eq!(inline_words("a old b", "a b"), "a <del>old </del>b");
+        assert_eq!(
+            inline_words("<old>", "<new>"),
+            "&lt;<del>old</del><ins>new</ins>&gt;"
+        );
+    }
+
+    #[test]
     fn rich_preview_marks_blocks_and_preserves_deleted_text() {
         let html = render_diff(
             "# Keep\n\nOld text\n\nRemove me\n\nEnd\n",
@@ -238,10 +411,10 @@ mod tests {
         assert!(html.contains("rich-preview-block added"), "{html}");
         assert!(html.contains("rich-preview-block removed"));
         assert!(html.contains("Remove me"));
-        assert!(html.contains("rich-preview-before"));
+        assert!(html.contains("<del>"));
         assert!(html.contains("<h1>Keep</h1>"));
         assert!(html.contains("<p>End</p>"));
-        assert!(!render_diff("same\n", "same\n").contains("rich-preview-before"));
+        assert!(!render_diff("same\n", "same\n").contains("<del>"));
         assert!(render_diff("last\n", "").contains("rich-preview-block removed"));
     }
 
