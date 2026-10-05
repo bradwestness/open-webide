@@ -11,7 +11,7 @@ for what's still ahead.
 
 ### Changed
 
-- Expand the editor roadmap with researched editing, indentation, folding, navigation and search/replace requirements, an editor-engine evaluation, and explicit integration with the existing code-intelligence work.
+- Expand the editor roadmap with researched editing, indentation, folding, navigation and search/replace requirements, a Rust/Leptos WebAssembly implementation with thin browser glue, and explicit integration with the existing code-intelligence work.
 
 - Offer Resume after reloading a local run with unfinished tool calls. Preserve call/result pairing in shared history, mark unrecorded outcomes explicitly, and continue with fresh turn IDs without replaying unfinished tools. Verify slow-model reloads, approvals and conflicting edit decisions across browser windows in both modes; user-confirmed OS-picked local folder access also survives reload without re-picking.
 

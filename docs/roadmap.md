@@ -103,15 +103,22 @@ Then add structure and navigation:
   history, caret and scroll state. Coordinate draft/reload recovery with the existing
   Offline & error-state recovery item instead of implementing separate persistence.
 
-Before implementation, evaluate the current textarea/paint approach against
-CodeMirror 6 and Monaco behind one editor component. CodeMirror is the first candidate
-because it documents mobile support; Monaco explicitly does not support mobile
-browsers. Compare touch/IME/accessibility, language coverage, incremental parsing,
-large-file responsiveness, bundle/PWA loading, theme integration and Leptos bindings.
-Use one document/selection/command integration and thin browser bindings; workspace
-reads/writes, settings and review policy stay in shared facades. Save user preferences
-in database settings, never localStorage. Benchmark viewport rendering and establish
-large-file fallbacks before claiming completion; run behavioral contracts in both modes.
+**Rust/WebAssembly architecture:** keep the editor in Rust/Leptos compiled to WASM;
+do not embed CodeMirror, Monaco or another substantial JavaScript editor client.
+Those editors are feature references only. Build reusable Rust document, selection,
+edit-transaction, undo/history, command and fold-range primitives, with one Leptos
+editor component. Evaluate WASM-compatible Rust crates for text storage and syntax
+parsing before choosing dependencies. Keep browser glue thin: DOM events, input/IME,
+selection, clipboard, measurements and worker transport; editing policy and algorithms
+belong in Rust. Preserve native browser input behavior where possible, and evaluate
+how to replace the current textarea/paint surface when folding and multiple selections
+require a richer view.
+
+Workspace reads/writes, settings and review policy stay in shared facades. Save user
+preferences in database settings, never localStorage. Verify touch/IME/accessibility,
+Unicode/caret mapping, incremental parsing, large-file responsiveness, theme integration
+and PWA loading. Benchmark viewport rendering and establish large-file fallbacks before
+claiming completion; run behavioral contracts in both modes.
 
 Completion, diagnostics, hover, symbol navigation, rename, formatting and code actions
 belong to the following Code intelligence item, using the editor's extension points.
