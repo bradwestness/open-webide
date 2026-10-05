@@ -42,7 +42,7 @@ impl LayoutActions {
                 .chat_width
                 .set(crate::state::layout::ActiveResizer::Chat.default());
             layout
-                .terminal_width
+                .terminal_height
                 .set(crate::state::layout::ActiveResizer::Terminal.default());
             layout.active_resizer.set(Default::default());
             pending.set_value(None);
@@ -61,7 +61,7 @@ impl LayoutActions {
             if !layout.available(panel) {
                 return;
             }
-            if layout.phone.get_untracked() {
+            if layout.phone.get_untracked() && panel != Panel::Terminal {
                 layout.sheet.set(if visible && panel != Panel::Chat {
                     Some(panel)
                 } else {
@@ -211,7 +211,7 @@ impl LayoutActions {
                         return;
                     }
                     if let Err(message) = result {
-                        ui.notify(format!("Could not save panel width: {message}"));
+                        ui.notify(format!("Could not save panel size: {message}"));
                     }
                 }
                 if width_saving.try_get_value() == Some(Some(epoch)) {

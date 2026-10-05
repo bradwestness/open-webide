@@ -135,7 +135,7 @@ pub fn fit_open_panels(viewport: f64, widths: [f64; 4], visibility: PanelVisibil
         visibility.sessions,
         visibility.files || visibility.git || visibility.search,
         visibility.chat,
-        visibility.terminal,
+        false,
     ];
     let mut widths = std::array::from_fn(|i| {
         let width = if widths[i].is_finite() {
@@ -190,7 +190,7 @@ impl ActiveResizer {
             Self::Sidebar => 140.0,
             Self::Tree => 160.0,
             Self::Chat => 260.0,
-            Self::Terminal => 240.0,
+            Self::Terminal => 140.0,
         }
     }
 
@@ -200,7 +200,7 @@ impl ActiveResizer {
             Self::Sidebar => 480.0,
             Self::Tree => 650.0,
             Self::Chat => 1000.0,
-            Self::Terminal => 1000.0,
+            Self::Terminal => 700.0,
         }
     }
 
@@ -210,7 +210,7 @@ impl ActiveResizer {
             Self::Sidebar => 240.0,
             Self::Tree => 260.0,
             Self::Chat => 420.0,
-            Self::Terminal => 360.0,
+            Self::Terminal => 260.0,
         }
     }
 
@@ -220,7 +220,7 @@ impl ActiveResizer {
             Self::Sidebar => "panel_sidebar_width",
             Self::Tree => "panel_tree_width",
             Self::Chat => "panel_chat_width",
-            Self::Terminal => "panel_terminal_width",
+            Self::Terminal => "panel_terminal_height",
         }
     }
 }
@@ -242,7 +242,7 @@ pub struct LayoutState {
     pub sidebar_width: RwSignal<f64>,
     pub tree_width: RwSignal<f64>,
     pub chat_width: RwSignal<f64>,
-    pub terminal_width: RwSignal<f64>,
+    pub terminal_height: RwSignal<f64>,
     pub active_resizer: RwSignal<ActiveResizer>,
 }
 
@@ -269,7 +269,6 @@ impl LayoutState {
                     Panel::Files,
                     Panel::Editor,
                     Panel::Chat,
-                    Panel::Terminal,
                     Panel::Git,
                     Panel::Search,
                 ] {
@@ -297,7 +296,7 @@ impl LayoutState {
             sidebar_width: RwSignal::new(ActiveResizer::Sidebar.default()),
             tree_width: RwSignal::new(ActiveResizer::Tree.default()),
             chat_width: RwSignal::new(ActiveResizer::Chat.default()),
-            terminal_width: RwSignal::new(ActiveResizer::Terminal.default()),
+            terminal_height: RwSignal::new(ActiveResizer::Terminal.default()),
             active_resizer: RwSignal::new(ActiveResizer::None),
         }
     }
@@ -307,7 +306,7 @@ impl LayoutState {
             ActiveResizer::Sidebar => self.sidebar_width,
             ActiveResizer::Tree => self.tree_width,
             ActiveResizer::Chat => self.chat_width,
-            ActiveResizer::Terminal => self.terminal_width,
+            ActiveResizer::Terminal => self.terminal_height,
             ActiveResizer::None => panic!("a panel width requires a resize target"),
         }
     }
@@ -389,13 +388,7 @@ impl LayoutState {
         } else {
             0.0
         };
-        let tools = if panels.terminal && resizer != ActiveResizer::Terminal {
-            self.terminal_width.get_untracked()
-        } else {
-            0.0
-        };
-        let viewport =
-            viewport - PANEL_RAILS_WIDTH - tools + if panels.editor { 0.0 } else { CENTER_MIN };
+        let viewport = viewport - PANEL_RAILS_WIDTH + if panels.editor { 0.0 } else { CENTER_MIN };
         Self::clamp(resizer, requested, sidebar, tree, chat, viewport)
     }
 
@@ -480,21 +473,19 @@ mod tests {
         visibility.terminal = true;
         assert_widths(
             fit_visible_panels(1400.0, [240.0, 260.0, 420.0], visibility),
-            [240.0, 260.0, 260.0],
+            [240.0, 260.0, 420.0],
         );
     }
 
     #[test]
-    fn terminal_uses_shared_fitting_and_collapsed_widths_are_retained() {
+    fn terminal_height_does_not_consume_horizontal_space() {
         let visible = PanelVisibility {
             terminal: true,
             ..Default::default()
         };
         let widths = fit_open_panels(1400.0, [240.0, 260.0, 420.0, 500.0], visible);
-        assert!(
-            (widths.iter().sum::<f64>() + CENTER_MIN + PANEL_RAILS_WIDTH - 1400.0).abs()
-                < f64::EPSILON
-        );
+        assert_widths([widths[0], widths[1], widths[2]], [240.0, 260.0, 420.0]);
+        assert!((widths[3] - 500.0).abs() < f64::EPSILON);
         let hidden = PanelVisibility {
             terminal: false,
             ..visible

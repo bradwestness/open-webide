@@ -51,15 +51,11 @@ async fn panels_collapse_without_unmounting_and_persist_in_both_modes() {
             let element = mounted.element(&selector);
             let child = element.first_element_child().unwrap();
             let button = format!("button[aria-controls='panel-{}']", panel.id());
-            super::support::click_action(
-                &mounted,
-                &format!(
-                    "#panel-{} button[aria-label='Minimize {}']",
-                    panel.id(),
-                    panel.label()
-                ),
-            )
-            .await;
+            mounted.click(&format!(
+                "#panel-{} button[aria-label='Minimize {}']",
+                panel.id(),
+                panel.label()
+            ));
             settle().await;
             assert_eq!(
                 mounted
@@ -352,7 +348,7 @@ async fn phone_sheets_keep_drafts_and_desktop_preferences_in_both_modes() {
         settle().await;
         assert!(layout.phone.get_untracked());
         assert!(layout.visible_panels.get_untracked().chat);
-        for panel in [Panel::Files, Panel::Search, Panel::Git, Panel::Terminal] {
+        for panel in [Panel::Files, Panel::Search, Panel::Git] {
             actions.show.run(panel);
             settle().await;
             assert!(layout.visible_panels.get_untracked().visible(
@@ -364,7 +360,7 @@ async fn phone_sheets_keep_drafts_and_desktop_preferences_in_both_modes() {
             ));
             assert!(!layout.visible_panels.get_untracked().chat);
             mounted.click(&format!(
-                "#panel-{} .tool-panel-heading > button",
+                "#panel-{} .tool-panel-heading > button[title='Return to chat']",
                 if matches!(panel, Panel::Git | Panel::Search) {
                     Panel::Files
                 } else {
@@ -481,6 +477,7 @@ async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes(
             view! {
                 <ToolPanel panel=Panel::Sessions><span>"Sessions"</span></ToolPanel>
                 <ToolPanel panel=Panel::Files><span>"Files"</span></ToolPanel>
+                <ToolPanel panel=Panel::Editor><span>"Editor"</span></ToolPanel>
                 <ToolPanel panel=Panel::Chat><span>"Chat"</span></ToolPanel>
                 <ToolPanel panel=Panel::Terminal><span>"Terminal"</span></ToolPanel>
             }
@@ -495,13 +492,24 @@ async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes(
             (Panel::Sessions, ActiveResizer::Sidebar),
             (Panel::Files, ActiveResizer::Tree),
             (Panel::Chat, ActiveResizer::Chat),
-            (Panel::Terminal, ActiveResizer::Terminal),
         ] {
-            let separator = mounted.element(&format!("#panel-{} [role=separator]", panel.id()));
+            layout.panels.set(PanelVisibility {
+                sessions: panel == Panel::Sessions,
+                files: panel == Panel::Files,
+                chat: panel == Panel::Chat,
+                editor: true,
+                terminal: false,
+                ..PanelVisibility::default()
+            });
             for side in [PanelSide::Left, PanelSide::Right] {
                 actions.pin.run((panel, side));
                 settle().await;
                 layout.fit(2400.0);
+                let leading = layout.preferences.with_untracked(|prefs| {
+                    prefs.order(panel.id()) > prefs.order(Panel::Editor.id())
+                });
+                let owner = if leading { Panel::Editor } else { panel };
+                let separator = mounted.element(&format!("#panel-{} [role=separator]", owner.id()));
                 let before = layout.width(kind).get_untracked();
                 let init = web_sys::KeyboardEventInit::new();
                 init.set_key("ArrowRight");
@@ -515,7 +523,7 @@ async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes(
                     )
                     .unwrap();
                 settle().await;
-                let expected = before + 20.0;
+                let expected = before + if leading { -20.0 } else { 20.0 };
                 assert!((layout.width(kind).get_untracked() - expected).abs() < f64::EPSILON);
                 assert_eq!(
                     mounted.state.fake.settings.borrow()[kind.setting_key()],
@@ -523,6 +531,11 @@ async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes(
                 );
             }
         }
+        layout.panels.set(PanelVisibility {
+            terminal: true,
+            ..PanelVisibility::default()
+        });
+        settle().await;
         assert_eq!(
             mounted
                 .root
@@ -531,7 +544,7 @@ async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes(
                 .length(),
             4
         );
-        actions.move_panel.run((Panel::Terminal, false));
+        actions.move_panel.run((Panel::Files, true));
         settle().await;
         assert!(
             mounted
@@ -572,38 +585,56 @@ async fn dock_resize_targets_are_visible_and_resize_actual_geometry_in_both_mode
             view! {
                 <style>{include_str!("../../styles.css")}</style>
                 <div class="app" style="height:400px;width:1000px"><div class="app-body">
+                    <ToolPanel panel=Panel::Editor><span>"Editor"</span></ToolPanel>
                     <ToolPanel panel=Panel::Sessions><div class="sidebar" style="width:240px;flex:none">"Sessions"</div></ToolPanel>
                     <ToolPanel panel=Panel::Files><div class="search-pane">"Files"</div></ToolPanel>
                     <ToolPanel panel=Panel::Chat><div class="chat-pane" style="width:420px;flex:none">"Chat"</div></ToolPanel>
-                    <ToolPanel panel=Panel::Terminal><div class="terminal-visibility"><div class="terminal-dock">"Terminal"</div></div></ToolPanel>
+
                 </div></div>
             }
         });
+        settle().await;
+        mounted
+            .root
+            .set_attribute("style", "position:fixed;left:0;top:0;right:0;z-index:100")
+            .unwrap();
         let (layout, actions) = slot.get().unwrap();
         actions.set_mode.run(LayoutMode::Desktop);
         for (panel, kind) in [
             (Panel::Sessions, ActiveResizer::Sidebar),
             (Panel::Files, ActiveResizer::Tree),
             (Panel::Chat, ActiveResizer::Chat),
-            (Panel::Terminal, ActiveResizer::Terminal),
         ] {
             layout.panels.set(PanelVisibility {
                 sessions: panel == Panel::Sessions,
                 files: panel == Panel::Files,
                 chat: panel == Panel::Chat,
                 terminal: panel == Panel::Terminal,
-                editor: false,
+                editor: true,
                 ..PanelVisibility::default()
             });
             for side in [PanelSide::Left, PanelSide::Right] {
                 actions.pin.run((panel, side));
                 settle().await;
                 let dock = mounted.element(&format!("#panel-{}", panel.id()));
+                let leading = layout.preferences.with_untracked(|prefs| {
+                    prefs.order(panel.id()) > prefs.order(Panel::Editor.id())
+                });
+                let owner = if leading { Panel::Editor } else { panel };
                 let separator =
-                    mounted.element(&format!("#panel-{} > [role=separator]", panel.id()));
+                    mounted.element(&format!("#panel-{} > [role=separator]", owner.id()));
                 let rect = separator.get_bounding_client_rect();
                 assert!(rect.height() > 300.0);
-                assert!((rect.right() - dock.get_bounding_client_rect().right()).abs() < 1.0);
+                assert!(
+                    (rect.right()
+                        - if leading {
+                            dock.get_bounding_client_rect().left()
+                        } else {
+                            dock.get_bounding_client_rect().right()
+                        })
+                    .abs()
+                        < 1.0
+                );
                 let x = rect.x() + rect.width() / 2.0;
                 let y = rect.y() + rect.height() / 2.0;
                 let hit = web_sys::window()
@@ -614,7 +645,7 @@ async fn dock_resize_targets_are_visible_and_resize_actual_geometry_in_both_mode
                     .unwrap();
                 assert!(
                     hit.is_same_node(Some(separator.as_ref())),
-                    "{} handle must receive pointer input",
+                    "{} {side:?} resize handle must receive pointer input",
                     panel.id()
                 );
                 let before = dock.get_bounding_client_rect().width();
@@ -625,9 +656,21 @@ async fn dock_resize_targets_are_visible_and_resize_actual_geometry_in_both_mode
                     web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap()
                 };
                 hit.dispatch_event(&event("pointerdown", x)).unwrap();
+                settle().await;
+                assert_eq!(
+                    mounted
+                        .root
+                        .query_selector_all(".panel-resizer.is-active")
+                        .unwrap()
+                        .length(),
+                    1
+                );
                 web_sys::window()
                     .unwrap()
-                    .dispatch_event(&event("pointermove", x + 30.0))
+                    .dispatch_event(&event(
+                        "pointermove",
+                        x + if leading { -30.0 } else { 30.0 },
+                    ))
                     .unwrap();
                 web_sys::window()
                     .unwrap()
@@ -850,4 +893,391 @@ async fn overflow_actions_share_rows_with_labels_and_files_view_switcher_in_both
                 .is_some()
         );
     }
+}
+
+#[wasm_bindgen_test]
+async fn editor_and_expanded_chat_resize_their_visible_neighbor_in_both_modes() {
+    use openwebide_frontend::state::{layout::ActiveResizer, responsive::LayoutMode};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let read = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.auth.set_user(user(1));
+            let layout = expect_context::<LayoutState>();
+            let actions = LayoutActions::new(state.api, layout, state.auth, state.ui);
+            provide_context(actions);
+            read.set(Some((layout, actions)));
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div class="app" style="height:400px;width:1400px"><div class="app-body" class:editor-collapsed=move || !layout.visible_panels.get().editor>
+                    <ToolPanel panel=Panel::Files><span>"Files"</span></ToolPanel>
+                    <ToolPanel panel=Panel::Editor><span>"Editor"</span></ToolPanel>
+                    <ToolPanel panel=Panel::Chat><span>"Chat"</span></ToolPanel>
+                </div></div>
+            }
+        });
+        settle().await;
+        let (layout, actions) = slot.get().unwrap();
+        actions.set_mode.run(LayoutMode::Desktop);
+        for (editor, terminal, panel, kind) in [
+            (true, true, Panel::Editor, ActiveResizer::Chat),
+            (true, false, Panel::Editor, ActiveResizer::Chat),
+            (false, true, Panel::Chat, ActiveResizer::Tree),
+            (false, false, Panel::Chat, ActiveResizer::Tree),
+        ] {
+            layout.panels.set(PanelVisibility {
+                sessions: false,
+                files: true,
+                editor,
+                terminal,
+                chat: true,
+                ..PanelVisibility::default()
+            });
+            layout.fit(1400.0);
+            settle().await;
+            let dock = mounted.element(&format!("#panel-{}", panel.id()));
+            let owner = if editor { Panel::Editor } else { Panel::Files };
+            let separator = mounted.element(&format!("#panel-{} > [role=separator]", owner.id()));
+            let before = dock.get_bounding_client_rect().width();
+            let neighbor_before = layout.width(kind).get_untracked();
+
+            let event = |name, x| {
+                let init = web_sys::PointerEventInit::new();
+                init.set_client_x(x);
+                init.set_bubbles(true);
+                web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap()
+            };
+            separator
+                .dispatch_event(&event("pointerdown", 500))
+                .unwrap();
+            web_sys::window()
+                .unwrap()
+                .dispatch_event(&event("pointermove", if editor { 530 } else { 470 }))
+                .unwrap();
+            web_sys::window()
+                .unwrap()
+                .dispatch_event(&event("pointerup", if editor { 530 } else { 470 }))
+                .unwrap();
+            settle().await;
+            assert!((dock.get_bounding_client_rect().width() - before - 30.0).abs() < 1.0);
+            assert!(
+                (layout.width(kind).get_untracked() - neighbor_before + 30.0).abs() < f64::EPSILON
+            );
+            assert_eq!(
+                mounted.state.fake.settings.borrow()[kind.setting_key()],
+                (neighbor_before - 30.0).to_string()
+            );
+        }
+        layout.panels.set(PanelVisibility {
+            sessions: false,
+            files: true,
+            editor: true,
+            chat: true,
+            terminal: false,
+            ..PanelVisibility::default()
+        });
+        actions.pin.run((
+            Panel::Files,
+            openwebide_frontend::state::responsive::PanelSide::Right,
+        ));
+        actions.move_panel.run((Panel::Files, false));
+        settle().await;
+        let grip = mounted.element("#panel-files > [role=separator]");
+        let files_before = layout.tree_width.get_untracked();
+        let chat_before = layout.chat_width.get_untracked();
+        let editor_before = mounted
+            .element("#panel-editor")
+            .get_bounding_client_rect()
+            .width();
+        let seam_before = grip.get_bounding_client_rect().right();
+        let event = |name, x| {
+            let init = web_sys::PointerEventInit::new();
+            init.set_client_x(x);
+            init.set_bubbles(true);
+            web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap()
+        };
+        grip.dispatch_event(&event("pointerdown", 500)).unwrap();
+        settle().await;
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all(".panel-resizer.is-active")
+                .unwrap()
+                .length(),
+            1
+        );
+        web_sys::window()
+            .unwrap()
+            .dispatch_event(&event("pointermove", 530))
+            .unwrap();
+        web_sys::window()
+            .unwrap()
+            .dispatch_event(&event("pointerup", 530))
+            .unwrap();
+        settle().await;
+        assert!((layout.tree_width.get_untracked() - files_before - 30.0).abs() < f64::EPSILON);
+        assert!((layout.chat_width.get_untracked() - chat_before + 30.0).abs() < f64::EPSILON);
+        assert!(
+            (mounted
+                .element("#panel-editor")
+                .get_bounding_client_rect()
+                .width()
+                - editor_before)
+                .abs()
+                < 1.0
+        );
+        assert!((grip.get_bounding_client_rect().right() - seam_before - 30.0).abs() < 1.0);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn bottom_terminal_spans_workspace_resizes_height_and_requires_project_in_both_modes() {
+    use openwebide_frontend::{components::StatusBar, state::responsive::LayoutMode};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let read = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.auth.set_user(user(1));
+            let layout = expect_context::<LayoutState>();
+            let actions = LayoutActions::new(state.api, layout, state.auth, state.ui);
+            provide_context(actions);
+            read.set(Some((layout, actions)));
+            let health = RwSignal::new(None);
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div class="app" style="height:700px;width:1000px"><div class="app-body">
+                    <div class="workspace-docks">
+                        <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
+                        <ToolPanel panel=Panel::Editor><span>"Editor"</span></ToolPanel>
+                        <ToolPanel panel=Panel::Chat><span>"Chat"</span></ToolPanel>
+                    </div>
+                    <ToolPanel panel=Panel::Terminal><div class="terminal-visibility"><div class="terminal-dock">"Retained shell"</div></div></ToolPanel>
+                </div><StatusBar health=health.read_only() on_toggle_terminal=move || actions.toggle.run(Panel::Terminal) /></div>
+            }
+        });
+        let (layout, actions) = slot.get().unwrap();
+        actions.set_mode.run(LayoutMode::Desktop);
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".panel-rail [aria-controls=panel-terminal]")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click(".statusbar .status-btn");
+        settle().await;
+        let terminal = mounted.element("#panel-terminal");
+        let row = mounted.element(".workspace-docks");
+        let grip = mounted.element("#panel-terminal > [role=separator]");
+        assert_eq!(
+            grip.get_attribute("aria-orientation").as_deref(),
+            Some("horizontal")
+        );
+        assert!((terminal.get_bounding_client_rect().width() - 1000.0).abs() < 1.0);
+        assert!(
+            (row.get_bounding_client_rect().bottom() - terminal.get_bounding_client_rect().top())
+                .abs()
+                < 1.0
+        );
+        assert!(
+            (grip.get_bounding_client_rect().top() - terminal.get_bounding_client_rect().top())
+                .abs()
+                < 2.0
+        );
+        let before = terminal.get_bounding_client_rect().height();
+        let event = |name, y| {
+            let init = web_sys::PointerEventInit::new();
+            init.set_client_y(y);
+            init.set_bubbles(true);
+            web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap()
+        };
+        grip.dispatch_event(&event("pointerdown", 500)).unwrap();
+        web_sys::window()
+            .unwrap()
+            .dispatch_event(&event("pointermove", 470))
+            .unwrap();
+        web_sys::window()
+            .unwrap()
+            .dispatch_event(&event("pointerup", 470))
+            .unwrap();
+        settle().await;
+        assert!((terminal.get_bounding_client_rect().height() - before - 30.0).abs() < 1.0);
+        assert_eq!(
+            mounted.state.fake.settings.borrow()["panel_terminal_height"],
+            (before + 30.0).to_string()
+        );
+        mounted.click(".statusbar .status-btn");
+        mounted.click(".statusbar .status-btn");
+        settle().await;
+        assert!(terminal.is_same_node(Some(mounted.element("#panel-terminal").as_ref())));
+        assert!((terminal.get_bounding_client_rect().height() - before - 30.0).abs() < 1.0);
+        grip.dispatch_event(&event("pointerdown", 500)).unwrap();
+        web_sys::window()
+            .unwrap()
+            .dispatch_event(&event("pointermove", -1000))
+            .unwrap();
+        web_sys::window()
+            .unwrap()
+            .dispatch_event(&event("pointerup", -1000))
+            .unwrap();
+        settle().await;
+        assert!(
+            (layout.terminal_height.get_untracked() - terminal.get_bounding_client_rect().height())
+                .abs()
+                < 1.0
+        );
+        assert!(row.get_bounding_client_rect().height() >= 180.0);
+        actions.set_mode.run(LayoutMode::Phone);
+        settle().await;
+        assert!(
+            layout.visible_panels.get_untracked().chat
+                && layout.visible_panels.get_untracked().terminal
+        );
+        mounted.state.projects.active_project.set(None);
+        settle().await;
+        assert!(
+            mounted
+                .element(".statusbar .status-btn")
+                .has_attribute("disabled")
+        );
+        assert!(!layout.visible_panels.get_untracked().terminal);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn account_dropdown_groups_actions_and_collapses_to_user_icon() {
+    use openwebide_frontend::components::TopBar;
+    let opened = RwSignal::new(0);
+    let logged_out = RwSignal::new(false);
+    let mounted = mount_test(move |state| {
+        state.auth.set_user(user(1));
+        let health = RwSignal::new(None);
+        view! {
+            <style>{include_str!("../../styles.css")}</style>
+            <div class="app"><TopBar health=health.read_only() on_open_settings=Callback::new(move |()| opened.update(|count| *count += 1)) on_logout=Callback::new(move |()| logged_out.set(true)) /></div>
+        }
+    });
+    settle().await;
+    for (action, label) in [
+        ("Settings", "Settings"),
+        ("Model setup", "Models"),
+        ("Log out", "Log out"),
+    ] {
+        mounted.click("[aria-label='Account menu']");
+        settle().await;
+        let button = mounted.element(&format!("button[aria-label='{action}']"));
+        assert!(button.text_content().unwrap().contains(label));
+        button.click();
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".ui-dropdown-menu")
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(opened.get_untracked(), 1);
+    assert!(logged_out.get_untracked());
+    assert!(mounted.state.settings.show_conn_form.get_untracked());
+    mounted
+        .element(".app")
+        .class_list()
+        .add_1("phone-layout")
+        .unwrap();
+    settle().await;
+    assert_eq!(
+        web_sys::window()
+            .unwrap()
+            .get_computed_style(&mounted.element(".topbar-user"))
+            .unwrap()
+            .unwrap()
+            .get_property_value("display")
+            .unwrap(),
+        "none"
+    );
+    assert!(
+        mounted
+            .element("[aria-label='Account menu'] .ui-dropdown-label .ui-icon-glyph")
+            .get_bounding_client_rect()
+            .width()
+            > 0.0
+    );
+}
+
+#[wasm_bindgen_test]
+async fn settings_appearance_uses_compact_shared_segmented_controls() {
+    use openwebide_frontend::{
+        components::Settings,
+        state::{responsive::LayoutMode, settings::Theme},
+    };
+    let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let read = slot.clone();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        state.auth.set_user(user(1));
+        let layout = expect_context::<LayoutState>();
+        provide_context(LayoutActions::new(state.api, layout, state.auth, state.ui));
+        read.set(Some(layout));
+        view! {
+            <style>{include_str!("../../styles.css")}</style>
+            <Settings on_set_theme=Callback::new(move |theme| state.settings.theme.set(theme)) on_set_notifications=Callback::new(|_| ()) on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) />
+        }
+    });
+    settle().await;
+    let controls = mounted
+        .root
+        .query_selector_all(".ui-form-grid .ui-segmented-control")
+        .unwrap();
+    assert_eq!(controls.length(), 2);
+    for index in 0..2 {
+        let control = controls
+            .item(index)
+            .unwrap()
+            .dyn_into::<web_sys::HtmlElement>()
+            .unwrap();
+        assert!(
+            control.get_bounding_client_rect().width()
+                < control
+                    .parent_element()
+                    .unwrap()
+                    .get_bounding_client_rect()
+                    .width()
+        );
+        assert_eq!(
+            control
+                .query_selector_all("button.ui-seg-btn")
+                .unwrap()
+                .length(),
+            3
+        );
+    }
+    mounted.click_text("Light");
+    settle().await;
+    assert_eq!(mounted.state.settings.theme.get_untracked(), Theme::Light);
+    mounted.click_text("Desktop");
+    settle().await;
+    assert_eq!(
+        slot.get().unwrap().preferences.get_untracked().mode,
+        LayoutMode::Desktop
+    );
+    assert!(
+        mounted
+            .state
+            .fake
+            .settings
+            .borrow()
+            .contains_key("workspace_layout")
+    );
 }

@@ -366,7 +366,8 @@ pub fn App() -> impl IntoView {
                                 on_delete_project=on_delete_project
                             />
                             <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.visible_panels.get().editor { "" } else { " editor-collapsed" })>
-                            <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat, Panel::Terminal ] />
+                            <div class="workspace-docks">
+                            <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
                             <ToolPanel panel=Panel::Sessions>
                             <Sidebar
                                 on_new_connection=on_new_connection
@@ -415,9 +416,6 @@ pub fn App() -> impl IntoView {
 
                             </div>
                             </ToolPanel>
-                            <ToolPanel panel=Panel::Terminal>
-                                {move || bridge_connection.get().map(|bridge| view! { <TerminalDock bridge=bridge visible=terminal_visible on_close=Callback::new(move |()| layout_actions.toggle.run(Panel::Terminal)) /> })}
-                            </ToolPanel>
                             <ToolPanel panel=Panel::Chat>
                             <ChatPane
                                 on_select_connection_model=chat_actions.select_connection_model
@@ -435,6 +433,10 @@ pub fn App() -> impl IntoView {
                             <Show when=move || !layout.phone.get() && !layout.visible_panels.get().editor && !layout.visible_panels.get().chat>
                                 <div class="panel-empty">"Choose a panel tab to expand it."</div>
                             </Show>
+                            </div>
+                            <ToolPanel panel=Panel::Terminal>
+                                {move || bridge_connection.get().map(|bridge| view! { <TerminalDock bridge=bridge visible=terminal_visible on_close=Callback::new(move |()| layout_actions.toggle.run(Panel::Terminal)) /> })}
+                            </ToolPanel>
                         </div>
                         <StatusBar
                             health=health.read_only()

@@ -15,6 +15,7 @@ pub fn StatusBar(
     let chat = expect_context::<ChatState>();
     let git = expect_context::<GitState>();
     let show_terminal = chat.show_terminal.read_only();
+    let layout = expect_context::<crate::state::layout::LayoutState>();
     let git_status: Signal<Option<openwebide_core::GitRepoStatus>> =
         Signal::derive(move || git.status.get());
     view! {
@@ -67,7 +68,8 @@ pub fn StatusBar(
             <span class="spacer" />
             <button
                 class=move || if show_terminal.get() { "status-btn active" } else { "status-btn" }
-                title="Toggle terminal dock (Ctrl+`)"
+                disabled=move || !layout.available(crate::state::layout::Panel::Terminal)
+                title=move || if layout.available(crate::state::layout::Panel::Terminal) { "Toggle terminal dock (Ctrl+`)" } else { "Open a project to use Terminal" }
                 on:click=move |_| on_toggle_terminal()
             >
                 <super::ui::Icon name=super::ui::IconName::Terminal />"Terminal"

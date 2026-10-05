@@ -64,6 +64,7 @@ html,
 body {
   margin: 0;
   height: 100%;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -688,8 +689,10 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 24px;
-  padding: 0 12px;
+  height: auto;
+  min-height: 36px;
+  flex: none;
+  padding: 2px 12px;
   background: var(--bg-panel);
   border-top: 1px solid var(--border);
   font-size: 12px;
@@ -1278,6 +1281,8 @@ body {
 
 .ui-segmented-control {
   display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
   align-items: center;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -2759,8 +2764,6 @@ button.browser-item {
 /* Tool windows keep their children mounted while moving or collapsing. */
 .tool-panel { position: relative; flex: none; min-width: 0; min-height: 0; flex-direction: column; }
 .tool-panel-center, .editor-collapsed #panel-chat { flex: 1; }
-/* Chat fills the editor vacancy; neighboring dock handles size that boundary. */
-.app-body.editor-collapsed #panel-chat > .panel-resizer { display: none; }
 .tool-panel-content { display: flex; flex: 1; min-width: 0; min-height: 0; }
 .tool-panel-content > .center-pane { flex: 1; }
 .tool-panel-heading { display: none; }
@@ -2769,7 +2772,7 @@ button.browser-item {
 .panel-pin { padding: 2px; border: 0; font-size: 12px; }
 .panel-empty { order: 60; }
 
-.app { height: 100dvh; }
+.app { height: 100dvh; min-height: 0; overflow: hidden; }
 .phone-layout .app-body { flex-direction: column; overflow: hidden; }
 .phone-layout .panel-rail { width: 100%; flex: none; flex-direction: row; padding: 2px; overflow-x: auto; overflow-y: hidden; box-sizing: border-box; }
 .phone-layout .panel-tab-group { flex: none; }
@@ -2909,6 +2912,8 @@ button.browser-item {
 .tool-panel-heading { display: flex; align-items: center; gap: var(--space-2); box-sizing: border-box; min-height: calc(var(--control-height) + 2 * var(--space-2)); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); background: var(--bg-panel); font-family: system-ui, sans-serif; font-size: var(--font-caption); line-height: 1.4; }
 .tool-panel-actions { display: flex; margin-left: auto; }
 .app:not(.phone-layout) .tool-panel-heading > .btn { display: none; }
+.tool-panel-heading .panel-minimize { flex: none; margin-left: auto; }
+.tool-panel-heading .ui-action-menu + .panel-minimize { margin-left: 0; }
 .phone-layout .tool-panel-actions { display: none; }
 .files-panel > .search-pane { width: 100%; flex: 1; overflow: hidden; }
 .file-tree-search { display: flex; gap: var(--space-1); align-items: center; }
@@ -3025,3 +3030,18 @@ button.browser-item {
 /* Server identity takes precedence over provider metadata in narrow rows. */
 .connection .conn-name { flex: 1 0 auto; min-width: 0; max-width: calc(100% - 56px); }
 .connection .conn-kind { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Terminal is a bottom dock, independent of the vertical pane ordering. */
+.app-body:has(> .workspace-docks) { flex-direction: column; overflow: hidden; }
+.workspace-docks { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.phone-layout .workspace-docks { flex-direction: column; overflow: hidden; }
+#panel-terminal.tool-panel { box-sizing: border-box; width: 100%; height: var(--tool-window-height); max-height: calc(100% - 180px); flex: none; border-top: 1px solid var(--border); }
+#panel-terminal .tool-panel-heading > .btn { display: none; }
+#panel-terminal .panel-resizer { top: 0; bottom: auto; left: 0; right: 0; width: 100%; height: 6px; cursor: row-resize; }
+#panel-terminal .panel-resizer::after { top: 2px; left: 0; right: 0; bottom: auto; width: 100%; height: 1px; }
+#panel-terminal .panel-resizer:hover::after, #panel-terminal .panel-resizer.is-active::after { height: 2px; }
+.app-body.is-resizing:has(#panel-terminal > .is-active), .app-body.is-resizing:has(#panel-terminal > .is-active) * { cursor: row-resize !important; }
+.status-btn:disabled { opacity: .5; cursor: default; }
+
+.topbar-account .ui-dropdown-label { display: inline-flex; align-items: center; gap: var(--space-2); }
+@media (max-width: 800px) { .topbar-account .topbar-user { display: none; } .topbar-account .ui-dropdown-trigger > .ui-icon-glyph { display: none; } }

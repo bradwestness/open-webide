@@ -19,23 +19,26 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
     view! { <section id=format!("panel-{}", panel.id()) class="tool-panel"
         class:tool-panel-center=panel == Panel::Editor
         style=move || {
-            let order = layout.preferences.with(|prefs| prefs.order(panel.id()));
-            format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 0.0 } else { layout.width(kind).get() })
+            let order = if panel == Panel::Terminal { 255 } else { layout.preferences.with(|prefs| prefs.order(panel.id())) };
+            format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px; --tool-window-height: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 0.0 } else { layout.width(kind).get() }, layout.terminal_height.get())
         }
         aria-label=panel.label()>
         <div class="tool-panel-heading">
             <span>{panel.label()}</span>
+            <Show when=move || panel != Panel::Terminal>
             <super::dropdown::ActionMenu aria_label="Panel actions">
                 <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Move {} left", panel.label()) title="Move panel left" on:click=move |_| actions.move_panel.run((panel, false))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowLeft /><span>"Move panel left"</span></button>
                 <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Move {} right", panel.label()) title="Move panel right" on:click=move |_| actions.move_panel.run((panel, true))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowRight /><span>"Move panel right"</span></button>
-                <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Minimize {}", panel.label()) title="Minimize panel" on:click=move |_| actions.toggle.run(panel)><crate::components::ui::Icon name=crate::components::ui::IconName::Minus /><span>"Minimize panel"</span></button>
             </super::dropdown::ActionMenu>
+            </Show>
+            <button type="button" class="icon-btn ui-icon panel-minimize" aria-label=format!("Minimize {}", panel.label()) title="Minimize panel" on:click=move |_| actions.toggle.run(panel)><crate::components::ui::Icon name=crate::components::ui::IconName::Minus /></button>
             <button class="btn" title="Return to chat" on:click=move |_| actions.show.run(Panel::Chat)>"Back to chat"</button>
         </div>
         <div class="tool-panel-content">
             {children()}
         </div>
-        {(kind != ActiveResizer::None).then(|| view! { <super::panel_resizer::PanelResizer kind=kind /> })}
+        {(panel == Panel::Terminal).then(|| view! { <super::panel_resizer::PanelResizer kind=ActiveResizer::Terminal /> })}
+        {(panel != Panel::Terminal).then(|| view! { <DockBoundary panel=panel /> })}
     </section> }
 }
 
@@ -77,4 +80,48 @@ pub fn FilesPanel(
         </super::ui::PanelToolbar>
         {children()}
     </div> }
+}
+
+/// Each seam appears once; the flexible pane absorbs changes on either side.
+#[component]
+fn DockBoundary(panel: Panel) -> impl IntoView {
+    let layout = expect_context::<LayoutState>();
+    let boundary = Memo::new(move |_| {
+        let visible = layout.visible_panels.get();
+        layout.preferences.with(|prefs| {
+            let mut panels = [Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat]
+                .into_iter()
+                .filter(|candidate| visible.visible(*candidate))
+                .collect::<Vec<_>>();
+            panels.sort_by_key(|candidate| prefs.order(candidate.id()));
+            let index = panels.iter().position(|candidate| *candidate == panel)?;
+            let next = *panels.get(index + 1)?;
+            let flexible = if visible.editor {
+                Some(Panel::Editor)
+            } else if visible.chat {
+                Some(Panel::Chat)
+            } else {
+                None
+            };
+            let flexible_index = flexible
+                .and_then(|flexible| panels.iter().position(|candidate| *candidate == flexible));
+            let invert = flexible_index.is_some_and(|flexible| index == flexible);
+            let coupled = flexible_index.is_some_and(|flexible| index > flexible);
+            let target = if invert { next } else { panel };
+            let kind_for = |target| match target {
+                Panel::Sessions => ActiveResizer::Sidebar,
+                Panel::Files => ActiveResizer::Tree,
+                Panel::Chat => ActiveResizer::Chat,
+                _ => ActiveResizer::None,
+            };
+            let kind = kind_for(target);
+            if kind == ActiveResizer::None {
+                return None;
+            }
+            Some((kind, invert, coupled.then(|| kind_for(next))))
+        })
+    });
+    view! { {move || boundary.get().map(|(kind, invert, partner)| view! {
+        <super::panel_resizer::PanelResizer kind=kind panel=panel invert=invert partner=partner />
+    })} }
 }

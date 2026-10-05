@@ -11,6 +11,17 @@ for what's still ahead.
 
 ### Changed
 
+- Keep Layout and Theme segmented controls compact in Settings, matching Sessions and Files.
+
+- Keep the app within the viewport and give status-bar controls enough height to avoid page-level scrolling.
+
+- Keep Minimize visible on every panel heading; menus contain only the remaining actions.
+
+- Group Settings, Models and Log out under the username dropdown.
+- Keep Terminal in the status bar as a full-width bottom dock with a resizable, remembered height; disable it without a project.
+
+- Share one resize grip per vertical panel boundary, keeping drag direction correct after reordering and highlighting only the dragged grip.
+
 - Standardize dock title-bar spacing and right-edge resize handles. Left-align labeled terminal actions and prioritize server names over provider types in narrow Sessions panels.
 
 - Keep overflow menus inline with session and contextual rows. Place file creation actions beside Explorer/Changes and show them only in Explorer; use the shared Plus icon for all add/new buttons.

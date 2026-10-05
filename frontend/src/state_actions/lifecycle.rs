@@ -311,11 +311,11 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                         }
                     }
                     if let Some(width) = values
-                        .get("panel_terminal_width")
+                        .get("panel_terminal_height")
                         .and_then(|value| value.parse::<f64>().ok())
                         .filter(|width| width.is_finite())
                     {
-                        layout.terminal_width.set(width.clamp(240.0, 1000.0));
+                        layout.terminal_height.set(width.clamp(140.0, 700.0));
                     }
                     layout.sidebar_width.set(widths[0].clamp(140.0, 480.0));
                     layout.tree_width.set(widths[1].clamp(160.0, 650.0));
