@@ -93,6 +93,7 @@ impl AuthState {
         chat.branching.set(false);
         chat.branch_draft_context.set_value(None);
         chat.reading_images.set(false);
+        chat.image_picker_requested.set(false);
         settings.browser_notifications.set(false);
         chat.send_generation
             .update_value(|generation| *generation += 1);

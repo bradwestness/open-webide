@@ -24,3 +24,5 @@ Panel headings always show Minimize directly; only panels with other actions sho
 Dock title bars use the shared ToolPanel heading spacing and typography. Each shared vertical boundary has one trailing grip. Resizing changes the fixed dock on the outer side of the flexible editor or Chat, so the seam follows the pointer after reordering. Only the dragged grip highlights. Server rows preserve the server name before provider metadata when space is limited.
 
 Terminal is a full-width bottom dock, controlled from the status bar and available only with a project. Its top-edge separator resizes the database-backed height without consuming editor width. Account actions live in the shared username dropdown.
+
+Chat uses compact, labeled icon controls beside the composer. Enter sends or queues, Ctrl/⌘+Enter steers an active run, and Escape stops it. Attach images lives in the Chat panel menu; paste/drop use the same image import path. Status telemetry stays on one line, with secondary fields hidden in narrower panes.

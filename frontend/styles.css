@@ -2924,9 +2924,9 @@ button.browser-item {
 .tui-composer { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: end; flex: none; }
 .tui-composer .tui-input { height: 44px; min-height: 44px; max-height: none; box-sizing: border-box; resize: none; overflow-y: auto; line-height: 20px; padding: 11px 10px; }
 .tui-composer > .btn { height: 44px; min-height: 44px; box-sizing: border-box; font-family: var(--mono); font-size: var(--font-caption); }
-.tui-composer.is-streaming { grid-template-columns: 12px repeat(3, minmax(0, 1fr)); }
-.tui-composer.is-streaming .tui-input { grid-column: 2 / -1; }
-.tui-composer.is-streaming > .btn:first-of-type { grid-column: 2; }
+.tui-composer.is-streaming { grid-template-columns: 12px minmax(0, 1fr) repeat(3, auto); }
+.tui-composer.is-streaming .tui-input { grid-column: 2; }
+.tui-composer.is-streaming > .btn:first-of-type { grid-column: 3; }
 .panel-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .ui-icon-glyph { display: inline-flex; vertical-align: middle; flex: none; align-items: center; justify-content: center; pointer-events: none; }
@@ -3015,7 +3015,7 @@ button.browser-item {
 .tui-prompt-actions { margin-left: auto; }
 .phone-layout .ui-action-items button { min-height: 44px; }
 .tui-user { position: relative; }
-.tui-user .tui-prompt-actions { position: absolute; right: 0; top: 0; }
+.tui-user .tui-prompt-actions { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
 .tui-user .tui-user-text { padding-right: 36px; }
 
 .ui-action-menu .ui-dropdown-label { display: flex; }
@@ -3064,3 +3064,25 @@ button.browser-item {
 
 .logo { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
 .logo-mark { width: 32px; height: 32px; flex: none; border-radius: var(--radius-sm); }
+
+/* Chat keeps primary controls compact and secondary actions in the panel menu. */
+.tui-user { min-height: 40px; justify-content: center; }
+.tui-user-prompt { align-items: center; }
+.tui-user > .prompt-image-list:empty { display: none; }
+.phone-layout .tui-user { min-height: 52px; }
+.tui-pane { container-type: inline-size; }
+.tui-statusline { white-space: nowrap; flex-wrap: nowrap; min-height: 30px; gap: 8px; overflow: hidden; }
+.tui-statusline .tui-sep { display: none; }
+.tui-statusline .btn { min-height: 24px; }
+.tui-statusline > span { flex: none; }
+.tui-statusline .tui-model-picker { flex: 1; min-width: 40px; max-width: 160px; }
+.tui-statusline .tui-model-name { min-width: 0; width: 100%; }
+.prompt-attachments { padding: 0; border: none; }
+.prompt-image-list:not(:empty), .prompt-attachments > .muted { padding: 6px 10px; }
+.tui-composer > .btn.ui-icon { width: 44px; padding: 0; display: inline-flex; justify-content: center; align-items: center; }
+@container (max-width: 600px) { .tui-statusline .tui-workspace-mode, .tui-statusline .tui-tools-count, .tui-statusline .tui-run-state { display: none; } }
+@container (max-width: 420px) { .tui-statusline .tui-speed { display: none; } }
+
+.phone-layout .tui-statusline { flex-wrap: nowrap; }
+
+.phone-layout .tui-statusline .btn { min-height: 44px; }

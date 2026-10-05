@@ -723,3 +723,102 @@ async fn composer_grows_shrinks_and_caps_height_in_every_workspace() {
         .await;
     }
 }
+
+#[wasm_bindgen_test]
+async fn compact_chat_centers_prompt_actions_and_keeps_composer_actions_inline_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::{
+        components::ToolPanel,
+        state::{
+            auth::AuthState,
+            layout::{LayoutState, Panel},
+        },
+        state_actions::layout::LayoutActions,
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.fake.messages.borrow_mut().insert(
+                1,
+                vec![ConversationEntry::Message(ChatMessage {
+                    id: 1,
+                    session_id: 1,
+                    role: Role::User,
+                    content: "short prompt".into(),
+                    created_at: 0,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    usage: None,
+                })],
+            );
+            let layout = expect_context::<LayoutState>();
+            layout.chat_width.set(360.0);
+            let auth = expect_context::<AuthState>();
+            provide_context(LayoutActions::new(state.api, layout, auth, state.ui));
+            let chat = chat_view(state).into_any();
+            view! { <style>{include_str!("../../styles.css")}</style><div style="height:600px;display:flex;width:360px"><ToolPanel panel=Panel::Chat>{chat}</ToolPanel></div> }
+        });
+        settle().await;
+        super::support::wait_until("prompt row", || {
+            mounted.root.query_selector(".tui-user").unwrap().is_some()
+        })
+        .await;
+        let row = mounted.element(".tui-user").get_bounding_client_rect();
+        let text = mounted.element(".tui-user-text").get_bounding_client_rect();
+        let menu = mounted
+            .element(".tui-prompt-actions .ui-dropdown-trigger")
+            .get_bounding_client_rect();
+        assert!(
+            ((row.top() + row.bottom()) / 2.0 - (text.top() + text.bottom()) / 2.0).abs() < 1.0
+        );
+        assert!(
+            ((row.top() + row.bottom()) / 2.0 - (menu.top() + menu.bottom()) / 2.0).abs() < 1.0
+        );
+        assert!(
+            mounted
+                .element(".tui-statusline")
+                .get_bounding_client_rect()
+                .height()
+                < 40.0
+        );
+        assert!(
+            mounted
+                .element(".prompt-attachments")
+                .get_bounding_client_rect()
+                .height()
+                < 1.0
+        );
+        let input = mounted.element(".prompt-attachments input");
+        input.set_onclick(Some(&js_sys::Function::new_no_args(
+            "this.setAttribute('data-opened', 'true')",
+        )));
+        mounted.click("#panel-chat .tool-panel-heading .ui-dropdown-trigger");
+        settle().await;
+        mounted.click("button[aria-label='Attach images']");
+        settle().await;
+        assert_eq!(input.get_attribute("data-opened").as_deref(), Some("true"));
+        assert!(!mounted.state.chat.image_picker_requested.get_untracked());
+        mounted.state.chat.streaming.set(true);
+        settle().await;
+        let composer_input = mounted
+            .element(".composer-input")
+            .get_bounding_client_rect();
+        for class in [".tui-btn-queue", ".tui-btn-steer", ".tui-btn-stop"] {
+            let action = mounted.element(class).get_bounding_client_rect();
+            assert!((action.bottom() - composer_input.bottom()).abs() < 1.0);
+            assert!(action.width() <= 44.0);
+        }
+        assert!(
+            mounted
+                .element(".tui-composer")
+                .get_bounding_client_rect()
+                .height()
+                < 70.0
+        );
+    }
+}

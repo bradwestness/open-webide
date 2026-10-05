@@ -112,6 +112,7 @@ impl Composer {
             composer.chat.active_session.get();
             composer.chat.prompt_images.set(Vec::new());
             composer.chat.reading_images.set(false);
+            composer.chat.image_picker_requested.set(false);
             composer.dismiss();
         });
         composer
@@ -321,6 +322,14 @@ async fn read_image(file: &web_sys::File) -> Result<PromptImage, String> {
 #[component]
 pub fn PromptControls(composer: Composer) -> impl IntoView {
     let file_input = NodeRef::<leptos::html::Input>::new();
+    Effect::new(move || {
+        if composer.chat.image_picker_requested.get()
+            && let Some(input) = file_input.get()
+        {
+            composer.chat.image_picker_requested.set(false);
+            input.click();
+        }
+    });
     view! {
         <div class="prompt-attachments">
             <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple=true node_ref=file_input style="display:none" on:change=move |event| {
@@ -328,8 +337,7 @@ pub fn PromptControls(composer: Composer) -> impl IntoView {
                 if let Some(files) = target.files() { composer.import(files); }
                 target.set_value("");
             } />
-            <button class="btn ghost" disabled=move || composer.chat.reading_images.get() title="Attach PNG, JPEG, GIF or WebP images (or paste/drop). Four images maximum, 2 MiB each and 4 MiB total." on:click=move |_| { if let Some(input) = file_input.get() { input.click(); } }>"Attach images"</button>
-            <span class="muted">{move || if composer.chat.reading_images.get() { "Reading images…" } else { "Use @file:, @folder: or @diff with an open project" }}</span>
+            <Show when=move || composer.chat.reading_images.get()><span class="muted">"Reading images…"</span></Show>
             <div class="prompt-image-list">
                 <For each={move || composer.chat.prompt_images.get().into_iter().enumerate().collect::<Vec<_>>()} key=|(index, image)| (*index, image.data.clone()) children=move |(index, image)| {
                     view! { <div class="prompt-image"><img src=image.url() alt=image.name.clone() /><span>{image.name}</span><button class="btn ghost" title="Remove image" disabled=move || composer.chat.reading_images.get() on:click=move |_| composer.chat.prompt_images.update(|images| { if index < images.len() { images.remove(index); } })>"×"</button></div> }

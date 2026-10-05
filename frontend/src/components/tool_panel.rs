@@ -8,6 +8,7 @@ use leptos::prelude::*;
 #[component]
 pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
     let layout = expect_context::<LayoutState>();
+    let chat = use_context::<crate::state::chat::ChatState>();
     let actions = expect_context::<LayoutActions>();
     let kind = match panel {
         Panel::Sessions => ActiveResizer::Sidebar,
@@ -27,6 +28,9 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
             <span>{panel.label()}</span>
             <Show when=move || panel != Panel::Terminal>
             <super::dropdown::ActionMenu aria_label="Panel actions">
+                <Show when=move || panel == Panel::Chat && chat.is_some()>
+                    <button role="menuitem" type="button" class="ui-dropdown-item recent-item" aria-label="Attach images" disabled=move || chat.is_some_and(|chat| chat.reading_images.get()) on:click=move |_| { if let Some(chat) = chat { chat.request_image_picker(); } }><crate::components::ui::Icon name=crate::components::ui::IconName::Paperclip /><span>"Attach images"</span></button>
+                </Show>
                 <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Move {} left", panel.label()) title="Move panel left" on:click=move |_| actions.move_panel.run((panel, false))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowLeft /><span>"Move panel left"</span></button>
                 <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Move {} right", panel.label()) title="Move panel right" on:click=move |_| actions.move_panel.run((panel, true))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowRight /><span>"Move panel right"</span></button>
             </super::dropdown::ActionMenu>

@@ -345,6 +345,7 @@ pub struct ChatState {
     pub draft: RwSignal<String>,
     pub prompt_images: RwSignal<Vec<openwebide_core::PromptImage>>,
     pub reading_images: RwSignal<bool>,
+    pub image_picker_requested: RwSignal<bool>,
     pub todo_plan: RwSignal<Option<openwebide_core::TodoUpdate>>,
     pub todo_loading: RwSignal<bool>,
     pub todo_error: RwSignal<Option<String>>,
@@ -383,6 +384,12 @@ pub struct ChatState {
 }
 
 impl ChatState {
+    pub fn request_image_picker(self) {
+        if !self.reading_images.get_untracked() {
+            self.image_picker_requested.set(true);
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_active_session_and_toast(RwSignal::new(None), RwSignal::new(None))
     }
@@ -447,6 +454,7 @@ impl ChatState {
             draft: RwSignal::new(String::new()),
             prompt_images: RwSignal::new(Vec::new()),
             reading_images: RwSignal::new(false),
+            image_picker_requested: RwSignal::new(false),
             todo_plan: RwSignal::new(None),
             todo_loading: RwSignal::new(false),
             todo_error: RwSignal::new(None),

@@ -209,7 +209,7 @@ async fn statusline_preserves_compact_telemetry_text() {
     );
     assert_eq!(
         mounted.element(".tui-ctx-gauge").text_content().as_deref(),
-        Some("Ctx: ~12.3k/~66k (19%) [==········]")
+        Some("Ctx: ~12.3k/~66k (19%)")
     );
     assert_eq!(
         mounted.element(".tui-speed").text_content().as_deref(),
@@ -230,7 +230,7 @@ async fn statusline_preserves_compact_telemetry_text() {
     settle().await;
     assert_eq!(
         mounted.element(".tui-ctx-gauge").text_content().as_deref(),
-        Some("Ctx: 0.0k/0k (0%) [··········]")
+        Some("Ctx: 0.0k/0k (0%)")
     );
     assert_eq!(
         mounted.element(".tui-speed").text_content().as_deref(),

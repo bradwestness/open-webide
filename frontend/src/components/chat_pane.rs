@@ -636,8 +636,7 @@ fn TuiStatusLine(
                 {move || session_telemetry.with(SessionTelemetry::compact_context_limit)}
                 " ("
                 {move || format!("{:.0}%", session_telemetry.with(SessionTelemetry::context_percent))}
-                ") "
-                {move || session_telemetry.with(SessionTelemetry::gauge_bar)}
+                ")"
             </span>
             <span class="tui-sep">"│"</span>
             <span class="tui-speed" title="Generation Speed">
@@ -900,7 +899,7 @@ pub fn ChatPane(
                     class="composer-input tui-input"
                     rows="1"
                     aria-label="Chat message"
-                    title="Enter to send; Shift+Enter for a newline; Up/Down for prompt history"
+                    title="Enter to send or queue; Ctrl/⌘+Enter to steer; Escape to stop; Shift/Alt+Enter for a newline; Up/Down for history; paste/drop images; @ for file references"
                     node_ref=input_ref
                     placeholder=move || {
                         if let Some((_, name)) = awaiting_step.get() {
@@ -956,8 +955,14 @@ pub fn ChatPane(
                                 }
                             }
 
+                            if key == "Enter" && (e.ctrl_key() || e.meta_key()) && !e.shift_key() && streaming.get_untracked() {
+                                e.prevent_default();
+                                if let Some(actions) = queue_actions && !chat.queue_busy.get_untracked() && !chat.reading_images.get_untracked() && chat.queue_edit.get_untracked().is_none() && (!draft.get_untracked().trim().is_empty() || !chat.prompt_images.with_untracked(Vec::is_empty)) { actions.steer.run(()); }
+                                return;
+                            }
+
                             // Enter submits
-                            if key == "Enter" && !e.shift_key() {
+                            if key == "Enter" && !e.shift_key() && !e.alt_key() {
                                 e.prevent_default();
                                 submit();
                                 return;
@@ -1045,20 +1050,22 @@ pub fn ChatPane(
                         let submit = submit_or_command;
                         view! {
                             <button
-                                class="btn send tui-btn-send"
+                                class="btn send tui-btn-send ui-icon"
+                                title="Send (Enter)"
+                                aria-label=move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else if chat.prompt_edit.get().is_some() { "Send edit" } else { "Send" }
                                 disabled=move || chat.branching.get() || chat.queue_busy.get() || chat.rewinding.get() || reviews.is_some_and(|state| state.busy.get().is_some()) || chat.creating_session.get() || chat.reading_images.get() || (draft.with(|d| d.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty))
                                 on:click=move |_| submit()
                             >
-                                {move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else if chat.prompt_edit.get().is_some() { "Send edit" } else { "Send" }}
+                                <super::ui::Icon name=super::ui::IconName::ArrowUp /><span class="sr-only">{move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else if chat.prompt_edit.get().is_some() { "Send edit" } else { "Send" }}</span>
                             </button>
                         }
                     }
                 >
                     {queue_actions.map(|actions| view! {
-                        <button class="btn send tui-btn-queue" disabled=move || chat.queue_busy.get() || chat.reading_images.get() || chat.rewinding.get() || (draft.with(|draft| draft.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty)) on:click=move |_| actions.enqueue.run(())>{move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else { "Queue" }}</button>
-                        <button class="btn ghost tui-btn-steer" title="Stop the current run and send this guidance before queued follow-ups" disabled=move || chat.queue_busy.get() || chat.reading_images.get() || chat.queue_edit.get().is_some() || (draft.with(|draft| draft.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty)) on:click=move |_| actions.steer.run(())>"Steer"</button>
+                        <button class="btn send tui-btn-queue ui-icon" title="Queue follow-up (Enter)" aria-label="Queue follow-up" disabled=move || chat.queue_busy.get() || chat.reading_images.get() || chat.rewinding.get() || (draft.with(|draft| draft.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty)) on:click=move |_| actions.enqueue.run(())><super::ui::Icon name=super::ui::IconName::ArrowUp /><span class="sr-only">{move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else { "Queue" }}</span></button>
+                        <button class="btn ghost tui-btn-steer ui-icon" aria-label="Steer" title="Steer: stop and send this guidance first (Ctrl/⌘+Enter)" disabled=move || chat.queue_busy.get() || chat.reading_images.get() || chat.queue_edit.get().is_some() || (draft.with(|draft| draft.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty)) on:click=move |_| actions.steer.run(())><super::ui::Icon name=super::ui::IconName::CornerUpLeft /><span class="sr-only">"Steer"</span></button>
                     })}
-                    <button class="btn stop tui-btn-stop" on:click=move |_| on_stop.run(())>"Stop"</button>
+                    <button class="btn stop tui-btn-stop ui-icon" title="Stop (Escape)" aria-label="Stop" on:click=move |_| on_stop.run(())><super::ui::Icon name=super::ui::IconName::Square /><span class="sr-only">"Stop"</span></button>
                 </Show>
             </div>
         </main>

@@ -183,7 +183,17 @@ async fn steering_saves_guidance_before_cancelling_and_delivers_it_before_follow
     settle().await;
     mounted.input("use the other approach");
     settle().await;
-    mounted.click(".tui-btn-steer");
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_key("Enter");
+    init.set_ctrl_key(true);
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    mounted
+        .element(".composer-input")
+        .dispatch_event(
+            &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap(),
+        )
+        .unwrap();
     settle().await;
     let pending = mounted.state.fake.queued_prompts.borrow()[&1].clone();
     assert_eq!(pending[0].content, "use the other approach");
