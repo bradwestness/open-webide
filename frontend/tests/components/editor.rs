@@ -132,6 +132,155 @@ async fn native_typing_composition_and_invalid_edits_preserve_document_contract(
 }
 
 #[wasm_bindgen_test]
+async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = format!("😀{}\r\n", "x".repeat(300)).repeat(80);
+        let content = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("position.rs".into()));
+            state.workspace.content.set(content);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:250px">{editor_view(state)}</div> }
+        });
+        settle().await;
+        frame().await;
+        let first: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        first
+            .set_selection_range_with_direction(2, 320, "backward")
+            .unwrap();
+        first
+            .dispatch_event(&web_sys::Event::new("select").unwrap())
+            .unwrap();
+        first.set_scroll_top(450.0);
+        first.set_scroll_left(120.0);
+        first
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        let expected = (first.scroll_top(), first.scroll_left());
+        assert!(expected.0 > 0.0 && expected.1 > 0.0);
+        let actions =
+            openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
+        actions.record_scroll(1, "position.rs", f64::NAN, 50.0);
+        actions.record_scroll(2, "position.rs", 900.0, 50.0);
+        actions.record_scroll(1, "missing.rs", 900.0, 50.0);
+        assert_eq!((actions.scroll().top, actions.scroll().left), expected);
+        // Identical text must still restore the other file's distinct position.
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        settle().await;
+        let other: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(other.selection_start().unwrap(), Some(0));
+        assert!(other.scroll_top().abs() < 0.5);
+        other.set_selection_range(5, 5).unwrap();
+        other
+            .dispatch_event(&web_sys::Event::new("select").unwrap())
+            .unwrap();
+        // Late measurements from a detached file cannot overwrite the active file.
+        first.set_scroll_top(900.0);
+        first
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("position.rs".into()));
+        settle().await;
+        frame().await;
+        let restored: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(restored.selection_start().unwrap(), Some(2));
+        assert_eq!(restored.selection_end().unwrap(), Some(320));
+        assert_eq!(
+            restored.selection_direction().unwrap().as_deref(),
+            Some("backward")
+        );
+        assert_eq!((restored.scroll_top(), restored.scroll_left()), expected);
+        mounted.state.workspace.switch_project(Some(1), 2);
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("position.rs".into()));
+        mounted.state.workspace.content.set(source);
+        settle().await;
+        let second: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(second.selection_start().unwrap(), Some(0));
+        assert!(second.scroll_top().abs() < 0.5);
+        mounted.state.workspace.switch_project(Some(2), 1);
+        settle().await;
+        frame().await;
+        let restored: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(restored.selection_end().unwrap(), Some(320));
+        assert_eq!((restored.scroll_top(), restored.scroll_left()), expected);
+        // Remount the edit view, retaining selection even with no text change.
+        mounted
+            .state
+            .git
+            .head_content
+            .set(Some(openwebide_frontend::state::git::HeadContent {
+                project_id: Some(1),
+                path: "position.rs".into(),
+                content: Ok("old".into()),
+            }));
+        settle().await;
+        mounted.click_text("Diff HEAD");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-textarea")
+                .unwrap()
+                .is_none()
+        );
+        // Detached nodes for the same file must not replace its saved selection.
+        restored.set_selection_range(0, 0).unwrap();
+        restored
+            .dispatch_event(&web_sys::Event::new("select").unwrap())
+            .unwrap();
+        restored
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        mounted.click_text("Edit");
+        settle().await;
+        frame().await;
+        let restored: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(restored.selection_end().unwrap(), Some(320));
+        assert_eq!((restored.scroll_top(), restored.scroll_left()), expected);
+        mounted.state.workspace.reset();
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_scroll
+                .get_untracked()
+                .is_empty()
+        );
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_documents
+                .get_untracked()
+                .is_empty()
+        );
+    }
+}
+
+#[wasm_bindgen_test]
 async fn rust_editor_commands_history_and_stale_dom_share_both_modes() {
     for mode in [
         openwebide_core::WorkspaceMode::Local,

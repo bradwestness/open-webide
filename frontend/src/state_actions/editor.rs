@@ -174,6 +174,42 @@ impl EditorActions {
             .unwrap_or(Ok(()))
     }
 
+    /// The browser adapter supplies measurements only for the currently mounted document.
+    pub fn record_scroll(self, project: i64, path: &str, top: f64, left: f64) {
+        if !self.is_current(project, path) || !top.is_finite() || !left.is_finite() {
+            return;
+        }
+        self.workspace.editor_scroll.update(|positions| {
+            positions.insert(
+                (project, path.to_string()),
+                crate::state::workspace::EditorScroll {
+                    top: top.max(0.0),
+                    left: left.max(0.0),
+                },
+            );
+        });
+    }
+
+    pub fn scroll(self) -> crate::state::workspace::EditorScroll {
+        self.key()
+            .and_then(|key| {
+                self.workspace
+                    .editor_scroll
+                    .with_untracked(|positions| positions.get(&key).copied())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn selection(self, text: &str) -> Option<Selection> {
+        let key = self.key()?;
+        self.workspace.editor_documents.with_untracked(|documents| {
+            documents
+                .get(&key)
+                .filter(|document| document.text() == text)
+                .and_then(|document| document.selections().first().copied())
+        })
+    }
+
     pub fn native_input(
         self,
         text: String,

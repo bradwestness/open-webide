@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- The editor restores each file’s caret, selection direction and horizontal/vertical scroll position across file, project and edit/diff view switches; detached editor events cannot overwrite another view’s position.
+
 - Add shared editor line movement, duplication/deletion, indented line insertion, snippet duplication and language-aware line/block comments. Expose commands through the existing action menu and familiar shortcuts. Preserve normal paste whitespace; Ctrl/Cmd+Shift+V explicitly matches snippet indentation. Add undoable selected-line reindent that ignores literal contents and preserves Python block depth, with unsupported actions visibly disabled. Share all commands across local and remote projects and retain Unicode, mixed line separators and directional selections.
 
 - Add shared Rust block-aware Enter, closing-delimiter outdent and paired typing commands: auto-close language-supported brackets/quotes, wrap directional selections, skip existing closers and delete empty pairs. Keep strings, nested Rust comments/raw strings/lifetimes, Python triple strings and JavaScript regex literals opaque. Handle cancelable mobile input and desktop shortcuts through the same editor facade, retain Unicode/CRLF and atomic undo, and fall back to ordinary editing when synchronous structure limits are reached. Count indentation in visual columns when tab and indentation widths differ, and preserve selection columns inside rewritten indentation.

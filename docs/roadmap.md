@@ -63,7 +63,8 @@ comments, explicit indentation-matching paste and selected-line reindent use the
 same engine. See [editor controls](editor.md). Continue with:
 
 - **Reliable edits and history:** build on grouped transactions and per-document history
-  to restore caret/selection/scroll state on switches. Explicit EditorConfig newline,
+  with caret/selection/scroll restoration now retained across file, project and view
+  switches. Explicit EditorConfig newline,
   line-ending and trailing-whitespace save policies are undoable; finish real
   input-method/clipboard verification, preserving Unicode and LF/CRLF without
   rewriting unrelated text.

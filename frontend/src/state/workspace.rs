@@ -3,6 +3,13 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use openwebide_core::{EditDecision, FileDiff, FileEntry, PersistedEdit, SearchHit};
 
+/// Scroll position for a document's edit view; caret and selection live in Document.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EditorScroll {
+    pub top: f64,
+    pub left: f64,
+}
+
 /// Workspace data preserved while a project is not the active tab.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceSnapshot {
@@ -40,6 +47,7 @@ pub struct WorkspaceState {
     pub media_url: RwSignal<Option<String>>,
     pub snapshots: RwSignal<HashMap<i64, WorkspaceSnapshot>>,
     pub editor_documents: RwSignal<HashMap<(i64, String), openwebide_core::editor::Document>>,
+    pub editor_scroll: RwSignal<HashMap<(i64, String), EditorScroll>>,
     pub editor_rules: RwSignal<HashMap<(i64, String), openwebide_core::editor::EditorRules>>,
     pub editor_indentation: RwSignal<HashMap<(i64, String), openwebide_core::editor::Indentation>>,
     pub editor_group: RwSignal<u64>,
@@ -78,6 +86,7 @@ impl WorkspaceState {
             media_url: RwSignal::new(None),
             snapshots: RwSignal::new(HashMap::new()),
             editor_documents: RwSignal::new(HashMap::new()),
+            editor_scroll: RwSignal::new(HashMap::new()),
             editor_rules: RwSignal::new(HashMap::new()),
             editor_indentation: RwSignal::new(HashMap::new()),
             editor_group: RwSignal::new(0),
@@ -134,6 +143,7 @@ impl WorkspaceState {
 
     pub fn reset(&self) {
         self.editor_documents.set(HashMap::new());
+        self.editor_scroll.set(HashMap::new());
         self.editor_rules.set(HashMap::new());
         self.editor_indentation.set(HashMap::new());
         self.editor_group.set(0);

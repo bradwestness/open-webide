@@ -78,3 +78,8 @@ Structural commands currently use bounded lexical analysis: files over 2 MiB or
 65,536 bracket tokens fall back to ordinary indentation and typing. JavaScript
 template strings remain opaque, including their interpolations. Parser-backed
 structure, incremental parsing and large-file benchmarks remain roadmap work.
+
+The edit view retains each file’s caret, selection direction and horizontal/vertical
+scroll position within its project while the app is open, including when switching
+to a diff view and back. New files start at the beginning; changing accounts clears
+these positions. Reload persistence is part of the remaining draft-recovery work.

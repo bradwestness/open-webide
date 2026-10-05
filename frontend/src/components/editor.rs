@@ -14,11 +14,12 @@ use crate::state::{git::GitState, projects::ProjectsState, workspace::WorkspaceS
 use crate::state_actions::editor::{EditorActions, EditorCommand};
 
 fn current_editor_target(actions: EditorActions, textarea: &web_sys::HtmlTextAreaElement) -> bool {
-    textarea
-        .get_attribute("data-editor-project")
-        .and_then(|project| project.parse().ok())
-        .zip(textarea.get_attribute("data-editor-path"))
-        .is_some_and(|(project, path)| actions.is_current(project, &path))
+    textarea.is_connected()
+        && textarea
+            .get_attribute("data-editor-project")
+            .and_then(|project| project.parse().ok())
+            .zip(textarea.get_attribute("data-editor-path"))
+            .is_some_and(|(project, path)| actions.is_current(project, &path))
 }
 
 fn editor_selection(textarea: &web_sys::HtmlTextAreaElement) -> openwebide_core::editor::Selection {
@@ -917,30 +918,45 @@ pub fn Editor(
         }
     });
 
-    // Mirror the loaded content into the textarea without clobbering the
-    // user's in-progress edits (same pattern as the chat composer).
+    // Restore a remounted document independently of whether its text changed.
+    // Existing nodes retain their current viewport during commands and external updates.
+    let restored_textarea =
+        StoredValue::new_local(None::<(web_sys::HtmlTextAreaElement, Option<(i64, String)>)>);
     Effect::new(move || {
         let value = content.get();
-        if let Some(el) = ta.get()
-            && el.value() != value.replace("\r\n", "\n").replace('\r', "\n")
-        {
-            let scroll = (el.scroll_top(), el.scroll_left());
-            el.set_value(&value);
-            if current_editor_target(editor_actions, &el)
-                && let Some(key) = workspace
-                    .active_project
-                    .get_untracked()
-                    .zip(open_file.get_untracked())
-                && let Some(selection) = workspace.editor_documents.with_untracked(|documents| {
-                    documents
-                        .get(&key)
-                        .filter(|document| document.text() == value)
-                        .and_then(|document| document.selections().first().copied())
-                })
+        let key = workspace.active_project.get().zip(open_file.get());
+        let Some(el) = ta.get() else {
+            return;
+        };
+        if !current_editor_target(editor_actions, &el) {
+            return;
+        }
+        let mounted = restored_textarea
+            .with_value(|previous| previous.as_ref() != Some(&(el.clone(), key.clone())));
+        let changed = el.value() != value.replace("\r\n", "\n").replace('\r', "\n");
+        if mounted || changed {
+            let scroll = if mounted {
+                editor_actions.scroll()
+            } else {
+                crate::state::workspace::EditorScroll {
+                    top: el.scroll_top(),
+                    left: el.scroll_left(),
+                }
+            };
+            if changed {
+                el.set_value(&value);
+            }
+            if let Some(selection) = editor_actions
+                .selection(&value)
+                .or_else(|| mounted.then_some(openwebide_core::editor::Selection::caret(0)))
             {
                 restore_editor_selection(&el, &value, selection);
-                el.set_scroll_top(scroll.0);
-                el.set_scroll_left(scroll.1);
+            }
+            el.set_scroll_top(scroll.top);
+            el.set_scroll_left(scroll.left);
+            restored_textarea.set_value(Some((el.clone(), key)));
+            if let Some(overlay) = hl.get_untracked() {
+                sync_highlight_scroll(&el, &overlay);
             }
         }
     });
@@ -1303,9 +1319,13 @@ pub fn Editor(
                                                     let _ = editor_actions.native_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp());
                                                 }
                                             }
-                                            on:scroll=move |_| {
-                                                if let (Some(ta_el), Some(hl_el)) = (ta.get(), hl.get()) {
-                                                    sync_highlight_scroll(&ta_el, &hl_el);
+                                            on:scroll=move |event: web_sys::Event| {
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+                                                    && current_editor_target(editor_actions, &textarea)
+                                                {
+                                                    let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked()));
+                                                    editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), textarea.scroll_top(), textarea.scroll_left());
+                                                    if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
                                                 }
                                             }
                                         />
