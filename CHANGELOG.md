@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Keep an installed app's page and cached scripts on the same build during deployments; activate the new build after existing app windows close.
+
 - Keep conversation forking busy until the new branch's draft and attachments are restored, preventing completion from racing the composer reset in every workspace mode.
 
 - Add automatic phone layout with full-screen chat and mounted tool sheets, a saved Automatic/Desktop/Phone override, touch targets, independent Terminal/Git/Search tabs, and per-user left/right pinning. Preserve drafts, terminal output and desktop panel preferences in local, remote and projectless chats.

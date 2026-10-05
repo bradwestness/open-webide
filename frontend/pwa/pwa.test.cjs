@@ -6,10 +6,10 @@ const path = require('node:path');
 
 function worker(fetch) {
   const handlers = {};
-  const entries = new Map([['/offline.html', new Response('Can’t reach the server')], ['/app.wasm', new Response('wasm')]]);
+  const entries = new Map([['/', new Response('current build page')], ['/offline.html', new Response('Can’t reach the server')], ['/app.wasm', new Response('wasm')]]);
   const deleted = [];
   const cache = {match: async key => entries.get(key), addAll: async files => {cache.files = files;}};
-  const context = {BUILD_ID: 'test-build', SHELL_FILES: ['/', '/offline.html', '/app.wasm', '/app.js'], URL, fetch,
+  const context = {BUILD_ID: 'test-build', SHELL_FILES: ['/', '/offline.html', '/app.wasm', '/app.js'], URL, Request, fetch,
     self: {location: {origin: 'https://ide.test'}, clients: {claim: async () => {}}, addEventListener: (name, action) => {handlers[name] = action;}},
     caches: {open: async name => {assert.equal(name, 'openwebide-shell-test-build'); return cache;}, keys: async () => ['other-app', 'openwebide-shell-old', 'openwebide-shell-test-build'], delete: async key => deleted.push(key)}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8'), context);
@@ -18,7 +18,7 @@ function worker(fetch) {
     handlers.fetch({request: {url, method, mode}, respondWith: promise => {response = promise;}});
     return response;
   }
-  return {handlers, request, cache, deleted};
+  return {handlers, request, cache, deleted, entries};
 }
 
 test('the worker never handles API, bridge, foreign, write or unknown requests', () => {
@@ -38,11 +38,27 @@ test('versioned app assets are served from shell cache and offline navigation ha
   let installed;
   host.handlers.install({waitUntil: task => {installed = task;}});
   await installed;
-  assert.deepEqual(Array.from(host.cache.files), ['/', '/offline.html', '/app.wasm', '/app.js']);
+  assert.deepEqual(Array.from(host.cache.files, request => new URL(request.url).pathname), ['/', '/offline.html', '/app.wasm', '/app.js']);
+  assert.ok(host.cache.files.every(request => request.cache === 'reload'));
   let activated;
   host.handlers.activate({waitUntil: task => {activated = task;}});
   await activated;
   assert.deepEqual(host.deleted, ['openwebide-shell-old']);
+});
+
+test('navigation keeps the installed build coherent across server deployments', async () => {
+  let probes = 0;
+  const host = worker(async (request, options) => {
+    probes++;
+    assert.equal(options.cache, 'no-store');
+    return new Response('new build page');
+  });
+  assert.equal(await (await host.request('https://ide.test/', 'GET', 'navigate')).text(), 'current build page');
+  assert.equal(probes, 1);
+  host.entries.delete('/');
+  assert.equal(await (await host.request('https://ide.test/', 'GET', 'navigate')).text(), 'new build page');
+  const failed = worker(async () => new Response('Server error', {status: 503}));
+  assert.equal((await failed.request('https://ide.test/', 'GET', 'navigate')).status, 503);
 });
 
 function installation(secure, installed = false) {
