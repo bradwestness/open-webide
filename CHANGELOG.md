@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Keep Edit scrollbars above the syntax paint and outside the line-number gutter, with the gutter clipped to the visible text area when scrollbars or panel sizes change.
+
 - Center chat prompt rows and their inline menus. Compact the status line and Send/Queue/Steer/Stop controls, add Ctrl/⌘+Enter to steer, and move Attach images into the Chat panel menu while preserving paste/drop.
 
 - Show full-file Inline diffs, remove Content, and number logical lines in Edit, Inline and Split with compact, pinned gutters. Scroll long lines horizontally and keep Split panes synchronized. Add literal Find in file with next/previous navigation and Ctrl/⌘F.

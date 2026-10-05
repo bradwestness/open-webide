@@ -584,13 +584,11 @@ async fn numbered_views_scroll_horizontally_with_compact_gutters_and_linked_spli
                 .abs()
                 < 1.0
         );
-        let padding = window()
-            .get_computed_style(&textarea)
-            .unwrap()
-            .unwrap()
-            .get_property_value("padding-left")
-            .unwrap();
-        let compact_width: f64 = padding.trim_end_matches("px").parse().unwrap();
+        let compact_width = textarea.get_bounding_client_rect().left()
+            - mounted
+                .element(".editor-code")
+                .get_bounding_client_rect()
+                .left();
         assert!(compact_width < 45.0);
         mounted.click("button[aria-label^='Find in file']");
         settle().await;
@@ -675,13 +673,90 @@ async fn numbered_views_scroll_horizontally_with_compact_gutters_and_linked_spli
         settle().await;
         frame().await;
         let textarea = mounted.element(".editor-textarea");
-        let padding = window()
-            .get_computed_style(&textarea)
-            .unwrap()
-            .unwrap()
-            .get_property_value("padding-left")
-            .unwrap();
-        let expanded_width: f64 = padding.trim_end_matches("px").parse().unwrap();
+        let expanded_width = textarea.get_bounding_client_rect().left()
+            - mounted
+                .element(".editor-code")
+                .get_bounding_client_rect()
+                .left();
         assert!(expanded_width > compact_width + 10.0);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn edit_scrollbars_stay_above_paint_and_outside_gutter_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("scroll.rs".into()));
+            state
+                .workspace
+                .content
+                .set(format!("{}\n", "x".repeat(800)).repeat(100));
+            view! { <style>{include_str!("../../styles.css")}</style><div class="editor-fixture" style="display:flex;width:500px;height:250px">{editor_view(state)}</div> }
+        });
+        settle().await;
+        frame().await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let overlay = mounted.element(".editor-highlight");
+        let textarea_style = window().get_computed_style(&textarea).unwrap().unwrap();
+        let overlay_style = window().get_computed_style(&overlay).unwrap().unwrap();
+        let input_z: i32 = textarea_style
+            .get_property_value("z-index")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let paint_z: i32 = overlay_style
+            .get_property_value("z-index")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            input_z > paint_z,
+            "syntax paint must not cover scrollbar tracks or thumbs"
+        );
+        assert_ne!(
+            textarea_style
+                .get_property_value("scrollbar-color")
+                .unwrap(),
+            "auto"
+        );
+        let gutter_width = textarea.get_bounding_client_rect().left()
+            - mounted
+                .element(".editor-code")
+                .get_bounding_client_rect()
+                .left();
+        assert!(gutter_width > 30.0 && gutter_width < 60.0);
+        assert!(textarea.scroll_width() > textarea.client_width());
+        assert!(textarea.scroll_height() > textarea.client_height());
+        for (height, content) in [(250, None), (150, None), (150, Some("short"))] {
+            mounted
+                .element(".editor-fixture")
+                .style()
+                .set_property("height", &format!("{height}px"))
+                .unwrap();
+            if let Some(content) = content {
+                mounted.state.workspace.content.set(content.into());
+            }
+            frame().await;
+            super::support::wait_until("paint clips above horizontal scrollbar", || {
+                (overlay.get_bounding_client_rect().height() - f64::from(textarea.client_height()))
+                    .abs()
+                    < 0.5
+            })
+            .await;
+            assert!(
+                (overlay.get_bounding_client_rect().bottom()
+                    - (textarea.get_bounding_client_rect().top()
+                        + f64::from(textarea.client_height())))
+                .abs()
+                    < 0.5
+            );
+        }
     }
 }

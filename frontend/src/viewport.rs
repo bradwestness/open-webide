@@ -146,3 +146,19 @@ pub fn install_action_tooltips() {
         });
     });
 }
+
+#[wasm_bindgen(inline_js = r#"
+export function observe_editor_viewport(input, overlay) {
+    const update = () => overlay.style.setProperty('--editor-viewport-height', `${input.clientHeight}px`);
+    const observer = new ResizeObserver(update);
+    observer.observe(input);
+    update();
+    return () => observer.disconnect();
+}
+"#)]
+extern "C" {
+    pub fn observe_editor_viewport(
+        input: &web_sys::HtmlTextAreaElement,
+        overlay: &web_sys::HtmlElement,
+    ) -> JsValue;
+}

@@ -203,6 +203,25 @@ fn HighlightOverlay(
 ) -> impl IntoView {
     use wasm_bindgen::closure::Closure;
 
+    let viewport_observer = StoredValue::new_local(None::<wasm_bindgen::JsValue>);
+    Effect::new(move || {
+        if let (Some(input), Some(overlay)) = (textarea_ref.get(), node_ref.get())
+            && viewport_observer.get_value().is_none()
+        {
+            viewport_observer.set_value(Some(crate::viewport::observe_editor_viewport(
+                &input, &overlay,
+            )));
+        }
+    });
+    on_cleanup(move || {
+        viewport_observer.with_value(|stop| {
+            if let Some(stop) = stop {
+                let _ = stop
+                    .unchecked_ref::<js_sys::Function>()
+                    .call0(&wasm_bindgen::JsValue::NULL);
+            }
+        });
+    });
     let rendered = RwSignal::new(String::new());
     let request = StoredValue::new(None::<i32>);
     let generation = StoredValue::new(0_u64);
