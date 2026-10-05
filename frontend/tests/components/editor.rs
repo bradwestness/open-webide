@@ -15,6 +15,203 @@ fn mount_editor(content: String) -> Mounted {
     })
 }
 
+fn editor_key(
+    textarea: &web_sys::HtmlTextAreaElement,
+    key: &str,
+    control: bool,
+    shift: bool,
+) -> web_sys::KeyboardEvent {
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_key(key);
+    init.set_ctrl_key(control);
+    init.set_shift_key(shift);
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let event =
+        web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    textarea.dispatch_event(&event).unwrap();
+    event
+}
+
+#[wasm_bindgen_test]
+async fn native_typing_composition_and_invalid_edits_preserve_document_contract() {
+    use openwebide_core::editor::{Indentation, Selection};
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fixture.rs".into()));
+            state.workspace.content.set("😀\r\ntext\nlast".into());
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        actions.record_selection(Selection::caret(10)).unwrap();
+        actions
+            .native_input(
+                "😀\ntexts\nlast".into(),
+                Selection::caret(10),
+                "insertText",
+                0.0,
+            )
+            .unwrap();
+        actions.record_selection(Selection::caret(11)).unwrap();
+        actions
+            .native_input(
+                "😀\ntextsx\nlast".into(),
+                Selection::caret(11),
+                "insertText",
+                100.0,
+            )
+            .unwrap();
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "😀\r\ntextsx\nlast"
+        );
+        actions
+            .command(
+                EditorCommand::Undo,
+                Selection::caret(12),
+                Indentation::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "😀\r\ntext\nlast"
+        );
+        actions.begin_composition();
+        actions
+            .native_input(
+                "😀\ntext文\nlast".into(),
+                Selection::caret(12),
+                "insertCompositionText",
+                1000.0,
+            )
+            .unwrap();
+        actions
+            .native_input(
+                "😀\ntext文字\nlast".into(),
+                Selection::caret(15),
+                "insertCompositionText",
+                4000.0,
+            )
+            .unwrap();
+        actions.end_composition();
+        actions
+            .command(
+                EditorCommand::Undo,
+                Selection::caret(16),
+                Indentation::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "😀\r\ntext\nlast"
+        );
+        assert!(
+            actions
+                .native_input(
+                    "😀\nchanged\nlast".into(),
+                    Selection::caret(1),
+                    "insertText",
+                    5000.0
+                )
+                .is_err()
+        );
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "😀\r\ntext\nlast"
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn rust_editor_commands_history_and_stale_dom_share_both_modes() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fixture.rs".into()));
+            state.workspace.content.set("a\r\nb\r\nc".into());
+            editor_view(state)
+        });
+        settle().await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        // The DOM normalizes textarea values to LF. The command must retain the
+        // workspace's CRLF text rather than rewrite unrelated line endings.
+        textarea.set_selection_range(0, 4).unwrap();
+        assert!(editor_key(&textarea, "Tab", false, false).default_prevented());
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "    a\r\n    b\r\nc"
+        );
+        assert!(editor_key(&textarea, "z", true, false).default_prevented());
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "a\r\nb\r\nc"
+        );
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        editor_key(&textarea, "z", true, true);
+        settle().await;
+        assert!(mounted.state.workspace.dirty.get_untracked());
+        editor_key(&textarea, "m", true, false);
+        assert!(!editor_key(&textarea, "Tab", false, false).default_prevented());
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        mounted.state.workspace.content.set("other".into());
+        mounted.state.workspace.dirty.set(false);
+        settle().await;
+        editor_key(&textarea, "Tab", false, false);
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "other");
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("fixture.rs".into()));
+        mounted
+            .state
+            .workspace
+            .content
+            .set("    a\r\n    b\r\nc".into());
+        settle().await;
+        let restored: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        editor_key(&restored, "z", true, false);
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "a\r\nb\r\nc"
+        );
+        mounted.state.workspace.reset();
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_documents
+                .get_untracked()
+                .is_empty()
+        );
+    }
+}
+
 #[wasm_bindgen_test]
 async fn markdown_preview_gutters_share_git_and_pending_changes_in_both_modes() {
     use openwebide_core::{FileDiff, WorkspaceMode};

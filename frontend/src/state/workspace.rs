@@ -39,6 +39,7 @@ pub struct WorkspaceState {
     pub counted_agent_writes: RwSignal<HashSet<(i64, String)>>,
     pub media_url: RwSignal<Option<String>>,
     pub snapshots: RwSignal<HashMap<i64, WorkspaceSnapshot>>,
+    pub editor_documents: RwSignal<HashMap<(i64, String), openwebide_core::editor::Document>>,
 }
 
 impl WorkspaceState {
@@ -72,6 +73,7 @@ impl WorkspaceState {
             counted_agent_writes: RwSignal::new(HashSet::new()),
             media_url: RwSignal::new(None),
             snapshots: RwSignal::new(HashMap::new()),
+            editor_documents: RwSignal::new(HashMap::new()),
         }
     }
 
@@ -123,6 +125,7 @@ impl WorkspaceState {
     }
 
     pub fn reset(&self) {
+        self.editor_documents.set(HashMap::new());
         self.pending_epoch.update(|epoch| *epoch += 1);
         self.pending_generation.set(HashMap::new());
         self.agent_writes.set(HashMap::new());

@@ -649,15 +649,22 @@ impl WorkspaceActions {
                         });
                     }
                     workspace.clear_resolved_edit(&edit);
+                    // The file transition is committed. Background list refresh must
+                    // not keep the editor locked or discard newly typed text.
+                    workspace.resolving_edits.update(|edits| {
+                        edits.remove(&key);
+                    });
                 }
                 // Invalidate older list responses and verify authoritative state after either outcome.
                 refresh_pending(api, projects, workspace, ui, auth, project_id).await;
                 if !current() {
                     return;
                 }
-                workspace.resolving_edits.update(|edits| {
-                    edits.remove(&key);
-                });
+                if result.is_err() {
+                    workspace.resolving_edits.update(|edits| {
+                        edits.remove(&key);
+                    });
+                }
                 match result {
                     Ok(()) => {
                         let still_pending = if active_project.get_untracked() == Some(project_id) {

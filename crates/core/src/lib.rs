@@ -14,6 +14,7 @@ pub mod model_setup;
 pub use model_setup::*;
 pub mod bridge;
 pub mod diff;
+pub mod editor;
 pub mod file_type;
 pub mod git;
 pub mod highlight;

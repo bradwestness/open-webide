@@ -11,6 +11,89 @@ use crate::components::ui::{
     SegmentedControl,
 };
 use crate::state::{git::GitState, projects::ProjectsState, workspace::WorkspaceState};
+use crate::state_actions::editor::{EditorActions, EditorCommand};
+
+fn current_editor_target(actions: EditorActions, textarea: &web_sys::HtmlTextAreaElement) -> bool {
+    textarea
+        .get_attribute("data-editor-project")
+        .and_then(|project| project.parse().ok())
+        .zip(textarea.get_attribute("data-editor-path"))
+        .is_some_and(|(project, path)| actions.is_current(project, &path))
+}
+
+fn editor_selection(textarea: &web_sys::HtmlTextAreaElement) -> openwebide_core::editor::Selection {
+    use openwebide_core::editor::{Selection, utf16_to_byte};
+    let text = textarea.value();
+    let start = utf16_to_byte(
+        &text,
+        textarea.selection_start().ok().flatten().unwrap_or(0) as usize,
+    );
+    let end = utf16_to_byte(
+        &text,
+        textarea.selection_end().ok().flatten().unwrap_or(0) as usize,
+    );
+    if textarea.selection_direction().ok().flatten().as_deref() == Some("backward") {
+        Selection {
+            anchor: end,
+            head: start,
+        }
+    } else {
+        Selection {
+            anchor: start,
+            head: end,
+        }
+    }
+}
+
+fn document_selection(
+    textarea: &web_sys::HtmlTextAreaElement,
+    text: &str,
+) -> openwebide_core::editor::Selection {
+    use openwebide_core::editor::{Selection, textarea_to_byte};
+    let start = textarea_to_byte(
+        text,
+        textarea.selection_start().ok().flatten().unwrap_or(0) as usize,
+    );
+    let end = textarea_to_byte(
+        text,
+        textarea.selection_end().ok().flatten().unwrap_or(0) as usize,
+    );
+    if textarea.selection_direction().ok().flatten().as_deref() == Some("backward") {
+        Selection {
+            anchor: end,
+            head: start,
+        }
+    } else {
+        Selection {
+            anchor: start,
+            head: end,
+        }
+    }
+}
+
+fn restore_editor_selection(
+    textarea: &web_sys::HtmlTextAreaElement,
+    text: &str,
+    selection: openwebide_core::editor::Selection,
+) {
+    use openwebide_core::editor::byte_to_textarea;
+    let range = selection.range();
+    if let (Ok(start), Ok(end)) = (
+        byte_to_textarea(text, range.start),
+        byte_to_textarea(text, range.end),
+    ) && let (Ok(start), Ok(end)) = (u32::try_from(start), u32::try_from(end))
+    {
+        let _ = textarea.set_selection_range_with_direction(
+            start,
+            end,
+            if selection.anchor > selection.head {
+                "backward"
+            } else {
+                "forward"
+            },
+        );
+    }
+}
 
 /// How the open file is displayed in the editor pane.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -601,6 +684,8 @@ pub fn Editor(
     on_reject: Callback<()>,
 ) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
+    let editor_actions = EditorActions::new(workspace);
+    let tab_moves_focus = RwSignal::new(false);
     let file_tree_actions = use_context::<crate::state_actions::file_tree::FileTreeActions>();
     let read_only = Signal::derive(move || {
         read_only.get()
@@ -612,9 +697,7 @@ pub fn Editor(
 
     let open_file = workspace.open_file.read_only();
     let content = workspace.content.read_only();
-    let set_content = workspace.content.write_only();
     let dirty = workspace.dirty.read_only();
-    let set_dirty = workspace.dirty.write_only();
     let pending_diff: Signal<Option<FileDiff>> = Signal::from(workspace.pending_diff);
     let media_url = workspace.media_url.read_only();
     let preview_disabled = Signal::derive(move || {
@@ -807,7 +890,7 @@ pub fn Editor(
     Effect::new(move || {
         let value = content.get();
         if let Some(el) = ta.get()
-            && el.value() != value
+            && el.value() != value.replace("\r\n", "\n").replace('\r', "\n")
         {
             el.set_value(&value);
         }
@@ -990,6 +1073,7 @@ pub fn Editor(
                 }
             >
                 {move || {
+                    let editor_project = workspace.active_project.get();
                     let mode = view_mode.get();
                     if let Some(diff) = pending_diff.get() {
                         let metadata = workspace.open_file.get().and_then(|path| workspace.persisted_edits.with(|edits| edits.get(&path).and_then(|edit| edit.file.clone())));
@@ -1052,17 +1136,55 @@ pub fn Editor(
                                     <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 24px)", text.split('\n').count().to_string().len())) class:highlight-ready=move || highlight_ready.get()>
                                         <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready />
                                         <textarea
+                                            data-editor-project=editor_project.map(|project| project.to_string())
+                                            data-editor-path=open_file.get()
                                             class="editor-textarea"
                                             wrap="off"
                                             spellcheck="false"
                                             readonly=read_only
+                                            title="Tab indents; Ctrl+M toggles Tab moving focus"
                                             node_ref=ta
+                                            on:beforeinput=move |event: web_sys::InputEvent| {
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
+                                            }
+                                            on:compositionstart=move |event: web_sys::CompositionEvent| {
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
+                                                    let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); editor_actions.begin_composition();
+                                                }
+                                            }
+                                            on:compositionend=move |event: web_sys::CompositionEvent| {
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { editor_actions.end_composition(); }
+                                            }
+                                            on:keydown=move |event: web_sys::KeyboardEvent| {
+                                                if event.is_composing() { return; }
+                                                let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
+                                                let modified = event.ctrl_key() || event.meta_key();
+                                                if modified && event.key().eq_ignore_ascii_case("m") {
+                                                    event.prevent_default(); event.stop_propagation(); tab_moves_focus.update(|value| *value = !*value); return;
+                                                }
+                                                if read_only.get_untracked() { return; }
+                                                let command = match event.key().as_str() {
+                                                    "Tab" if !tab_moves_focus.get_untracked() && !modified && !event.alt_key() => Some(if event.shift_key() { EditorCommand::Outdent } else { EditorCommand::Tab }),
+                                                    "Enter" if !modified && !event.alt_key() => Some(EditorCommand::Newline),
+                                                    key if modified && key.eq_ignore_ascii_case("z") => Some(if event.shift_key() { EditorCommand::Redo } else { EditorCommand::Undo }),
+                                                    key if modified && key.eq_ignore_ascii_case("y") => Some(EditorCommand::Redo),
+                                                    _ => None,
+                                                };
+                                                if let Some(command) = command {
+                                                    event.prevent_default(); event.stop_propagation();
+                                                    if let Ok(Some((text, selection))) = editor_actions.command(command, document_selection(&textarea, &workspace.content.get_untracked()), openwebide_core::editor::Indentation::default()) {
+                                                        textarea.set_value(&text); restore_editor_selection(&textarea, &text, selection);
+                                                    }
+                                                }
+                                            }
                                             on:input=move |e: web_sys::Event| {
+                                                if read_only.get_untracked() { return; }
                                                 if let Some(target) = e.target()
                                                     && let Some(textarea) = target.dyn_ref::<web_sys::HtmlTextAreaElement>()
+                                                    && current_editor_target(editor_actions, textarea)
                                                 {
-                                                    set_content.set(textarea.value());
-                                                    set_dirty.set(true);
+                                                    let input_type = e.dyn_ref::<web_sys::InputEvent>().map_or_else(String::new, web_sys::InputEvent::input_type);
+                                                    let _ = editor_actions.native_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp());
                                                 }
                                             }
                                             on:scroll=move |_| {

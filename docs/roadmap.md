@@ -56,18 +56,19 @@ including Markdown gutters on changed blocks/items/rows and inline prose differe
 Find, pending-edit review and agent editor
 context intact. Editing must work without a host language server in both modes.
 
-Start with the editing foundation:
+The shared Rust document/transaction engine, grouped undo/redo, per-file/project
+history and basic Tab/Shift+Tab/Enter commands are in place. Continue the editing
+foundation with:
 
-- **Indentation:** Tab inserts tabs or spaces at the configured tab stop;
-  Shift+Tab and selection commands indent/outdent whole lines. Preserve indentation
-  on Enter, indent inside blocks, outdent closing delimiters, and support deliberate
+- **Indentation:** expose configurable tabs/spaces and tab stops (the current UI uses
+  four spaces). Add block-aware Enter indentation, outdent closing delimiters, and deliberate
   paste/reindent behavior. Honor nested `.editorconfig` rules through `Workspace`,
   then detected file style, then user defaults; expose indentation style/width and
   explicit tabs/spaces conversion. Keep a documented way to Tab out of the editor.
-- **Reliable edits and history:** group typing and compound commands into predictable
-  Undo/Redo transactions, preserve selections and caret positions, and keep editor
-  history across file/project switches. Handle Unicode, IME composition, clipboard,
-  LF/CRLF and final-newline policy without silently rewriting unrelated text.
+- **Reliable edits and history:** build on grouped transactions and per-document history
+  to restore caret/selection/scroll state on switches. Complete final-newline policy and
+  real input-method/clipboard verification, preserving Unicode and LF/CRLF without
+  rewriting unrelated text.
 - **Everyday commands:** move/duplicate/delete lines or selections, insert a line
   above/below, toggle line/block comments, and auto-close brackets/quotes, surround
   selections, skip an existing closing delimiter and delete empty pairs. Use language

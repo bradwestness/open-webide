@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Begin the Rust/WASM editor foundation: shared atomic text transactions, directional selections, bounded grouped undo/redo, per-file/project history, Tab/Shift+Tab indentation and indentation-preserving Enter. Route native typing and IME input through the shared editor facade, preserve CRLF and unrelated mixed line endings, reject stale file events, and provide Ctrl+M to let Tab move focus. Advanced editor roadmap work remains in progress.
+
 - Limit rich Markdown gutter bars to changed list items and table rows, instead of marking their entire unchanged container. Keep unchanged changelog items unmarked in both Git and pending-edit previews.
 
 - Diff Markdown prose within its existing lists, tables and inline formatting. Highlight changed words in place, so editing one word in a changelog item no longer duplicates the entire list in rich Preview; share the behavior across Git and pending-edit previews in both modes.
