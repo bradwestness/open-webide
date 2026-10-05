@@ -11,9 +11,11 @@ for what's still ahead.
 
 ### Changed
 
-- Build shared document fold state and source/visible-text projection for the upcoming folding controls: preserve logical lines, Unicode/CRLF offsets and directional selections; reveal hidden navigation targets, reject replacements across hidden gaps, and rebase unaffected headers through edits and grouped undo/redo. Route commands through the same editor facade in both modes; editor-view controls remain in progress.
+- Integrate Rust folding into Edit with gutter controls, cursor/recursive/all commands and keyboard shortcuts. Preserve source line numbers and syntax context, reveal Find matches, copy complete source selections and expand safely for editing/IME/clipboard operations; replay input-only browser events against full source without deleting hidden blocks. Use the shared editor facade in both modes. Other-language providers and advanced folding remain roadmap work.
 
-- Add the shared incremental Rust syntax/folding provider, with Unicode/CRLF-safe tree updates, parser cancellation/size limits and per-file/project/account caches. Supply portable Clang/LLVM builds for browser WASM, CI and Docker; keep backend WASI builds independent of the optional parser. Folding controls and other-language providers remain in progress.
+- Build shared document fold state and source/visible-text projection for the upcoming folding controls: preserve logical lines, Unicode/CRLF offsets and directional selections; reveal hidden navigation targets, reject replacements across hidden gaps, and rebase unaffected headers through edits and grouped undo/redo. Route commands through the same editor facade in both modes; editor-view controls are described above.
+
+- Add the shared incremental Rust syntax/folding provider, with Unicode/CRLF-safe tree updates, parser cancellation/size limits and per-file/project/account caches. Supply portable Clang/LLVM builds for browser WASM, CI and Docker; keep backend WASI builds independent of the optional parser. Other-language providers remain in progress.
 
 - The editor restores each file’s caret, selection direction and horizontal/vertical scroll position across file, project and edit/diff view switches; detached editor events cannot overwrite another view’s position.
 

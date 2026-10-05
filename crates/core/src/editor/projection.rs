@@ -165,6 +165,97 @@ impl FoldProjection {
         })
     }
 
+    /// Replay an input-only event against the full document when the browser did
+    /// not emit a usable beforeinput event. Return normalized textarea text/offsets.
+    pub fn replay_input(
+        &self,
+        source: &str,
+        value: &str,
+        selection: Selection,
+        input_type: &str,
+        before_selection: Selection,
+    ) -> Result<(String, Selection), ProjectionError> {
+        if source.len() != self.source_len {
+            return Err(ProjectionError::InvalidOffset);
+        }
+        let before = self.text.replace("\r\n", "\n").replace('\r', "\n");
+        let full = source.replace("\r\n", "\n").replace('\r', "\n");
+        let map = |offset| {
+            let utf16 = super::byte_to_utf16(&before, offset)
+                .map_err(|_| ProjectionError::InvalidOffset)?;
+            let visible = super::textarea_to_byte(&self.text, utf16);
+            let original = self.source_offset(visible)?;
+            let utf16 = super::byte_to_textarea(source, original)
+                .map_err(|_| ProjectionError::InvalidOffset)?;
+            Ok::<_, ProjectionError>(super::utf16_to_byte(&full, utf16))
+        };
+        let Some(change) = super::text_change(&before, value) else {
+            let selection = Selection {
+                anchor: map(selection.anchor)?,
+                head: map(selection.head)?,
+            };
+            return Ok((full, selection));
+        };
+        let raw_start = super::textarea_to_byte(
+            &self.text,
+            super::byte_to_utf16(&before, change.range.start)
+                .map_err(|_| ProjectionError::InvalidOffset)?,
+        );
+        let raw_end = super::textarea_to_byte(
+            &self.text,
+            super::byte_to_utf16(&before, change.range.end)
+                .map_err(|_| ProjectionError::InvalidOffset)?,
+        );
+        let crosses =
+            self.source_edit_range(raw_start..raw_end) == Err(ProjectionError::HiddenText);
+        let mut range = map(change.range.start)?..map(change.range.end)?;
+        let inserted = &value[change.range.start..change.new_end];
+        // Deleting the projected newline at a fold boundary means one native
+        // logical newline, never the hidden block between the visible rows.
+        if crosses && inserted.is_empty() && before_selection.range().is_empty() {
+            if input_type == "deleteContentBackward" || input_type == "deleteWordBackward" {
+                let count = if input_type == "deleteWordBackward" {
+                    word_delete_len(full[..range.end].chars().rev())
+                } else {
+                    full[..range.end]
+                        .chars()
+                        .next_back()
+                        .map_or(0, char::len_utf8)
+                };
+                range.start = range.end - count;
+            } else if input_type == "deleteContentForward" || input_type == "deleteWordForward" {
+                let count = full[range.start..].chars().next().map_or(0, char::len_utf8);
+                range.end = range.start + count;
+            }
+        }
+        let endpoint = |position: usize| -> Result<usize, ProjectionError> {
+            if position > value.len() || !value.is_char_boundary(position) {
+                return Err(ProjectionError::InvalidOffset);
+            }
+            if change.range.start <= position && position <= change.new_end {
+                return Ok(range.start + position - change.range.start);
+            }
+            let old = if position < change.range.start {
+                position
+            } else {
+                position - change.new_end + change.range.end
+            };
+            let original = map(old)?;
+            Ok(if original >= range.end {
+                original - range.end + range.start + inserted.len()
+            } else {
+                original.min(range.start)
+            })
+        };
+        let mapped = Selection {
+            anchor: endpoint(selection.anchor)?,
+            head: endpoint(selection.head)?,
+        };
+        let mut result = full.clone();
+        result.replace_range(range, inserted);
+        Ok((result, mapped))
+    }
+
     /// A native replacement must not silently consume bytes omitted from the view.
     pub fn source_edit_range(
         &self,
@@ -189,6 +280,26 @@ impl FoldProjection {
     }
 }
 
+fn word_delete_len(chars: impl Iterator<Item = char>) -> usize {
+    let mut chars = chars.peekable();
+    let mut count = 0;
+    while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+        count += chars.next().unwrap().len_utf8();
+    }
+    let Some(first) = chars.next() else {
+        return count;
+    };
+    count += first.len_utf8();
+    let word = first.is_alphanumeric() || first == '_';
+    while chars
+        .peek()
+        .is_some_and(|ch| !ch.is_whitespace() && (ch.is_alphanumeric() || *ch == '_') == word)
+    {
+        count += chars.next().unwrap().len_utf8();
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +321,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn input_only_events_replay_unicode_and_boundary_deletion_without_losing_hidden_code() {
+        let source = "head\r\nbody 文\r\nend\r\nnext 😀";
+        let mut state = FoldState::default();
+        state.set_ranges(
+            vec![FoldRange {
+                start_line: 0,
+                end_line: 2,
+            }],
+            4,
+        );
+        state.collapse_all();
+        let projection = FoldProjection::new(source, &state);
+        let next = source.find("next").unwrap();
+        let (text, selection) = projection
+            .replay_input(
+                source,
+                "head\nXnext 😀",
+                Selection::caret(6),
+                "insertText",
+                Selection::caret(next),
+            )
+            .unwrap();
+        assert_eq!(text, "head\nbody 文\nend\nXnext 😀");
+        assert_eq!(selection.head, text.find("Xnext").unwrap() + 1);
+        let (text, selection) = projection
+            .replay_input(
+                source,
+                "headnext 😀",
+                Selection::caret(4),
+                "deleteContentBackward",
+                Selection::caret(next),
+            )
+            .unwrap();
+        assert_eq!(text, "head\nbody 文\nendnext 😀");
+        assert_eq!(selection.head, text.find("next").unwrap());
+        let (text, _) = projection
+            .replay_input(
+                source,
+                "headnext 😀",
+                Selection::caret(4),
+                "deleteContentForward",
+                Selection::caret(4),
+            )
+            .unwrap();
+        assert_eq!(text, "headbody 文\nend\nnext 😀");
+        let (text, _) = projection
+            .replay_input(
+                source,
+                "headnext 😀",
+                Selection::caret(4),
+                "deleteContentBackward",
+                Selection {
+                    anchor: 4,
+                    head: next,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            text, "headnext 😀",
+            "explicit selections still include folded source"
+        );
     }
 
     #[test]

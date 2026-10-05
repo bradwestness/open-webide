@@ -77,7 +77,7 @@ a project, folder, bridge or account change.
 Structural commands currently use bounded lexical analysis: files over 2 MiB or
 65,536 bracket tokens fall back to ordinary indentation and typing. JavaScript
 template strings remain opaque, including their interpolations. Parser-backed
-structure, incremental parsing and large-file benchmarks remain roadmap work.
+editing commands and large-file benchmarks remain roadmap work.
 
 The edit view retains each file’s caret, selection direction and horizontal/vertical
 scroll position within its project while the app is open, including when switching
@@ -87,8 +87,8 @@ these positions. Reload persistence is part of the remaining draft-recovery work
 The syntax/folding foundation now includes a shared incremental Rust parser. Its
 previous tree is updated with Unicode-safe byte edits; fold candidates cover code
 blocks, declarations and multiline comments/literals. Cancellation, parser work
-limits and oversized files discard stale results. Other languages, fold controls,
-folded edit-view integration and worker/viewport work remain under development;
+limits and oversized files discard stale results. Other languages and
+worker/viewport work remain under development;
 the existing editing commands continue to use their documented lexical structure.
 
 Frontend builds enable the core `editor-parser` feature. Backend WASI builds do not
@@ -103,5 +103,20 @@ that cross omitted text explicitly require revealing it first. Edits open affect
 folds and rebase unaffected headers; stale ranges stay invalid until refreshed from
 the new source. Grouped undo/redo rebases the final transaction result once.
 
-These primitives are available through the shared editor facade in both modes;
-gutter controls and their DOM/input/clipboard integration remain in progress.
+These primitives and the folding view use the shared editor facade in both modes.
+
+## Folding
+
+Rust files show fold controls beside the logical line numbers for declarations,
+blocks and multiline comments/literals. Click a control to collapse or expand;
+the editing menu also offers cursor, recursive and all-document commands.
+Ctrl/Cmd+Alt+[ folds at the cursor and Ctrl/Cmd+Alt+] unfolds; add Shift for
+recursive commands. Fold state belongs to the document, including across view
+and file switches during the current app lifetime.
+
+Hidden lines remain in the source and copied selections. Syntax highlighting
+retains the full file's context, and Find reveals a hidden match. Editing, paste,
+cut and composition currently expand the view before applying the operation;
+input-only browser events replay their change against the complete source.
+Other-language ranges, indentation/explicit-region fallback, worker rendering
+and real-device input verification remain roadmap work.

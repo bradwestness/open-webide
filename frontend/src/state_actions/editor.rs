@@ -273,6 +273,9 @@ impl EditorActions {
             let count = document.text().split('\n').count();
             document.fold_state_mut().set_ranges(ranges, count);
         });
+        self.workspace
+            .editor_fold_revision
+            .update(|value| *value = value.wrapping_add(1));
         result.map(|(status, _)| status)
     }
 
@@ -282,11 +285,15 @@ impl EditorActions {
     ) -> Option<(openwebide_core::editor::FoldProjection, Selection)> {
         let key = self.key()?;
         self.typing.set(None);
-        self.workspace.editor_documents.try_update(|documents| {
+        let result = self.workspace.editor_documents.try_update(|documents| {
             let document = self.document(documents, key);
             document.fold_command(command);
             (document.projection(), document.selections()[0])
-        })
+        });
+        self.workspace
+            .editor_fold_revision
+            .update(|value| *value = value.wrapping_add(1));
+        result
     }
 
     pub fn projection(self) -> Option<openwebide_core::editor::FoldProjection> {
@@ -298,6 +305,44 @@ impl EditorActions {
                 .filter(|document| document.text() == text)
                 .map(Document::projection)
         })
+    }
+
+    pub fn fold_state(self) -> Option<openwebide_core::editor::FoldState> {
+        let key = self.key()?;
+        let text = self.workspace.content.get_untracked();
+        self.workspace.editor_documents.with_untracked(|documents| {
+            documents
+                .get(&key)
+                .filter(|document| document.text() == text)
+                .map(|document| document.fold_state().clone())
+        })
+    }
+
+    pub fn projected_input(
+        self,
+        value: String,
+        selection: Selection,
+        input_type: &str,
+        timestamp: f64,
+    ) -> Result<(), EditError> {
+        let source = self.workspace.content.get_untracked();
+        let Some(projection) = self
+            .projection()
+            .filter(openwebide_core::editor::FoldProjection::is_folded)
+        else {
+            return self.native_input(value, selection, input_type, timestamp);
+        };
+        let (value, selection) = projection
+            .replay_input(
+                &source,
+                &value,
+                selection,
+                input_type,
+                self.selection(&source).unwrap_or_default(),
+            )
+            .map_err(|_| EditError::InvalidRange)?;
+        self.fold_command(openwebide_core::editor::FoldCommand::ExpandAll);
+        self.native_input(value, selection, input_type, timestamp)
     }
 
     pub fn native_input(

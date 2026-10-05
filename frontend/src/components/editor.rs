@@ -46,6 +46,58 @@ fn editor_selection(textarea: &web_sys::HtmlTextAreaElement) -> openwebide_core:
     }
 }
 
+fn projected_selection(
+    actions: EditorActions,
+    textarea: &web_sys::HtmlTextAreaElement,
+    source: &str,
+) -> openwebide_core::editor::Selection {
+    if let Some(projection) = actions
+        .projection()
+        .filter(openwebide_core::editor::FoldProjection::is_folded)
+        && textarea.value() == projection.text().replace("\r\n", "\n").replace('\r', "\n")
+        && let Ok(selection) =
+            projection.source_selection(document_selection(textarea, projection.text()))
+    {
+        return selection;
+    }
+    document_selection(textarea, source)
+}
+
+fn expand_editor_folds(
+    actions: EditorActions,
+    textarea: &web_sys::HtmlTextAreaElement,
+    source: &str,
+) {
+    if actions
+        .projection()
+        .is_some_and(|projection| projection.is_folded())
+    {
+        let selection = projected_selection(actions, textarea, source);
+        let _ = actions.record_selection(selection);
+        actions.fold_command(openwebide_core::editor::FoldCommand::ExpandAll);
+        let scroll = (textarea.scroll_top(), textarea.scroll_left());
+        textarea.set_value(source);
+        restore_editor_selection(textarea, source, selection);
+        textarea.set_scroll_top(scroll.0);
+        textarea.set_scroll_left(scroll.1);
+    }
+}
+
+fn apply_fold_command(
+    actions: EditorActions,
+    textarea: &web_sys::HtmlTextAreaElement,
+    command: openwebide_core::editor::FoldCommand,
+    source: &str,
+) {
+    let _ = actions.record_selection(projected_selection(actions, textarea, source));
+    if let Some((projection, selection)) = actions.fold_command(command)
+        && let Ok(visible) = projection.visible_selection(selection)
+    {
+        textarea.set_value(projection.text());
+        restore_editor_selection(textarea, projection.text(), visible);
+    }
+}
+
 fn document_selection(
     textarea: &web_sys::HtmlTextAreaElement,
     text: &str,
@@ -228,12 +280,15 @@ pub fn highlight_count() -> usize {
 }
 
 /// Render the highlighted source as an HTML string for the overlay.
-fn highlight_html(source: &str, language: Language) -> String {
+fn highlight_html(source: &str, language: Language, visible: &[usize]) -> String {
     #[cfg(feature = "test-support")]
     HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
     let lines = highlight_lines(source, language);
     let mut html = String::new();
-    for (idx, line) in lines.iter().enumerate() {
+    for &idx in visible {
+        let Some(line) = lines.get(idx) else {
+            continue;
+        };
         html.push_str(&format!(
             "<span class=\"editor-source-line\" data-line=\"{}\">",
             idx + 1
@@ -250,7 +305,7 @@ fn highlight_html(source: &str, language: Language) -> String {
                 }
             }
         }
-        if idx + 1 < lines.len() {
+        if idx != *visible.last().unwrap_or(&idx) {
             html.push('\n');
         }
         html.push_str("</span>");
@@ -268,6 +323,15 @@ fn sync_highlight_scroll(textarea: &web_sys::HtmlTextAreaElement, overlay: &web_
         "--editor-scroll-y",
         &format!("{}px", -textarea.scroll_top()),
     );
+    if let Some(parent) = textarea
+        .parent_element()
+        .and_then(|parent| parent.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = parent.style().set_property(
+            "--editor-scroll-y",
+            &format!("{}px", -textarea.scroll_top()),
+        );
+    }
     overlay.set_scroll_top(0.0);
     overlay.set_scroll_left(0.0);
 }
@@ -279,6 +343,7 @@ fn HighlightOverlay(
     node_ref: NodeRef<leptos::html::Div>,
     textarea_ref: NodeRef<leptos::html::Textarea>,
     ready: RwSignal<bool>,
+    visible: Memo<Vec<usize>>,
 ) -> impl IntoView {
     use wasm_bindgen::closure::Closure;
 
@@ -317,7 +382,9 @@ fn HighlightOverlay(
         let language = open_file
             .with_untracked(|path| path.as_deref().map(language_from_path))
             .unwrap_or(Language::Plain);
-        rendered.set(content.with_untracked(|text| highlight_html(text, language)));
+        rendered.set(
+            content.with_untracked(|text| highlight_html(text, language, &visible.get_untracked())),
+        );
         ready.set(true);
         let published_generation = generation.get_value();
         // Re-align after the highlighted HTML reaches the DOM.
@@ -338,6 +405,9 @@ fn HighlightOverlay(
 
     Effect::new(move || {
         content.track();
+        // Resolve the projection before scheduling paint, so reading it in the
+        // frame callback cannot invalidate and queue a second paint afterward.
+        visible.with(|_| ());
         ready.set(false);
         let current_path = open_file.get();
         let mounted = node_ref.get().is_some();
@@ -687,6 +757,7 @@ fn apply_editor_command(
     textarea: &web_sys::HtmlTextAreaElement,
     text: &str,
 ) -> bool {
+    expand_editor_folds(actions, textarea, text);
     if let Ok(Some((text, selection))) = actions.command(
         command,
         document_selection(textarea, text),
@@ -730,6 +801,43 @@ pub fn Editor(
 
     let open_file = workspace.open_file.read_only();
     let content = workspace.content.read_only();
+    let projection = Memo::new(move |_| {
+        content.track();
+        open_file.track();
+        workspace.active_project.track();
+        workspace.editor_fold_revision.track();
+        editor_actions.projection().unwrap_or_else(|| {
+            openwebide_core::editor::FoldProjection::new(
+                &content.get_untracked(),
+                &Default::default(),
+            )
+        })
+    });
+    let visible_rows = Memo::new(move |_| {
+        projection.with(|projection| {
+            projection
+                .lines()
+                .iter()
+                .map(|line| line.source_line)
+                .collect::<Vec<_>>()
+        })
+    });
+    let fold_state = Memo::new(move |_| {
+        workspace.editor_fold_revision.track();
+        content.track();
+        open_file.track();
+        workspace.active_project.track();
+        editor_actions.fold_state().unwrap_or_default()
+    });
+    Effect::new(move || {
+        content.track();
+        open_file.track();
+        workspace.active_project.track();
+        let deadline = js_sys::Date::now() + 12.0;
+        untrack(|| {
+            editor_actions.refresh_fold_ranges(|| js_sys::Date::now() <= deadline);
+        });
+    });
     let dirty = workspace.dirty.read_only();
     let pending_diff: Signal<Option<FileDiff>> = Signal::from(workspace.pending_diff);
     let media_url = workspace.media_url.read_only();
@@ -866,7 +974,13 @@ pub fn Editor(
             if mode == ViewMode::Code
                 && let Some(Some(textarea)) = ta.try_get_untracked()
             {
-                let _ = textarea.set_selection_range(start, end);
+                editor_actions.fold_command(openwebide_core::editor::FoldCommand::Reveal(line.saturating_sub(1)));
+                if let Some(projection) = editor_actions.projection() {
+                    textarea.set_value(projection.text());
+                    let source_selection = openwebide_core::editor::Selection { anchor: openwebide_core::editor::utf16_to_byte(&source, start as usize), head: openwebide_core::editor::utf16_to_byte(&source, end as usize) };
+                    if let Ok(visible) = projection.visible_selection(source_selection) { restore_editor_selection(&textarea, projection.text(), visible); }
+                    let _ = editor_actions.record_selection(source_selection);
+                } else { let _ = textarea.set_selection_range(start, end); }
                 if let Ok(Some(row)) =
                     root.query_selector(&format!(".editor-source-line[data-line='{line}']"))
                 {
@@ -923,7 +1037,8 @@ pub fn Editor(
     let restored_textarea =
         StoredValue::new_local(None::<(web_sys::HtmlTextAreaElement, Option<(i64, String)>)>);
     Effect::new(move || {
-        let value = content.get();
+        let current_projection = projection.get();
+        let value = current_projection.text().to_string();
         let key = workspace.active_project.get().zip(open_file.get());
         let Some(el) = ta.get() else {
             return;
@@ -947,7 +1062,8 @@ pub fn Editor(
                 el.set_value(&value);
             }
             if let Some(selection) = editor_actions
-                .selection(&value)
+                .selection(&content.get_untracked())
+                .and_then(|selection| current_projection.visible_selection(selection).ok())
                 .or_else(|| mounted.then_some(openwebide_core::editor::Selection::caret(0)))
             {
                 restore_editor_selection(&el, &value, selection);
@@ -1016,6 +1132,18 @@ pub fn Editor(
                                                 }
                                             } on:click=move |_| {
                                                 if let Some(textarea) = ta.get() && !read_only.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_editor_command(editor_actions, command, &textarea, &workspace.content.get_untracked()); let _ = textarea.focus(); }
+                                            }>{label}</button>
+                                        }).collect_view()}
+                                        {[
+                                            ("Fold at cursor", openwebide_core::editor::FoldCommand::Collapse { recursive: false }),
+                                            ("Unfold at cursor", openwebide_core::editor::FoldCommand::Expand { recursive: false }),
+                                            ("Fold recursively", openwebide_core::editor::FoldCommand::Collapse { recursive: true }),
+                                            ("Unfold recursively", openwebide_core::editor::FoldCommand::Expand { recursive: true }),
+                                            ("Fold all", openwebide_core::editor::FoldCommand::CollapseAll),
+                                            ("Unfold all", openwebide_core::editor::FoldCommand::ExpandAll),
+                                        ].into_iter().map(move |(label, command)| view! {
+                                            <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move || fold_state.with(|state| state.ranges().is_empty()) on:click=move |_| {
+                                                if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_fold_command(editor_actions, &textarea, command, &content.get_untracked()); let _ = textarea.focus(); }
                                             }>{label}</button>
                                         }).collect_view()}
                                     </super::dropdown::ActionMenu>
@@ -1227,8 +1355,28 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 24px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get()>
-                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready />
+                                    <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get()>
+                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows />
+                                        <div class="editor-fold-column"><div class="editor-fold-track">{move || {
+                                            let state = fold_state.get();
+                                            let headers: std::collections::HashSet<_> = state.ranges().iter().map(|range| range.start_line).collect();
+                                            let project = workspace.active_project.get_untracked();
+                                            let path = open_file.get_untracked();
+                                            projection.get().lines().iter().map(|line| {
+                                                let header = line.source_line;
+                                                let control = headers.contains(&header);
+                                                let collapsed = state.collapsed_at(header).is_some();
+                                                let path = path.clone();
+                                                view! { <div class="editor-fold-row">{control.then(move || view! {
+                                                    <IconButton class="editor-fold-control" label=format!("{} block at line {}", if collapsed { "Expand" } else { "Collapse" }, header + 1) on_click=Callback::new(move |event: web_sys::MouseEvent| {
+                                                        if event.current_target().and_then(|target| target.dyn_into::<web_sys::Element>().ok()).is_none_or(|node| !node.is_connected()) { return; }
+                                                        if let (Some(project), Some(path), Some(textarea)) = (project, path.as_ref(), ta.get_untracked())
+                                                            && editor_actions.is_current(project, path) && current_editor_target(editor_actions, &textarea)
+                                                        { apply_fold_command(editor_actions, &textarea, openwebide_core::editor::FoldCommand::Toggle(header), &content.get_untracked()); let _ = textarea.focus(); }
+                                                    })><Icon name=if collapsed { IconName::ChevronRight } else { IconName::ChevronDown } /></IconButton>
+                                                })}</div> }
+                                            }).collect_view()
+                                        }}</div></div>
                                         <textarea
                                             data-editor-project=editor_project.map(|project| project.to_string())
                                             data-editor-path=open_file.get()
@@ -1239,27 +1387,41 @@ pub fn Editor(
                                             title="Tab indents; Ctrl+M toggles Tab moving focus"
                                             node_ref=ta
                                             on:select=move |event: web_sys::Event| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); }
                                             }
                                             on:blur=move |event: web_sys::FocusEvent| {
                                                 paste_matches_indentation.set(false);
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); }
                                             }
                                             on:keyup=move |event: web_sys::KeyboardEvent| { if event.key().eq_ignore_ascii_case("v") { paste_matches_indentation.set(false); } }
                                             on:paste=move |event: web_sys::ClipboardEvent| {
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { expand_editor_folds(editor_actions, &textarea, &content.get_untracked()); }
                                                 let matching = paste_matches_indentation.get_untracked(); paste_matches_indentation.set(false);
                                                 if !matching || read_only.get_untracked() { return; }
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 let Some(clipboard) = event.clipboard_data() else { return; };
                                                 let Ok(pasted) = clipboard.get_data("text/plain") else { return; };
                                                 if pasted.is_empty() { return; }
-                                                if let Ok(Some((text, selection))) = editor_actions.paste_with_indentation(&pasted, document_selection(&textarea, &workspace.content.get_untracked())) {
+                                                if let Ok(Some((text, selection))) = editor_actions.paste_with_indentation(&pasted, projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())) {
                                                     event.prevent_default(); textarea.set_value(&text); restore_editor_selection(&textarea, &text, selection);
                                                 }
                                             }
+                                            on:copy=move |event: web_sys::ClipboardEvent| {
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea))
+                                                    && editor_actions.projection().is_some_and(|projection| projection.is_folded())
+                                                {
+                                                    let source = content.get_untracked(); let selection = projected_selection(editor_actions, &textarea, &source);
+                                                    if let Some(clipboard) = event.clipboard_data() && clipboard.set_data("text/plain", &source[selection.range()]).is_ok() { event.prevent_default(); }
+                                                    else { expand_editor_folds(editor_actions, &textarea, &source); }
+                                                }
+                                            }
+                                            on:cut=move |event: web_sys::ClipboardEvent| {
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { expand_editor_folds(editor_actions, &textarea, &content.get_untracked()); }
+                                            }
                                             on:beforeinput=move |event: web_sys::InputEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
-                                                    let selection = document_selection(&textarea, &workspace.content.get_untracked());
+                                                    if !read_only.get_untracked() { expand_editor_folds(editor_actions, &textarea, &content.get_untracked()); }
+                                                    let selection = projected_selection(editor_actions, &textarea, &workspace.content.get_untracked());
                                                     let _ = editor_actions.record_selection(selection);
                                                     if read_only.get_untracked() || event.is_composing() || !event.cancelable() { return; }
                                                     let command = match event.input_type().as_str() {
@@ -1273,7 +1435,8 @@ pub fn Editor(
                                             }
                                             on:compositionstart=move |event: web_sys::CompositionEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
-                                                    let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); editor_actions.begin_composition();
+                                                    expand_editor_folds(editor_actions, &textarea, &content.get_untracked());
+                                                    let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); editor_actions.begin_composition();
                                                 }
                                             }
                                             on:compositionend=move |event: web_sys::CompositionEvent| {
@@ -1284,6 +1447,11 @@ pub fn Editor(
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 let modified = event.ctrl_key() || event.meta_key();
                                                 paste_matches_indentation.set(false);
+                                                if modified && event.alt_key() && (matches!(event.key().as_str(), "[" | "]") || matches!(event.code().as_str(), "BracketLeft" | "BracketRight")) {
+                                                    event.prevent_default(); event.stop_propagation();
+                                                    let command = if event.key() == "[" || event.code() == "BracketLeft" { openwebide_core::editor::FoldCommand::Collapse { recursive: event.shift_key() } } else { openwebide_core::editor::FoldCommand::Expand { recursive: event.shift_key() } };
+                                                    apply_fold_command(editor_actions, &textarea, command, &content.get_untracked()); return;
+                                                }
                                                 if modified && event.shift_key() && !event.alt_key() && event.key().eq_ignore_ascii_case("v") && !read_only.get_untracked() { paste_matches_indentation.set(true); return; }
 
                                                 if modified && event.key().eq_ignore_ascii_case("m") {
@@ -1316,14 +1484,16 @@ pub fn Editor(
                                                     && current_editor_target(editor_actions, textarea)
                                                 {
                                                     let input_type = e.dyn_ref::<web_sys::InputEvent>().map_or_else(String::new, web_sys::InputEvent::input_type);
-                                                    let _ = editor_actions.native_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp());
+                                                    let folded = editor_actions.projection().is_some_and(|projection| projection.is_folded());
+                                                    let _ = editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp());
+                                                    if folded { let text = content.get_untracked(); textarea.set_value(&text); if let Some(selection) = editor_actions.selection(&text) { restore_editor_selection(textarea, &text, selection); } }
                                                 }
                                             }
                                             on:scroll=move |event: web_sys::Event| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
                                                     && current_editor_target(editor_actions, &textarea)
                                                 {
-                                                    let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked()));
+                                                    let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked()));
                                                     editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), textarea.scroll_top(), textarea.scroll_left());
                                                     if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
                                                 }
@@ -1341,7 +1511,7 @@ pub fn Editor(
                     <super::editor_options::IndentationControls above=true value=Signal::derive(move || editor_actions.rules().indentation) disabled=read_only on_change=Callback::new(move |indentation| editor_actions.set_indentation(indentation)) />
                     <Button size=ButtonSize::Sm variant=ButtonVariant::Ghost disabled=read_only on_click=Callback::new(move |_| {
                         if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea)
-                            && let Ok(Some((text, selection))) = editor_actions.command(EditorCommand::ConvertIndentation, document_selection(&textarea, &workspace.content.get_untracked()), editor_actions.rules_untracked().indentation) {
+                            && let Ok(Some((text, selection))) = editor_actions.command(EditorCommand::ConvertIndentation, projected_selection(editor_actions, &textarea, &workspace.content.get_untracked()), editor_actions.rules_untracked().indentation) {
                                 textarea.set_value(&text); restore_editor_selection(&textarea, &text, selection); let _ = textarea.focus();
                         }
                     })>"Convert indentation"</Button>

@@ -83,6 +83,7 @@ impl CommandActions {
                 Command::Stop => slash.run(SlashCommand::Stop),
                 Command::CaptureEditor => {
                     if let Some(context) = super::lifecycle::capture_active_editor(
+                        workspace,
                         workspace.open_file.get_untracked(),
                         &workspace.content.get_untracked(),
                     ) {

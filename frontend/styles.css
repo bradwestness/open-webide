@@ -3158,3 +3158,10 @@ button.browser-item {
 .editor-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--border); background: var(--bg-panel); }
 .editor-indentation-options { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .editor-rules-source { margin-left: auto; font-size: 11px; color: var(--text-muted); }
+
+/* Fold controls share the editor's native scroll source and logical-row height. */
+.editor-fold-column { position: absolute; left: 0; top: 12px; bottom: 0; width: 18px; z-index: 3; overflow: hidden; }
+.editor-fold-track { transform: translateY(var(--editor-scroll-y, 0px)); }
+.editor-fold-row { height: 19.5px; }
+.editor-fold-control { width: 18px; height: 19.5px; min-width: 0; min-height: 0; padding: 0; border: 0; color: var(--text-muted); }
+.editor-fold-control:hover, .editor-fold-control:focus-visible { color: var(--accent); background: var(--bg-hover); }

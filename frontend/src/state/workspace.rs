@@ -54,6 +54,7 @@ pub struct WorkspaceState {
     pub editor_scroll: RwSignal<HashMap<(i64, String), EditorScroll>>,
     pub editor_rules: RwSignal<HashMap<(i64, String), openwebide_core::editor::EditorRules>>,
     pub editor_indentation: RwSignal<HashMap<(i64, String), openwebide_core::editor::Indentation>>,
+    pub editor_fold_revision: RwSignal<u64>,
     pub editor_group: RwSignal<u64>,
     pub editor_configuration_revision: RwSignal<u64>,
 }
@@ -94,6 +95,7 @@ impl WorkspaceState {
             editor_scroll: RwSignal::new(HashMap::new()),
             editor_rules: RwSignal::new(HashMap::new()),
             editor_indentation: RwSignal::new(HashMap::new()),
+            editor_fold_revision: RwSignal::new(0),
             editor_group: RwSignal::new(0),
             editor_configuration_revision: RwSignal::new(0),
         }
@@ -153,6 +155,8 @@ impl WorkspaceState {
         self.editor_scroll.set(HashMap::new());
         self.editor_rules.set(HashMap::new());
         self.editor_indentation.set(HashMap::new());
+        self.editor_fold_revision
+            .update(|value| *value = value.wrapping_add(1));
         self.editor_group.set(0);
         self.editor_configuration_revision
             .update(|value| *value += 1);

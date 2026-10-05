@@ -69,7 +69,7 @@ same engine. See [editor controls](editor.md). Continue with:
   input-method/clipboard verification, preserving Unicode and LF/CRLF without
   rewriting unrelated text.
 - **Syntax-aware editing:** the shared incremental Rust parser and fold-range
-  provider are in place; continue other-language providers and editor-view integration
+  provider and Rust folding controls are in place; continue other-language providers
   for richer language contexts,
   including template interpolation, alongside folding. Current reindent uses bounded
   lexical bracket structure and preserves existing Python block depth; language
@@ -78,12 +78,14 @@ same engine. See [editor controls](editor.md). Continue with:
 Then add structure and navigation:
 
 - **Folding:** shared collapse state, recursive/reveal commands and source/visible
-  offset projection are in place. Connect gutter controls and keyboard commands
-  for blocks, methods/functions,
-  comments and explicit regions; fold/unfold at the cursor, recursively or all.
+  offset projection, Rust gutter controls and cursor/recursive/all keyboard commands
+  are in place. Continue other-language blocks, methods/functions, comments and
+  explicit regions.
   Prefer parser/language-provided ranges with indentation fallback, avoiding naive
-  brace counting inside strings/comments. Retain logical line numbers; searching or
-  navigating into a fold reveals its contents, and edits keep fold ranges valid.
+  brace counting inside strings/comments. Logical line numbers and Find reveal
+  are supported; finish navigation reveal
+  and retain unaffected folds during native editing, which currently expands the
+  view.
 - **Reading/navigation:** active-line and matching-bracket highlights, indent guides,
   jump to matching bracket, go to line/column, and a compact cursor/selection status.
   Preserve the current horizontal-scroll default; make word wrap and whitespace

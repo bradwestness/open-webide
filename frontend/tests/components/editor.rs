@@ -1799,6 +1799,11 @@ async fn block_indentation_pairs_and_mobile_input_share_both_workspace_modes() {
 }
 
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function editorClipboardCopy(target) {
+    const data = new DataTransfer();
+    const event = new ClipboardEvent('copy', {bubbles:true, cancelable:true, clipboardData:data});
+    target.dispatchEvent(event); return data.getData('text/plain');
+}
 export function editorClipboardPaste(target, text) {
     const data = new DataTransfer(); data.setData('text/plain', text);
     const event = new ClipboardEvent('paste', {bubbles:true, cancelable:true, clipboardData:data});
@@ -1806,6 +1811,7 @@ export function editorClipboardPaste(target, text) {
 }
 "#)]
 extern "C" {
+    fn editorClipboardCopy(target: &web_sys::HtmlTextAreaElement) -> String;
     fn editorClipboardPaste(target: &web_sys::HtmlTextAreaElement, text: &str) -> web_sys::Event;
 }
 fn editor_alt_key(
@@ -2002,5 +2008,140 @@ async fn line_comment_reindent_and_explicit_paste_commands_share_both_modes() {
         if let Some(folder) = folder {
             editorConfigCleanup(&folder).await.unwrap();
         }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn visible_folding_preserves_source_and_replays_input_in_both_modes() {
+    let source = "fn main() {\r\n    /* hidden {\r\n       comment\r\n    */\r\n    let text = \"文😀\";\r\n}\r\n// after\r\n";
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fold.rs".into()));
+            state.workspace.content.set(source.into());
+            let commands = super::support::command_actions(state.clone());
+            view! { <button class="capture-folded" on:click=move |_| commands.run.run(openwebide_frontend::commands::Command::CaptureEditor)>"Capture"</button> {editor_view(state)} }
+        });
+        wait_until("fold gutter", || {
+            mounted
+                .root
+                .query_selector("button[aria-label='Collapse block at line 1']")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        mounted.click("button[aria-label='Collapse block at line 1']");
+        settle().await;
+        frame().await;
+        assert_eq!(textarea.value(), "fn main() {\n// after\n");
+        textarea.set_selection_range(0, 12).unwrap();
+        assert_eq!(
+            editorClipboardCopy(&textarea),
+            source[..source.find("// after").unwrap()]
+        );
+        mounted.click(".capture-folded");
+        settle().await;
+        let captured = mounted
+            .state
+            .chat
+            .active_editor_context
+            .get_untracked()
+            .unwrap();
+        assert_eq!(
+            captured.selection.unwrap().text,
+            source[..source.find("// after").unwrap()]
+        );
+
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-source-line[data-line='5']")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-line='7'] .tok-comment")
+                .unwrap()
+                .is_some()
+        );
+        textarea.set_selection_range(12, 12).unwrap();
+        textarea
+            .dispatch_event(&web_sys::Event::new("select").unwrap())
+            .unwrap();
+        textarea.set_value("fn main() {\nZ// after\n");
+        textarea.set_selection_range(13, 13).unwrap();
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_input_type("insertText");
+        init.set_data(Some("Z"));
+        textarea
+            .dispatch_event(&web_sys::InputEvent::new_with_event_init_dict("input", &init).unwrap())
+            .unwrap();
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            source.replace("// after", "Z// after")
+        );
+        assert_eq!(
+            textarea.value(),
+            source
+                .replace("\r\n", "\n")
+                .replace("// after", "Z// after")
+        );
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        wait_until("fold after undo", || {
+            mounted
+                .root
+                .query_selector("button[aria-label='Collapse block at line 1']")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        mounted.click("button[aria-label='Collapse block at line 1']");
+        settle().await;
+        textarea.set_selection_range(12, 12).unwrap();
+        let before = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        textarea.dispatch_event(&before).unwrap();
+        assert!(!before.default_prevented());
+        assert_eq!(textarea.value(), source.replace("\r\n", "\n"));
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        settle().await;
+        mounted.click("button[aria-label='Collapse block at line 1']");
+        settle().await;
+        mounted.click("button[aria-label^='Find in file']");
+        settle().await;
+        let search: web_sys::HtmlInputElement =
+            mounted.element(".editor-find input").unchecked_into();
+        search.set_value("文");
+        search
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        frame().await;
+        assert!(textarea.value().contains("文😀"));
+        let normalized = source.replace("\r\n", "\n");
+        let offset = u32::try_from(
+            normalized[..normalized.find("文").unwrap()]
+                .encode_utf16()
+                .count(),
+        )
+        .unwrap();
+        assert_eq!(textarea.selection_start().unwrap(), Some(offset));
+        assert_eq!(textarea.selection_end().unwrap(), Some(offset + 1));
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
     }
 }
