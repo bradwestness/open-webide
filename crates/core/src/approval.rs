@@ -25,6 +25,21 @@ impl ApprovalMode {
             Self::AlwaysForSession => "Always",
         }
     }
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Default => "Ask before tools that require approval.",
+            Self::AutoAcceptEdits => {
+                "Automatically approve file edits; ask before other tools that require approval."
+            }
+            Self::Auto => {
+                "Use the fast or primary model to approve routine actions; ask before risky or uncertain actions."
+            }
+            Self::Yolo => "Automatically approve all tools, including shell commands.",
+            Self::AlwaysForSession => {
+                "Automatically approve tools except shell commands for this session."
+            }
+        }
+    }
     pub fn next(self) -> Self {
         match self {
             Self::Default | Self::AlwaysForSession => Self::AutoAcceptEdits,

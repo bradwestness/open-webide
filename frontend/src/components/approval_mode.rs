@@ -19,9 +19,13 @@ pub fn ApprovalModePicker() -> impl IntoView {
     view! {
         <super::dropdown::Dropdown class="approval-mode-picker" menu_class="approval-mode-menu" aria_label="Approval mode" trigger_class="btn tui-mode-badge" open=open above=true label=move || view! { <span class:mode-awaiting=move || mode.get() == ApprovalMode::Yolo>{move || format!("[{}]", mode.get().label().to_uppercase())}</span> }>
             {ApprovalMode::CHOICES.into_iter().map(|choice| view! {
-                <button type="button" class="ui-dropdown-item recent-item" role="menuitemradio" aria-checked=move || (mode.get() == choice).to_string() on:click=move |_| { select_mode.run(choice); open.set(false); }>{choice.label()}</button>
+                <button type="button" class="ui-dropdown-item recent-item" role="menuitemradio" aria-checked=move || (mode.get() == choice).to_string() on:click=move |_| { select_mode.run(choice); open.set(false); }>
+                    <span class="ui-dropdown-item-text">
+                        <span>{choice.label()}</span>
+                        <span class="ui-dropdown-item-description">{choice.description()}</span>
+                    </span>
+                </button>
             }).collect_view()}
-            <p class="form-hint">"Auto uses the fast model or primary model. YOLO approves all tools, including commands."</p>
         </super::dropdown::Dropdown>
     }
 }

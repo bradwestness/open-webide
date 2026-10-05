@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Explain each approval mode directly in its dropdown item instead of a shared footer hint.
+
 - Keep Layout and Theme segmented controls compact in Settings, matching Sessions and Files.
 
 - Keep the app within the viewport and give status-bar controls enough height to avoid page-level scrolling.

@@ -342,6 +342,25 @@ async fn approval_picker_and_shift_tab_share_database_state_in_both_modes() {
         );
         mounted.click(".tui-mode-badge");
         settle().await;
+        for (index, choice) in ApprovalMode::CHOICES.into_iter().enumerate() {
+            assert_eq!(
+                mounted
+                    .element(&format!(
+                        ".approval-mode-menu button:nth-child({}) .ui-dropdown-item-description",
+                        index + 1
+                    ))
+                    .text_content()
+                    .unwrap(),
+                choice.description()
+            );
+        }
+        assert!(
+            mounted
+                .root
+                .query_selector(".approval-mode-menu .form-hint")
+                .unwrap()
+                .is_none()
+        );
         mounted.click(".approval-mode-menu button:nth-child(3)");
         super::support::wait_until("saved auto mode", || {
             mounted.state.chat.approval_mode.get_untracked().get(&1) == Some(&ApprovalMode::Auto)
