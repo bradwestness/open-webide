@@ -34,8 +34,10 @@ reply. No production projects or model settings were used.
 
 Remote checks used two independent Chrome profiles. Local checks used two windows
 sharing a real origin-private File System Access directory handle in IndexedDB;
-they did not exercise an OS folder picker's permission renewal. That remains a
-hands-on check with a real picked directory.
+they did not exercise an OS folder picker's permission renewal. On October 5,
+2026, the user confirmed that an actual OS-picked local folder continued working
+after reload without prompting to pick it again. This verifies retained access;
+the prompted permission-renewal path was not exercised by that check.
 
 Shared history reconstruction and interruption detection live in
 `openwebide-core`; `ProjectRuns` owns frontend recovery and selects the browser or

@@ -35,12 +35,12 @@ The model setup and code hardening follow-ups are implemented. Native and browse
 contracts cover both modes, failures, stale results and fallbacks. Docker checks
 cover authenticated WebSocket PTYs, real-model streaming, remote file writes,
 host-owned Git workspaces, supervisor shutdown and bridge-disabled SSE fallback.
+[Reload recovery](reload-recovery.md) covers mid-run and multi-window checks, plus
+the user-confirmed restoration of an OS-picked local folder.
 
 The following checks still require hands-on device or environment testing:
 
 - First-paint theme and both themes visually; terminal dock hide/show.
-- Local folder permission renewal after reload with an actual OS-picked directory;
-  mid-run and multi-window recovery are [verified](reload-recovery.md).
 - Docker browser terminal and Files/Changes interactions.
 - A phone on the LAN; podman/systemd.
 - Editor IME composition, paste and caret behaviour with a real input method.
