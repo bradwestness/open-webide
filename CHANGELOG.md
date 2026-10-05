@@ -11,6 +11,9 @@ for what's still ahead.
 
 ### Changed
 
+- Show full-file Inline diffs, remove Content, and number logical lines in Edit, Inline and Split with compact, pinned gutters. Scroll long lines horizontally and keep Split panes synchronized. Add literal Find in file with next/previous navigation and Ctrl/⌘F.
+- Show the existing PWA code mark beside the Open WebIDE wordmark.
+
 - Explain each approval mode directly in its dropdown item instead of a shared footer hint.
 
 - Keep Layout and Theme segmented controls compact in Settings, matching Sessions and Files.

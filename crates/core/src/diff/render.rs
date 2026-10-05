@@ -325,12 +325,24 @@ fn diff_segments<'a>(ops: &[LineOp<'a>]) -> Vec<DiffSegment<'a>> {
 /// Unpaired lines in the longer run are plain. Per region the removed lines are
 /// emitted before the added lines, in the order the regions appear.
 pub fn diff_inline_detailed(diff: &FileDiff) -> Vec<DiffLine> {
+    inline_lines(diff, false)
+}
+
+/// Full-file inline diff, including unchanged context between and around edits.
+pub fn diff_inline_full(diff: &FileDiff) -> Vec<DiffLine> {
+    inline_lines(diff, true)
+}
+
+fn inline_lines(diff: &FileDiff, include_context: bool) -> Vec<DiffLine> {
     let old = diff.old.as_deref().unwrap_or_default();
     let ops = line_lcs(old, &diff.new);
 
     let mut out = Vec::new();
     for segment in diff_segments(&ops) {
         let DiffSegment::Cluster { dels, inss } = segment else {
+            if include_context && let DiffSegment::Equal(line) = segment {
+                out.push(DiffLine::new_plain(' ', line.text.to_string()));
+            }
             continue;
         };
 
@@ -440,4 +452,61 @@ pub fn diff_side_by_side_detailed(diff: &FileDiff) -> Vec<(Option<DiffLine>, Opt
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod full_inline_tests {
+    use super::*;
+
+    #[test]
+    fn full_inline_preserves_context_and_compact_contract() {
+        let diff = FileDiff {
+            path: "test".into(),
+            old: Some("before\none\nkeep\ntwo\nafter\n".into()),
+            new: "before\nONE\nkeep\nTWO\nafter\n".into(),
+            old_unavailable: false,
+            backup_path: None,
+        };
+        let full = diff_inline_full(&diff);
+        assert_eq!(
+            full.iter()
+                .map(|line| (line.marker, line.content.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (' ', "before"),
+                ('-', "one"),
+                ('+', "ONE"),
+                (' ', "keep"),
+                ('-', "two"),
+                ('+', "TWO"),
+                (' ', "after")
+            ]
+        );
+        assert_eq!(diff_inline_detailed(&diff).len(), 4);
+        let unchanged = FileDiff {
+            old: Some(diff.new.clone()),
+            ..diff.clone()
+        };
+        assert_eq!(diff_inline_full(&unchanged).len(), 5);
+        assert!(diff_inline_detailed(&unchanged).is_empty());
+        let new_file = FileDiff {
+            old: None,
+            ..unchanged
+        };
+        assert!(
+            diff_inline_full(&new_file)
+                .iter()
+                .all(|line| line.marker == '+')
+        );
+        let endings = FileDiff {
+            old: Some("a\r\nb\r\n".into()),
+            new: "a\nb\n".into(),
+            ..diff
+        };
+        assert!(
+            diff_inline_full(&endings)
+                .iter()
+                .all(|line| line.ending_note.is_some())
+        );
+    }
 }

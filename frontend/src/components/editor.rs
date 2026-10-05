@@ -1,12 +1,15 @@
 use leptos::prelude::*;
 use openwebide_core::{
-    DiffChunk, DiffLine, FileDiff, FileKind, diff_inline_detailed, diff_side_by_side_detailed,
+    DiffChunk, FileDiff, FileKind, diff_inline_full, diff_side_by_side_detailed,
     highlight::{Language, TokenKind, highlight_lines, language_from_path},
 };
 use web_sys::wasm_bindgen::JsCast;
 
 use crate::components::chat_pane::render_markdown;
-use crate::components::ui::{Button, ButtonSize, ButtonVariant, SegmentOption, SegmentedControl};
+use crate::components::ui::{
+    Button, ButtonSize, ButtonVariant, Icon, IconButton, IconName, PanelSearchRow, SegmentOption,
+    SegmentedControl,
+};
 use crate::state::{git::GitState, projects::ProjectsState, workspace::WorkspaceState};
 
 /// How the open file is displayed in the editor pane.
@@ -20,8 +23,91 @@ pub enum ViewMode {
     InlineDiff,
     /// Agent edit side-by-side split diff.
     SideBySide,
-    /// Agent edit full updated content view.
-    Content,
+}
+
+fn text_position(node: &web_sys::Node, offset: &mut u32) -> Option<(web_sys::Node, u32)> {
+    if node.node_type() == web_sys::Node::TEXT_NODE {
+        let length =
+            u32::try_from(node.node_value().unwrap_or_default().encode_utf16().count()).ok()?;
+        if *offset <= length {
+            return Some((node.clone(), *offset));
+        }
+        *offset -= length;
+    } else {
+        let children = node.child_nodes();
+        for index in 0..children.length() {
+            if let Some(child) = children.item(index)
+                && let Some(position) = text_position(&child, offset)
+            {
+                return Some(position);
+            }
+        }
+    }
+    None
+}
+
+/// Reveal the actual match column, including tabs, Unicode and highlighted tokens.
+fn reveal_match_column(
+    text: &web_sys::Element,
+    body: &web_sys::HtmlElement,
+    mut offset: u32,
+    gutter: f64,
+) {
+    let Some((node, offset)) = text_position(text.as_ref(), &mut offset) else {
+        return;
+    };
+    let Ok(range) = document().create_range() else {
+        return;
+    };
+    if range.set_start(&node, offset).is_err() || range.set_end(&node, offset).is_err() {
+        return;
+    }
+    let caret = range.get_bounding_client_rect();
+    let viewport = body.get_bounding_client_rect();
+    let left = viewport.left() + gutter;
+    if caret.left() < left || caret.left() > viewport.right() - 16.0 {
+        body.set_scroll_left((body.scroll_left() + caret.left() - left).max(0.0));
+    }
+}
+
+fn clear_find_marks(root: &web_sys::HtmlElement) {
+    if let Ok(nodes) = root.query_selector_all(".editor-find-match") {
+        for index in 0..nodes.length() {
+            if let Some(node) = nodes
+                .item(index)
+                .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+            {
+                let _ = node.class_list().remove_1("editor-find-match");
+            }
+        }
+    }
+}
+
+/// Literal, case-sensitive matches with browser selection offsets and logical lines.
+fn find_matches(text: &str, query: &str) -> Vec<(u32, u32, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut byte = 0;
+    let mut utf16 = 0;
+    let mut line = 1;
+    text.match_indices(query)
+        .map(|(start, matched)| {
+            let gap = &text[byte..start];
+            utf16 += gap.encode_utf16().count();
+            line += gap.bytes().filter(|value| *value == b'\n').count();
+            let begin = utf16;
+            let match_line = line;
+            utf16 += matched.encode_utf16().count();
+            line += matched.bytes().filter(|value| *value == b'\n').count();
+            byte = start + matched.len();
+            (
+                u32::try_from(begin).unwrap_or(u32::MAX),
+                u32::try_from(utf16).unwrap_or(u32::MAX),
+                match_line,
+            )
+        })
+        .collect()
 }
 
 /// The CSS class for a token category.
@@ -69,9 +155,10 @@ fn highlight_html(source: &str, language: Language) -> String {
     let lines = highlight_lines(source, language);
     let mut html = String::new();
     for (idx, line) in lines.iter().enumerate() {
-        if idx > 0 {
-            html.push('\n');
-        }
+        html.push_str(&format!(
+            "<span class=\"editor-source-line\" data-line=\"{}\">",
+            idx + 1
+        ));
         for tok in line {
             match tok.kind {
                 TokenKind::Plain => html.push_str(&escape_html(&tok.text)),
@@ -84,6 +171,10 @@ fn highlight_html(source: &str, language: Language) -> String {
                 }
             }
         }
+        if idx + 1 < lines.len() {
+            html.push('\n');
+        }
+        html.push_str("</span>");
     }
     html
 }
@@ -202,146 +293,148 @@ pub(crate) fn render_diff_chunks(chunks: Vec<DiffChunk>) -> impl IntoView {
         .collect::<Vec<_>>()
 }
 
-/// If the whole diff is nothing but a uniform line-ending change — every line
-/// paired as a delete + add of identical text, all carrying the same ending
-/// note — return a one-line summary instead of the per-line noise. Otherwise
-/// `None`, so the normal per-line rendering is used.
-fn whole_file_ending_summary(lines: &[DiffLine]) -> Option<String> {
-    let n = lines.len();
-    if n == 0 || !n.is_multiple_of(2) {
-        return None;
-    }
-    let half = n / 2;
-    // First half all deletions, second half all additions.
-    if !lines[..half].iter().all(|l| l.marker == '-')
-        || !lines[half..].iter().all(|l| l.marker == '+')
-    {
-        return None;
-    }
-    // Every line carries the same non-None ending note.
-    let note = lines[0].ending_note?;
-    if !lines.iter().all(|l| l.ending_note == Some(note)) {
-        return None;
-    }
-    // Each removed line's text matches the corresponding added line's text.
-    if !lines[..half]
-        .iter()
-        .zip(&lines[half..])
-        .all(|(d, a)| d.content == a.content)
-    {
-        return None;
-    }
-    Some(format!("Line endings changed: {note} ({half} lines)"))
-}
-
-/// Render the changed middle of a file edit as inline removed/added lines with intra-line word diffs.
+/// Render a full file edit as inline removed/added lines with intra-line word diffs.
 pub(super) fn render_inline_diff(diff: FileDiff) -> impl IntoView {
-    let lines = diff_inline_detailed(&diff);
-    let body: Vec<AnyView> = if let Some(summary) = whole_file_ending_summary(&lines) {
-        vec![
+    let digits = diff
+        .old
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .count()
+        .max(diff.new.lines().count())
+        .max(1)
+        .to_string()
+        .len();
+    let mut old_line = 0;
+    let mut new_line = 0;
+    let body = diff_inline_full(&diff)
+        .into_iter()
+        .map(|dl| {
+            let mark = dl.marker;
+            let old_number = if mark != '+' {
+                old_line += 1;
+                Some(old_line)
+            } else {
+                None
+            };
+            let new_number = if mark != '-' {
+                new_line += 1;
+                Some(new_line)
+            } else {
+                None
+            };
+            let line_class = match mark {
+                '+' => "diff-line add",
+                '-' => "diff-line del",
+                _ => "diff-line",
+            };
             view! {
-                <div class="diff-line">
-                    <span class="form-hint">{summary}</span>
+                <div class=line_class data-line=new_number>
+                    <span class="editor-line-gutter">
+                        <span class="editor-line-number">{old_number}</span>
+                        <span class="editor-line-number">{new_number}</span>
+                        <span class="diff-line-marker">{mark}</span>
+                    </span>
+                    <span class="editor-line-text">{render_diff_chunks(dl.chunks)}
+                        {dl.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
+                    </span>
                 </div>
             }
-            .into_any(),
-        ]
-    } else {
-        lines
-            .into_iter()
-            .map(|dl| {
-                let mark = dl.marker;
-                let note = dl.ending_note;
-                let line_class = if mark == '+' {
-                    "diff-line add"
-                } else if mark == '-' {
-                    "diff-line del"
-                } else {
-                    "diff-line"
-                };
-                view! {
-                    <div class=line_class>
-                        <span class="diff-line-marker">{mark} " "</span>
-                        {render_diff_chunks(dl.chunks)}
-                        {note.map(|note| view! {
-                            <span class="form-hint">{note}</span>
-                        })}
-                    </div>
-                }
-                .into_any()
-            })
-            .collect()
-    };
+        })
+        .collect_view();
     view! {
-        <div class="editor-diff editor-diff-inline">
-            {body}
+        <div class="editor-diff editor-diff-inline" style=format!("--editor-number-width: {digits}ch")>
+            <div class="inline-track">{body}</div>
         </div>
     }
 }
 
-/// Render the changed middle of a file edit as aligned side-by-side rows with intra-line word diffs.
+/// Scroll aligned split panes together, including equal space for their longest line.
+fn sync_split_scroll(source: NodeRef<leptos::html::Div>, target: NodeRef<leptos::html::Div>) {
+    if let (Some(source), Some(target)) = (source.get_untracked(), target.get_untracked()) {
+        if (source.scroll_left() - target.scroll_left()).abs() > 0.5 {
+            target.set_scroll_left(source.scroll_left());
+        }
+        if (source.scroll_top() - target.scroll_top()).abs() > 0.5 {
+            target.set_scroll_top(source.scroll_top());
+        }
+    }
+}
+
+/// Full aligned rows with a shared scroll extent and compact, pinned gutters.
 fn render_side_by_side(diff: FileDiff) -> impl IntoView {
+    let digits = diff
+        .old
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .count()
+        .max(diff.new.lines().count())
+        .max(1)
+        .to_string()
+        .len();
     let rows = diff_side_by_side_detailed(&diff);
+    let left_pane = NodeRef::<leptos::html::Div>::new();
+    let right_pane = NodeRef::<leptos::html::Div>::new();
+    let left_track = NodeRef::<leptos::html::Div>::new();
+    let right_track = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move || {
+        let (Some(left), Some(right)) = (left_track.get(), right_track.get()) else {
+            return;
+        };
+        let extent = |track: &web_sys::HtmlElement| {
+            let gutter = track
+                .query_selector(".editor-line-gutter")
+                .ok()
+                .flatten()
+                .map_or(0, |node| {
+                    node.unchecked_into::<web_sys::HtmlElement>().offset_width()
+                });
+            let text = track
+                .query_selector_all(".editor-line-text")
+                .ok()
+                .map_or(0, |nodes| {
+                    (0..nodes.length())
+                        .filter_map(|index| nodes.item(index))
+                        .map(|node| node.unchecked_into::<web_sys::HtmlElement>().scroll_width())
+                        .max()
+                        .unwrap_or(0)
+                });
+            gutter + text + 20
+        };
+        let width = extent(&left).max(extent(&right));
+        for track in [left, right] {
+            let _ = track
+                .unchecked_ref::<web_sys::HtmlElement>()
+                .style()
+                .set_property("width", &format!("{width}px"));
+        }
+    });
+    let mut old_line = 0;
+    let mut new_line = 0;
+    let (left, right): (Vec<_>, Vec<_>) = rows.into_iter().map(|(left, right)| {
+        let changed = !matches!((&left, &right), (Some(l), Some(r)) if l.marker == ' ' && r.marker == ' ');
+        let old_number = left.as_ref().map(|_| { old_line += 1; old_line });
+        let new_number = right.as_ref().map(|_| { new_line += 1; new_line });
+        let left_class = if left.is_none() { "sbs-cell sbs-empty" } else if changed { "sbs-cell sbs-del" } else { "sbs-cell" };
+        let right_class = if right.is_none() { "sbs-cell sbs-empty" } else if changed { "sbs-cell sbs-add" } else { "sbs-cell" };
+        let cell = |class, number, line: Option<openwebide_core::DiffLine>| view! {
+            <div class=class data-line=number>
+                <span class="editor-line-gutter"><span class="editor-line-number">{number}</span></span>
+                <span class="editor-line-text">{line.map(|line| view! {
+                    {render_diff_chunks(line.chunks)}
+                    {line.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
+                })}</span>
+            </div>
+        };
+        (cell(left_class, old_number, left), cell(right_class, new_number, right))
+    }).unzip();
     view! {
-        <div class="editor-diff editor-diff-side">
-            {rows
-                .into_iter()
-                .map(|(left, right)| {
-                    let (left_class, right_class) = match (&left, &right) {
-                        (Some(l), Some(r)) if l.marker == ' ' && r.marker == ' ' => ("sbs-cell", "sbs-cell"),
-                        (Some(_), Some(_)) => ("sbs-cell sbs-del", "sbs-cell sbs-add"),
-                        (Some(_), None) => ("sbs-cell sbs-del", "sbs-cell sbs-empty"),
-                        (None, Some(_)) => ("sbs-cell sbs-empty", "sbs-cell sbs-add"),
-                        (None, None) => ("sbs-cell sbs-empty", "sbs-cell sbs-empty"),
-                    };
-                    view! {
-                        <div class="sbs-row">
-                            <div class=left_class>
-                                {left.map(|l| view! {
-                                    {render_diff_chunks(l.chunks)}
-                                    {l.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
-                                }.into_any()).unwrap_or_else(|| ().into_any())}
-                            </div>
-                            <div class=right_class>
-                                {right.map(|r| view! {
-                                    {render_diff_chunks(r.chunks)}
-                                    {r.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
-                                }.into_any()).unwrap_or_else(|| ().into_any())}
-                            </div>
-                        </div>
-                    }
-                })
-                .collect::<Vec<_>>()}
+        <div class="editor-diff editor-diff-side" style=format!("--editor-number-width: {digits}ch")>
+            <div class="sbs-pane" node_ref=left_pane on:scroll=move |_| sync_split_scroll(left_pane, right_pane)><div class="sbs-track" node_ref=left_track>{left}</div></div>
+            <div class="sbs-pane" node_ref=right_pane on:scroll=move |_| sync_split_scroll(right_pane, left_pane)><div class="sbs-track" node_ref=right_track>{right}</div></div>
         </div>
     }
-}
-
-/// Render the full updated contents as plain text.
-fn render_content_view(content: String) -> impl IntoView {
-    view! {
-        <pre class="editor-content-view">{content}</pre>
-    }
-}
-
-/// Full pending contents with stable line numbers and review markers.
-fn render_pending_content(diff: FileDiff) -> impl IntoView {
-    let markers = openwebide_core::reviews::pending_lines(&diff);
-    let mut lines = openwebide_core::diff::split_lines(&diff.new)
-        .into_iter()
-        .map(|line| line.text.to_string())
-        .collect::<Vec<_>>();
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    let count = lines.len();
-    view! { <div class="editor-content-view editor-pending-content">
-        {lines.into_iter().enumerate().map(|(index, text)| {
-            let line = index + 1;
-            let mark = markers.iter().find(|(number, _)| (*number).min(count) == line).map(|(_, deleted)| *deleted);
-            let class = match mark { Some(true) => "editor-pending-gutter removed", Some(false) => "editor-pending-gutter changed", None => "editor-pending-gutter" };
-            view! { <div class="editor-pending-line" data-line=line><span class=class title=if mark.is_some() { "Pending agent change" } else { "" }>{line}</span><span class="editor-pending-text">{text}</span></div> }
-        }).collect_view()}
-    </div> }
 }
 
 /// Render a friendly placeholder for binary or non-previewable files.
@@ -535,6 +628,120 @@ pub fn Editor(
     let highlight_ready = RwSignal::new(false);
     let view_mode = RwSignal::new(ViewMode::Code);
 
+    let root = NodeRef::<leptos::html::Div>::new();
+    let find_input = NodeRef::<leptos::html::Input>::new();
+    let find_open = RwSignal::new(false);
+    let query = RwSignal::new(String::new());
+    let match_index = RwSignal::new(0_usize);
+    let find_source = Memo::new(move |_| {
+        pending_diff
+            .get()
+            .map_or_else(|| content.get(), |diff| diff.new)
+    });
+    let matches = Memo::new(move |_| find_matches(&find_source.get(), &query.get()));
+    let navigate = Callback::new(move |forward: bool| {
+        let count = matches.get_untracked().len();
+        if count > 0 {
+            match_index.update(|index| {
+                *index = if forward {
+                    (*index + 1) % count
+                } else {
+                    (*index + count - 1) % count
+                }
+            });
+        }
+    });
+    Effect::new(move || {
+        query.track();
+        open_file.track();
+        projects.active_project.track();
+        match_index.set(0);
+    });
+    Effect::new(move || {
+        if find_open.get()
+            && let Some(input) = find_input.get()
+        {
+            let _ = input.focus();
+        }
+    });
+    Effect::new(move || {
+        let active = find_open.get() && view_mode.get() != ViewMode::Preview;
+        if !active {
+            if let Some(root) = root.get() {
+                clear_find_marks(&root);
+            }
+            return;
+        }
+        highlight_ready.track();
+        let results = matches.get();
+        let selected = results
+            .get(match_index.get() % results.len().max(1))
+            .copied();
+        let mode = view_mode.get();
+        let path = open_file.get();
+        let project = projects.active_project.get();
+        let source = find_source.get();
+        let search = query.get();
+        let index = match_index.get();
+        leptos::leptos_dom::helpers::queue_microtask(move || {
+            if open_file.try_get_untracked() != Some(path)
+                || projects.active_project.try_get_untracked() != Some(project)
+                || find_source.try_with_untracked(|current| current == &source) != Some(true)
+                || query.try_get_untracked() != Some(search)
+                || match_index.try_get_untracked() != Some(index)
+                || view_mode.try_get_untracked() != Some(mode)
+                || find_open.try_get_untracked() != Some(active)
+            {
+                return;
+            }
+            let Some(Some(root)) = root.try_get_untracked() else {
+                return;
+            };
+            clear_find_marks(&root);
+            let Some((start, end, line)) = selected.filter(|_| active) else {
+                return;
+            };
+            let line_start = source
+                .split_inclusive('\n')
+                .take(line.saturating_sub(1))
+                .map(|part| part.encode_utf16().count())
+                .sum::<usize>();
+            let column = start.saturating_sub(u32::try_from(line_start).unwrap_or(u32::MAX));
+            if mode == ViewMode::Code
+                && let Some(Some(textarea)) = ta.try_get_untracked()
+            {
+                let _ = textarea.set_selection_range(start, end);
+                if let Ok(Some(row)) =
+                    root.query_selector(&format!(".editor-source-line[data-line='{line}']"))
+                {
+                    let row: web_sys::HtmlElement = row.unchecked_into();
+                    textarea.set_scroll_top(f64::from(row.offset_top().saturating_sub(12)));
+                    if let Some(Some(overlay)) = hl.try_get_untracked() {
+                        sync_highlight_scroll(&textarea, &overlay);
+                        let gutter = window().get_computed_style(&textarea).ok().flatten().and_then(|style| style.get_property_value("padding-left").ok()).and_then(|padding| padding.trim_end_matches("px").parse::<f64>().ok()).unwrap_or(40.0);
+                        reveal_match_column(&row, &textarea, column, gutter);
+                        sync_highlight_scroll(&textarea, &overlay);
+                    }
+                }
+            } else if let Ok(Some(row)) =
+                root.query_selector(&format!(".editor-diff-inline [data-line='{line}'], .sbs-pane:last-child [data-line='{line}']"))
+            {
+                let _ = row.class_list().add_1("editor-find-match");
+                if let Ok(Some(body)) = row.closest(".sbs-pane, .editor-diff") {
+                    let body: web_sys::HtmlElement = body.unchecked_into();
+                    body.set_scroll_top(
+                        body.scroll_top() + row.get_bounding_client_rect().top()
+                            - body.get_bounding_client_rect().top(),
+                    );
+                    if let Ok(Some(text)) = row.query_selector(".editor-line-text") {
+                        let gutter = row.query_selector(".editor-line-gutter").ok().flatten().map_or(0.0, |gutter| gutter.get_bounding_client_rect().width()) + 8.0;
+                        reveal_match_column(&text, &body, column, gutter);
+                    }
+                }
+            }
+        });
+    });
+
     // Default to Preview for non-text files; default to Code for source files.
     Effect::new(move || {
         if let Some(path) = open_file.get() {
@@ -567,7 +774,15 @@ pub fn Editor(
     });
 
     view! {
-        <div class="editor">
+        <div class="editor" node_ref=root on:keydown=move |event: web_sys::KeyboardEvent| {
+            if (event.ctrl_key() || event.meta_key()) && event.key().eq_ignore_ascii_case("f") && view_mode.get_untracked() != ViewMode::Preview {
+                event.prevent_default(); event.stop_propagation(); find_open.set(true);
+                if let Some(input) = find_input.get_untracked() { let _ = input.focus(); input.select(); }
+            } else if event.key() == "Escape" && find_open.get_untracked() {
+                event.prevent_default(); event.stop_propagation(); find_open.set(false);
+                if let Some(textarea) = ta.get_untracked() { let _ = textarea.focus(); }
+            }
+        }>
             <div class="editor-header">
                 <span class="editor-path" title="Open file">
                     {move || match open_file.get() {
@@ -589,7 +804,7 @@ pub fn Editor(
                         view! {
                             <div class="editor-header-actions">
                                 <Show
-                                    when=move || view_mode.get() == ViewMode::InlineDiff || view_mode.get() == ViewMode::SideBySide || view_mode.get() == ViewMode::Content
+                                    when=move || view_mode.get() == ViewMode::InlineDiff || view_mode.get() == ViewMode::SideBySide
                                     fallback={
                                         move || {
                                             let on_load = on_load;
@@ -631,7 +846,6 @@ pub fn Editor(
                                             SegmentOption::new("Edit", ViewMode::Code),
                                             SegmentOption::new("Inline", ViewMode::InlineDiff),
                                             SegmentOption::new("Split", ViewMode::SideBySide),
-                                            SegmentOption::new("Content", ViewMode::Content),
                                             SegmentOption::new("Preview", ViewMode::Preview),
                                         ]
                                         value=view_mode.read_only().into()
@@ -691,7 +905,6 @@ pub fn Editor(
                             options=vec![
                                 SegmentOption::new("Inline", ViewMode::InlineDiff),
                                 SegmentOption::new("Split", ViewMode::SideBySide),
-                                SegmentOption::new("Content", ViewMode::Content),
                                 SegmentOption::new("Preview", ViewMode::Preview),
                             ]
                             value=view_mode.read_only().into()
@@ -715,7 +928,19 @@ pub fn Editor(
                         </Button>
                     </div>
                 </Show>
+                <IconButton label="Find in file (Ctrl/⌘F)" disabled=Signal::derive(move || open_file.get().is_none() || view_mode.get() == ViewMode::Preview) on_click=Callback::new(move |_| find_open.set(!find_open.get_untracked()))><Icon name=IconName::Search /></IconButton>
             </div>
+            <Show when=move || find_open.get() && open_file.get().is_some() && view_mode.get() != ViewMode::Preview>
+                <PanelSearchRow class="editor-find">
+                    <input class="form-input panel-search-input" type="search" node_ref=find_input placeholder="Find in file" aria-label="Find in file" title="Literal, case-sensitive search" prop:value=move || query.get() on:input=move |event| query.set(event_target_value(&event)) on:keydown=move |event: web_sys::KeyboardEvent| {
+                        if event.key() == "Enter" { event.prevent_default(); navigate.run(!event.shift_key()); }
+                    } />
+                    <span class="form-hint" aria-live="polite">{move || { let count = matches.get().len(); format!("{} / {count}", if count == 0 { 0 } else { match_index.get() % count + 1 }) }}</span>
+                    <IconButton label="Previous match" disabled=Signal::derive(move || matches.get().is_empty()) on_click=Callback::new(move |_| navigate.run(false))><Icon name=IconName::ChevronUp /></IconButton>
+                    <IconButton label="Next match" disabled=Signal::derive(move || matches.get().is_empty()) on_click=Callback::new(move |_| navigate.run(true))><Icon name=IconName::ChevronDown /></IconButton>
+                    <IconButton label="Close find" on_click=Callback::new(move |_| find_open.set(false))><Icon name=IconName::X /></IconButton>
+                </PanelSearchRow>
+            </Show>
             <Show
                 when=move || open_file.get().is_some()
                 fallback=move || {
@@ -735,7 +960,6 @@ pub fn Editor(
                         } else { match mode {
                             ViewMode::InlineDiff => render_inline_diff(diff).into_any(),
                             ViewMode::SideBySide => render_side_by_side(diff).into_any(),
-                            ViewMode::Content => render_pending_content(diff).into_any(),
                             ViewMode::Preview => {
                                 let path = open_file.get().unwrap_or_default();
                                 render_preview_view(
@@ -747,18 +971,17 @@ pub fn Editor(
                                 )
                                 .into_any()
                             }
-                            ViewMode::Code => render_pending_content(diff).into_any(),
+                            ViewMode::Code => render_inline_diff(diff).into_any(),
                         }
                         }
                     } else if (mode == ViewMode::InlineDiff || mode == ViewMode::SideBySide) && binary_head.get() {
                         view! { <p class="empty editor-empty">"Binary file — no text diff"</p> }.into_any()
-                    } else if (mode == ViewMode::InlineDiff || mode == ViewMode::SideBySide || mode == ViewMode::Content) && git_head_diff.get().is_some() {
+                    } else if (mode == ViewMode::InlineDiff || mode == ViewMode::SideBySide) && git_head_diff.get().is_some() {
                         let diff = git_head_diff.get().unwrap();
                         match mode {
                             ViewMode::InlineDiff => render_inline_diff(diff).into_any(),
                             ViewMode::SideBySide => render_side_by_side(diff).into_any(),
-                            ViewMode::Content => render_content_view(diff.new).into_any(),
-                            _ => render_content_view(diff.new).into_any(),
+                            _ => ().into_any(),
                         }
                     } else {
                         match mode {
@@ -776,10 +999,11 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code" class:highlight-ready=move || highlight_ready.get()>
+                                    <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 24px)", text.split('\n').count().to_string().len())) class:highlight-ready=move || highlight_ready.get()>
                                         <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready />
                                         <textarea
                                             class="editor-textarea"
+                                            wrap="off"
                                             spellcheck="false"
                                             readonly=read_only
                                             node_ref=ta
@@ -805,5 +1029,24 @@ pub fn Editor(
                 }}
             </Show>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_matches;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn find_uses_utf16_offsets_and_logical_lines() {
+        assert_eq!(
+            find_matches("😀 café\n😀 café", "café"),
+            vec![(3, 7, 1), (11, 15, 2)]
+        );
+        assert!(find_matches("text", "").is_empty());
+        assert!(find_matches("Text", "text").is_empty());
+        assert_eq!(
+            find_matches("a\nb\na\nb", "a\nb"),
+            vec![(0, 3, 1), (4, 7, 3)]
+        );
     }
 }

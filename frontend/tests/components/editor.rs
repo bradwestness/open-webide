@@ -172,7 +172,9 @@ async fn file_switch_reads_latest_path_and_mode_exit_cancels() {
     frame().await;
     assert_eq!(highlight_count(), before + 1);
     assert_eq!(
-        mounted.element(".editor-highlight-content").inner_html(),
+        mounted
+            .element(".editor-source-line[data-line='1']")
+            .inner_html(),
         "fn plain <span class=\"tok-operator\">&lt;&gt;&amp;</span>\n"
     );
     let before = highlight_count();
@@ -326,6 +328,13 @@ async fn rapid_bottom_and_reverse_scrolling_uses_one_scroll_source() {
         let textarea: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
         assert!(textarea.scroll_height() > textarea.client_height());
+        assert!(
+            (textarea.scroll_height()
+                - mounted.element(".editor-highlight-content").scroll_height())
+            .abs()
+                <= 2,
+            "code and gutter heights must match"
+        );
         for offset in [1e6, 0.0, 600.0, 1e6, 240.0, 1e6, 0.0] {
             textarea.set_scroll_top(offset);
             textarea
@@ -346,5 +355,333 @@ async fn rapid_bottom_and_reverse_scrolling_uses_one_scroll_source() {
                 .class_list()
                 .contains("highlight-ready")
         );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn editor_numbers_full_diff_and_find_share_both_workspace_modes() {
+    use openwebide_core::{FileDiff, WorkspaceMode};
+    use openwebide_frontend::state::git::HeadContent;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fixture.rs".into()));
+            state
+                .workspace
+                .content
+                .set("start\n😀 café\nkeep\ncafé end\n".into());
+            state.git.head_content.set(Some(HeadContent {
+                project_id: Some(1),
+                path: "fixture.rs".into(),
+                content: Ok("start\nold\nkeep\nold end\n".into()),
+            }));
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:600px;height:400px">{editor_view(state)}</div> }
+        });
+        settle().await;
+        frame().await;
+        assert_eq!(
+            mounted
+                .element(".editor-source-line[data-line='3']")
+                .text_content()
+                .unwrap(),
+            "keep\n"
+        );
+        mounted.click("button[aria-label^='Find in file']");
+        settle().await;
+        let search: web_sys::HtmlInputElement =
+            mounted.element(".editor-find input").unchecked_into();
+        search.set_value("café");
+        search
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        settle().await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(textarea.selection_start().unwrap(), Some(9));
+        assert_eq!(textarea.selection_end().unwrap(), Some(13));
+        assert!(
+            mounted
+                .element(".editor-find")
+                .text_content()
+                .unwrap()
+                .contains("1 / 2")
+        );
+        mounted.click("button[aria-label='Next match']");
+        settle().await;
+        assert!(
+            mounted
+                .element(".editor-find")
+                .text_content()
+                .unwrap()
+                .contains("2 / 2")
+        );
+        mounted.click_text("Diff HEAD");
+        settle().await;
+        assert_eq!(
+            mounted
+                .element(".diff-line[data-line='3'] .editor-line-text")
+                .text_content()
+                .unwrap(),
+            "keep"
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".diff-line.add[data-line='2']")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-find-match[data-line='4']")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            !mounted
+                .element(".editor-header")
+                .text_content()
+                .unwrap()
+                .contains("Content")
+        );
+        mounted.click_text("Split");
+        settle().await;
+        assert_eq!(
+            mounted
+                .element(".sbs-cell[data-line='3'] .editor-line-number")
+                .text_content()
+                .unwrap(),
+            "3"
+        );
+        assert_eq!(
+            mounted
+                .element(".sbs-cell[data-line='3'] .editor-line-text")
+                .text_content()
+                .unwrap(),
+            "keep"
+        );
+        mounted.click("button[aria-label='Close find']");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-find-match")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click_text("Preview");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-line-number, .editor-source-line")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click_text("Edit");
+        settle().await;
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("f");
+        init.set_ctrl_key(true);
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let event =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        mounted
+            .element(".editor-textarea")
+            .dispatch_event(&event)
+            .unwrap();
+        settle().await;
+        assert!(event.default_prevented());
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        mounted.state.workspace.content.set("😀 café".into());
+        settle().await;
+        frame().await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(textarea.selection_start().unwrap(), Some(3));
+        assert_eq!(textarea.selection_end().unwrap(), Some(7));
+        mounted.state.workspace.merge_pending(
+            1,
+            FileDiff {
+                path: "other.rs".into(),
+                old: Some("unchanged\nold\nafter\n".into()),
+                new: "unchanged\ncafé\nafter\n".into(),
+                old_unavailable: false,
+                backup_path: None,
+            },
+        );
+        settle().await;
+        assert_eq!(
+            mounted
+                .element(".diff-line[data-line='1'] .editor-line-text")
+                .text_content()
+                .unwrap(),
+            "unchanged"
+        );
+        assert_eq!(
+            mounted
+                .element(".diff-line[data-line='3'] .editor-line-text")
+                .text_content()
+                .unwrap(),
+            "after"
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-find-match[data-line='2']")
+                .unwrap()
+                .is_some()
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn numbered_views_scroll_horizontally_with_compact_gutters_and_linked_split_panes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state::git::HeadContent;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("wide.rs".into()));
+            state.workspace.content.set(format!(
+                "{}needle\n{}",
+                "x".repeat(800),
+                "short\n".repeat(40)
+            ));
+            state.git.head_content.set(Some(HeadContent {
+                project_id: Some(1),
+                path: "wide.rs".into(),
+                content: Ok(format!("{}\n{}", "y".repeat(200), "short\n".repeat(40))),
+            }));
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:350px">{editor_view(state)}</div> }
+        });
+        settle().await;
+        frame().await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(textarea.get_attribute("wrap").unwrap(), "off");
+        assert!(textarea.scroll_width() > textarea.client_width() * 2);
+        assert!(
+            (mounted
+                .element(".editor-source-line[data-line='1']")
+                .get_bounding_client_rect()
+                .height()
+                - 19.5)
+                .abs()
+                < 1.0
+        );
+        let padding = window()
+            .get_computed_style(&textarea)
+            .unwrap()
+            .unwrap()
+            .get_property_value("padding-left")
+            .unwrap();
+        let compact_width: f64 = padding.trim_end_matches("px").parse().unwrap();
+        assert!(compact_width < 45.0);
+        mounted.click("button[aria-label^='Find in file']");
+        settle().await;
+        let search: web_sys::HtmlInputElement =
+            mounted.element(".editor-find input").unchecked_into();
+        search.set_value("needle");
+        search
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        settle().await;
+        assert_eq!(textarea.selection_start().unwrap(), Some(800));
+        assert!(
+            textarea.scroll_left() > 1_000.0,
+            "find must reveal a match far across a line"
+        );
+        mounted.click("button[aria-label='Close find']");
+        settle().await;
+        textarea.set_scroll_left(120.0);
+        textarea
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        assert_scroll_aligned(&mounted, &textarea);
+        let gutter = window()
+            .get_computed_style_with_pseudo_elt(&mounted.element(".editor-source-line"), "::before")
+            .unwrap()
+            .unwrap();
+        assert!(
+            gutter
+                .get_property_value("transform")
+                .unwrap()
+                .contains("120")
+        );
+        mounted.click_text("Diff HEAD");
+        settle().await;
+        let inline = mounted.element(".editor-diff-inline");
+        assert!(inline.scroll_width() > inline.client_width() * 2);
+        inline.set_scroll_left(120.0);
+        let left = mounted
+            .element(".editor-line-gutter")
+            .get_bounding_client_rect()
+            .left();
+        assert!((left - inline.get_bounding_client_rect().left()).abs() < 2.0);
+        mounted.click_text("Split");
+        settle().await;
+        let left = mounted.element(".sbs-pane:first-child");
+        let right = mounted.element(".sbs-pane:last-child");
+        assert_eq!(left.scroll_width(), right.scroll_width());
+        right.set_scroll_left(1_900.0);
+        right
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        assert!((left.scroll_left() - right.scroll_left()).abs() < 0.5);
+        assert!(
+            left.scroll_left() > 1_800.0,
+            "the shorter side must share the full horizontal extent"
+        );
+        left.set_scroll_left(100.0);
+        left.set_scroll_top(160.0);
+        left.dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        assert!((left.scroll_left() - right.scroll_left()).abs() < 0.5);
+        assert!((left.scroll_top() - right.scroll_top()).abs() < 0.5);
+        mounted.click("button[aria-label^='Find in file']");
+        settle().await;
+        super::support::wait_until("linked horizontal find", || {
+            right.scroll_left() > 1_000.0 && (left.scroll_left() - right.scroll_left()).abs() < 0.5
+        })
+        .await;
+        mounted.click("button[aria-label='Close find']");
+        settle().await;
+        assert!(
+            (mounted
+                .element(".sbs-pane:last-child .editor-line-gutter")
+                .get_bounding_client_rect()
+                .left()
+                - right.get_bounding_client_rect().left())
+            .abs()
+                < 2.0
+        );
+        mounted.click_text("Edit");
+        mounted.state.workspace.content.set("short\n".repeat(1_000));
+        settle().await;
+        frame().await;
+        let textarea = mounted.element(".editor-textarea");
+        let padding = window()
+            .get_computed_style(&textarea)
+            .unwrap()
+            .unwrap()
+            .get_property_value("padding-left")
+            .unwrap();
+        let expanded_width: f64 = padding.trim_end_matches("px").parse().unwrap();
+        assert!(expanded_width > compact_width + 10.0);
     }
 }

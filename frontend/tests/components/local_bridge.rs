@@ -1590,19 +1590,19 @@ async fn run_changes_review_hunks_and_editor_markers_in_both_modes() {
             .await
             .unwrap();
         settle().await;
-        mounted.click_text("Content");
+        mounted.click_text("Inline");
         settle().await;
         assert!(
             mounted
                 .root
-                .query_selector("[data-line='1'] .editor-pending-gutter.changed")
+                .query_selector(".editor-diff-inline .diff-line.add[data-line='1']")
                 .unwrap()
                 .is_some()
         );
         assert!(
             mounted
                 .root
-                .query_selector("[data-line='3'] .editor-pending-gutter.changed")
+                .query_selector(".editor-diff-inline .diff-line.add[data-line='3']")
                 .unwrap()
                 .is_some()
         );
@@ -1621,14 +1621,14 @@ async fn run_changes_review_hunks_and_editor_markers_in_both_modes() {
         assert!(
             mounted
                 .root
-                .query_selector("[data-line='1'] .editor-pending-gutter.changed")
+                .query_selector(".editor-diff-inline .diff-line.add[data-line='1']")
                 .unwrap()
                 .is_none()
         );
         assert!(
             mounted
                 .root
-                .query_selector("[data-line='3'] .editor-pending-gutter.changed")
+                .query_selector(".editor-diff-inline .diff-line.add[data-line='3']")
                 .unwrap()
                 .is_some()
         );

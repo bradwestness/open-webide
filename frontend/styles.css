@@ -1129,7 +1129,7 @@ body {
 }
 
 /* The editor body: a highlighted overlay behind a transparent textarea. Both
-   layers share identical font metrics and wrapping so the colored text stays
+   layers share identical font metrics and whitespace so the colored text stays
    pixel-aligned with the raw text the user edits. */
 .editor-code {
   position: relative;
@@ -1150,15 +1150,17 @@ body {
   font-size: 13px;
   line-height: 1.5;
   tab-size: 4;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+  white-space: pre;
+  overflow-wrap: normal;
   color: var(--text);
   visibility: hidden;
 }
 
 .editor-highlight-content {
-  padding: 12px 16px;
+  padding: 12px 16px 12px var(--editor-gutter-width, 40px);
   min-height: 100%;
+  min-width: 100%;
+  width: max-content;
   transform: translate(var(--editor-scroll-x, 0px), var(--editor-scroll-y, 0px));
   will-change: transform;
 }
@@ -1176,7 +1178,7 @@ body {
   border: none;
   outline: none;
   margin: 0;
-  padding: 12px 16px;
+  padding: 12px 16px 12px var(--editor-gutter-width, 40px);
   background: transparent;
   /* Keep raw text readable until the current highlight frame is ready. */
   color: var(--text);
@@ -1185,9 +1187,13 @@ body {
   font-size: 13px;
   line-height: 1.5;
   tab-size: 4;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+  white-space: pre;
+  overflow-wrap: normal;
 }
+
+/* Logical lines stay aligned; gutter paint compensates horizontal scrolling. */
+.editor-source-line { display: block; position: relative; min-height: 1.5em; }
+.editor-source-line::before { content: attr(data-line); position: absolute; right: 100%; width: var(--editor-gutter-width, 40px); padding-right: 12px; height: 100%; text-align: right; color: var(--text-muted); background: var(--bg); z-index: 1; transform: translateX(calc(0px - var(--editor-scroll-x, 0px))); user-select: none; white-space: nowrap; }
 
 /* syntax highlight token colors (Tokyo Night palette) */
 
@@ -2645,12 +2651,6 @@ button.browser-item {
 .run-change-added { color: var(--online); background: var(--bg); }
 .run-change-actions { padding: 4px 8px; }
 
-.editor-pending-content { white-space: pre; }
-.editor-pending-line { display: flex; min-height: 1.5em; }
-.editor-pending-gutter { flex: 0 0 4ch; margin-right: 1ch; padding-right: 1ch; border-left: 3px solid transparent; text-align: right; color: var(--text-muted); user-select: none; }
-.editor-pending-gutter.changed { border-left-color: var(--git-modified); }
-.editor-pending-gutter.removed { border-left-color: var(--offline); }
-.editor-pending-text { white-space: pre; }
 
 .context-breakdown-bar { display: flex; height: 18px; overflow: hidden; border-radius: 4px; background: var(--bg-hover); border: 1px solid var(--border); }
 .context-segment { display: block; height: 100%; }
@@ -3046,3 +3046,21 @@ button.browser-item {
 
 .topbar-account .ui-dropdown-label { display: inline-flex; align-items: center; gap: var(--space-2); }
 @media (max-width: 800px) { .topbar-account .topbar-user { display: none; } .topbar-account .ui-dropdown-trigger > .ui-icon-glyph { display: none; } }
+
+.editor-diff { min-height: 0; tab-size: 4; }
+.inline-track, .sbs-track { width: max-content; min-width: 100%; }
+.editor-diff .diff-line, .sbs-cell { display: flex; align-items: flex-start; gap: 8px; min-height: 1.5em; padding: 0 12px 0 0; white-space: pre; overflow-wrap: normal; }
+.editor-line-gutter { position: sticky; left: 0; z-index: 1; display: inline-flex; align-items: center; gap: 8px; flex: none; padding: 0 8px; background: var(--bg); min-height: 1.5em; }
+.editor-line-number { width: var(--editor-number-width, 1ch); flex: none; text-align: right; color: var(--text-muted); user-select: none; white-space: nowrap; }
+.editor-line-text { flex: 1; white-space: pre; overflow-wrap: normal; }
+.editor-diff-side { flex-direction: row; padding: 0; overflow: hidden; }
+.sbs-pane { flex: 1; min-width: 0; overflow: auto; padding: 8px 0; scrollbar-gutter: stable; }
+.sbs-pane:first-child { border-right: 1px solid var(--border); }
+.sbs-cell { border: none; }
+.sbs-cell .editor-line-text { flex: none; }
+.editor-find { border-bottom: 1px solid var(--border); flex: none; }
+.editor-find .form-hint { flex: none; white-space: nowrap; }
+.editor-find-match { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.logo { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
+.logo-mark { width: 32px; height: 32px; flex: none; border-radius: var(--radius-sm); }
