@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Extend the shared folding provider with language-aware bracket/literal ranges, indentation fallback, consecutive comment groups and balanced explicit regions. Prefer Rust parser ranges; protect Python multiline strings, JavaScript regex/template literals and YAML block scalars from false folds. Use configured tab stops, preserve shared closing/header rows, bound synchronous work and clear cancelled/stale ranges in both modes. Richer language parsers and worker rendering remain in progress.
+
 - Integrate Rust folding into Edit with gutter controls, cursor/recursive/all commands and keyboard shortcuts. Preserve source line numbers and syntax context, reveal Find matches, copy complete source selections and expand safely for editing/IME/clipboard operations; replay input-only browser events against full source without deleting hidden blocks. Use the shared editor facade in both modes. Other-language providers and advanced folding remain roadmap work.
 
 - Build shared document fold state and source/visible-text projection for the upcoming folding controls: preserve logical lines, Unicode/CRLF offsets and directional selections; reveal hidden navigation targets, reject replacements across hidden gaps, and rebase unaffected headers through edits and grouped undo/redo. Route commands through the same editor facade in both modes; editor-view controls are described above.

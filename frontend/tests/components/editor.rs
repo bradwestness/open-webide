@@ -318,7 +318,10 @@ async fn incremental_syntax_and_fold_provider_share_both_modes_and_account_reset
             .workspace
             .open_file
             .set(Some("syntax.py".into()));
-        assert!(actions.syntax_folds(|| true).is_none());
+        assert_eq!(
+            actions.syntax_folds(|| true).unwrap(),
+            (SyntaxStatus::TooLarge, vec![])
+        );
         mounted.state.workspace.reset();
         assert_eq!(
             mounted
@@ -2143,5 +2146,105 @@ async fn visible_folding_preserves_source_and_replays_input_in_both_modes() {
         assert_eq!(textarea.selection_start().unwrap(), Some(offset));
         assert_eq!(textarea.selection_end().unwrap(), Some(offset + 1));
         assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn fallback_and_region_folds_render_and_reveal_in_both_modes() {
+    use openwebide_core::editor::{FoldCommand, SyntaxStatus};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        for (path, source, collapsed, end_line) in [
+            (
+                "fallback.py",
+                "def main():\r\n\tif ready:\r\n\t\twork(\"文😀\")\r\n\tfinish()\r\nafter()\r\n",
+                "def main():\nafter()\n",
+                3,
+            ),
+            (
+                "fallback.js",
+                "function main() {\n  const pattern = /[{}]/;\n  const text = `fake }`;\n}\nafter();\n",
+                "function main() {\nafter();\n",
+                3,
+            ),
+            (
+                "fallback.yaml",
+                "root:\n  first: 1\n  second: 2\nnext: 3\n",
+                "root:\nnext: 3\n",
+                2,
+            ),
+            (
+                "fallback.txt",
+                "#region group\n文😀\n#endregion\nafter\n",
+                "#region group\nafter\n",
+                2,
+            ),
+            (
+                "region.rs",
+                "// #region group\nfn first() {}\n// #endregion\nfn after() {}\n",
+                "// #region group\nfn after() {}\n",
+                2,
+            ),
+        ] {
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some(path.into()));
+                state.workspace.content.set(source.into());
+                editor_view(state)
+            });
+            wait_until("fallback fold control", || {
+                mounted
+                    .root
+                    .query_selector("button[aria-label='Collapse block at line 1']")
+                    .unwrap()
+                    .is_some()
+            })
+            .await;
+            let actions = EditorActions::new(mounted.state.workspace);
+            let textarea: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            mounted.click("button[aria-label='Collapse block at line 1']");
+            settle().await;
+            frame().await;
+            assert_eq!(textarea.value(), collapsed, "{path}");
+            assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+            assert!(!mounted.state.workspace.dirty.get_untracked());
+            assert!(
+                mounted
+                    .root
+                    .query_selector(&format!(
+                        ".editor-source-line[data-line='{}']",
+                        end_line + 2
+                    ))
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                actions.refresh_fold_ranges(|| false),
+                Some(SyntaxStatus::Cancelled)
+            );
+            settle().await;
+            assert_eq!(textarea.value(), source.replace("\r\n", "\n"));
+            assert!(actions.fold_state().unwrap().ranges().is_empty());
+            actions.refresh_fold_ranges(|| true);
+            actions.fold_command(FoldCommand::CollapseAll);
+            settle().await;
+            assert_eq!(textarea.value(), collapsed);
+            actions.fold_command(FoldCommand::Reveal(end_line));
+            settle().await;
+            assert!(
+                textarea
+                    .value()
+                    .contains(source.lines().nth(end_line).unwrap())
+            );
+            assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        }
     }
 }

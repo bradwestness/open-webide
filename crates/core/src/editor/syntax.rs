@@ -19,23 +19,29 @@ pub enum SyntaxStatus {
 
 /// One parser and previous tree per document. Never publish an old tree for new text.
 pub struct SyntaxDocument {
-    parser: Parser,
+    parser: Option<Parser>,
+    language: Language,
+    ready: bool,
     tree: Option<Tree>,
     text: String,
 }
 
 impl SyntaxDocument {
-    /// Unsupported languages use another provider rather than the wrong grammar.
+    /// Languages without a grammar use shared lexical/indentation providers.
     pub fn new(language: Language) -> Option<Self> {
-        if language != Language::Rust {
-            return None;
-        }
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_rust::LANGUAGE.into())
-            .ok()?;
+        let parser = if language == Language::Rust {
+            let mut parser = Parser::new();
+            parser
+                .set_language(&tree_sitter_rust::LANGUAGE.into())
+                .ok()?;
+            Some(parser)
+        } else {
+            None
+        };
         Some(Self {
             parser,
+            language,
+            ready: false,
             tree: None,
             text: String::new(),
         })
@@ -54,9 +60,15 @@ impl SyntaxDocument {
             self.clear();
             return SyntaxStatus::Cancelled;
         }
-        if self.tree.is_some() && self.text == text {
+        if self.ready && self.text == text {
             return SyntaxStatus::Ready { incremental: true };
         }
+        let Some(parser) = self.parser.as_mut() else {
+            self.text.clear();
+            self.text.push_str(text);
+            self.ready = true;
+            return SyntaxStatus::Ready { incremental: false };
+        };
         let mut previous = self.tree.clone();
         if let Some(tree) = previous.as_mut() {
             tree.edit(&input_edit(&self.text, text));
@@ -71,12 +83,13 @@ impl SyntaxDocument {
                 ControlFlow::Continue(())
             }
         };
-        let tree = self.parser.parse_with_options(
+        let tree = parser.parse_with_options(
             &mut |offset, _| &text.as_bytes()[offset..],
             previous.as_ref(),
             Some(ParseOptions::new().progress_callback(&mut progress)),
         );
         if let Some(tree) = tree {
+            self.ready = true;
             self.tree = Some(tree);
             self.text.clear();
             self.text.push_str(text);
@@ -88,12 +101,27 @@ impl SyntaxDocument {
     }
 
     fn clear(&mut self) {
-        self.parser.reset();
+        if let Some(parser) = self.parser.as_mut() {
+            parser.reset();
+        }
+        self.ready = false;
         self.tree = None;
         self.text.clear();
     }
 
     pub fn folds(&self) -> Vec<FoldRange> {
+        self.folds_with_tab_width(4)
+    }
+
+    pub fn folds_with_tab_width(&self, tab_width: usize) -> Vec<FoldRange> {
+        if !self.ready {
+            return Vec::new();
+        }
+        let parsed = self.tree.as_ref().map(|_| self.parser_folds());
+        super::fold_ranges(&self.text, self.language, parsed.as_deref(), tab_width)
+    }
+
+    fn parser_folds(&self) -> Vec<FoldRange> {
         let Some(tree) = &self.tree else {
             return Vec::new();
         };
@@ -268,7 +296,7 @@ mod tests {
                 }
             ]
         );
-        assert!(SyntaxDocument::new(Language::Python).is_none());
+        assert!(SyntaxDocument::new(Language::Python).is_some());
     }
 
     #[test]

@@ -3,6 +3,8 @@
 
 use std::ops::Range;
 
+mod fold_providers;
+pub use fold_providers::fold_ranges;
 mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
 mod projection;

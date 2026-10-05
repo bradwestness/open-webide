@@ -79,13 +79,11 @@ Then add structure and navigation:
 
 - **Folding:** shared collapse state, recursive/reveal commands and source/visible
   offset projection, Rust gutter controls and cursor/recursive/all keyboard commands
-  are in place. Continue other-language blocks, methods/functions, comments and
-  explicit regions.
-  Prefer parser/language-provided ranges with indentation fallback, avoiding naive
-  brace counting inside strings/comments. Logical line numbers and Find reveal
-  are supported; finish navigation reveal
-  and retain unaffected folds during native editing, which currently expands the
-  view.
+  are in place, with language-aware lexical/indentation fallback, consecutive
+  comments and explicit regions. Rust parser ranges take precedence; richer
+  other-language parser providers remain under Syntax-aware editing. Logical line
+  numbers and Find reveal are supported; finish navigation reveal and retain
+  unaffected folds during native editing, which currently expands the view.
 - **Reading/navigation:** active-line and matching-bracket highlights, indent guides,
   jump to matching bracket, go to line/column, and a compact cursor/selection status.
   Preserve the current horizontal-scroll default; make word wrap and whitespace

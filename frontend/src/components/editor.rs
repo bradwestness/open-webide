@@ -833,6 +833,7 @@ pub fn Editor(
         content.track();
         open_file.track();
         workspace.active_project.track();
+        editor_actions.rules();
         let deadline = js_sys::Date::now() + 12.0;
         untrack(|| {
             editor_actions.refresh_fold_ranges(|| js_sys::Date::now() <= deadline);

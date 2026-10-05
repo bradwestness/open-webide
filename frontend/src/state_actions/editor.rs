@@ -223,6 +223,7 @@ impl EditorActions {
         let epoch = self.workspace.pending_epoch.get_untracked();
         let language = openwebide_core::highlight::language_from_path(&key.1);
         let text = self.workspace.content.get_untracked();
+        let tab_width = self.rules_untracked().indentation.tab_width();
         let result = self
             .workspace
             .editor_syntax
@@ -234,7 +235,7 @@ impl EditorActions {
                     }
                 };
                 let status = document.update(&text, should_continue);
-                Some((status, document.folds()))
+                Some((status, document.folds_with_tab_width(tab_width)))
             })
             .flatten();
         (self.key() == Some(key)

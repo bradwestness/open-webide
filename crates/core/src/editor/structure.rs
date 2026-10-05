@@ -131,6 +131,14 @@ impl Structure {
                 continue;
             }
             let ch = rest.chars().next().unwrap();
+            if language == Language::Yaml
+                && matches!(ch, '|' | '>')
+                && let Some(end) = yaml_scalar_end(text, i)
+            {
+                protected.push((i..end, true, RegionKind::String));
+                i = end;
+                continue;
+            }
             let quotes = supports_quote(language, ch);
             // An apostrophe before a Rust identifier is a lifetime unless a closing
             // apostrophe follows its single character (possibly an escape).
@@ -204,6 +212,36 @@ impl Structure {
         self.available
     }
 
+    pub(super) fn literals(&self) -> impl Iterator<Item = &Range<usize>> {
+        self.protected.iter().filter_map(|(range, _, kind)| {
+            matches!(kind, RegionKind::String | RegionKind::BlockComment).then_some(range)
+        })
+    }
+
+    pub(super) fn is_literal(&self, position: usize) -> bool {
+        self.region_at(position).is_some_and(|(range, _, kind)| {
+            matches!(kind, RegionKind::String | RegionKind::Regex) && range.contains(&position)
+        })
+    }
+
+    pub(super) fn is_opaque_body(&self, position: usize) -> bool {
+        self.region_at(position)
+            .is_some_and(|(range, _, _)| range.start < position && range.contains(&position))
+    }
+
+    pub(super) fn is_line_comment(&self, position: usize) -> bool {
+        self.region_at(position).is_some_and(|(range, _, kind)| {
+            *kind == RegionKind::LineComment && range.contains(&position)
+        })
+    }
+
+    pub(super) fn is_comment(&self, position: usize) -> bool {
+        self.region_at(position).is_some_and(|(range, _, kind)| {
+            matches!(kind, RegionKind::LineComment | RegionKind::BlockComment)
+                && range.contains(&position)
+        })
+    }
+
     fn region_at(&self, position: usize) -> Option<&(Range<usize>, bool, RegionKind)> {
         let end = self
             .protected
@@ -254,6 +292,41 @@ impl Structure {
                 .then_some((position, ch))
             })
     }
+}
+
+// YAML block-scalar contents are literal even when they resemble comments or
+// code. Dedentation ends the value; blank rows do not.
+fn yaml_scalar_end(text: &str, offset: usize) -> Option<usize> {
+    let start = text[..offset].rfind('\n').map_or(0, |newline| newline + 1);
+    let before = &text[start..offset];
+    if !before.trim_end().ends_with([':', '-']) {
+        return None;
+    }
+    let newline = text[offset..].find('\n').map(|newline| offset + newline)?;
+    let indicator = text[offset + 1..newline].split('#').next()?.trim();
+    if !indicator
+        .chars()
+        .all(|ch| matches!(ch, '+' | '-' | '1'..='9'))
+    {
+        return None;
+    }
+    let depth = before
+        .chars()
+        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .count();
+    let mut end = newline + 1;
+    for line in text[end..].split_inclusive('\n') {
+        let body = line.trim();
+        let indent = line
+            .chars()
+            .take_while(|ch| matches!(ch, ' ' | '\t'))
+            .count();
+        if !body.is_empty() && indent <= depth {
+            break;
+        }
+        end += line.len();
+    }
+    Some(end)
 }
 
 fn regex_position(before: &str) -> bool {
