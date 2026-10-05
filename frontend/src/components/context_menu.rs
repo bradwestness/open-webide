@@ -184,3 +184,9 @@ pub fn context_menu_target(
         binding.try_update_value(|binding| *binding = None);
     });
 }
+
+/// The application supplies context menus; suppress the browser's default menu.
+pub fn disable_browser_menu() {
+    let listener = window_event_listener(leptos::ev::contextmenu, |event| event.prevent_default());
+    on_cleanup(move || listener.remove());
+}

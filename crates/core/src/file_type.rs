@@ -59,6 +59,11 @@ impl FileKind {
         matches!(self, FileKind::Markdown | FileKind::Image)
     }
 
+    /// Preview formats rendered by the editor; binary placeholders are not previews.
+    pub fn supports_preview(path: &str) -> bool {
+        Self::from_path(path).is_previewable() || extension(path).as_deref() == Some("pdf")
+    }
+
     /// A friendly descriptive label for the file type.
     pub fn description(&self, path: &str) -> &'static str {
         let ext = extension(path).unwrap_or_default();
@@ -154,5 +159,11 @@ mod tests {
         assert!(FileKind::from_path("README.md").is_previewable());
         assert!(FileKind::from_path("logo.png").is_previewable());
         assert!(!FileKind::from_path("backend.wasm").is_previewable());
+        for path in ["README.md", "photo.PNG", "report.PDF"] {
+            assert!(FileKind::supports_preview(path));
+        }
+        for path in ["source.rs", "text.txt", "archive.zip", "movie.mp4"] {
+            assert!(!FileKind::supports_preview(path));
+        }
     }
 }

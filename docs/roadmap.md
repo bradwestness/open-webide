@@ -50,7 +50,8 @@ The following checks still require hands-on device or environment testing:
 ### Full code editor: editing, structure and navigation
 
 Build out the existing syntax-highlighted Edit view into a daily-use code editor.
-Keep numbered Inline/Split diffs, preview, Find, pending-edit review and agent editor
+Keep numbered Inline/Split diffs, previews for supported formats (Markdown/images/PDF),
+Find, pending-edit review and agent editor
 context intact. Editing must work without a host language server in both modes.
 
 Start with the editing foundation:

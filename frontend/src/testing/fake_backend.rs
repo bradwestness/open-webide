@@ -1008,7 +1008,7 @@ impl Backend for FakeBackend {
             parts.push(&wasm_bindgen::JsValue::from_str(&content));
             let blob =
                 web_sys::Blob::new_with_str_sequence(&parts).map_err(|e| format!("{e:?}"))?;
-            web_sys::Url::create_object_url_with_blob(&blob).map_err(|e| format!("{e:?}"))
+            crate::workspace::preview_object_url(&blob, path).map_err(|e| format!("{e:?}"))
         })
     }
     fn read_file<'a>(

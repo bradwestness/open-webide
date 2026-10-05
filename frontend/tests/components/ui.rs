@@ -639,3 +639,28 @@ async fn action_menus_open_from_rows_headers_and_touch_without_activating_them()
         assert!(mounted.root.contains(Some(row.as_ref())));
     }
 }
+
+#[wasm_bindgen_test]
+async fn browser_context_menu_is_suppressed_even_without_an_app_menu() {
+    let mounted = mount_test(|_| {
+        openwebide_frontend::components::context_menu::disable_browser_menu();
+        view! {<div class="blank">"Blank area"<input /></div>}
+    });
+    settle().await;
+    for selector in [".blank", "input"] {
+        let init = web_sys::MouseEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let event =
+            web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &init).unwrap();
+        mounted.element(selector).dispatch_event(&event).unwrap();
+        assert!(event.default_prevented());
+        assert!(
+            mounted
+                .root
+                .query_selector(".ui-dropdown-menu")
+                .unwrap()
+                .is_none()
+        );
+    }
+}

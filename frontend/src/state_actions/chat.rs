@@ -40,12 +40,14 @@ pub struct ChatActionContext {
 type RunIntent = (
     Option<InterruptedRun>,
     Option<openwebide_core::QueuedPrompt>,
+    Option<String>,
 );
 
 pub struct ChatActions {
     pub conversation: super::conversation::ConversationActions,
     pub queue: super::prompt_queue::PromptQueueActions,
     pub send: Callback<()>,
+    pub send_prompt: Callback<String>,
     pub rewind: Callback<i64>,
     pub resume_run: Callback<()>,
     pub stop: Callback<()>,
@@ -237,12 +239,14 @@ impl ChatActions {
             let auth = expect_context::<crate::state::auth::AuthState>();
             let local_cancel = chat.local_cancel_flag.get_value();
             let local_permissions = chat.local_permissions.get_value();
-            Callback::new(move |(resume, queued): RunIntent| {
-                let content = queued.as_ref().map_or_else(
-                    || chat.draft.with(|draft| draft.trim().to_string()),
-                    |prompt| prompt.content.clone(),
-                );
-                let images = if queued.is_some() {
+            Callback::new(move |(resume, queued, shortcut): RunIntent| {
+                let content = shortcut.clone().unwrap_or_else(|| {
+                    queued.as_ref().map_or_else(
+                        || chat.draft.with(|draft| draft.trim().to_string()),
+                        |prompt| prompt.content.clone(),
+                    )
+                });
+                let images = if queued.is_some() || shortcut.is_some() {
                     Vec::new()
                 } else {
                     chat.prompt_images.get_untracked()
@@ -271,12 +275,13 @@ impl ChatActions {
                 if resume.is_none() {
                     chat.interrupted_run.set(None);
                 }
-                let editing = if resume.is_none() && queued.is_none() {
+                let editing = if resume.is_none() && queued.is_none() && shortcut.is_none() {
                     chat.prompt_edit.get_untracked()
                 } else {
                     None
                 };
-                let editor_snapshot = if resume.is_none() && queued.is_none() {
+                let editor_snapshot = if resume.is_none() && queued.is_none() && shortcut.is_none()
+                {
                     chat.active_editor_context.get_untracked()
                 } else {
                     None
@@ -303,7 +308,7 @@ impl ChatActions {
                 }
                 // Clear the draft and mark streaming synchronously so a second
                 // send can't fire while the session is (possibly) created.
-                if resume.is_none() && queued.is_none() {
+                if resume.is_none() && queued.is_none() && shortcut.is_none() {
                     chat.draft.set(String::new());
                     chat.prompt_images.set(Vec::new());
                     chat.interrupted_run.set(None);
@@ -574,6 +579,7 @@ impl ChatActions {
 
                     if resume.is_none()
                         && queued.is_none()
+                        && shortcut.is_none()
                         && chat.active_editor_context.get_untracked() == editor_snapshot
                     {
                         chat.active_editor_context.set(None);
@@ -637,7 +643,7 @@ impl ChatActions {
             projects,
             project_git,
             ui,
-            Callback::new(move |prompt| start.run((None, Some(prompt)))),
+            Callback::new(move |prompt| start.run((None, Some(prompt), None))),
             stop,
         );
         let stop = Callback::new(move |()| {
@@ -712,7 +718,9 @@ impl ChatActions {
                 });
             });
 
-        let send = Callback::new(move |()| start.run((None, None)));
+        let send = Callback::new(move |()| start.run((None, None, None)));
+        let send_prompt =
+            Callback::new(move |prompt: String| start.run((None, None, Some(prompt))));
         let resume_run = Callback::new(move |()| {
             let Some(resume) = chat.interrupted_run.get_untracked() else {
                 return;
@@ -726,7 +734,7 @@ impl ChatActions {
             if !project_runs.can_resume(session_project) {
                 return;
             }
-            start.run((Some(resume), None));
+            start.run((Some(resume), None, None));
         });
 
         let on_select_session =
@@ -1086,6 +1094,7 @@ impl ChatActions {
             queue,
             rewind,
             send,
+            send_prompt,
             resume_run,
             stop,
             permission,

@@ -27,6 +27,7 @@ use crate::{api::HealthState, backend::Api};
 #[component]
 pub fn App() -> impl IntoView {
     crate::viewport::install_action_tooltips();
+    crate::components::context_menu::disable_browser_menu();
     let api: Api =
         StoredValue::new_local(std::rc::Rc::new(crate::api::BackendApi::from_location()));
     provide_context(api);
@@ -286,6 +287,9 @@ pub fn App() -> impl IntoView {
         refresh_git,
         on_sync_click,
     });
+    expect_context::<crate::state_actions::file_tree::FileTreeActions>()
+        .send_prompt
+        .set(Some(chat_actions.send_prompt));
     let on_send = chat_actions.send;
     let on_stop = chat_actions.stop;
     let on_permission = chat_actions.permission;

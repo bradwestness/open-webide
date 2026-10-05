@@ -244,11 +244,12 @@ fn tree_rows(target: Option<web_sys::EventTarget>) -> Vec<web_sys::HtmlElement> 
 
 /// One entry owns its menu and gestures; every action uses the shared facade.
 #[component]
-fn FileTreeEntry(
+pub(super) fn FileTreeEntry(
     entry: FileEntry,
     depth: u32,
     on_toggle: Callback<String>,
     on_open: Callback<String>,
+    #[prop(default = false)] changes_only: bool,
 ) -> impl IntoView {
     use super::{
         dropdown::Dropdown,
@@ -364,6 +365,21 @@ fn FileTreeEntry(
                 })
         })
     });
+    let review = Signal::derive(move || {
+        stage.get()
+            || unstage.get()
+            || changes_only
+            || git.status.with(|status| {
+                status.as_ref().is_some_and(|status| {
+                    status.files.keys().any(|path| {
+                        openwebide_core::workspace_entries::contains_path(
+                            &entry.get_value().path,
+                            path,
+                        )
+                    })
+                })
+            })
+    });
     let disabled = Signal::derive(move || {
         actions.is_none_or(FileTreeActions::disabled)
             || openwebide_core::workspace_entries::entry_path(&entry.get_value().path).is_err()
@@ -422,15 +438,18 @@ fn FileTreeEntry(
                     <div class="ui-action-items" on:click=move |event| {
                         if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
                             .is_some_and(|target| target.closest("button:not(:disabled)").ok().flatten().is_some()) {open.set(false);}
-                    }>{owner.with(|| view! {
+                    }>{move || changes.with(|result| result.as_ref().and_then(|result| result.as_ref().err()).map(|error| view! {<div class="form-hint" role="status">{format!("Git actions unavailable: {error}")}</div>}))}
+                    {owner.with(|| view! {
+                        {(!changes_only).then(|| view! {
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get()
                             on:click=move |_| {let entry = entry.get_value(); actions.create(if is_dir {&entry.path} else {parent(&entry.path)}, VfsEntryKind::File);}>"New file"</button>
-                        <button class="recent-item" role="menuitem" disabled=move || disabled.get()
-                            on:click=move |_| {let entry = entry.get_value(); actions.create(if is_dir {&entry.path} else {parent(&entry.path)}, VfsEntryKind::Directory);}>"New folder"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !is_dir
+                            on:click=move |_| {let entry = entry.get_value(); actions.create(&entry.path, VfsEntryKind::Directory);}>"New folder"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), true)>"Rename"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), false)>"Move"</button>
                         <button class="recent-item" role="menuitem" on:click=move |_| actions.copy_path(&entry.get_value().path)>"Copy path"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.delete(&entry.get_value())>"Delete"</button>
+                        })}
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !stage.get()
                             on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Stage)>{move || if untracked.get() {"Add / track"} else {"Stage"}}</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !unstage.get()
@@ -439,10 +458,10 @@ fn FileTreeEntry(
                             on:click=move |_| actions.ignore(&entry.get_value())>"Ignore"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !revert.get()
                             on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Revert)>"Revert changes"</button>
-                        <button class="recent-item" role="menuitem" on:click=move |_| actions.chat(&entry.get_value(), "Explain", false)>"Explain in chat"</button>
-                        <button class="recent-item" role="menuitem" on:click=move |_| actions.chat(&entry.get_value(), "Summarize", false)>"Summarize in chat"</button>
-                        <button class="recent-item" role="menuitem" disabled=move || !stage.get() && !unstage.get()
-                            on:click=move |_| actions.chat(&entry.get_value(), "Review changes in", true)>"Review changes in chat"</button>
+                        <button class="recent-item" role="menuitem" title="Explain the purpose, behavior and how the code works" disabled=move || actions.disabled() on:click=move |_| actions.chat(&entry.get_value(), "Explain how this works:", false)>"Explain in chat"</button>
+                        <button class="recent-item" role="menuitem" title="Give a brief overview of the purpose and key contents" disabled=move || actions.disabled() on:click=move |_| actions.chat(&entry.get_value(), "Give a concise overview of", false)>"Summarize in chat"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || actions.disabled() || !review.get()
+                            on:click=move |_| actions.chat(&entry.get_value(), "Review changes for bugs and regressions in", true)>"Review changes in chat"</button>
                     })}</div>
                 </Dropdown>
             })}

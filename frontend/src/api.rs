@@ -462,7 +462,7 @@ impl BackendApi {
             .await
             .map_err(|e| format!("{e:?}"))?;
         let blob: web_sys::Blob = blob_js.unchecked_into();
-        web_sys::Url::create_object_url_with_blob(&blob).map_err(|e| format!("{e:?}"))
+        crate::workspace::preview_object_url(&blob, path).map_err(|e| format!("{e:?}"))
     }
 
     /// Read a file's contents as text.

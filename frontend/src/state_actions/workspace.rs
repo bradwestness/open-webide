@@ -347,6 +347,8 @@ impl WorkspaceActions {
             let Some(project_id) = active_project.get() else {
                 return;
             };
+            let generation = auth.generation.get_untracked();
+            let epoch = directory_epoch.get_untracked();
             read_only.set(false);
             workspace.dirty.set(false);
             workspace.open_file.set(Some(path.clone()));
@@ -356,16 +358,24 @@ impl WorkspaceActions {
             ui.toast.set(None);
             let kind = FileKind::from_path(&path);
             spawn_local(async move {
+                let current = || {
+                    auth.generation.try_get_untracked() == Some(generation)
+                        && directory_epoch.try_get_untracked() == Some(epoch)
+                        && active_project.try_get_untracked() == Some(Some(project_id))
+                        && workspace.open_file.try_get_untracked() == Some(Some(path.clone()))
+                };
+                if !current() {
+                    return;
+                }
                 let Some(ws) = workspace_for.run(project_id) else {
                     return;
                 };
 
-                if kind == FileKind::Image
+                if kind.is_non_text()
+                    && FileKind::supports_preview(&path)
                     && let Ok(url) = ws.read_blob_url(&path).await
                 {
-                    if active_project.get_untracked() == Some(project_id)
-                        && workspace.open_file.get_untracked().as_deref() == Some(path.as_str())
-                    {
+                    if current() {
                         workspace.media_url.set(Some(url));
                     } else {
                         revoke_object_url(Some(url));
@@ -378,16 +388,12 @@ impl WorkspaceActions {
 
                 match ws.read(&path).await {
                     Ok(content) => {
-                        if active_project.get_untracked() == Some(project_id)
-                            && workspace.open_file.get_untracked().as_deref() == Some(path.as_str())
-                        {
+                        if current() {
                             workspace.content.set(content);
                         }
                     }
                     Err(error) => {
-                        if active_project.get_untracked() == Some(project_id)
-                            && workspace.open_file.get_untracked().as_deref() == Some(path.as_str())
-                        {
+                        if current() {
                             ui.toast.set(Some(error.to_string()));
                         }
                     }

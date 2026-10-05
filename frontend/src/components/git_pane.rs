@@ -28,14 +28,13 @@ pub fn GitPane(
     });
     view! { <div class="git-pane">
             <super::ui::PanelToolbar class="file-tree-header"><super::BranchPicker on_load=on_load_branches on_select=on_select_branch on_new=on_new_branch /></super::ui::PanelToolbar>
-            <div class="git-files">
+            <div class="git-files" role="tree" aria-label="Changed files">
                 <For each=move || {
                     let mut files = git.status.get().map(|status| status.files.into_iter().collect::<Vec<_>>()).unwrap_or_default();
                     files.sort_by(|a, b| a.0.cmp(&b.0)); files
-                } key=|(path, _)| path.clone() children=move |(path, status)| {
-                    let click = path.clone();
-                    let selected = path.clone();
-                    view! { <button class="btn tree-item" class:selected=move || workspace.open_file.get().as_deref() == Some(selected.as_str()) on:click=move |_| { on_open.run(click.clone()); }><span class="tree-icon"><super::ui::Icon name=super::ui::IconName::File /></span><span class="tree-name">{path}</span><span class=format!("git-badge {}", status.css_class())>{status.badge()}</span></button> }
+                } key=move |(path, status)| (workspace.active_project.get_untracked(), path.clone(), status.css_class()) children=move |(path, status)| {
+                    let _ = status;
+                    view! { <super::file_tree::FileTreeEntry entry=openwebide_core::FileEntry {name:path.clone(),path,is_dir:false,size:0} depth=0 on_toggle=Callback::new(|_: String| ()) on_open=on_open changes_only=true /> }
                 } />
             </div>
             <div class="git-diff-actions" data-context-menu="">

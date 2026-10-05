@@ -180,6 +180,12 @@ async fn file_switch_reads_latest_path_and_mode_exit_cancels() {
     let before = highlight_count();
     input(&mounted, "new text");
     settle().await;
+    mounted
+        .state
+        .workspace
+        .open_file
+        .set(Some("README.md".into()));
+    settle().await;
     mounted.click_text("Preview");
     settle().await;
     frame().await;
@@ -474,14 +480,16 @@ async fn editor_numbers_full_diff_and_find_share_both_workspace_modes() {
                 .unwrap()
                 .is_none()
         );
+        let preview = mounted.element(".ui-seg-btn:last-child");
+        assert!(preview.has_attribute("disabled"));
         mounted.click_text("Preview");
         settle().await;
         assert!(
             mounted
                 .root
-                .query_selector(".editor-line-number, .editor-source-line")
+                .query_selector(".editor-line-number")
                 .unwrap()
-                .is_none()
+                .is_some()
         );
         mounted.click_text("Edit");
         settle().await;

@@ -164,7 +164,7 @@ pub(crate) async fn read_blob_url_typed(
         .dyn_into()
         .map_err(|_| VfsError::Io(format!("no such file: {path}")))?;
     check_read_size(blob.size())?;
-    web_sys::Url::create_object_url_with_blob(&blob).map_err(js_vfs_error)
+    crate::workspace::preview_object_url(&blob, &path).map_err(js_vfs_error)
 }
 
 /// Write text to a file, creating parent directories as needed.

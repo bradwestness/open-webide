@@ -60,6 +60,7 @@ struct Scope {
 pub struct FileTreeActions {
     pub busy: RwSignal<bool>,
     pub epoch: Memo<u64>,
+    pub send_prompt: RwSignal<Option<Callback<String>>>,
     projects: ProjectsState,
     workspace: WorkspaceState,
     auth: AuthState,
@@ -97,6 +98,7 @@ impl FileTreeActions {
         Self {
             busy,
             epoch,
+            send_prompt: RwSignal::new(None),
             projects,
             workspace,
             auth,
@@ -455,12 +457,19 @@ impl FileTreeActions {
             "{task} {}",
             openwebide_core::prompt::mention_token(kind, path)
         );
-        chat.draft.update(|draft| {
-            if !draft.is_empty() {
-                draft.push_str("\n\n");
-            }
-            draft.push_str(&prompt);
-        });
+        if self.disabled()
+            || chat.connection_changing.get_untracked()
+            || chat.creating_session.get_untracked()
+        {
+            self.ui
+                .notify("Wait for the current chat operation to finish");
+            return;
+        }
+        let Some(send) = self.send_prompt.get_untracked() else {
+            self.ui.notify("Chat actions unavailable");
+            return;
+        };
+        send.run(prompt);
         if let Some(layout) = self.layout {
             layout.show.run(Panel::Chat);
         }

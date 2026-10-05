@@ -73,4 +73,4 @@ pub mod dropdown;
 
 pub use modal::Modal;
 
-mod context_menu;
+pub mod context_menu;

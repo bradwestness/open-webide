@@ -520,6 +520,12 @@ fn render_preview_view(
     let kind = FileKind::from_path(path);
     let file_name = path.rsplit('/').next().unwrap_or(path).to_string();
 
+    if openwebide_core::file_type::extension(path).as_deref() == Some("pdf") {
+        return media_url.map_or_else(
+            || render_placeholder_view(path, kind, set_view_mode, on_open_lossy).into_any(),
+            |url| view! { <iframe class="editor-pdf-preview" src=url title=format!("PDF preview: {file_name}") /> }.into_any(),
+        );
+    }
     match kind {
         FileKind::Image => {
             if let Some(url) = media_url {
@@ -566,11 +572,7 @@ fn render_preview_view(
             render_placeholder_view(path, kind, set_view_mode, on_open_lossy).into_any()
         }
         FileKind::Text => {
-            let html = render_markdown(content);
-            view! {
-                <div class="editor-preview markdown" inner_html=html />
-            }
-            .into_any()
+            render_placeholder_view(path, kind, set_view_mode, on_open_lossy).into_any()
         }
     }
 }
@@ -607,6 +609,12 @@ pub fn Editor(
     let set_dirty = workspace.dirty.write_only();
     let pending_diff: Signal<Option<FileDiff>> = Signal::from(workspace.pending_diff);
     let media_url = workspace.media_url.read_only();
+    let preview_disabled = Signal::derive(move || {
+        workspace.open_file.with(|path| {
+            path.as_ref()
+                .is_none_or(|path| !FileKind::supports_preview(path))
+        })
+    });
     let git_head_diff = Signal::derive(move || {
         let open_file = workspace.open_file.get()?;
         let project_id = projects.active_project.get();
@@ -770,7 +778,7 @@ pub fn Editor(
     Effect::new(move || {
         if let Some(path) = open_file.get() {
             let kind = FileKind::from_path(&path);
-            if kind.is_non_text() {
+            if kind.is_non_text() && FileKind::supports_preview(&path) {
                 view_mode.set(ViewMode::Preview);
             } else if pending_diff.get().is_none() && kind != FileKind::Markdown {
                 view_mode.set(ViewMode::Code);
@@ -837,7 +845,7 @@ pub fn Editor(
                                                     options=vec![
                                                         SegmentOption::new("Edit", ViewMode::Code),
                                                         SegmentOption::new("Diff HEAD", ViewMode::InlineDiff),
-                                                        SegmentOption::new("Preview", ViewMode::Preview),
+                                                        SegmentOption::new("Preview", ViewMode::Preview).disabled_when(preview_disabled),
                                                     ]
                                                     value=view_mode.read_only().into()
                                                     on_change=Callback::new(move |mode| {
@@ -870,7 +878,7 @@ pub fn Editor(
                                             SegmentOption::new("Edit", ViewMode::Code),
                                             SegmentOption::new("Inline", ViewMode::InlineDiff),
                                             SegmentOption::new("Split", ViewMode::SideBySide),
-                                            SegmentOption::new("Preview", ViewMode::Preview),
+                                            SegmentOption::new("Preview", ViewMode::Preview).disabled_when(preview_disabled),
                                         ]
                                         value=view_mode.read_only().into()
                                         on_change=Callback::new(move |mode| {
@@ -929,7 +937,7 @@ pub fn Editor(
                             options=vec![
                                 SegmentOption::new("Inline", ViewMode::InlineDiff),
                                 SegmentOption::new("Split", ViewMode::SideBySide),
-                                SegmentOption::new("Preview", ViewMode::Preview),
+                                SegmentOption::new("Preview", ViewMode::Preview).disabled_when(preview_disabled),
                             ]
                             value=view_mode.read_only().into()
                             on_change=Callback::new(move |mode| view_mode.set(mode))
@@ -1020,6 +1028,10 @@ pub fn Editor(
                                     on_open_lossy,
                                 )
                                 .into_any()
+                            }
+                            _ if open_file.with(|path| path.as_ref().is_some_and(|path| FileKind::from_path(path).is_non_text())) && !read_only.get() => {
+                                let path = open_file.get().unwrap_or_default();
+                                render_placeholder_view(&path, FileKind::from_path(&path), view_mode.write_only(), on_open_lossy).into_any()
                             }
                             _ => {
                                 view! {

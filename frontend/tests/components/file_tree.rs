@@ -70,6 +70,15 @@ fn fixture(
     Mounted,
     std::rc::Rc<std::cell::Cell<Option<FileTreeActions>>>,
 ) {
+    fixture_with_changes(handle, false)
+}
+fn fixture_with_changes(
+    handle: Option<JsValue>,
+    changes: bool,
+) -> (
+    Mounted,
+    std::rc::Rc<std::cell::Cell<Option<FileTreeActions>>>,
+) {
     let slot = std::rc::Rc::new(std::cell::Cell::new(None));
     let captured = slot.clone();
     let mounted = mount_test(move |state| {
@@ -99,8 +108,12 @@ fn fixture(
             RwSignal::new(false),
             Callback::new(|()| ()),
         );
-        captured.set(Some(expect_context::<FileTreeActions>()));
-        view! {<FileTree on_toggle=actions.on_toggle on_open=actions.request_open /><PromptDialog /><ConfirmDialog />}
+        let tree = expect_context::<FileTreeActions>();
+        tree.send_prompt.set(Some(Callback::new(move |prompt| {
+            state.chat.notice.set(Some(prompt));
+        })));
+        captured.set(Some(tree));
+        view! {<FileTree on_toggle=actions.on_toggle on_open=actions.request_open /><PromptDialog /><ConfirmDialog />{changes.then(|| view! { <openwebide_frontend::components::GitPane on_open=actions.request_open on_load_git_diff=Callback::new(|()| ()) on_discard_git_diff=Callback::new(|()| ()) /> })}}
     });
     (mounted, slot)
 }
@@ -279,19 +292,11 @@ async fn tree_menu_keyboard_touch_dismissal_and_editable_chat_prompts_in_both_mo
         settle().await;
         assert_eq!(
             mounted.state.chat.draft.get_untracked(),
-            "Existing question\n\nExplain @file:\"a.txt\""
+            "Existing question"
         );
-        assert!(
-            !mounted
-                .state
-                .fake
-                .calls
-                .borrow()
-                .iter()
-                .any(|call| matches!(
-                    call,
-                    openwebide_frontend::testing::fake_backend::Call::SendMessage { .. }
-                ))
+        assert_eq!(
+            mounted.state.chat.notice.get_untracked().as_deref(),
+            Some("Explain how this works: @file:\"a.txt\"")
         );
         treeLongPress(&row, true);
         openwebide_frontend::util::sleep_ms(550).await;
@@ -620,7 +625,7 @@ async fn tree_git_actions_share_both_adapters_and_report_failures() {
                 .query_selector_all(".ui-dropdown-menu button:not(:disabled)")
                 .unwrap()
                 .length()
-                >= 12
+                >= 11
         })
         .await;
         if !local {
@@ -688,4 +693,250 @@ async fn tree_git_actions_share_both_adapters_and_report_failures() {
         drop(mounted);
     }
     restore_token(old).await;
+}
+
+#[wasm_bindgen_test]
+async fn changes_rows_share_git_and_chat_menus_and_review_uses_known_status() {
+    use super::project_git::{Http, gitChange, gitHttp, restore_token, token};
+    let previous = token().await;
+    let http = Http(gitHttp());
+    gitChange(&http.0, "invalid", true);
+    use openwebide_core::{GitRepoStatus, git::GitFileStatus};
+    for local in [false, true] {
+        let folder = if local {
+            Some(treeFolder().await.unwrap())
+        } else {
+            None
+        };
+        let (mounted, _) = fixture_with_changes(folder.as_ref().map(treeHandle), true);
+        mounted
+            .state
+            .settings
+            .bridge_url
+            .set("ws://git.test:3001".into());
+        mounted.state.git.status.set(Some(GitRepoStatus {
+            branch: "main".into(),
+            commit_hash: "abc".into(),
+            commit_message: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            is_clean: false,
+            line_stats: Default::default(),
+            files: [("a.txt".into(), GitFileStatus::Modified)].into(),
+        }));
+        settle().await;
+        treeContext(&mounted.element(".tree-root .tree-item"));
+        settle().await;
+        let button = |label: &str| {
+            let nodes = mounted
+                .root
+                .query_selector_all(".ui-dropdown-menu button")
+                .unwrap();
+            (0..nodes.length())
+                .filter_map(|i| nodes.item(i))
+                .filter_map(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+                .find(|node| node.text_content().as_deref() == Some(label))
+                .unwrap()
+        };
+        assert!(button("New folder").has_attribute("disabled"));
+        assert!(!button("Review changes in chat").has_attribute("disabled"));
+        mounted.click(".ui-dropdown-backdrop");
+        treeContext(&mounted.element(".git-files .tree-item"));
+        settle().await;
+        wait_until("Git lookup completed", || {
+            mounted
+                .root
+                .query_selector(".ui-dropdown-menu [role=status]")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let menu = mounted.element(".ui-dropdown-menu").text_content().unwrap();
+        assert!(
+            !menu.contains("New folder") && !menu.contains("Rename") && !menu.contains("Delete")
+        );
+        assert!(menu.contains("Stage") && menu.contains("Revert changes"));
+        choose(&mounted, "Review changes in chat");
+        assert_eq!(
+            mounted.state.chat.notice.get_untracked().as_deref(),
+            Some("Review changes for bugs and regressions in @diff:\"a.txt\"")
+        );
+        assert!(mounted.state.chat.draft.get_untracked().is_empty());
+        if let Some(folder) = folder {
+            treeCleanup(&folder).await.unwrap();
+        }
+    }
+    restore_token(previous).await;
+}
+
+#[wasm_bindgen_test]
+async fn shortcut_send_uses_shared_run_pipeline_and_preserves_draft_in_both_modes() {
+    use openwebide_core::{
+        ChatCompletion, ChatResponse, ConversationEntry, PromptImage, Role, StopReason,
+    };
+    for local in [false, true] {
+        let folder = if local {
+            Some(treeFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(treeHandle);
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let capture = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_connection();
+            state.seed_session();
+            state
+                .fake
+                .files
+                .borrow_mut()
+                .insert((1, "a.txt".into()), "Original".into());
+            if let Some(handle) = handle {
+                state
+                    .projects
+                    .projects
+                    .update(|items| items[0].mode = openwebide_core::WorkspaceMode::Local);
+                state.projects.local_handles.update(|items| {
+                    items.insert(1, handle.unchecked_into());
+                });
+            }
+            state
+                .fake
+                .scripted_completions
+                .borrow_mut()
+                .push_back(ChatCompletion {
+                    reasoning: String::new(),
+                    response: ChatResponse::Text("Explained".into()),
+                    stop_reason: StopReason::Complete,
+                    preamble: String::new(),
+                    usage: None,
+                });
+            capture.set(Some(super::support::chat_actions(state).send_prompt));
+            view! {<div/>}
+        });
+        settle().await;
+        let image = PromptImage {
+            name: "draft.png".into(),
+            mime: "image/png".into(),
+            data: "unused-draft-image".into(),
+        };
+        mounted.state.chat.draft.set("Unsent draft".into());
+        mounted.state.chat.prompt_images.set(vec![image.clone()]);
+        slot.get().unwrap().run("Explain @file:\"a.txt\"".into());
+        wait_until("shortcut sent", || {
+            !mounted.state.chat.streaming.get_untracked()
+        })
+        .await;
+        assert!(
+            mounted.state.chat.error.get_untracked().is_none(),
+            "{:?}",
+            mounted.state.chat.error.get_untracked()
+        );
+        assert_eq!(mounted.state.chat.draft.get_untracked(), "Unsent draft");
+        assert_eq!(
+            mounted.state.chat.prompt_images.get_untracked(),
+            vec![image]
+        );
+        if local {
+            assert!(mounted.state.fake.messages.borrow()[&1].iter().any(|entry| matches!(entry,ConversationEntry::Message(message) if message.role==Role::User && message.content.contains("Explain") && message.content.contains("Original") && !message.content.contains("Unsent draft"))));
+        } else {
+            assert!(mounted.state.fake.calls.borrow().iter().any(|call| matches!(call,openwebide_frontend::testing::fake_backend::Call::SendMessage {content,..} if content.contains("Explain") && content.contains("Original") && !content.contains("Unsent draft"))));
+        }
+        if let Some(folder) = folder {
+            treeCleanup(&folder).await.unwrap();
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn preview_availability_and_pdf_blob_contract_work_in_both_modes() {
+    for local in [false, true] {
+        let folder = if local {
+            Some(treeFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(treeHandle);
+        let open = std::rc::Rc::new(std::cell::Cell::new(None));
+        let capture = open.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            if let Some(handle) = handle {
+                state
+                    .projects
+                    .projects
+                    .update(|items| items[0].mode = openwebide_core::WorkspaceMode::Local);
+                state.projects.local_handles.update(|items| {
+                    items.insert(1, handle.unchecked_into());
+                });
+            }
+            let actions = WorkspaceActions::new(
+                state.api,
+                state.projects,
+                state.workspace,
+                state.ui,
+                RwSignal::new(false),
+                Callback::new(|()| ()),
+            );
+            capture.set(Some(actions.request_open));
+            view! { <openwebide_frontend::components::Editor read_only=Signal::derive(|| false) on_open_lossy=actions.on_open_lossy on_save=actions.on_save on_accept=actions.on_accept on_reject=actions.on_reject /> }
+        });
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        for (path, content) in [
+            ("source.rs", "fn code() {}"),
+            ("README.md", "# Read me"),
+            ("report.pdf", "%PDF-1.4\n%%EOF"),
+            ("archive.zip", "binary placeholder"),
+        ] {
+            files.write(path, content).await.unwrap();
+            open.get().unwrap().run(path.into());
+            settle().await;
+            let preview = || {
+                let buttons = mounted.root.query_selector_all(".ui-seg-btn").unwrap();
+                (0..buttons.length())
+                    .filter_map(|i| buttons.item(i))
+                    .filter_map(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+                    .find(|node| node.text_content().as_deref() == Some("Preview"))
+                    .unwrap()
+            };
+            assert_eq!(
+                preview().has_attribute("disabled"),
+                !openwebide_core::FileKind::supports_preview(path),
+                "{path}"
+            );
+            if path.ends_with("pdf") {
+                wait_until("PDF loaded", || {
+                    mounted.state.workspace.media_url.get_untracked().is_some()
+                })
+                .await;
+                let url = mounted.state.workspace.media_url.get_untracked().unwrap();
+                let response = gloo_net::http::Request::get(&url).send().await.unwrap();
+                assert_eq!(
+                    response.headers().get("content-type").as_deref(),
+                    Some("application/pdf")
+                );
+                assert_eq!(
+                    mounted
+                        .element(".editor-pdf-preview")
+                        .get_attribute("src")
+                        .as_deref(),
+                    Some(url.as_str())
+                );
+            }
+            if path.ends_with("zip") {
+                assert!(
+                    mounted
+                        .root
+                        .query_selector(".editor-placeholder-view")
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        }
+        if let Some(folder) = folder {
+            treeCleanup(&folder).await.unwrap();
+        }
+    }
 }

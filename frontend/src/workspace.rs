@@ -46,6 +46,19 @@ pub enum Workspace {
     Remote { api: Api, project_id: i64 },
     Local { handle: FileSystemDirectoryHandle },
 }
+/// Normalize preview metadata once for both browser filesystem and HTTP blobs.
+pub(crate) fn preview_object_url(
+    blob: &web_sys::Blob,
+    path: &str,
+) -> Result<String, wasm_bindgen::JsValue> {
+    let blob = if openwebide_core::file_type::extension(path).as_deref() == Some("pdf") {
+        blob.slice_with_f64_and_f64_and_content_type(0.0, blob.size(), "application/pdf")?
+    } else {
+        blob.clone()
+    };
+    web_sys::Url::create_object_url_with_blob(&blob)
+}
+
 impl Workspace {
     /// Local bridge discovery updates metadata, not the browser folder handle.
     /// Only remote paths select a filesystem root; local roots use handle identity.

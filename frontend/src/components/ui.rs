@@ -78,6 +78,7 @@ pub struct SegmentOption<T: Clone + PartialEq + Send + Sync + 'static> {
     pub label: String,
     pub value: T,
     pub glyph: Option<String>,
+    pub disabled: Option<Signal<bool>>,
 }
 
 impl<T: Clone + PartialEq + Send + Sync + 'static> SegmentOption<T> {
@@ -86,7 +87,12 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> SegmentOption<T> {
             label: label.into(),
             value,
             glyph: None,
+            disabled: None,
         }
+    }
+    pub fn disabled_when(mut self, disabled: Signal<bool>) -> Self {
+        self.disabled = Some(disabled);
+        self
     }
 }
 
@@ -113,6 +119,7 @@ pub fn SegmentedControl<T: Clone + PartialEq + Send + Sync + 'static>(
                 view! {
                     <button
                         type="button"
+                        disabled=move || opt.disabled.is_some_and(|disabled| disabled.get())
                         aria-pressed=move || (value.get() == opt_val).to_string()
                         class=move || {
                             if is_active() {
