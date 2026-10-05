@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Build shared document fold state and source/visible-text projection for the upcoming folding controls: preserve logical lines, Unicode/CRLF offsets and directional selections; reveal hidden navigation targets, reject replacements across hidden gaps, and rebase unaffected headers through edits and grouped undo/redo. Route commands through the same editor facade in both modes; editor-view controls remain in progress.
+
 - Add the shared incremental Rust syntax/folding provider, with Unicode/CRLF-safe tree updates, parser cancellation/size limits and per-file/project/account caches. Supply portable Clang/LLVM builds for browser WASM, CI and Docker; keep backend WASI builds independent of the optional parser. Folding controls and other-language providers remain in progress.
 
 - The editor restores each file’s caret, selection direction and horizontal/vertical scroll position across file, project and edit/diff view switches; detached editor events cannot overwrite another view’s position.

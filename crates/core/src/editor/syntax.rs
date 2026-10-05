@@ -165,21 +165,13 @@ fn point(text: &str, offset: usize) -> Point {
 }
 
 fn input_edit(old: &str, new: &str) -> InputEdit {
-    let start = old
-        .chars()
-        .zip(new.chars())
-        .take_while(|(a, b)| a == b)
-        .map(|(ch, _)| ch.len_utf8())
-        .sum::<usize>();
-    let suffix = old[start..]
-        .chars()
-        .rev()
-        .zip(new[start..].chars().rev())
-        .take_while(|(a, b)| a == b)
-        .map(|(ch, _)| ch.len_utf8())
-        .sum::<usize>();
-    let old_end = old.len() - suffix;
-    let new_end = new.len() - suffix;
+    let change = super::text_change(old, new).unwrap_or(super::TextChange {
+        range: 0..0,
+        new_end: 0,
+    });
+    let start = change.range.start;
+    let old_end = change.range.end;
+    let new_end = change.new_end;
     InputEdit {
         start_byte: start,
         old_end_byte: old_end,

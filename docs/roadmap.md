@@ -77,7 +77,9 @@ same engine. See [editor controls](editor.md). Continue with:
 
 Then add structure and navigation:
 
-- **Folding:** gutter controls and keyboard commands for blocks, methods/functions,
+- **Folding:** shared collapse state, recursive/reveal commands and source/visible
+  offset projection are in place. Connect gutter controls and keyboard commands
+  for blocks, methods/functions,
   comments and explicit regions; fold/unfold at the cursor, recursively or all.
   Prefer parser/language-provided ranges with indentation fallback, avoiding naive
   brace counting inside strings/comments. Retain logical line numbers; searching or

@@ -32,9 +32,343 @@ pub fn normalize_folds(mut ranges: Vec<FoldRange>, line_count: usize) -> Vec<Fol
     ranges
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoldCommand {
+    Toggle(usize),
+    Collapse { recursive: bool },
+    Expand { recursive: bool },
+    CollapseAll,
+    ExpandAll,
+    Reveal(usize),
+}
+
+/// Collapse state is independent of presentation and retained per source document.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FoldState {
+    ranges: Vec<FoldRange>,
+    collapsed: std::collections::BTreeSet<usize>,
+    // Source anchors survive multiple edits while a provider refresh is pending.
+    // These ranges are never exposed to the view before the provider validates them.
+    pending: Vec<FoldRange>,
+}
+
+impl FoldState {
+    pub fn ranges(&self) -> &[FoldRange] {
+        &self.ranges
+    }
+    pub fn set_ranges(&mut self, ranges: Vec<FoldRange>, line_count: usize) {
+        self.ranges = normalize_folds(ranges, line_count);
+        self.pending.clear();
+        self.collapsed.retain(|line| {
+            self.ranges
+                .binary_search_by_key(line, |range| range.start_line)
+                .is_ok()
+        });
+    }
+    pub fn collapsed_at(&self, header: usize) -> Option<FoldRange> {
+        if !self.collapsed.contains(&header) {
+            return None;
+        }
+        self.ranges
+            .binary_search_by_key(&header, |range| range.start_line)
+            .ok()
+            .map(|index| self.ranges[index])
+    }
+    pub fn toggle(&mut self, header: usize) -> bool {
+        if self
+            .ranges
+            .binary_search_by_key(&header, |range| range.start_line)
+            .is_err()
+        {
+            return false;
+        }
+        if !self.collapsed.remove(&header) {
+            self.collapsed.insert(header);
+        }
+        true
+    }
+    pub fn collapse_all(&mut self) {
+        self.collapsed
+            .extend(self.ranges.iter().map(|range| range.start_line));
+    }
+    pub fn expand_all(&mut self) {
+        self.collapsed.clear();
+        self.pending.clear();
+    }
+    pub fn collapse_at(&mut self, line: usize, recursive: bool) -> bool {
+        let Some(range) = self
+            .ranges
+            .iter()
+            .rev()
+            .find(|range| range.start_line <= line && line <= range.end_line)
+            .copied()
+        else {
+            return false;
+        };
+        self.collapsed.insert(range.start_line);
+        if recursive {
+            self.collapsed.extend(
+                self.ranges
+                    .iter()
+                    .filter(|child| {
+                        range.start_line <= child.start_line && child.end_line <= range.end_line
+                    })
+                    .map(|child| child.start_line),
+            );
+        }
+        true
+    }
+    pub fn expand_at(&mut self, line: usize, recursive: bool) -> bool {
+        let candidates = if self.ranges.is_empty() {
+            &self.pending
+        } else {
+            &self.ranges
+        };
+        let Some(range) = candidates
+            .iter()
+            .rev()
+            .find(|range| {
+                (recursive || self.collapsed.contains(&range.start_line))
+                    && range.start_line <= line
+                    && line <= range.end_line
+            })
+            .copied()
+        else {
+            return false;
+        };
+        self.collapsed.remove(&range.start_line);
+        if recursive {
+            self.collapsed.retain(|header| {
+                !candidates.iter().any(|child| {
+                    child.start_line == *header
+                        && range.start_line <= child.start_line
+                        && child.end_line <= range.end_line
+                })
+            });
+        }
+        true
+    }
+    /// Search and navigation reveal every ancestor hiding the requested line.
+    pub fn reveal(&mut self, line: usize) -> bool {
+        let before = self.collapsed.len();
+        let candidates = if self.ranges.is_empty() {
+            &self.pending
+        } else {
+            &self.ranges
+        };
+        self.collapsed.retain(|header| {
+            !candidates.iter().any(|range| {
+                range.start_line == *header && range.start_line < line && line <= range.end_line
+            })
+        });
+        self.collapsed.len() != before
+    }
+    /// Edited folds open; unaffected headers follow line insertions/removals.
+    /// Ranges are invalidated until a provider publishes candidates for the new text.
+    pub fn rebase(&mut self, old: &str, new: &str) {
+        if self.collapsed.is_empty() {
+            if old != new {
+                self.ranges.clear();
+                self.pending.clear();
+            }
+            return;
+        }
+        let Some(change) = super::text_change(old, new) else {
+            return;
+        };
+        let lines = super::lines::lines(old);
+        let candidates = if self.ranges.is_empty() {
+            &self.pending
+        } else {
+            &self.ranges
+        };
+        let mapped = |offset: usize| {
+            if offset >= change.range.end {
+                offset - change.range.end + change.new_end
+            } else {
+                offset
+            }
+        };
+        let new_lines = super::lines::lines(new);
+        let row = |offset: usize| {
+            new_lines
+                .partition_point(|line| line.start <= offset)
+                .saturating_sub(1)
+        };
+        let pending = self
+            .collapsed
+            .iter()
+            .filter_map(|header| {
+                let range = candidates.get(
+                    candidates
+                        .binary_search_by_key(header, |range| range.start_line)
+                        .ok()?,
+                )?;
+                let first = lines.get(*header)?.start;
+                let last = lines.get(range.end_line)?;
+                let intersects = if change.range.is_empty() {
+                    first < change.range.start && change.range.start < last.end
+                } else {
+                    change.range.start < last.end && first < change.range.end
+                };
+                if intersects {
+                    return None;
+                }
+                Some(FoldRange {
+                    start_line: row(mapped(first)),
+                    end_line: row(
+                        if change.range.is_empty() && last.body_end == change.range.start {
+                            last.body_end
+                        } else {
+                            mapped(last.body_end)
+                        },
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        self.collapsed = pending.iter().map(|range| range.start_line).collect();
+        self.pending = pending;
+        self.ranges.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recursive_commands_and_navigation_preserve_unrelated_collapsed_ranges() {
+        let ranges = vec![
+            FoldRange {
+                start_line: 0,
+                end_line: 8,
+            },
+            FoldRange {
+                start_line: 2,
+                end_line: 5,
+            },
+            FoldRange {
+                start_line: 10,
+                end_line: 12,
+            },
+        ];
+        let mut state = FoldState::default();
+        state.set_ranges(ranges, 14);
+        assert!(state.collapse_at(0, true));
+        assert!(state.collapsed_at(2).is_some());
+        state.toggle(10);
+        state.toggle(0);
+        assert!(state.expand_at(0, true));
+        assert!(state.collapsed_at(2).is_none());
+        assert!(state.collapsed_at(10).is_some());
+        state.collapse_all();
+        assert!(state.reveal(4));
+        assert!(state.collapsed_at(0).is_none());
+        assert!(state.collapsed_at(2).is_none());
+        assert!(state.collapsed_at(10).is_some());
+        assert!(!state.reveal(10));
+        assert!(!state.toggle(9));
+    }
+
+    #[test]
+    fn navigation_during_pending_refresh_cannot_rehide_its_target() {
+        let old = "prefix\nheader\nbody\nclose\nlast";
+        let new = format!("zero\n{old}");
+        let mut state = FoldState::default();
+        state.set_ranges(
+            vec![FoldRange {
+                start_line: 1,
+                end_line: 3,
+            }],
+            5,
+        );
+        state.collapse_all();
+        state.rebase(old, &new);
+        assert!(state.ranges().is_empty());
+        assert!(state.reveal(3));
+        state.set_ranges(
+            vec![FoldRange {
+                start_line: 2,
+                end_line: 4,
+            }],
+            6,
+        );
+        assert!(state.collapsed_at(2).is_none());
+    }
+
+    #[test]
+    fn document_edits_and_grouped_undo_rebase_headers_without_reusing_stale_ranges() {
+        use crate::editor::{Document, Edit, Selection};
+        let source = "prefix\nheader\nbody\nclose\nlast";
+        let mut document = Document::new(source);
+        document.fold_state_mut().set_ranges(
+            vec![FoldRange {
+                start_line: 1,
+                end_line: 3,
+            }],
+            5,
+        );
+        document.fold_state_mut().collapse_all();
+        document
+            .apply(
+                vec![Edit::replace(0..0, "zero\n")],
+                vec![Selection::caret(0)],
+                Some(1),
+            )
+            .unwrap();
+        assert_eq!(document.projection().text(), document.text());
+        assert!(document.fold_state().ranges().is_empty());
+        document
+            .apply(
+                vec![Edit::replace(0..0, "one\n")],
+                vec![Selection::caret(0)],
+                Some(1),
+            )
+            .unwrap();
+        document.fold_state_mut().set_ranges(
+            vec![FoldRange {
+                start_line: 3,
+                end_line: 5,
+            }],
+            7,
+        );
+        assert!(document.fold_state().collapsed_at(3).is_some());
+        assert!(document.undo());
+        assert_eq!(document.text(), source);
+        document.fold_state_mut().set_ranges(
+            vec![FoldRange {
+                start_line: 1,
+                end_line: 3,
+            }],
+            5,
+        );
+        assert!(document.fold_state().collapsed_at(1).is_some());
+        assert!(document.redo());
+        document.fold_state_mut().set_ranges(
+            vec![FoldRange {
+                start_line: 3,
+                end_line: 5,
+            }],
+            7,
+        );
+        assert!(document.fold_state().collapsed_at(3).is_some());
+        let body = document.text().find("body").unwrap();
+        document
+            .apply(
+                vec![Edit::replace(body..body + 4, "changed")],
+                vec![Selection::caret(body)],
+                None,
+            )
+            .unwrap();
+        document.fold_state_mut().set_ranges(
+            vec![FoldRange {
+                start_line: 3,
+                end_line: 5,
+            }],
+            7,
+        );
+        assert!(document.fold_state().collapsed_at(3).is_none());
+    }
 
     #[test]
     fn fold_providers_merge_without_crossing_or_duplicate_header_controls() {

@@ -220,12 +220,14 @@ impl EditorActions {
         Vec<openwebide_core::editor::FoldRange>,
     )> {
         let key = self.key()?;
+        let epoch = self.workspace.pending_epoch.get_untracked();
         let language = openwebide_core::highlight::language_from_path(&key.1);
         let text = self.workspace.content.get_untracked();
-        self.workspace
+        let result = self
+            .workspace
             .editor_syntax
             .try_update(|documents| {
-                let document = match documents.entry(key) {
+                let document = match documents.entry(key.clone()) {
                     std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         entry.insert(openwebide_core::editor::SyntaxDocument::new(language)?)
@@ -234,7 +236,68 @@ impl EditorActions {
                 let status = document.update(&text, should_continue);
                 Some((status, document.folds()))
             })
-            .flatten()
+            .flatten();
+        (self.key() == Some(key)
+            && self.workspace.pending_epoch.get_untracked() == epoch
+            && self
+                .workspace
+                .content
+                .with_untracked(|current| current == &text))
+        .then_some(result)
+        .flatten()
+    }
+
+    pub fn refresh_fold_ranges(
+        self,
+        should_continue: impl FnMut() -> bool,
+    ) -> Option<openwebide_core::editor::SyntaxStatus> {
+        let key = self.key()?;
+        let epoch = self.workspace.pending_epoch.get_untracked();
+        let text = self.workspace.content.get_untracked();
+        let result = self.syntax_folds(should_continue);
+        if self.key() != Some(key.clone())
+            || self.workspace.pending_epoch.get_untracked() != epoch
+            || self
+                .workspace
+                .content
+                .with_untracked(|current| current != &text)
+        {
+            return None;
+        }
+        let ranges = result
+            .as_ref()
+            .map(|(_, ranges)| ranges.clone())
+            .unwrap_or_default();
+        self.workspace.editor_documents.update(|documents| {
+            let document = self.document(documents, key);
+            let count = document.text().split('\n').count();
+            document.fold_state_mut().set_ranges(ranges, count);
+        });
+        result.map(|(status, _)| status)
+    }
+
+    pub fn fold_command(
+        self,
+        command: openwebide_core::editor::FoldCommand,
+    ) -> Option<(openwebide_core::editor::FoldProjection, Selection)> {
+        let key = self.key()?;
+        self.typing.set(None);
+        self.workspace.editor_documents.try_update(|documents| {
+            let document = self.document(documents, key);
+            document.fold_command(command);
+            (document.projection(), document.selections()[0])
+        })
+    }
+
+    pub fn projection(self) -> Option<openwebide_core::editor::FoldProjection> {
+        let key = self.key()?;
+        let text = self.workspace.content.get_untracked();
+        self.workspace.editor_documents.with_untracked(|documents| {
+            documents
+                .get(&key)
+                .filter(|document| document.text() == text)
+                .map(Document::projection)
+        })
     }
 
     pub fn native_input(
@@ -431,28 +494,14 @@ impl EditorActions {
 /// Minimal native-input replacement, preserving UTF-8 boundaries and distant text.
 fn replacement(old: &str, new: &str) -> Option<Edit> {
     let normalized = old.replace("\r\n", "\n").replace('\r', "\n");
-    if normalized == new {
-        return None;
-    }
-    let start = normalized
-        .chars()
-        .zip(new.chars())
-        .take_while(|(a, b)| a == b)
-        .map(|(ch, _)| ch.len_utf8())
-        .sum::<usize>();
-    let suffix = normalized[start..]
-        .chars()
-        .rev()
-        .zip(new[start..].chars().rev())
-        .take_while(|(a, b)| a == b)
-        .map(|(ch, _)| ch.len_utf8())
-        .sum::<usize>();
-    let end = normalized.len() - suffix;
+    let change = openwebide_core::editor::text_change(&normalized, new)?;
+    let start = change.range.start;
+    let end = change.range.end;
     let start_doc =
         openwebide_core::editor::textarea_to_byte(old, normalized[..start].encode_utf16().count());
     let end_doc =
         openwebide_core::editor::textarea_to_byte(old, normalized[..end].encode_utf16().count());
-    let mut inserted = new[start..new.len() - suffix].to_string();
+    let mut inserted = new[start..change.new_end].to_string();
     if old
         .split_once('\n')
         .is_some_and(|(prefix, _)| prefix.ends_with('\r'))

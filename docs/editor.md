@@ -88,9 +88,20 @@ The syntax/folding foundation now includes a shared incremental Rust parser. Its
 previous tree is updated with Unicode-safe byte edits; fold candidates cover code
 blocks, declarations and multiline comments/literals. Cancellation, parser work
 limits and oversized files discard stale results. Other languages, fold controls,
-folded-text/caret mapping and worker/viewport integration remain under development;
+folded edit-view integration and worker/viewport work remain under development;
 the existing editing commands continue to use their documented lexical structure.
 
 Frontend builds enable the core `editor-parser` feature. Backend WASI builds do not
 need the parser or a WASI C SDK. The Rust grammar’s small build-script patch uses
 upstream WASM headers; see `vendor/tree-sitter-rust/PATCH.md`.
+
+The shared document now owns fold state independently of undo history. Commands
+can collapse/expand at the caret, recursively or all, and reveal a navigation target.
+The projection retains logical source row numbers and maps Unicode-safe byte offsets
+and directional selections between visible text and the full source. Native edits
+that cross omitted text explicitly require revealing it first. Edits open affected
+folds and rebase unaffected headers; stale ranges stay invalid until refreshed from
+the new source. Grouped undo/redo rebases the final transaction result once.
+
+These primitives are available through the shared editor facade in both modes;
+gutter controls and their DOM/input/clipboard integration remain in progress.

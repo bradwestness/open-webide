@@ -132,6 +132,117 @@ async fn native_typing_composition_and_invalid_edits_preserve_document_contract(
 }
 
 #[wasm_bindgen_test]
+async fn folded_document_commands_projection_and_history_share_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{FoldCommand, ProjectionError, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "// 😀\r\nfn main() {\r\n    let value = \"文\";\r\n}\r\nnext();\r\n";
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("folds.rs".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        actions
+            .record_selection(Selection::caret(source.find('文').unwrap()))
+            .unwrap();
+        actions.refresh_fold_ranges(|| true);
+        let (projection, selection) = actions.fold_command(FoldCommand::CollapseAll).unwrap();
+        assert_eq!(projection.text(), "// 😀\r\nfn main() {\r\nnext();\r\n");
+        assert_eq!(
+            selection,
+            Selection::caret(source.find(" {\r\n").unwrap() + 2)
+        );
+        assert_eq!(
+            projection.visible_offset(source.find('文').unwrap()),
+            Err(ProjectionError::HiddenText)
+        );
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        // Independent file/project histories own their collapse state.
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        actions.refresh_fold_ranges(|| true);
+        assert!(!actions.projection().unwrap().is_folded());
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("folds.rs".into()));
+        assert!(actions.projection().unwrap().is_folded());
+        actions.fold_command(FoldCommand::Reveal(2));
+        assert_eq!(actions.projection().unwrap().text(), source);
+        actions.fold_command(FoldCommand::CollapseAll);
+        let original = mounted.state.workspace.content.get_untracked();
+        actions
+            .command(
+                EditorCommand::Newline,
+                Selection::caret(0),
+                actions.rules_untracked().indentation,
+            )
+            .unwrap();
+        assert!(
+            !actions.projection().unwrap().is_folded(),
+            "stale ranges stay invalid until refreshed"
+        );
+        actions.refresh_fold_ranges(|| true);
+        assert!(
+            actions.projection().unwrap().is_folded(),
+            "unchanged headers follow inserted rows"
+        );
+        actions
+            .command(
+                EditorCommand::Undo,
+                Selection::caret(0),
+                actions.rules_untracked().indentation,
+            )
+            .unwrap();
+        actions.refresh_fold_ranges(|| true);
+        assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+        assert!(actions.projection().unwrap().is_folded());
+        mounted.state.workspace.active_project.set(Some(2));
+        actions.refresh_fold_ranges(|| true);
+        assert!(!actions.projection().unwrap().is_folded());
+        mounted.state.workspace.active_project.set(Some(1));
+        assert!(actions.projection().unwrap().is_folded());
+        let before = mounted
+            .state
+            .workspace
+            .editor_documents
+            .with_untracked(|documents| documents.get(&(1, "folds.rs".into())).unwrap().clone());
+        assert!(
+            actions
+                .refresh_fold_ranges(|| {
+                    mounted.state.workspace.active_project.set(Some(2));
+                    true
+                })
+                .is_none()
+        );
+        let after = mounted
+            .state
+            .workspace
+            .editor_documents
+            .with_untracked(|documents| documents.get(&(1, "folds.rs".into())).unwrap().clone());
+        assert_eq!(
+            before, after,
+            "a changed scope cannot publish ranges or another buffer's content"
+        );
+        mounted.state.workspace.reset();
+        assert!(actions.projection().is_none());
+    }
+}
+
+#[wasm_bindgen_test]
 async fn incremental_syntax_and_fold_provider_share_both_modes_and_account_reset() {
     use openwebide_core::{
         WorkspaceMode,

@@ -4,7 +4,9 @@
 use std::ops::Range;
 
 mod folds;
-pub use folds::{FoldRange, normalize_folds};
+pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
+mod projection;
+pub use projection::{FoldProjection, ProjectionError, VisibleLine};
 #[cfg(feature = "editor-parser")]
 mod syntax;
 #[cfg(feature = "editor-parser")]
@@ -24,6 +26,36 @@ mod configuration;
 pub use configuration::{
     ConfigSource, EditorPreferences, EditorRules, LineEnding, load_rules, resolve_rules,
 };
+
+/// Minimal changed span with UTF-8 character boundaries in both versions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextChange {
+    pub range: Range<usize>,
+    pub new_end: usize,
+}
+
+pub fn text_change(old: &str, new: &str) -> Option<TextChange> {
+    if old == new {
+        return None;
+    }
+    let start = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum::<usize>();
+    let suffix = old[start..]
+        .chars()
+        .rev()
+        .zip(new[start..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum::<usize>();
+    Some(TextChange {
+        range: start..old.len() - suffix,
+        new_end: new.len() - suffix,
+    })
+}
 
 /// A directional selection: its head is the moving caret.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -108,6 +140,7 @@ pub struct Document {
     history_cursor: usize,
     history_bytes: usize,
     revision: u64,
+    folds: FoldState,
 }
 
 const HISTORY_BYTES: usize = 16 * 1024 * 1024;
@@ -124,6 +157,48 @@ impl Document {
             history_cursor: 0,
             history_bytes: 0,
             revision: 0,
+            folds: FoldState::default(),
+        }
+    }
+
+    pub fn fold_state(&self) -> &FoldState {
+        &self.folds
+    }
+    pub fn fold_state_mut(&mut self) -> &mut FoldState {
+        &mut self.folds
+    }
+    pub fn projection(&self) -> FoldProjection {
+        FoldProjection::new(&self.text, &self.folds)
+    }
+
+    pub fn fold_command(&mut self, command: FoldCommand) {
+        let line = self.text[..self.selections[0].head]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count();
+        match command {
+            FoldCommand::Toggle(header) => {
+                self.folds.toggle(header);
+            }
+            FoldCommand::Collapse { recursive } => {
+                self.folds.collapse_at(line, recursive);
+            }
+            FoldCommand::Expand { recursive } => {
+                self.folds.expand_at(line, recursive);
+            }
+            FoldCommand::CollapseAll => self.folds.collapse_all(),
+            FoldCommand::ExpandAll => self.folds.expand_all(),
+            FoldCommand::Reveal(line) => {
+                self.folds.reveal(line);
+            }
+        }
+        let projection = self.projection();
+        for selection in &mut self.selections {
+            if let Ok(visible) = projection.visible_selection(*selection)
+                && let Ok(source) = projection.source_selection(visible)
+            {
+                *selection = source;
+            }
         }
     }
 
@@ -215,6 +290,7 @@ impl Document {
             self.history_bytes -= self.history.remove(0).bytes;
             self.history_cursor -= 1;
         }
+        self.folds.rebase(&self.text, &text);
         self.text = text;
         self.selections = after;
         self.revision = self.revision.wrapping_add(1);
@@ -226,10 +302,14 @@ impl Document {
             return false;
         }
         let step = &self.history[self.history_cursor - 1];
+        let mut text = std::borrow::Cow::Borrowed(self.text.as_str());
         for transaction in step.transactions.iter().rev() {
-            self.text = replace_edits(&self.text, &transaction.inverse).0;
+            text = std::borrow::Cow::Owned(replace_edits(&text, &transaction.inverse).0);
             self.selections.clone_from(&transaction.before);
         }
+        let text = text.into_owned();
+        self.folds.rebase(&self.text, &text);
+        self.text = text;
         self.history_cursor -= 1;
         self.revision = self.revision.wrapping_add(1);
         true
@@ -240,10 +320,14 @@ impl Document {
             return false;
         }
         let step = &self.history[self.history_cursor];
+        let mut text = std::borrow::Cow::Borrowed(self.text.as_str());
         for transaction in &step.transactions {
-            self.text = replace_edits(&self.text, &transaction.forward).0;
+            text = std::borrow::Cow::Owned(replace_edits(&text, &transaction.forward).0);
             self.selections.clone_from(&transaction.after);
         }
+        let text = text.into_owned();
+        self.folds.rebase(&self.text, &text);
+        self.text = text;
         self.history_cursor += 1;
         self.revision = self.revision.wrapping_add(1);
         true
