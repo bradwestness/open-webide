@@ -284,6 +284,9 @@ pub fn DisclosurePanel(
     #[prop(into)] summary: ViewFn,
     #[prop(default = "")] class: &'static str,
     #[prop(into, optional)] force_open: Option<Signal<bool>>,
+    #[prop(default = "")] toggle_class: &'static str,
+    #[prop(default = "")] title: &'static str,
+    #[prop(into, optional)] active: Option<Signal<bool>>,
     children: Children,
 ) -> impl IntoView {
     let content_id = format!(
@@ -294,7 +297,7 @@ pub fn DisclosurePanel(
     let open = move || expanded.get() || force_open.is_some_and(|force| force.get());
     view! {
         <div class=format!("ui-disclosure-panel {class}")>
-            <button type="button" class="ui-disclosure-toggle" aria-expanded=move || open().to_string() aria-controls=content_id.clone()
+            <button type="button" class=format!("ui-disclosure-toggle {toggle_class}") title=title class:active=move || active.is_some_and(|value| value.get()) aria-expanded=move || open().to_string() aria-controls=content_id.clone()
                 on:click=move |_| { if !force_open.is_some_and(|force| force.get_untracked()) { expanded.update(|expanded| *expanded = !*expanded); } }>
                 <span class="ui-disclosure-caret" aria-hidden="true"><Icon name=Signal::derive(move || if open() { IconName::ChevronDown } else { IconName::ChevronRight }) /></span>
                 {summary.run()}

@@ -77,7 +77,6 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
         Memo::new(move |_| parsed.with(|parsed| parsed.thinking.clone().unwrap_or_default()));
     let answer_sig = Memo::new(move |_| parsed.with(|parsed| parsed.answer.clone()));
     let is_thinking_active = Memo::new(move |_| parsed.with(|parsed| parsed.is_thinking));
-    let thinking_expanded = RwSignal::new(false);
 
     let timing = RwSignal::new(openwebide_core::tui::ReasoningTiming::default());
     let now = RwSignal::new(Date::now());
@@ -124,27 +123,17 @@ fn render_assistant_message(content: Memo<String>) -> AnyView {
     view! {
         <div class="tui-stream-line tui-assistant">
             <Show when=move || !thinking_sig.with(String::is_empty) fallback=|| ()>
-                <div class="tui-thinking-box">
-                    <button
-                        class="btn ghost tui-thinking-summary"
-                        class:active=move || is_thinking_active.get()
-                        aria-expanded=move || thinking_expanded.get().to_string()
-                        on:click=move |_| thinking_expanded.update(|expanded| *expanded = !*expanded)
-                        title="Toggle reasoning trace; token counts are estimated"
-                    >
-                        <span class="tui-think-caret" aria-hidden="true">
-                            <super::ui::Icon name=Signal::derive(move || if thinking_expanded.get() { super::ui::IconName::ChevronDown } else { super::ui::IconName::ChevronRight }) />
-                        </span>
+                <super::ui::DisclosurePanel class="tui-thinking-box" toggle_class="tui-thinking-summary"
+                    title="Toggle reasoning trace; token counts are estimated"
+                    active=Signal::derive(move || is_thinking_active.get())
+                    summary=move || view! {
                         <span class="tui-think-meta">{summary}</span>
                         <Show when=move || is_thinking_active.get()><span class="tui-spinner" aria-hidden="true"/></Show>
-                    </button>
-
-                    <Show when=move || thinking_expanded.get() fallback=|| ()>
-                        <div class="tui-thinking-trace">
-                            <pre class="tui-thinking-pre">{move || thinking_sig.get()}</pre>
-                        </div>
-                    </Show>
-                </div>
+                    }>
+                    <div class="tui-thinking-trace">
+                        <pre class="tui-thinking-pre">{move || thinking_sig.get()}</pre>
+                    </div>
+                </super::ui::DisclosurePanel>
             </Show>
 
             <Show when=move || !answer_sig.with(String::is_empty) fallback=|| ()>
@@ -855,15 +844,14 @@ pub fn ChatPane(
                                                 {render_assistant_message(content)}
                                             </Show>
                                         }>
-                                            <details class="tui-thinking-box">
-                                                <summary class="tui-thinking-summary">{move || if content.get().starts_with(openwebide_core::COMPACTION_PREFIX) { "Conversation summary" } else { "Run context" }}</summary>
+                                            <super::ui::DisclosurePanel class="tui-thinking-box" toggle_class="tui-thinking-summary" summary=move || view! { <span>{move || if content.get().starts_with(openwebide_core::COMPACTION_PREFIX) { "Conversation summary" } else { "Run context" }}</span> }>
                                                 <div class="tui-thinking-trace">
                                                     <pre class="tui-thinking-pre">{move || {
                                                         let text = content.get();
                                                         openwebide_core::Compaction::parse(&text).map_or_else(|| text.strip_prefix(openwebide_core::RUN_CONTEXT_PREFIX).unwrap_or(&text).to_string(), |compaction| compaction.summary)
                                                     }}</pre>
                                                 </div>
-                                            </details>
+                                            </super::ui::DisclosurePanel>
                                         </Show>
                                     }.into_any()
                                 }
@@ -1195,7 +1183,7 @@ fn render_task_run(
                         ConversationItem::Message(message) => {
                             let content = Memo::new(move |_| item.with(|item| match item { ConversationItem::Message(message) => message.content.clone(), _ => String::new() }));
                             if message.role == Role::User { render_user_message(content, ().into_any()) }
-                            else if message.role == Role::System { view! { <details class="tui-system-context"><summary>"Child context"</summary><pre>{content}</pre></details> }.into_any() }
+                            else if message.role == Role::System { view! { <super::ui::DisclosurePanel class="tui-thinking-box" toggle_class="tui-thinking-summary" summary=|| view! { <span>"Child context"</span> }><div class="tui-thinking-trace"><pre class="tui-thinking-pre">{content}</pre></div></super::ui::DisclosurePanel> }.into_any() }
                             else { render_assistant_message(content) }
                         }
                         _ => ().into_any(),

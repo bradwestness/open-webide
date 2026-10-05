@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Share left-aligned disclosure headers across reasoning, run context and tool groups. Anchor resize handles to the full panel boundary so Terminal and other docked panels remain draggable regardless of their content wrappers.
+
 - Build dialogs from shared sections, fields, notices and action bars with consistent spacing and visual hierarchy.
 - Consolidate Explorer, Git Changes and persistent search into one resizable Files panel. Searching shows results; clearing restores the selected file view. Share resize handles, limits, keyboard resizing and user-scoped width saves across Sessions, Files, Chat and Terminal; move panel ordering controls into their headers.
 - Use Lucide SVG icons through a shared component, larger action targets, fast accessible tooltips and labeled desktop top-bar actions. Give selected project tabs the same accent/background treatment as expanded panel tabs.

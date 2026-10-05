@@ -536,3 +536,108 @@ async fn shared_panel_resizers_follow_the_panel_side_and_save_widths_in_both_mod
         assert!(mounted.root.query_selector(".panel-pin").unwrap().is_none());
     }
 }
+
+#[wasm_bindgen_test]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Browser hit testing uses f32 coordinates and pointer events use integer CSS pixels."
+)]
+async fn dock_resize_targets_are_visible_and_resize_actual_geometry_in_both_modes() {
+    use openwebide_frontend::state::{
+        layout::ActiveResizer,
+        responsive::{LayoutMode, PanelSide},
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let read = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.auth.set_user(user(1));
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            let layout = expect_context::<LayoutState>();
+            let actions = LayoutActions::new(state.api, layout, state.auth, state.ui);
+            provide_context(actions);
+            read.set(Some((layout, actions)));
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div class="app" style="height:400px;width:1000px"><div class="app-body">
+                    <ToolPanel panel=Panel::Sessions><div class="sidebar" style="width:240px;flex:none">"Sessions"</div></ToolPanel>
+                    <ToolPanel panel=Panel::Files><div class="search-pane">"Files"</div></ToolPanel>
+                    <ToolPanel panel=Panel::Chat><div class="chat-pane" style="width:420px;flex:none">"Chat"</div></ToolPanel>
+                    <ToolPanel panel=Panel::Terminal><div class="terminal-visibility"><div class="terminal-dock">"Terminal"</div></div></ToolPanel>
+                </div></div>
+            }
+        });
+        let (layout, actions) = slot.get().unwrap();
+        actions.set_mode.run(LayoutMode::Desktop);
+        for (panel, kind) in [
+            (Panel::Sessions, ActiveResizer::Sidebar),
+            (Panel::Files, ActiveResizer::Tree),
+            (Panel::Chat, ActiveResizer::Chat),
+            (Panel::Terminal, ActiveResizer::Terminal),
+        ] {
+            layout.panels.set(PanelVisibility {
+                sessions: panel == Panel::Sessions,
+                files: panel == Panel::Files,
+                chat: panel == Panel::Chat,
+                terminal: panel == Panel::Terminal,
+                editor: false,
+                ..PanelVisibility::default()
+            });
+            for side in [PanelSide::Left, PanelSide::Right] {
+                actions.pin.run((panel, side));
+                settle().await;
+                let dock = mounted.element(&format!("#panel-{}", panel.id()));
+                let separator =
+                    mounted.element(&format!("#panel-{} > [role=separator]", panel.id()));
+                let rect = separator.get_bounding_client_rect();
+                assert!(rect.height() > 300.0);
+                let x = rect.x() + rect.width() / 2.0;
+                let y = rect.y() + rect.height() / 2.0;
+                let hit = web_sys::window()
+                    .unwrap()
+                    .document()
+                    .unwrap()
+                    .element_from_point(x as f32, y as f32)
+                    .unwrap();
+                assert!(
+                    hit.is_same_node(Some(separator.as_ref())),
+                    "{} handle must receive pointer input",
+                    panel.id()
+                );
+                let before = dock.get_bounding_client_rect().width();
+                let event = |name, x: f64| {
+                    let init = web_sys::PointerEventInit::new();
+                    init.set_client_x(x as i32);
+                    init.set_bubbles(true);
+                    web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap()
+                };
+                hit.dispatch_event(&event("pointerdown", x)).unwrap();
+                web_sys::window()
+                    .unwrap()
+                    .dispatch_event(&event(
+                        "pointermove",
+                        x + if side == PanelSide::Left { 30.0 } else { -30.0 },
+                    ))
+                    .unwrap();
+                web_sys::window()
+                    .unwrap()
+                    .dispatch_event(&event("pointerup", x))
+                    .unwrap();
+                settle().await;
+                assert!(
+                    (dock.get_bounding_client_rect().width() - before - 30.0).abs() < 1.0,
+                    "{} geometry follows drag",
+                    panel.id()
+                );
+                assert_eq!(
+                    mounted.state.fake.settings.borrow()[kind.setting_key()],
+                    layout.width(kind).get_untracked().to_string()
+                );
+            }
+        }
+    }
+}

@@ -53,7 +53,7 @@ async fn reasoning_summary_counts_live_tokens_for_both_stream_formats_in_all_mod
                         .sessions
                         .update(|sessions| sessions[0].project_id = None);
                 }
-                chat_view(state)
+                view! { <style>{include_str!("../../styles.css")}</style>{chat_view(state)} }
             });
             settle().await;
             let chat = mounted.state.chat;
@@ -73,6 +73,18 @@ async fn reasoning_summary_counts_live_tokens_for_both_stream_formats_in_all_mod
                 });
             }
             settle().await;
+            let header = mounted.element(".tui-thinking-summary");
+            let style = web_sys::window()
+                .unwrap()
+                .get_computed_style(&header)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                style.get_property_value("justify-content").unwrap(),
+                "flex-start"
+            );
+            assert_eq!(style.get_property_value("text-align").unwrap(), "left");
+            assert!(header.class_list().contains("ui-disclosure-toggle"));
             let initial = mounted.element(".tui-think-meta").text_content().unwrap();
             assert!(
                 initial.contains("Thinking for 0.0s · ~2 tokens"),
@@ -547,9 +559,9 @@ async fn cancelled_reasoning_freezes_elapsed_time_and_collapses_trace() {
     assert!(
         mounted
             .root
-            .query_selector(".tui-thinking-pre")
+            .query_selector(".ui-disclosure-content[hidden] .tui-thinking-pre")
             .unwrap()
-            .is_none()
+            .is_some()
     );
     let summary = mounted
         .element(".tui-thinking-summary")
@@ -635,9 +647,9 @@ async fn reasoning_stream_stays_collapsed_until_expanded_and_shows_cutoff() {
     assert!(
         mounted
             .root
-            .query_selector(".tui-thinking-pre")
+            .query_selector(".ui-disclosure-content[hidden] .tui-thinking-pre")
             .unwrap()
-            .is_none()
+            .is_some()
     );
     mounted.click(".tui-thinking-summary");
     settle().await;
@@ -673,9 +685,9 @@ async fn reasoning_stream_stays_collapsed_until_expanded_and_shows_cutoff() {
     assert!(
         mounted
             .root
-            .query_selector(".tui-thinking-pre")
+            .query_selector(".ui-disclosure-content[hidden] .tui-thinking-pre")
             .unwrap()
-            .is_none()
+            .is_some()
     );
     let content = openwebide_core::with_reasoning(
         "checking </think> &lt; carefully",
@@ -941,10 +953,18 @@ async fn saved_and_streamed_run_context_is_collapsible_and_survives_reload() {
     settle().await;
     let context = mounted
         .root
-        .query_selector("details.tui-thinking-box")
+        .query_selector(".ui-disclosure-panel.tui-thinking-box")
         .unwrap()
         .unwrap();
-    assert!(!context.has_attribute("open"));
+    assert_eq!(
+        context
+            .query_selector("button")
+            .unwrap()
+            .unwrap()
+            .get_attribute("aria-expanded")
+            .as_deref(),
+        Some("false")
+    );
     assert!(context.text_content().unwrap().contains("Run context"));
     assert!(context.text_content().unwrap().contains("Root rule"));
     assert!(

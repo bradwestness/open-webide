@@ -21,9 +21,10 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
     };
     view! { <section id=format!("panel-{}", panel.id()) class="tool-panel"
         class:tool-panel-center=panel == Panel::Editor
+        class:resizer-leading=move || layout.preferences.with(|prefs| prefs.side(panel.id())) == PanelSide::Right
         style=move || {
             let order = layout.preferences.with(|prefs| prefs.order(panel.id()));
-            format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if panel == Panel::Terminal { layout.terminal_width.get() } else { 0.0 })
+            format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 0.0 } else { layout.width(kind).get() })
         }
         aria-label=panel.label()>
         <div class="tool-panel-heading">
@@ -34,10 +35,10 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
             </div>
             <button class="btn" title="Return to chat" on:click=move |_| actions.show.run(Panel::Chat)>"Back to chat"</button>
         </div>
-        <div class="tool-panel-content" class:resizer-leading=move || layout.preferences.with(|prefs| prefs.side(panel.id())) == PanelSide::Right>
+        <div class="tool-panel-content">
             {children()}
-            {(kind != ActiveResizer::None).then(|| view! { <super::panel_resizer::PanelResizer kind=kind /> })}
         </div>
+        {(kind != ActiveResizer::None).then(|| view! { <super::panel_resizer::PanelResizer kind=kind /> })}
     </section> }
 }
 
