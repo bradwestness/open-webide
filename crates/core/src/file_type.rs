@@ -61,7 +61,22 @@ impl FileKind {
 
     /// Preview formats rendered by the editor; binary placeholders are not previews.
     pub fn supports_preview(path: &str) -> bool {
-        Self::from_path(path).is_previewable() || extension(path).as_deref() == Some("pdf")
+        Self::from_path(path).is_previewable()
+            || extension(path).as_deref() == Some("pdf")
+            || Self::is_plain_document(path)
+    }
+
+    /// Plain-text documents and conventional extensionless documentation.
+    pub fn is_plain_document(path: &str) -> bool {
+        matches!(extension(path).as_deref(), Some("txt" | "text" | "log"))
+            || matches!(
+                path.rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_ascii_uppercase()
+                    .as_str(),
+                "LICENSE" | "LICENCE" | "COPYING" | "NOTICE" | "AUTHORS" | "README" | "CHANGELOG"
+            )
     }
 
     /// A friendly descriptive label for the file type.
@@ -159,10 +174,33 @@ mod tests {
         assert!(FileKind::from_path("README.md").is_previewable());
         assert!(FileKind::from_path("logo.png").is_previewable());
         assert!(!FileKind::from_path("backend.wasm").is_previewable());
-        for path in ["README.md", "photo.PNG", "report.PDF"] {
+        for path in [
+            "README.md",
+            "photo.PNG",
+            "report.PDF",
+            "LICENSE",
+            "docs/readme",
+            "NOTICE",
+            "LICENCE",
+            "COPYING",
+            "AUTHORS",
+            "CHANGELOG",
+            "notes.TXT",
+            "notes.text",
+            "server.log",
+        ] {
             assert!(FileKind::supports_preview(path));
         }
-        for path in ["source.rs", "text.txt", "archive.zip", "movie.mp4"] {
+        for path in [
+            "source.rs",
+            "data.json",
+            "archive.zip",
+            "movie.mp4",
+            "Makefile",
+            ".bashrc",
+            "docs/LICENSE/code",
+            "LICENSE.rs",
+        ] {
             assert!(!FileKind::supports_preview(path));
         }
     }

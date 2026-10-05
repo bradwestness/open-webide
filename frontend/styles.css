@@ -1319,7 +1319,7 @@ body {
   user-select: none;
 }
 
-.ui-seg-btn:hover:not(.active) {
+.ui-seg-btn:hover:not(.active):not(:disabled) {
   color: var(--text);
   background: var(--bg-hover);
 }
@@ -1329,6 +1329,21 @@ body {
   background: var(--bg-panel);
   border-color: var(--border);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.ui-seg-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.editor-document-preview {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
 }
 
 .ui-seg-glyph {

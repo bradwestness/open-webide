@@ -881,12 +881,16 @@ async fn preview_availability_and_pdf_blob_contract_work_in_both_modes() {
                 Callback::new(|()| ()),
             );
             capture.set(Some(actions.request_open));
-            view! { <openwebide_frontend::components::Editor read_only=Signal::derive(|| false) on_open_lossy=actions.on_open_lossy on_save=actions.on_save on_accept=actions.on_accept on_reject=actions.on_reject /> }
+            view! { <style>{include_str!("../../styles.css")}</style><openwebide_frontend::components::Editor read_only=Signal::derive(|| false) on_open_lossy=actions.on_open_lossy on_save=actions.on_save on_accept=actions.on_accept on_reject=actions.on_reject /> }
         });
         let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
         for (path, content) in [
             ("source.rs", "fn code() {}"),
             ("README.md", "# Read me"),
+            ("LICENSE", "Copyright <example>\n\n  All rights reserved."),
+            ("notes.txt", "Plain *text* <example>"),
+            ("data.json", "{\"key\":1}"),
+            ("Makefile", "build:\n\tcargo build"),
             ("report.pdf", "%PDF-1.4\n%%EOF"),
             ("archive.zip", "binary placeholder"),
         ] {
@@ -906,6 +910,41 @@ async fn preview_availability_and_pdf_blob_contract_work_in_both_modes() {
                 !openwebide_core::FileKind::supports_preview(path),
                 "{path}"
             );
+            if !openwebide_core::FileKind::supports_preview(path) {
+                wait_until("Disabled style settled", || {
+                    web_sys::window()
+                        .unwrap()
+                        .get_computed_style(&preview())
+                        .unwrap()
+                        .unwrap()
+                        .get_property_value("opacity")
+                        .unwrap()
+                        == "0.4"
+                })
+                .await;
+                let style = web_sys::window()
+                    .unwrap()
+                    .get_computed_style(&preview())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(style.get_property_value("opacity").unwrap(), "0.4");
+                assert_eq!(style.get_property_value("cursor").unwrap(), "default");
+            }
+            if path == "LICENSE" || path == "notes.txt" {
+                wait_until("Document loaded", || {
+                    mounted.state.workspace.content.get_untracked() == content
+                })
+                .await;
+                preview().click();
+                settle().await;
+                let document = mounted.element(".editor-document-preview");
+                assert_eq!(document.text_content().as_deref(), Some(content));
+                assert_eq!(
+                    document.children().length(),
+                    0,
+                    "Document text must stay literal"
+                );
+            }
             if path.ends_with("pdf") {
                 wait_until("PDF loaded", || {
                     mounted.state.workspace.media_url.get_untracked().is_some()

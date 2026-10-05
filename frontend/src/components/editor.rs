@@ -572,7 +572,11 @@ fn render_preview_view(
             render_placeholder_view(path, kind, set_view_mode, on_open_lossy).into_any()
         }
         FileKind::Text => {
-            render_placeholder_view(path, kind, set_view_mode, on_open_lossy).into_any()
+            if FileKind::is_plain_document(path) {
+                view! { <pre class="editor-preview editor-document-preview">{content.to_string()}</pre> }.into_any()
+            } else {
+                render_placeholder_view(path, kind, set_view_mode, on_open_lossy).into_any()
+            }
         }
     }
 }
