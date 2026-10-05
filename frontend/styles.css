@@ -3019,7 +3019,7 @@ button.browser-item {
 .tui-prompt-actions { margin-left: auto; }
 .phone-layout .ui-action-items button { min-height: 44px; }
 .tui-user { position: relative; }
-.tui-user .tui-prompt-actions { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
+.tui-user .tui-prompt-actions { position: absolute; right: 4px; top: 0; bottom: 0; align-items: center; }
 .tui-user .tui-user-text { padding-right: 36px; }
 
 .ui-action-menu .ui-dropdown-label { display: flex; }

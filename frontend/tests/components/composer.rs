@@ -779,6 +779,36 @@ async fn compact_chat_centers_prompt_actions_and_keeps_composer_actions_inline_i
         assert!(
             ((row.top() + row.bottom()) / 2.0 - (menu.top() + menu.bottom()) / 2.0).abs() < 1.0
         );
+        mounted.click(".tui-prompt-actions .ui-dropdown-trigger");
+        settle().await;
+        let popup = mounted.element(".tui-prompt-actions .ui-dropdown-menu");
+        let popup_rect = popup.get_bounding_client_rect();
+        assert!((popup_rect.top() - menu.bottom() - 4.0).abs() < 1.0);
+        let backdrop = mounted.element(".tui-prompt-actions .ui-dropdown-backdrop");
+        let backdrop_rect = backdrop.get_bounding_client_rect();
+        assert!(backdrop_rect.left().abs() < 1.0);
+        assert!(backdrop_rect.top().abs() < 1.0);
+        assert!(backdrop_rect.width() > 600.0);
+        let open_row = mounted.element(".tui-user").get_bounding_client_rect();
+        assert!((open_row.top() - row.top()).abs() < 1.0);
+        assert!((open_row.height() - row.height()).abs() < 1.0);
+        // Use actual hit testing outside the chat row, rather than invoking the
+        // backdrop directly: a transformed ancestor used to trap it in the row.
+        let outside = document().element_from_point(1.0, 1.0).unwrap();
+        assert!(outside.is_same_node(Some(backdrop.as_ref())));
+        outside.unchecked_ref::<web_sys::HtmlElement>().click();
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".ui-dropdown-menu")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            mounted.element(".tui-user-text").text_content().as_deref(),
+            Some("short prompt")
+        );
         assert!(
             mounted
                 .element(".tui-statusline")

@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Keep chat history message menus anchored to their prompt without obscuring history; outside clicks dismiss them normally.
+
 - Keep Edit scrollbars above the syntax paint and outside the line-number gutter, with the gutter clipped to the visible text area when scrollbars or panel sizes change.
 
 - Center chat prompt rows and their inline menus. Compact the status line and Send/Queue/Steer/Stop controls, add Ctrl/⌘+Enter to steer, and move Attach images into the Chat panel menu while preserving paste/drop.
