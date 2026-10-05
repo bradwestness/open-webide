@@ -123,16 +123,6 @@ after the first account):
   bridge token, so one user can't list, attach to or kill another's shells;
   and the bridge's acting-user header limited to the connection's own user.
 
-### Tailscale HTTPS deployment verification
-
-- The app shell, installation guidance, phone layout and same-origin WSS default
-  are implemented. Docker and rootless Podman pass real TLS REST, SSE and WSS
-  checks through Caddy in both workspace modes.
-- Finish live verification of the official external Tailscale Serve deployment:
-  certificate provisioning, persistent Serve JSON, `/bridge` routing and node
-  recreation. This needs Serve enabled in the test tailnet; the
-  [setup guide](tailscale.md) and standalone HTTPS Compose file are ready.
-
 ### Web Push (optional)
 
 - Notify installed apps when a run finishes or needs approval, with user-scoped

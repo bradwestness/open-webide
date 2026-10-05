@@ -152,10 +152,17 @@ docker save open-webide:local | podman load
 python3 docker/https-test/check.py podman --image open-webide:local --port 8447
 ```
 
-Both engine contracts have passed. Actual Tailscale certificate/Serve enrollment
-verification remains pending because the test tailnet has not enabled Serve;
-this distinction is tracked in the [roadmap](roadmap.md#tailscale-https-deployment-verification).
+Both engine contracts have passed. Live verification of the official Tailscale
+container deployment also passed in Docker, including trusted certificates,
+secure cookies, REST file write/read/delete, incremental SSE and authenticated
+WSS in both workspace modes. Native Tailscale Serve passed the same transport
+checks. Chrome received an install prompt over the trusted tailnet HTTPS origin,
+with an active service worker that excludes API and bridge response caching.
 
+Recreating the Tailscale and app containers with their existing volumes preserved
+the node ID, hostname, IP addresses, Serve JSON and account database without
+re-enrollment. Both-mode transport checks passed again after recreation. The
+checks used an isolated node, account, workspace and deterministic model provider.
 
 After deployment, check `/bridge/health`, sign in, and confirm the bridge connects.
 Open a remote project, write/read/delete a temporary file, then repeat with a local

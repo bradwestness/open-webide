@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Complete live Tailscale HTTPS verification: trusted certificates, PWA installability, REST/SSE/WSS in both workspace modes, and persistent node identity, Serve routes and app accounts after container recreation.
+
 - Keep Git branch menus open during background status updates and avoid rediscovering branches when only working-tree status changes.
 
 - Keep Run context and other transcript panels at their natural height in overflowing, narrow chat panes. History disclosure arrows point down when collapsed and up when expanded.
