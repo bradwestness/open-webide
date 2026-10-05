@@ -12,6 +12,7 @@ pub enum EditorCommand {
     Newline,
     Undo,
     Redo,
+    ConvertIndentation,
 }
 
 type TypingState = Option<((i64, String), String, f64)>;
@@ -19,6 +20,7 @@ type TypingState = Option<((i64, String), String, f64)>;
 #[derive(Clone, Copy)]
 pub struct EditorActions {
     workspace: WorkspaceState,
+    preferences: Option<crate::state::settings::SettingsState>,
     group: RwSignal<u64>,
     typing: RwSignal<TypingState>,
     composing: RwSignal<bool>,
@@ -28,10 +30,83 @@ impl EditorActions {
     pub fn new(workspace: WorkspaceState) -> Self {
         Self {
             workspace,
-            group: RwSignal::new(0),
+            preferences: use_context::<crate::state::settings::SettingsState>(),
+            group: workspace.editor_group,
             typing: RwSignal::new(None),
             composing: RwSignal::new(false),
         }
+    }
+
+    pub fn rules(self) -> openwebide_core::editor::EditorRules {
+        let key = self
+            .workspace
+            .active_project
+            .get()
+            .zip(self.workspace.open_file.get());
+        let defaults = self
+            .preferences
+            .map(|settings| settings.editor_preferences.get())
+            .unwrap_or_default();
+        let mut rules = self
+            .workspace
+            .editor_rules
+            .with(|rules| key.as_ref().and_then(|key| rules.get(key).cloned()))
+            .unwrap_or_else(|| {
+                openwebide_core::editor::resolve_rules(
+                    "",
+                    &self.workspace.content.get(),
+                    defaults,
+                    &[],
+                )
+                .0
+            });
+        if let Some(indentation) = self
+            .workspace
+            .editor_indentation
+            .with(|values| key.as_ref().and_then(|key| values.get(key).copied()))
+        {
+            rules.indentation = indentation;
+        }
+        rules
+    }
+
+    pub fn set_indentation(self, mut indentation: Indentation) {
+        indentation.width = indentation.width();
+        indentation.tab_width = indentation.tab_width();
+        if let Some(key) = self.key() {
+            self.workspace.editor_indentation.update(|values| {
+                values.insert(key, indentation);
+            });
+        }
+    }
+
+    pub fn rules_untracked(self) -> openwebide_core::editor::EditorRules {
+        untrack(|| self.rules())
+    }
+
+    pub fn prepare_save(
+        self,
+        rules: &openwebide_core::editor::EditorRules,
+    ) -> Result<Option<String>, EditError> {
+        let Some(key) = self.key() else {
+            return Ok(None);
+        };
+        self.typing.set(None);
+        self.group.update(|group| *group = group.wrapping_add(1));
+        let result = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| {
+                let document = self.document(documents, key.clone());
+                document.prepare_save(rules)?;
+                Ok(Some(document.text().to_string()))
+            })
+            .unwrap_or(Ok(None));
+        if let Ok(Some(text)) = &result {
+            self.workspace.content.set(text.clone());
+            self.publish_dirty(key);
+        }
+        result
     }
 
     pub fn begin_composition(self) {
@@ -173,6 +248,9 @@ impl EditorActions {
                 let document = self.document(documents, key.clone());
                 document.set_selections(vec![selection])?;
                 match command {
+                    EditorCommand::ConvertIndentation => {
+                        document.convert_indentation(indentation, indentation.tab_width())?;
+                    }
                     EditorCommand::Tab => {
                         document.tab(indentation)?;
                     }
@@ -180,7 +258,7 @@ impl EditorActions {
                         document.indent_lines(indentation, true)?;
                     }
                     EditorCommand::Newline => {
-                        document.newline()?;
+                        document.newline_with_ending(self.rules_untracked().line_ending)?;
                     }
                     EditorCommand::Undo => {
                         document.undo();

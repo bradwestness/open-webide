@@ -664,3 +664,186 @@ async fn browser_context_menu_is_suppressed_even_without_an_app_menu() {
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn editor_defaults_serialize_writes_rollback_failures_and_ignore_previous_accounts() {
+    use openwebide_core::editor::{EditorPreferences, IndentStyle};
+    use openwebide_frontend::components::Settings;
+    use openwebide_frontend::testing::fake_backend::Call;
+    let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let captured = slot.clone();
+    let mounted = mount_test(move |state| {
+        let actions = build_settings_actions(SettingsActionContext {
+            api: state.api,
+            settings: state.settings,
+            ui: state.ui,
+        });
+        captured.set(Some(actions.on_set_editor_preferences));
+        view! { <Settings on_set_notifications=actions.on_set_notifications on_set_theme=actions.on_set_theme on_set_editor_preferences=actions.on_set_editor_preferences on_set_default_prompt=actions.on_set_default_prompt on_set_bridge_url=actions.on_set_bridge_url /> }
+    });
+    settle().await;
+    let save = slot.get().unwrap();
+    let (release, waiting) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .editor_save_results
+        .borrow_mut()
+        .push_back(waiting);
+    let mut preferences = EditorPreferences::default();
+    preferences.indentation.style = IndentStyle::Tabs;
+    save.run(preferences);
+    settle().await;
+    preferences.indentation.width = 2;
+    save.run(preferences);
+    settle().await;
+    let count = || {
+        mounted
+            .state
+            .fake
+            .calls
+            .borrow()
+            .iter()
+            .filter(
+                |call| matches!(call, Call::SetSetting { key, .. } if key == "editor_preferences"),
+            )
+            .count()
+    };
+    assert_eq!(count(), 1, "only one preference write may be in flight");
+    release.send(Ok(())).unwrap();
+    settle().await;
+    assert_eq!(count(), 2);
+    let stored: EditorPreferences =
+        serde_json::from_str(&mounted.state.fake.settings.borrow()["editor_preferences"]).unwrap();
+    assert_eq!(stored, preferences);
+    let (release, waiting) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .editor_save_results
+        .borrow_mut()
+        .push_back(waiting);
+    let mut changed = preferences;
+    changed.indentation.width = 8;
+    save.run(changed);
+    settle().await;
+    release.send(Err("offline".into())).unwrap();
+    settle().await;
+    assert_eq!(
+        mounted.state.settings.editor_preferences.get_untracked(),
+        preferences
+    );
+    assert!(
+        mounted
+            .state
+            .ui
+            .toast
+            .get_untracked()
+            .unwrap()
+            .contains("Could not save editor preferences")
+    );
+    let (release, waiting) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .editor_save_results
+        .borrow_mut()
+        .push_back(waiting);
+    save.run(changed);
+    settle().await;
+    mounted
+        .state
+        .auth
+        .generation
+        .update(|generation| *generation += 1);
+    mounted
+        .state
+        .settings
+        .editor_preferences
+        .set(Default::default());
+    settle().await;
+    release.send(Err("old account".into())).unwrap();
+    settle().await;
+    assert_eq!(
+        mounted.state.settings.editor_preferences.get_untracked(),
+        EditorPreferences::default()
+    );
+}
+
+#[wasm_bindgen_test]
+async fn editor_defaults_restore_from_database_without_overwriting_a_newer_choice() {
+    use openwebide_core::editor::{EditorPreferences, IndentStyle};
+    use openwebide_frontend::testing::fake_backend::Call;
+    for changed_during_load in [false, true] {
+        let (release, waiting) = futures::channel::oneshot::channel();
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let captured = slot.clone();
+        let mounted = mount_test(move |state| {
+            let actions = build_settings_actions(SettingsActionContext {
+                api: state.api,
+                settings: state.settings,
+                ui: state.ui,
+            });
+            captured.set(Some(actions.on_set_editor_preferences));
+            state
+                .fake
+                .settings_load_results
+                .borrow_mut()
+                .push_back(waiting);
+            state.auth.set_user(User {
+                id: UserId::new(1),
+                username: "test".into(),
+                role: UserRole::User,
+                created_at: 0,
+            });
+            install_project_effects(ProjectEffectContext {
+                api: state.api,
+                health: RwSignal::new(None),
+                auth: state.auth,
+                settings: state.settings,
+                projects: state.projects,
+                chat: state.chat,
+                layout: expect_context::<LayoutState>(),
+                select_project: Callback::new(|_| ()),
+            });
+            view! { <div /> }
+        });
+        super::support::wait_until("editor defaults database load", || {
+            mounted.state.fake.calls.borrow().iter().any(|call| {
+                matches!(
+                    call,
+                    Call::Request {
+                        method: "get_settings"
+                    }
+                )
+            })
+        })
+        .await;
+        let mut saved = EditorPreferences::default();
+        saved.indentation.style = IndentStyle::Tabs;
+        saved.indentation.width = 6;
+        let mut chosen = saved;
+        chosen.indentation.width = 2;
+        if changed_during_load {
+            slot.get().unwrap().run(chosen);
+            settle().await;
+        }
+        release
+            .send(Ok(std::collections::BTreeMap::from([
+                (
+                    "editor_preferences".into(),
+                    serde_json::to_string(&saved).unwrap(),
+                ),
+                ("browser_notifications".into(), "true".into()),
+            ])))
+            .unwrap();
+        super::support::wait_until("settings load completion", || {
+            mounted.state.settings.browser_notifications.get_untracked()
+        })
+        .await;
+        assert_eq!(
+            mounted.state.settings.editor_preferences.get_untracked(),
+            if changed_during_load { chosen } else { saved }
+        );
+    }
+}

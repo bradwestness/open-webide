@@ -1182,3 +1182,142 @@ async fn edit_scrollbars_stay_above_paint_and_outside_gutter_in_both_modes() {
         }
     }
 }
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export async function editorConfigFolder() {
+    const root = await navigator.storage.getDirectory();
+    const name = 'editor-config-' + crypto.randomUUID();
+    const handle = await root.getDirectoryHandle(name, {create:true});
+    const src = await handle.getDirectoryHandle('src', {create:true});
+    for (const [dir, name, text] of [
+        [handle, '.editorconfig', 'root=true\n[*]\nindent_style=space\nindent_size=4\n'],
+        [src, '.editorconfig', '[*.rs]\nindent_size=2\ntab_width=4\nend_of_line=lf\ninsert_final_newline=true\ntrim_trailing_whitespace=true\n'],
+        [src, 'a.rs', '😀\r\n  tail  '],
+    ]) { const file = await dir.getFileHandle(name, {create:true}); const writer = await file.createWritable(); await writer.write(text); await writer.close(); }
+    return {root, name, handle};
+}
+export function editorConfigHandle(folder) { return folder.handle; }
+export async function editorConfigCleanup(folder) { await folder.root.removeEntry(folder.name, {recursive:true}); }
+"#)]
+extern "C" {
+    #[wasm_bindgen(catch)]
+    async fn editorConfigFolder() -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
+    fn editorConfigHandle(folder: &wasm_bindgen::JsValue) -> wasm_bindgen::JsValue;
+    #[wasm_bindgen(catch)]
+    async fn editorConfigCleanup(
+        folder: &wasm_bindgen::JsValue,
+    ) -> Result<(), wasm_bindgen::JsValue>;
+}
+
+#[wasm_bindgen_test]
+async fn editorconfig_indentation_conversion_and_save_use_both_real_workspace_adapters() {
+    use super::support::wait_until;
+    use openwebide_core::WorkspaceMode;
+    use openwebide_core::editor::{EditorPreferences, load_rules};
+    use openwebide_frontend::workspace::Workspace;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let folder = if mode == WorkspaceMode::Local {
+            Some(editorConfigFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(editorConfigHandle);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            if let Some(handle) = handle {
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+            }
+            state.fake.files.borrow_mut().extend([
+                ((1,".editorconfig".into()),"root=true\n[*]\nindent_style=space\nindent_size=4\n".into()),
+                ((1,"src/.editorconfig".into()),"[*.rs]\nindent_size=2\ntab_width=4\nend_of_line=lf\ninsert_final_newline=true\ntrim_trailing_whitespace=true\n".into()),
+                ((1,"src/a.rs".into()),"😀\r\n  tail  ".into()),
+            ]);
+            state.workspace.open_file.set(Some("src/a.rs".into()));
+            state.workspace.content.set("😀\r\n  tail  ".into());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:640px;height:400px">{editor_view(state)}</div> }
+        });
+        wait_until("nested editor configuration", || {
+            mounted
+                .state
+                .workspace
+                .editor_rules
+                .with_untracked(|rules| {
+                    rules
+                        .get(&(1, "src/a.rs".into()))
+                        .is_some_and(|rules| rules.indentation.width == 2)
+                })
+        })
+        .await;
+        let ws = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        textarea.set_selection_range(5, 5).unwrap();
+        editor_key(&textarea, "Tab", false, false);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "😀\r\n    tail  "
+        );
+        textarea.set_value("    😀\n tail  ");
+        textarea
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        mounted.click(".editor-footer .ui-seg-btn:nth-child(2)");
+        mounted.click_text("Convert indentation");
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "\t😀\r\n tail  "
+        );
+        let style = window().get_computed_style(&textarea).unwrap().unwrap();
+        assert_eq!(style.get_property_value("tab-size").unwrap(), "4");
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "    😀\r\n tail  "
+        );
+        editor_key(&textarea, "z", true, true);
+        mounted.click_text("Save");
+        wait_until("configured file save", || {
+            !mounted.state.workspace.dirty.get_untracked()
+        })
+        .await;
+        assert_eq!(ws.read("src/a.rs").await.unwrap(), "\t😀\n tail\n");
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "\t😀\n tail\n"
+        );
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "\t😀\r\n tail  "
+        );
+        assert!(mounted.state.workspace.dirty.get_untracked());
+        ws.write_bytes("src/.editorconfig", &[255]).await.unwrap();
+        let (rules, warnings) = load_rules(
+            &ws,
+            "src/a.rs",
+            "😀\n  tail",
+            EditorPreferences::default(),
+            || true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rules.indentation.width, 4);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            load_rules(&ws, "src/a.rs", "", EditorPreferences::default(), || false)
+                .await
+                .is_err()
+        );
+        drop(mounted);
+        if let Some(folder) = folder {
+            editorConfigCleanup(&folder).await.unwrap();
+        }
+    }
+}

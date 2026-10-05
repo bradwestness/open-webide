@@ -253,6 +253,7 @@ pub fn App() -> impl IntoView {
         on_delete_connection,
         on_open_settings,
         on_set_theme,
+        on_set_editor_preferences,
         on_set_notifications,
         on_set_default_connection: _,
         on_set_default_prompt,
@@ -453,6 +454,7 @@ pub fn App() -> impl IntoView {
                         <Show when=move || show_settings.get() fallback=|| ()>
                             <Settings
                                 on_set_theme=on_set_theme
+                                on_set_editor_preferences=on_set_editor_preferences
                                 on_set_notifications=on_set_notifications
 
                                 on_set_default_prompt=on_set_default_prompt

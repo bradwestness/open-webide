@@ -11,6 +11,9 @@ use web_sys::wasm_bindgen::JsCast;
 #[component]
 pub fn Settings(
     on_set_theme: Callback<Theme>,
+    #[prop(optional)] on_set_editor_preferences: Option<
+        Callback<openwebide_core::editor::EditorPreferences>,
+    >,
     on_set_notifications: Callback<bool>,
     on_set_default_prompt: Callback<Option<i64>>,
     on_set_bridge_url: Callback<String>,
@@ -44,6 +47,15 @@ pub fn Settings(
                     <super::ui::SegmentedControl options=vec![super::ui::SegmentOption::new("System", Theme::System), super::ui::SegmentOption::new("Dark", Theme::Dark), super::ui::SegmentOption::new("Light", Theme::Light)] value=Signal::derive(move || theme.get()) on_change=on_set_theme />
                 </FormField>
 
+                </FormSection>
+                <FormSection title="Editor defaults" description="Files use EditorConfig first, then their detected indentation, then these defaults. Tab indents; Ctrl+M lets Tab move focus.">
+                    <FormField label="Indentation" group=true>
+                        <super::editor_options::IndentationControls value=Signal::derive(move || settings.editor_preferences.get().indentation) disabled=Signal::derive(move || on_set_editor_preferences.is_none()) on_change=Callback::new(move |indentation| {
+                            if let Some(save) = on_set_editor_preferences {
+                                let mut preferences = settings.editor_preferences.get_untracked(); preferences.indentation = indentation; save.run(preferences);
+                            }
+                        }) />
+                    </FormField>
                 </FormSection>
                 <FormSection title="Notifications">
                 <FormField label="Browser notifications" group=true>

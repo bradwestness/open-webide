@@ -141,7 +141,11 @@ impl Vfs for NativeFsVfs {
                 } else {
                     format!("{}/{name}", dir.trim_end_matches('/'))
                 };
-                let metadata = entry.metadata().await.map_err(|e| io_error(e, &path))?;
+                let metadata = match entry.metadata().await {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(io_error(error, &path)),
+                };
                 entries.push(FileEntry {
                     name,
                     path,

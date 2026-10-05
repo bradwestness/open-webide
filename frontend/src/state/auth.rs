@@ -95,6 +95,8 @@ impl AuthState {
         chat.reading_images.set(false);
         chat.image_picker_requested.set(false);
         settings.browser_notifications.set(false);
+        settings.editor_preferences.set(Default::default());
+        settings.editor_preference_revision.set(0);
         chat.send_generation
             .update_value(|generation| *generation += 1);
         chat.active_run.set(None);

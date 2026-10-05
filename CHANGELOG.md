@@ -11,6 +11,10 @@ for what's still ahead.
 
 ### Changed
 
+- Keep directory listings usable when an entry disappears during enumeration, including Chromium writable swap files and temporary bridge discovery probes. Skip missing metadata entries in browser, native bridge and WASI listings.
+
+- Add shared Rust editor indentation settings: independent indentation and tab widths, per-file controls and explicit conversion, with user defaults saved in database settings. Both local and remote workspaces discover nested `.editorconfig` rules with root/section precedence and `unset`, then fall back to detected file style and defaults. Apply configured line endings, final-newline and trailing-whitespace policies as one undoable save command; retain caret positions and distinguish the saved snapshot from newer typing. Keep paint and diff tab widths aligned, and prevent unrelated typing groups from merging after editor remounts.
+
 - Begin the Rust/WASM editor foundation: shared atomic text transactions, directional selections, bounded grouped undo/redo, per-file/project history, Tab/Shift+Tab indentation and indentation-preserving Enter. Route native typing and IME input through the shared editor facade, preserve CRLF and unrelated mixed line endings, reject stale file events, and provide Ctrl+M to let Tab move focus. Advanced editor roadmap work remains in progress.
 
 - Limit rich Markdown gutter bars to changed list items and table rows, instead of marking their entire unchanged container. Keep unchanged changelog items unmarked in both Git and pending-edit previews.

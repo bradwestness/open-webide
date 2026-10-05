@@ -1152,7 +1152,7 @@ body {
   font-family: var(--mono);
   font-size: 13px;
   line-height: 1.5;
-  tab-size: 4;
+  tab-size: var(--editor-tab-width, 4);
   white-space: pre;
   overflow-wrap: normal;
   color: var(--text);
@@ -1191,7 +1191,7 @@ body {
   font-family: var(--mono);
   font-size: 13px;
   line-height: 1.5;
-  tab-size: 4;
+  tab-size: var(--editor-tab-width, 4);
   white-space: pre;
   overflow-wrap: normal;
 }
@@ -3101,7 +3101,7 @@ button.browser-item {
 .topbar-account .ui-dropdown-label { display: inline-flex; align-items: center; gap: var(--space-2); }
 @media (max-width: 800px) { .topbar-account .topbar-user { display: none; } .topbar-account .ui-dropdown-trigger > .ui-icon-glyph { display: none; } }
 
-.editor-diff { min-height: 0; tab-size: 4; }
+.editor-diff { min-height: 0; tab-size: var(--editor-tab-width, 4); }
 .inline-track, .sbs-track { width: max-content; min-width: 100%; }
 .editor-diff .diff-line, .sbs-cell { display: flex; align-items: flex-start; gap: 8px; min-height: 1.5em; padding: 0 12px 0 0; white-space: pre; overflow-wrap: normal; }
 .editor-line-gutter { position: sticky; left: 0; z-index: 1; display: inline-flex; align-items: center; gap: 8px; flex: none; padding: 0 8px; background: var(--bg); min-height: 1.5em; }
@@ -3154,3 +3154,7 @@ button.browser-item {
 .ui-action-menu-context { display: contents; }
 
 .editor-pdf-preview { width: 100%; height: 100%; min-height: 200px; border: 0; background: var(--bg-panel); }
+
+.editor-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--border); background: var(--bg-panel); }
+.editor-indentation-options { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.editor-rules-source { margin-left: auto; font-size: 11px; color: var(--text-muted); }

@@ -132,6 +132,7 @@ pub struct FakeBackend {
     pub panel_save_results:
         RefCell<VecDeque<futures::channel::oneshot::Receiver<Result<(), String>>>>,
     pub settings: RefCell<BTreeMap<String, String>>,
+    pub editor_save_results: RefCell<VecDeque<Deferred<()>>>,
     pub settings_load_error: RefCell<Option<String>>,
     pub settings_load_results: RefCell<VecDeque<SettingsLoad>>,
     pub history_save_results:
@@ -781,6 +782,12 @@ impl Backend for FakeBackend {
                 key: key.into(),
                 value: value.into(),
             });
+            if key == "editor_preferences" {
+                let pending = self.editor_save_results.borrow_mut().pop_front();
+                if let Some(pending) = pending {
+                    pending.await.map_err(|error| error.to_string())??;
+                }
+            }
             if key == "panel_visibility" {
                 let result = self.panel_save_results.borrow_mut().pop_front();
                 if let Some(result) = result {

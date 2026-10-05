@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/ec4rs"]
 members = [
     "backend",
     "bridge",
@@ -142,3 +143,6 @@ unnecessary_wraps = "warn"
 unnested_or_patterns = "warn"
 unused_self = "warn"
 used_underscore_binding = "warn"
+
+[patch.crates-io]
+ec4rs = { path = "vendor/ec4rs" }

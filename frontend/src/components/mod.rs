@@ -3,6 +3,7 @@ mod chat_pane;
 mod commands;
 mod confirm_dialog;
 mod editor;
+mod editor_options;
 mod file_browser;
 mod file_tree;
 pub(crate) mod modal;

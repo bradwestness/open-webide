@@ -284,6 +284,7 @@ pub async fn list(rel: &str) -> Result<Vec<FileEntry>> {
         } else {
             match dir.stat_at(PathFlags::empty(), e.name.clone()).await {
                 Ok(st) => st.size,
+                Err(ErrorCode::NoEntry) => continue,
                 Err(_) => 0,
             }
         };

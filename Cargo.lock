@@ -529,6 +529,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec4rs"
+version = "1.2.0"
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1703,6 +1707,7 @@ name = "openwebide-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "ec4rs",
  "futures",
  "html5ever",
  "ignore",

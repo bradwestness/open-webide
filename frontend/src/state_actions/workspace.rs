@@ -180,6 +180,48 @@ impl WorkspaceActions {
         });
 
         let directory_epoch = project_epoch(projects, auth);
+        let settings = use_context::<crate::state::settings::SettingsState>();
+        let rule_generation = StoredValue::new(0_u64);
+        Effect::new(move |_| {
+            let key = active_project.get().zip(workspace.open_file.get());
+            let epoch = directory_epoch.get();
+            workspace.editor_configuration_revision.track();
+            let defaults = settings
+                .map(|settings| settings.editor_preferences.get())
+                .unwrap_or_default();
+            rule_generation.update_value(|generation| *generation += 1);
+            let generation = rule_generation.get_value();
+            let Some((project_id, path)) = key else {
+                return;
+            };
+            let Some(ws) = workspace_for.run(project_id) else {
+                return;
+            };
+            let text = workspace.content.get_untracked();
+            spawn_local(async move {
+                let current = || {
+                    rule_generation.try_get_value() == Some(generation)
+                        && directory_epoch.try_get_untracked() == Some(epoch)
+                        && active_project.try_get_untracked() == Some(Some(project_id))
+                        && workspace.open_file.try_get_untracked().flatten().as_deref()
+                            == Some(path.as_str())
+                };
+                if let Ok((rules, warnings)) =
+                    openwebide_core::editor::load_rules(&ws, &path, &text, defaults, current).await
+                {
+                    if !current() {
+                        return;
+                    }
+                    workspace.editor_rules.update(|values| {
+                        values.insert((project_id, path), rules);
+                    });
+                    if !warnings.is_empty() {
+                        ui.notify(warnings.join("\n"));
+                    }
+                }
+            });
+        });
+
         let load_dir = Callback::new(move |(project_id, dir): (i64, String)| {
             let generation = auth.generation.get_untracked();
             let epoch = directory_epoch.get_untracked();
@@ -436,26 +478,73 @@ impl WorkspaceActions {
             }
         });
 
+        let save_editor = super::editor::EditorActions::new(workspace);
         let on_save = Callback::new(move |()| {
-            let Some(project_id) = active_project.get() else {
+            let Some(project_id) = active_project.get_untracked() else {
                 return;
             };
-            let Some(path) = workspace.open_file.get() else {
+            let Some(path) = workspace.open_file.get_untracked() else {
                 return;
             };
-            if !workspace.dirty.get() {
+            if !workspace.dirty.get_untracked()
+                || read_only.get_untracked()
+                || workspace.is_resolving()
+            {
                 return;
             }
-            let content = workspace.content.get();
-            ui.toast.set(None);
+            let content_before = workspace.content.get_untracked();
+            let account = auth.generation.get_untracked();
+            let epoch = directory_epoch.get_untracked();
+            let defaults = settings
+                .map(|settings| settings.editor_preferences.get_untracked())
+                .unwrap_or_default();
+            ui.clear_toast();
             spawn_local(async move {
+                let current = || {
+                    auth.generation.try_get_untracked() == Some(account)
+                        && directory_epoch.try_get_untracked() == Some(epoch)
+                        && save_editor.is_current(project_id, &path)
+                };
                 let Some(ws) = workspace_for.run(project_id) else {
                     return;
                 };
+                let Ok((rules, warnings)) = openwebide_core::editor::load_rules(
+                    &ws,
+                    &path,
+                    &content_before,
+                    defaults,
+                    current,
+                )
+                .await
+                else {
+                    return;
+                };
+                if !current() {
+                    return;
+                }
+                if workspace.content.get_untracked() != content_before {
+                    ui.notify("The file changed while preparing to save. Save again to include your latest edits.");
+                    return;
+                }
+                let content = match save_editor.prepare_save(&rules) {
+                    Ok(Some(content)) => content,
+                    Ok(None) => return,
+                    Err(error) => {
+                        ui.notify(error.to_string());
+                        return;
+                    }
+                };
                 match ws.write(&path, &content).await {
                     Ok(()) => {
-                        if active_project.get_untracked() == Some(project_id)
-                            && workspace.open_file.get_untracked().as_deref() == Some(path.as_str())
+                        if auth.generation.try_get_untracked() != Some(account) {
+                            return;
+                        }
+                        workspace.editor_documents.update(|documents| {
+                            if let Some(document) = documents.get_mut(&(project_id, path.clone())) {
+                                document.mark_saved_version(&content);
+                            }
+                        });
+                        if save_editor.is_current(project_id, &path)
                             && workspace.content.get_untracked() == content
                         {
                             workspace.dirty.set(false);
@@ -469,9 +558,21 @@ impl WorkspaceActions {
                                 }
                             });
                         }
+                        if path.rsplit('/').next() == Some(".editorconfig") {
+                            workspace
+                                .editor_configuration_revision
+                                .update(|value| *value += 1);
+                        }
                         refresh_git.run(());
+                        if current() && !warnings.is_empty() {
+                            ui.notify(warnings.join("\n"));
+                        }
                     }
-                    Err(error) => ui.toast.set(Some(error.to_string())),
+                    Err(error) => {
+                        if current() {
+                            ui.notify(error.to_string());
+                        }
+                    }
                 }
             });
         });

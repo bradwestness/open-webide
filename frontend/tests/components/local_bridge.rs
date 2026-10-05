@@ -36,6 +36,18 @@ export function probeFolder() {
         removeEntry: async name => { deleted.push(name); files.delete(name); }
     };
 }
+export function disappearingEntryFolder(errorName) {
+    return { name: 'project', queryPermission: async () => 'granted', values: async function*() {
+        for (const name of ['temporary.crswap', 'kept.txt']) {
+            const handle = Object.create(FileSystemFileHandle.prototype);
+            Object.defineProperties(handle, { name: {value:name}, kind: {value:'file'}, getFile: {value:async () => {
+                if (name === 'temporary.crswap') throw new DOMException('entry disappeared', errorName);
+                return new File(['kept'], name);
+            }}});
+            yield handle;
+        }
+    }};
+}
 export function emptyReadFolder() {
     return { name: 'project', queryPermission: async () => 'granted', values: async function*() {},
         removeEntry: async () => { throw new DOMException('missing', 'NotFoundError'); },
@@ -107,6 +119,7 @@ extern "C" {
     fn folder_empty(folder: &JsValue) -> bool;
     #[wasm_bindgen(js_name = probeFolder)]
     pub(crate) fn probe_folder() -> JsValue;
+    fn disappearingEntryFolder(error_name: &str) -> JsValue;
     #[wasm_bindgen(js_name = emptyReadFolder)]
     pub(crate) fn empty_read_folder() -> JsValue;
     #[wasm_bindgen(js_name = probeDeleted)]
@@ -1130,6 +1143,20 @@ async fn browser_vfs_uses_shared_paths_read_limits_and_search_contract() {
     assert_eq!(hits.len(), 500);
     assert!(hits.iter().all(|hit| hit.text.chars().count() == 400));
     contractCleanup(&fixture).await;
+}
+
+#[wasm_bindgen_test]
+async fn browser_vfs_directory_listing_tolerates_disappearing_entries_only() {
+    let vfs = BrowserFsaVfs::new(disappearingEntryFolder("NotFoundError").unchecked_into());
+    let entries = vfs.list("").await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, "kept.txt");
+    assert_eq!(entries[0].size, 4);
+    let denied = BrowserFsaVfs::new(disappearingEntryFolder("NotAllowedError").unchecked_into());
+    assert!(matches!(
+        denied.list("").await,
+        Err(openwebide_core::VfsError::PermissionDenied(_))
+    ));
 }
 
 #[wasm_bindgen_test]

@@ -40,6 +40,10 @@ pub struct WorkspaceState {
     pub media_url: RwSignal<Option<String>>,
     pub snapshots: RwSignal<HashMap<i64, WorkspaceSnapshot>>,
     pub editor_documents: RwSignal<HashMap<(i64, String), openwebide_core::editor::Document>>,
+    pub editor_rules: RwSignal<HashMap<(i64, String), openwebide_core::editor::EditorRules>>,
+    pub editor_indentation: RwSignal<HashMap<(i64, String), openwebide_core::editor::Indentation>>,
+    pub editor_group: RwSignal<u64>,
+    pub editor_configuration_revision: RwSignal<u64>,
 }
 
 impl WorkspaceState {
@@ -74,6 +78,10 @@ impl WorkspaceState {
             media_url: RwSignal::new(None),
             snapshots: RwSignal::new(HashMap::new()),
             editor_documents: RwSignal::new(HashMap::new()),
+            editor_rules: RwSignal::new(HashMap::new()),
+            editor_indentation: RwSignal::new(HashMap::new()),
+            editor_group: RwSignal::new(0),
+            editor_configuration_revision: RwSignal::new(0),
         }
     }
 
@@ -126,6 +134,11 @@ impl WorkspaceState {
 
     pub fn reset(&self) {
         self.editor_documents.set(HashMap::new());
+        self.editor_rules.set(HashMap::new());
+        self.editor_indentation.set(HashMap::new());
+        self.editor_group.set(0);
+        self.editor_configuration_revision
+            .update(|value| *value += 1);
         self.pending_epoch.update(|epoch| *epoch += 1);
         self.pending_generation.set(HashMap::new());
         self.agent_writes.set(HashMap::new());

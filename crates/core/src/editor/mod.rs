@@ -5,6 +5,10 @@ use std::ops::Range;
 
 mod indent;
 pub use indent::{IndentStyle, Indentation};
+mod configuration;
+pub use configuration::{
+    ConfigSource, EditorPreferences, EditorRules, LineEnding, load_rules, resolve_rules,
+};
 
 /// A directional selection: its head is the moving caret.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -122,6 +126,12 @@ impl Document {
     }
     pub fn mark_saved(&mut self) {
         self.saved.clone_from(&self.text);
+    }
+    /// A write can finish after another edit. Record the version actually written
+    /// without treating the newer in-memory document as saved.
+    pub fn mark_saved_version(&mut self, text: &str) {
+        self.saved.clear();
+        self.saved.push_str(text);
     }
     pub const fn can_undo(&self) -> bool {
         self.history_cursor > 0
@@ -336,6 +346,33 @@ pub fn byte_to_textarea(text: &str, offset: usize) -> Result<usize, EditError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_snapshot_does_not_mark_newer_typing_clean() {
+        let mut document = Document::new("a");
+        document
+            .apply(
+                vec![Edit::replace(1..1, "b")],
+                vec![Selection::caret(2)],
+                None,
+            )
+            .unwrap();
+        let saved = document.text().to_string();
+        document
+            .apply(
+                vec![Edit::replace(2..2, "c")],
+                vec![Selection::caret(3)],
+                None,
+            )
+            .unwrap();
+        document.mark_saved_version(&saved);
+        assert!(document.is_dirty());
+        document.undo();
+        assert_eq!(document.text(), "ab");
+        assert!(!document.is_dirty());
+        document.undo();
+        assert!(document.is_dirty());
+    }
 
     #[test]
     fn atomic_multicursor_edits_round_trip_selections_and_line_endings() {

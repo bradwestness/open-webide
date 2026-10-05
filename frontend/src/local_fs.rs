@@ -508,10 +508,17 @@ async fn dir_entries_with_handles(
             0
         } else {
             let file: FileSystemFileHandle = handle.clone().unchecked_into();
+            let metadata = match file_handle_file(&file).await {
+                Ok(file) => file,
+                // Directory iteration and metadata reads are not atomic. A file may
+                // disappear between them (including browser writable swap files).
+                Err(VfsError::NotFound(_)) => continue,
+                Err(error) => return Err(error),
+            };
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             // Browser File.size is a nonnegative integer within JS's exact range.
             {
-                file_handle_file(&file).await?.size() as u64
+                metadata.size() as u64
             }
         };
         let path = if prefix.is_empty() {

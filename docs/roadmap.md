@@ -60,14 +60,15 @@ The shared Rust document/transaction engine, grouped undo/redo, per-file/project
 history and basic Tab/Shift+Tab/Enter commands are in place. Continue the editing
 foundation with:
 
-- **Indentation:** expose configurable tabs/spaces and tab stops (the current UI uses
-  four spaces). Add block-aware Enter indentation, outdent closing delimiters, and deliberate
-  paste/reindent behavior. Honor nested `.editorconfig` rules through `Workspace`,
-  then detected file style, then user defaults; expose indentation style/width and
-  explicit tabs/spaces conversion. Keep a documented way to Tab out of the editor.
+- **Indentation:** configurable tabs/spaces, independent indentation/tab widths,
+  nested project-bounded `.editorconfig`, detected style, database-backed defaults,
+  explicit indentation conversion and Tab focus escape are in place. Continue with
+  block-aware Enter indentation, outdent closing delimiters and deliberate
+  paste/reindent behavior. See [editor controls](editor.md).
 - **Reliable edits and history:** build on grouped transactions and per-document history
-  to restore caret/selection/scroll state on switches. Complete final-newline policy and
-  real input-method/clipboard verification, preserving Unicode and LF/CRLF without
+  to restore caret/selection/scroll state on switches. Explicit EditorConfig newline,
+  line-ending and trailing-whitespace save policies are undoable; finish real
+  input-method/clipboard verification, preserving Unicode and LF/CRLF without
   rewriting unrelated text.
 - **Everyday commands:** move/duplicate/delete lines or selections, insert a line
   above/below, toggle line/block comments, and auto-close brackets/quotes, surround

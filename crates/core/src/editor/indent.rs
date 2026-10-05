@@ -3,17 +3,18 @@ use std::collections::BTreeSet;
 
 use super::{Document, Edit, EditError, Selection};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum IndentStyle {
     #[default]
     Spaces,
     Tabs,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Indentation {
     pub style: IndentStyle,
     pub width: usize,
+    pub tab_width: usize,
 }
 
 impl Default for Indentation {
@@ -21,6 +22,7 @@ impl Default for Indentation {
         Self {
             style: IndentStyle::Spaces,
             width: 4,
+            tab_width: 4,
         }
     }
 }
@@ -30,10 +32,41 @@ impl Indentation {
         self.width.clamp(1, 16)
     }
     pub fn unit(self) -> String {
-        match self.style {
-            IndentStyle::Spaces => " ".repeat(self.width()),
-            IndentStyle::Tabs => "\t".into(),
+        self.columns(self.width())
+    }
+    pub fn tab_width(self) -> usize {
+        self.tab_width.clamp(1, 16)
+    }
+    pub fn columns(self, width: usize) -> String {
+        self.columns_from(0, width)
+    }
+    fn columns_from(self, start: usize, width: usize) -> String {
+        if self.style == IndentStyle::Spaces {
+            return " ".repeat(width);
         }
+        let mut result = String::new();
+        let mut column = start;
+        let end = start + width;
+        while column < end {
+            let stop = column + self.tab_width() - column % self.tab_width();
+            if stop <= end {
+                result.push('\t');
+                column = stop;
+            } else {
+                result.push_str(&" ".repeat(end - column));
+                break;
+            }
+        }
+        result
+    }
+    fn visual_width(self, text: &str) -> usize {
+        text.chars().fold(0, |column, ch| {
+            if ch == '\t' {
+                column + self.tab_width() - column % self.tab_width()
+            } else {
+                column + 1
+            }
+        })
     }
 }
 
@@ -65,15 +98,17 @@ impl Document {
             .filter_map(|start| {
                 if outdent {
                     let line = &self.text[start..];
-                    let remove = if line.starts_with('\t') {
-                        1
-                    } else {
-                        line.bytes()
-                            .take_while(|byte| *byte == b' ')
-                            .take(indentation.width())
-                            .count()
-                    };
-                    (remove > 0).then(|| Edit::replace(start..start + remove, ""))
+                    let prefix: String = line
+                        .chars()
+                        .take_while(|ch| matches!(ch, ' ' | '\t'))
+                        .collect();
+                    let columns = indentation.visual_width(&prefix);
+                    (!prefix.is_empty()).then(|| {
+                        Edit::replace(
+                            start..start + prefix.len(),
+                            indentation.columns(columns.saturating_sub(indentation.width())),
+                        )
+                    })
                 } else {
                     Some(Edit::replace(start..start, indentation.unit()))
                 }
@@ -96,22 +131,10 @@ impl Document {
             .iter()
             .map(|selection| {
                 let position = selection.head;
-                let text = match indentation.style {
-                    IndentStyle::Tabs => "\t".into(),
-                    IndentStyle::Spaces => {
-                        let width = indentation.width();
-                        let column = self.text[line_start(&self.text, position)..position]
-                            .chars()
-                            .fold(0, |column, ch| {
-                                if ch == '\t' {
-                                    column + width - column % width
-                                } else {
-                                    column + 1
-                                }
-                            });
-                        " ".repeat(width - column % width)
-                    }
-                };
+                let column = indentation
+                    .visual_width(&self.text[line_start(&self.text, position)..position]);
+                let width = indentation.width();
+                let text = indentation.columns_from(column, width - column % width);
                 Edit::replace(position..position, text)
             })
             .collect();
@@ -120,15 +143,16 @@ impl Document {
 
     /// Enter retains the current line's indentation and the document's line ending.
     pub fn newline(&mut self) -> Result<bool, EditError> {
-        let ending = if self
-            .text
-            .split_once('\n')
-            .is_some_and(|(prefix, _)| prefix.ends_with('\r'))
-        {
-            "\r\n"
-        } else {
-            "\n"
-        };
+        self.newline_with_ending(None)
+    }
+
+    pub fn newline_with_ending(
+        &mut self,
+        ending: Option<super::LineEnding>,
+    ) -> Result<bool, EditError> {
+        let ending = ending
+            .unwrap_or_else(|| super::LineEnding::detect(&self.text))
+            .text();
         let edits = self
             .selections
             .iter()
@@ -145,7 +169,7 @@ impl Document {
         self.apply_mapped(edits)
     }
 
-    fn apply_mapped(&mut self, mut edits: Vec<Edit>) -> Result<bool, EditError> {
+    pub(super) fn apply_mapped(&mut self, mut edits: Vec<Edit>) -> Result<bool, EditError> {
         edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
         let selections = self
             .selections
@@ -185,6 +209,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn separate_soft_and_hard_tab_stops_round_trip_outdent() {
+        let indentation = Indentation {
+            style: IndentStyle::Tabs,
+            width: 4,
+            tab_width: 3,
+        };
+        let mut doc = Document::new("  x");
+        doc.set_selections(vec![Selection::caret(2)]).unwrap();
+        doc.tab(indentation).unwrap();
+        assert_eq!(doc.text(), "  \t x");
+        doc.indent_lines(indentation, true).unwrap();
+        assert_eq!(doc.text(), "x");
+        doc.undo();
+        assert_eq!(doc.text(), "  \t x");
+    }
+
+    #[test]
     fn selected_lines_indent_once_and_preserve_direction_crlf_and_final_newline() {
         let mut doc = Document::new("a\r\nb\r\nc");
         doc.set_selections(vec![
@@ -196,6 +237,7 @@ mod tests {
             Indentation {
                 style: IndentStyle::Spaces,
                 width: 2,
+                tab_width: 2,
             },
             false,
         )
@@ -214,6 +256,7 @@ mod tests {
             Indentation {
                 style: IndentStyle::Tabs,
                 width: 4,
+                tab_width: 4,
             },
             false,
         )

@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 base64 = { workspace = true }
+ec4rs = { version = "1.2", features = ["allow-empty-values"] }
 html5ever = "0.40"
 ignore = "0.4.33"
 serde = { workspace = true }

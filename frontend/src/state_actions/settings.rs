@@ -28,6 +28,7 @@ pub struct SettingsActions {
     pub on_delete_connection: Callback<i64>,
     pub on_open_settings: Callback<()>,
     pub on_set_theme: Callback<Theme>,
+    pub on_set_editor_preferences: Callback<openwebide_core::editor::EditorPreferences>,
     pub on_set_notifications: Callback<bool>,
     pub on_set_default_connection: Callback<Option<i64>>,
     pub on_set_default_prompt: Callback<Option<i64>>,
@@ -234,6 +235,72 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         settings.show_settings.set(true);
     });
 
+    let editor_auth = expect_context::<crate::state::auth::AuthState>();
+    let pending_editor_preferences =
+        StoredValue::new(None::<openwebide_core::editor::EditorPreferences>);
+    let saving_editor_preferences = StoredValue::new(None::<u64>);
+    let confirmed_editor_preferences =
+        StoredValue::new(None::<openwebide_core::editor::EditorPreferences>);
+    Effect::new(move |_| {
+        editor_auth.generation.track();
+        pending_editor_preferences.set_value(None);
+        confirmed_editor_preferences.set_value(None);
+    });
+    let on_set_editor_preferences = Callback::new(
+        move |preferences: openwebide_core::editor::EditorPreferences| {
+            let preferences = preferences.normalized();
+            if confirmed_editor_preferences.get_value().is_none() {
+                confirmed_editor_preferences
+                    .set_value(Some(settings.editor_preferences.get_untracked()));
+            }
+            settings.editor_preferences.set(preferences);
+            settings
+                .editor_preference_revision
+                .update(|revision| *revision += 1);
+            pending_editor_preferences.set_value(Some(preferences));
+            let account = editor_auth.generation.get_untracked();
+            if saving_editor_preferences.get_value() == Some(account) {
+                return;
+            }
+            saving_editor_preferences.set_value(Some(account));
+            spawn_local(async move {
+                loop {
+                    if editor_auth.generation.try_get_untracked() != Some(account) {
+                        return;
+                    }
+                    let mut preferences = None;
+                    pending_editor_preferences.update_value(|pending| preferences = pending.take());
+                    let Some(preferences) = preferences else {
+                        break;
+                    };
+                    let value =
+                        serde_json::to_string(&preferences).expect("editor preferences serialize");
+                    let result = api
+                        .with_value(Clone::clone)
+                        .set_setting("editor_preferences", &value)
+                        .await;
+                    if editor_auth.generation.try_get_untracked() != Some(account) {
+                        return;
+                    }
+                    match result {
+                        Ok(()) => confirmed_editor_preferences.set_value(Some(preferences)),
+                        Err(error) => {
+                            if pending_editor_preferences.get_value().is_none() {
+                                settings.editor_preferences.set(
+                                    confirmed_editor_preferences.get_value().unwrap_or_default(),
+                                );
+                                ui.notify(format!("Could not save editor preferences: {error}"));
+                            }
+                        }
+                    }
+                }
+                if saving_editor_preferences.try_get_value() == Some(Some(account)) {
+                    saving_editor_preferences.set_value(None);
+                }
+            });
+        },
+    );
+
     let on_set_theme = Callback::new(move |theme: Theme| {
         settings.theme.set(theme);
         spawn_local(async move {
@@ -297,6 +364,7 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         on_delete_connection,
         on_open_settings,
         on_set_theme,
+        on_set_editor_preferences,
         on_set_notifications,
         on_set_default_connection,
         on_set_default_prompt,

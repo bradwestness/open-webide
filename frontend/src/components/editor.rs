@@ -892,12 +892,29 @@ pub fn Editor(
         if let Some(el) = ta.get()
             && el.value() != value.replace("\r\n", "\n").replace('\r', "\n")
         {
+            let scroll = (el.scroll_top(), el.scroll_left());
             el.set_value(&value);
+            if current_editor_target(editor_actions, &el)
+                && let Some(key) = workspace
+                    .active_project
+                    .get_untracked()
+                    .zip(open_file.get_untracked())
+                && let Some(selection) = workspace.editor_documents.with_untracked(|documents| {
+                    documents
+                        .get(&key)
+                        .filter(|document| document.text() == value)
+                        .and_then(|document| document.selections().first().copied())
+                })
+            {
+                restore_editor_selection(&el, &value, selection);
+                el.set_scroll_top(scroll.0);
+                el.set_scroll_left(scroll.1);
+            }
         }
     });
 
     view! {
-        <div class="editor" node_ref=root on:keydown=move |event: web_sys::KeyboardEvent| {
+        <div class="editor" node_ref=root style=move || format!("--editor-tab-width: {}", editor_actions.rules().indentation.tab_width()) on:keydown=move |event: web_sys::KeyboardEvent| {
             if (event.ctrl_key() || event.meta_key()) && event.key().eq_ignore_ascii_case("f") && view_mode.get_untracked() != ViewMode::Preview {
                 event.prevent_default(); event.stop_propagation(); find_open.set(true);
                 if let Some(input) = find_input.get_untracked() { let _ = input.focus(); input.select(); }
@@ -1133,7 +1150,7 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 24px)", text.split('\n').count().to_string().len())) class:highlight-ready=move || highlight_ready.get()>
+                                    <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 24px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get()>
                                         <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready />
                                         <textarea
                                             data-editor-project=editor_project.map(|project| project.to_string())
@@ -1144,6 +1161,12 @@ pub fn Editor(
                                             readonly=read_only
                                             title="Tab indents; Ctrl+M toggles Tab moving focus"
                                             node_ref=ta
+                                            on:select=move |event: web_sys::Event| {
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
+                                            }
+                                            on:blur=move |event: web_sys::FocusEvent| {
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
+                                            }
                                             on:beforeinput=move |event: web_sys::InputEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(document_selection(&textarea, &workspace.content.get_untracked())); }
                                             }
@@ -1172,7 +1195,7 @@ pub fn Editor(
                                                 };
                                                 if let Some(command) = command {
                                                     event.prevent_default(); event.stop_propagation();
-                                                    if let Ok(Some((text, selection))) = editor_actions.command(command, document_selection(&textarea, &workspace.content.get_untracked()), openwebide_core::editor::Indentation::default()) {
+                                                    if let Ok(Some((text, selection))) = editor_actions.command(command, document_selection(&textarea, &workspace.content.get_untracked()), editor_actions.rules_untracked().indentation) {
                                                         textarea.set_value(&text); restore_editor_selection(&textarea, &text, selection);
                                                     }
                                                 }
@@ -1199,6 +1222,18 @@ pub fn Editor(
                         }
                     }
                 }}
+            </Show>
+            <Show when=move || open_file.get().is_some() && view_mode.get() == ViewMode::Code && open_file.with(|path| path.as_ref().is_some_and(|path| !FileKind::from_path(path).is_non_text()))>
+                <div class="editor-footer">
+                    <super::editor_options::IndentationControls above=true value=Signal::derive(move || editor_actions.rules().indentation) disabled=read_only on_change=Callback::new(move |indentation| editor_actions.set_indentation(indentation)) />
+                    <Button size=ButtonSize::Sm variant=ButtonVariant::Ghost disabled=read_only on_click=Callback::new(move |_| {
+                        if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea)
+                            && let Ok(Some((text, selection))) = editor_actions.command(EditorCommand::ConvertIndentation, document_selection(&textarea, &workspace.content.get_untracked()), editor_actions.rules_untracked().indentation) {
+                                textarea.set_value(&text); restore_editor_selection(&textarea, &text, selection); let _ = textarea.focus();
+                        }
+                    })>"Convert indentation"</Button>
+                    <span class="editor-rules-source" title=move || editor_actions.rules().source.unwrap_or_else(|| "Detected from this file, with editor defaults as fallback".into())>{move || if editor_actions.rules().source.is_some() { "EditorConfig" } else { "Detected / defaults" }}</span>
+                </div>
             </Show>
         </div>
     }

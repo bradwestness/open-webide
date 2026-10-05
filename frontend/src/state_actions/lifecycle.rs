@@ -194,6 +194,7 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 return;
             }
             let backend = api.with_value(Clone::clone);
+            let editor_revision = settings.editor_preference_revision.get_untracked();
             let (
                 settings_result,
                 projects_result,
@@ -253,6 +254,20 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                         })
                         .collect(),
                 );
+                if settings.editor_preference_revision.get_untracked() == editor_revision {
+                    settings.editor_preferences.set(
+                        values
+                            .get("editor_preferences")
+                            .and_then(|value| {
+                                serde_json::from_str::<openwebide_core::editor::EditorPreferences>(
+                                    value,
+                                )
+                                .ok()
+                            })
+                            .unwrap_or_default()
+                            .normalized(),
+                    );
+                }
                 settings.browser_notifications.set(
                     values
                         .get("browser_notifications")
