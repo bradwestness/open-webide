@@ -102,3 +102,6 @@ mod probe_tests {
 pub mod prompt;
 
 pub mod viewport;
+
+#[cfg(target_arch = "wasm32")]
+pub mod clipboard;

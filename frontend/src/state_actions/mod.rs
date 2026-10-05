@@ -21,3 +21,5 @@ pub mod rewind;
 pub mod reviews;
 
 pub mod todos;
+
+pub mod file_tree;

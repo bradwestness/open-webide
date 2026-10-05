@@ -540,3 +540,5 @@ pub use tasks::{
     AgentTask, NewAgentTask, TaskEvent, TaskHistory, TaskRequest, TaskSnapshot, TaskStatus,
     TaskUpdate,
 };
+
+pub mod workspace_entries;

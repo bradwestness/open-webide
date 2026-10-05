@@ -28,6 +28,7 @@ export function gitHttp() {
         }
         if (mock.invalid) return json({error:'cwd does not exist: repos/local'}, 400);
         if (path === '/git/status') return json({branch:mock.currentBranch,commit_hash:'abc',commit_message:null,upstream:null,ahead:0,behind:0,is_clean:mock.clean,line_stats:{insertions:0,deletions:0},files:mock.clean?{}:{'main.rs':'modified'}});
+        if (path === '/git/path-status' || path === '/git/path') return mock.pathError && path === '/git/path' ? json({error:'path action failed'}, 400) : json({has_head:true,staged:['a.txt'],unstaged:['a.txt'],untracked:[],renamed_from:{}});
         if (path === '/git/show') return json({content:'committed'});
         if (path === '/git/diff') return json({diff:'local diff'});
         if (path === '/git/branches') return mock.branchesError ? json({error:'cannot list branches'}, 400) : json(mock.branches);
@@ -45,21 +46,21 @@ export function gitChange(mock, field, value) { mock[field] = value; }
 export function gitRestore(mock) { mock.restore(); }
 "#)]
 extern "C" {
-    fn gitHttp() -> JsValue;
+    pub(super) fn gitHttp() -> JsValue;
     fn gitBranches(mock: &JsValue, branches: &str);
-    fn gitCalls(mock: &JsValue) -> String;
-    fn gitChange(mock: &JsValue, field: &str, value: bool);
+    pub(super) fn gitCalls(mock: &JsValue) -> String;
+    pub(super) fn gitChange(mock: &JsValue, field: &str, value: bool);
     fn gitRestore(mock: &JsValue);
 }
 
-struct Http(JsValue);
+pub(super) struct Http(pub(super) JsValue);
 impl Drop for Http {
     fn drop(&mut self) {
         gitRestore(&self.0);
     }
 }
 
-async fn token() -> Option<String> {
+pub(super) async fn token() -> Option<String> {
     let old = openwebide_frontend::idb::get_bridge_pairing_token()
         .await
         .unwrap();
@@ -68,7 +69,7 @@ async fn token() -> Option<String> {
         .unwrap();
     old
 }
-async fn restore_token(old: Option<String>) {
+pub(super) async fn restore_token(old: Option<String>) {
     if let Some(old) = old {
         openwebide_frontend::idb::set_bridge_pairing_token(&old)
             .await

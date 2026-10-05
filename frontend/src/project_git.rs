@@ -91,6 +91,41 @@ impl GitRepository {
         }
     }
 
+    pub async fn path_changes(&self) -> Result<openwebide_core::git::GitPathChanges, String> {
+        match self {
+            Self::Remote { api, project_id } => {
+                api.with_value(Clone::clone)
+                    .git_path_changes(*project_id)
+                    .await
+            }
+            Self::Local(client) => {
+                client
+                    .git_request("path-status", serde_json::json!({}))
+                    .await
+            }
+        }
+    }
+    pub async fn path_action(
+        &self,
+        request: &openwebide_core::git::GitPathRequest,
+    ) -> Result<openwebide_core::git::GitPathChanges, String> {
+        match self {
+            Self::Remote { api, project_id } => {
+                api.with_value(Clone::clone)
+                    .git_path_action(*project_id, request)
+                    .await
+            }
+            Self::Local(client) => {
+                client
+                    .git_request(
+                        "path",
+                        serde_json::to_value(request).map_err(|error| error.to_string())?,
+                    )
+                    .await
+            }
+        }
+    }
+
     pub async fn commit(&self, request: &GitCommitRequest) -> Result<GitCommitResult, String> {
         match self {
             Self::Remote { api, project_id } => {

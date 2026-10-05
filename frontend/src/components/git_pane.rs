@@ -38,7 +38,7 @@ pub fn GitPane(
                     view! { <button class="btn tree-item" class:selected=move || workspace.open_file.get().as_deref() == Some(selected.as_str()) on:click=move |_| { on_open.run(click.clone()); }><span class="tree-icon"><super::ui::Icon name=super::ui::IconName::File /></span><span class="tree-name">{path}</span><span class=format!("git-badge {}", status.css_class())>{status.badge()}</span></button> }
                 } />
             </div>
-            <div class="git-diff-actions">
+            <div class="git-diff-actions" data-context-menu="">
                 <span class="git-diff-path">{move || workspace.open_file.get().unwrap_or_else(|| "Select a changed file".into())}</span>
     <super::dropdown::ActionMenu aria_label="Diff actions">            <button role="menuitem" class="ui-dropdown-item recent-item btn" disabled=move || workspace.open_file.get().is_none() || git.status.get().is_none() on:click=move |_| on_load_git_diff.run(())>"Refresh diff"</button>
                 <button role="menuitem" class="ui-dropdown-item recent-item btn" disabled=move || !git.can_revert(workspace.active_project.get(), workspace.open_file.get().as_deref()) on:click=move |_| on_discard_git_diff.run(())>"Revert file"</button></super::dropdown::ActionMenu>

@@ -78,3 +78,6 @@ mod sessions;
 
 #[path = "components/installation.rs"]
 mod installation;
+
+#[path = "components/file_tree.rs"]
+mod file_tree;

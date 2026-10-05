@@ -11,6 +11,9 @@ for what's still ahead.
 
 ### Changed
 
+- Open existing session, server, prompt, chat-message and panel action menus with right-click, long press or Shift+F10. Preserve the inline menu buttons, shared styling, focus restoration and outside-click dismissal.
+- Align backend history regression coverage with reload recovery: retain interrupted tool-call/result pairs with explicit unrecorded outcomes.
+
 - Expand the editor roadmap with researched editing, indentation, folding, navigation and search/replace requirements, a Rust/Leptos WebAssembly implementation with thin browser glue, and explicit integration with the existing code-intelligence work.
 
 - Offer Resume after reloading a local run with unfinished tool calls. Preserve call/result pairing in shared history, mark unrecorded outcomes explicitly, and continue with fresh turn IDs without replaying unfinished tools. Verify slow-model reloads, approvals and conflicting edit decisions across browser windows in both modes; user-confirmed OS-picked local folder access also survives reload without re-picking.
@@ -105,6 +108,8 @@ for what's still ahead.
 - Verify common provider and filesystem contracts across adapters, including failure and fallback behavior. Browser chat-only runs share server reply persistence and telemetry; populated-directory deletion and binary Git previews behave consistently in both modes.
 
 ### Added
+
+- Add [file and folder context menus](docs/file-tree-menus.md) in both workspace modes: create, rename, move, copy path, confirmed delete/revert, status-aware Git tracking/staging/unstaging/ignore, and editable Explain/Summarize/Review prompts. Share filesystem policy and Git planning across adapters; guard unsaved buffers, pending reviews, concurrent operations and stale account/project/folder results. Preserve originals on failed moves and untracked files on revert.
 
 - Add `todo_write` for an agent-maintained checklist pinned above the composer in local, remote and projectless chats. Show pending, in-progress and completed items with progress counts and collapsible themed scrolling. Persist prompt-anchored revisions in the database, restore the correct plan after reload, rewind and Fork, and include the latest checklist in subsequent model context. Reject stale prompt updates, preserve the plan when tool persistence or loading fails, and offer Retry for failed loads. Share tool policy and execution above thin browser, Spin and bridge persistence adapters.
 

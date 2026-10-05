@@ -591,7 +591,12 @@ pub fn Editor(
     on_reject: Callback<()>,
 ) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
-    let read_only = Signal::derive(move || read_only.get() || workspace.is_resolving());
+    let file_tree_actions = use_context::<crate::state_actions::file_tree::FileTreeActions>();
+    let read_only = Signal::derive(move || {
+        read_only.get()
+            || workspace.is_resolving()
+            || file_tree_actions.is_some_and(|actions| actions.busy.get())
+    });
     let projects = expect_context::<ProjectsState>();
     let git = expect_context::<GitState>();
 

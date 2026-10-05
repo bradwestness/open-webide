@@ -708,6 +708,22 @@ impl BackendApi {
         self.get(&Self::git_endpoint(project_id, "branches")).await
     }
 
+    pub async fn git_path_changes(
+        &self,
+        project_id: Option<i64>,
+    ) -> Result<openwebide_core::git::GitPathChanges, String> {
+        self.get(&Self::git_endpoint(project_id, "path-status"))
+            .await
+    }
+    pub async fn git_path_action(
+        &self,
+        project_id: Option<i64>,
+        request: &openwebide_core::git::GitPathRequest,
+    ) -> Result<openwebide_core::git::GitPathChanges, String> {
+        self.post(&Self::git_endpoint(project_id, "path"), request)
+            .await
+    }
+
     pub async fn git_commit(
         &self,
         project_id: Option<i64>,

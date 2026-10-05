@@ -28,7 +28,7 @@ pub fn SessionList(
                 let id=session.id;let pinned=session.pinned;let archived=session.archived;
                 let title=session.name.clone();
                 view! {
-                    <div class=move || format!("session{}",if chat.active_session.get()==Some(id){" active"}else{""}) data-session-id=id>
+                    <div class=move || format!("session{}",if chat.active_session.get()==Some(id){" active"}else{""}) data-session-id=id data-context-menu="">
                         <button class="btn ghost session-name" title=title on:click=move |_|on_select.run(id)>{pinned.then(|| view! { <crate::components::ui::Icon name=crate::components::ui::IconName::Pin /> })}<span class="session-label">{session.name}</span></button>
                         <super::dropdown::ActionMenu aria_label="Session actions">
                             <button role="menuitem" class="ui-dropdown-item recent-item icon-btn session-pin" title=if pinned {"Unpin"}else{"Pin"} aria-pressed=pinned.to_string() disabled=move || state.busy.with(|busy|busy.contains(&id)) on:click=move |_|actions.preferences.run((id,SessionPreferences{pinned:Some(!pinned),archived:None}))><crate::components::ui::Icon name=crate::components::ui::IconName::Pin /><span>{if pinned { "Unpin" } else { "Pin" }}</span></button>

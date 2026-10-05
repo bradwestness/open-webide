@@ -6,7 +6,7 @@ use crate::state::{
     chat::ChatState,
     git::{GitState, HeadContent},
     projects::ProjectsState,
-    ui::{ConfirmRequest, PromptRequest, UiState},
+    ui::{PromptRequest, UiState},
     workspace::WorkspaceState,
 };
 
@@ -98,7 +98,7 @@ impl GitActions {
             git,
             chat,
             ui,
-            workspace_for,
+            workspace_for: _,
             refresh,
         } = context;
         let active_project = projects.active_project;
@@ -330,45 +330,14 @@ impl GitActions {
             });
         });
 
+        let tree_actions = use_context::<super::file_tree::FileTreeActions>();
         let on_discard_diff = Callback::new(move |()| {
-            let Some(head) = git.head_content.get() else {
-                return;
-            };
-            let Some(project_id) = head.project_id else {
-                return;
-            };
-            let Ok(head_content) = head.content else {
-                return;
-            };
-            let head_path = head.path;
-            ui.set_confirm(ConfirmRequest {
-                title: "Revert to HEAD".to_string(),
-                message: format!(
-                    "Discard all changes to `{head_path}` and restore the committed version?"
-                ),
-                confirm_label: "Revert".to_string(),
-                action: Callback::new(move |()| {
-                    let content = head_content.clone();
-                    let path = head_path.clone();
-                    spawn_local(async move {
-                        let Some(ws) = workspace_for.run(project_id) else {
-                            return;
-                        };
-                        match ws.write(&path, &content).await {
-                            Ok(()) => {
-                                if active_project.get_untracked() == Some(project_id)
-                                    && open_file.get_untracked().as_deref() == Some(path.as_str())
-                                {
-                                    workspace.content.set(content);
-                                    workspace.dirty.set(false);
-                                    refresh.run(());
-                                }
-                            }
-                            Err(error) => ui.notify(error),
-                        }
-                    });
-                }),
-            });
+            if let Some(actions) = tree_actions
+                && let Some(head) = git.head_content.get_untracked()
+                && head.project_id == active_project.get_untracked()
+            {
+                actions.git_action(&head.path, openwebide_core::git::GitPathAction::Revert);
+            }
         });
 
         Self {

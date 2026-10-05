@@ -47,20 +47,6 @@ The following checks still require hands-on device or environment testing:
 - Windows runtime process cleanup. The Windows adapter compiles without TLS locally;
   the Windows CI job checks the full TLS build.
 
-### File tree: context menus
-
-Add right-click menus for files and folders, with the same actions in local and
-remote projects through shared workspace and Git facades:
-
-- File actions: create, rename, move, copy path and delete, with confirmation for
-  destructive operations and clear handling of open or dirty editor tabs.
-- Git actions: add/track, ignore, stage, unstage and revert changes. Show actions
-  appropriate to the selected file's status and support folders where applicable.
-- Chat TUI / agent actions: explain or summarize a file/folder, review changes,
-  and similar shortcuts. Inject an editable prompt with the selected paths into
-  the chat composer so the user can review and send it.
-- Make menus keyboard-accessible and usable with a touch-friendly alternative.
-
 ### Full code editor: editing, structure and navigation
 
 Build out the existing syntax-highlighted Edit view into a daily-use code editor.

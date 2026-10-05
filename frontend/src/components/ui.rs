@@ -322,7 +322,7 @@ pub fn PanelToolbar(
     #[prop(default = "")] class: &'static str,
     children: Children,
 ) -> impl IntoView {
-    view! { <div class=format!("panel-toolbar {class}")>{children()}</div> }
+    view! { <div class=format!("panel-toolbar {class}") data-context-menu="">{children()}</div> }
 }
 
 /// Consistent search input and inline actions for tool panels.

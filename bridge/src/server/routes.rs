@@ -367,6 +367,12 @@ async fn handle_git(req: Request<Incoming>, config: &ServerConfig) -> Result<Str
     }
     let operation = match (method.as_str(), path.as_str()) {
         ("GET" | "POST", "/git/status") => GitOperation::Status,
+        ("GET" | "POST", "/git/path-status") => GitOperation::PathChanges,
+        ("POST", "/git/path") => {
+            GitOperation::PathAction(serde_json::from_slice(&body).map_err(|error| {
+                BridgeError::Validation(format!("invalid Git path payload: {error}"))
+            })?)
+        }
         ("GET" | "POST", "/git/diff") => GitOperation::Diff(
             serde_json::from_slice::<PathRequest>(&body)
                 .unwrap_or_default()

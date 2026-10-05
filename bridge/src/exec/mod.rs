@@ -91,6 +91,8 @@ pub enum GitOperation {
     Commit(GitCommitRequest),
     Checkout(GitCheckoutRequest),
     Sync(GitSyncRequest),
+    PathChanges,
+    PathAction(openwebide_core::git::GitPathRequest),
 }
 
 /// Typed execution results; serialization preserves each existing HTTP route's JSON shape.
@@ -104,6 +106,7 @@ pub enum GitResponse {
     Commit(openwebide_core::GitCommitResult),
     Checkout(openwebide_core::GitCheckoutResult),
     Sync(openwebide_core::GitSyncResult),
+    PathChanges(openwebide_core::git::GitPathChanges),
 }
 
 pub trait ToolExecution: Send + Sync {
@@ -137,6 +140,12 @@ impl ToolExecution for HostExecution {
         Box::pin(async move {
             let dir = &request.cwd;
             Ok(match request.operation {
+                GitOperation::PathChanges => {
+                    GitResponse::PathChanges(git::get_path_changes(dir).await?)
+                }
+                GitOperation::PathAction(req) => {
+                    GitResponse::PathChanges(git::apply_path_action(dir, &req).await?)
+                }
                 GitOperation::Status => GitResponse::Status(git::get_repo_status(dir).await?),
                 GitOperation::Diff(path) => GitResponse::Diff(openwebide_core::GitDiff {
                     diff: git::get_repo_diff(dir, path.as_deref()).await?,

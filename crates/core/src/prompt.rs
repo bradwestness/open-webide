@@ -162,6 +162,17 @@ impl PromptContent {
 
 /// Mentions use @file:path, @folder:path or @diff[:path]. Quote paths with spaces.
 /// Email addresses and Markdown code are ordinary text.
+/// Quote a path for editable composer text using the mention parser's escapes.
+pub fn mention_token(kind: MentionKind, path: &str) -> String {
+    let kind = match kind {
+        MentionKind::File => "file",
+        MentionKind::Folder => "folder",
+        MentionKind::Diff => "diff",
+    };
+    let path = path.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("@{kind}:\"{path}\"")
+}
+
 pub fn mentions(text: &str) -> Result<Vec<Mention>, String> {
     let mut results = Vec::new();
     let mut code = false;
@@ -180,6 +191,18 @@ pub fn mentions(text: &str) -> Result<Vec<Mention>, String> {
             let mut token = String::new();
             let mut quoted = false;
             while let Some(&next) = chars.peek() {
+                if quoted && next == '\\' {
+                    let mut lookahead = chars.clone();
+                    lookahead.next();
+                    if lookahead
+                        .peek()
+                        .is_some_and(|next| matches!(next, '"' | '\\'))
+                    {
+                        chars.next();
+                        token.push(chars.next().unwrap());
+                        continue;
+                    }
+                }
                 if next == '"' {
                     quoted = !quoted;
                     chars.next();
@@ -441,6 +464,17 @@ mod tests {
         }
         async fn diff(&self, path: Option<&str>) -> Result<String, String> {
             Ok(format!("diff {}", path.unwrap_or("all")))
+        }
+    }
+    #[test]
+    fn formatted_mentions_round_trip_quotes_unicode_and_whitespace() {
+        for kind in [MentionKind::File, MentionKind::Folder, MentionKind::Diff] {
+            for path in ["src/a b", "src/a\"b", "src/λ\nname"] {
+                let parsed = mentions(&mention_token(kind, path)).unwrap();
+                assert_eq!(parsed.len(), 1);
+                assert_eq!(parsed[0].kind, kind);
+                assert_eq!(parsed[0].path, path);
+            }
         }
     }
     #[test]

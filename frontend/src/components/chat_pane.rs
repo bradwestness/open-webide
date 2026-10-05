@@ -161,7 +161,7 @@ fn render_user_message(content: Memo<String>, actions: AnyView) -> AnyView {
     });
 
     view! {
-        <div class="tui-stream-line tui-user">
+        <div class="tui-stream-line tui-user" data-context-menu="">
             <Show when=move || pill_sig.with(Option::is_some) fallback=|| ()>
                 <div class="tui-attached-pill">
                     <span class="tui-pill-icon"><crate::components::ui::Icon name=crate::components::ui::IconName::Paperclip /></span>

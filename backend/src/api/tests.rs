@@ -106,27 +106,22 @@ fn run_plan_rebuilds_tool_history_and_falls_back_across_gaps() {
             .unwrap();
             let history = plan.request.messages;
             assert_eq!(history[0].content, "checking");
-            if row_count == 1 {
-                assert_eq!(history.len(), 1);
-                assert!(history[0].tool_calls.is_none());
-            } else {
-                assert_eq!(history.len(), 3);
-                assert_eq!(history[0].tool_calls.as_ref(), Some(&calls));
-                for i in 0..2 {
-                    assert_eq!(history[i + 1].role, Role::Tool);
-                    assert_eq!(
-                        history[i + 1].tool_call_id.as_deref(),
-                        Some(calls[i].id.as_str())
-                    );
-                    assert_eq!(
-                        history[i + 1].content,
-                        if i == 1 && !complete_second {
-                            "result not recorded".into()
-                        } else {
-                            format!("result-{i}")
-                        }
-                    );
-                }
+            assert_eq!(history.len(), 3);
+            assert_eq!(history[0].tool_calls.as_ref(), Some(&calls));
+            for i in 0..2 {
+                assert_eq!(history[i + 1].role, Role::Tool);
+                assert_eq!(
+                    history[i + 1].tool_call_id.as_deref(),
+                    Some(calls[i].id.as_str())
+                );
+                assert_eq!(
+                    history[i + 1].content,
+                    if i >= row_count || (i == 1 && !complete_second) {
+                        openwebide_core::chat::UNRECORDED_TOOL_RESULT.into()
+                    } else {
+                        format!("result-{i}")
+                    }
+                );
             }
         }
     });

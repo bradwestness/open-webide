@@ -24,7 +24,7 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
             format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px; --tool-window-height: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 0.0 } else { layout.width(kind).get() }, layout.terminal_height.get())
         }
         aria-label=panel.label()>
-        <div class="tool-panel-heading">
+        <div class="tool-panel-heading" data-context-menu="">
             <span>{panel.label()}</span>
             <Show when=move || panel != Panel::Terminal>
             <super::dropdown::ActionMenu aria_label="Panel actions">

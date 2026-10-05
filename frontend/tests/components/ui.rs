@@ -573,3 +573,69 @@ async fn overflow_actions_close_before_dialogs_and_keep_dialog_callbacks_alive()
         mounted.element(".ui-dropdown-trigger").into()
     );
 }
+
+#[wasm_bindgen_test]
+async fn action_menus_open_from_rows_headers_and_touch_without_activating_them() {
+    use openwebide_frontend::components::dropdown::ActionMenu;
+    use wasm_bindgen::JsCast;
+    let activations = RwSignal::new(0_u32);
+    let mounted = mount_test(move |_| {
+        view! {
+            { ["session", "connection", "tui-user", "tool-panel-heading", "panel-toolbar", "git-diff-actions"].into_iter().map(|class| view! {
+                <div class=class data-context-menu="">
+                    <button class="primary" on:click=move |_| activations.update(|count| *count += 1)>"Primary action"</button>
+                    <div class="nested-actions"><ActionMenu aria_label="Context actions"><button role="menuitem">"Secondary action"</button></ActionMenu></div>
+                </div>
+            }).collect_view() }
+        }
+    });
+    settle().await;
+    for class in [
+        "session",
+        "connection",
+        "tui-user",
+        "tool-panel-heading",
+        "panel-toolbar",
+        "git-diff-actions",
+    ] {
+        let row = mounted.element(&format!(".{class}"));
+        let event = web_sys::MouseEventInit::new();
+        event.set_bubbles(true);
+        event.set_cancelable(true);
+        event.set_client_x(100);
+        event.set_client_y(80);
+        let event =
+            web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &event).unwrap();
+        row.dispatch_event(&event).unwrap();
+        settle().await;
+        assert!(event.default_prevented());
+        assert!(row.query_selector(".ui-dropdown-menu").unwrap().is_some());
+        mounted.click(".ui-dropdown-backdrop");
+        settle().await;
+        assert!(row.query_selector(".ui-dropdown-menu").unwrap().is_none());
+        let primary: web_sys::HtmlElement = row
+            .query_selector(".primary")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        let pointer = web_sys::PointerEventInit::new();
+        pointer.set_bubbles(true);
+        pointer.set_pointer_type("touch");
+        pointer.set_client_x(100);
+        pointer.set_client_y(80);
+        primary
+            .dispatch_event(
+                &web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &pointer).unwrap(),
+            )
+            .unwrap();
+        openwebide_frontend::util::sleep_ms(550).await;
+        settle().await;
+        assert!(row.query_selector(".ui-dropdown-menu").unwrap().is_some());
+        primary.click(); // Synthetic click following the completed long press.
+        assert_eq!(activations.get_untracked(), 0);
+        mounted.click(".ui-dropdown-backdrop");
+        settle().await;
+        assert!(row.query_selector(".ui-dropdown-menu").unwrap().is_none());
+        assert!(mounted.root.contains(Some(row.as_ref())));
+    }
+}

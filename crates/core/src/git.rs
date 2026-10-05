@@ -158,6 +158,26 @@ pub struct GitSyncResult {
     pub output: String,
 }
 
+/// Decode NUL records once, consuming rename/copy source records together.
+fn porcelain_records(output: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
+    let mut records = output.split('\0');
+    std::iter::from_fn(move || {
+        let record = records.next()?;
+        let bytes = record.as_bytes();
+        let source = if bytes.len() >= 4
+            && bytes[2] == b' '
+            && bytes[..2]
+                .iter()
+                .any(|status| matches!(status, b'R' | b'C'))
+        {
+            records.next()
+        } else {
+            None
+        };
+        Some((record, source))
+    })
+}
+
 /// Parse output of `git status --porcelain=v1 -b -z`.
 ///
 /// Records are NUL-separated and paths are unquoted. A rename/copy record is
@@ -178,12 +198,7 @@ pub fn parse_porcelain_v1(
     let mut ahead = 0;
     let mut behind = 0;
 
-    let records: Vec<&str> = output.split('\0').collect();
-    let mut i = 0;
-    while i < records.len() {
-        let rec = records[i];
-        i += 1;
-
+    for (rec, _) in porcelain_records(output) {
         if rec.starts_with("## ") {
             // Branch header: e.g.
             // ## main...origin/main [ahead 1, behind 2]
@@ -234,14 +249,6 @@ pub fn parse_porcelain_v1(
         };
 
         files.insert(path.to_string(), status);
-        if index_status == b'R'
-            || work_status == b'R'
-            || index_status == b'C'
-            || work_status == b'C'
-        {
-            // Rename/copy: the next record is the source path.
-            i += 1;
-        }
     }
 
     (files, branch, upstream, ahead, behind)
@@ -415,5 +422,199 @@ mod tests {
         assert_eq!(stats.insertions, 42);
         assert_eq!(stats.deletions, 12);
         assert_eq!(stats.format_diff(), "+42 -12");
+    }
+}
+
+/// File-tree Git mutations; each request names one literal workspace path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitPathAction {
+    Stage,
+    Unstage,
+    Revert,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPathRequest {
+    pub path: String,
+    pub action: GitPathAction,
+}
+
+/// Index and working-tree changes remain separate so menus can offer both
+/// Stage and Unstage when a staged file has been edited again.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct GitPathChanges {
+    #[serde(default)]
+    pub has_head: bool,
+    pub staged: std::collections::BTreeSet<String>,
+    pub unstaged: std::collections::BTreeSet<String>,
+    pub untracked: std::collections::BTreeSet<String>,
+    pub renamed_from: HashMap<String, String>,
+}
+
+impl GitPathChanges {
+    pub fn has_staged(&self, path: &str) -> bool {
+        self.staged
+            .iter()
+            .any(|entry| crate::workspace_entries::contains_path(path, entry))
+    }
+    pub fn has_unstaged(&self, path: &str) -> bool {
+        self.unstaged
+            .iter()
+            .chain(&self.untracked)
+            .any(|entry| crate::workspace_entries::contains_path(path, entry))
+    }
+    pub fn has_tracked_changes(&self, path: &str) -> bool {
+        self.staged
+            .iter()
+            .chain(&self.unstaged)
+            .any(|entry| crate::workspace_entries::contains_path(path, entry))
+    }
+    /// Include a renamed entry's original name to unstage/revert the whole
+    /// rename rather than leaving its staged deletion behind.
+    pub fn action_paths(&self, path: &str) -> Result<Vec<String>, String> {
+        let path = crate::workspace_entries::entry_path(path)?;
+        let mut paths = vec![path.clone()];
+        for (destination, source) in &self.renamed_from {
+            if crate::workspace_entries::contains_path(&path, destination) {
+                paths.push(crate::workspace_entries::entry_path(source)?);
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+}
+
+/// Parse the same NUL-delimited porcelain records as repository status,
+/// retaining the two status columns and rename source names.
+pub fn parse_path_changes(output: &str) -> GitPathChanges {
+    let mut changes = GitPathChanges::default();
+    for (record, source) in porcelain_records(output) {
+        if record.starts_with("## ") {
+            continue;
+        }
+        let bytes = record.as_bytes();
+        if bytes.len() < 4 || bytes[2] != b' ' {
+            continue;
+        }
+        let path = &record[3..];
+        if bytes[0] == b'?' && bytes[1] == b'?' {
+            changes.untracked.insert(path.into());
+        } else {
+            if bytes[0] != b' ' {
+                changes.staged.insert(path.into());
+            }
+            if bytes[1] != b' ' {
+                changes.unstaged.insert(path.into());
+            }
+        }
+        // Copies do not delete their source and must not revert it.
+        if bytes[..2].contains(&b'R')
+            && let Some(source) = source
+        {
+            changes.renamed_from.insert(path.into(), source.into());
+        }
+    }
+    changes
+}
+
+/// Domain validation and command choice shared by every Git transport.
+/// The execution adapter must set GIT_LITERAL_PATHSPECS=1.
+pub fn path_action_args(
+    request: &GitPathRequest,
+    changes: &GitPathChanges,
+    has_head: bool,
+) -> Result<Vec<String>, String> {
+    let path = crate::workspace_entries::entry_path(&request.path)?;
+    let paths = changes.action_paths(&path)?;
+    if request.action == GitPathAction::Revert
+        && changes.untracked.iter().any(|untracked| {
+            changes
+                .staged
+                .iter()
+                .chain(&changes.unstaged)
+                .chain(changes.renamed_from.values())
+                .filter(|tracked| {
+                    paths
+                        .iter()
+                        .any(|path| crate::workspace_entries::contains_path(path, tracked))
+                })
+                .any(|tracked| {
+                    crate::workspace_entries::contains_path(tracked, untracked)
+                        || crate::workspace_entries::contains_path(untracked, tracked)
+                })
+        })
+    {
+        return Err("Move untracked files out of the paths being restored before reverting".into());
+    }
+    let args = match request.action {
+        GitPathAction::Stage if changes.has_unstaged(&path) => vec!["add", "-A", "--"],
+        GitPathAction::Unstage if changes.has_staged(&path) => {
+            if has_head {
+                vec!["reset", "HEAD", "--"]
+            } else {
+                vec!["rm", "-r", "--cached", "--ignore-unmatch", "--"]
+            }
+        }
+        GitPathAction::Revert if has_head && changes.has_tracked_changes(&path) => {
+            vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"]
+        }
+        _ => return Err("This Git action is not available for the selected path".into()),
+    };
+    let mut args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    args.extend(paths);
+    Ok(args)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    #[test]
+    fn distinguishes_index_and_worktree_and_preserves_literal_names() {
+        let changes = parse_path_changes(
+            "## main\0MM src/a b\0?? src/[x]*\0R  new\0old\0C  copied\0source\0",
+        );
+        assert!(changes.has_staged("src"));
+        assert!(changes.has_unstaged("src"));
+        assert!(!changes.has_unstaged("sr"));
+        assert_eq!(changes.action_paths("new").unwrap(), ["new", "old"]);
+        assert_eq!(changes.action_paths("copied").unwrap(), ["copied"]);
+        let args = path_action_args(
+            &GitPathRequest {
+                path: "src/[x]*".into(),
+                action: GitPathAction::Stage,
+            },
+            &changes,
+            true,
+        )
+        .unwrap();
+        assert_eq!(args, ["add", "-A", "--", "src/[x]*"]);
+    }
+    #[test]
+    fn unborn_unstage_keeps_worktree_and_revert_never_cleans_untracked() {
+        let changes = parse_path_changes("A  new\0?? scratch\0");
+        let request = GitPathRequest {
+            path: "new".into(),
+            action: GitPathAction::Unstage,
+        };
+        assert_eq!(
+            path_action_args(&request, &changes, false).unwrap(),
+            ["rm", "-r", "--cached", "--ignore-unmatch", "--", "new"]
+        );
+        for (path, has_head) in [("new", false), ("scratch", true)] {
+            assert!(
+                path_action_args(
+                    &GitPathRequest {
+                        path: path.into(),
+                        action: GitPathAction::Revert
+                    },
+                    &changes,
+                    has_head
+                )
+                .is_err()
+            );
+        }
+        assert!(changes.action_paths("../outside").is_err());
     }
 }

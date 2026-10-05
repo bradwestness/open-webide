@@ -81,6 +81,9 @@ pub struct FakeBackend {
     >,
     pub rewinds: RefCell<BTreeMap<i64, openwebide_core::RewindPlan>>,
     pub git_diffs: RefCell<VecDeque<Result<String, String>>>,
+    pub git_path_results: RefCell<VecDeque<Deferred<openwebide_core::git::GitPathChanges>>>,
+    pub git_path_requests: RefCell<Vec<(Option<i64>, openwebide_core::git::GitPathRequest)>>,
+    pub git_path_status_requests: RefCell<Vec<Option<i64>>>,
     pub git_statuses: RefCell<VecDeque<Deferred<GitRepoStatus>>>,
     pub git_branches: RefCell<Vec<GitBranchInfo>>,
     pub git_branches_results: RefCell<VecDeque<Deferred<Vec<GitBranchInfo>>>>,
@@ -1243,6 +1246,39 @@ impl Backend for FakeBackend {
                 pending.await.map_err(|error| error.to_string())?
             } else {
                 Ok(self.git_branches.borrow().clone())
+            }
+        })
+    }
+    fn git_path_changes(
+        &self,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::git::GitPathChanges, String>> {
+        Box::pin(async move {
+            self.git_path_status_requests.borrow_mut().push(project_id);
+            let pending = self.git_path_results.borrow_mut().pop_front();
+            match pending {
+                Some(pending) => pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into())),
+                None => Err("git_path_changes has no scripted response".into()),
+            }
+        })
+    }
+    fn git_path_action<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitPathRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitPathChanges, String>> {
+        Box::pin(async move {
+            self.git_path_requests
+                .borrow_mut()
+                .push((project_id, request.clone()));
+            let pending = self.git_path_results.borrow_mut().pop_front();
+            match pending {
+                Some(pending) => pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into())),
+                None => Err("git_path_action has no scripted response".into()),
             }
         })
     }

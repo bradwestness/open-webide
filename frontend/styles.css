@@ -2916,7 +2916,8 @@ button.browser-item {
 .tool-panel-actions { display: flex; margin-left: auto; }
 .app:not(.phone-layout) .tool-panel-heading > .btn { display: none; }
 .tool-panel-heading .panel-minimize { flex: none; margin-left: auto; }
-.tool-panel-heading .ui-action-menu + .panel-minimize { margin-left: 0; }
+.tool-panel-heading .ui-action-menu + .panel-minimize,
+.tool-panel-heading .ui-action-menu-context + .panel-minimize { margin-left: 0; }
 .phone-layout .tool-panel-actions { display: none; }
 .files-panel > .search-pane { width: 100%; flex: 1; overflow: hidden; }
 .file-tree-search { display: flex; gap: var(--space-1); align-items: center; }
@@ -3090,3 +3091,15 @@ button.browser-item {
 .phone-layout .tui-statusline { flex-wrap: nowrap; }
 
 .phone-layout .tui-statusline .btn { min-height: 44px; }
+
+/* Quiet inline fallback for pointer, keyboard and touch context menus. */
+.tree-entry-menu { margin-left: auto; flex: none; }
+.tree-entry-menu > .ui-dropdown-trigger { opacity: 0; }
+.tree-item:hover .tree-entry-menu > .ui-dropdown-trigger,
+.tree-item:focus-within .tree-entry-menu > .ui-dropdown-trigger,
+.tree-entry-menu > .ui-dropdown-trigger[aria-expanded="true"] { opacity: 1; }
+.tree-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (hover: none) {
+  .tree-entry-menu > .ui-dropdown-trigger { opacity: 1; min-width: 44px; min-height: 44px; }
+}
+.ui-action-menu-context { display: contents; }

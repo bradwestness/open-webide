@@ -236,6 +236,26 @@ pub async fn repo_sync(
     bridge_post(store, "/git/sync", project_dir, req).await
 }
 
+pub async fn repo_path_changes(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+) -> Result<openwebide_core::git::GitPathChanges, BridgeError> {
+    bridge_post(
+        store,
+        "/git/path-status",
+        project_dir,
+        &serde_json::json!({}),
+    )
+    .await
+}
+pub async fn repo_path_action(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+    request: &openwebide_core::git::GitPathRequest,
+) -> Result<openwebide_core::git::GitPathChanges, BridgeError> {
+    bridge_post(store, "/git/path", project_dir, request).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

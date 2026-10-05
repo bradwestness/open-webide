@@ -68,6 +68,81 @@ async fn exec_git_bytes(args: &[&str], cwd: &Path) -> Result<(Vec<u8>, String, b
     }
 }
 
+/// Workspace-relative index/worktree state for file-tree actions.
+pub async fn get_path_changes(
+    repo_dir: &Path,
+) -> Result<openwebide_core::git::GitPathChanges, GitError> {
+    let (prefix, stderr, success) = exec_git(&["rev-parse", "--show-prefix"], repo_dir).await?;
+    if !success {
+        return Err(GitError::Execution(stderr));
+    }
+    let prefix = prefix.trim_end_matches('\n');
+    let (output, stderr, success) = exec_git(
+        &[
+            "--literal-pathspecs",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "-z",
+            "--",
+            ".",
+        ],
+        repo_dir,
+    )
+    .await?;
+    if !success {
+        return Err(GitError::Execution(stderr));
+    }
+    let raw = openwebide_core::git::parse_path_changes(&output);
+    let relative = |path: String| -> Result<String, GitError> {
+        path.strip_prefix(prefix).map(str::to_owned).ok_or_else(|| {
+            GitError::Validation(
+                "Rename crosses the project root; manage it from the repository root".into(),
+            )
+        })
+    };
+    let (_, _, has_head) = exec_git(&["rev-parse", "--verify", "HEAD"], repo_dir).await?;
+    Ok(openwebide_core::git::GitPathChanges {
+        has_head,
+        staged: raw
+            .staged
+            .into_iter()
+            .map(&relative)
+            .collect::<Result<_, _>>()?,
+        unstaged: raw
+            .unstaged
+            .into_iter()
+            .map(&relative)
+            .collect::<Result<_, _>>()?,
+        untracked: raw
+            .untracked
+            .into_iter()
+            .map(&relative)
+            .collect::<Result<_, _>>()?,
+        renamed_from: raw
+            .renamed_from
+            .into_iter()
+            .map(|(to, from)| Ok((relative(to)?, relative(from)?)))
+            .collect::<Result<_, GitError>>()?,
+    })
+}
+
+pub async fn apply_path_action(
+    repo_dir: &Path,
+    request: &openwebide_core::git::GitPathRequest,
+) -> Result<openwebide_core::git::GitPathChanges, GitError> {
+    let changes = get_path_changes(repo_dir).await?;
+    let args = openwebide_core::git::path_action_args(request, &changes, changes.has_head)
+        .map_err(GitError::Validation)?;
+    let mut literal_args = vec!["--literal-pathspecs"];
+    literal_args.extend(args.iter().map(String::as_str));
+    let (_, stderr, success) = exec_git(&literal_args, repo_dir).await?;
+    if !success {
+        return Err(GitError::Execution(stderr));
+    }
+    get_path_changes(repo_dir).await
+}
+
 /// Validate branch name: reject empty, leading '-', or invalid format according to git check-ref-format.
 pub async fn validate_branch(name: &str) -> Result<(), GitError> {
     if name.is_empty() {
@@ -589,6 +664,135 @@ mod tests {
         assert!(cmd.status().await.unwrap().success());
 
         td
+    }
+
+    #[tokio::test]
+    async fn path_actions_preserve_literal_names_and_unborn_worktree() {
+        use openwebide_core::git::{GitPathAction, GitPathRequest};
+        let td = create_test_repo().await;
+        std::fs::write(td.path.join("[one]*.txt"), "Original").unwrap();
+        std::fs::write(td.path.join("other.txt"), "Other").unwrap();
+        let request = |action| GitPathRequest {
+            path: "[one]*.txt".into(),
+            action,
+        };
+        let changes = apply_path_action(&td.path, &request(GitPathAction::Stage))
+            .await
+            .unwrap();
+        assert!(changes.staged.contains("[one]*.txt"));
+        assert!(changes.untracked.contains("other.txt"));
+        assert!(!changes.staged.contains("other.txt"));
+        apply_path_action(&td.path, &request(GitPathAction::Unstage))
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(td.path.join("[one]*.txt")).unwrap(),
+            "Original"
+        );
+        apply_path_action(&td.path, &request(GitPathAction::Stage))
+            .await
+            .unwrap();
+        assert!(
+            exec_git(
+                &["-c", "commit.gpgsign=false", "commit", "-m", "Baseline"],
+                &td.path
+            )
+            .await
+            .unwrap()
+            .2
+        );
+        std::fs::write(td.path.join("[one]*.txt"), "Changed").unwrap();
+        apply_path_action(&td.path, &request(GitPathAction::Stage))
+            .await
+            .unwrap();
+        std::fs::write(td.path.join("[one]*.txt"), "Changed again").unwrap();
+        let changes = get_path_changes(&td.path).await.unwrap();
+        assert!(changes.has_staged("[one]*.txt"));
+        assert!(changes.has_unstaged("[one]*.txt"));
+        apply_path_action(&td.path, &request(GitPathAction::Revert))
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(td.path.join("[one]*.txt")).unwrap(),
+            "Original"
+        );
+        assert_eq!(
+            std::fs::read_to_string(td.path.join("other.txt")).unwrap(),
+            "Other"
+        );
+        assert!(
+            apply_path_action(
+                &td.path,
+                &GitPathRequest {
+                    path: "../outside".into(),
+                    action: GitPathAction::Stage
+                }
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn path_actions_restore_complete_renames_and_scope_subdirectories() {
+        use openwebide_core::git::{GitPathAction, GitPathRequest};
+        let td = create_test_repo().await;
+        std::fs::create_dir(td.path.join("src")).unwrap();
+        std::fs::write(td.path.join("src/old"), "Original").unwrap();
+        assert!(exec_git(&["add", "--", "src"], &td.path).await.unwrap().2);
+        assert!(
+            exec_git(
+                &["-c", "commit.gpgsign=false", "commit", "-m", "Baseline"],
+                &td.path
+            )
+            .await
+            .unwrap()
+            .2
+        );
+        assert!(
+            exec_git(&["mv", "--", "src/old", "src/new"], &td.path)
+                .await
+                .unwrap()
+                .2
+        );
+        let cwd = td.path.join("src");
+        let changes = get_path_changes(&cwd).await.unwrap();
+        assert_eq!(changes.renamed_from.get("new").unwrap(), "old");
+        std::fs::write(cwd.join("old"), "Untracked replacement").unwrap();
+        assert!(
+            apply_path_action(
+                &cwd,
+                &GitPathRequest {
+                    path: "new".into(),
+                    action: GitPathAction::Revert,
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("old")).unwrap(),
+            "Untracked replacement"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("new")).unwrap(),
+            "Original"
+        );
+        std::fs::remove_file(cwd.join("old")).unwrap();
+        apply_path_action(
+            &cwd,
+            &GitPathRequest {
+                path: "new".into(),
+                action: GitPathAction::Revert,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("old")).unwrap(),
+            "Original"
+        );
+        assert!(!cwd.join("new").exists());
     }
 
     #[tokio::test]

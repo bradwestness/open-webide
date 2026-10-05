@@ -47,6 +47,20 @@ pub enum Workspace {
     Local { handle: FileSystemDirectoryHandle },
 }
 impl Workspace {
+    /// Local bridge discovery updates metadata, not the browser folder handle.
+    /// Only remote paths select a filesystem root; local roots use handle identity.
+    pub fn root_identity(
+        project: &openwebide_core::Project,
+    ) -> (i64, WorkspaceMode, Option<String>) {
+        (
+            project.id,
+            project.mode,
+            match project.mode {
+                WorkspaceMode::Remote => project.path.clone(),
+                WorkspaceMode::Local => None,
+            },
+        )
+    }
     pub fn for_project(api: Api, projects: ProjectsState, id: i64) -> Option<Self> {
         match projects.project(id)?.mode {
             WorkspaceMode::Remote => Some(Self::Remote {
@@ -57,6 +71,20 @@ impl Workspace {
                 .local_handles
                 .with_untracked(|handles| handles.get(&id).cloned())
                 .map(|handle| Self::Local { handle }),
+        }
+    }
+    pub async fn canonical_path(&self, path: &str) -> Result<String, WorkspaceError> {
+        let path = workspace_path(path)?;
+        match self {
+            Self::Remote { api, project_id } => api
+                .with_value(Clone::clone)
+                .canonical_file_path(*project_id, &path)
+                .await
+                .map_err(Into::into),
+            Self::Local { handle } => local_fs::BrowserFsaVfs::new(handle.clone())
+                .canonicalize(&path)
+                .await
+                .map_err(Into::into),
         }
     }
     pub async fn list(&self, dir: &str) -> Result<Vec<FileEntry>, WorkspaceError> {
@@ -170,6 +198,22 @@ impl Workspace {
                 .map_err(Into::into),
         }
     }
+    pub async fn move_entry(
+        &self,
+        from: &str,
+        to: &str,
+        current: impl Fn() -> bool,
+    ) -> Result<(), String> {
+        openwebide_core::workspace_entries::move_entry(self, from, to, current).await
+    }
+    pub async fn ignore(
+        &self,
+        path: &str,
+        is_dir: bool,
+        current: impl Fn() -> bool,
+    ) -> Result<(), String> {
+        openwebide_core::workspace_entries::ignore_entry(self, path, is_dir, current).await
+    }
     pub async fn create(&self, path: &str, kind: VfsEntryKind) -> Result<(), WorkspaceError> {
         let path = workspace_path(path)?;
         match self {
@@ -221,17 +265,7 @@ impl Workspace {
 
 impl openwebide_core::rewind::RewindFiles for Workspace {
     async fn validate(&self, path: &str) -> Result<(), String> {
-        let canonical = match self {
-            Self::Remote { api, project_id } => {
-                api.with_value(Clone::clone)
-                    .canonical_file_path(*project_id, path)
-                    .await?
-            }
-            Self::Local { handle } => local_fs::BrowserFsaVfs::new(handle.clone())
-                .canonicalize(path)
-                .await
-                .map_err(|e| e.to_string())?,
-        };
+        let canonical = self.canonical_path(path).await.map_err(String::from)?;
         if canonical
             .split('/')
             .any(|part| part.eq_ignore_ascii_case(".git") || part == ".spin")
@@ -289,5 +323,32 @@ impl openwebide_core::rewind::RewindFiles for Workspace {
         Workspace::delete(self, path)
             .await
             .map_err(|error| error.to_string())
+    }
+}
+
+impl openwebide_core::workspace_entries::WorkspaceEntries for Workspace {
+    async fn canonicalize(&self, path: &str) -> Result<String, String> {
+        Workspace::canonical_path(self, path)
+            .await
+            .map_err(Into::into)
+    }
+    async fn list(&self, path: &str) -> Result<Vec<FileEntry>, String> {
+        Workspace::list(self, path).await.map_err(Into::into)
+    }
+    async fn read_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        Workspace::read_bytes(self, path).await.map_err(Into::into)
+    }
+    async fn create(&self, path: &str, kind: VfsEntryKind) -> Result<(), String> {
+        Workspace::create(self, path, kind)
+            .await
+            .map_err(Into::into)
+    }
+    async fn write_bytes(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
+        Workspace::write_bytes(self, path, bytes)
+            .await
+            .map_err(Into::into)
+    }
+    async fn delete(&self, path: &str) -> Result<(), String> {
+        Workspace::delete(self, path).await.map_err(Into::into)
     }
 }

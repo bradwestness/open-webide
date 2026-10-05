@@ -22,6 +22,9 @@ pub fn Dropdown(
     #[prop(default = "btn ghost")] trigger_class: &'static str,
     #[prop(default = "")] menu_class: &'static str,
     #[prop(optional)] open: Option<RwSignal<bool>>,
+    /// Context menus anchor at a pointer; ordinary dropdowns retain the trigger anchor.
+    #[prop(optional)]
+    pointer_anchor: Option<Signal<Option<(f64, f64)>>>,
     #[prop(into, optional)] disabled: Option<Signal<bool>>,
     #[prop(default = Callback::new(|()| ()))] on_open: Callback<()>,
     #[prop(default = false)] above: bool,
@@ -80,12 +83,15 @@ pub fn Dropdown(
             .as_ref()
             .map_or(0.0, web_sys::VisualViewport::offset_top);
         let rect = trigger.get_bounding_client_rect();
-        let width = rect
-            .width()
+        let pointer = pointer_anchor.and_then(|anchor| anchor.get());
+        let (anchor_left, anchor_top, anchor_bottom) =
+            pointer.map_or((rect.left(), rect.top(), rect.bottom()), |(x, y)| (x, y, y));
+        let width = pointer
+            .map_or(rect.width(), |_| 260.0)
             .max(260.0)
             .min((viewport_width - 16.0).max(0.0));
-        let below = (offset + viewport_height - rect.bottom() - 8.0).max(0.0);
-        let above_space = (rect.top() - offset - 8.0).max(0.0);
+        let below = (offset + viewport_height - anchor_bottom - 8.0).max(0.0);
+        let above_space = (anchor_top - offset - 8.0).max(0.0);
         let up = if above {
             above_space >= below || above_space >= 160.0
         } else {
@@ -99,8 +105,7 @@ pub fn Dropdown(
             "left",
             &format!(
                 "{}px",
-                rect.left()
-                    .clamp(8.0, (viewport_width - width - 8.0).max(8.0))
+                anchor_left.clamp(8.0, (viewport_width - width - 8.0).max(8.0))
             ),
         );
         if up {
@@ -110,10 +115,10 @@ pub fn Dropdown(
                 .and_then(|height| height.as_f64())
                 .unwrap_or(viewport_height);
             let _ = style.set_property("top", "auto");
-            let _ = style.set_property("bottom", &format!("{}px", height - rect.top() + 4.0));
+            let _ = style.set_property("bottom", &format!("{}px", height - anchor_top + 4.0));
         } else {
             let _ = style.set_property("bottom", "auto");
-            let _ = style.set_property("top", &format!("{}px", rect.bottom() + 4.0));
+            let _ = style.set_property("top", &format!("{}px", anchor_bottom + 4.0));
         }
         let choices = items(&menu);
         if let Some(item) = choices
@@ -163,7 +168,7 @@ pub fn Dropdown(
             if let Some(index) = index { event.prevent_default(); event.stop_propagation(); let _ = choices[index].focus(); }
         }>
             <button type="button" class=format!("ui-dropdown-trigger {trigger_class}") node_ref=trigger aria-label=aria_label aria-haspopup="menu" aria-expanded=move || open.get().to_string() aria-controls=content_id.clone()
-                disabled=move || disabled.is_some_and(|disabled| disabled.get()) on:click=move |event| { event.prevent_default(); let next = !open.get_untracked(); open.set(next); if next { on_open.run(()); } }>
+                disabled=move || disabled.is_some_and(|disabled| disabled.get()) on:click=move |event| { event.prevent_default(); event.stop_propagation(); let next = !open.get_untracked(); open.set(next); if next { on_open.run(()); } }>
                 <span class="ui-dropdown-label">{label.run()}</span>{(!hide_caret).then(|| view! { <Icon name=IconName::ChevronDown /> })}
             </button>
             <Show when=move || open.get()>
@@ -220,16 +225,34 @@ pub fn DropdownSelect(
 #[component]
 pub fn ActionMenu(aria_label: &'static str, children: ChildrenFn) -> impl IntoView {
     let open = RwSignal::new(false);
+    let anchor = RwSignal::new(None::<(f64, f64)>);
+    let root = NodeRef::<leptos::html::Span>::new();
+    super::context_menu::context_menu_target(
+        move || {
+            let root = root.get()?;
+            root.closest("[data-context-menu]")
+                .ok()
+                .flatten()
+                .or_else(|| root.parent_element())
+                .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+        },
+        Callback::new(move |point| {
+            anchor.set(point);
+            open.set(true);
+        }),
+    );
     // Handlers and any dialogs they create must outlive the temporary menu surface.
     let owner = Owner::current().expect("Action menu has an owner");
     let children = std::sync::Arc::new(children);
     view! {
-        <Dropdown aria_label=aria_label class="ui-action-menu" trigger_class="icon-btn ui-icon" hide_caret=true open=open
-            label=|| view! { <Icon name=IconName::Ellipsis /> }>
+        <span class="ui-action-menu-context" node_ref=root>
+        <Dropdown aria_label=aria_label class="ui-action-menu" trigger_class="icon-btn ui-icon" hide_caret=true open=open pointer_anchor=anchor.into()
+            on_open=Callback::new(move |()| anchor.set(None)) label=|| view! { <Icon name=IconName::Ellipsis /> }>
             <div class="ui-action-items" on:click=move |event| {
                 if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
                     .is_some_and(|target| target.closest("button:not(:disabled)").ok().flatten().is_some()) { open.set(false); }
             }>{owner.with(|| children())}</div>
         </Dropdown>
+        </span>
     }
 }

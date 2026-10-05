@@ -74,7 +74,7 @@ pub fn Sidebar(
                         let name = c.name.clone();
                         let kind = c.kind;
                         view! {
-                            <div class="connection">
+                            <div class="connection" data-context-menu="">
                                 <span class="conn-name" title=name.clone()>{name.clone()}</span>
                                 <span class="conn-kind" title=kind.display_name()>{kind.display_name()}</span>
                                 <super::dropdown::ActionMenu aria_label="Server actions">
@@ -171,7 +171,7 @@ pub fn Sidebar(
                         let id = p.id;
                         let name = p.name.clone();
                         view! {
-                            <div class="session">
+                            <div class="session" data-context-menu="">
                                 <span class="session-name">{name}</span>
                                 <super::dropdown::ActionMenu aria_label="Prompt actions">
                                     <button role="menuitem"

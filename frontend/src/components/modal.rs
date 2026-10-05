@@ -155,9 +155,23 @@ fn update_layers(entries: &[ActiveModal]) {
 }
 
 fn register(panel: web_sys::HtmlElement, close: Callback<()>) {
-    let opener = document()
-        .active_element()
-        .and_then(|element| element.dyn_into().ok());
+    let opener = document().active_element().and_then(|element| {
+        // A menu item disappears when its action opens a dialog. Restore to
+        // the persistent trigger, independent of menu/dialog effect ordering.
+        element
+            .closest(".ui-dropdown")
+            .ok()
+            .flatten()
+            .and_then(|dropdown| {
+                dropdown
+                    .query_selector(".ui-dropdown-trigger")
+                    .ok()
+                    .flatten()
+            })
+            .unwrap_or(element)
+            .dyn_into()
+            .ok()
+    });
     let observed_panel = panel.clone();
     // Removing a focused control can move focus to BODY without a focusin event.
     let mutation_listener = Closure::wrap(Box::new(move || {

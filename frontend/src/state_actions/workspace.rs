@@ -1,7 +1,7 @@
 use crate::state::{
     auth::AuthState,
     projects::ProjectsState,
-    ui::{ConfirmRequest, PromptRequest, UiState},
+    ui::{ConfirmRequest, UiState},
     workspace::WorkspaceState,
 };
 use leptos::prelude::*;
@@ -11,6 +11,31 @@ use openwebide_core::{
 };
 
 use crate::{backend::Api, local_fs, workspace::Workspace};
+
+/// Invalidates in-flight work when the account, project, folder or bridge changes.
+pub(crate) fn project_epoch(projects: ProjectsState, auth: AuthState) -> Memo<u64> {
+    let settings = use_context::<crate::state::settings::SettingsState>();
+    let root = Memo::new(move |_| {
+        let active = projects.active_project.get();
+        projects.projects.with(|items| {
+            items
+                .iter()
+                .find(|project| Some(project.id) == active)
+                .map(crate::workspace::Workspace::root_identity)
+        })
+    });
+    let generation = StoredValue::new(0_u64);
+    Memo::new(move |_| {
+        root.with(|_| ());
+        projects.local_handles.track();
+        auth.generation.track();
+        if let Some(settings) = settings {
+            settings.bridge_url.track();
+        }
+        generation.update_value(|value| *value += 1);
+        generation.get_value()
+    })
+}
 
 pub async fn refresh_pending(
     api: Api,
@@ -154,11 +179,14 @@ impl WorkspaceActions {
             }
         });
 
+        let directory_epoch = project_epoch(projects, auth);
         let load_dir = Callback::new(move |(project_id, dir): (i64, String)| {
             let generation = auth.generation.get_untracked();
+            let epoch = directory_epoch.get_untracked();
             spawn_local(async move {
                 let current = || {
                     auth.generation.try_get_untracked() == Some(generation)
+                        && directory_epoch.try_get_untracked() == Some(epoch)
                         && active_project.try_get_untracked() == Some(Some(project_id))
                 };
                 if !current() {
@@ -706,92 +734,20 @@ impl WorkspaceActions {
             }));
         });
 
-        let on_new_file = Callback::new(move |()| {
-            if active_project.get().is_none() {
-                return;
-            }
-            ui.prompt.set(Some(PromptRequest {
-                title: "New file".to_string(),
-                value: String::new(),
-                placeholder: "Path relative to project (e.g. src/main.rs)".to_string(),
-                submit_label: "Create".to_string(),
-                on_submit: Callback::new(move |path: String| {
-                    let Some(project_id) = active_project.get() else {
-                        return;
-                    };
-                    let path = path.trim().to_string();
-                    if path.is_empty() {
-                        return;
-                    }
-                    ui.toast.set(None);
-                    let request_open = request_open;
-                    let load_dir = load_dir;
-                    spawn_local(async move {
-                        let Some(ws) = workspace_for.run(project_id) else {
-                            return;
-                        };
-                        match ws
-                            .create(&path, openwebide_core::vfs::VfsEntryKind::File)
-                            .await
-                        {
-                            Ok(()) => {
-                                if active_project.get() == Some(project_id) {
-                                    load_dir.run((project_id, parent_dir(&path)));
-                                    request_open.run(path);
-                                }
-                            }
-                            Err(error) => {
-                                if active_project.get() == Some(project_id) {
-                                    ui.toast.set(Some(error.to_string()));
-                                }
-                            }
-                        }
-                    });
-                }),
-            }));
-        });
-
+        let file_tree = super::file_tree::FileTreeActions::new(
+            projects,
+            workspace,
+            ui,
+            workspace_for,
+            load_dir,
+            request_open,
+            refresh_git,
+        );
+        provide_context(file_tree);
+        let on_new_file =
+            Callback::new(move |()| file_tree.create("", openwebide_core::vfs::VfsEntryKind::File));
         let on_new_dir = Callback::new(move |()| {
-            if active_project.get().is_none() {
-                return;
-            }
-            ui.prompt.set(Some(PromptRequest {
-                title: "New folder".to_string(),
-                value: String::new(),
-                placeholder: "Path relative to project (e.g. src/utils)".to_string(),
-                submit_label: "Create".to_string(),
-                on_submit: Callback::new(move |path: String| {
-                    let Some(project_id) = active_project.get() else {
-                        return;
-                    };
-                    let path = path.trim().to_string();
-                    if path.is_empty() {
-                        return;
-                    }
-                    ui.toast.set(None);
-                    let load_dir = load_dir;
-                    spawn_local(async move {
-                        let Some(ws) = workspace_for.run(project_id) else {
-                            return;
-                        };
-                        match ws
-                            .create(&path, openwebide_core::vfs::VfsEntryKind::Directory)
-                            .await
-                        {
-                            Ok(()) => {
-                                if active_project.get() == Some(project_id) {
-                                    load_dir.run((project_id, parent_dir(&path)));
-                                }
-                            }
-                            Err(error) => {
-                                if active_project.get() == Some(project_id) {
-                                    ui.toast.set(Some(error.to_string()));
-                                }
-                            }
-                        }
-                    });
-                }),
-            }));
+            file_tree.create("", openwebide_core::vfs::VfsEntryKind::Directory);
         });
 
         let search_gen = StoredValue::new(0u64);

@@ -38,6 +38,10 @@ pub(crate) async fn git_get(
     };
 
     match sub {
+        "path-status" => {
+            let changes = crate::git::repo_path_changes(&state.store, &project_dir).await?;
+            Ok(json_response(200, &changes))
+        }
         "status" => {
             let status = crate::git::repo_status(&state.store, &project_dir).await?;
             Ok(json_response(200, &status))
@@ -88,6 +92,10 @@ pub(crate) async fn git_post(
     let body = read_body(req, JSON_BODY_LIMIT).await?;
 
     match sub {
+        "path-status" => {
+            let changes = crate::git::repo_path_changes(&state.store, &project_dir).await?;
+            Ok(json_response(200, &changes))
+        }
         "status" => {
             let status = crate::git::repo_status(&state.store, &project_dir).await?;
             Ok(json_response(200, &status))
@@ -109,6 +117,12 @@ pub(crate) async fn git_post(
         "branches" => {
             let branches = crate::git::repo_branches(&state.store, &project_dir).await?;
             Ok(json_response(200, &branches))
+        }
+        "path" => {
+            let request: openwebide_core::git::GitPathRequest = parse_json(body)?;
+            let changes =
+                crate::git::repo_path_action(&state.store, &project_dir, &request).await?;
+            Ok(json_response(200, &changes))
         }
         "commit" => {
             let commit_req: GitCommitRequest = parse_json(body)?;

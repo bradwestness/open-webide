@@ -18,15 +18,11 @@ pub fn FileTree(
 ) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let projects = expect_context::<ProjectsState>();
-    let git = expect_context::<GitState>();
     let layout = expect_context::<LayoutState>();
 
     let entries = workspace.entries.read_only();
     let expanded = workspace.expanded.read_only();
-    let open_file = workspace.open_file.read_only();
     let tree_width = layout.tree_width.read_only();
-    let git_status: Signal<Option<openwebide_core::GitRepoStatus>> =
-        Signal::derive(move || git.status.get());
     let needs_grant = Signal::derive(move || {
         projects
             .active_project
@@ -87,69 +83,13 @@ pub fn FileTree(
                     </crate::components::Button>
                 </div>
             </Show>
-                        <div class="tree-root">
+                        <div class="tree-root" role="tree" aria-label="Project files">
                             <For
                                 each=move || flat.get()
-                                key=|e| e.0.path.clone()
+                                key=move |entry| (projects.active_project.get_untracked(), entry.0.path.clone(), entry.0.is_dir)
                                 children=move |(entry, depth)| {
-                                    let is_dir = entry.is_dir;
-                                    let name = entry.name.clone();
-                                    let path_class = entry.path.clone();
-                                    let path_click = entry.path.clone();
-                                     let path_icon = entry.path.clone();
-                                    let path_badge = entry.path.clone();
-                                    view! {
-                                        <div
-                                            class=move || {
-                                                if open_file.get().as_deref()
-                                                    == Some(path_class.as_str())
-                                                {
-                                                    "tree-item selected".to_string()
-                                                } else {
-                                                    "tree-item".to_string()
-                                                }
-                                            }
-                                            style=move || {
-                                                format!("padding-left: {}px", 8 + depth as usize * 14)
-                                            }
-                                            on:click=move |_| {
-                                                if is_dir {
-                                                    on_toggle.run(path_click.clone());
-                                                } else {
-                                                    on_open.run(path_click.clone());
-                                                }
-                                            }
-                                        >
-                                            <span class="tree-icon">
-                                                <super::ui::Icon name=Signal::derive(move || if is_dir {
-                                                    if expanded.get().contains(&path_icon) { super::ui::IconName::FolderOpen } else { super::ui::IconName::Folder }
-                                                } else { super::ui::IconName::File }) />
-                                            </span>
-                                            <span class="tree-name">{name}</span>
-                                            {
-                                                let path_badge = path_badge.clone();
-                                                move || {
-                                                    let status_opt = git_status.get();
-                                                    let status = status_opt.as_ref()?;
-                                                    if is_dir {
-                                                        let dir_prefix = format!("{path_badge}/");
-                                                        let has_modified = status.files.keys().any(|k| k.starts_with(&dir_prefix));
-                                                        if has_modified {
-                                                            Some(view! { <span class="git-badge git-badge-dir" title="Contains modified files">"•"</span> }.into_any())
-                                                        } else {
-                                                            None
-                                                        }
-                                                    } else {
-                                                        status.files.get(&path_badge).map(|s| {
-                                                            let badge = s.badge();
-                                                            let css_class = s.css_class();
-                                                            view! { <span class=format!("git-badge {css_class}") title=css_class>{badge}</span> }.into_any()
-                                                        })
-                                                    }
-                                                }
-                                            }
-                                        </div>
-                                    }
+                                    view! { <FileTreeEntry entry=entry depth=depth on_toggle=on_toggle on_open=on_open /> }
+
                                 }
                             />
                         </div>
@@ -287,4 +227,225 @@ pub fn FileActions(on_new_file: Callback<()>, on_new_dir: Callback<()>) -> impl 
             <crate::components::ui::Icon name=crate::components::ui::IconName::Folder />
         <span>"New folder"</span></button>
     </super::dropdown::ActionMenu> }
+}
+
+fn tree_rows(target: Option<web_sys::EventTarget>) -> Vec<web_sys::HtmlElement> {
+    target
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .and_then(|target| target.closest(".tree-root").ok().flatten())
+        .and_then(|tree| tree.query_selector_all(".tree-item").ok())
+        .map_or_else(Vec::new, |rows| {
+            (0..rows.length())
+                .filter_map(|index| rows.item(index))
+                .filter_map(|row| row.dyn_into::<web_sys::HtmlElement>().ok())
+                .collect()
+        })
+}
+
+/// One entry owns its menu and gestures; every action uses the shared facade.
+#[component]
+fn FileTreeEntry(
+    entry: FileEntry,
+    depth: u32,
+    on_toggle: Callback<String>,
+    on_open: Callback<String>,
+) -> impl IntoView {
+    use super::{
+        dropdown::Dropdown,
+        ui::{Icon, IconName},
+    };
+    use crate::state_actions::file_tree::FileTreeActions;
+    use openwebide_core::{
+        git::{GitPathAction, GitPathChanges},
+        vfs::VfsEntryKind,
+        workspace_entries::parent,
+    };
+    let workspace = expect_context::<WorkspaceState>();
+    let git = expect_context::<GitState>();
+    let actions = use_context::<FileTreeActions>();
+    let is_dir = entry.is_dir;
+    let name = entry.name.clone();
+    let entry = StoredValue::new(entry);
+    let open = RwSignal::new(false);
+    let anchor = RwSignal::new(None::<(f64, f64)>);
+    let changes = RwSignal::new(None::<Result<GitPathChanges, String>>);
+    let menu_generation = StoredValue::new(0_u64);
+    let owner = Owner::current().expect("File tree entry has an owner");
+    let load_changes = Callback::new(move |()| {
+        changes.set(None);
+        menu_generation.update_value(|generation| *generation += 1);
+        let generation = menu_generation.get_value();
+        if let Some(actions) = actions {
+            let epoch = actions.epoch.get_untracked();
+            leptos::task::spawn_local(async move {
+                let result = actions.path_changes().await;
+                if actions.epoch.try_get_untracked() == Some(epoch)
+                    && menu_generation.try_get_value() == Some(generation)
+                    && open.try_get_untracked() == Some(true)
+                {
+                    changes.set(Some(result));
+                }
+            });
+        }
+    });
+    let show = Callback::new(move |point: Option<(f64, f64)>| {
+        if actions.is_none() {
+            return;
+        }
+        anchor.set(point);
+        open.set(true);
+        load_changes.run(());
+    });
+    Effect::new(move |_| {
+        if let Some(actions) = actions {
+            actions.epoch.get();
+        }
+        open.set(false);
+    });
+    let root = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |_| {
+        if let Some(root) = root.get() {
+            let _ = root.set_attribute("aria-level", &(depth + 1).to_string());
+        }
+    });
+    super::context_menu::context_menu_target(
+        move || {
+            actions?.epoch.get();
+            root.get()
+                .map(|root| root.unchecked_ref::<web_sys::HtmlElement>().clone())
+        },
+        show,
+    );
+    let activate = Callback::new(move |()| {
+        if is_dir {
+            on_toggle.run(entry.get_value().path);
+        } else {
+            on_open.run(entry.get_value().path);
+        }
+    });
+    let stage = Signal::derive(move || {
+        changes.with(|changes| {
+            changes
+                .as_ref()
+                .and_then(|changes| changes.as_ref().ok())
+                .is_some_and(|changes| changes.has_unstaged(&entry.get_value().path))
+        })
+    });
+    let unstage = Signal::derive(move || {
+        changes.with(|changes| {
+            changes
+                .as_ref()
+                .and_then(|changes| changes.as_ref().ok())
+                .is_some_and(|changes| changes.has_staged(&entry.get_value().path))
+        })
+    });
+    let revert = Signal::derive(move || {
+        changes.with(|changes| {
+            changes
+                .as_ref()
+                .and_then(|changes| changes.as_ref().ok())
+                .is_some_and(|changes| {
+                    changes.has_head && changes.has_tracked_changes(&entry.get_value().path)
+                })
+        })
+    });
+    let untracked = Signal::derive(move || {
+        changes.with(|changes| {
+            changes
+                .as_ref()
+                .and_then(|changes| changes.as_ref().ok())
+                .is_some_and(|changes| {
+                    changes.untracked.iter().any(|path| {
+                        openwebide_core::workspace_entries::contains_path(
+                            &entry.get_value().path,
+                            path,
+                        )
+                    })
+                })
+        })
+    });
+    let disabled = Signal::derive(move || {
+        actions.is_none_or(FileTreeActions::disabled)
+            || openwebide_core::workspace_entries::entry_path(&entry.get_value().path).is_err()
+    });
+    view! {
+        <div node_ref=root data-context-menu="" class=move || if workspace.open_file.get().as_deref() == Some(&entry.get_value().path) {"tree-item selected"} else {"tree-item"}
+            style=format!("padding-left: {}px", 8 + depth as usize * 14) tabindex="0" role="treeitem" aria-label=name.clone() data-tree-path=entry.get_value().path
+            aria-expanded=move || is_dir.then(|| workspace.expanded.with(|dirs| dirs.contains(&entry.get_value().path)).to_string())
+            on:click=move |_| activate.run(())
+            on:keydown=move |event: web_sys::KeyboardEvent| {
+                if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    .is_some_and(|target| target.closest(".ui-dropdown").ok().flatten().is_some()) {return;}
+                let rows = tree_rows(event.target());
+                let index = rows.iter().position(|row| row.get_attribute("data-tree-path").as_deref() == Some(&entry.get_value().path)).unwrap_or(0);
+                let target = match event.key().as_str() {
+                    "ArrowDown" => rows.get(index + 1),
+                    "ArrowUp" => rows.get(index.saturating_sub(1)),
+                    "Home" => rows.first(), "End" => rows.last(),
+                    "ArrowRight" if is_dir => {
+                        if workspace.expanded.with_untracked(|dirs| dirs.contains(&entry.get_value().path)) {rows.get(index + 1)}
+                        else {on_toggle.run(entry.get_value().path); None}
+                    }
+                    "ArrowLeft" => {
+                        if is_dir && workspace.expanded.with_untracked(|dirs| dirs.contains(&entry.get_value().path)) {on_toggle.run(entry.get_value().path); None}
+                        else {rows.iter().find(|row| row.get_attribute("data-tree-path").as_deref() == Some(parent(&entry.get_value().path)))}
+                    }
+                    _ => None,
+                };
+                if matches!(event.key().as_str(), "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Home" | "End") {
+                    event.prevent_default(); if let Some(target) = target {let _ = target.focus();} return;
+                }
+                if event.key() == "ContextMenu" || (event.key() == "F10" && event.shift_key()) {
+                    event.prevent_default(); event.stop_propagation(); show.run(None);
+                } else if matches!(event.key().as_str(), "Enter" | " ") {event.prevent_default(); activate.run(());}
+            }
+            >
+            <span class="tree-icon"><Icon name=Signal::derive(move || if is_dir {
+                if workspace.expanded.with(|dirs| dirs.contains(&entry.get_value().path)) {IconName::FolderOpen} else {IconName::Folder}
+            } else {IconName::File}) /></span>
+            <span class="tree-name">{name.clone()}</span>
+            {move || git.status.with(|status| {
+                let status = status.as_ref()?; let path = entry.get_value().path;
+                if is_dir {
+                    status.files.keys().any(|file| file.starts_with(&format!("{path}/")))
+                        .then(|| view! {<span class="git-badge git-badge-dir" title="Contains modified files">"•"</span>}.into_any())
+                } else {
+                    status.files.get(&path).map(|status| view! {
+                        <span class=format!("git-badge {}", status.css_class()) title=status.css_class()>{status.badge()}</span>
+                    }.into_any())
+                }
+            })}
+            {actions.map(move |actions| view! {
+                <Dropdown aria_label="File actions" class="ui-action-menu tree-entry-menu" trigger_class="icon-btn ui-icon" hide_caret=true
+                    open=open pointer_anchor=anchor.into() on_open=Callback::new(move |()| {anchor.set(None); load_changes.run(());})
+                    label=|| view! {<Icon name=IconName::Ellipsis />}>
+                    <div class="ui-action-items" on:click=move |event| {
+                        if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                            .is_some_and(|target| target.closest("button:not(:disabled)").ok().flatten().is_some()) {open.set(false);}
+                    }>{owner.with(|| view! {
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get()
+                            on:click=move |_| {let entry = entry.get_value(); actions.create(if is_dir {&entry.path} else {parent(&entry.path)}, VfsEntryKind::File);}>"New file"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get()
+                            on:click=move |_| {let entry = entry.get_value(); actions.create(if is_dir {&entry.path} else {parent(&entry.path)}, VfsEntryKind::Directory);}>"New folder"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), true)>"Rename"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), false)>"Move"</button>
+                        <button class="recent-item" role="menuitem" on:click=move |_| actions.copy_path(&entry.get_value().path)>"Copy path"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.delete(&entry.get_value())>"Delete"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !stage.get()
+                            on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Stage)>{move || if untracked.get() {"Add / track"} else {"Stage"}}</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !unstage.get()
+                            on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Unstage)>"Unstage"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !untracked.get()
+                            on:click=move |_| actions.ignore(&entry.get_value())>"Ignore"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !revert.get()
+                            on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Revert)>"Revert changes"</button>
+                        <button class="recent-item" role="menuitem" on:click=move |_| actions.chat(&entry.get_value(), "Explain", false)>"Explain in chat"</button>
+                        <button class="recent-item" role="menuitem" on:click=move |_| actions.chat(&entry.get_value(), "Summarize", false)>"Summarize in chat"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || !stage.get() && !unstage.get()
+                            on:click=move |_| actions.chat(&entry.get_value(), "Review changes in", true)>"Review changes in chat"</button>
+                    })}</div>
+                </Dropdown>
+            })}
+        </div>
+    }
 }

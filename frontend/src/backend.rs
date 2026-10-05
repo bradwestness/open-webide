@@ -261,6 +261,15 @@ pub trait Backend {
         &'a self,
         project_id: Option<i64>,
     ) -> LocalBoxFuture<'a, Result<Vec<GitBranchInfo>, String>>;
+    fn git_path_changes(
+        &self,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::git::GitPathChanges, String>>;
+    fn git_path_action<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitPathRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitPathChanges, String>>;
     fn git_commit<'a>(
         &'a self,
         project_id: Option<i64>,
@@ -855,6 +864,19 @@ impl Backend for BackendApi {
         project_id: Option<i64>,
     ) -> LocalBoxFuture<'a, Result<Vec<GitBranchInfo>, String>> {
         Box::pin(BackendApi::git_branches(self, project_id))
+    }
+    fn git_path_changes(
+        &self,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::git::GitPathChanges, String>> {
+        Box::pin(BackendApi::git_path_changes(self, project_id))
+    }
+    fn git_path_action<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitPathRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitPathChanges, String>> {
+        Box::pin(BackendApi::git_path_action(self, project_id, request))
     }
     fn git_commit<'a>(
         &'a self,
