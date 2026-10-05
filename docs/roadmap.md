@@ -61,11 +61,75 @@ remote projects through shared workspace and Git facades:
   the chat composer so the user can review and send it.
 - Make menus keyboard-accessible and usable with a touch-friendly alternative.
 
+### Full code editor: editing, structure and navigation
+
+Build out the existing syntax-highlighted Edit view into a daily-use code editor.
+Keep numbered Inline/Split diffs, preview, Find, pending-edit review and agent editor
+context intact. Editing must work without a host language server in both modes.
+
+Start with the editing foundation:
+
+- **Indentation:** Tab inserts tabs or spaces at the configured tab stop;
+  Shift+Tab and selection commands indent/outdent whole lines. Preserve indentation
+  on Enter, indent inside blocks, outdent closing delimiters, and support deliberate
+  paste/reindent behavior. Honor nested `.editorconfig` rules through `Workspace`,
+  then detected file style, then user defaults; expose indentation style/width and
+  explicit tabs/spaces conversion. Keep a documented way to Tab out of the editor.
+- **Reliable edits and history:** group typing and compound commands into predictable
+  Undo/Redo transactions, preserve selections and caret positions, and keep editor
+  history across file/project switches. Handle Unicode, IME composition, clipboard,
+  LF/CRLF and final-newline policy without silently rewriting unrelated text.
+- **Everyday commands:** move/duplicate/delete lines or selections, insert a line
+  above/below, toggle line/block comments, and auto-close brackets/quotes, surround
+  selections, skip an existing closing delimiter and delete empty pairs. Use language
+  rules so strings/comments and unsupported languages behave sensibly.
+
+Then add structure and navigation:
+
+- **Folding:** gutter controls and keyboard commands for blocks, methods/functions,
+  comments and explicit regions; fold/unfold at the cursor, recursively or all.
+  Prefer parser/language-provided ranges with indentation fallback, avoiding naive
+  brace counting inside strings/comments. Retain logical line numbers; searching or
+  navigating into a fold reveals its contents, and edits keep fold ranges valid.
+- **Reading/navigation:** active-line and matching-bracket highlights, indent guides,
+  jump to matching bracket, go to line/column, and a compact cursor/selection status.
+  Preserve the current horizontal-scroll default; make word wrap and whitespace
+  visibility explicit options with correct gutters and caret mapping.
+- **Find/Replace:** extend existing Find with case/whole-word/regex options, selection
+  scope, replace-next/all and visible match counts. Replacement is one undoable
+  transaction; invalid regexes and zero-width matches cannot hang the UI.
+- **Second pass:** multiple cursors, next/all matching-occurrence selection, column
+  selection and expand/shrink selection; file tabs with independent dirty buffers,
+  history, caret and scroll state. Coordinate draft/reload recovery with the existing
+  Offline & error-state recovery item instead of implementing separate persistence.
+
+Before implementation, evaluate the current textarea/paint approach against
+CodeMirror 6 and Monaco behind one editor component. CodeMirror is the first candidate
+because it documents mobile support; Monaco explicitly does not support mobile
+browsers. Compare touch/IME/accessibility, language coverage, incremental parsing,
+large-file responsiveness, bundle/PWA loading, theme integration and Leptos bindings.
+Use one document/selection/command integration and thin browser bindings; workspace
+reads/writes, settings and review policy stay in shared facades. Save user preferences
+in database settings, never localStorage. Benchmark viewport rendering and establish
+large-file fallbacks before claiming completion; run behavioral contracts in both modes.
+
+Completion, diagnostics, hover, symbol navigation, rename, formatting and code actions
+belong to the following Code intelligence item, using the editor's extension points.
+Minimap, Vim/Emacs emulation and similar extras are optional later work.
+
+Research references: [VS Code editing](https://code.visualstudio.com/docs/editing/codebasics),
+[CodeMirror baseline](https://codemirror.net/examples/basic/),
+[CodeMirror Tab accessibility](https://codemirror.net/examples/tab/),
+[CodeMirror features](https://codemirror.net/),
+[Monaco support/architecture](https://github.com/microsoft/monaco-editor),
+and [EditorConfig](https://editorconfig.org/).
+
 ### Code intelligence: in-browser WASM linters & LSP
 
 Run lightweight WebAssembly linters directly in the browser for instant diagnostics, with no
 language runtimes on the host, and optionally bridge to host language servers.
 
+Build on the Full code editor component and its document/selection/extension APIs.
 Bring real-time code intelligence (syntax errors, lint squiggles, tooltips,
 autocomplete) into the editor while keeping the core diagnostics engine
 100% shared between Remote and Local mode:
@@ -76,7 +140,8 @@ autocomplete) into the editor while keeping the core diagnostics engine
   producing a shared `Diagnostic` struct for the editor's squiggle overlay.
 - Progressive-enhancement host LSP multiplexed over the Phase 11 bridge
   (`rust-analyzer`, `pyright`, `vtsls`) for cross-file go-to-definition,
-  hover, and autocomplete when a host toolchain is available.
+  hover, autocomplete, document symbols/outline, references, rename, code actions
+  and document/selection formatting when a host toolchain is available.
 - One diagnostics UI regardless of whether a diagnostic came from the
   in-browser linter or a remote host LSP.
 
