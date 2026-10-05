@@ -19,4 +19,6 @@ Reasoning, run context and tools use `DisclosurePanel` for left-aligned headers,
 
 `Dropdown` owns the Recent-style menu surface, viewport fitting, focus, keyboard navigation and dismissal. `DropdownSelect` builds value choices on it. Recent projects, chat models and approval modes, Git branches, wizard choices and settings selectors share those primitives; use `SegmentedControl` for compact mutually exclusive view/mode switches. `PanelSearchRow` gives Files and Sessions the same input and inline-action layout.
 
-`ActionMenu` groups secondary actions behind a right-aligned Lucide ellipsis and reuses `Dropdown`. Keep primary actions such as Send, Stop, Save and Cancel visible. Menu items use explicit labels and existing feature callbacks; dialog handlers outlive the temporary menu surface.
+`ActionMenu` groups secondary actions behind a right-aligned Lucide ellipsis and reuses `Dropdown`. Keep it inline with the row’s label or view switcher, reserving space by allowing long labels to truncate rather than wrapping the menu onto its own row. Files creation actions share the Explorer/Changes toolbar and appear only in Explorer. Keep primary actions such as Send, Stop, Save and Cancel visible. Menu items use explicit labels and existing feature callbacks; dialog handlers outlive the temporary menu surface.
+
+Dock title bars use the shared ToolPanel heading spacing and typography. Every dock resize handle uses the right edge, with rightward movement increasing its width. Server rows preserve the server name before provider metadata when space is limited.

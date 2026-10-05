@@ -458,7 +458,7 @@ async fn git_window_loads_diffs_only_when_open_in_a_repository_in_both_modes() {
 }
 
 #[wasm_bindgen_test]
-async fn shared_panel_resizers_follow_the_panel_side_and_save_widths_in_both_modes() {
+async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes() {
     use openwebide_frontend::state::{
         layout::ActiveResizer,
         responsive::{LayoutMode, PanelSide},
@@ -515,7 +515,7 @@ async fn shared_panel_resizers_follow_the_panel_side_and_save_widths_in_both_mod
                     )
                     .unwrap();
                 settle().await;
-                let expected = before + if side == PanelSide::Left { 20.0 } else { -20.0 };
+                let expected = before + 20.0;
                 assert!((layout.width(kind).get_untracked() - expected).abs() < f64::EPSILON);
                 assert_eq!(
                     mounted.state.fake.settings.borrow()[kind.setting_key()],
@@ -603,6 +603,7 @@ async fn dock_resize_targets_are_visible_and_resize_actual_geometry_in_both_mode
                     mounted.element(&format!("#panel-{} > [role=separator]", panel.id()));
                 let rect = separator.get_bounding_client_rect();
                 assert!(rect.height() > 300.0);
+                assert!((rect.right() - dock.get_bounding_client_rect().right()).abs() < 1.0);
                 let x = rect.x() + rect.width() / 2.0;
                 let y = rect.y() + rect.height() / 2.0;
                 let hit = web_sys::window()
@@ -626,10 +627,7 @@ async fn dock_resize_targets_are_visible_and_resize_actual_geometry_in_both_mode
                 hit.dispatch_event(&event("pointerdown", x)).unwrap();
                 web_sys::window()
                     .unwrap()
-                    .dispatch_event(&event(
-                        "pointermove",
-                        x + if side == PanelSide::Left { 30.0 } else { -30.0 },
-                    ))
+                    .dispatch_event(&event("pointermove", x + 30.0))
                     .unwrap();
                 web_sys::window()
                     .unwrap()
@@ -681,7 +679,7 @@ async fn changes_and_explorer_share_file_layout_and_single_view_headings_in_both
             view! {
                 <style>{include_str!("../../styles.css")}</style>
                 <div style="display:flex;width:700px;height:500px">
-                    <FileTree on_toggle=Callback::new(|_| ()) on_open=Callback::new(|_| ()) on_new_file=Callback::new(|()| ()) on_new_dir=Callback::new(|()| ()) />
+                    <FileTree on_toggle=Callback::new(|_| ()) on_open=Callback::new(|_| ()) />
                     <GitPane on_open=Callback::new(move |path| state.workspace.open_file.set(Some(path))) on_load_git_diff=Callback::new(|()| ()) on_discard_git_diff=Callback::new(|()| ()) />
                 </div>
             }
@@ -749,6 +747,107 @@ async fn changes_and_explorer_share_file_layout_and_single_view_headings_in_both
         assert_eq!(
             mounted.state.workspace.open_file.get_untracked().as_deref(),
             Some("demo.rs")
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn overflow_actions_share_rows_with_labels_and_files_view_switcher_in_both_modes() {
+    use openwebide_frontend::components::{FileTree, FilesPanel, SessionList};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let created = RwSignal::new(0);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.seed_session();
+            state.chat.sessions.update(|sessions| {
+                sessions[0].name =
+                    "A very long session title that must leave room for its actions menu".into();
+            });
+            let auth = expect_context::<AuthState>();
+            auth.set_user(user(1));
+            let layout = expect_context::<LayoutState>();
+            provide_context(LayoutActions::new(state.api, layout, auth, state.ui));
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div class="inline-menu-fixture">
+                    <SessionList on_select=Callback::new(|_: i64| ()) on_new=Callback::new(|()| ()) on_rename=Callback::new(|_: i64| ()) on_delete=Callback::new(|_: i64| ()) />
+                    <FilesPanel on_new_file=Callback::new(move |()| created.update(|count| *count += 1)) on_new_dir=Callback::new(move |()| created.update(|count| *count += 10))>
+                        <FileTree on_toggle=Callback::new(|_: String| ()) on_open=Callback::new(|_: String| ()) />
+                    </FilesPanel>
+                </div>
+            }
+        });
+        settle().await;
+        for width in [220, 320, 390] {
+            let fixture = mounted.element(".inline-menu-fixture");
+            fixture
+                .style()
+                .set_property("width", &format!("{width}px"))
+                .unwrap();
+            fixture
+                .class_list()
+                .toggle_with_force("phone-layout", width == 390)
+                .unwrap();
+            mounted
+                .element(".files-panel")
+                .style()
+                .set_property("width", "100%")
+                .unwrap();
+            settle().await;
+            for (label, trigger) in [
+                (".session-name", ".session .ui-dropdown-trigger"),
+                (
+                    ".files-panel-toolbar .ui-segmented-control",
+                    ".files-panel-toolbar .ui-dropdown-trigger",
+                ),
+            ] {
+                let label = mounted.element(label).get_bounding_client_rect();
+                let trigger = mounted.element(trigger).get_bounding_client_rect();
+                assert!(
+                    (label.top() + label.height() / 2.0 - trigger.top() - trigger.height() / 2.0)
+                        .abs()
+                        < 1.0,
+                    "Overflow menu wrapped at {width}px in {mode:?}"
+                );
+                assert!(trigger.left() >= label.right() - 1.0);
+                assert!(trigger.right() <= fixture.get_bounding_client_rect().right());
+            }
+            let title = mounted.element(".session-label");
+            assert!(title.scroll_width() > title.client_width());
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".file-tree .ui-action-menu")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        super::support::click_action(&mounted, ".files-panel-toolbar button[title='New file']")
+            .await;
+        super::support::click_action(&mounted, ".files-panel-toolbar button[title='New folder']")
+            .await;
+        assert_eq!(created.get_untracked(), 11);
+        mounted.click(".files-panel-toolbar .ui-seg-btn:nth-child(2)");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".files-panel-toolbar .ui-action-menu")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click(".files-panel-toolbar .ui-seg-btn:first-child");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".files-panel-toolbar .ui-action-menu")
+                .unwrap()
+                .is_some()
         );
     }
 }

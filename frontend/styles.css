@@ -2733,8 +2733,8 @@ button.browser-item {
 
 .session-search { margin-bottom: 6px; }
 .session-filters { margin-bottom: 6px; }
-.session-list .session { flex-wrap: wrap; }
-.session-list .session-name { flex: 1 1 100%; min-width: 0; justify-content: flex-start; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+.session-list .session { flex-wrap: nowrap; }
+.session-list .session-name { flex: 1 1 0; min-width: 0; justify-content: flex-start; text-align: left; overflow: hidden; text-overflow: ellipsis; }
 .session-list .session-actions { margin-left: auto; }
 .session-list .session-actions { display: inline-flex; visibility: hidden; }
 .session-list .session:hover .session-actions, .session-list .session.active .session-actions, .session-list .session:focus-within .session-actions { visibility: visible; }
@@ -2777,7 +2777,7 @@ button.browser-item {
 .phone-layout .panel-pin { display: none; }
 .phone-layout .tool-panel { width: 100%; flex: 1; overflow: hidden; }
 .phone-layout .tool-panel-content { overflow: hidden; }
-.phone-layout .tool-panel-heading { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; border-bottom: 1px solid var(--border); }
+.phone-layout .tool-panel-heading { justify-content: space-between; }
 .phone-layout #panel-chat .tool-panel-heading { display: none; }
 .phone-layout .panel-resizer { display: none; }
 .phone-layout .chat-pane, .phone-layout .sidebar, .phone-layout .file-tree, .phone-layout .center-pane { width: 100% !important; min-width: 0 !important; flex: 1 !important; }
@@ -2899,16 +2899,14 @@ button.browser-item {
 .phone-layout .tui-tool-output .tui-tool-summary-out { padding-inline-end: 48px; }
 
 /* A single resize boundary and a mounted view stack for each tool window. */
-.tool-panel.resizer-leading > .panel-resizer { left: 0; right: auto; }
 .files-panel { display: flex; flex-direction: column; width: var(--files-panel-width, 260px); min-width: 0; min-height: 0; background: var(--bg-panel); }
-.files-panel > .ui-segmented-control { flex: none; margin: var(--space-2); }
 .files-view { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .files-view[hidden] { display: none; }
 .files-view > .file-tree, .files-view > .search-pane, .files-view > .git-pane { width: 100% !important; min-width: 0; flex: 1; }
 .phone-layout .files-panel { width: 100%; flex: 1; }
 #panel-terminal .tool-panel-content > .terminal-visibility { width: 0; }
 
-.tool-panel-heading { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border); background: var(--bg-panel); font-size: var(--font-caption); }
+.tool-panel-heading { display: flex; align-items: center; gap: var(--space-2); box-sizing: border-box; min-height: calc(var(--control-height) + 2 * var(--space-2)); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); background: var(--bg-panel); font-family: system-ui, sans-serif; font-size: var(--font-caption); line-height: 1.4; }
 .tool-panel-actions { display: flex; margin-left: auto; }
 .app:not(.phone-layout) .tool-panel-heading > .btn { display: none; }
 .phone-layout .tool-panel-actions { display: none; }
@@ -2994,7 +2992,7 @@ button.browser-item {
 .panel-search-row .panel-search-input { flex: 1; min-width: 0; width: 0; margin: 0; min-height: var(--control-height); padding: var(--space-2); font: inherit; font-size: var(--font-caption); }
 .session-list .session-search-toolbar { margin: -12px -12px 0; }
 .session-filters { margin: 0 0 var(--space-2); }
-.files-panel > .ui-segmented-control { align-self: flex-start; margin: 0 var(--space-3) var(--space-2); }
+.files-panel > .files-panel-toolbar { margin: 0 var(--space-3) var(--space-2); }
 
 /* Whitespace groups history; repeated reasoning/tool panels do not add rules. */
 .tui-stream .ui-disclosure-panel { border: 0; }
@@ -3015,3 +3013,15 @@ button.browser-item {
 .tui-user .tui-user-text { padding-right: 36px; }
 
 .ui-action-menu .ui-dropdown-label { display: flex; }
+
+/* Row labels yield space to their inline overflow controls. */
+.session-list .session-name { display: flex; }
+.session-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-panel-toolbar > .ui-segmented-control { flex: 0 1 auto; min-width: 0; }
+.git-diff-actions, .terminal-header { flex-wrap: nowrap; }
+.terminal-title { flex: 1; }
+.terminal-title .term-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Server identity takes precedence over provider metadata in narrow rows. */
+.connection .conn-name { flex: 1 0 auto; min-width: 0; max-width: calc(100% - 56px); }
+.connection .conn-kind { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,8 +1,5 @@
 use crate::{
-    state::{
-        layout::{ActiveResizer, LayoutState, Panel},
-        responsive::PanelSide,
-    },
+    state::layout::{ActiveResizer, LayoutState, Panel},
     state_actions::layout::LayoutActions,
 };
 use leptos::prelude::*;
@@ -21,7 +18,6 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
     };
     view! { <section id=format!("panel-{}", panel.id()) class="tool-panel"
         class:tool-panel-center=panel == Panel::Editor
-        class:resizer-leading=move || layout.preferences.with(|prefs| prefs.side(panel.id())) == PanelSide::Right
         style=move || {
             let order = layout.preferences.with(|prefs| prefs.order(panel.id()));
             format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 0.0 } else { layout.width(kind).get() })
@@ -62,14 +58,23 @@ pub fn PanelRail(panels: Vec<Panel>) -> impl IntoView {
 
 /// Files views stay mounted so switching tabs retains queries, selection and scroll.
 #[component]
-pub fn FilesPanel(children: Children) -> impl IntoView {
+pub fn FilesPanel(
+    on_new_file: Callback<()>,
+    on_new_dir: Callback<()>,
+    children: Children,
+) -> impl IntoView {
     use super::ui::{SegmentOption, SegmentedControl};
     use crate::state::responsive::FilesView;
     let layout = expect_context::<LayoutState>();
     let actions = expect_context::<LayoutActions>();
     view! { <div class="files-panel">
+        <super::ui::PanelToolbar class="files-panel-toolbar">
         <SegmentedControl options=vec![SegmentOption::new("Explorer", FilesView::Explorer), SegmentOption::new("Changes", FilesView::Changes)]
             value=Signal::derive(move || layout.preferences.with(|p| if p.files_view == FilesView::Search { FilesView::Explorer } else { p.files_view })) on_change=actions.select_files_view />
+            <Show when=move || layout.preferences.with(|prefs| prefs.files_view == FilesView::Explorer)>
+                <super::file_tree::FileActions on_new_file=on_new_file on_new_dir=on_new_dir />
+            </Show>
+        </super::ui::PanelToolbar>
         {children()}
     </div> }
 }

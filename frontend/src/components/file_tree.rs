@@ -8,15 +8,12 @@ use crate::state::{
     git::GitState, layout::LayoutState, projects::ProjectsState, workspace::WorkspaceState,
 };
 
-/// The project file explorer: a collapsible directory tree with create and
-/// search actions. Directory contents are loaded lazily and cached in
+/// A collapsible project file tree with directory contents loaded lazily and cached in
 /// `entries` (keyed by directory path, root = "").
 #[component]
 pub fn FileTree(
     on_toggle: Callback<String>,
     on_open: Callback<String>,
-    on_new_file: Callback<()>,
-    on_new_dir: Callback<()>,
     #[prop(optional)] on_grant_access: Option<Callback<()>>,
 ) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
@@ -74,16 +71,6 @@ pub fn FileTree(
             class="file-tree"
             style=move || format!("width: {}px; flex: none;", tree_width.get())
         >
-            <super::ui::PanelToolbar class="file-tree-header">
-                <super::dropdown::ActionMenu aria_label="File actions">
-                    <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New file" on:click=move |_| on_new_file.run(())>
-                        <crate::components::ui::Icon name=crate::components::ui::IconName::File />
-                    <span>"New file"</span></button>
-                    <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New folder" on:click=move |_| on_new_dir.run(())>
-                        <crate::components::ui::Icon name=crate::components::ui::IconName::Folder />
-                    <span>"New folder"</span></button>
-                </super::dropdown::ActionMenu>
-            </super::ui::PanelToolbar>
             <Show when=move || needs_grant.get() fallback=|| ()>
                 <div style="padding: 12px; text-align: center;">
                     <p>"This browser needs permission to access the project folder. Grant access or select the folder again to reconnect it."</p>
@@ -287,4 +274,17 @@ pub fn SearchPane(
                     />
                 </div>
     </div> }
+}
+
+/// Explorer creation actions can share a toolbar with the Files view switcher.
+#[component]
+pub fn FileActions(on_new_file: Callback<()>, on_new_dir: Callback<()>) -> impl IntoView {
+    view! { <super::dropdown::ActionMenu aria_label="File actions">
+        <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New file" on:click=move |_| on_new_file.run(())>
+            <crate::components::ui::Icon name=crate::components::ui::IconName::File />
+        <span>"New file"</span></button>
+        <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New folder" on:click=move |_| on_new_dir.run(())>
+            <crate::components::ui::Icon name=crate::components::ui::IconName::Folder />
+        <span>"New folder"</span></button>
+    </super::dropdown::ActionMenu> }
 }

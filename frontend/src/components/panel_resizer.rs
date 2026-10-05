@@ -35,15 +35,7 @@ pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
         }
 
         let current_x = ev.client_x();
-        let delta = if layout
-            .preferences
-            .with_untracked(|prefs| prefs.side(panel.id()))
-            == crate::state::responsive::PanelSide::Right
-        {
-            start_x.get() - current_x
-        } else {
-            current_x - start_x.get()
-        };
+        let delta = current_x - start_x.get();
         let requested = start_width.get() + delta;
         let total_width = web_sys::window()
             .and_then(|window| window.inner_width().ok())
@@ -104,11 +96,10 @@ pub fn PanelResizer(kind: ActiveResizer) -> impl IntoView {
             aria-label=format!("Resize {}", panel.label())
             aria-valuemin=kind.min() aria-valuemax=kind.max() aria-valuenow=move || width.get()
             on:keydown=move |event: web_sys::KeyboardEvent| {
-                let direction = if layout.preferences.with_untracked(|prefs| prefs.side(panel.id())) == crate::state::responsive::PanelSide::Right { -1.0 } else { 1.0 };
                 let delta = match event.key().as_str() { "ArrowLeft" => -20.0, "ArrowRight" => 20.0, _ => return };
                 event.prevent_default();
                 layout.width_revision.update(|revision| *revision += 1);
-                width.set(layout.clamp_visible(kind, width.get_untracked() + delta * direction, layout.viewport_width.get_untracked()));
+                width.set(layout.clamp_visible(kind, width.get_untracked() + delta, layout.viewport_width.get_untracked()));
                 actions.save_width.run(kind);
             }
             on:pointerdown=move |ev: PointerEvent| {

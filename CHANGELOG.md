@@ -11,6 +11,10 @@ for what's still ahead.
 
 ### Changed
 
+- Standardize dock title-bar spacing and right-edge resize handles. Left-align labeled terminal actions and prioritize server names over provider types in narrow Sessions panels.
+
+- Keep overflow menus inline with session and contextual rows. Place file creation actions beside Explorer/Changes and show them only in Explorer; use the shared Plus icon for all add/new buttons.
+
 - Complete live Tailscale HTTPS verification: trusted certificates, PWA installability, REST/SSE/WSS in both workspace modes, and persistent node identity, Serve routes and app accounts after container recreation.
 
 - Keep Git branch menus open during background status updates and avoid rediscovering branches when only working-tree status changes.

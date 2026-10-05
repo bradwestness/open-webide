@@ -386,13 +386,11 @@ pub fn App() -> impl IntoView {
                             </ToolPanel>
                             <ToolPanel panel=Panel::Files>
     <SearchPane on_open=request_open on_search_input=on_search_input on_cancel_search=on_cancel_search on_search=on_search on_clear_search=on_clear_search include_ignored=include_ignored_search.read_only() on_toggle_include_ignored=Callback::new(move |()| include_ignored_search.update(|v| *v = !*v))>
-    <crate::components::FilesPanel>
+    <crate::components::FilesPanel on_new_file=on_new_file on_new_dir=on_new_dir>
                                 <div class="files-view" hidden=move || layout.preferences.with(|p| p.files_view == crate::state::responsive::FilesView::Changes)>
                             <FileTree
                                 on_toggle=on_toggle
                                 on_open=request_open
-                                on_new_file=on_new_file
-                                on_new_dir=on_new_dir
                                 on_grant_access=on_grant_access
                             />
                                 </div>

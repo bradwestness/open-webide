@@ -120,7 +120,7 @@ async fn local_git_badges_and_all_actions_share_verified_bridge_repository() {
         view! {
                    <button id="refresh" on:click=move |_| refresh.run(())>"Refresh"</button>
                    <FileTree on_toggle=Callback::new(|_| ()) on_open=Callback::new(|_| ())
-                       on_new_file=Callback::new(|()| ()) on_new_dir=Callback::new(|()| ())
+
         />
                }
     });

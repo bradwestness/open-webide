@@ -57,10 +57,10 @@ pub fn Sidebar(
                     <h2>"Servers"</h2>
                     <button
                         class="icon-btn"
-                        title="New server"
+                        title="New server" aria-label="New server"
                         on:click=move |_| on_new_connection.run(())
                     >
-                        "+"
+                        <super::ui::Icon name=super::ui::IconName::Plus />
                     </button>
                 </div>
                 <Show when=move || show_conn_form.get() fallback=|| ()>
@@ -75,8 +75,8 @@ pub fn Sidebar(
                         let kind = c.kind;
                         view! {
                             <div class="connection">
-                                <span class="conn-name">{name}</span>
-                                <span class="conn-kind">{kind.display_name()}</span>
+                                <span class="conn-name" title=name.clone()>{name.clone()}</span>
+                                <span class="conn-kind" title=kind.display_name()>{kind.display_name()}</span>
                                 <super::dropdown::ActionMenu aria_label="Server actions">
                                     <button role="menuitem"
                                         class="ui-dropdown-item recent-item icon-btn"
@@ -108,10 +108,10 @@ pub fn Sidebar(
                     <h2>"System prompts"</h2>
                     <button
                         class="icon-btn"
-                        title="New prompt"
+                        title="New prompt" aria-label="New prompt"
                         on:click=move |_| on_new_prompt.run(())
                     >
-                        "+"
+                        <super::ui::Icon name=super::ui::IconName::Plus />
                     </button>
                 </div>
                 <Show when=move || show_prompt_form.get() fallback=|| ()>

@@ -546,32 +546,32 @@ pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) ->
                 </div>
                 <super::dropdown::ActionMenu aria_label="Terminal actions">
                     <button role="menuitem"
-                        class="ui-dropdown-item recent-item btn ghost sm term-btn"
+                        class="ui-dropdown-item recent-item term-btn"
                         title="New interactive shell"
                         on:click=move |_| spawn_shell_btn()
                     >
-                        "+ Shell"
+                        <super::ui::Icon name=super::ui::IconName::Plus />"New shell"
                     </button>
                     <button role="menuitem"
-                        class="ui-dropdown-item recent-item btn ghost sm term-btn"
+                        class="ui-dropdown-item recent-item term-btn"
                         title="Interrupt active process (Ctrl+C)"
                         on:click=move |_| kill_current_btn()
                     >
                         <super::ui::Icon name=super::ui::IconName::Square />"Kill"
                     </button>
                     <button role="menuitem"
-                        class="ui-dropdown-item recent-item btn ghost sm term-btn"
+                        class="ui-dropdown-item recent-item term-btn"
                         title="Clear output (Ctrl+L)"
                         on:click=move |_| clear_output()
                     >
                         <super::ui::Icon name=super::ui::IconName::Eraser />"Clear"
                     </button>
                     <button role="menuitem"
-                        class="ui-dropdown-item recent-item icon-btn term-close-btn"
+                        class="ui-dropdown-item recent-item term-close-btn"
                         title="Close terminal (Ctrl+`)"
                         on:click=move |_| on_close.run(())
                     >
-                        <super::ui::Icon name=super::ui::IconName::X />
+                        <super::ui::Icon name=super::ui::IconName::X /><span>"Close terminal"</span>
                     </button>
                 </super::dropdown::ActionMenu>
             </super::ui::PanelToolbar>
