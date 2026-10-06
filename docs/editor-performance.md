@@ -195,3 +195,37 @@ still takes 2.4–2.7 seconds, with frame stalls around 550 ms; native input ret
 full projected text. The long-line/byte/row admission boundaries, Linux PSS and
 real-device workflows still need the remaining validation described above. These
 single observations establish improvement, not final responsiveness limits.
+
+## Sparse long-line coordinates
+
+The follow-on working tree at checkout `9392227` on 2026-10-06 adds immutable
+checkpoints approximately every 512 bytes inside long logical rows. Document
+native-UTF-16/byte and character-column queries binary-search a checkpoint, then
+scan only its tail. Fold projections share the same row indexes, and transactions
+rebuild the edit region while retaining indexes outside it. Short rows allocate no
+checkpoint array. The same macOS arm64 host and Chrome 148 ran these release
+workloads; setup and correctness assertions are outside timed queries.
+
+| Workload | Bytes | Native ms | Browser WASM ms |
+| --- | ---: | ---: | ---: |
+| Long-line document construction | 65,522 | 0.124 | 0.120 |
+| Full-prefix reference, 100 native queries | 65,522 | 3.699 | 4.910 |
+| Indexed document, 100 paired byte/native queries | 65,522 | 0.071 | 0.170 |
+| Cold folded projection | 65,522 | 0.054 | 0.055 |
+| Indexed projection, 100 paired byte/native queries | 65,522 | 0.072 | 0.160 |
+| Indexed character columns, 100 queries | 65,522 | 0.003 | 0.010 |
+| Long-line document construction | 1,048,574 | 1.895 | 1.835 |
+| Full-prefix reference, 100 native queries | 1,048,574 | 56.506 | 76.030 |
+| Indexed document, 100 paired byte/native queries | 1,048,574 | 0.005 | 0.015 |
+| Cold folded projection | 1,048,574 | 0.739 | 0.840 |
+| Indexed projection, 100 paired byte/native queries | 1,048,574 | 0.004 | 0.010 |
+| Indexed character columns, 100 queries | 1,048,574 | 0.001 | 0.010 |
+
+Full records: [native CSV](editor-performance/native-long-coordinates.csv),
+[browser CSV](editor-performance/browser-long-coordinates.csv). Queries repeat
+at one fixed position three quarters into Unicode/tab/standalone-CR text ending
+in CRLF; checkpoint alignment differs between sizes. Tiny timings approach browser
+clock resolution and are observations rather than thresholds. Reference queries
+are one direction while indexed queries include both directions. These measurements
+do not establish native input/shaping, fine wrapped paint, memory or admission-boundary
+responsiveness. Grapheme indexing for browser geometry still scans a complete line.

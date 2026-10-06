@@ -239,7 +239,13 @@ input memory.
 
 The shared document maintains logical-line and UTF-16 prefixes across transactions,
 grouped undo/redo and composition. Commands reuse indexed rows; native caret mapping
-binary-searches the appropriate row. Projected text, normalized textarea text and
+binary-searches the appropriate row. Long rows retain sparse, Unicode-safe
+byte/native-UTF-16/character checkpoints every approximately 512 bytes. Document
+and folded-view offset queries and cursor line/column status scan only the tail
+after a checkpoint. Rows outside the rebuilt edit region retain their indexes;
+folded views share the same immutable checkpoints.
+CRLF inverse mapping still selects the original CR, and surrogate offsets retain
+the existing boundary behavior. Projected text, normalized textarea text and
 visible-row coordinates share immutable allocations until source or folds change.
 Preparing a view does not change document identity. Short-line queries and warm
 projection access are measured in [editor performance](editor-performance.md);

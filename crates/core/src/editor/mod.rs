@@ -74,6 +74,7 @@ pub use syntax_providers::{
 };
 mod comments;
 pub use comments::{block_comment, line_comment};
+mod coordinates;
 mod index;
 mod lines;
 mod paste;

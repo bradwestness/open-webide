@@ -35,6 +35,7 @@ pub struct FoldProjection {
     lines: Arc<[VisibleLine]>,
     hidden: Arc<[HiddenText]>,
     uniform_rows: bool,
+    coordinates: Arc<[super::coordinates::LineCoordinates]>,
 }
 
 impl FoldProjection {
@@ -50,6 +51,7 @@ impl FoldProjection {
         let logical = &index.rows;
         let mut text = String::new();
         let mut visible = Vec::new();
+        let mut coordinates = Vec::new();
         let mut hidden: Vec<HiddenText> = Vec::new();
         let mut row = 0;
         let mut textarea_start = 0;
@@ -61,6 +63,7 @@ impl FoldProjection {
                 visible_start: text.len(),
                 textarea_start,
             });
+            coordinates.push(index.coordinates[row].clone());
             text.push_str(&source[line.start..line.end]);
             textarea_start += index.native_line_len(row);
             if let Some(range) = folds.collapsed_at(row) {
@@ -86,6 +89,7 @@ impl FoldProjection {
                 .last()
                 .is_some_and(|line| line.source.start != source.len())
         {
+            coordinates.push(index.coordinates[logical.len() - 1].clone());
             visible.push(VisibleLine {
                 source_line: logical.len() - 1,
                 source: source.len()..source.len(),
@@ -108,6 +112,7 @@ impl FoldProjection {
             text,
             textarea_text,
             uniform_rows,
+            coordinates: coordinates.into(),
             source_len: source.len(),
             lines: visible.into(),
             hidden: hidden.into(),
@@ -131,7 +136,7 @@ impl FoldProjection {
             .get(row + 1)
             .map_or(self.text.len(), |next| next.visible_start);
         line.visible_start
-            + super::textarea_to_byte(
+            + self.coordinates[row].textarea_to_byte(
                 &self.text[line.visible_start..end],
                 offset.saturating_sub(line.textarea_start),
             )
@@ -150,7 +155,7 @@ impl FoldProjection {
             .get(row + 1)
             .map_or(self.text.len(), |next| next.visible_start);
         Ok(line.textarea_start
-            + super::byte_to_textarea(
+            + self.coordinates[row].byte_to_textarea(
                 &self.text[line.visible_start..end],
                 offset - line.visible_start,
             )?)

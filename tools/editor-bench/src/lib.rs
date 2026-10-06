@@ -212,6 +212,88 @@ pub fn measure(clock: impl Fn() -> f64) -> Vec<Measurement> {
             );
         }
     }
+    for size in [64 * 1024, 1024 * 1024] {
+        let pattern = "文😀e\u{301}\t\rwords ";
+        let source = pattern.repeat(size / pattern.len()) + "\r\n";
+        let at = source.floor_char_boundary(source.len() * 3 / 4);
+        let expected = openwebide_core::editor::byte_to_textarea(&source, at).unwrap();
+        let expected_column = openwebide_core::editor::line_column(&source, at);
+        let mut document = None;
+        time(
+            &mut records,
+            &clock,
+            "long_line_document_construction",
+            source.len(),
+            || {
+                document = Some(Document::new(source.clone()));
+            },
+        );
+        let document = document.unwrap();
+        time(
+            &mut records,
+            &clock,
+            "long_line_reference_100_textarea_queries",
+            source.len(),
+            || {
+                for _ in 0..100 {
+                    black_box(
+                        openwebide_core::editor::byte_to_textarea(&source, black_box(at)).unwrap(),
+                    );
+                }
+            },
+        );
+        assert_eq!(document.byte_to_textarea(at).unwrap(), expected);
+        assert_eq!(document.textarea_to_byte(expected), at);
+        time(
+            &mut records,
+            &clock,
+            "long_line_indexed_100_textarea_queries",
+            source.len(),
+            || {
+                for _ in 0..100 {
+                    black_box(document.byte_to_textarea(black_box(at)).unwrap());
+                    black_box(document.textarea_to_byte(black_box(expected)));
+                }
+            },
+        );
+        let mut projection = None;
+        time(
+            &mut records,
+            &clock,
+            "long_line_cold_projection",
+            source.len(),
+            || {
+                projection = Some(document.projection());
+            },
+        );
+        let projection = projection.unwrap();
+        assert_eq!(projection.byte_to_textarea(at).unwrap(), expected);
+        assert_eq!(projection.textarea_to_byte(expected), at);
+        time(
+            &mut records,
+            &clock,
+            "long_line_projection_100_textarea_queries",
+            source.len(),
+            || {
+                for _ in 0..100 {
+                    black_box(projection.byte_to_textarea(black_box(at)).unwrap());
+                    black_box(projection.textarea_to_byte(black_box(expected)));
+                }
+            },
+        );
+        assert_eq!(document.line_column(at), expected_column);
+        time(
+            &mut records,
+            &clock,
+            "long_line_indexed_100_line_columns",
+            source.len(),
+            || {
+                for _ in 0..100 {
+                    black_box(document.line_column(black_box(at)));
+                }
+            },
+        );
+    }
     records
 }
 
@@ -240,7 +322,7 @@ mod native {
     fn shared_storage_workloads() {
         let start = std::time::Instant::now();
         let records = super::measure(|| start.elapsed().as_secs_f64() * 1000.0);
-        let expected = if cfg!(feature = "candidates") { 39 } else { 21 };
+        let expected = if cfg!(feature = "candidates") { 51 } else { 33 };
         assert_eq!(records.len(), expected);
         assert!(
             records

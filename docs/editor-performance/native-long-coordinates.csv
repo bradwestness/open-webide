@@ -1,0 +1,13 @@
+operation,bytes,total_ms
+long_line_document_construction,65522,0.124
+long_line_reference_100_textarea_queries,65522,3.699
+long_line_indexed_100_textarea_queries,65522,0.071
+long_line_cold_projection,65522,0.054
+long_line_projection_100_textarea_queries,65522,0.072
+long_line_indexed_100_line_columns,65522,0.003
+long_line_document_construction,1048574,1.895
+long_line_reference_100_textarea_queries,1048574,56.506
+long_line_indexed_100_textarea_queries,1048574,0.005
+long_line_cold_projection,1048574,0.739
+long_line_projection_100_textarea_queries,1048574,0.004
+long_line_indexed_100_line_columns,1048574,0.001

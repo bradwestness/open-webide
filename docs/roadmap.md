@@ -108,8 +108,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   disjoint edits also reuse exactly matching interior rows.
   Finish fine paint within very long logical rows,
   then further incremental access: edits still materialize full Strings and shift
-  suffix coordinates, and
-  long-line queries still scan within the line. Native textarea input retains the
+  suffix coordinates. Native offset and line/column queries now use shared sparse
+  Unicode checkpoints in long rows, including folded views; native/WASM benchmarks
+  cover lookup and construction costs. Glyph preparation still scans within a long
+  line. Native textarea input retains the
   full projected source.
   Shared admission now bounds full-editor bytes, display breaks and long lines
   before allocating document metadata. Oversized files use bounded read-only
