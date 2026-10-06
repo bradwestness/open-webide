@@ -81,6 +81,8 @@ Issue templates, screenshots/a demo, and launch announcements remain part of the
   one static response regardless of query parameters; this is a single-account
   alias rather than a general WebFinger service. Mastodon parses its JSON body,
   but clients requiring a specific response content type may not support it.
+  The Pages workflow packages `.well-known` explicitly; the convenience Pages
+  upload action excludes dot directories.
 - [YouTube](https://www.youtube.com/@OpenWebIDE): `@OpenWebIDE`, channel ID
   `UCRRWQeyGWL1kkG0vjNIFtzA`. Demos, setup walkthroughs, and feature updates.
   The editable [banner source](assets/youtube-banner.svg) and
