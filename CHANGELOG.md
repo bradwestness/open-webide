@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Use parser contexts for structural selection expansion and bracket navigation. Expand through named syntax nodes, expressions, blocks and functions while preserving selection direction and shrink history. Match interpolation code and embedded-language brackets, reject stale source data, and share the editor facade and bounded fallbacks in both modes.
+
 - Use parser contexts for line comments, combining per-cursor line markers and CSS/HTML block-comment fallbacks in one undoable transaction. Clip inline script edits to their bodies, reject stale or escaping selections, deduplicate same-line targets, and share selection mapping with other editor commands in both modes.
 
 - Use parser contexts for block comments, selecting the language independently for each cursor. Keep inline HTML script/style caret edits within their bodies, reject escaping selections and stale contexts, and retain selection direction and atomic undo in both workspace modes.
@@ -31,9 +33,9 @@ for what's still ahead.
 
 - Retain independent unsaved editor buffers when navigating between files, alongside each document's undo history, selections, folds and scroll position. Protect pending reads from newer input, project/account switches and repeated opens; guard hidden drafts against file mutations and clear affected buffers after confirmed delete/revert. Both filesystem modes use the same workspace facade. Native folder-permission/device verification remains in progress.
 
-- Use shared parser contexts for paired typing/deletion and Enter, selecting the language per cursor in HTML script/style bodies and exposing template interpolation code while protecting literals. Retain bounded lexical fallback for incomplete input, including nested/escaped JavaScript templates. Reject stale contexts before changing text or history; remaining command contexts and richer highlighting stay on the roadmap.
+- Use shared parser contexts for paired typing/deletion and Enter, selecting the language per cursor in HTML script/style bodies and exposing template interpolation code while protecting literals. Retain bounded lexical fallback for incomplete input, including nested/escaped JavaScript templates. Reject stale contexts before changing text or history; richer highlighting and worker/performance work stay on the roadmap.
 
-- Parse JavaScript and CSS bodies inside HTML independently, preserving global fold coordinates through Unicode/CRLF edits and declared-type changes. Share cancellation, recovery and bounded injection policy in both workspace modes; embedded-language editing and highlighting remain in progress. Use stable Chrome in CI and optimize grammar dependencies in development builds.
+- Parse JavaScript and CSS bodies inside HTML independently, preserving global fold coordinates through Unicode/CRLF edits and declared-type changes. Share cancellation, recovery and bounded injection policy in both workspace modes; embedded-language highlighting remains in progress. Use stable Chrome in CI and optimize grammar dependencies in development builds.
 
 - Add shared incremental grammar/folding providers for TypeScript/TSX, JavaScript/JSX, Python, Java, C#, C++, PHP, Shell, C, Go, HTML and CSS alongside Rust. Retain Python suite headers and distinguish JSX/TSX and Java/C#/PHP file types. Use extensible grammar descriptors and one browser C compatibility adapter; native and both-mode browser contracts exercise Unicode/CRLF updates, cancellation, size limits and recovery. Provider-backed editing, embedded-language contexts, richer highlighting and worker rendering remain in progress.
 

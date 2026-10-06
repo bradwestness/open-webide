@@ -209,33 +209,21 @@ impl SyntaxDocument {
             }));
         }
         let mut visited = 0;
-        let mut captured = Vec::new();
-        let mut holes = Vec::new();
+        let mut contexts = SyntaxContexts::default();
         if let (Some(tree), Some(provider)) = (&self.tree, self.provider) {
-            collect_contexts(
-                tree,
-                provider,
-                &self.text,
-                &mut visited,
-                &mut captured,
-                &mut holes,
-            )
-            .ok()?;
+            collect_contexts(tree, provider, &self.text, &mut visited, &mut contexts).ok()?;
         }
         for body in &self.embedded {
             if let Some(tree) = &body.tree {
-                collect_contexts(
-                    tree,
-                    body.provider,
-                    &self.text,
-                    &mut visited,
-                    &mut captured,
-                    &mut holes,
-                )
-                .ok()?;
+                collect_contexts(tree, body.provider, &self.text, &mut visited, &mut contexts)
+                    .ok()?;
             }
         }
-        let mut coverage: Vec<_> = captured.iter().map(|(range, _, _)| range.clone()).collect();
+        let mut coverage: Vec<_> = contexts
+            .protected
+            .iter()
+            .map(|(range, _, _)| range.clone())
+            .collect();
         coverage.sort_by_key(|range| (range.start, range.end));
         let mut recognized: Vec<ByteRange<usize>> = Vec::new();
         for range in coverage {
@@ -254,13 +242,13 @@ impl SyntaxDocument {
                 .is_some_and(|parsed| range.end <= parsed.end || parsed.start == range.start)
         });
         let mut by_owner: HashMap<(usize, usize), Vec<ByteRange<usize>>> = HashMap::new();
-        for (owner, hole) in holes {
+        for (owner, hole) in contexts.holes {
             by_owner
                 .entry((owner.start, owner.end))
                 .or_default()
                 .push(hole);
         }
-        for (range, closed, kind) in captured {
+        for (range, closed, kind) in contexts.protected {
             if kind == RegionKind::Text {
                 opaque_starts.push(range.start);
             }
@@ -294,7 +282,14 @@ impl SyntaxDocument {
                 protected.push((range, closed, kind));
             }
         }
-        Structure::parsed(&self.text, self.language, protected, scopes, opaque_starts)
+        Structure::parsed(
+            &self.text,
+            self.language,
+            protected,
+            scopes,
+            opaque_starts,
+            contexts.selections,
+        )
     }
 
     fn clear(&mut self) {
@@ -347,22 +342,22 @@ fn overlaps(left: &ByteRange<usize>, right: &ByteRange<usize>) -> bool {
     left.start < right.end && right.start < left.end
 }
 
+#[derive(Default)]
+struct SyntaxContexts {
+    protected: Vec<(ByteRange<usize>, bool, RegionKind)>,
+    holes: Vec<(ByteRange<usize>, ByteRange<usize>)>,
+    selections: Vec<ByteRange<usize>>,
+}
+
 fn collect_contexts(
     tree: &Tree,
     provider: SyntaxProvider,
     text: &str,
     visited: &mut usize,
-    captured: &mut Vec<(ByteRange<usize>, bool, RegionKind)>,
-    holes: &mut Vec<(ByteRange<usize>, ByteRange<usize>)>,
+    contexts: &mut SyntaxContexts,
 ) -> Result<(), SyntaxStatus> {
-    let Some(classify) = provider.context else {
-        return Ok(());
-    };
     let mut ancestry = 0;
     visit_tree(tree, visited, |node| {
-        let Some(class) = classify(node) else {
-            return Ok(());
-        };
         let range = node.start_byte()..node.end_byte();
         if range.start > range.end
             || !text.is_char_boundary(range.start)
@@ -373,6 +368,12 @@ fn collect_contexts(
         if range.is_empty() {
             return Ok(());
         }
+        if node.is_named() && !node.is_error() && !node.is_missing() {
+            contexts.selections.push(range.clone());
+        }
+        let Some(class) = provider.context.and_then(|classify| classify(node)) else {
+            return Ok(());
+        };
         if class == SyntaxContextKind::Interpolation {
             let mut parent = node.parent();
             while let Some(owner) = parent {
@@ -381,14 +382,16 @@ fn collect_contexts(
                     return Err(SyntaxStatus::TooLarge);
                 }
                 if matches!(
-                    classify(owner),
+                    provider.context.and_then(|classify| classify(owner)),
                     Some(
                         SyntaxContextKind::String
                             | SyntaxContextKind::Template
                             | SyntaxContextKind::Regex
                     )
                 ) {
-                    holes.push((owner.start_byte()..owner.end_byte(), range));
+                    contexts
+                        .holes
+                        .push((owner.start_byte()..owner.end_byte(), range));
                     break;
                 }
                 parent = owner.parent();
@@ -410,7 +413,7 @@ fn collect_contexts(
             SyntaxContextKind::Comment => (RegionKind::LineComment, false),
             SyntaxContextKind::Interpolation => unreachable!(),
         };
-        captured.push((range, closed, kind));
+        contexts.protected.push((range, closed, kind));
         Ok(())
     })?;
     *visited += ancestry;
@@ -1104,6 +1107,121 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(document, before);
+    }
+
+    #[test]
+    fn parsed_navigation_matches_interpolation_code_and_keeps_embedded_bodies_separate() {
+        use super::super::matching_bracket_with_context;
+        let source = "<script>const t = `literal { ${call(foo)} tail }`;</script><style>a { color: red; }</style>";
+        let mut parser = SyntaxDocument::new(Language::Html).unwrap();
+        parser.update(source, || true);
+        let context = parser.structure().unwrap();
+        let open = source.find("(foo)").unwrap();
+        assert_eq!(
+            matching_bracket_with_context(source, &context, open),
+            Some((open, open + 4))
+        );
+        assert_eq!(
+            matching_bracket_with_context(source, &context, open + 1),
+            Some((open, open + 4))
+        );
+        assert!(
+            matching_bracket_with_context(source, &context, source.find("literal {").unwrap() + 8)
+                .is_none()
+        );
+        let css = source.find("{ color").unwrap();
+        assert_eq!(
+            matching_bracket_with_context(source, &context, css),
+            Some((css, source.rfind('}').unwrap()))
+        );
+        assert!(matching_bracket_with_context(&format!("{source}x"), &context, open).is_none());
+        for offset in [source.len() + 1, usize::MAX] {
+            assert!(matching_bracket_with_context(source, &context, offset).is_none());
+        }
+        let incomplete = "<script>{</script><style>}</style><script>}</script>";
+        parser.update(incomplete, || true);
+        let context = parser.structure().unwrap();
+        assert!(
+            matching_bracket_with_context(incomplete, &context, incomplete.find('{').unwrap())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn parsed_selection_expands_into_python_blocks_and_shrinks_without_changing_text() {
+        use super::super::{Document, EditError, Indentation, Selection, SelectionCommand};
+        let source = "def f():\r\n    value = call(foo)\r\n    return value\r\noutside()";
+        let mut parser = SyntaxDocument::new(Language::Python).unwrap();
+        parser.update(source, || true);
+        let context = parser.structure().unwrap();
+        let mut document = Document::new(source);
+        let start = source.find("foo").unwrap();
+        document
+            .set_selections(vec![Selection {
+                anchor: start + 2,
+                head: start + 1,
+            }])
+            .unwrap();
+        for expected in [
+            "foo",
+            "(foo)",
+            "call(foo)",
+            "value = call(foo)",
+            "value = call(foo)\r\n    return value",
+            "def f():\r\n    value = call(foo)\r\n    return value",
+        ] {
+            document
+                .selection_command_with_context(
+                    SelectionCommand::Expand,
+                    Indentation::default(),
+                    &context,
+                )
+                .unwrap();
+            assert_eq!(&document.text()[document.selections()[0].range()], expected);
+            assert!(document.selections()[0].anchor > document.selections()[0].head);
+        }
+        document
+            .selection_command_with_context(
+                SelectionCommand::Shrink,
+                Indentation::default(),
+                &context,
+            )
+            .unwrap();
+        assert_eq!(
+            &document.text()[document.selections()[0].range()],
+            "value = call(foo)\r\n    return value"
+        );
+        let other = Structure::new("changed", Language::Python);
+        let before = document.clone();
+        assert!(matches!(
+            document.selection_command_with_context(
+                SelectionCommand::Shrink,
+                Indentation::default(),
+                &other
+            ),
+            Err(super::super::SelectionError::Edit(EditError::StaleContext))
+        ));
+        assert_eq!(document, before);
+        assert_eq!(document.text(), source);
+    }
+
+    #[test]
+    fn builtin_providers_publish_validated_syntax_selection_ranges() {
+        for &(path, source, _) in super::super::syntax_contracts::LANGUAGE_CASES {
+            let language = crate::highlight::language_from_path(path);
+            let mut parser = SyntaxDocument::new(language).unwrap();
+            parser.update(source, || true);
+            let context = parser.structure().unwrap();
+            assert!(context.selection_ranges().next().is_some(), "{path}");
+            assert!(
+                context.selection_ranges().all(|range| {
+                    range.start < range.end
+                        && source.is_char_boundary(range.start)
+                        && source.is_char_boundary(range.end)
+                }),
+                "{path}"
+            );
+        }
     }
 
     #[test]

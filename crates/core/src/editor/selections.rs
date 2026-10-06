@@ -298,6 +298,28 @@ impl Document {
         language: Language,
         indentation: Indentation,
     ) -> Result<bool, SelectionError> {
+        self.selection_command_in(command, language, indentation, None)
+    }
+
+    pub fn selection_command_with_context(
+        &mut self,
+        command: SelectionCommand,
+        indentation: Indentation,
+        context: &Structure,
+    ) -> Result<bool, SelectionError> {
+        if !context.matches_source(&self.text) {
+            return Err(EditError::StaleContext.into());
+        }
+        self.selection_command_in(command, context.language_at(0), indentation, Some(context))
+    }
+
+    fn selection_command_in(
+        &mut self,
+        command: SelectionCommand,
+        language: Language,
+        indentation: Indentation,
+        context: Option<&Structure>,
+    ) -> Result<bool, SelectionError> {
         if self.is_composing() {
             return Err(EditError::CompositionActive.into());
         }
@@ -422,9 +444,19 @@ impl Document {
                 selections.insert(0, Selection::caret(offset));
             }
             SelectionCommand::Expand => {
-                let structure = Structure::new(&self.text, language);
+                let fallback;
+                let structure = if let Some(context) = context {
+                    context
+                } else {
+                    fallback = Structure::new(&self.text, language);
+                    &fallback
+                };
                 let rows = lines(&self.text);
-                let mut structure_ranges: Vec<_> = structure.literals().cloned().collect();
+                let mut structure_ranges: Vec<_> = structure
+                    .literals()
+                    .chain(structure.selection_ranges())
+                    .cloned()
+                    .collect();
                 for (open, _, mate) in &structure.brackets {
                     if let Some(close) = mate.filter(|close| open < close) {
                         structure_ranges.push(open + 1..close);
@@ -446,21 +478,33 @@ impl Document {
                             .cloned();
                         let first = row_at(&rows, range.start);
                         let last = row_at(&rows, range.end);
-                        let expanded = word
+                        let contains = |candidate: &Range<usize>| {
+                            candidate.start <= range.start
+                                && range.end <= candidate.end
+                                && *candidate != range
+                        };
+                        let structural = word
                             .into_iter()
                             .chain(structure_ranges.iter().cloned())
-                            .chain([
-                                rows[first].start..rows[last].body_end,
-                                rows[first].start..rows[last].end,
-                                0..self.text.len(),
-                            ])
-                            .filter(|candidate| {
-                                candidate.start <= range.start
-                                    && range.end <= candidate.end
-                                    && *candidate != range
-                            })
-                            .min_by_key(Range::len)
-                            .unwrap_or(range);
+                            .chain([structure.language_body(range.start)])
+                            .filter(contains)
+                            .min_by_key(Range::len);
+                        let logical = [
+                            rows[first].start..rows[last].body_end,
+                            rows[first].start..rows[last].end,
+                            0..self.text.len(),
+                        ]
+                        .into_iter()
+                        .filter(contains)
+                        .min_by_key(Range::len);
+                        // Parsed ancestors take priority over a whole logical
+                        // row: leading indentation can otherwise escape a block.
+                        let expanded = if structure.selection_ranges().next().is_some() {
+                            structural.or(logical)
+                        } else {
+                            structural.into_iter().chain(logical).min_by_key(Range::len)
+                        }
+                        .unwrap_or(range);
                         if selection.anchor > selection.head {
                             Selection {
                                 anchor: expanded.end,

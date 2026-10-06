@@ -106,17 +106,22 @@ files are limited to 256 KiB. Saving `.editorconfig` refreshes the active file's
 rules; switching files rediscovers rules. A pending discovery is discarded after
 a project, folder, bridge or account change.
 
-Paired typing/deletion, Enter, selected-line reindent and line/block comments use validated parser
+Paired typing/deletion, Enter, selected-line reindent, line/block comments,
+structural selection expansion and bracket navigation use validated parser
 contexts when available, including JavaScript template interpolation and HTML
 script/style bodies. Reindent keeps multiline literal content unchanged and
 separates embedded bodies, including after an unclosed block. Block comments use
 the language at each selection; caret edits stay within an embedded body, and
 selections escaping that body leave the document unchanged. Line comments combine
 per-language line markers and block-comment fallbacks in one transaction, deduplicate
-identical targets and preserve caret/selection direction through undo/redo. Other structural
-commands still use bounded lexical analysis. Files over 2 MiB or 65,536 bracket
-tokens fall back to ordinary indentation and typing. Remaining parser-backed
-commands and large-file benchmarks stay on the roadmap.
+identical targets and preserve caret/selection direction through undo/redo.
+Selection expansion follows parsed words, expressions, blocks and functions
+before whole-line fallbacks, with validated source ranges and reversible shrink
+history. Bracket navigation and its decorations use the same contexts, including
+interpolation code and separate embedded bodies. Both retain bounded lexical
+fallbacks when a parser is unavailable; language-aware highlighting remains pending.
+Files over 2 MiB or 65,536 bracket tokens fall back to ordinary indentation and
+typing. Richer highlighting and large-file benchmarks stay on the roadmap.
 
 The edit view retains each file’s caret, selection direction and horizontal/vertical
 scroll position within its project while the app is open, including when switching
@@ -143,17 +148,16 @@ Each provider can supply an injection selector returning validated source ranges
 The shared engine limits a document to 64 embedded bodies and discards every tree
 on cancellation or an exceeded limit.
 
-Paired typing/deletion and Enter use immutable parser contexts from the shared
-per-document cache. Each cursor uses its own language, including JavaScript/CSS
+Editing commands, structural selection expansion and bracket navigation use
+immutable parser contexts from the shared per-document cache. Each cursor uses its own language, including JavaScript/CSS
 in HTML, and template interpolation code remains editable while literal text is
 protected. Incomplete input uses bounded lexical fallback; JavaScript template
 interpolation also works during incomplete typing. Contexts verify their exact
 source before a command can mutate history. Custom provider classifiers use the
 same traversal, limits and fallback policy.
 
-Comment/reindent commands, selection/navigation, richer highlighting and
-worker/viewport rendering remain roadmap work; those commands continue to use
-their documented bounded lexical structure.
+Richer highlighting and worker/viewport rendering remain roadmap work.
+Highlighting continues to use its documented bounded lexical structure.
 
 The shared document now owns fold state independently of undo history. Commands
 can collapse/expand at the caret, recursively or all, and reveal a navigation target.

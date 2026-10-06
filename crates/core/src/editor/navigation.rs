@@ -44,23 +44,41 @@ pub fn navigation_target(text: &str, query: &str) -> Option<usize> {
     Some(offset_at_line_column(text, line, column))
 }
 
-/// Adjacent code bracket and its mate; literal/comment brackets are opaque.
-pub fn matching_bracket(text: &str, language: Language, offset: usize) -> Option<(usize, usize)> {
+pub fn has_adjacent_bracket(text: &str, offset: usize) -> bool {
     if offset > text.len() || !text.is_char_boundary(offset) {
-        return None;
+        return false;
     }
     let adjacent = text[offset..]
         .chars()
         .next()
         .into_iter()
         .chain(text[..offset].chars().next_back());
-    if !adjacent
+    adjacent
         .into_iter()
         .any(|ch| matches!(ch, '(' | ')' | '[' | ']' | '{' | '}'))
-    {
+}
+
+/// Adjacent code bracket and its mate; literal/comment brackets are opaque.
+pub fn matching_bracket(text: &str, language: Language, offset: usize) -> Option<(usize, usize)> {
+    if !has_adjacent_bracket(text, offset) {
         return None;
     }
     let structure = Structure::new(text, language);
+    matching_bracket_in(text, &structure, offset)
+}
+
+pub fn matching_bracket_with_context(
+    text: &str,
+    context: &Structure,
+    offset: usize,
+) -> Option<(usize, usize)> {
+    if !has_adjacent_bracket(text, offset) || !context.matches_source(text) {
+        return None;
+    }
+    matching_bracket_in(text, context, offset)
+}
+
+fn matching_bracket_in(text: &str, structure: &Structure, offset: usize) -> Option<(usize, usize)> {
     let previous = text[..offset]
         .char_indices()
         .next_back()

@@ -8,7 +8,8 @@ pub use fold_providers::fold_ranges;
 mod navigation;
 mod search;
 pub use navigation::{
-    indent_guide_columns, line_column, matching_bracket, navigation_target, offset_at_line_column,
+    has_adjacent_bracket, indent_guide_columns, line_column, matching_bracket,
+    matching_bracket_with_context, navigation_target, offset_at_line_column,
 };
 pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
 mod clipboard;

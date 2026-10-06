@@ -74,11 +74,12 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   parsed folds, incremental Unicode/CRLF updates, cancellation and size fallbacks.
   HTML script/style bodies now use separate incremental JavaScript/CSS parsers
   with full-file fold coordinates, declared-type selection and shared limits.
-  Paired typing/deletion, Enter, selected-line reindent and line/block comments
-  now consume parser-backed contexts,
-  including template interpolation and HTML embedded JavaScript/CSS. Extend those
-  contexts to selection/navigation and language-aware
-  highlighting; those paths still use bounded lexical structure. Reindent preserves
+  Paired typing/deletion, Enter, selected-line reindent, line/block comments,
+  structural selection expansion and bracket navigation now consume parser-backed
+  contexts, including template interpolation and HTML embedded JavaScript/CSS.
+  Selection expansion uses validated named syntax-node ranges and retains shrink
+  history and direction. Extend those contexts to language-aware highlighting;
+  highlighting still uses bounded lexical structure. Reindent preserves
   existing Python block depth; language formatting remains in Code intelligence.
 
 - **Selections and files:** the shared document now normalizes overlapping selections,

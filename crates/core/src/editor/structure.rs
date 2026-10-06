@@ -36,6 +36,7 @@ pub struct Structure {
     source: Arc<str>,
     language: Language,
     scopes: Vec<(Range<usize>, Language)>,
+    selection_ranges: Vec<Range<usize>>,
     pub(super) opaque_starts: Vec<usize>,
     available: bool,
     pub(super) protected: Vec<(Range<usize>, bool, RegionKind)>,
@@ -248,6 +249,7 @@ impl Structure {
             source: text.into(),
             language,
             scopes: Vec::new(),
+            selection_ranges: Vec::new(),
             opaque_starts,
             available: true,
             protected,
@@ -260,6 +262,7 @@ impl Structure {
             source: "".into(),
             language: Language::Plain,
             scopes: Vec::new(),
+            selection_ranges: Vec::new(),
             opaque_starts: Vec::new(),
             available: false,
             protected: Vec::new(),
@@ -340,6 +343,7 @@ impl Structure {
         mut protected: Vec<(Range<usize>, bool, RegionKind)>,
         scopes: Vec<(Range<usize>, Language)>,
         mut opaque_starts: Vec<usize>,
+        mut selection_ranges: Vec<Range<usize>>,
     ) -> Option<Self> {
         protected.sort_by_key(|(range, _, _)| (range.start, range.end));
         let mut end = 0;
@@ -353,12 +357,22 @@ impl Structure {
             }
             end = range.end;
         }
+        if selection_ranges.iter().any(|range| {
+            range.start >= range.end
+                || !text.is_char_boundary(range.start)
+                || !text.is_char_boundary(range.end)
+        }) {
+            return None;
+        }
+        selection_ranges.sort_by_key(|range| (range.start, range.end));
+        selection_ranges.dedup();
         opaque_starts.sort_unstable();
         opaque_starts.dedup();
         let mut result = Self {
             source: text.into(),
             language,
             scopes,
+            selection_ranges,
             opaque_starts,
             available: true,
             protected,
@@ -414,6 +428,10 @@ impl Structure {
             }
         }
         Some(result)
+    }
+
+    pub(super) fn selection_ranges(&self) -> impl Iterator<Item = &Range<usize>> {
+        self.selection_ranges.iter()
     }
 
     pub fn available(&self) -> bool {

@@ -352,8 +352,18 @@ impl EditorActions {
     ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
         let rules = self.rules_untracked();
         let language = openwebide_core::highlight::language_from_path(path);
+        if !self.is_current(project, path) || self.source() != source {
+            return Ok(None);
+        }
+        let syntax = (command == openwebide_core::editor::SelectionCommand::Expand)
+            .then(|| self.syntax_structure(|| true))
+            .flatten();
         self.operate_selections(project, path, source, move |document| {
-            document.selection_command(command, language, rules.indentation)
+            if let Some(context) = &syntax {
+                document.selection_command_with_context(command, rules.indentation, context)
+            } else {
+                document.selection_command(command, language, rules.indentation)
+            }
         })
     }
 
@@ -585,11 +595,23 @@ impl EditorActions {
 
     pub fn matching_bracket(self, offset: usize) -> Option<(usize, usize)> {
         let key = self.key()?;
-        openwebide_core::editor::matching_bracket(
-            &self.source(),
-            openwebide_core::highlight::language_from_path(&key.1),
-            offset,
-        )
+        let source = self.source();
+        if !openwebide_core::editor::has_adjacent_bracket(&source, offset) {
+            return None;
+        }
+        let syntax = self.syntax_structure(|| true);
+        if self.key() != Some(key.clone()) || self.source() != source {
+            return None;
+        }
+        if let Some(context) = syntax {
+            openwebide_core::editor::matching_bracket_with_context(&source, &context, offset)
+        } else {
+            openwebide_core::editor::matching_bracket(
+                &source,
+                openwebide_core::highlight::language_from_path(&key.1),
+                offset,
+            )
+        }
     }
 
     pub fn source(self) -> String {

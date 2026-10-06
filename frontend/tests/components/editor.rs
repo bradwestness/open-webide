@@ -241,6 +241,88 @@ async fn parser_line_comments_share_modes_mixed_syntax_and_one_undo_step() {
 }
 
 #[wasm_bindgen_test]
+async fn parser_selection_and_navigation_share_modes_and_reject_old_file_events() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Selection, SelectionCommand},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "def f():\r\n    value = call(foo)\r\n    return value\r\noutside()";
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fixture.py".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let start = source.find("foo").unwrap();
+        actions
+            .record_selection(Selection {
+                anchor: start + 2,
+                head: start + 1,
+            })
+            .unwrap();
+        for expected in [
+            "foo",
+            "(foo)",
+            "call(foo)",
+            "value = call(foo)",
+            "value = call(foo)\r\n    return value",
+            "def f():\r\n    value = call(foo)\r\n    return value",
+        ] {
+            let selections = actions
+                .selection_command(1, "fixture.py", source, SelectionCommand::Expand)
+                .unwrap()
+                .unwrap();
+            assert_eq!(&source[selections[0].range()], expected);
+            assert!(selections[0].anchor > selections[0].head);
+        }
+        let selections = actions
+            .selection_command(1, "fixture.py", source, SelectionCommand::Shrink)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            &source[selections[0].range()],
+            "value = call(foo)\r\n    return value"
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        let embedded = "<script>const t = `text ${call(foo)} tail`;</script><style>a {}</style>";
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("fixture.html".into()));
+        mounted.state.workspace.content.set(embedded.into());
+        let open = embedded.find("(foo)").unwrap();
+        assert_eq!(actions.matching_bracket(open), Some((open, open + 4)));
+        assert!(
+            actions
+                .selection_command(1, "fixture.py", source, SelectionCommand::Expand)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), embedded);
+        let context = actions.syntax_structure(|| true).unwrap();
+        assert!(context.is_code(open));
+        assert!(!context.is_code(embedded.find(" tail").unwrap()));
+        // Selecting bracket mates goes through the existing source-coordinate facade.
+        actions.navigate(open + 4).unwrap();
+        assert_eq!(
+            actions.selections(embedded),
+            vec![Selection::caret(open + 4)]
+        );
+        assert_eq!(actions.matching_bracket(open + 4), Some((open + 4, open)));
+        drop(mounted);
+        settle().await;
+    }
+}
+
+#[wasm_bindgen_test]
 async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_targets() {
     use openwebide_core::{
         WorkspaceMode,
