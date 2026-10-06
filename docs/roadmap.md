@@ -69,9 +69,12 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   input-method/clipboard verification, preserving Unicode and LF/CRLF without
   rewriting unrelated text.
 - **Syntax-aware editing:** the shared incremental Rust parser and fold-range
-  provider and Rust folding controls are in place; continue other-language providers
-  for richer language contexts,
-  including template interpolation, alongside folding. Current reindent uses bounded
+  provider and Rust folding controls are in place. Make language providers extensible
+  and ship built-in support for TypeScript/TSX, Python, JavaScript/JSX, Java, C#, C++,
+  PHP, Shell, C, Go, HTML and CSS, retaining Rust. Cover syntax-aware editing and
+  folding with richer language contexts, including template interpolation and
+  embedded languages in HTML, through shared provider contracts in native and
+  browser WASM. Current reindent uses bounded
   lexical bracket structure and preserves existing Python block depth; language
   formatting remains in Code intelligence.
 
@@ -80,9 +83,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   expands/shrinks selections and replaces multiple ranges in one grouped transaction.
   The editor facade retains secondary selections during commands. Finish the view,
   shortcuts, native input/IME and clipboard integration for multiple cursors; file tabs
-  still need independent dirty buffers, history, caret and scroll state. Coordinate
-  draft/reload recovery with the existing Offline & error-state recovery item instead
-  of implementing separate persistence.
+  still need independent dirty buffers, history, caret and scroll state. Persist the
+  selected editor file per project in user-scoped database state and reopen it after
+  refresh or in a new window, with workspace permissions and stale-result guards.
+  Coordinate draft/reload recovery with the existing Offline & error-state recovery
+  item instead of implementing separate persistence.
 
 **Rust/WebAssembly architecture:** keep the editor in Rust/Leptos compiled to WASM;
 do not embed CodeMirror, Monaco or another substantial JavaScript editor client.

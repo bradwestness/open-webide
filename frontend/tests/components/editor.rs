@@ -2128,6 +2128,117 @@ async fn line_comment_reindent_and_explicit_paste_commands_share_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn fold_controls_preserve_scrolled_viewport_with_a_distant_caret_in_both_modes() {
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let source = format!(
+            "{}fn folded() {{\n    one();\n    two();\n}}\n{}",
+            format!("const PAD: &str = \"{}\";\n", "long ".repeat(80)).repeat(100),
+            "const END: u8 = 0;\n".repeat(200)
+        );
+        let expected = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fold-scroll.rs".into()));
+            state.workspace.content.set(source.clone());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:280px">{editor_view(state)}</div> }
+        });
+        wait_until("scrolled fold control", || {
+            mounted
+                .root
+                .query_selector("button[aria-label='Collapse block at line 101']")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        textarea.set_selection_range(0, 0).unwrap();
+        textarea.set_scroll_top(1900.0);
+        textarea.set_scroll_left(120.0);
+        textarea
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        frame().await;
+        let scroll = (textarea.scroll_top(), textarea.scroll_left());
+        assert!(scroll.0 > 1000.0 && scroll.1 > 50.0);
+        let actions = EditorActions::new(mounted.state.workspace);
+        for label in ["Collapse block at line 101", "Expand block at line 101"] {
+            mounted.click(&format!("button[aria-label='{label}']"));
+            settle().await;
+            frame().await;
+            frame().await;
+            assert!(
+                (textarea.scroll_top() - scroll.0).abs() < 1.0,
+                "{label}: vertical position {} instead of {}",
+                textarea.scroll_top(),
+                scroll.0
+            );
+            assert!(
+                (textarea.scroll_left() - scroll.1).abs() < 1.0,
+                "{label}: horizontal position"
+            );
+            assert!((actions.scroll().top - textarea.scroll_top()).abs() < 1.0);
+            assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+            assert!(!mounted.state.workspace.dirty.get_untracked());
+        }
+        for label in ["Fold all", "Unfold all"] {
+            mounted.click("button[aria-label='Editing commands']");
+            settle().await;
+            let items = mounted
+                .root
+                .query_selector_all("[role='menuitem']")
+                .unwrap();
+            let item = (0..items.length())
+                .filter_map(|index| items.item(index))
+                .filter_map(|item| item.dyn_into::<web_sys::HtmlElement>().ok())
+                .find(|item| item.text_content().as_deref() == Some(label))
+                .unwrap();
+            item.click();
+            settle().await;
+            frame().await;
+            assert!(
+                (textarea.scroll_top() - scroll.0).abs() < 1.0,
+                "menu {label}"
+            );
+            assert!((textarea.scroll_left() - scroll.1).abs() < 1.0);
+        }
+        let header = u32::try_from(expected.find("fn folded()").unwrap()).unwrap();
+        textarea.set_selection_range(header, header).unwrap();
+        textarea.set_scroll_top(scroll.0);
+        textarea.set_scroll_left(scroll.1);
+        for key in ["[", "]"] {
+            let init = web_sys::KeyboardEventInit::new();
+            init.set_key(key);
+            init.set_ctrl_key(true);
+            init.set_alt_key(true);
+            init.set_bubbles(true);
+            init.set_cancelable(true);
+            textarea
+                .dispatch_event(
+                    &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+                        .unwrap(),
+                )
+                .unwrap();
+            settle().await;
+            frame().await;
+            assert!(
+                (textarea.scroll_top() - scroll.0).abs() < 1.0,
+                "keyboard {key}"
+            );
+            assert!((textarea.scroll_left() - scroll.1).abs() < 1.0);
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn visible_folding_preserves_source_and_replays_input_in_both_modes() {
     let source = "fn main() {\r\n    /* hidden {\r\n       comment\r\n    */\r\n    let text = \"文😀\";\r\n}\r\n// after\r\n";
     for mode in [

@@ -199,12 +199,23 @@ fn apply_fold_command(
     command: openwebide_core::editor::FoldCommand,
     source: &str,
 ) {
+    let scroll = (textarea.scroll_top(), textarea.scroll_left());
     let _ = actions.record_selection(projected_selection(actions, textarea, source));
     if let Some((projection, selection)) = actions.fold_command(command)
         && let Ok(visible) = projection.visible_selection(selection)
     {
         textarea.set_value(projection.text());
         restore_editor_selection(textarea, projection.text(), visible);
+        let focus = web_sys::FocusOptions::new();
+        focus.set_prevent_scroll(true);
+        let _ = textarea.focus_with_options(&focus);
+        textarea.set_scroll_top(scroll.0);
+        textarea.set_scroll_left(scroll.1);
+        if let Some(parent) = textarea.parent_element()
+            && let Ok(Some(overlay)) = parent.query_selector(".editor-highlight")
+        {
+            sync_highlight_scroll(textarea, &overlay.unchecked_into());
+        }
     }
 }
 
@@ -1591,7 +1602,7 @@ pub fn Editor(
                                             ("Unfold all", openwebide_core::editor::FoldCommand::ExpandAll),
                                         ].into_iter().map(move |(label, command)| view! {
                                             <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move || fold_state.with(|state| state.ranges().is_empty()) on:click=move |_| {
-                                                if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_fold_command(editor_actions, &textarea, command, &content.get_untracked()); let _ = textarea.focus(); }
+                                                if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_fold_command(editor_actions, &textarea, command, &content.get_untracked()); }
                                             }>{label}</button>
                                         }).collect_view()}
                                     </super::dropdown::ActionMenu>
@@ -1846,7 +1857,7 @@ pub fn Editor(
                                                         if event.current_target().and_then(|target| target.dyn_into::<web_sys::Element>().ok()).is_none_or(|node| !node.is_connected()) { return; }
                                                         if let (Some(project), Some(path), Some(textarea)) = (project, path.as_ref(), ta.get_untracked())
                                                             && editor_actions.is_current(project, path) && current_editor_target(editor_actions, &textarea)
-                                                        { apply_fold_command(editor_actions, &textarea, openwebide_core::editor::FoldCommand::Toggle(header), &content.get_untracked()); let _ = textarea.focus(); }
+                                                        { apply_fold_command(editor_actions, &textarea, openwebide_core::editor::FoldCommand::Toggle(header), &content.get_untracked()); }
                                                     })><Icon name=if collapsed { IconName::ChevronRight } else { IconName::ChevronDown } /></IconButton>
                                                 })}</div> }
                                             }).collect_view()
