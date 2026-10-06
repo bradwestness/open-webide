@@ -135,6 +135,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   source before HTML generation and parsing, with full-source fallback on invalid
   partial measurements. Independent font provenance now preserves validated
   anchors when equivalent syntax paint precedes row-height reconciliation.
+  Settled font readiness no longer discards initial measurements; loading events
+  still invalidate them.
   Finish uncached initial/cold
   shaping and bidirectional visual-run windows, then further incremental access:
   edits still materialize

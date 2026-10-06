@@ -9428,3 +9428,53 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
         assert_eq!(input.value(), original);
     }
 }
+
+#[wasm_bindgen_test]
+async fn settled_fonts_do_not_invalidate_initial_editor_geometry_in_both_modes() {
+    JsFuture::from(
+        js_sys::Function::new_no_args("return document.fonts.ready")
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap()
+            .unchecked_into::<js_sys::Promise>(),
+    )
+    .await
+    .unwrap();
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fonts.txt".into()));
+            state.workspace.content.set("hello".into());
+            editor_view(state)
+        });
+        settle().await;
+        settle().await;
+        JsFuture::from(js_sys::Function::new_no_args("return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+            .call0(&wasm_bindgen::JsValue::NULL).unwrap().unchecked_into::<js_sys::Promise>())
+            .await.unwrap();
+        assert_eq!(
+            mounted.state.workspace.editor_font_epoch.get_untracked(),
+            0,
+            "already settled fonts must not discard initial geometry: {mode:?}"
+        );
+        for event in ["loadingdone", "loadingerror"] {
+            let epoch = mounted.state.workspace.editor_font_epoch.get_untracked();
+            js_sys::Function::new_with_args(
+                "event",
+                "document.fonts.dispatchEvent(new Event(event))",
+            )
+            .call1(&wasm_bindgen::JsValue::NULL, &event.into())
+            .unwrap();
+            wait_until("real font notification invalidates geometry", || {
+                mounted.state.workspace.editor_font_epoch.get_untracked() > epoch
+            })
+            .await;
+        }
+    }
+}

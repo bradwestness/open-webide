@@ -170,7 +170,13 @@ def measure(case, mode, wrapped, trace=False):
                                 record = {at: performance.now(), phase: editorViewMeasurement.phase,
                                     cold: !!row.closest(".editor-height-measure"),
                                     sliced: row.hasAttribute("data-source-start"),
-                                    sourceNative: row.textContent.length, calls: 0, layoutMs: 0,
+                                    sourceNative: row.textContent.length,
+                                    probeStyle: row.closest(".editor-row-measure").getAttribute("style"),
+                                    rowStyle: row.getAttribute("style"),
+                                    scope: Object.fromEntries(Array.from(row.closest(".editor-row-measure").attributes)
+                                        .filter(attribute => attribute.name.startsWith("data-measure-"))
+                                        .map(attribute => [attribute.name, attribute.value])),
+                                    calls: 0, layoutMs: 0,
                                     boundsCalls: 0, boundsMs: 0};
                                 rows.set(row, record); editorViewMeasurement.probes.push(record);
                             }

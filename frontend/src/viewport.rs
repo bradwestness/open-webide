@@ -172,9 +172,11 @@ export function observe_editor_viewport(input, overlay, onLayout) {
     preferences.observe(document.documentElement, {attributes: true});
     const fontsChanged = () => schedule(true);
     document.fonts?.addEventListener('loadingdone', fontsChanged);
-    document.fonts?.ready.then(() => { if (active) fontsChanged(); });
+    // Readiness alone does not change glyphs. Observe actual loading transitions,
+    // including loads already in progress when this observer is installed.
+    document.fonts?.addEventListener('loadingerror', fontsChanged);
     update();
-    return () => { active = false; cancelAnimationFrame(frame); observer.disconnect(); mutation.disconnect(); preferences.disconnect(); document.fonts?.removeEventListener('loadingdone', fontsChanged); };
+    return () => { active = false; cancelAnimationFrame(frame); observer.disconnect(); mutation.disconnect(); preferences.disconnect(); document.fonts?.removeEventListener('loadingdone', fontsChanged); document.fonts?.removeEventListener('loadingerror', fontsChanged); };
 }
 "#)]
 extern "C" {

@@ -273,6 +273,8 @@ logical extents remain intact. Unwrapped rows retain equivalent styled geometry
 within the same font generation without requiring a wrapped height table.
 Ordinary layout reconciliation can follow equivalent syntax paint without
 discarding its validated anchors; actual font invalidation always discards them.
+Already-settled browser font readiness does not invalidate initial geometry;
+font loading completion and failure still invalidate it.
 First measurement still shapes the complete row. Initial layout,
 uncached full-row HTML construction and native
 input costs remain performance follow-ups.

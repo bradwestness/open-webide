@@ -1106,8 +1106,7 @@ fn HighlightOverlay(
         wasm_bindgen_futures::spawn_local(async move {
             let result = super::editor_rows::measure_batches(
                 input,
-                projection,
-                metrics,
+                paint.clone(),
                 plan,
                 move || {
                     batch_key.try_get_value().as_ref().and_then(Option::as_ref) == Some(&key)

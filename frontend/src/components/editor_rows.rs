@@ -68,14 +68,9 @@ pub(super) fn styled_row_probe(
 /// Browser primitives only: styled HTML, exact rectangles and yielding. The
 /// shared core chooses batch sizes and validates the completed height table;
 /// the editor facade rechecks document/layout ownership before publication.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Cold measurement receives separate progress, geometry and rendering primitives"
-)]
 pub(super) async fn measure_batches(
     input: web_sys::HtmlTextAreaElement,
-    projection: openwebide_core::editor::FoldProjection,
-    metrics: String,
+    scope: crate::state::workspace::EditorRowPaint,
     mut plan: openwebide_core::editor::RowMeasurementPlan,
     current: impl Fn() -> bool,
     progress: impl Fn(usize),
@@ -89,11 +84,30 @@ pub(super) async fn measure_batches(
     {
         return Ok(None);
     }
+    let projection = &scope.projection;
+    let metrics = &scope.metrics;
     let (probe, paint) = styled_row_probe(&input)?;
     probe
         .0
         .class_list()
         .add_1("editor-height-measure")
+        .map_err(|_| ())?;
+    for (name, value) in [
+        ("data-measure-view", scope.view_revision),
+        ("data-measure-layout", scope.layout_epoch),
+        ("data-measure-font", scope.font_epoch),
+        ("data-measure-read", scope.read_revision),
+        ("data-measure-source", scope.epoch),
+        ("data-measure-account", scope.account_generation),
+    ] {
+        probe
+            .0
+            .set_attribute(name, &value.to_string())
+            .map_err(|_| ())?;
+    }
+    probe
+        .0
+        .set_attribute("data-measure-prepared", &scope.prepared_source.to_string())
         .map_err(|_| ())?;
     let lengths = projection
         .lines()
@@ -103,9 +117,7 @@ pub(super) async fn measure_batches(
     progress(plan.completed());
     let mut batches = 0_usize;
     while let Some(range) = plan.pending_batch(&lengths) {
-        if !current()
-            || !input.is_connected()
-            || metrics_identity(&input).as_ref() != Some(&metrics)
+        if !current() || !input.is_connected() || metrics_identity(&input).as_ref() != Some(metrics)
         {
             return Ok(None);
         }
@@ -167,7 +179,7 @@ pub(super) async fn measure_batches(
             }
         }
     }
-    if !current() || !input.is_connected() || metrics_identity(&input).as_ref() != Some(&metrics) {
+    if !current() || !input.is_connected() || metrics_identity(&input).as_ref() != Some(metrics) {
         return Ok(None);
     }
     let rows = plan.finish().ok_or(())?;

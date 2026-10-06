@@ -413,3 +413,26 @@ in these runs. It does not prove percentiles or complete admission gates. Duplic
 initial height shaping, cold native input layout, full String/input costs,
 bidirectional windows, Linux PSS, boundary and device verification remain open.
 Summed Chrome RSS can double-count shared pages.
+
+### Settled font readiness and duplicate cold measurement
+
+The [original-scope before trace](editor-performance/production-font-ready-before.jsonl)
+records two startup height probes in each mode with identical styles and source,
+read and account revisions. The second probe advances font provenance from zero
+to one despite no font loading events. The viewport observer unconditionally
+invalidated font geometry when the already-resolved `document.fonts.ready`
+promise completed. The both-mode browser regression reproduces this only after
+waiting for animation frames, and fails before the fix.
+
+The observer now invalidates on loading completion or failure, including loads
+in progress when it is installed, rather than settled readiness. The
+[after trace](editor-performance/production-font-ready-after.jsonl) records one
+startup height probe per mode, retains font generation zero and has no font
+events or trace truncation. Measurement probes record their original immutable
+scope so diagnostic timing cannot mislabel jobs with newer state. Traces record
+style and revision attributes, never source text. These instrumented observations
+perturb timings and establish probe counts rather than latency thresholds.
+Both builds include concurrent branding/welcome changes; module identifiers
+identify the builds and `checkoutHead` their parent commit. Initial full-row
+shaping, native textarea/input and full String costs, bidirectional windows,
+Linux PSS, percentiles and boundary/device gates remain outstanding.
