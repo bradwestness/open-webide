@@ -806,6 +806,7 @@ impl EditorActions {
                 | EditorCommand::Newline
                 | EditorCommand::Reindent
                 | EditorCommand::BlockComment
+                | EditorCommand::LineComment
         ) {
             self.syntax_structure(|| true)
         } else {
@@ -877,9 +878,13 @@ impl EditorActions {
                         document.duplicate_selections()?;
                     }
                     EditorCommand::LineComment => {
-                        document.toggle_line_comments(
-                            openwebide_core::highlight::language_from_path(&key.1),
-                        )?;
+                        if let Some(syntax) = &syntax {
+                            document.toggle_line_comments_with_context(syntax)?;
+                        } else {
+                            document.toggle_line_comments(
+                                openwebide_core::highlight::language_from_path(&key.1),
+                            )?;
+                        }
                     }
                     EditorCommand::BlockComment => {
                         if let Some(syntax) = &syntax {

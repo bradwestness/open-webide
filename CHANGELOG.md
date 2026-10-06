@@ -9,7 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Use parser contexts for block comments, selecting the language independently for each cursor. Keep inline HTML script/style caret edits within their bodies, reject escaping selections and stale contexts, and retain selection direction and atomic undo in both workspace modes. Line-comment contexts remain roadmap work.
+- Use parser contexts for line comments, combining per-cursor line markers and CSS/HTML block-comment fallbacks in one undoable transaction. Clip inline script edits to their bodies, reject stale or escaping selections, deduplicate same-line targets, and share selection mapping with other editor commands in both modes.
+
+- Use parser contexts for block comments, selecting the language independently for each cursor. Keep inline HTML script/style caret edits within their bodies, reject escaping selections and stale contexts, and retain selection direction and atomic undo in both workspace modes.
 
 - Use validated parser contexts for selected-line reindent, preserving multiline literal content and separating HTML script/style bodies even after unclosed blocks. Reject stale contexts, retain undo and use the same editor facade in both workspace modes.
 

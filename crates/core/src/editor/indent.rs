@@ -369,9 +369,33 @@ impl Document {
         self.apply(edits, selections, None)
     }
 
-    pub(super) fn apply_mapped(&mut self, mut edits: Vec<Edit>) -> Result<bool, EditError> {
-        edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
-        let selections = self
+    pub(super) fn apply_mapped(&mut self, edits: Vec<Edit>) -> Result<bool, EditError> {
+        self.apply_mapped_selections(edits, Vec::new())
+    }
+
+    /// Apply one transaction while retaining source selections, with optional
+    /// selection overrides relative to a replacement's new text.
+    pub(super) fn apply_mapped_selections(
+        &mut self,
+        edits: Vec<Edit>,
+        overrides: Vec<(usize, usize, Selection)>,
+    ) -> Result<bool, EditError> {
+        let mut indexed: Vec<_> = edits.into_iter().enumerate().collect();
+        indexed.sort_by_key(|(_, edit)| (edit.range.start, edit.range.end));
+        let mut offsets = vec![0; indexed.len()];
+        let mut source = 0;
+        let mut target = 0;
+        for (index, edit) in &indexed {
+            if edit.range.start < source {
+                return Err(EditError::OverlappingEdits);
+            }
+            target += edit.range.start - source;
+            offsets[*index] = target;
+            target += edit.text.len();
+            source = edit.range.end;
+        }
+        let edits: Vec<_> = indexed.into_iter().map(|(_, edit)| edit).collect();
+        let mut selections: Vec<_> = self
             .selections
             .iter()
             .map(|selection| Selection {
@@ -379,6 +403,12 @@ impl Document {
                 head: mapped_position(selection.head, &edits),
             })
             .collect();
+        for (caret, edit, after) in overrides {
+            selections[caret] = Selection {
+                anchor: offsets[edit] + after.anchor,
+                head: offsets[edit] + after.head,
+            };
+        }
         self.apply(edits, selections, None)
     }
 }

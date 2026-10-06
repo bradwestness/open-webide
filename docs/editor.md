@@ -106,12 +106,14 @@ files are limited to 256 KiB. Saving `.editorconfig` refreshes the active file's
 rules; switching files rediscovers rules. A pending discovery is discarded after
 a project, folder, bridge or account change.
 
-Paired typing/deletion, Enter, selected-line reindent and block comments use validated parser
+Paired typing/deletion, Enter, selected-line reindent and line/block comments use validated parser
 contexts when available, including JavaScript template interpolation and HTML
 script/style bodies. Reindent keeps multiline literal content unchanged and
 separates embedded bodies, including after an unclosed block. Block comments use
 the language at each selection; caret edits stay within an embedded body, and
-selections escaping that body leave the document unchanged. Line comments and other structural
+selections escaping that body leave the document unchanged. Line comments combine
+per-language line markers and block-comment fallbacks in one transaction, deduplicate
+identical targets and preserve caret/selection direction through undo/redo. Other structural
 commands still use bounded lexical analysis. Files over 2 MiB or 65,536 bracket
 tokens fall back to ordinary indentation and typing. Remaining parser-backed
 commands and large-file benchmarks stay on the roadmap.

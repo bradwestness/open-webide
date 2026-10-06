@@ -64,44 +64,77 @@ fn balanced_comments(text: &str) -> bool {
 impl Document {
     /// Unsupported syntaxes leave text unchanged rather than introduce invalid comments.
     pub fn toggle_line_comments(&mut self, language: Language) -> Result<bool, EditError> {
-        let Some(marker) = line_comment(language) else {
-            return self.toggle_block_comments(language);
-        };
+        let length = self.text.len();
+        self.toggle_line_comments_in(|_| (language, 0..length))
+    }
+
+    pub fn toggle_line_comments_with_context(
+        &mut self,
+        syntax: &Structure,
+    ) -> Result<bool, EditError> {
+        if !syntax.matches_source(&self.text) {
+            return Err(EditError::StaleContext);
+        }
+        self.toggle_line_comments_in(|position| {
+            (syntax.language_at(position), syntax.language_body(position))
+        })
+    }
+
+    fn toggle_line_comments_in(
+        &mut self,
+        context: impl Fn(usize) -> (Language, std::ops::Range<usize>),
+    ) -> Result<bool, EditError> {
         let rows = lines(&self.text);
-        let selected: Vec<_> = selected_rows(&rows, &self.selections)
-            .into_iter()
-            .flatten()
-            .filter_map(|row| {
+        let mut changes = CommentChanges::default();
+        let mut selected = std::collections::BTreeMap::new();
+        let blank = self
+            .selections
+            .iter()
+            .all(|selection| selection.range().is_empty());
+        for (index, selection) in self.selections.iter().enumerate() {
+            let range = selection.range();
+            let (language, body) = context(range.start);
+            let Some(marker) = line_comment(language) else {
+                let Some((edit, after)) =
+                    block_comment_change(&self.text, &rows, *selection, language, body)
+                else {
+                    return Ok(false);
+                };
+                changes.add(edit, Some((index, after)))?;
+                continue;
+            };
+            if range.start < body.start || range.end > body.end {
+                return Ok(false);
+            }
+            for row in selected_rows(&rows, &[*selection]).into_iter().flatten() {
                 let line = &rows[row];
-                let text = &self.text[line.start..line.body_end];
+                let start = line.start.max(body.start);
+                let end = line.body_end.min(body.end);
+                let text = &self.text[start..end];
+                if text.trim().is_empty() && !blank {
+                    continue;
+                }
                 let prefix = text.len() - text.trim_start_matches([' ', '\t']).len();
-                (!text.trim().is_empty()
-                    || self
-                        .selections
-                        .iter()
-                        .all(|selection| selection.range().is_empty()))
-                .then_some((line.start + prefix, line.body_end))
-            })
-            .collect();
+                selected.insert((start + prefix, end), marker);
+            }
+        }
         let remove = !selected.is_empty()
             && selected
                 .iter()
-                .all(|&(start, end)| self.text[start..end].starts_with(marker));
-        let edits = selected
-            .into_iter()
-            .map(|(start, end)| {
-                if remove {
-                    let mut stop = start + marker.len();
-                    if stop < end && self.text.as_bytes()[stop] == b' ' {
-                        stop += 1;
-                    }
-                    Edit::replace(start..stop, "")
-                } else {
-                    Edit::replace(start..start, format!("{marker} "))
+                .all(|(&(start, end), marker)| self.text[start..end].starts_with(marker));
+        for ((start, end), marker) in selected {
+            let edit = if remove {
+                let mut stop = start + marker.len();
+                if stop < end && self.text.as_bytes()[stop] == b' ' {
+                    stop += 1;
                 }
-            })
-            .collect();
-        self.apply_mapped(edits)
+                Edit::replace(start..stop, "")
+            } else {
+                Edit::replace(start..start, format!("{marker} "))
+            };
+            changes.add(edit, None)?;
+        }
+        changes.apply(self)
     }
     pub fn toggle_block_comments(&mut self, language: Language) -> Result<bool, EditError> {
         let length = self.text.len();
@@ -125,72 +158,116 @@ impl Document {
         context: impl Fn(usize) -> (Language, std::ops::Range<usize>),
     ) -> Result<bool, EditError> {
         let rows = lines(&self.text);
-        let mut changes = Vec::new();
-        for selection in &self.selections {
-            let mut range = selection.range();
-            let (language, body) = context(range.start);
-            let Some((open, close)) = block_comment(language) else {
+        let mut changes = CommentChanges::default();
+        for (index, selection) in self.selections.iter().enumerate() {
+            let (language, body) = context(selection.range().start);
+            let Some((edit, after)) =
+                block_comment_change(&self.text, &rows, *selection, language, body)
+            else {
                 return Ok(false);
             };
-            if range.is_empty() {
-                let row = &rows[row_at(&rows, selection.head)];
-                let body = &self.text[row.start..row.body_end];
-                range = row.start + body.len() - body.trim_start_matches([' ', '\t']).len()
-                    ..row.body_end;
-            }
-            if selection.range().is_empty() {
-                range.start = range.start.max(body.start);
-                range.end = range.end.min(body.end);
-            } else if range.start < body.start || range.end > body.end {
-                return Ok(false);
-            }
-            if range.start > open.len()
-                && self.text[..range.start].ends_with(&format!("{open} "))
-                && self.text[range.end..].starts_with(&format!(" {close}"))
-            {
-                let expanded = range.start - open.len() - 1..range.end + close.len() + 1;
-                if expanded.start >= body.start && expanded.end <= body.end {
-                    range = expanded;
-                }
-            }
-            let selected = &self.text[range.clone()];
-            let (text, anchor, head) = if selected.starts_with(open)
-                && selected.ends_with(close)
-                && selected.len() >= open.len() + close.len()
-            {
-                let inside = &selected[open.len()..selected.len() - close.len()];
-                let inside = inside.strip_prefix(' ').unwrap_or(inside);
-                let inside = inside.strip_suffix(' ').unwrap_or(inside);
-                (inside.to_string(), 0, inside.len())
-            } else {
-                // A closer in the selection would terminate the outer comment early.
-                // Rust permits nested comments; other languages must leave it alone.
-                if (language == Language::Rust && !balanced_comments(selected))
-                    || (language != Language::Rust && selected.contains(close))
-                {
-                    return Ok(false);
-                }
-                (
-                    format!("{open} {selected} {close}"),
-                    open.len() + 1,
-                    open.len() + 1 + selected.len(),
-                )
-            };
-            let after = if selection.range().is_empty() {
-                Selection::caret(text.len())
-            } else if selection.anchor <= selection.head {
-                Selection { anchor, head }
-            } else {
-                Selection {
-                    anchor: head,
-                    head: anchor,
-                }
-            };
-            changes.push((Edit::replace(range, text), after));
+            changes.add(edit, Some((index, after)))?;
         }
-        self.apply_caret_edits(changes)
+        changes.apply(self)
     }
 }
+fn block_comment_change(
+    text: &str,
+    rows: &[super::lines::Line],
+    selection: Selection,
+    language: Language,
+    body: std::ops::Range<usize>,
+) -> Option<(Edit, Selection)> {
+    let mut range = selection.range();
+    let (open, close) = block_comment(language)?;
+    if range.is_empty() {
+        let row = &rows[row_at(rows, selection.head)];
+        let body = &text[row.start..row.body_end];
+        range = row.start + body.len() - body.trim_start_matches([' ', '\t']).len()..row.body_end;
+    }
+    if selection.range().is_empty() {
+        range.start = range.start.max(body.start);
+        range.end = range.end.min(body.end);
+    } else if range.start < body.start || range.end > body.end {
+        return None;
+    }
+    if range.start > open.len()
+        && text[..range.start].ends_with(&format!("{open} "))
+        && text[range.end..].starts_with(&format!(" {close}"))
+    {
+        let expanded = range.start - open.len() - 1..range.end + close.len() + 1;
+        if expanded.start >= body.start && expanded.end <= body.end {
+            range = expanded;
+        }
+    }
+    let selected = &text[range.clone()];
+    let (text, anchor, head) = if selected.starts_with(open)
+        && selected.ends_with(close)
+        && selected.len() >= open.len() + close.len()
+    {
+        let inside = &selected[open.len()..selected.len() - close.len()];
+        let inside = inside.strip_prefix(' ').unwrap_or(inside);
+        let inside = inside.strip_suffix(' ').unwrap_or(inside);
+        (inside.to_string(), 0, inside.len())
+    } else {
+        // A closer in the selection would terminate the outer comment early.
+        // Rust permits nested comments; other languages must leave it alone.
+        if (language == Language::Rust && !balanced_comments(selected))
+            || (language != Language::Rust && selected.contains(close))
+        {
+            return None;
+        }
+        (
+            format!("{open} {selected} {close}"),
+            open.len() + 1,
+            open.len() + 1 + selected.len(),
+        )
+    };
+    let after = if selection.range().is_empty() {
+        Selection::caret(text.len())
+    } else if selection.anchor <= selection.head {
+        Selection { anchor, head }
+    } else {
+        Selection {
+            anchor: head,
+            head: anchor,
+        }
+    };
+    Some((Edit::replace(range, text), after))
+}
+
+#[derive(Default)]
+struct CommentChanges {
+    edits: Vec<Edit>,
+    ranges: std::collections::BTreeMap<(usize, usize), usize>,
+    selections: Vec<(usize, usize, Selection)>,
+}
+
+impl CommentChanges {
+    fn add(&mut self, edit: Edit, selection: Option<(usize, Selection)>) -> Result<(), EditError> {
+        let key = (edit.range.start, edit.range.end);
+        let index = if let Some(&index) = self.ranges.get(&key) {
+            if self.edits[index].text != edit.text {
+                return Err(EditError::OverlappingEdits);
+            }
+            index
+        } else {
+            let index = self.edits.len();
+            self.ranges.insert(key, index);
+            self.edits.push(edit);
+            index
+        };
+        if let Some((caret, after)) = selection {
+            self.selections.push((caret, index, after));
+        }
+        Ok(())
+    }
+
+    fn apply(self, document: &mut Document) -> Result<bool, EditError> {
+        document.apply_mapped_selections(self.edits, self.selections)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

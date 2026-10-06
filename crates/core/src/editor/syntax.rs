@@ -1013,6 +1013,100 @@ mod tests {
     }
 
     #[test]
+    fn line_comments_mix_embedded_syntax_in_one_transaction_and_reject_stale_contexts() {
+        use super::super::{Document, EditError, Selection};
+        let source = "<script>call();</script><style>a { color: red; }</style>";
+        let mut parser = SyntaxDocument::new(Language::Html).unwrap();
+        parser.update(source, || true);
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![
+                Selection::caret(source.find("call").unwrap()),
+                Selection {
+                    anchor: source.find("red").unwrap() + 3,
+                    head: source.find("red").unwrap(),
+                },
+            ])
+            .unwrap();
+        let context = parser.structure().unwrap();
+        document
+            .toggle_line_comments_with_context(&context)
+            .unwrap();
+        let expected = "<script>// call();</script><style>a { color: /* red */; }</style>";
+        assert_eq!(document.text(), expected);
+        let css = document.selections()[1];
+        assert!(css.anchor > css.head);
+        assert_eq!(&document.text()[css.range()], "red");
+        let changed = document.clone();
+        assert_eq!(
+            document.toggle_line_comments_with_context(&context),
+            Err(EditError::StaleContext)
+        );
+        assert_eq!(document, changed);
+        parser.update(document.text(), || true);
+        document
+            .toggle_line_comments_with_context(&parser.structure().unwrap())
+            .unwrap();
+        assert_eq!(document.text(), source);
+        assert!(document.undo());
+        assert_eq!(document.text(), expected);
+        assert!(document.undo());
+        assert_eq!(document.text(), source);
+    }
+
+    #[test]
+    fn line_comments_deduplicate_same_body_rows_and_block_carets() {
+        use super::super::{Document, Selection};
+        let source = "<script>call();</script><style>a { color: red; }</style>";
+        let mut parser = SyntaxDocument::new(Language::Html).unwrap();
+        parser.update(source, || true);
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![
+                Selection::caret(source.find("call").unwrap()),
+                Selection::caret(source.find("call").unwrap() + 3),
+                Selection::caret(source.find("color").unwrap()),
+                Selection::caret(source.find("red").unwrap()),
+            ])
+            .unwrap();
+        document
+            .toggle_line_comments_with_context(&parser.structure().unwrap())
+            .unwrap();
+        assert_eq!(
+            document.text(),
+            "<script>// call();</script><style>/* a { color: red; } */</style>"
+        );
+        assert!(document.undo());
+        assert_eq!(document.text(), source);
+        assert_eq!(document.selections().len(), 4);
+    }
+
+    #[test]
+    fn line_comments_reject_escaping_selections_without_applying_other_cursors() {
+        use super::super::{Document, Selection};
+        let source = "<script>call();</script><style>a { color: red; }</style>";
+        let mut parser = SyntaxDocument::new(Language::Html).unwrap();
+        parser.update(source, || true);
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![
+                Selection::caret(source.find("call").unwrap()),
+                Selection {
+                    anchor: source.find("color").unwrap(),
+                    head: source.len(),
+                },
+            ])
+            .unwrap();
+        let before = document.clone();
+        assert!(
+            !document
+                .toggle_line_comments_with_context(&parser.structure().unwrap())
+                .unwrap()
+        );
+        assert_eq!(document, before);
+    }
+
+    #[test]
     fn parsed_contexts_cover_builtin_literals_and_incomplete_interpolation() {
         for &(path, source, _) in super::super::syntax_contracts::LANGUAGE_CASES {
             let language = crate::highlight::language_from_path(path);

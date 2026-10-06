@@ -165,6 +165,82 @@ async fn parser_block_comments_share_modes_embedded_cursors_and_atomic_undo() {
 }
 
 #[wasm_bindgen_test]
+async fn parser_line_comments_share_modes_mixed_syntax_and_one_undo_step() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Document, Indentation, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    let source = "<script>\r\ncall();\r\n</script><style>a { color: red; }</style>";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("comments.html".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let primary = Selection::caret(source.find("call").unwrap());
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .update(|documents| {
+                let mut document = Document::new(source);
+                document
+                    .set_selections(vec![
+                        primary,
+                        Selection {
+                            anchor: source.find("red").unwrap() + 3,
+                            head: source.find("red").unwrap(),
+                        },
+                    ])
+                    .unwrap();
+                documents.insert((1, "comments.html".into()), document);
+            });
+        actions
+            .command(EditorCommand::LineComment, primary, Indentation::default())
+            .unwrap()
+            .unwrap();
+        let edited = "<script>\r\n// call();\r\n</script><style>a { color: /* red */; }</style>";
+        assert_eq!(mounted.state.workspace.content.get_untracked(), edited);
+        let selections = actions.selections(edited);
+        assert_eq!(selections.len(), 2);
+        assert!(selections[1].anchor > selections[1].head);
+        assert_eq!(&edited[selections[1].range()], "red");
+        actions
+            .command(EditorCommand::Undo, selections[0], Indentation::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        actions
+            .command(
+                EditorCommand::Redo,
+                actions.selections(source)[0],
+                Indentation::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(mounted.state.workspace.content.get_untracked(), edited);
+        actions
+            .command(
+                EditorCommand::LineComment,
+                actions.selections(edited)[0],
+                Indentation::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        drop(mounted);
+        settle().await;
+    }
+}
+
+#[wasm_bindgen_test]
 async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_targets() {
     use openwebide_core::{
         WorkspaceMode,
