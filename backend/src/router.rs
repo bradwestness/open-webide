@@ -35,6 +35,8 @@ enum Route {
     UpdateSystemPrompt,
     DeleteSystemPrompt,
     ListProjects,
+    GetEditorRecovery,
+    SaveEditorRecovery,
     CreateProject,
     ListPendingEdits,
     ListRunChanges,
@@ -139,6 +141,12 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("POST", ["system-prompts"]) => Some(Route::CreateSystemPrompt),
         ("PUT", ["system-prompts", _]) => Some(Route::UpdateSystemPrompt),
         ("DELETE", ["system-prompts", _]) => Some(Route::DeleteSystemPrompt),
+        ("GET", ["projects", id, "editor-recovery"]) if numeric_id(id) => {
+            Some(Route::GetEditorRecovery)
+        }
+        ("PUT", ["projects", id, "editor-recovery"]) if numeric_id(id) => {
+            Some(Route::SaveEditorRecovery)
+        }
         ("GET", ["projects"]) => Some(Route::ListProjects),
         ("POST", ["projects"]) => Some(Route::CreateProject),
         ("PUT", ["projects", _]) => Some(Route::RenameProject),
@@ -319,6 +327,12 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::SetToolStreamUnsupported), Some(user)) => {
             api::connections::set_tool_stream_unsupported(req, &state, &path, user).await
+        }
+        (Some(Route::GetEditorRecovery), Some(user)) => {
+            api::editor_recovery::get(&state, &path, user).await
+        }
+        (Some(Route::SaveEditorRecovery), Some(user)) => {
+            api::editor_recovery::save(req, &state, &path, user).await
         }
         (Some(Route::GetSettings), Some(user)) => api::settings::get_settings(&state, user).await,
         (Some(Route::SetSetting), Some(user)) => {
@@ -771,6 +785,16 @@ mod tests {
             ("PUT", "system-prompts/5", Route::UpdateSystemPrompt),
             ("DELETE", "system-prompts/5", Route::DeleteSystemPrompt),
             ("GET", "projects", Route::ListProjects),
+            (
+                "GET",
+                "projects/5/editor-recovery",
+                Route::GetEditorRecovery,
+            ),
+            (
+                "PUT",
+                "projects/5/editor-recovery",
+                Route::SaveEditorRecovery,
+            ),
             ("POST", "projects", Route::CreateProject),
             ("GET", "projects/5/pending-edits", Route::ListPendingEdits),
             ("GET", "projects/5/run-changes", Route::ListRunChanges),

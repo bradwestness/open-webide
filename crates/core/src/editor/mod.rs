@@ -21,6 +21,11 @@ pub use native::NativeInputKind;
 pub use selections::{
     MAX_SELECTIONS, SelectionCommand, SelectionError, column_selections, normalize_selections,
 };
+mod recovery;
+pub use recovery::{
+    DocumentRecovery, EditorRecovery, EditorRecoveryFile, EditorRecoveryRecord, EditorRecoveryRoot,
+    RecoveryScroll, recovery_body_limit,
+};
 mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
 mod projection;
@@ -87,7 +92,7 @@ pub fn text_change(old: &str, new: &str) -> Option<TextChange> {
 }
 
 /// A directional selection: its head is the moving caret.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Selection {
     pub anchor: usize,
     pub head: usize,

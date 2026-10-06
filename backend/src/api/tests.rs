@@ -1077,3 +1077,162 @@ fn todo_endpoints_share_owned_validation_and_durability_in_every_workspace() {
         }
     });
 }
+
+#[test]
+fn editor_recovery_routes_validate_owned_revisioned_snapshots_in_both_modes() {
+    use openwebide_core::editor::{
+        Document, EditorRecovery, EditorRecoveryFile, EditorRecoveryRecord, EditorRecoveryRoot,
+        RecoveryScroll,
+    };
+    futures::executor::block_on(async {
+        for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+            let state = AppState::new().await.unwrap();
+            let owner = state
+                .store
+                .insert_user("owner", "hash", openwebide_core::UserRole::Admin, 1)
+                .await
+                .unwrap();
+            let other = state
+                .store
+                .insert_user("other", "hash", openwebide_core::UserRole::User, 1)
+                .await
+                .unwrap();
+            let project = state
+                .store
+                .create_project(
+                    &NewProject {
+                        name: "editor".into(),
+                        mode,
+                        path: Some("project".into()),
+                    },
+                    owner.id,
+                    1,
+                )
+                .await
+                .unwrap();
+            let user = AuthedUser {
+                id: owner.id,
+                role: owner.role,
+            };
+            let other = AuthedUser {
+                id: other.id,
+                role: other.role,
+            };
+            let path = format!("/api/projects/{}/editor-recovery", project.id);
+            let mut document = Document::new("α\r\n");
+            document.replace_selections("draft ", None).unwrap();
+            let record = EditorRecoveryRecord {
+                revision: 0,
+                state: EditorRecovery {
+                    format: 1,
+                    root: Some(EditorRecoveryRoot::for_project(&project)),
+                    selected: Some("main.rs".into()),
+                    files: vec![EditorRecoveryFile {
+                        path: "main.rs".into(),
+                        document: Some(document.recovery()),
+                        scroll: RecoveryScroll::default(),
+                        read_only: false,
+                    }],
+                },
+            };
+            assert_eq!(
+                super::editor_recovery::get(&state, &path, user)
+                    .await
+                    .unwrap()
+                    .status(),
+                200
+            );
+            assert_eq!(
+                super::editor_recovery::save_record(&state, project.id, other, record.clone())
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                404
+            );
+            assert_eq!(
+                super::editor_recovery::save_record(&state, project.id, user, record.clone())
+                    .await
+                    .unwrap()
+                    .status(),
+                200
+            );
+            assert_eq!(
+                super::editor_recovery::save_record(&state, project.id, user, record.clone())
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                409
+            );
+            let response = super::editor_recovery::get(&state, &path, user)
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes();
+            let persisted: EditorRecoveryRecord = serde_json::from_slice(&response).unwrap();
+            assert_eq!(persisted.revision, 1);
+            assert_eq!(persisted.state, record.state);
+            let mut invalid = persisted.clone();
+            invalid.state.files[0].path = "../outside".into();
+            assert_eq!(
+                super::editor_recovery::save_record(&state, project.id, user, invalid.clone())
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                400
+            );
+            invalid = persisted.clone();
+            invalid.revision = -1;
+            assert_eq!(
+                super::editor_recovery::save_record(&state, project.id, user, invalid.clone())
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                400
+            );
+            invalid = persisted.clone();
+            invalid.state.root.as_mut().unwrap().path = Some("changed".into());
+            assert_eq!(
+                super::editor_recovery::save_record(&state, project.id, user, invalid.clone())
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                409
+            );
+            let settings = super::settings::get_settings(&state, user)
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&settings).unwrap(),
+                serde_json::json!({})
+            );
+            assert_eq!(
+                super::settings::validate_setting_key(&format!("editor_recovery_{}", project.id))
+                    .unwrap_err()
+                    .into_response()
+                    .status(),
+                400
+            );
+            assert_eq!(
+                state
+                    .store
+                    .editor_recovery(user.id, project.id)
+                    .await
+                    .unwrap(),
+                persisted
+            );
+        }
+    });
+}

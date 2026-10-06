@@ -21,11 +21,21 @@ pub(crate) async fn set_setting(
     let user_id = user.id;
     let body = read_body(req, SETTINGS_BODY_LIMIT).await?;
     let setting: SettingBody = parse_json(body)?;
+    validate_setting_key(&setting.key)?;
     state
         .store
         .set_user_setting(user_id, &setting.key, &setting.value)
         .await?;
     Ok(json_response(200, &json!({ "key": setting.key })))
+}
+
+pub(super) fn validate_setting_key(key: &str) -> Result<(), ApiError> {
+    if key.starts_with("editor_recovery_") {
+        return Err(ApiError::bad_request(
+            "Use the versioned editor recovery API",
+        ));
+    }
+    Ok(())
 }
 
 const SYSTEM_THEME: &str = "matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'";

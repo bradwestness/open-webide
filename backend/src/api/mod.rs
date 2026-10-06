@@ -119,6 +119,7 @@ pub(super) mod auth;
 pub(super) mod bridge;
 pub(super) mod chat;
 pub(super) mod connections;
+pub(super) mod editor_recovery;
 pub(super) mod files;
 pub(super) mod git;
 pub(crate) mod model_operations;

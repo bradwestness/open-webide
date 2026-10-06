@@ -1,7 +1,7 @@
 //! Logical line ranges shared by parser, indentation and explicit-region providers.
 
 /// The header remains visible; subsequent logical lines through `end_line` fold.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FoldRange {
     pub start_line: usize,
     pub end_line: usize,

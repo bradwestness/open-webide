@@ -4147,3 +4147,45 @@ async fn wrapping_whitespace_fold_geometry_and_navigation_share_both_modes() {
         assert!(!mounted.state.workspace.dirty.get_untracked());
     }
 }
+
+#[wasm_bindgen_test]
+async fn recovery_document_format_restores_committed_browser_edits_in_both_modes() {
+    use openwebide_core::editor::{DocumentRecovery, Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let actions_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let slot = actions_slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|items| items[0].mode = mode);
+            state.workspace.open_file.set(Some("main.rs".into()));
+            state.workspace.content.set("α\r\n".into());
+            slot.set(Some(EditorActions::new(state.workspace)));
+            editor_view(state)
+        });
+        settle().await;
+        let actions = actions_slot.get().unwrap();
+        actions
+            .native_input("α😀\n".into(), Selection::caret(6), "insertText", 1.0)
+            .unwrap();
+        let snapshot = mounted
+            .state
+            .workspace
+            .editor_documents
+            .with_untracked(|documents| documents[&(1, "main.rs".into())].recovery());
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        let decoded: DocumentRecovery = serde_json::from_str(&encoded).unwrap();
+        let mut restored = decoded.restore().unwrap();
+        assert_eq!(restored.text(), "α😀\r\n");
+        assert_eq!(restored.selections(), &[Selection::caret(6)]);
+        assert!(restored.is_dirty());
+        assert!(restored.undo());
+        assert_eq!(restored.text(), "α\r\n");
+        assert!(!restored.is_dirty());
+        assert!(restored.redo());
+        assert_eq!(restored.text(), snapshot.text);
+    }
+}

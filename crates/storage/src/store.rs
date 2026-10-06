@@ -2,6 +2,7 @@
 
 mod branches;
 mod chat_queue;
+mod editor_recovery;
 mod model_setup;
 mod reviews;
 mod rewind;
@@ -305,6 +306,11 @@ impl<D: Db> Store<D> {
         key: &str,
         value: &str,
     ) -> Result<(), StorageError> {
+        if key.starts_with("editor_recovery_") {
+            return Err(StorageError::InvalidValue(
+                "Use the versioned editor recovery API".into(),
+            ));
+        }
         self.db
             .execute(
                 "INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)
@@ -326,7 +332,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT key, value FROM user_settings WHERE user_id = ? ORDER BY key",
+                "SELECT key, value FROM user_settings WHERE user_id = ? AND key NOT GLOB 'editor_recovery_*' ORDER BY key",
                 &[DbValue::Int(user_id.get())],
             )
             .await?;
@@ -681,6 +687,14 @@ impl<D: Db> Store<D> {
                     return Err(StorageError::NotFound(format!("project {id}")));
                 }
 
+                tx.execute(
+                    "DELETE FROM user_settings WHERE user_id = ? AND key = ?",
+                    &[
+                        DbValue::Int(user_id.get()),
+                        DbValue::Text(format!("editor_recovery_{id}")),
+                    ],
+                )
+                .await?;
                 tx.execute(
                     "DELETE FROM projects WHERE id = ? AND user_id = ?",
                     &[DbValue::Int(id), DbValue::Int(user_id.get())],

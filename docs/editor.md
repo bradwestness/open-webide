@@ -256,3 +256,25 @@ Cancel leaves it open. Closing the selected file chooses an adjacent tab. A clos
 confirmation cannot discard newer edits or files from another account/project.
 Database draft/reload recovery is still on the roadmap; refreshing currently loses
 these in-memory buffers.
+
+## Recovery contract (integration in progress)
+
+The shared Rust recovery format and `/api/projects/{id}/editor-recovery` GET/PUT
+endpoints persist tab order, selection, per-file scroll/read-only state and document
+snapshots in user-scoped database settings. PUT requires the revision returned by
+GET; a stale revision or changed project root returns 409. Closing every tab retains
+a revision rather than deleting it, so an older window cannot resurrect its drafts.
+Project deletion removes its recovery setting. Ordinary settings reads exclude
+recovery bodies, and ordinary settings writes cannot bypass revision checks.
+
+Snapshots capture committed text rather than an active IME preview. The saved
+baseline, selections and collapsed folds restore with the draft; its edits become
+one undoable recovery transaction. Paths, Unicode offsets, folds, scroll values,
+format versions and bounds are validated in shared code. Text encoding keeps
+control-heavy files within the same wire bounds as ordinary files. Limits are
+64 tabs and 128 MiB of text/metadata, with each document using the editor's existing
+32 MiB text limit. Failed writes preserve the preceding stored recovery.
+
+Client autosave, hydration, workspace permissions, disk-change/conflict feedback
+and retry behavior still need integration. The app currently keeps buffers in
+memory; refreshing still loses them.

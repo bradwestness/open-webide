@@ -42,6 +42,9 @@ pub(super) struct Composition {
     group: Option<u64>,
 }
 impl Composition {
+    pub(super) fn committed_document(&self) -> &Document {
+        &self.before
+    }
     pub(super) fn mark_saved_version(&mut self, text: &str) {
         self.before.mark_saved_version(text);
     }
