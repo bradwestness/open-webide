@@ -147,3 +147,5 @@ used_underscore_binding = "warn"
 [patch.crates-io]
 ec4rs = { path = "vendor/ec4rs" }
 tree-sitter-rust = { path = "vendor/tree-sitter-rust" }
+
+tree-sitter-language = { path = "vendor/tree-sitter-language" }

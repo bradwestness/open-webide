@@ -22,9 +22,36 @@ serde_json = { workspace = true }
 tree-sitter = { version = "0.27.0", optional = true }
 tree-sitter-rust = { version = "0.24.2", optional = true }
 
+tree-sitter-typescript = { version = "0.23.2", optional = true }
+tree-sitter-javascript = { version = "0.25.0", optional = true }
+tree-sitter-python = { version = "0.25.0", optional = true }
+tree-sitter-java = { version = "0.23.5", optional = true }
+tree-sitter-c-sharp = { version = "0.23.5", optional = true }
+tree-sitter-cpp = { version = "0.23.4", optional = true }
+tree-sitter-php = { version = "0.24.2", optional = true }
+tree-sitter-bash = { version = "0.25.1", optional = true }
+tree-sitter-c = { version = "0.24.2", optional = true }
+tree-sitter-go = { version = "0.25.0", optional = true }
+tree-sitter-html = { version = "0.23.2", optional = true }
+tree-sitter-css = { version = "0.25.0", optional = true }
+
 [features]
 test-support = []
-editor-parser = ["dep:tree-sitter", "dep:tree-sitter-rust"]
+editor-parser = [
+    "dep:tree-sitter", "dep:tree-sitter-rust",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-java",
+    "dep:tree-sitter-c-sharp",
+    "dep:tree-sitter-cpp",
+    "dep:tree-sitter-php",
+    "dep:tree-sitter-bash",
+    "dep:tree-sitter-c",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-html",
+    "dep:tree-sitter-css",
+]
 
 [dev-dependencies]
 futures = { workspace = true }

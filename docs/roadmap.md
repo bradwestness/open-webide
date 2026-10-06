@@ -68,15 +68,14 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   line-ending and trailing-whitespace save policies are undoable; finish real
   input-method/clipboard verification, preserving Unicode and LF/CRLF without
   rewriting unrelated text.
-- **Syntax-aware editing:** the shared incremental Rust parser and fold-range
-  provider and Rust folding controls are in place. Make language providers extensible
-  and ship built-in support for TypeScript/TSX, Python, JavaScript/JSX, Java, C#, C++,
-  PHP, Shell, C, Go, HTML and CSS, retaining Rust. Cover syntax-aware editing and
-  folding with richer language contexts, including template interpolation and
-  embedded languages in HTML, through shared provider contracts in native and
-  browser WASM. Current reindent uses bounded
-  lexical bracket structure and preserves existing Python block depth; language
-  formatting remains in Code intelligence.
+- **Syntax-aware editing:** the shared incremental parser now has extensible grammar
+  providers and fold descriptors for Rust, TypeScript/TSX, JavaScript/JSX, Python,
+  Java, C#, C++, PHP, Shell, C, Go, HTML and CSS. Native/browser contracts cover
+  parsed folds, incremental Unicode/CRLF updates, cancellation and size fallbacks.
+  Finish provider-backed editing and literal contexts, including template
+  interpolation, HTML embedded JavaScript/CSS and language-aware highlighting;
+  the editing commands still use bounded lexical structure. Reindent preserves
+  existing Python block depth; language formatting remains in Code intelligence.
 
 - **Selections and files:** the shared document now normalizes overlapping selections,
   selects next/all occurrences, maps column selections using graphemes and tab stops,

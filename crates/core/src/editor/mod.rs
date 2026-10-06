@@ -27,8 +27,14 @@ mod projection;
 pub use projection::{FoldProjection, ProjectionError, VisibleLine};
 #[cfg(feature = "editor-parser")]
 mod syntax;
+#[cfg(all(feature = "editor-parser", any(test, feature = "test-support")))]
+pub mod syntax_contracts;
+#[cfg(feature = "editor-parser")]
+mod syntax_providers;
 #[cfg(feature = "editor-parser")]
 pub use syntax::{SyntaxDocument, SyntaxStatus};
+#[cfg(feature = "editor-parser")]
+pub use syntax_providers::{SYNTAX_PROVIDERS, SyntaxProvider, syntax_provider};
 mod comments;
 pub use comments::{block_comment, line_comment};
 mod lines;

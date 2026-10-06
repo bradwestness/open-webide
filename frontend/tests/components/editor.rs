@@ -1003,6 +1003,64 @@ async fn folded_document_commands_projection_and_history_share_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn built_in_language_parser_folds_share_local_remote_and_wasm_contracts() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{SyntaxDocument, SyntaxStatus, syntax_contracts::LANGUAGE_CASES},
+        highlight::language_from_path,
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let oversized = "x".repeat(openwebide_core::editor::MAX_STRUCTURE_BYTES + 1);
+        for &(path, source, expected) in LANGUAGE_CASES {
+            mounted.state.workspace.open_file.set(Some(path.into()));
+            mounted.state.workspace.content.set(source.into());
+            let (status, folds) = actions.syntax_folds(|| true).unwrap();
+            assert_eq!(status, SyntaxStatus::Ready { incremental: false }, "{path}");
+            assert!(folds.contains(&expected), "{mode:?} {path}: {folds:?}");
+            let revised = source.replace("文😀", "😀文 changed").replace('\n', "\r\n");
+            mounted.state.workspace.content.set(revised.clone());
+            let (status, folds) = actions.syntax_folds(|| true).unwrap();
+            assert_eq!(status, SyntaxStatus::Ready { incremental: true }, "{path}");
+            let mut fresh = SyntaxDocument::new(language_from_path(path)).unwrap();
+            fresh.update(&revised, || true);
+            assert_eq!(folds, fresh.folds(), "{path}");
+            assert_eq!(
+                actions.syntax_folds(|| false).unwrap(),
+                (SyntaxStatus::Cancelled, vec![])
+            );
+            mounted.state.workspace.content.set(oversized.clone());
+            assert_eq!(
+                actions.syntax_folds(|| true).unwrap(),
+                (SyntaxStatus::TooLarge, vec![])
+            );
+            mounted.state.workspace.content.set(source.into());
+            assert_eq!(
+                actions.syntax_folds(|| true).unwrap().0,
+                SyntaxStatus::Ready { incremental: false }
+            );
+        }
+        mounted.state.workspace.reset();
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_syntax
+                .with_untracked(|cache| cache.is_empty())
+        );
+    }
+}
+
+#[wasm_bindgen_test]
 async fn incremental_syntax_and_fold_provider_share_both_modes_and_account_reset() {
     use openwebide_core::{
         WorkspaceMode,

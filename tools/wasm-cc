@@ -1,0 +1,7 @@
+#!/bin/sh
+# Browser grammar/runtime crates share Tree-sitter's portable C headers.
+set -eu
+if [ -n "${DEP_TREE_SITTER_LANGUAGE_WASM_HEADERS:-}" ]; then
+    exec clang -I "$DEP_TREE_SITTER_LANGUAGE_WASM_HEADERS" "$@"
+fi
+exec clang "$@"

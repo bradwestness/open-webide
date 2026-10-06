@@ -10,6 +10,11 @@ pub fn line_comment(language: Language) -> Option<&'static str> {
         Language::Rust
         | Language::JavaScript
         | Language::TypeScript
+        | Language::Jsx
+        | Language::Tsx
+        | Language::Java
+        | Language::CSharp
+        | Language::Php
         | Language::C
         | Language::Cpp
         | Language::Go => Some("//"),
@@ -23,6 +28,11 @@ pub fn block_comment(language: Language) -> Option<(&'static str, &'static str)>
         Language::Rust
         | Language::JavaScript
         | Language::TypeScript
+        | Language::Jsx
+        | Language::Tsx
+        | Language::Java
+        | Language::CSharp
+        | Language::Php
         | Language::C
         | Language::Cpp
         | Language::Go

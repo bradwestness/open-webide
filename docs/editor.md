@@ -116,16 +116,22 @@ scroll position within its project while the app is open, including when switchi
 to a diff view and back. New files start at the beginning; changing accounts clears
 these positions. Reload persistence is part of the remaining draft-recovery work.
 
-The syntax/folding foundation now includes a shared incremental Rust parser. Its
-previous tree is updated with Unicode-safe byte edits; fold candidates cover code
-blocks, declarations and multiline comments/literals. Cancellation, parser work
-limits and oversized files discard stale results. Other languages and
-worker/viewport work remain under development;
-the existing editing commands continue to use their documented lexical structure.
+The syntax/folding foundation uses shared incremental grammar providers for Rust,
+TypeScript/TSX, JavaScript/JSX, Python, Java, C#, C++, PHP, Shell, C, Go, HTML and
+CSS. Trees update with Unicode-safe byte edits. Fold descriptors cover blocks,
+declarations and multiline comments/literals, with Python suite headers retained.
+Cancellation and oversized files discard stale trees; unsupported languages use
+lexical/indentation folding. Custom `SyntaxProvider` descriptors use the same
+update and fold policy through `SyntaxDocument::with_provider`.
 
 Frontend builds enable the core `editor-parser` feature. Backend WASI builds do not
-need the parser or a WASI C SDK. The Rust grammar’s small build-script patch uses
-upstream WASM headers; see `vendor/tree-sitter-rust/PATCH.md`.
+need the parser or a WASI C SDK. A shared browser compiler adapter supplies portable
+C headers; see `vendor/tree-sitter-language/PATCH.md`. The existing Rust grammar
+patch remains compatible with that adapter.
+
+Provider-backed editing contexts, template interpolation, embedded JavaScript/CSS
+inside HTML, richer highlighting and worker/viewport rendering remain roadmap
+work. Editing commands continue to use their documented bounded lexical structure.
 
 The shared document now owns fold state independently of undo history. Commands
 can collapse/expand at the caret, recursively or all, and reveal a navigation target.

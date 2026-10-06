@@ -4,7 +4,7 @@ use std::ops::ControlFlow;
 
 use tree_sitter::{InputEdit, ParseOptions, Parser, Point, Tree};
 
-use super::{FoldRange, MAX_STRUCTURE_BYTES, normalize_folds};
+use super::{FoldRange, MAX_STRUCTURE_BYTES, SyntaxProvider, normalize_folds, syntax_provider};
 use crate::highlight::Language;
 
 const MAX_PROGRESS_CHECKS: usize = 4_096;
@@ -20,6 +20,7 @@ pub enum SyntaxStatus {
 /// One parser and previous tree per document. Never publish an old tree for new text.
 pub struct SyntaxDocument {
     parser: Option<Parser>,
+    provider: Option<SyntaxProvider>,
     language: Language,
     ready: bool,
     tree: Option<Tree>,
@@ -29,17 +30,23 @@ pub struct SyntaxDocument {
 impl SyntaxDocument {
     /// Languages without a grammar use shared lexical/indentation providers.
     pub fn new(language: Language) -> Option<Self> {
-        let parser = if language == Language::Rust {
+        Self::with_provider(language, syntax_provider(language))
+    }
+
+    pub fn with_provider(language: Language, provider: Option<SyntaxProvider>) -> Option<Self> {
+        if provider.is_some_and(|provider| provider.language != language) {
+            return None;
+        }
+        let parser = if let Some(provider) = provider {
             let mut parser = Parser::new();
-            parser
-                .set_language(&tree_sitter_rust::LANGUAGE.into())
-                .ok()?;
+            parser.set_language(&(provider.grammar)()).ok()?;
             Some(parser)
         } else {
             None
         };
         Some(Self {
             parser,
+            provider,
             language,
             ready: false,
             tree: None,
@@ -135,24 +142,20 @@ impl SyntaxDocument {
                 return Vec::new();
             }
             let node = cursor.node();
-            if matches!(
-                node.kind(),
-                "block"
-                    | "declaration_list"
-                    | "enum_variant_list"
-                    | "field_declaration_list"
-                    | "match_block"
-                    | "use_list"
-                    | "token_tree"
-                    | "block_comment"
-                    | "array_expression"
-                    | "arguments"
-                    | "parameters"
-                    | "tuple_expression"
-                    | "raw_string_literal"
-            ) && !node.is_missing()
+            if self
+                .provider
+                .is_some_and(|provider| provider.fold_nodes.contains(&node.kind()))
+                && !node.is_missing()
             {
-                let start = node.start_position();
+                let start = if self
+                    .provider
+                    .is_some_and(|provider| provider.parent_headers.contains(&node.kind()))
+                {
+                    node.parent()
+                        .map_or(node.start_position(), |parent| parent.start_position())
+                } else {
+                    node.start_position()
+                };
                 let end = node.end_position();
                 // Preserve a closing row when another construct begins there,
                 // e.g. `} else {`: its header needs its own fold control.
@@ -214,6 +217,21 @@ fn input_edit(old: &str, new: &str) -> InputEdit {
 mod tests {
     use super::*;
 
+    #[test]
+    fn provider_fold_nodes_exist_in_the_released_grammars() {
+        for provider in super::super::SYNTAX_PROVIDERS {
+            let grammar = (provider.grammar)();
+            for kind in provider.fold_nodes.iter().chain(provider.parent_headers) {
+                assert_ne!(
+                    grammar.id_for_node_kind(kind, true),
+                    0,
+                    "{:?}: {kind}",
+                    provider.language
+                );
+            }
+        }
+    }
+
     fn positions(tree: &Tree) -> Vec<String> {
         let mut cursor = tree.walk();
         let mut positions = Vec::new();
@@ -241,6 +259,81 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn built_in_grammars_incremental_folds_and_recovery_share_one_contract() {
+        let oversized = "x".repeat(MAX_STRUCTURE_BYTES + 1);
+        for &(path, source, expected) in super::super::syntax_contracts::LANGUAGE_CASES {
+            let language = crate::highlight::language_from_path(path);
+            let mut syntax = SyntaxDocument::new(language).unwrap();
+            for (index, source) in [
+                source.to_string(),
+                source.replace("文😀", "😀文 changed").replace('\n', "\r\n"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert_eq!(
+                    syntax.update(&source, || true),
+                    SyntaxStatus::Ready {
+                        incremental: index != 0
+                    },
+                    "{path}"
+                );
+                let tree = syntax.tree.as_ref().unwrap();
+                assert!(
+                    !tree.root_node().has_error(),
+                    "{path}: {}",
+                    tree.root_node().to_sexp()
+                );
+                assert!(
+                    syntax.folds().contains(&expected),
+                    "{path}: {:?}",
+                    syntax.folds()
+                );
+                let mut fresh = SyntaxDocument::new(language).unwrap();
+                fresh.update(&source, || true);
+                assert_eq!(
+                    positions(tree),
+                    positions(fresh.tree.as_ref().unwrap()),
+                    "{path}"
+                );
+                assert_eq!(syntax.folds(), fresh.folds(), "{path}");
+            }
+            assert_eq!(syntax.update(source, || false), SyntaxStatus::Cancelled);
+            assert!(syntax.tree.is_none());
+            assert!(syntax.folds().is_empty());
+            assert_eq!(syntax.update(&oversized, || true), SyntaxStatus::TooLarge);
+            assert!(syntax.tree.is_none());
+            assert_eq!(
+                syntax.update(source, || true),
+                SyntaxStatus::Ready { incremental: false }
+            );
+        }
+    }
+
+    #[test]
+    fn custom_provider_uses_shared_parse_and_fold_policy() {
+        let provider = SyntaxProvider {
+            language: Language::Rust,
+            grammar: || tree_sitter_rust::LANGUAGE.into(),
+            fold_nodes: &["arguments"],
+            parent_headers: &[],
+        };
+        assert!(SyntaxDocument::with_provider(Language::Python, Some(provider)).is_none());
+        let mut syntax = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        syntax.update(
+            "fn main() {\n    call(\n        1,\n        2\n    );\n}\n",
+            || true,
+        );
+        assert_eq!(
+            syntax.folds(),
+            vec![FoldRange {
+                start_line: 1,
+                end_line: 3
+            }]
+        );
     }
 
     #[test]

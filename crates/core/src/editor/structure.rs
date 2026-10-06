@@ -36,17 +36,13 @@ impl Structure {
             let rest = &text[i..];
             let hash_comments = matches!(
                 language,
-                Language::Python | Language::Shell | Language::Toml | Language::Yaml
+                Language::Python
+                    | Language::Shell
+                    | Language::Toml
+                    | Language::Yaml
+                    | Language::Php
             );
-            let slash_comments = matches!(
-                language,
-                Language::Rust
-                    | Language::JavaScript
-                    | Language::TypeScript
-                    | Language::C
-                    | Language::Cpp
-                    | Language::Go
-            );
+            let slash_comments = super::line_comment(language) == Some("//");
             let line_comment = (hash_comments && rest.starts_with('#'))
                 || (slash_comments && rest.starts_with("//"))
                 || (language == Language::Sql && rest.starts_with("--"));
@@ -101,8 +97,10 @@ impl Structure {
             }
             // A slash in expression-start position can begin a JavaScript regex.
             // Character classes and escaped slashes do not end the literal.
-            if matches!(language, Language::JavaScript | Language::TypeScript)
-                && rest.starts_with('/')
+            if matches!(
+                language,
+                Language::JavaScript | Language::TypeScript | Language::Jsx | Language::Tsx
+            ) && rest.starts_with('/')
                 && regex_position(&text[..i])
             {
                 let start = i;
@@ -348,7 +346,12 @@ pub fn supports_quote(language: Language, ch: char) -> bool {
     match language {
         Language::Plain | Language::Markdown => false,
         Language::Json => ch == '"',
-        Language::JavaScript | Language::TypeScript | Language::Go | Language::Shell => {
+        Language::JavaScript
+        | Language::TypeScript
+        | Language::Jsx
+        | Language::Tsx
+        | Language::Go
+        | Language::Shell => {
             matches!(ch, '\'' | '"' | '`')
         }
         _ => matches!(ch, '\'' | '"'),
@@ -362,6 +365,11 @@ pub fn supports_brackets(language: Language) -> bool {
             | Language::Python
             | Language::JavaScript
             | Language::TypeScript
+            | Language::Jsx
+            | Language::Tsx
+            | Language::Java
+            | Language::CSharp
+            | Language::Php
             | Language::Json
             | Language::C
             | Language::Cpp
