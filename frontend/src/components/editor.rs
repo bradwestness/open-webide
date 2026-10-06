@@ -653,7 +653,18 @@ pub fn highlight_count() -> usize {
 /// Whitespace markers retain their original text node and therefore source offsets.
 fn paint_text(text: &str, show_whitespace: bool) -> String {
     if !show_whitespace {
-        return escape_html(text);
+        if text.len() <= 512 {
+            return escape_html(text);
+        }
+        return openwebide_core::editor::visual_text_runs(text)
+            .into_iter()
+            .map(|run| {
+                format!(
+                    "<span class=\"editor-text-run\">{}</span>",
+                    escape_html(run)
+                )
+            })
+            .collect();
     }
     let mut html = String::new();
     for ch in text.chars() {

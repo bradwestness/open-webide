@@ -69,6 +69,23 @@ pub fn visual_line_offsets(text: &str) -> Result<Vec<(usize, usize)>, SelectionE
     Ok(offsets)
 }
 
+/// Keep browser shaping/range primitives on short text runs without splitting
+/// grapheme clusters. A single unusually large cluster remains indivisible.
+pub fn visual_text_runs(text: &str) -> Vec<&str> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for (offset, _) in text.grapheme_indices(true) {
+        if offset - start >= 512 {
+            runs.push(&text[start..offset]);
+            start = offset;
+        }
+    }
+    if start < text.len() {
+        runs.push(&text[start..]);
+    }
+    runs
+}
+
 impl VisualLayout {
     /// Partial measurement is allowed, but every moved cursor must have its
     /// current and neighboring visual row. Missing coverage rejects atomically.
@@ -192,6 +209,29 @@ mod tests {
             visual_line_offsets(&"x".repeat(super::super::MAX_STRUCTURE_BYTES + 1)),
             Err(SelectionError::TooLarge)
         );
+    }
+
+    #[test]
+    fn shaping_runs_preserve_complete_clusters_source_and_empty_text() {
+        let text = format!(
+            "{}e{} tail",
+            "文😀e\u{301} ".repeat(1000),
+            "\u{301}".repeat(600)
+        );
+        let runs = visual_text_runs(&text);
+        assert_eq!(runs.concat(), text);
+        let boundaries: BTreeSet<_> = text
+            .grapheme_indices(true)
+            .map(|(offset, _)| offset)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        let mut offset = 0;
+        for run in runs {
+            assert!(boundaries.contains(&offset));
+            offset += run.len();
+            assert!(boundaries.contains(&offset));
+        }
+        assert!(visual_text_runs("").is_empty());
     }
 
     fn wrapped(doc: &Document, identity: &str) -> VisualLayout {

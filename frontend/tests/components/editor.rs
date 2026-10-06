@@ -6410,6 +6410,11 @@ async fn long_wrapped_lines_move_cursors_without_measuring_the_entire_line_in_bo
                 .is_some()
         })
         .await;
+        let runs = mounted.root.query_selector_all(".editor-text-run").unwrap();
+        assert!(runs.length() > 100);
+        for index in 0..runs.length() {
+            assert!(runs.item(index).unwrap().text_content().unwrap().len() <= 516);
+        }
         let actions = EditorActions::new(mounted.state.workspace);
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();

@@ -19,6 +19,7 @@ pub use motion_queue::{MotionQueue, MotionRequest};
 mod visual_motion;
 pub use visual_motion::{
     MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_caret_offsets, visual_line_offsets,
+    visual_text_runs,
 };
 mod native;
 pub use clipboard::{CLIPBOARD_SELECTIONS_MIME, ClipboardContent};

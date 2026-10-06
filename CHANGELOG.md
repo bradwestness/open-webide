@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Split oversized Edit paint into escaped, Unicode-safe text runs so browser range measurement avoids scanning one enormous text node. Preserve grapheme clusters, syntax classes, source coordinates and wrap behavior in both modes.
+- Add reproducible native/browser-WASM editor storage workloads with optional Crop/Ropey comparisons, CRLF-aware offset checks and recorded results. CI checks workload correctness without timing thresholds; production storage remains unchanged while viewport/worker work continues.
+
 - Move cursors within long wrapped lines by indexing Unicode graphemes separately and measuring only each cursor’s current and neighboring visual rows. Locate rows with bounded DOM range searches, reuse measurements across cursors, and preserve pixel goals, folds and soft-wrap affinity in both modes.
 
 - Protect PHP heredoc/nowdoc and shell heredoc text in shared editing and syntax paint. Expose PHP interpolated expressions and their braces, shell substitutions and arithmetic expansions as code; retain nested literal protection through enclosing string wrappers, Unicode/CRLF and incremental updates in both modes.

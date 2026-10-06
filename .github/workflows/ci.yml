@@ -37,11 +37,19 @@ jobs:
       - name: Clippy (frontend, wasm32-unknown-unknown)
         run: cargo clippy -p openwebide-frontend --target wasm32-unknown-unknown -- -D warnings
 
+      - name: Clippy (editor measurements)
+        run: |
+          cargo clippy -p openwebide-editor-bench --features candidates --all-targets -- -D warnings
+          cargo clippy -p openwebide-editor-bench --features candidates --target wasm32-unknown-unknown --all-targets -- -D warnings
+
       - name: Clippy (bridge)
         run: cargo clippy -p openwebide-bridge --all-targets -- -D warnings
 
       - name: Tests (native)
         run: cargo test -p openwebide-core -p openwebide-llm -p openwebide-storage -p openwebide-agent -p openwebide-auth -p openwebide-bridge -p openwebide-backend --features openwebide-core/editor-parser
+
+      - name: Tests (editor storage workloads)
+        run: cargo test -p openwebide-editor-bench --features candidates --release
 
       - name: Tests (frontend native)
         run: cargo test -p openwebide-frontend
@@ -118,6 +126,7 @@ jobs:
         run: |
           printf '{"goog:chromeOptions":{"binary":"%s","args":["--window-size=1280,900"]}}\n' "$CHROME_PATH" \
             | tee webdriver.json > frontend/webdriver.json
+          cp webdriver.json tools/editor-bench/webdriver.json
 
       - name: Install wasm-bindgen test runner
         run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
@@ -126,6 +135,11 @@ jobs:
         env:
           CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
         run: cargo test -p openwebide-frontend --target wasm32-unknown-unknown
+
+      - name: Measure shared editor storage in browser WASM
+        env:
+          CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
+        run: cargo test -p openwebide-editor-bench --features candidates --target wasm32-unknown-unknown --release -- --nocapture
 
   docker:
     runs-on: ubuntu-latest

@@ -10,6 +10,7 @@ members = [
     "crates/llm",
     "crates/storage",
     "frontend",
+    "tools/editor-bench",
 ]
 
 [workspace.package]

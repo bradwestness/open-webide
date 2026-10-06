@@ -75,7 +75,9 @@ Measurements bind to the complete source and fold projection; stale/missing
 coverage rejects the entire movement without changing text, selections or history.
 The DOM adapter indexes bounded logical lines by grapheme byte/UTF-16 coordinates,
 locates visual rows with binary DOM range searches and measures only current and
-neighboring visual rows. It reuses measurements across cursors and caps prepared
+neighboring visual rows. Oversized paint tokens use Unicode-safe text runs so
+range measurements stay within short text nodes. It reuses measurements across
+cursors and caps prepared
 caret positions at 65,536. While paint is pending, arrow requests queue in order, including
 Shift selections. Typing, commands, composition and clipboard actions flush fresh
 paint and apply queued motion first. File/account/source/fold changes cancel stale
@@ -367,3 +369,6 @@ When running the full WASM UI test suite locally, match CI’s Chrome capabiliti
 include `--window-size=1280,900` in `goog:chromeOptions.args` in `webdriver.json`.
 Desktop panel contracts require that viewport; individual narrow-layout tests
 set their own container sizes.
+
+See [editor performance measurements](editor-performance.md) for native/WASM
+text-storage comparisons and the remaining viewport/worker verification.

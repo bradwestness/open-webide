@@ -132,7 +132,10 @@ do not embed CodeMirror, Monaco or another substantial JavaScript editor client.
 Those editors are feature references only. Build reusable Rust document, selection,
 edit-transaction, undo/history, command and fold-range primitives, with one Leptos
 editor component. Evaluate WASM-compatible Rust crates for text storage and syntax
-parsing before choosing dependencies. Keep browser glue thin: DOM events, input/IME,
+parsing before choosing dependencies. [Native/browser storage measurements](editor-performance.md)
+compare the current document with Crop/Ropey edits, display materialization and
+UTF-16 indexing; retain current production storage until viewport/worker work
+changes its access pattern. Keep browser glue thin: DOM events, input/IME,
 selection, clipboard, measurements and worker transport; editing policy and algorithms
 belong in Rust. Preserve native browser input behavior where possible, and evaluate
 a richer view for multiple selections beyond the current projected textarea/paint
