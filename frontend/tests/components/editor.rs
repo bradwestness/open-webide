@@ -97,6 +97,74 @@ async fn parser_reindent_preserves_literals_and_embedded_boundaries_in_both_mode
 }
 
 #[wasm_bindgen_test]
+async fn parser_block_comments_share_modes_embedded_cursors_and_atomic_undo() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Document, Indentation, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    let source = "<script>call();</script><style>a { color: red; }</style>";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("comments.html".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let primary = Selection::caret(source.find("call").unwrap());
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .update(|documents| {
+                let mut document = Document::new(source);
+                document
+                    .set_selections(vec![
+                        primary,
+                        Selection {
+                            anchor: source.find("red").unwrap() + 3,
+                            head: source.find("red").unwrap(),
+                        },
+                    ])
+                    .unwrap();
+                documents.insert((1, "comments.html".into()), document);
+            });
+        actions
+            .command(EditorCommand::BlockComment, primary, Indentation::default())
+            .unwrap()
+            .unwrap();
+        let edited = "<script>/* call(); */</script><style>a { color: /* red */; }</style>";
+        assert_eq!(mounted.state.workspace.content.get_untracked(), edited);
+        assert_eq!(actions.selections(edited).len(), 2);
+        actions
+            .command(
+                EditorCommand::BlockComment,
+                actions.selections(edited)[0],
+                Indentation::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        actions
+            .command(
+                EditorCommand::Undo,
+                actions.selections(source)[0],
+                Indentation::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(mounted.state.workspace.content.get_untracked(), edited);
+        drop(mounted);
+        settle().await;
+    }
+}
+
+#[wasm_bindgen_test]
 async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_targets() {
     use openwebide_core::{
         WorkspaceMode,

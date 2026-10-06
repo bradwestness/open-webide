@@ -805,6 +805,7 @@ impl EditorActions {
                 | EditorCommand::DeletePair
                 | EditorCommand::Newline
                 | EditorCommand::Reindent
+                | EditorCommand::BlockComment
         ) {
             self.syntax_structure(|| true)
         } else {
@@ -881,9 +882,13 @@ impl EditorActions {
                         )?;
                     }
                     EditorCommand::BlockComment => {
-                        document.toggle_block_comments(
-                            openwebide_core::highlight::language_from_path(&key.1),
-                        )?;
+                        if let Some(syntax) = &syntax {
+                            document.toggle_block_comments_with_context(syntax)?;
+                        } else {
+                            document.toggle_block_comments(
+                                openwebide_core::highlight::language_from_path(&key.1),
+                            )?;
+                        }
                     }
                     EditorCommand::Reindent => {
                         if let Some(syntax) = &syntax {

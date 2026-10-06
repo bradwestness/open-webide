@@ -324,6 +324,15 @@ impl Structure {
         body(first) == body(second)
     }
 
+    /// The bounds of the embedded language containing a caret. Root-language
+    /// commands retain the document bounds.
+    pub fn language_body(&self, position: usize) -> Range<usize> {
+        self.scopes
+            .iter()
+            .find(|(range, _)| range.start <= position && position <= range.end)
+            .map_or(0..self.source.len(), |(range, _)| range.clone())
+    }
+
     #[cfg(feature = "editor-parser")]
     pub(super) fn parsed(
         text: &str,

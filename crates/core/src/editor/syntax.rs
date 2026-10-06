@@ -951,6 +951,68 @@ mod tests {
     }
 
     #[test]
+    fn block_comments_use_each_embedded_language_and_keep_markup_outside_caret_edits() {
+        use super::super::{Document, EditError, Selection};
+        let source = "<script>call();</script><style>a { color: red; }</style><p>文</p>";
+        let mut parser = SyntaxDocument::new(Language::Html).unwrap();
+        parser.update(source, || true);
+        let context = parser.structure().unwrap();
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![
+                Selection::caret(source.find("call").unwrap()),
+                Selection {
+                    anchor: source.find("red").unwrap(),
+                    head: source.find("red").unwrap() + 3,
+                },
+            ])
+            .unwrap();
+        document
+            .toggle_block_comments_with_context(&context)
+            .unwrap();
+        assert_eq!(
+            document.text(),
+            "<script>/* call(); */</script><style>a { color: /* red */; }</style><p>文</p>"
+        );
+        let edited = document.clone();
+        assert_eq!(
+            document.toggle_block_comments_with_context(&context),
+            Err(EditError::StaleContext)
+        );
+        assert_eq!(document, edited);
+        parser.update(document.text(), || true);
+        document
+            .toggle_block_comments_with_context(&parser.structure().unwrap())
+            .unwrap();
+        assert_eq!(document.text(), source);
+        assert!(document.undo());
+        assert_eq!(document.text(), edited.text());
+    }
+
+    #[test]
+    fn embedded_block_comment_selection_cannot_escape_its_language_body() {
+        use super::super::{Document, Selection};
+        let source = "<script>call();</script><style>a {}</style>";
+        let mut parser = SyntaxDocument::new(Language::Html).unwrap();
+        parser.update(source, || true);
+        let context = parser.structure().unwrap();
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![Selection {
+                anchor: source.find("call").unwrap(),
+                head: source.len(),
+            }])
+            .unwrap();
+        let before = document.clone();
+        assert!(
+            !document
+                .toggle_block_comments_with_context(&context)
+                .unwrap()
+        );
+        assert_eq!(document, before);
+    }
+
+    #[test]
     fn parsed_contexts_cover_builtin_literals_and_incomplete_interpolation() {
         for &(path, source, _) in super::super::syntax_contracts::LANGUAGE_CASES {
             let language = crate::highlight::language_from_path(path);

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Use parser contexts for block comments, selecting the language independently for each cursor. Keep inline HTML script/style caret edits within their bodies, reject escaping selections and stale contexts, and retain selection direction and atomic undo in both workspace modes. Line-comment contexts remain roadmap work.
+
 - Use validated parser contexts for selected-line reindent, preserving multiline literal content and separating HTML script/style bodies even after unclosed blocks. Reject stale contexts, retain undo and use the same editor facade in both workspace modes.
 
 - Add a disposable live editor-recovery check against the built WASI API, SQLite and Chrome. Verify both-mode browser edits and autosave, selected-tab/draft restoration after server restart, reload and new windows, and durable close-all revisions that reject stale windows. Local browser recovery is checked without native folder access; native permission/device verification remains pending.

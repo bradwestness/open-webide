@@ -1,6 +1,6 @@
 //! Comment commands use language syntax and logical-line selections.
 use super::{
-    Document, Edit, EditError, Selection,
+    Document, Edit, EditError, Selection, Structure,
     lines::{lines, row_at, selected_rows},
 };
 use crate::highlight::Language;
@@ -104,25 +104,54 @@ impl Document {
         self.apply_mapped(edits)
     }
     pub fn toggle_block_comments(&mut self, language: Language) -> Result<bool, EditError> {
-        let Some((open, close)) = block_comment(language) else {
-            return Ok(false);
-        };
+        let length = self.text.len();
+        self.toggle_block_comments_in(|_| (language, 0..length))
+    }
+
+    pub fn toggle_block_comments_with_context(
+        &mut self,
+        syntax: &Structure,
+    ) -> Result<bool, EditError> {
+        if !syntax.matches_source(&self.text) {
+            return Err(EditError::StaleContext);
+        }
+        self.toggle_block_comments_in(|position| {
+            (syntax.language_at(position), syntax.language_body(position))
+        })
+    }
+
+    fn toggle_block_comments_in(
+        &mut self,
+        context: impl Fn(usize) -> (Language, std::ops::Range<usize>),
+    ) -> Result<bool, EditError> {
         let rows = lines(&self.text);
         let mut changes = Vec::new();
         for selection in &self.selections {
             let mut range = selection.range();
+            let (language, body) = context(range.start);
+            let Some((open, close)) = block_comment(language) else {
+                return Ok(false);
+            };
             if range.is_empty() {
                 let row = &rows[row_at(&rows, selection.head)];
                 let body = &self.text[row.start..row.body_end];
                 range = row.start + body.len() - body.trim_start_matches([' ', '\t']).len()
                     ..row.body_end;
             }
+            if selection.range().is_empty() {
+                range.start = range.start.max(body.start);
+                range.end = range.end.min(body.end);
+            } else if range.start < body.start || range.end > body.end {
+                return Ok(false);
+            }
             if range.start > open.len()
                 && self.text[..range.start].ends_with(&format!("{open} "))
                 && self.text[range.end..].starts_with(&format!(" {close}"))
             {
-                range.start -= open.len() + 1;
-                range.end += close.len() + 1;
+                let expanded = range.start - open.len() - 1..range.end + close.len() + 1;
+                if expanded.start >= body.start && expanded.end <= body.end {
+                    range = expanded;
+                }
             }
             let selected = &self.text[range.clone()];
             let (text, anchor, head) = if selected.starts_with(open)
