@@ -282,3 +282,13 @@ are validated. Old-session REST responses cannot expire a newly active session.
 Client autosave, hydration, workspace permissions, disk-change/conflict feedback
 and retry behavior still need integration. The app currently keeps buffers in
 memory; refreshing still loses them.
+
+Recovery hydration primitives prepare all documents before publishing any state,
+restore ordered tabs and active or hidden buffers, and preserve unrelated workspace
+state. Guards reject a changed project, reset, pending read, document revision,
+selection, draft, or composition. Old media URLs are returned to the caller for
+revocation. Shared disk reconciliation preserves conflicting/missing drafts, detects
+an already completed write, and refreshes clean files. Optional disk reads distinguish
+missing ancestors from permission/transport errors through the same Workspace
+primitive used by rewind. The automatic scheduler, hydration wiring and conflict UI
+remain pending; these primitives alone do not restore files on refresh.

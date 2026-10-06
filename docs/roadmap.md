@@ -98,8 +98,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   with protected reads and filesystem mutation guards. File tabs share selected-tab
   styling, keyboard navigation and guarded close/discard controls. Validated recovery
   snapshots, revision-guarded user-scoped SQLite/API storage, typed frontend
-  transport and active/hidden buffer collection are in place. Wire autosave,
-  tab/selected-file hydration and draft restoration into the shared frontend
+  transport and active/hidden buffer collection are in place. Transactional
+  hydration and shared disk reconciliation preserve baselines and reject stale
+  editor activity. Wire autosave, tab/selected-file hydration and draft restoration into the shared frontend
   facade after refresh or in a new window, with workspace permissions, disk-change
   handling, retry/conflict feedback and stale-result guards.
   Coordinate draft/reload recovery with the existing Offline & error-state recovery

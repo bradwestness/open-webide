@@ -116,6 +116,36 @@ impl Workspace {
         openwebide_core::vfs::sort_file_entries(&mut entries);
         Ok(entries)
     }
+    /// Read an existing project-relative file without treating a transport or
+    /// permission failure as absence. Shared enumeration handles missing parents.
+    pub async fn read_optional_bytes(&self, path: &str) -> Result<Option<Vec<u8>>, WorkspaceError> {
+        let path = workspace_path(path)?;
+        // Enumerate each existing ancestor so a removed directory means absence
+        // without classifying transport errors by their text.
+        let (parent, _) = path.rsplit_once('/').unwrap_or(("", path.as_str()));
+        let mut dir = String::new();
+        for part in parent.split('/').filter(|part| !part.is_empty()) {
+            let entries = self.list(&dir).await?;
+            let next = if dir.is_empty() {
+                part.to_string()
+            } else {
+                format!("{dir}/{part}")
+            };
+            if !entries
+                .iter()
+                .any(|entry| entry.path == next && entry.is_dir)
+            {
+                return Ok(None);
+            }
+            dir = next;
+        }
+        let entries = self.list(parent).await?;
+        if !entries.iter().any(|entry| entry.path == path) {
+            return Ok(None);
+        }
+        Workspace::read_bytes(self, &path).await.map(Some)
+    }
+
     pub async fn read(&self, path: &str) -> Result<String, WorkspaceError> {
         let path = workspace_path(path)?;
         match self {
@@ -289,32 +319,8 @@ impl openwebide_core::rewind::RewindFiles for Workspace {
     }
 
     async fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
-        // Enumerate each existing ancestor so a removed directory means absence
-        // without classifying transport errors by their text.
-        let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
-        let mut dir = String::new();
-        for part in parent.split('/').filter(|part| !part.is_empty()) {
-            let entries = self.list(&dir).await.map_err(|error| error.to_string())?;
-            let next = if dir.is_empty() {
-                part.to_string()
-            } else {
-                format!("{dir}/{part}")
-            };
-            if !entries
-                .iter()
-                .any(|entry| entry.path == next && entry.is_dir)
-            {
-                return Ok(None);
-            }
-            dir = next;
-        }
-        let entries = self.list(parent).await.map_err(|error| error.to_string())?;
-        if !entries.iter().any(|entry| entry.path == path) {
-            return Ok(None);
-        }
-        Workspace::read_bytes(self, path)
+        self.read_optional_bytes(path)
             .await
-            .map(Some)
             .map_err(|error| error.to_string())
     }
     async fn write(&self, path: &str, content: &str) -> Result<(), String> {

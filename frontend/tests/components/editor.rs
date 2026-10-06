@@ -4291,3 +4291,138 @@ async fn workspace_recovery_collects_active_and_hidden_drafts_without_compositio
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn recovery_hydration_and_disk_reconciliation_use_both_real_workspace_adapters() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{
+            Document, EditorRecovery, EditorRecoveryFile, EditorRecoveryRoot, RecoveryDiskState,
+            RecoveryScroll, Selection,
+        },
+    };
+    use openwebide_frontend::workspace::Workspace;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let folder = if mode == WorkspaceMode::Local {
+            Some(editorConfigFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(editorConfigHandle);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            if let Some(handle) = handle {
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+            }
+            state
+                .fake
+                .files
+                .borrow_mut()
+                .insert((1, "src/a.rs".into()), "😀\r\n  tail  ".into());
+            editor_view(state)
+        });
+        settle().await;
+        let project = mounted.state.projects.project(1).unwrap();
+        let mut document = Document::new("😀\r\n  tail  ");
+        document.set_selections(vec![Selection::caret(4)]).unwrap();
+        document.replace_selections("文", None).unwrap();
+        let draft = document.recovery();
+        let recovery = EditorRecovery {
+            format: 1,
+            root: Some(EditorRecoveryRoot::for_project(&project)),
+            selected: Some("src/a.rs".into()),
+            files: vec![EditorRecoveryFile {
+                path: "src/a.rs".into(),
+                document: Some(draft.clone()),
+                scroll: RecoveryScroll::default(),
+                read_only: false,
+            }],
+        };
+        let guard = mounted
+            .state
+            .workspace
+            .editor_recovery_guard(&project, false)
+            .unwrap();
+        mounted
+            .state
+            .workspace
+            .restore_editor_recovery(&project, &guard, &recovery, false)
+            .unwrap()
+            .unwrap();
+        settle().await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(textarea.value(), draft.text.replace("\r\n", "\n"));
+        assert!(mounted.state.workspace.dirty.get_untracked());
+        assert_eq!(
+            mounted
+                .state
+                .workspace
+                .editor_recovery(&project, false)
+                .unwrap(),
+            recovery
+        );
+        let ws = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        let disk = ws.read_optional_bytes("src/a.rs").await.unwrap().unwrap();
+        let disk = String::from_utf8(disk).unwrap();
+        assert_eq!(
+            draft.reconcile_disk(Some(&disk)).unwrap().1,
+            RecoveryDiskState::Current
+        );
+        ws.write("src/a.rs", "external").await.unwrap();
+        let disk =
+            String::from_utf8(ws.read_optional_bytes("src/a.rs").await.unwrap().unwrap()).unwrap();
+        let (restored, status) = draft.reconcile_disk(Some(&disk)).unwrap();
+        assert_eq!(status, RecoveryDiskState::Conflict);
+        assert_eq!(restored.recovery(), draft);
+        assert!(
+            ws.read_optional_bytes("missing/a.rs")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            ws.read_optional_bytes("src/missing.rs")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(ws.read_optional_bytes("../a.rs").await.is_err());
+        // An edit arriving after a load captured its guard must win atomically.
+        let guard = mounted
+            .state
+            .workspace
+            .editor_recovery_guard(&project, false)
+            .unwrap();
+        let actions =
+            openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
+        let changed = format!("{}!", draft.text);
+        let projected = changed.replace("\r\n", "\n");
+        actions
+            .native_input(
+                projected.clone(),
+                Selection::caret(projected.len()),
+                "insertText",
+                1.0,
+            )
+            .unwrap();
+        assert!(
+            mounted
+                .state
+                .workspace
+                .restore_editor_recovery(&project, &guard, &EditorRecovery::default(), false)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), changed);
+        if let Some(folder) = folder {
+            editorConfigCleanup(&folder).await.unwrap();
+        }
+    }
+}

@@ -47,6 +47,16 @@ impl Document {
     }
 }
 
+/// Disk reconciliation never rebases a draft onto changed host text silently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryDiskState {
+    Current,
+    AlreadySaved,
+    Reloaded,
+    Conflict,
+    Missing,
+}
+
 impl DocumentRecovery {
     pub fn validate(&self) -> Result<(), String> {
         if self.text.len() > MAX_DOCUMENT_BYTES || self.saved.len() > MAX_DOCUMENT_BYTES {
@@ -65,6 +75,32 @@ impl DocumentRecovery {
             return Err("Recovered folds are outside the document or overlap".into());
         }
         Ok(())
+    }
+
+    /// Compare the fresh disk read with the saved baseline before permitting a
+    /// recovered draft to overwrite it. Hosts handle unavailable reads separately.
+    pub fn reconcile_disk(
+        &self,
+        disk: Option<&str>,
+    ) -> Result<(Document, RecoveryDiskState), String> {
+        let mut document = self.restore()?;
+        let state = match disk {
+            None => RecoveryDiskState::Missing,
+            Some(text) if text == self.saved => RecoveryDiskState::Current,
+            Some(text) if text == self.text => {
+                document.mark_saved();
+                RecoveryDiskState::AlreadySaved
+            }
+            Some(text) if self.text == self.saved => {
+                if text.len() > MAX_DOCUMENT_BYTES {
+                    return Err("Disk document exceeds the editor's size limit".into());
+                }
+                document = Document::new(text);
+                RecoveryDiskState::Reloaded
+            }
+            Some(_) => RecoveryDiskState::Conflict,
+        };
+        Ok((document, state))
     }
 
     /// The recovered draft is one undoable change against its original disk text.
@@ -251,6 +287,39 @@ mod encoded_text {
 mod tests {
     use super::super::NativeInputKind;
     use super::*;
+
+    #[test]
+    fn disk_reconciliation_preserves_conflicting_drafts_and_detects_completed_writes() {
+        let mut draft = Document::new("base\r\n");
+        draft.replace_selections("文", None).unwrap();
+        let recovery = draft.recovery();
+        for (disk, expected) in [
+            (Some("base\r\n"), RecoveryDiskState::Current),
+            (Some("external\r\n"), RecoveryDiskState::Conflict),
+            (None, RecoveryDiskState::Missing),
+        ] {
+            let (mut restored, state) = recovery.reconcile_disk(disk).unwrap();
+            assert_eq!(state, expected);
+            assert_eq!(restored.recovery(), recovery);
+            assert!(restored.undo());
+            assert_eq!(restored.text(), recovery.saved);
+        }
+        let (mut restored, state) = recovery.reconcile_disk(Some(&recovery.text)).unwrap();
+        assert_eq!(state, RecoveryDiskState::AlreadySaved);
+        assert!(!restored.is_dirty());
+        assert!(restored.undo());
+        assert!(restored.is_dirty());
+        let clean = Document::new("old").recovery();
+        let (restored, state) = clean.reconcile_disk(Some("new 文")).unwrap();
+        assert_eq!(state, RecoveryDiskState::Reloaded);
+        assert_eq!(restored.text(), "new 文");
+        assert!(!restored.is_dirty());
+        assert!(!restored.can_undo());
+        assert_eq!(
+            clean.reconcile_disk(None).unwrap().1,
+            RecoveryDiskState::Missing
+        );
+    }
 
     #[test]
     fn recovery_preserves_unicode_crlf_baseline_selections_folds_and_undo() {

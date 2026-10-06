@@ -175,6 +175,8 @@ for what's still ahead.
 
 ### Added
 
+- Add transactional editor recovery hydration and shared disk reconciliation primitives. Preserve saved baselines, ordered tabs and hidden drafts; reject stale editor activity and distinguish changed, missing and already-written disk text. Automatic autosave, reload restoration and conflict controls remain in progress.
+
 - Add [file and folder context menus](docs/file-tree-menus.md) in both workspace modes: create, rename, move, copy path, confirmed delete/revert, status-aware Git tracking/staging/unstaging/ignore, and Explain/Summarize/Review chat shortcuts. Share filesystem policy and Git planning across adapters; guard unsaved buffers, pending reviews, concurrent operations and stale account/project/folder results. Preserve originals on failed moves and untracked files on revert.
 
 - Add `todo_write` for an agent-maintained checklist pinned above the composer in local, remote and projectless chats. Show pending, in-progress and completed items with progress counts and collapsible themed scrolling. Persist prompt-anchored revisions in the database, restore the correct plan after reload, rewind and Fork, and include the latest checklist in subsequent model context. Reject stale prompt updates, preserve the plan when tool persistence or loading fails, and offer Retry for failed loads. Share tool policy and execution above thin browser, Spin and bridge persistence adapters.

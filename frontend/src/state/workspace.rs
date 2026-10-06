@@ -24,6 +24,97 @@ pub struct EditorBuffer {
     pub read_only: bool,
 }
 
+/// Captured before an asynchronous recovery load. A hydration must not replace
+/// editor activity, pending reads, or a reset that occurred while loading.
+#[derive(Clone, Debug)]
+pub struct EditorRecoveryGuard {
+    project: i64,
+    state: openwebide_core::editor::EditorRecovery,
+    read_revision: u64,
+    epoch: u64,
+    documents: HashMap<String, u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorRecoveryHydration {
+    pub selected: Option<String>,
+    pub read_only: bool,
+    pub needs_read: bool,
+    pub revoke_urls: Vec<String>,
+}
+
+struct PreparedEditorRecovery {
+    documents: HashMap<(i64, String), openwebide_core::editor::Document>,
+    buffers: HashMap<(i64, String), EditorBuffer>,
+    scroll: HashMap<(i64, String), EditorScroll>,
+    paths: Vec<String>,
+    content: String,
+    dirty: bool,
+    result: EditorRecoveryHydration,
+}
+
+impl PreparedEditorRecovery {
+    fn new(
+        project: i64,
+        recovery: &openwebide_core::editor::EditorRecovery,
+    ) -> Result<Self, String> {
+        let mut documents = HashMap::new();
+        let mut buffers = HashMap::new();
+        let mut scroll = HashMap::new();
+        let mut paths = Vec::with_capacity(recovery.files.len());
+        for file in &recovery.files {
+            let key = (project, file.path.clone());
+            paths.push(file.path.clone());
+            if let Some(saved) = &file.document {
+                let document = saved.restore()?;
+                buffers.insert(
+                    key.clone(),
+                    EditorBuffer {
+                        content: document.text().into(),
+                        dirty: document.is_dirty(),
+                        read_only: file.read_only,
+                    },
+                );
+                documents.insert(key.clone(), document);
+            }
+            scroll.insert(
+                key,
+                EditorScroll {
+                    top: file.scroll.top,
+                    left: file.scroll.left,
+                },
+            );
+        }
+        let selected = recovery
+            .selected
+            .as_ref()
+            .and_then(|path| buffers.get(&(project, path.clone())));
+        let content = selected
+            .map(|buffer| buffer.content.clone())
+            .unwrap_or_default();
+        let dirty = selected.is_some_and(|buffer| buffer.dirty);
+        let read_only = recovery
+            .files
+            .iter()
+            .any(|file| recovery.selected.as_deref() == Some(&file.path) && file.read_only);
+        let result = EditorRecoveryHydration {
+            selected: recovery.selected.clone(),
+            read_only,
+            needs_read: recovery.selected.is_some() && selected.is_none(),
+            revoke_urls: Vec::new(),
+        };
+        Ok(Self {
+            documents,
+            buffers,
+            scroll,
+            paths,
+            content,
+            dirty,
+            result,
+        })
+    }
+}
+
 /// Workspace data preserved while a project is not the active tab.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceSnapshot {
@@ -288,6 +379,126 @@ impl WorkspaceState {
         Ok(state)
     }
 
+    pub fn editor_recovery_guard(
+        &self,
+        project: &openwebide_core::Project,
+        active_read_only: bool,
+    ) -> Result<EditorRecoveryGuard, String> {
+        Ok(EditorRecoveryGuard {
+            project: project.id,
+            state: self.editor_recovery(project, active_read_only)?,
+            read_revision: self.editor_read_revision.get_untracked(),
+            epoch: self.pending_epoch.get_untracked(),
+            documents: self.editor_documents.with_untracked(|documents| {
+                documents
+                    .iter()
+                    .filter(|((id, _), _)| *id == project.id)
+                    .map(|((_, path), document)| (path.clone(), document.revision()))
+                    .collect()
+            }),
+        })
+    }
+
+    /// Install a validated project recovery atomically. The caller guards account
+    /// and root/handle identity around I/O, then verifies disk baselines before save.
+    /// None means newer editor activity won; no partial state is published.
+    pub fn restore_editor_recovery(
+        &self,
+        project: &openwebide_core::Project,
+        guard: &EditorRecoveryGuard,
+        recovery: &openwebide_core::editor::EditorRecovery,
+        active_read_only: bool,
+    ) -> Result<Option<EditorRecoveryHydration>, String> {
+        recovery.validate()?;
+        if recovery.root.as_ref().is_some_and(|root| {
+            *root != openwebide_core::editor::EditorRecoveryRoot::for_project(project)
+        }) {
+            return Err("The recovered files belong to a different project folder".into());
+        }
+        if self.editor_composition.with_untracked(|composition| {
+            composition
+                .as_ref()
+                .is_some_and(|composition| composition.key.0 == project.id)
+        }) {
+            return Ok(None);
+        }
+        let current = self.editor_recovery_guard(project, active_read_only)?;
+        if current.project != guard.project
+            || current.epoch != guard.epoch
+            || current.read_revision != guard.read_revision
+            || current.documents != guard.documents
+            || current.state != guard.state
+        {
+            return Ok(None);
+        }
+        let PreparedEditorRecovery {
+            documents,
+            buffers,
+            scroll,
+            paths,
+            content,
+            dirty,
+            mut result,
+        } = PreparedEditorRecovery::new(project.id, recovery)?;
+        result.revoke_urls = self.snapshots.with_untracked(|snapshots| {
+            snapshots
+                .get(&project.id)
+                .and_then(|snapshot| snapshot.media_url.clone())
+                .into_iter()
+                .collect()
+        });
+        if self.active_project.get_untracked() == Some(project.id)
+            && let Some(url) = self.media_url.get_untracked()
+            && !result.revoke_urls.contains(&url)
+        {
+            result.revoke_urls.push(url);
+        }
+        batch(|| {
+            self.editor_tabs.update(|tabs| {
+                tabs.insert(project.id, paths);
+            });
+            self.editor_documents.update(|values| {
+                values.retain(|(id, _), _| *id != project.id);
+                values.extend(documents);
+            });
+            self.editor_buffers.update(|values| {
+                values.retain(|(id, _), _| *id != project.id);
+                values.extend(buffers);
+            });
+            self.editor_scroll.update(|values| {
+                values.retain(|(id, _), _| *id != project.id);
+                values.extend(scroll);
+            });
+            self.editor_syntax.update(|values| {
+                values.retain(|(id, _), _| *id != project.id);
+            });
+            self.editor_rules.update(|values| {
+                values.retain(|(id, _), _| *id != project.id);
+            });
+            self.editor_indentation.update(|values| {
+                values.retain(|(id, _), _| *id != project.id);
+            });
+            self.snapshots.update(|snapshots| {
+                let snapshot = snapshots.entry(project.id).or_default();
+                snapshot.open_file.clone_from(&recovery.selected);
+                snapshot.content.clone_from(&content);
+                snapshot.dirty = dirty;
+                snapshot.media_url = None;
+            });
+            if self.active_project.get_untracked() == Some(project.id) {
+                self.begin_editor_read();
+                self.editor_loading.set(result.needs_read);
+                self.media_url.set(None);
+                self.open_file.set(recovery.selected.clone());
+                self.content.set(content);
+                self.dirty.set(dirty);
+            }
+            self.editor_fold_revision
+                .update(|revision| *revision = revision.wrapping_add(1));
+        });
+        Ok(Some(result))
+    }
+
     pub fn register_editor_tab(&self, project: i64, path: String) {
         self.editor_tabs.update(|tabs| {
             let paths = tabs.entry(project).or_default();
@@ -523,6 +734,233 @@ mod tests {
             old_unavailable: false,
             backup_path: None,
         }
+    }
+
+    #[test]
+    fn recovery_hydration_is_atomic_scoped_and_preserves_the_saved_baseline() {
+        use openwebide_core::{
+            Project, WorkspaceMode,
+            editor::{
+                Document, EditorRecovery, EditorRecoveryFile, EditorRecoveryRoot, RecoveryScroll,
+                Selection,
+            },
+        };
+        for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+            let owner = Owner::new();
+            owner.with(|| {
+                let workspace = WorkspaceState::new();
+                let project = Project {
+                    id: 1,
+                    user_id: None,
+                    created_at: 1,
+                    name: "project".into(),
+                    path: Some("project".into()),
+                    mode,
+                };
+                workspace.restore_project(1);
+                workspace.active_session.set(Some(9));
+                let mut document = Document::new("base\r\n");
+                document.replace_selections("文", None).unwrap();
+                document.set_selections(vec![Selection::caret(3)]).unwrap();
+                let recovery = EditorRecovery {
+                    format: 1,
+                    root: Some(EditorRecoveryRoot::for_project(&project)),
+                    selected: Some("a.rs".into()),
+                    files: vec![
+                        EditorRecoveryFile {
+                            path: "a.rs".into(),
+                            document: Some(document.recovery()),
+                            scroll: RecoveryScroll {
+                                top: 75.0,
+                                left: 9.0,
+                            },
+                            read_only: false,
+                        },
+                        EditorRecoveryFile {
+                            path: "b.txt".into(),
+                            document: Some(Document::new("kept").recovery()),
+                            scroll: RecoveryScroll::default(),
+                            read_only: true,
+                        },
+                    ],
+                };
+                workspace.editor_buffers.update(|buffers| {
+                    buffers.insert(
+                        (3, "other".into()),
+                        EditorBuffer {
+                            content: "other".into(),
+                            dirty: true,
+                            read_only: false,
+                        },
+                    );
+                });
+                let guard = workspace.editor_recovery_guard(&project, false).unwrap();
+                let hydrated = workspace
+                    .restore_editor_recovery(&project, &guard, &recovery, false)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(hydrated.selected.as_deref(), Some("a.rs"));
+                assert!(!hydrated.needs_read);
+                assert!(!hydrated.read_only);
+                assert_eq!(workspace.content.get_untracked(), "文base\r\n");
+                assert!(workspace.dirty.get_untracked());
+                assert_eq!(workspace.active_session.get_untracked(), Some(9));
+                assert!(
+                    workspace
+                        .editor_buffers
+                        .with_untracked(|buffers| buffers.contains_key(&(3, "other".into())))
+                );
+                assert_eq!(
+                    workspace.editor_recovery(&project, false).unwrap(),
+                    recovery
+                );
+                workspace.editor_documents.with_untracked(|documents| {
+                    let mut document = documents[&(1, "a.rs".into())].clone();
+                    assert!(document.undo());
+                    assert_eq!(document.text(), "base\r\n");
+                });
+                // Capture another load while the project is inactive. Its result
+                // must update only that project's snapshot and retained buffers.
+                workspace.save_active(1);
+                workspace.clear_active();
+                let guard = workspace.editor_recovery_guard(&project, false).unwrap();
+                workspace
+                    .restore_editor_recovery(&project, &guard, &recovery, false)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(workspace.active_project.get_untracked(), None);
+                assert_eq!(workspace.content.get_untracked(), "");
+                assert_eq!(
+                    workspace.editor_recovery(&project, false).unwrap(),
+                    recovery
+                );
+                workspace.restore_project(1);
+                assert_eq!(workspace.content.get_untracked(), "文base\r\n");
+                let guard = workspace.editor_recovery_guard(&project, false).unwrap();
+                workspace.begin_editor_read();
+                assert!(
+                    workspace
+                        .restore_editor_recovery(
+                            &project,
+                            &guard,
+                            &EditorRecovery::default(),
+                            false
+                        )
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(workspace.open_file.get_untracked().as_deref(), Some("a.rs"));
+                let guard = workspace.editor_recovery_guard(&project, false).unwrap();
+                let mut invalid = recovery.clone();
+                invalid.files[0].scroll.top = f64::NAN;
+                assert!(
+                    workspace
+                        .restore_editor_recovery(&project, &guard, &invalid, false)
+                        .is_err()
+                );
+                assert_eq!(
+                    workspace.editor_recovery(&project, false).unwrap(),
+                    recovery
+                );
+                workspace
+                    .restore_editor_recovery(&project, &guard, &EditorRecovery::default(), false)
+                    .unwrap()
+                    .unwrap();
+                assert!(workspace.open_file.get_untracked().is_none());
+                assert!(
+                    workspace
+                        .editor_buffers
+                        .with_untracked(|buffers| buffers.keys().all(|(id, _)| *id != 1))
+                );
+                assert_eq!(workspace.active_session.get_untracked(), Some(9));
+            });
+            owner.cleanup();
+        }
+    }
+
+    #[test]
+    fn hydration_rejects_project_reset_and_composition_and_clears_old_media() {
+        use openwebide_core::editor::{
+            EditorRecovery, EditorRecoveryFile, EditorRecoveryRoot, RecoveryScroll,
+        };
+        let owner = Owner::new();
+        owner.with(|| {
+            let workspace = WorkspaceState::new();
+            let project = openwebide_core::Project {
+                id: 1,
+                name: "one".into(),
+                mode: openwebide_core::WorkspaceMode::Remote,
+                path: Some("one".into()),
+                user_id: None,
+                created_at: 1,
+            };
+            let guard = workspace.editor_recovery_guard(&project, false).unwrap();
+            let mut other = project.clone();
+            other.id = 2;
+            assert!(
+                workspace
+                    .restore_editor_recovery(&other, &guard, &EditorRecovery::default(), false)
+                    .unwrap()
+                    .is_none()
+            );
+            workspace.editor_composition.set(Some(EditorComposition {
+                key: (1, "one.rs".into()),
+                epoch: 0,
+            }));
+            assert!(
+                workspace
+                    .restore_editor_recovery(&project, &guard, &EditorRecovery::default(), false)
+                    .unwrap()
+                    .is_none()
+            );
+            workspace.editor_composition.set(None);
+            workspace.reset();
+            assert!(
+                workspace
+                    .restore_editor_recovery(&project, &guard, &EditorRecovery::default(), false)
+                    .unwrap()
+                    .is_none()
+            );
+            workspace.restore_project(1);
+            workspace.media_url.set(Some("blob:active".into()));
+            workspace.snapshots.update(|snapshots| {
+                snapshots.entry(1).or_default().media_url = Some("blob:hidden".into());
+            });
+            let guard = workspace.editor_recovery_guard(&project, false).unwrap();
+            let recovery = EditorRecovery {
+                format: 1,
+                root: Some(EditorRecoveryRoot::for_project(&project)),
+                selected: Some("one.pdf".into()),
+                files: vec![EditorRecoveryFile {
+                    path: "one.pdf".into(),
+                    document: None,
+                    scroll: RecoveryScroll::default(),
+                    read_only: true,
+                }],
+            };
+            let mut wrong = recovery.clone();
+            wrong.root.as_mut().unwrap().path = Some("other".into());
+            assert!(
+                workspace
+                    .restore_editor_recovery(&project, &guard, &wrong, false)
+                    .is_err()
+            );
+            let result = workspace
+                .restore_editor_recovery(&project, &guard, &recovery, false)
+                .unwrap()
+                .unwrap();
+            assert!(result.needs_read);
+            assert!(result.read_only);
+            assert_eq!(result.revoke_urls, vec!["blob:hidden", "blob:active"]);
+            assert!(workspace.editor_loading.get_untracked());
+            assert!(workspace.media_url.get_untracked().is_none());
+            assert!(
+                workspace
+                    .snapshots
+                    .with_untracked(|snapshots| snapshots[&1].media_url.is_none())
+            );
+        });
+        owner.cleanup();
     }
 
     #[test]
