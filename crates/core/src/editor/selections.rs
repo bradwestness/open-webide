@@ -67,7 +67,20 @@ pub fn normalize_selections(
     text: &str,
     selections: Vec<Selection>,
 ) -> Result<Vec<Selection>, EditError> {
-    super::validate_selections(text, &selections)?;
+    normalize_selection_positions(selections, |offset| super::valid_position(text, offset))
+}
+
+pub(super) fn normalize_selection_positions(
+    selections: Vec<Selection>,
+    valid: impl Fn(usize) -> bool,
+) -> Result<Vec<Selection>, EditError> {
+    if selections.is_empty()
+        || selections
+            .iter()
+            .any(|selection| !valid(selection.anchor) || !valid(selection.head))
+    {
+        return Err(EditError::InvalidSelection);
+    }
     if selections.len() > MAX_SELECTIONS {
         return Err(EditError::TooManySelections);
     }

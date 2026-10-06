@@ -143,9 +143,12 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   insertion transactions instead of full-value diff/replay, with common newline policy and native
   IME/non-cancellable fallbacks. Trusted, unfolded single-cursor commits skip
   the input handler's full DOM-value read; preparation and other input paths still
-  access full values. Edits still materialize
-  full Strings and shift
-  suffix coordinates. Native offset and line/column queries now use shared sparse
+  access full values. Shared transactions now validate borrowed proposed pieces,
+  mutate the existing String with bounded growth headroom and rebuild merged affected row contexts, including
+  grouped undo/redo. Precise edits retain unrelated collapsed folds and distant
+  interior coordinates. Admission still scans proposed text; buffer/projection/IME
+  publication still materializes full Strings, and storage shifts suffix bytes
+  and coordinates. Native offset and line/column queries now use shared sparse
   Unicode checkpoints in long rows, including folded views; native/WASM benchmarks
   cover lookup and construction costs. Glyph queries scan from sparse cluster
   checkpoints; indivisible clusters remain bounded by source limits. Native textarea input retains the

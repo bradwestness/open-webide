@@ -180,40 +180,29 @@ impl FoldState {
         self.collapsed.len() != before
     }
 
-    /// Edited folds open; unaffected headers follow line insertions/removals.
-    /// Ranges are invalidated until a provider publishes candidates for the new text.
-    pub fn rebase(&mut self, old: &str, new: &str) {
-        if self.collapsed.is_empty() {
-            if old != new {
-                self.ranges.clear();
-                self.pending.clear();
-            }
-            return;
-        }
-        let Some(change) = super::text_change(old, new) else {
-            return;
-        };
-        let lines = super::lines::lines(old);
+    /// Capture unaffected collapsed boundaries before applying known edits.
+    pub(super) fn prepare_rebase(
+        &self,
+        lines: &[super::lines::Line],
+        edits: &[super::Edit<&str>],
+    ) -> Vec<(usize, usize)> {
         let candidates = if self.ranges.is_empty() {
             &self.pending
         } else {
             &self.ranges
         };
-        let mapped = |offset: usize| {
-            if offset >= change.range.end {
-                offset - change.range.end + change.new_end
-            } else {
-                offset
+        let mapped = |offset: usize, end: bool| {
+            let mut result = offset;
+            for edit in edits {
+                if edit.range.end <= offset
+                    && !(end && edit.range.is_empty() && edit.range.start == offset)
+                {
+                    result = result - edit.range.len() + edit.text.len();
+                }
             }
+            result
         };
-        let new_lines = super::lines::lines(new);
-        let row = |offset: usize| {
-            new_lines
-                .partition_point(|line| line.start <= offset)
-                .saturating_sub(1)
-        };
-        let pending = self
-            .collapsed
+        self.collapsed
             .iter()
             .filter_map(|header| {
                 let range = candidates.get(
@@ -223,29 +212,53 @@ impl FoldState {
                 )?;
                 let first = lines.get(*header)?.start;
                 let last = lines.get(range.end_line)?;
-                let intersects = if change.range.is_empty() {
-                    first < change.range.start && change.range.start < last.end
-                } else {
-                    change.range.start < last.end && first < change.range.end
-                };
-                if intersects {
+                if edits.iter().any(|edit| {
+                    if edit.range.is_empty() {
+                        first < edit.range.start && edit.range.start < last.end
+                    } else {
+                        edit.range.start < last.end && first < edit.range.end
+                    }
+                }) {
                     return None;
                 }
-                Some(FoldRange {
-                    start_line: row(mapped(first)),
-                    end_line: row(
-                        if change.range.is_empty() && last.body_end == change.range.start {
-                            last.body_end
-                        } else {
-                            mapped(last.body_end)
-                        },
-                    ),
-                })
+                Some((mapped(first, false), mapped(last.body_end, true)))
             })
-            .collect::<Vec<_>>();
-        self.collapsed = pending.iter().map(|range| range.start_line).collect();
-        self.pending = pending;
+            .collect()
+    }
+
+    pub(super) fn finish_rebase(
+        &mut self,
+        boundaries: Vec<(usize, usize)>,
+        lines: &[super::lines::Line],
+    ) {
+        let row = |offset| {
+            lines
+                .partition_point(|line| line.start <= offset)
+                .saturating_sub(1)
+        };
+        self.pending = boundaries
+            .into_iter()
+            .map(|(first, last)| FoldRange {
+                start_line: row(first),
+                end_line: row(last),
+            })
+            .collect();
+        self.collapsed = self.pending.iter().map(|range| range.start_line).collect();
         self.ranges.clear();
+    }
+
+    /// Edited folds open; unaffected headers follow line insertions/removals.
+    /// Ranges are invalidated until a provider publishes candidates for the new text.
+    pub fn rebase(&mut self, old: &str, new: &str) {
+        let Some(change) = super::text_change(old, new) else {
+            return;
+        };
+        let edits = [super::Edit {
+            text: &new[change.range.start..change.new_end],
+            range: change.range,
+        }];
+        let boundaries = self.prepare_rebase(&super::lines::lines(old), &edits);
+        self.finish_rebase(boundaries, &super::lines::lines(new));
     }
 }
 

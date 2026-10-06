@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Apply editor transactions and grouped undo/redo to the existing String buffer after validating proposed pieces, without building a full replacement candidate or doubling capacity for ordinary typing. Rebuild overlapping row contexts once, preserve distant interior indexes and unaffected collapsed folds, and keep failed edits atomic in both modes.
+
 - Avoid reading the full textarea value after a validated trusted single-cursor insertion without folds in both modes. Preserve reconciliation for synthetic events, folds, multiple cursors and input fallbacks.
 
 - Stabilize overflowing editor file tabs by removing percentage-height feedback, keeping tab nodes, dirty indicators and horizontal scroll position stable in both workspace modes.

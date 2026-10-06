@@ -147,9 +147,9 @@ impl Selection {
 
 /// One replacement in the document before a transaction is applied.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Edit {
+pub struct Edit<T = String> {
     pub range: Range<usize>,
-    pub text: String,
+    pub text: T,
 }
 
 impl Edit {
@@ -254,6 +254,7 @@ impl Eq for ProjectionCache {}
 
 const HISTORY_BYTES: usize = 16 * 1024 * 1024;
 const HISTORY_STEPS: usize = 1_000;
+const EDIT_RESERVE_BYTES: usize = 64 * 1024;
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 
 impl Document {
@@ -466,17 +467,27 @@ impl Document {
         if output > MAX_DOCUMENT_BYTES {
             return Err(EditError::OutputTooLarge);
         }
-        let changed = edits
-            .first()
-            .map(|first| first.range.start..edits.last().unwrap().range.end);
-        let (text, inverse) = replace_edits(&self.text, &edits);
+        let parts = edit_parts(&self.text, &edits);
         if self.editor_limits
-            && let Some(limit) = editor_limit(&text)
+            && let Some(limit) = capacity::editor_limit_parts(&parts)
         {
             return Err(EditError::Capacity(limit));
         }
-        let after = normalize_selections(&text, after)?;
-        if text == self.text {
+        let after = selections::normalize_selection_positions(after, |offset| {
+            let mut start = 0;
+            for part in &parts {
+                let end = start + part.len();
+                if offset <= end {
+                    return part.is_char_boundary(offset - start);
+                }
+                start = end;
+            }
+            false
+        })?;
+        if edits
+            .iter()
+            .all(|edit| self.text[edit.range.clone()] == edit.text)
+        {
             if self.selections != after {
                 self.selection_history.clear();
                 self.motion_columns = None;
@@ -484,6 +495,15 @@ impl Document {
             self.selections = after;
             return Ok(false);
         }
+        let inverse = inverse_edits(&self.text, &edits);
+        drop(parts);
+        replace_indexed_text(
+            &mut self.text,
+            &mut self.line_index,
+            &mut self.folds,
+            &mut self.projection,
+            &edits,
+        );
         let bytes = edits
             .iter()
             .chain(&inverse)
@@ -521,13 +541,6 @@ impl Document {
             self.history_bytes -= self.history.remove(0).bytes;
             self.history_cursor -= 1;
         }
-        if let Some(changed) = changed {
-            let new_end = text.len() - (self.text.len() - changed.end);
-            self.line_index.update(&self.text, &text, changed, new_end);
-        }
-        self.projection.0.take();
-        self.folds.rebase(&self.text, &text);
-        self.text = text;
         self.selections = after;
         self.selection_history.clear();
         self.motion_columns = None;
@@ -540,21 +553,16 @@ impl Document {
             return false;
         }
         let step = &self.history[self.history_cursor - 1];
-        let mut text = std::borrow::Cow::Borrowed(self.text.as_str());
         for transaction in step.transactions.iter().rev() {
-            let next = replace_edits(&text, &transaction.inverse).0;
-            if let Some(first) = transaction.inverse.first() {
-                let changed = first.range.start..transaction.inverse.last().unwrap().range.end;
-                let new_end = next.len() - (text.len() - changed.end);
-                self.line_index.update(&text, &next, changed, new_end);
-            }
-            text = std::borrow::Cow::Owned(next);
+            replace_indexed_text(
+                &mut self.text,
+                &mut self.line_index,
+                &mut self.folds,
+                &mut self.projection,
+                &transaction.inverse,
+            );
             self.selections.clone_from(&transaction.before);
         }
-        let text = text.into_owned();
-        self.projection.0.take();
-        self.folds.rebase(&self.text, &text);
-        self.text = text;
         self.history_cursor -= 1;
         self.selection_history.clear();
         self.motion_columns = None;
@@ -567,21 +575,16 @@ impl Document {
             return false;
         }
         let step = &self.history[self.history_cursor];
-        let mut text = std::borrow::Cow::Borrowed(self.text.as_str());
         for transaction in &step.transactions {
-            let next = replace_edits(&text, &transaction.forward).0;
-            if let Some(first) = transaction.forward.first() {
-                let changed = first.range.start..transaction.forward.last().unwrap().range.end;
-                let new_end = next.len() - (text.len() - changed.end);
-                self.line_index.update(&text, &next, changed, new_end);
-            }
-            text = std::borrow::Cow::Owned(next);
+            replace_indexed_text(
+                &mut self.text,
+                &mut self.line_index,
+                &mut self.folds,
+                &mut self.projection,
+                &transaction.forward,
+            );
             self.selections.clone_from(&transaction.after);
         }
-        let text = text.into_owned();
-        self.projection.0.take();
-        self.folds.rebase(&self.text, &text);
-        self.text = text;
         self.history_cursor += 1;
         self.selection_history.clear();
         self.motion_columns = None;
@@ -620,6 +623,95 @@ fn validate_edits(text: &str, edits: &[Edit]) -> Result<(), EditError> {
         }
     }
     Ok(())
+}
+
+fn edit_parts<'a>(text: &'a str, edits: &'a [Edit]) -> Vec<&'a str> {
+    let mut parts = Vec::with_capacity(edits.len() * 2 + 1);
+    let mut source = 0;
+    for edit in edits {
+        parts.push(&text[source..edit.range.start]);
+        parts.push(&edit.text);
+        source = edit.range.end;
+    }
+    parts.push(&text[source..]);
+    parts
+}
+
+fn inverse_edits(text: &str, edits: &[Edit]) -> Vec<Edit> {
+    let mut inverse = Vec::with_capacity(edits.len());
+    let mut source = 0;
+    let mut output = 0;
+    for edit in edits {
+        output += edit.range.start - source;
+        inverse.push(Edit::replace(
+            output..output + edit.text.len(),
+            &text[edit.range.clone()],
+        ));
+        output += edit.text.len();
+        source = edit.range.end;
+    }
+    inverse
+}
+
+fn replace_indexed_text(
+    text: &mut String,
+    index: &mut index::LineIndex,
+    folds: &mut FoldState,
+    projection: &mut ProjectionCache,
+    edits: &[Edit],
+) {
+    // No-op ranges must not open folds or discard unchanged row coordinates.
+    let edits: Vec<_> = edits
+        .iter()
+        .filter_map(|edit| {
+            let change = text_change(&text[edit.range.clone()], &edit.text)?;
+            Some(Edit {
+                range: edit.range.start + change.range.start..edit.range.start + change.range.end,
+                text: &edit.text[change.range.start..change.new_end],
+            })
+        })
+        .collect();
+    if edits.is_empty() {
+        return;
+    }
+    let boundaries = folds.prepare_rebase(&index.rows, &edits);
+    // Merge edits whose row contexts overlap. Multiple cursors in one long row
+    // rebuild it once, while distant edits retain unchanged interior indexes.
+    let mut batches: Vec<(std::ops::Range<usize>, usize)> = Vec::new();
+    for (position, edit) in edits.iter().enumerate() {
+        let first = lines::row_at(&index.rows, edit.range.start).saturating_sub(1);
+        let last = (lines::row_at(&index.rows, edit.range.end) + 1).min(index.rows.len());
+        if let Some((range, end_row)) = batches.last_mut()
+            && first <= *end_row
+        {
+            range.end = position + 1;
+            *end_row = (*end_row).max(last);
+        } else {
+            batches.push((position..position + 1, last));
+        }
+    }
+    let mut size = text.len();
+    let mut peak = size;
+    for edit in edits.iter().rev() {
+        size = size - edit.range.len() + edit.text.len();
+        peak = peak.max(size);
+    }
+    if peak > text.capacity() {
+        // Avoid doubling an admitted multi-megabyte buffer for one keystroke.
+        text.reserve_exact(peak + EDIT_RESERVE_BYTES - text.len());
+    }
+    for (batch, _) in batches.into_iter().rev() {
+        let edits = &edits[batch];
+        let changed = edits[0].range.start..edits.last().unwrap().range.end;
+        let old_len = text.len();
+        for edit in edits.iter().rev() {
+            text.replace_range(edit.range.clone(), edit.text);
+        }
+        let new_end = text.len() - (old_len - changed.end);
+        index.update(old_len, text, changed, new_end);
+    }
+    projection.0.take();
+    folds.finish_rebase(boundaries, &index.rows);
 }
 
 fn replace_edits(text: &str, edits: &[Edit]) -> (String, Vec<Edit>) {
@@ -700,6 +792,228 @@ pub fn byte_to_textarea(text: &str, offset: usize) -> Result<usize, EditError> {
 
 #[cfg(test)]
 mod tests {
+    proptest::proptest! {
+        #[test]
+        fn disjoint_unicode_transactions_match_full_replacement_and_history(
+            characters in proptest::collection::vec(proptest::sample::select(vec!['a', '文', '😀', '\r', '\n', '\u{301}']), 0..100),
+            requested in proptest::collection::vec((0_usize..100, 0_usize..100, 0_usize..5), 0..10),
+        ) {
+            let source: String = characters.into_iter().collect();
+            let positions: Vec<_> = source.char_indices().map(|(at, _)| at).chain([source.len()]).collect();
+            let inserted = ["", "文😀", "\r", "\n", "a\r\nb"];
+            let mut requested: Vec<_> = requested.into_iter().map(|(start, end, text)| {
+                let a = positions[start % positions.len()];
+                let b = positions[end % positions.len()];
+                Edit::replace(a.min(b)..a.max(b), inserted[text])
+            }).collect();
+            requested.sort_by_key(|edit| (edit.range.start, edit.range.end));
+            let mut edits: Vec<Edit> = Vec::new();
+            for edit in requested {
+                if edits.last().is_none_or(|previous| previous.range.end <= edit.range.start && previous.range.start != edit.range.start) {
+                    edits.push(edit);
+                }
+            }
+            let expected = replace_edits(&source, &edits).0;
+            let mut document = Document::new(source.as_str());
+            document.apply(edits, vec![Selection::caret(expected.len()), Selection::caret(0)], None).unwrap();
+            proptest::prop_assert_eq!(document.text(), expected.as_str());
+            proptest::prop_assert_eq!(&document.line_index, &index::LineIndex::new(&expected));
+            if expected != source {
+                proptest::prop_assert!(document.undo());
+                proptest::prop_assert_eq!(document.text(), source.as_str());
+                proptest::prop_assert_eq!(&document.line_index, &index::LineIndex::new(&source));
+                proptest::prop_assert!(document.redo());
+                proptest::prop_assert_eq!(document.text(), expected.as_str());
+                proptest::prop_assert_eq!(&document.line_index, &index::LineIndex::new(&expected));
+            }
+        }
+    }
+
+    #[test]
+    fn large_buffer_growth_keeps_bounded_spare_capacity_for_typing() {
+        let source = ("x".repeat(127) + "\n").repeat(4096);
+        let mut document = Document::new(source.as_str());
+        document
+            .apply(
+                vec![Edit::replace(0..0, "文")],
+                vec![Selection::caret(3)],
+                Some(1),
+            )
+            .unwrap();
+        assert!(document.text.capacity() - document.text.len() <= EDIT_RESERVE_BYTES);
+        let allocation = document.text.as_ptr();
+        for _ in 0..100 {
+            document
+                .apply(
+                    vec![Edit::replace(0..0, "😀")],
+                    vec![Selection::caret(4)],
+                    Some(1),
+                )
+                .unwrap();
+            assert_eq!(document.text.as_ptr(), allocation);
+        }
+        assert!(document.undo());
+        assert_eq!(document.text(), source);
+        assert_eq!(document.text.as_ptr(), allocation);
+        assert!(document.redo());
+        assert_eq!(document.text.as_ptr(), allocation);
+    }
+
+    #[test]
+    fn indexed_edits_reuse_the_buffer_and_unchanged_interior_coordinates() {
+        use super::*;
+        let middle = "文😀e\u{301} words ".repeat(7000);
+        let source = format!("head\nspacer\n{middle}\nspacer\nlast");
+        let mut document = Document::new(source.as_str());
+        document.text.reserve(64);
+        let allocation = document.text.as_ptr();
+        let retained = document.line_index.coordinates[2].visual().unwrap();
+        let last = source.rfind("last").unwrap();
+        document
+            .apply(
+                vec![
+                    Edit::replace(0..4, "header"),
+                    Edit::replace(last..source.len(), "ending"),
+                ],
+                vec![Selection::caret(0)],
+                None,
+            )
+            .unwrap();
+        assert_eq!(document.text.as_ptr(), allocation);
+        assert!(
+            document.line_index.coordinates[2]
+                .visual()
+                .unwrap()
+                .shared_with(&retained)
+        );
+        assert_eq!(document.line_index, index::LineIndex::new(document.text()));
+        assert!(document.undo());
+        assert_eq!(document.text(), source);
+        assert_eq!(document.text.as_ptr(), allocation);
+        assert!(
+            document.line_index.coordinates[2]
+                .visual()
+                .unwrap()
+                .shared_with(&retained)
+        );
+        assert!(document.redo());
+        assert_eq!(document.text.as_ptr(), allocation);
+        assert!(
+            document.line_index.coordinates[2]
+                .visual()
+                .unwrap()
+                .shared_with(&retained)
+        );
+    }
+
+    #[test]
+    fn precise_edits_preserve_folds_between_disjoint_changes_and_inside_unchanged_replacements() {
+        use super::*;
+        let source = "head\nfn middle {\n body\n}\nlast\n";
+        let mut document = Document::new(source);
+        document.set_fold_ranges(vec![FoldRange {
+            start_line: 1,
+            end_line: 3,
+        }]);
+        document.fold_command(FoldCommand::CollapseAll);
+        let last = source.find("last").unwrap();
+        let body = source.find("body").unwrap();
+        document
+            .apply(
+                vec![
+                    Edit::replace(0..4, "new\nhead"),
+                    Edit::replace(body..body + 4, "body"),
+                    Edit::replace(last..last + 4, "tail"),
+                ],
+                vec![Selection::caret(0)],
+                None,
+            )
+            .unwrap();
+        document.set_fold_ranges(vec![FoldRange {
+            start_line: 2,
+            end_line: 4,
+        }]);
+        assert!(document.fold_state().collapsed_at(2).is_some());
+        assert!(document.undo());
+        document.set_fold_ranges(vec![FoldRange {
+            start_line: 1,
+            end_line: 3,
+        }]);
+        assert!(document.fold_state().collapsed_at(1).is_some());
+        assert!(document.redo());
+        document.set_fold_ranges(vec![FoldRange {
+            start_line: 2,
+            end_line: 4,
+        }]);
+        assert!(document.fold_state().collapsed_at(2).is_some());
+        let source = document.text().to_string();
+        let replacement = source.replacen("tail", "ending", 1);
+        document
+            .apply(
+                vec![Edit::replace(0..source.len(), replacement)],
+                vec![Selection::caret(0)],
+                None,
+            )
+            .unwrap();
+        document.set_fold_ranges(vec![FoldRange {
+            start_line: 2,
+            end_line: 4,
+        }]);
+        assert!(document.fold_state().collapsed_at(2).is_some());
+    }
+
+    #[test]
+    fn virtual_transaction_validation_matches_full_strings_and_keeps_failures_atomic() {
+        use super::*;
+        for source in ["", "abc", "文😀e\u{301}\r\nx\n", "a\r\nb\rc"] {
+            let boundaries: Vec<_> = source
+                .char_indices()
+                .map(|(at, _)| at)
+                .chain([source.len()])
+                .collect();
+            for &start in &boundaries {
+                for &end in boundaries.iter().filter(|&&at| at >= start) {
+                    for inserted in ["", "文😀", "\r", "\n", "x\r\ny"] {
+                        let mut document = Document::new(source);
+                        let edits = vec![Edit::replace(start..end, inserted)];
+                        let expected = replace_edits(source, &edits).0;
+                        document
+                            .apply(
+                                edits,
+                                vec![Selection {
+                                    anchor: expected.len(),
+                                    head: 0,
+                                }],
+                                Some(1),
+                            )
+                            .unwrap();
+                        assert_eq!(document.text(), expected);
+                        assert_eq!(document.line_index, index::LineIndex::new(&expected));
+                        let before = document.clone();
+                        assert!(
+                            document
+                                .apply(
+                                    vec![Edit::replace(0..0, "😀")],
+                                    vec![Selection::caret(1)],
+                                    None
+                                )
+                                .is_err()
+                        );
+                        assert_eq!(document, before);
+                        if expected != source {
+                            assert!(document.undo());
+                            assert_eq!(document.text(), source);
+                            assert_eq!(document.line_index, index::LineIndex::new(source));
+                            assert!(document.redo());
+                            assert_eq!(document.text(), expected);
+                            assert_eq!(document.line_index, index::LineIndex::new(&expected));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn edit_preparation_reveals_selected_headers_but_keeps_disjoint_folds() {
         use super::*;

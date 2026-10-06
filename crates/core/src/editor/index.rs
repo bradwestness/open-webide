@@ -36,20 +36,20 @@ impl LineIndex {
     }
 
     /// Re-scan changed logical rows, preserving all unchanged suffix coordinates.
-    /// The edit envelope includes every replacement in the transaction.
-    pub fn update(&mut self, old: &str, new: &str, changed: Range<usize>, new_end: usize) {
+    /// The edit envelope includes every replacement in one overlapping row batch.
+    pub fn update(&mut self, old_len: usize, new: &str, changed: Range<usize>, new_end: usize) {
         let start_row = row_at(&self.rows, changed.start).saturating_sub(1);
         let mut end_row = (row_at(&self.rows, changed.end) + 1).min(self.rows.len());
         if self
             .rows
             .get(end_row)
-            .is_some_and(|row| row.start == old.len())
+            .is_some_and(|row| row.start == old_len)
         {
             end_row = self.rows.len();
         }
         let start = self.rows[start_row].start;
-        let old_end = self.rows.get(end_row).map_or(old.len(), |row| row.start);
-        let suffix = old.len() - old_end;
+        let old_end = self.rows.get(end_row).map_or(old_len, |row| row.start);
+        let suffix = old_len - old_end;
         let end = new.len() - suffix;
         debug_assert!(start <= changed.start && changed.end <= old_end && new_end <= end);
         let mut replacement = Self::new(&new[start..end]);
@@ -158,7 +158,7 @@ mod tests {
         assert!(ltr.horizontal_paint_bounds(0.0, 400.0).is_some());
         assert!(rtl.horizontal_paint_bounds(0.0, 400.0).is_none());
         let next = old.replacen("head", "header changed", 1);
-        index.update(&old, &next, 0..4, "header changed".len());
+        index.update(old.len(), &next, 0..4, "header changed".len());
         assert!(index.coordinates[1].visual().unwrap().shared_with(&ltr));
         assert!(index.coordinates[2].visual().unwrap().shared_with(&rtl));
         let projection = super::super::FoldProjection::indexed(
@@ -170,7 +170,7 @@ mod tests {
         let at = next.find(&body).unwrap();
         let mut changed = next.clone();
         changed.insert(at, 'א');
-        index.update(&next, &changed, at..at, at + 'א'.len_utf8());
+        index.update(next.len(), &changed, at..at, at + 'א'.len_utf8());
         let updated = index.coordinates[1].visual().unwrap();
         assert!(!updated.shared_with(&ltr));
         assert!(updated.horizontal_paint_bounds(0.0, 400.0).is_none());
@@ -327,7 +327,7 @@ mod tests {
             let changed = a.min(b)..a.max(b);
             let new = format!("{}{}{}", &old[..changed.start], inserted, &old[changed.end..]);
             let mut index = LineIndex::new(&old);
-            index.update(&old, &new, changed.clone(), changed.start + inserted.len());
+            index.update(old.len(), &new, changed.clone(), changed.start + inserted.len());
             proptest::prop_assert_eq!(&index, &LineIndex::new(&new));
             for offset in new.char_indices().map(|(offset, _)| offset).chain(std::iter::once(new.len())) {
                 proptest::prop_assert_eq!(index.byte_to_textarea(&new, offset), super::super::byte_to_textarea(&new, offset));

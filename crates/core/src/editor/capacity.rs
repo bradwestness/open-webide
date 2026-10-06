@@ -26,13 +26,22 @@ impl std::fmt::Display for EditorLimit {
 /// count as display breaks; CRLF counts once. The scan allocates no metadata and
 /// stops at the first exceeded limit.
 pub fn editor_limit(source: &str) -> Option<EditorLimit> {
-    if source.len() > MAX_EDITOR_BYTES {
+    editor_limit_parts(&[source])
+}
+
+/// Validate a proposed transaction without joining its unchanged source pieces.
+pub(super) fn editor_limit_parts(parts: &[&str]) -> Option<EditorLimit> {
+    if parts
+        .iter()
+        .try_fold(0_usize, |size, part| size.checked_add(part.len()))
+        .is_none_or(|size| size > MAX_EDITOR_BYTES)
+    {
         return Some(EditorLimit::Bytes);
     }
     let mut lines = 1;
     let mut width = 0;
     let mut carriage_return = false;
-    for byte in source.bytes() {
+    for byte in parts.iter().flat_map(|part| part.bytes()) {
         match byte {
             b'\r' | b'\n' => {
                 if byte != b'\n' || !carriage_return {
@@ -85,6 +94,30 @@ impl TextPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn proposed_parts_preserve_admission_priority_and_cross_piece_line_endings() {
+        for source in [
+            "".to_string(),
+            "文😀\r\nx\r\n\r".to_string(),
+            "\r\n".repeat(MAX_EDITOR_LINES),
+            "x".repeat(MAX_EDITOR_LINE_BYTES + 1),
+            "x".repeat(MAX_EDITOR_BYTES + 1),
+        ] {
+            for at in [
+                0,
+                source.len() / 2,
+                source.len().saturating_sub(1),
+                source.len(),
+            ] {
+                let at = source.floor_char_boundary(at);
+                assert_eq!(
+                    editor_limit_parts(&[&source[..at], "", &source[at..]]),
+                    editor_limit(&source)
+                );
+            }
+        }
+        assert_eq!(editor_limit_parts(&["\r", "\n"]), None);
+    }
 
     #[test]
     fn admission_bounds_bytes_rows_and_single_lines_without_confusing_crlf() {

@@ -246,8 +246,15 @@ cursor, synthetic and fallback input still reconcile the complete value. Multipl
 cursors use the same typing-history group.
 Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME retain native replay.
-The native textarea still owns the complete projected source, so input memory and
-full String materialization remain unbounded by the viewport.
+Ordinary transactions validate borrowed proposed pieces before mutating the existing
+String, including grouped undo/redo. Growth reserves at most 64 KiB of headroom
+above the transaction's peak size, rather than doubling a large buffer. Affected row contexts are merged so multiple
+cursors rebuild a shared row once, while distant edits retain interior coordinates.
+Fold rebasing uses precise edited boundaries and retains unaffected collapsed ranges
+until providers refresh. Admission still scans the proposed source; publishing buffers,
+projections and IME paths still materialize full Strings. The native textarea owns
+the complete projected source, so storage and input memory remain unbounded by the
+viewport.
 
 The shared document maintains logical-line and UTF-16 prefixes across transactions,
 grouped undo/redo and composition. Commands reuse indexed rows; native caret mapping

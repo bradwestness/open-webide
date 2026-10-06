@@ -541,3 +541,42 @@ and full native textarea layout remain expensive.
 
 Raw records: [wrapped native retention](editor-performance/production-linux-native-retain-wrapped.jsonl),
 [unwrapped native retention](editor-performance/production-linux-native-retain-unwrapped.jsonl).
+
+## Existing-buffer transactions
+
+On 2026-10-06, the shared engine validated borrowed proposed pieces before mutation
+and applied edits/grouped history to the existing String. Allocation contracts
+verify retained capacity for repeated typing/undo/redo and at most 64 KiB growth
+headroom above a transaction's peak size. Merged row contexts preserve unchanged
+interior indexes; randomized Unicode/CRLF transactions match complete replacement
+and history, and rejected selections leave the document unchanged. Fold APIs share
+precise boundary rebasing and retain unrelated collapsed ranges through refresh.
+
+All 63 shared storage observations passed on native macOS arm64 (Rust 1.98.1) and
+Chrome 148.0.7778.97/browser WASM. These are isolated one-run observations, not
+percentiles or evidence of an overall speedup. The 16 MiB fixture uses the
+unrestricted document API, outside the full editor's 8 MiB admission boundary.
+
+| 100 middle edit/Undo operations | Native ms | Browser WASM ms |
+| --- | ---: | ---: |
+| 65,520 bytes | 0.885 | 0.740 |
+| 2,097,144 bytes | 7.803 | 3.900 |
+| 16,777,194 bytes | 26.279 | 31.715 |
+
+Raw storage records: [native](editor-performance/native-buffer-transactions.csv),
+[browser WASM](editor-performance/browser-buffer-transactions.csv).
+
+The final capped-growth production build also passed twelve Linux Chromium 154
+runs across 2 MiB, near 8 MiB and near 1 MiB line workloads, both modes and layouts.
+Each has numeric apportioned Chrome PSS and the same compiled application module.
+The build includes concurrent branding/welcome work; raw parent-checkout and module
+identities describe the actual worktree build. Uncapped-reserve exploratory runs
+are excluded.
+
+One-run `beforeinput`-to-paint timings range from 412 to 1018 ms. Removing the
+replacement candidate does not establish responsiveness: full proposed-text
+admission scans, String suffix shifts, full buffer/projection/IME publication,
+initial shaping and native textarea layout remain.
+
+Raw production records: [wrapped](editor-performance/production-linux-buffer-transactions-wrapped.jsonl),
+[unwrapped](editor-performance/production-linux-buffer-transactions-unwrapped.jsonl).
