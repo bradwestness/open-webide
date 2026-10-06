@@ -277,6 +277,11 @@ landed — before sharing the repo publicly.
 - **Setup story:** a quick start that works in minutes — pull an image and point it at a model
   server — plus bare-metal, Docker/Podman and Tailscale guides, a configuration reference (flags,
   Spin variables, settings), upgrade/migration notes and troubleshooting.
+- **Public launch & support:** finish the [generated project site](project-site.md) for 1.0 with
+  screenshots or a demo and release-ready landing-page copy. The site already has a dedicated
+  homepage and builds documentation from repository Markdown, with GitHub Issues for feedback
+  and support. Add a site link to the README once deployed, add issue templates for bugs, feature
+  requests and support questions, and prepare community announcements and directory submissions.
 - **Documentation & architecture diagrams** (Mermaid in `docs/`, rendered on GitHub, updated in the
   same PR as the code they describe):
   - Architecture overview: the browser app (Leptos → wasm32-unknown-unknown), the Spin backend

@@ -1,0 +1,87 @@
+# Project site
+
+The GitHub Pages site has its own landing page in `site/index.md`. Documentation
+is generated directly from `docs/**/*.md`, `README.md` and `CHANGELOG.md`; edit those
+files with the code they describe. The build makes a temporary snapshot, discovers
+documentation pages automatically, and copies supporting assets such as CSV files.
+There are no maintained copies of the documentation and no separate wiki.
+
+The site uses MkDocs with a small custom theme in `site/theme/`. Its palette and
+button foundations are extracted from `frontend/styles.css` during the build;
+site layout styles live in `site/assets/site.css`. Light and dark appearance follow
+the device preference without persisting browser settings. Mermaid code fences
+render using a pinned external renderer, with readable source as a fallback.
+
+## Build and preview
+
+From the repository root:
+
+```sh
+python3 -m venv /tmp/open-webide-pages-venv
+/tmp/open-webide-pages-venv/bin/pip install -r site/requirements.txt
+/tmp/open-webide-pages-venv/bin/python site/build.py --output /tmp/open-webide-site
+python3 -m http.server 8000 --directory /tmp/open-webide-site
+```
+
+Open <http://localhost:8000/>. Builds run in strict mode and check generated HTML,
+so missing documentation links, anchors and local assets fail the build. Keep
+generated output outside the repository; the build only replaces directories it
+previously generated, to avoid deleting unrelated files.
+Markdown links between source documents remain ordinary relative `.md` links;
+MkDocs converts them to site URLs. Images should use Markdown image syntax for
+relative-path rewriting. Keep raw HTML image paths relative to the generated page.
+
+## Publishing
+
+In the repository's **Settings → Pages → Build and deployment**, set **Source**
+to **GitHub Actions**. `.github/workflows/pages.yml` validates builds on pull
+requests, then publishes site changes on `main`; it can also run manually.
+The canonical address is <https://openwebide.com/>. Set **Custom domain** to
+`openwebide.com` in the same Pages settings. With an Actions deployment, GitHub
+uses this setting rather than a repository `CNAME` file.
+
+At the DNS provider, replace the registrar's parking/redirect records for `@`
+and `www` with these records:
+
+| Type | Host | Value |
+| --- | --- | --- |
+| A | `@` | `185.199.108.153` |
+| A | `@` | `185.199.109.153` |
+| A | `@` | `185.199.110.153` |
+| A | `@` | `185.199.111.153` |
+| CNAME | `www` | `bradwestness.github.io` |
+
+GitHub redirects `www` to the configured apex domain. Enable **Enforce HTTPS**
+once GitHub has provisioned its certificate. See
+[GitHub's custom-domain guide](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site)
+for DNS configuration and propagation checks. To build for another deployment,
+pass `--site-url https://example.com/` to the build command.
+
+The build is independent of the Rust/WASM app and works the same for visitors
+using either workspace mode. It links GitHub Issues for feedback and support.
+Issue templates, screenshots/a demo, and launch announcements remain part of the
+1.0 public-release work.
+
+## Social profiles
+
+- [Bluesky](https://bsky.app/profile/did:plc:vw3hdjhj2253v3hc6cjtt4ys): account DID
+  `did:plc:vw3hdjhj2253v3hc6cjtt4ys`. The site uses this stable profile URL so handle
+  changes do not break links. For `@openwebide.com`, the DNS TXT record at `_atproto`
+  must be `did=did:plc:vw3hdjhj2253v3hc6cjtt4ys`; verify it in Bluesky's handle settings.
+- [Mastodon](https://mastodon.social/@openwebide): `@openwebide@mastodon.social`.
+  Put `https://openwebide.com/` in a profile metadata field named Website. The site
+  footer links back with `rel="me"`, allowing Mastodon to verify that website field
+  once the site is deployed. Save the Mastodon profile again after deployment if
+  verification has not appeared.
+
+- [YouTube](https://www.youtube.com/@OpenWebIDE): `@OpenWebIDE`, channel ID
+  `UCRRWQeyGWL1kkG0vjNIFtzA`. Demos, setup walkthroughs, and feature updates.
+  The editable [banner source](assets/youtube-banner.svg) and
+  [upload-ready PNG](assets/youtube-banner.png) use the app logo and palette.
+
+The [social header source](assets/social-banner.svg) and
+[upload-ready PNG](assets/social-banner.png) provide matching Bluesky and Mastodon
+headers. Keep these assets alongside the YouTube banner when updating branding.
+
+Use GitHub Issues for support and bug reports; social profiles are for project
+updates and discovery.

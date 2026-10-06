@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add a dedicated project landing page and GitHub Pages build workflow for openwebide.com. Generate documentation directly from repository Markdown with automatic navigation, validated links, shared app colors and buttons, GitHub Issues links for feedback and support, and Bluesky, Mastodon, and YouTube profile links with Mastodon website verification support.
+
 - Window wrapped editor paint using exact browser row heights in both workspace modes. Preserve global Unicode/CRLF caret mapping, offscreen multi-cursor motion and resize remeasurement; reject stale layout tables. Initial full paint and bounded cold measurement remain in progress.
 
 - Open files beyond full-editor byte, line-count or long-line limits in bounded, read-only Unicode text pages in both workspace modes. Keep complete source separate from page text, preserve before/after review access, reject oversized interactive transactions before indexing, and recover clean oversized tabs by reopening their host file.

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page.title if page else 'Page not found' }} · {{ config.site_name }}</title>
+  <meta name="description" content="{{ page.meta.description if page and page.meta.description else config.site_description }}">
+  {% if page and page.canonical_url %}<link rel="canonical" href="{{ page.canonical_url }}">{% endif %}
+  <link rel="icon" href="{{ 'frontend/pwa/favicon.svg' | url }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ 'assets/shared.css' | url }}">
+  <link rel="stylesheet" href="{{ 'assets/site.css' | url }}">
+  <script type="module" src="{{ 'assets/diagrams.js' | url }}"></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header">
+    <a class="brand" href="{{ nav.homepage.url | url }}"><img src="{{ 'frontend/pwa/favicon.svg' | url }}" alt="" width="32" height="32">Open WebIDE</a>
+    <nav aria-label="Primary">
+      {% for item in nav.pages %}
+        {% if item.file.src_path == 'getting-started.md' %}<a href="{{ item.url | url }}">Get started</a>{% endif %}
+        {% if item.file.src_path == 'docs/architecture.md' %}<a href="{{ item.url | url }}">Docs</a>{% endif %}
+      {% endfor %}
+      <a href="{{ config.repo_url }}/issues">Issues</a>
+      <a href="{{ config.repo_url }}">GitHub</a>
+    </nav>
+  </header>
+  {% set home = page and page.is_homepage %}
+  <div class="layout{% if home %} landing{% endif %}">
+    {% if not home %}
+    <aside class="sidebar">
+      <details open>
+        <summary>Documentation</summary>
+        <nav aria-label="Documentation">
+          {% for item in nav %}
+            {% if item.children %}
+              {% for child in item.children %}<a href="{{ child.url | url }}"{% if child.active %} aria-current="page"{% endif %}>{{ child.title }}</a>{% endfor %}
+            {% else %}<a href="{{ item.url | url }}"{% if item.active %} aria-current="page"{% endif %}>{{ item.title }}</a>{% endif %}
+          {% endfor %}
+        </nav>
+      </details>
+    </aside>
+    {% endif %}
+    <main id="content" tabindex="-1">
+      {% if page %}
+        {% if not home %}<p class="source-link"><a href="{{ config.repo_url }}/blob/main/{{ 'README.md' if page.file.src_path == 'getting-started.md' else page.file.src_path }}">View source on GitHub</a></p>{% endif %}
+        {{ page.content }}
+      {% else %}<h1>Page not found</h1><p><a href="{{ nav.homepage.url | url }}">Return home</a></p>{% endif %}
+    </main>
+  </div>
+  <footer>Open WebIDE · <a href="{{ config.repo_url }}/blob/main/LICENSE">MIT licensed</a> · <a href="{{ config.repo_url }}/releases">Releases</a> · <a href="{{ config.repo_url }}/issues">Feedback &amp; support</a> · <a href="https://bsky.app/profile/did:plc:vw3hdjhj2253v3hc6cjtt4ys" rel="me">Bluesky</a> · <a href="https://mastodon.social/@openwebide" rel="me">Mastodon</a> · <a href="https://www.youtube.com/@OpenWebIDE">YouTube</a></footer>
+</body>
+</html>

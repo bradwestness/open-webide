@@ -27,6 +27,9 @@ sessions, and preferences live in SQLite, so you can resume from another browser
 See the [roadmap](docs/roadmap.md) for remaining work and the
 [changelog](CHANGELOG.md) for completed changes.
 
+The [project site guide](docs/project-site.md) explains how the landing page and documentation
+are built and published to GitHub Pages from this repository.
+
 ## Run with Docker
 
 From a checkout of this repository:

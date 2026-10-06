@@ -1,0 +1,62 @@
+---
+title: Open WebIDE
+description: Your code. Your models. Your workspace.
+---
+
+<div class="hero" markdown="1">
+
+<img class="hero-logo" src="frontend/pwa/favicon.svg" alt="" width="88" height="88" />
+
+<p class="eyebrow">Self-hosted · Open source · Local LLMs</p>
+
+# Your code. Your models.<br>Your workspace.
+
+An IDE in your browser, powered by the models you choose. Edit code, ask an agent
+for help, review its changes, and work with Git and a terminal—all in one place.
+
+[Get started](README.md#run-with-docker){ .btn .send }
+[View on GitHub](https://github.com/bradwestness/open-webide){ .btn }
+
+<p class="release-note">Under active development toward 1.0. Try the current source build and share your feedback.</p>
+
+</div>
+
+<div class="features" markdown="1">
+
+<section markdown="1">
+
+## Bring your own models
+
+Connect to Ollama, llama.cpp, or LM Studio. Use your own inference server for
+chat and coding tasks.
+
+</section>
+
+<section markdown="1">
+
+## See what the agent changes
+
+Let the agent read, edit, and run commands. Review diffs and choose the approval
+mode that fits how you work.
+
+</section>
+
+<section markdown="1">
+
+## Pick up where you left off
+
+Projects, conversations, and preferences stay with your deployment. Open it from
+another browser to continue working.
+
+</section>
+
+</div>
+
+## Make it your workspace
+
+Work on folders on the host or choose a folder on your browser's device.
+Keep the same editor, chat, and review workflow across both.
+
+[Explore the architecture](docs/architecture.md) ·
+[Read the roadmap](docs/roadmap.md) ·
+[Report a bug or ask a question](https://github.com/bradwestness/open-webide/issues)
