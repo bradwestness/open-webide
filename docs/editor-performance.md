@@ -308,3 +308,29 @@ Scroll readiness improved in these individual observations, but initial/input
 work and process memory remain costly. These are single observations, not
 percentiles or admission validation; Linux PSS and full boundary/device gates
 remain outstanding. The final guard retains full-paragraph probes for bidi text.
+
+### Cold height anchors and syntax reuse
+
+The [cold-anchor observation](editor-performance/production-cold-anchors.jsonl)
+uses the same destination-verified wrapped 1 MiB source in both modes. The built
+worktree app includes cold height-anchor publication, provenance-checked transfer
+across equivalent styled syntax results, stable file tabs and the concurrent
+branding/welcome changes. Its module identifier is recorded in the raw results;
+`checkoutHead` identifies the parent commit rather than the uncommitted build.
+No other owned browser test ran concurrently.
+
+| Mode | Cold ready (ms) | Input to paint (ms) | Destination scroll to paint (ms) | Peak summed Chrome RSS (GiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Local | 2701.5 | 1075.5 | 54.7 | 4.31 |
+| Remote | 2768.4 | 488.7 | 54.9 | 4.54 |
+
+An [earlier observation before syntax transfer](editor-performance/production-cold-anchors-before-transfer.jsonl)
+recorded 382 ms destination scroll in local mode and 58.7 ms remotely. Equivalent
+syntax results could discard anchors while reusing heights, leaving no cold probe
+that would repopulate them. The final policy preserves only identical styled rows
+with valid previous height provenance; browser contracts verify transfer and stale
+publication rejection, including font loading with unchanged computed metrics.
+These individual observations support further investigation, not percentiles or
+admission validation. Complete cold row shaping, long-line input and multi-GiB
+summed Chrome RSS remain costly. Summed RSS can double-count shared pages; Linux
+PSS and full boundary/device gates remain outstanding.

@@ -838,11 +838,13 @@ body {
   display: flex;
   align-items: stretch;
   gap: 2px;
-  height: 36px;
+  height: auto;
+  min-height: 36px;
   padding: 0 8px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .tab-action {
@@ -910,6 +912,7 @@ body {
 
 .tab {
   display: flex;
+  min-height: 35px;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
@@ -3195,7 +3198,8 @@ button.browser-item {
 .editor-file-tab { flex: none; gap: 2px; padding: 0 4px 0 0; }
 .btn.tab-select { display: flex; align-items: center; gap: 6px; min-width: 0; height: 100%; padding: 0 10px; border: 0; border-radius: 6px 0 0 0; background: transparent; color: inherit; }
 .tab-select .tab-name { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.editor-tab-dirty { font-size: 9px; color: var(--warn); }
+.editor-tab-dirty { flex: none; width: 1em; text-align: center; visibility: hidden; font-size: 9px; color: var(--warn); }
+.editor-tab-dirty.is-dirty { visibility: visible; }
 
 /* Shared bounded text viewer for files outside interactive editor limits. */
 .editor-large-file-page {

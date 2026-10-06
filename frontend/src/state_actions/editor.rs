@@ -246,6 +246,9 @@ impl EditorActions {
     pub fn view_revision(self) -> u64 {
         self.workspace.editor_view_revision.get()
     }
+    pub fn layout_epoch(self) -> u64 {
+        self.workspace.editor_layout_epoch.get()
+    }
     pub fn measured_rows(self) -> Option<crate::state::workspace::EditorRowMeasurements> {
         let revision = self.view_revision();
         self.workspace.editor_rows.with(|rows| {

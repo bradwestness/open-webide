@@ -30,6 +30,8 @@ pub struct EditorRowMeasurements {
 
 #[derive(Clone, Debug)]
 pub struct EditorRowPaint {
+    pub view_revision: u64,
+    pub layout_epoch: u64,
     pub key: (i64, String),
     pub epoch: u64,
     pub read_revision: u64,

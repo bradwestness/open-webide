@@ -12,7 +12,7 @@ use crate::{
 pub(super) fn EditorTabs() -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let actions = use_context::<WorkspaceActions>();
-    let paths = Signal::derive(move || {
+    let paths = Memo::new(move |_| {
         workspace
             .active_project
             .get()
@@ -74,7 +74,7 @@ pub(super) fn EditorTabs() -> impl IntoView {
                                     }
                                 }>
                                 <span class="tab-name">{name}</span>
-                                <Show when=move || dirty.get()><span class="editor-tab-dirty" aria-label="Unsaved changes">"●"</span></Show>
+                                <span class="editor-tab-dirty" class:is-dirty=move || dirty.get() aria-hidden=move || (!dirty.get()).to_string() aria-label="Unsaved changes">"●"</span>
                             </button>
                             <IconButton class="tab-close" label=Signal::derive(move || format!("Close {label_path}"))
                                 on_click=Callback::new(move |_| { if let Some(actions) = actions { actions.close_file.run(close_path.clone()); } })>

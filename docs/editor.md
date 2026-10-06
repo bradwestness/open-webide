@@ -259,8 +259,15 @@ Newly visited intervals clone bounded source before layout, validate measured
 anchors, then apply the complete fragment glyph check. Wrapped slices preserve
 original visual-row/tab origins, logical heights and global native offsets.
 Full-paragraph measurement remains the fallback for invalid geometry, oversized
-cluster slices, bidi paragraphs or reshaping differences. First measurement still
-shapes the complete row. Initial layout, full source HTML construction and native
+cluster slices, bidi paragraphs or reshaping differences. Cold height measurement
+supplies wrapped paint with these anchors while they
+remain in the bounded cache, avoiding a second complete-row shaping pass.
+Equivalent syntax results preserve proven geometry for identical styled rows;
+font loading clears that measurement provenance even if computed font text is
+unchanged. Geometry publication checks the
+original source/view and font-layout epochs as well as read, account, syntax and
+style ownership. First measurement still shapes the complete row. Initial layout,
+full source HTML construction and native
 input costs remain performance follow-ups.
 CRLF inverse mapping still selects the original CR, and surrogate offsets retain
 the existing boundary behavior. Projected text, normalized textarea text and

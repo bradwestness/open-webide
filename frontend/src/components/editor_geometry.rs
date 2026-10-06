@@ -134,6 +134,76 @@ impl<'a> Glyphs<'a> {
     }
 }
 
+fn sample_geometry(
+    glyphs: &mut Glyphs<'_>,
+    bounds: &web_sys::DomRect,
+    horizontal: bool,
+) -> Option<openwebide_core::editor::MeasuredRowGeometry> {
+    if !horizontal && !glyphs.index.source_paint_eligible() {
+        return None;
+    }
+    use openwebide_core::editor::{
+        GlyphRectangle, HorizontalGeometry, MAX_ROW_GEOMETRY_ANCHORS, MeasuredRowGeometry,
+        WrappedGeometry,
+    };
+    let mut indices = glyphs.index.anchor_glyphs().collect::<Vec<_>>();
+    indices.dedup();
+    if indices.len() <= MAX_ROW_GEOMETRY_ANCHORS {
+        let anchors = indices
+            .into_iter()
+            .map(|glyph| {
+                let rect = glyphs.rect(glyph)?;
+                Some(GlyphRectangle {
+                    glyph,
+                    left: rect.left() - bounds.left(),
+                    top: rect.top() - bounds.top(),
+                    width: rect.width(),
+                    height: rect.height(),
+                })
+            })
+            .collect::<Option<Vec<_>>>();
+        anchors.and_then(|anchors| {
+            if horizontal {
+                HorizontalGeometry::new(
+                    glyphs.index.len() - 1,
+                    bounds.width(),
+                    bounds.height(),
+                    anchors,
+                )
+                .map(MeasuredRowGeometry::Horizontal)
+            } else {
+                WrappedGeometry::new(
+                    glyphs.index.len() - 1,
+                    bounds.width(),
+                    bounds.height(),
+                    anchors,
+                )
+                .map(MeasuredRowGeometry::Wrapped)
+            }
+        })
+    } else {
+        None
+    }
+}
+
+/// Reuse the styled logical row already laid out by the cold height probe.
+pub(super) fn wrapped_geometry(
+    row: &web_sys::Element,
+    body: &str,
+    index: VisualLineIndex,
+    bounds: &web_sys::DomRect,
+) -> Option<openwebide_core::editor::MeasuredRowGeometry> {
+    if !index.source_paint_eligible() {
+        return None;
+    }
+    let text = row.text_content()?;
+    if text.strip_suffix('\n').unwrap_or(&text) != body.replace('\r', "\n") {
+        return None;
+    }
+    let mut glyphs = Glyphs::new(row, body, Some(index))?;
+    sample_geometry(&mut glyphs, bounds, false)
+}
+
 /// Retain the logical row's exact height while copying only its measured visual
 /// interval. Cloning the DOM range preserves token/whitespace spans. Verify every
 /// retained glyph after reshaping: paragraph-dependent bidi, tabs or ligatures
@@ -188,50 +258,7 @@ fn window_paint_row(
             )
         }
     };
-    let sampled = {
-        use openwebide_core::editor::{
-            GlyphRectangle, HorizontalGeometry, MAX_ROW_GEOMETRY_ANCHORS, MeasuredRowGeometry,
-            WrappedGeometry,
-        };
-        let mut indices = glyphs.index.anchor_glyphs().collect::<Vec<_>>();
-        indices.dedup();
-        if indices.len() <= MAX_ROW_GEOMETRY_ANCHORS {
-            let anchors = indices
-                .into_iter()
-                .map(|glyph| {
-                    let rect = glyphs.rect(glyph)?;
-                    Some(GlyphRectangle {
-                        glyph,
-                        left: rect.left() - bounds.left(),
-                        top: rect.top() - bounds.top(),
-                        width: rect.width(),
-                        height: rect.height(),
-                    })
-                })
-                .collect::<Option<Vec<_>>>();
-            anchors.and_then(|anchors| {
-                if horizontal {
-                    HorizontalGeometry::new(
-                        glyphs.index.len() - 1,
-                        bounds.width(),
-                        bounds.height(),
-                        anchors,
-                    )
-                    .map(MeasuredRowGeometry::Horizontal)
-                } else {
-                    WrappedGeometry::new(
-                        glyphs.index.len() - 1,
-                        bounds.width(),
-                        bounds.height(),
-                        anchors,
-                    )
-                    .map(MeasuredRowGeometry::Wrapped)
-                }
-            })
-        } else {
-            None
-        }
-    };
+    let sampled = sample_geometry(&mut glyphs, &bounds, horizontal);
     if horizontal && first == last {
         let original_style = row.get_attribute("style").unwrap_or_default();
         row.set_attribute(

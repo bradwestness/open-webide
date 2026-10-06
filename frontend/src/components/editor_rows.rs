@@ -68,6 +68,10 @@ pub(super) fn styled_row_probe(
 /// Browser primitives only: styled HTML, exact rectangles and yielding. The
 /// shared core chooses batch sizes and validates the completed height table;
 /// the editor facade rechecks document/layout ownership before publication.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Cold measurement receives separate progress, geometry and rendering primitives"
+)]
 pub(super) async fn measure_batches(
     input: web_sys::HtmlTextAreaElement,
     projection: openwebide_core::editor::FoldProjection,
@@ -75,6 +79,7 @@ pub(super) async fn measure_batches(
     mut plan: openwebide_core::editor::RowMeasurementPlan,
     current: impl Fn() -> bool,
     progress: impl Fn(usize),
+    geometry: impl Fn(usize, openwebide_core::editor::MeasuredRowGeometry),
     render: impl Fn(&[usize], bool) -> String,
 ) -> Result<Option<MeasuredRows>, ()> {
     if !current()
@@ -84,7 +89,12 @@ pub(super) async fn measure_batches(
     {
         return Ok(None);
     }
-    let (_probe, paint) = styled_row_probe(&input)?;
+    let (probe, paint) = styled_row_probe(&input)?;
+    probe
+        .0
+        .class_list()
+        .add_1("editor-height-measure")
+        .map_err(|_| ())?;
     let lengths = projection
         .lines()
         .iter()
@@ -123,6 +133,24 @@ pub(super) async fn measure_batches(
             }
             previous_bottom = Some(bounds.bottom());
             batch.push(bounds.height());
+            let logical = start + usize::try_from(index).map_err(|_| ())?;
+            let line = &projection.lines()[logical];
+            let end = projection
+                .lines()
+                .get(logical + 1)
+                .map_or(projection.text().len(), |next| next.visible_start);
+            let raw = &projection.text()[line.visible_start..end];
+            let body = raw
+                .strip_suffix("\r\n")
+                .or_else(|| raw.strip_suffix('\n'))
+                .unwrap_or(raw);
+            if let Some(index) = projection.visual_line_index(logical)
+                && let Some(measured) =
+                    super::editor_geometry::wrapped_geometry(&row, body, index, &bounds)
+                && current()
+            {
+                geometry(logical, measured);
+            }
         }
         if !plan.record(range, &batch) {
             return Err(());

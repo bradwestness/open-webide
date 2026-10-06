@@ -129,9 +129,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   within a bounded shared cache, with source/account/read/fold/syntax/font/layout
   invalidation. Horizontal and wrapped rows now retain exact styled source anchors; new
   intervals isolate bounded source slices before layout and validate the retained
-  anchors, falling back on unsupported geometry or shaping. Finish initial/cold
-  shaping, bidirectional visual-run windows and cold measurement anchor reuse,
-  then further incremental access:
+  anchors, falling back on unsupported geometry or shaping. First wrapped paint
+  now reuses anchors sampled during cold height measurement with the same
+  source/read/account/syntax/font provenance checks. Finish initial/cold
+  shaping and bidirectional visual-run windows, then further incremental access:
   edits still materialize
   full Strings and shift
   suffix coordinates. Native offset and line/column queries now use shared sparse
@@ -178,7 +179,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   verification for multiple cursors. File navigation now
   retains independent dirty buffers, history, caret and scroll state in memory,
   with protected reads and filesystem mutation guards. File tabs share selected-tab
-  styling, keyboard navigation and guarded close/discard controls. Validated recovery
+  styling, keyboard navigation and guarded close/discard controls. Horizontal overflow
+  keeps a stable strip height and tab nodes; dirty indicators reserve their space.
+  Validated recovery
   snapshots, revision-guarded user-scoped SQLite/API storage, typed frontend
   transport and active/hidden buffer collection are in place. Transactional
   hydration and shared disk reconciliation preserve baselines and reject stale

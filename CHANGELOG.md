@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Stabilize editor file tabs in both workspace modes: allow room for horizontal scrollbars without vertical overflow, retain tab nodes through unrelated updates, and reserve dirty-indicator space to prevent width jumps.
+
+- Reuse wrapped glyph anchors from cold row-height measurement for first paint in both workspace modes. Keep geometry in the bounded shared cache, reject older source/read/account/syntax/font scopes, and remeasure when fonts load even if computed font text is unchanged. Preserve proven geometry across equivalent styled syntax results; cold measurement still shapes complete rows.
+
 - Reuse exact styled anchors for newly visited wrapped editor intervals in both workspace modes. Slice bounded source before layout, preserve full row heights and native offsets, and restore full-paragraph measurement if shaping changes. Initial shaping and large-file input remain in progress.
 
 - Correct editor performance measurements to scroll single unwrapped rows horizontally and verify single-row destination fragments before recording readiness. Record actual long-line input, scroll and process-memory observations in both modes; mark older unchecked single-row scroll values unverified.

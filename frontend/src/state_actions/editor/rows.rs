@@ -60,22 +60,36 @@ impl Hash for PaintRow<'_> {
         }
     }
 }
+fn paint_row(paint: &EditorRowPaint, index: usize) -> Option<PaintRow<'_>> {
+    let source = paint.projection.lines().get(index)?.source_line;
+    Some(PaintRow {
+        tokens: paint.tokens.get(source)?,
+        guide: paint.guides.get(source).copied().unwrap_or(0),
+        normalize_cr: paint.prepared_source && source + 1 < paint.tokens.len(),
+        ending: index + 1 < paint.projection.lines().len(),
+    })
+}
 fn paint_rows(paint: &EditorRowPaint) -> Option<Vec<PaintRow<'_>>> {
-    paint
-        .projection
-        .lines()
-        .iter()
-        .enumerate()
-        .map(|(index, line)| {
-            let source = line.source_line;
-            Some(PaintRow {
-                tokens: paint.tokens.get(source)?,
-                guide: paint.guides.get(source).copied().unwrap_or(0),
-                normalize_cr: paint.prepared_source && source + 1 < paint.tokens.len(),
-                ending: index + 1 < paint.projection.lines().len(),
-            })
-        })
+    (0..paint.projection.lines().len())
+        .map(|index| paint_row(paint, index))
         .collect()
+}
+fn same_measurement_environment(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
+    old.key == paint.key
+        && old.epoch == paint.epoch
+        && old.read_revision == paint.read_revision
+        && old.account_generation == paint.account_generation
+        && old.metrics == paint.metrics
+        && old.indentation == paint.indentation
+        && old.whitespace == paint.whitespace
+}
+fn same_paint_scope(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
+    old.view_revision == paint.view_revision
+        && old.layout_epoch == paint.layout_epoch
+        && same_measurement_environment(old, paint)
+        && old.prepared_source == paint.prepared_source
+        && Arc::ptr_eq(&old.tokens, &paint.tokens)
+        && Arc::ptr_eq(&old.guides, &paint.guides)
 }
 impl EditorActions {
     pub fn paint_window(
@@ -130,7 +144,9 @@ impl EditorActions {
         )
     }
     pub(super) fn row_paint_current(self, paint: &EditorRowPaint) -> bool {
-        self.key().as_ref() == Some(&paint.key)
+        self.view_revision() == paint.view_revision
+            && self.workspace.editor_layout_epoch.get_untracked() == paint.layout_epoch
+            && self.key().as_ref() == Some(&paint.key)
             && self.workspace.pending_epoch.get_untracked() == paint.epoch
             && self.workspace.editor_read_revision.get_untracked() == paint.read_revision
             && self.auth.map_or(0, |auth| auth.generation.get_untracked())
@@ -146,6 +162,8 @@ impl EditorActions {
         whitespace: bool,
     ) -> Option<EditorRowPaint> {
         Some(EditorRowPaint {
+            view_revision: self.view_revision(),
+            layout_epoch: self.workspace.editor_layout_epoch.get_untracked(),
             key: self.key()?,
             epoch: self.workspace.pending_epoch.get_untracked(),
             read_revision: self.workspace.editor_read_revision.get_untracked(),
@@ -173,14 +191,7 @@ impl EditorActions {
         let reused = self.workspace.editor_row_cache.with_untracked(|cache| {
             let cache = cache.as_ref()?;
             let old = &cache.paint;
-            if old.key != paint.key
-                || old.epoch != paint.epoch
-                || old.read_revision != paint.read_revision
-                || old.account_generation != paint.account_generation
-                || old.metrics != paint.metrics
-                || old.indentation != paint.indentation
-                || old.whitespace != paint.whitespace
-            {
+            if !same_measurement_environment(old, &paint) {
                 return None;
             }
             RowMeasurementPlan::reuse(&paint_rows(old)?, &paint_rows(&paint)?, &cache.rows)
@@ -239,22 +250,37 @@ impl EditorActions {
             .scope
             .as_ref()
             .is_some_and(|(old, old_revision, old_layout)| {
-                *old_revision == revision
-                    && *old_layout == layout
-                    && old.key == paint.key
-                    && old.epoch == paint.epoch
-                    && old.read_revision == paint.read_revision
-                    && old.account_generation == paint.account_generation
-                    && old.metrics == paint.metrics
-                    && old.indentation == paint.indentation
-                    && old.whitespace == paint.whitespace
-                    && old.prepared_source == paint.prepared_source
-                    && Arc::ptr_eq(&old.tokens, &paint.tokens)
-                    && Arc::ptr_eq(&old.guides, &paint.guides)
+                *old_revision == revision && *old_layout == layout && same_paint_scope(old, &paint)
             });
         if !same {
+            let reusable = cache.scope.as_ref().and_then(|(old, _, _)| {
+                self.workspace
+                    .editor_row_cache
+                    .with_untracked(|height_cache| {
+                        let height_cache = height_cache.as_ref()?;
+                        // Font loading clears height provenance even when computed
+                        // metrics survive. Only the proven old styled scope may transfer.
+                        if !same_paint_scope(&height_cache.paint, old)
+                            || !same_measurement_environment(old, &paint)
+                        {
+                            return None;
+                        }
+                        Some(
+                            cache
+                                .geometry
+                                .iter()
+                                .filter(|(row, _)| {
+                                    paint_row(old, *row)
+                                        .zip(paint_row(&paint, *row))
+                                        .is_some_and(|(old, new)| old == new)
+                                })
+                                .cloned()
+                                .collect(),
+                        )
+                    })
+            });
             cache.paint.clear();
-            cache.geometry.clear();
+            cache.geometry = reusable.unwrap_or_default();
             cache.scope = Some((paint, revision, layout));
         }
         true
@@ -307,6 +333,22 @@ impl EditorActions {
             cache.geometry.pop_front();
         }
         cache.geometry.push_back((row, Arc::new(geometry)));
+    }
+    /// A cold probe may only add geometry to the exact styled scope it measured.
+    pub fn retain_preparation_geometry(
+        self,
+        cache: &mut EditorFragmentCache,
+        paint: &EditorRowPaint,
+        row: usize,
+        geometry: openwebide_core::editor::MeasuredRowGeometry,
+    ) {
+        if cache
+            .scope
+            .as_ref()
+            .is_some_and(|(current, _, _)| same_paint_scope(current, paint))
+        {
+            self.retain_measured_row_geometry(cache, row, geometry);
+        }
     }
     pub fn cached_fragment(
         self,

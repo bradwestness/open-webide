@@ -979,6 +979,8 @@ fn HighlightOverlay(
             openwebide_core::editor::indent_guide_columns(source, indentation.get())
         }))
     });
+    let fragment_cache =
+        StoredValue::new(crate::state_actions::editor::EditorFragmentCache::default());
     let batch_key = StoredValue::new(None::<(u64, String, usize, bool)>);
     let batch_ticket = StoredValue::new(None::<u64>);
     Effect::new(move || {
@@ -1047,6 +1049,17 @@ fn HighlightOverlay(
             actions.end_row_preparation(ticket);
             return;
         };
+        fragment_cache.update_value(|cache| {
+            actions.fragment_scope(
+                cache,
+                metrics.clone(),
+                prepared_tokens.clone(),
+                guides.clone(),
+                tab,
+                whitespace,
+            );
+        });
+        let geometry_paint = paint.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let result = super::editor_rows::measure_batches(
                 input,
@@ -1058,6 +1071,18 @@ fn HighlightOverlay(
                         && actions.row_preparation_current(ticket)
                 },
                 move |completed| actions.report_row_preparation(ticket, completed),
+                move |row, geometry| {
+                    if actions.row_preparation_current(ticket) && !fragment_cache.is_disposed() {
+                        fragment_cache.update_value(|cache| {
+                            actions.retain_preparation_geometry(
+                                cache,
+                                &geometry_paint,
+                                row,
+                                geometry,
+                            );
+                        });
+                    }
+                },
                 move |rows, suffix| {
                     highlight_html(
                         &prepared_tokens.1,
@@ -1113,8 +1138,6 @@ fn HighlightOverlay(
             })
             .collect::<Vec<_>>()
     });
-    let fragment_cache =
-        StoredValue::new(crate::state_actions::editor::EditorFragmentCache::default());
     let rendered = RwSignal::new(String::new());
     let rendered_scope = RwSignal::new(0_u64);
     let request = StoredValue::new(None::<i32>);

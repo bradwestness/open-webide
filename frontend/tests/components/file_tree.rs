@@ -1203,7 +1203,7 @@ async fn editor_file_tabs_close_discard_and_keyboard_navigation_share_both_modes
         assert!(
             mounted
                 .root
-                .query_selector(".editor-tab-dirty")
+                .query_selector(".editor-tab-dirty.is-dirty")
                 .unwrap()
                 .is_some()
         );

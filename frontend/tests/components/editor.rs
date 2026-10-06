@@ -8313,6 +8313,26 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
         );
         let original = source.clone();
         let normalized: Vec<_> = source.replace("\r\n", "\n").encode_utf16().collect();
+        let audit_source = js_sys::Function::new_no_args(
+            r#"
+            const state = {max: 0, cold: 0, paint: 0};
+            const old = Range.prototype.getClientRects;
+            Range.prototype.getClientRects = function(...args) {
+                const node = this.startContainer;
+                const element = node.nodeType === 1 ? node : node.parentElement;
+                const row = element?.closest('.editor-row-measure .editor-source-line');
+                if (row) {
+                    state.max = Math.max(state.max, row.textContent.length);
+                    const kind = row.closest('.editor-height-measure') ? 'cold' : 'paint';
+                    state[kind] = Math.max(state[kind], row.textContent.length);
+                }
+                return old.apply(this, args);
+            };
+            state.restore = () => { Range.prototype.getClientRects = old; };
+            return state;
+        "#,
+        );
+        let cold_source = audit_source.call0(&wasm_bindgen::JsValue::NULL).unwrap();
         let mounted = mount_test(move |state| {
             state.seed_project();
             state
@@ -8342,6 +8362,44 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
             .get_bounding_client_rect()
             .height();
         assert!(height > 10_000.0);
+        let cold = js_sys::Reflect::get(&cold_source, &"cold".into())
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        let paint = js_sys::Reflect::get(&cold_source, &"paint".into())
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        js_sys::Reflect::get(&cold_source, &"restore".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap()
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap();
+        assert!(
+            cold > 65_536.0,
+            "cold height measurement must supply full-row anchors"
+        );
+        assert!(
+            paint > 0.0 && paint <= 65_536.0,
+            "first wrapped paint must reuse cold anchors: {paint}"
+        );
+        let actions =
+            openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
+        let old_epoch = actions.layout_epoch();
+        js_sys::Function::new_no_args("document.fonts.dispatchEvent(new Event('loadingdone'))")
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap();
+        wait_until("same computed font starts fresh cold preparation", || {
+            actions.layout_epoch() != old_epoch
+                && actions.measured_rows().is_some()
+                && mounted
+                    .root
+                    .query_selector(".editor-code.highlight-ready")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
         // Settle initial font/syntax scope before measuring unseen intervals.
         for top in [10_000.0, 0.0] {
             input.set_scroll_top(top);
@@ -8358,21 +8416,6 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
             .await;
             settle().await;
         }
-        let audit_source = js_sys::Function::new_no_args(
-            r#"
-            const state = {max: 0};
-            const old = Range.prototype.getClientRects;
-            Range.prototype.getClientRects = function(...args) {
-                const node = this.startContainer;
-                const element = node.nodeType === 1 ? node : node.parentElement;
-                const row = element?.closest('.editor-row-measure .editor-source-line');
-                if (row) state.max = Math.max(state.max, row.textContent.length);
-                return old.apply(this, args);
-            };
-            state.restore = () => { Range.prototype.getClientRects = old; };
-            return state;
-        "#,
-        );
         let measured_source = audit_source.call0(&wasm_bindgen::JsValue::NULL).unwrap();
         for top in [height / 2.0, height - 1000.0, 0.0] {
             input.set_scroll_top(top);
@@ -8893,5 +8936,293 @@ async fn repeated_fragment_windows_reuse_validated_paint_and_font_changes_remeas
             .unwrap()
             .call0(&wasm_bindgen::JsValue::NULL)
             .unwrap();
+    }
+}
+
+#[wasm_bindgen_test]
+fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{GlyphRectangle, Indentation, MeasuredRowGeometry, Selection, WrappedGeometry},
+        highlight::{Language, highlight_lines},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorFragmentCache};
+    use std::sync::Arc;
+    let source = "a".repeat(70_000);
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for change in 0..8 {
+            let action_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let mounted = mount_test({
+                let source = source.clone();
+                let action_slot = action_slot.clone();
+                move |state| {
+                    state.seed_project();
+                    state
+                        .projects
+                        .projects
+                        .update(|projects| projects[0].mode = mode);
+                    state.workspace.open_file.set(Some("scope.txt".into()));
+                    state.workspace.content.set(source);
+                    *action_slot.borrow_mut() = Some(EditorActions::new(state.workspace));
+                    view! { <div/> }
+                }
+            });
+            let actions = action_slot.borrow_mut().take().unwrap();
+            actions.prepare_edit(Selection::caret(0)).unwrap();
+            let tokens = Arc::new(highlight_lines(&source, Language::Plain));
+            let guides: Arc<[usize]> = Arc::from([0]);
+            let mut metrics = "styled width/font".to_string();
+            let mut cache = EditorFragmentCache::default();
+            assert!(actions.fragment_scope(
+                &mut cache,
+                metrics.clone(),
+                (false, tokens.clone()),
+                guides.clone(),
+                Indentation::default(),
+                false
+            ));
+            let (paint, _) = actions
+                .prepare_row_measurements(
+                    metrics.clone(),
+                    actions.projection().unwrap(),
+                    (false, tokens.clone()),
+                    guides.clone(),
+                    Indentation::default(),
+                    false,
+                )
+                .unwrap();
+            let geometry = MeasuredRowGeometry::Wrapped(
+                WrappedGeometry::new(
+                    70_000,
+                    100.0,
+                    1000.0,
+                    vec![
+                        GlyphRectangle {
+                            glyph: 0,
+                            left: 0.0,
+                            top: 2.0,
+                            width: 8.0,
+                            height: 15.0,
+                        },
+                        GlyphRectangle {
+                            glyph: 69_999,
+                            left: 0.0,
+                            top: 982.0,
+                            width: 8.0,
+                            height: 15.0,
+                        },
+                    ],
+                )
+                .unwrap(),
+            );
+            actions.retain_preparation_geometry(&mut cache, &paint, 0, geometry.clone());
+            assert!(actions.measured_row_geometry(&mut cache, 0).is_some());
+            if change == 6 {
+                let ticket = actions
+                    .begin_row_preparation(actions.view_revision(), 1)
+                    .unwrap();
+                assert!(
+                    actions
+                        .finish_row_preparation(
+                            ticket,
+                            paint.clone(),
+                            Ok(Some(
+                                openwebide_core::editor::MeasuredRows::new([1000.0]).unwrap()
+                            ))
+                        )
+                        .is_none()
+                );
+                actions.invalidate_measured_rows();
+                let equivalent = Arc::new(highlight_lines(&source, Language::Plain));
+                assert!(actions.fragment_scope(
+                    &mut cache,
+                    metrics.clone(),
+                    (true, equivalent.clone()),
+                    guides.clone(),
+                    Indentation::default(),
+                    false
+                ));
+                assert!(
+                    (actions
+                        .measured_row_geometry(&mut cache, 0)
+                        .unwrap()
+                        .height()
+                        - 1000.0)
+                        .abs()
+                        < 0.001,
+                    "identical styled rows reuse proven geometry"
+                );
+                let stale = MeasuredRowGeometry::Wrapped(
+                    WrappedGeometry::new(
+                        70_000,
+                        100.0,
+                        2000.0,
+                        vec![
+                            GlyphRectangle {
+                                glyph: 0,
+                                left: 0.0,
+                                top: 2.0,
+                                width: 8.0,
+                                height: 15.0,
+                            },
+                            GlyphRectangle {
+                                glyph: 69_999,
+                                left: 0.0,
+                                top: 982.0,
+                                width: 8.0,
+                                height: 15.0,
+                            },
+                        ],
+                    )
+                    .unwrap(),
+                );
+                actions.retain_preparation_geometry(&mut cache, &paint, 0, stale);
+                assert!(
+                    (actions
+                        .measured_row_geometry(&mut cache, 0)
+                        .unwrap()
+                        .height()
+                        - 1000.0)
+                        .abs()
+                        < 0.001,
+                    "stale primitives cannot replace transferred geometry"
+                );
+                actions.invalidate_measured_font();
+                assert!(actions.fragment_scope(
+                    &mut cache,
+                    metrics,
+                    (true, equivalent),
+                    guides,
+                    Indentation::default(),
+                    false
+                ));
+                assert!(
+                    actions.measured_row_geometry(&mut cache, 0).is_none(),
+                    "font loading clears measurement provenance even with identical font text"
+                );
+                continue;
+            }
+            match change {
+                0 => mounted
+                    .state
+                    .workspace
+                    .content
+                    .set(format!("changed {source}")),
+                1 => mounted
+                    .state
+                    .workspace
+                    .editor_layout_epoch
+                    .update(|epoch| *epoch += 1),
+                2 => mounted
+                    .state
+                    .workspace
+                    .editor_read_revision
+                    .update(|revision| *revision += 1),
+                3 => mounted
+                    .state
+                    .workspace
+                    .pending_epoch
+                    .update(|epoch| *epoch += 1),
+                4 => mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation += 1),
+                5 => mounted
+                    .state
+                    .workspace
+                    .open_file
+                    .set(Some("other.txt".into())),
+                7 => metrics = "new font".into(),
+                _ => unreachable!(),
+            }
+            // A stale primitive must not populate a valid new scope, even when
+            // the same file, source, token allocation or computed font survives.
+            cache = EditorFragmentCache::default();
+            actions.prepare_edit(Selection::caret(0)).unwrap();
+            assert!(actions.fragment_scope(
+                &mut cache,
+                metrics,
+                (false, tokens),
+                guides,
+                Indentation::default(),
+                false
+            ));
+            actions.retain_preparation_geometry(&mut cache, &paint, 0, geometry);
+            assert!(
+                actions.measured_row_geometry(&mut cache, 0).is_none(),
+                "{mode:?} stale scope {change}"
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn overflowing_file_tabs_keep_height_scroll_and_nodes_stable_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state
+                .workspace
+                .open_file
+                .set(Some("long-file-name-0.txt".into()));
+            state.workspace.content.set("hello".into());
+            for index in 0..20 {
+                state
+                    .workspace
+                    .register_editor_tab(1, format!("long-file-name-{index}.txt"));
+            }
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:300px;height:320px">{editor_view(state)}</div> }
+        });
+        wait_until("file tabs overflow horizontally", || {
+            mounted
+                .root
+                .query_selector(".editor-file-tabs")
+                .unwrap()
+                .is_some_and(|tabs| tabs.scroll_width() > tabs.client_width())
+        })
+        .await;
+        let tabs: web_sys::HtmlElement = mounted.element(".editor-file-tabs").unchecked_into();
+        let first = mounted.element("[data-editor-tab='long-file-name-0.txt']");
+        let badge = first.query_selector(".editor-tab-dirty").unwrap().unwrap();
+        let width = first.get_bounding_client_rect().width();
+        let height = tabs.get_bounding_client_rect().height();
+        tabs.set_scroll_left(120.0);
+        for dirty in [true, false, true, false] {
+            mounted.state.workspace.dirty.set(dirty);
+            mounted
+                .state
+                .workspace
+                .register_editor_tab(1, "long-file-name-0.txt".into());
+            mounted
+                .state
+                .workspace
+                .register_editor_tab(2, "other-project.txt".into());
+            settle().await;
+            assert!(first.is_same_node(Some(
+                &mounted.element("[data-editor-tab='long-file-name-0.txt']")
+            )));
+            assert!(badge.is_same_node(Some(
+                &first.query_selector(".editor-tab-dirty").unwrap().unwrap()
+            )));
+            assert!((first.get_bounding_client_rect().width() - width).abs() < 0.5);
+            assert!((tabs.get_bounding_client_rect().height() - height).abs() < 0.5);
+            assert!(
+                tabs.scroll_height() <= tabs.client_height(),
+                "file tabs must not overflow vertically"
+            );
+            assert!((tabs.scroll_left() - 120.0).abs() < 0.5);
+            tabs.set_scroll_top(10.0);
+            assert!(tabs.scroll_top().abs() < 0.5);
+            assert_eq!(
+                badge.get_attribute("aria-hidden").as_deref(),
+                Some(if dirty { "false" } else { "true" })
+            );
+        }
     }
 }
