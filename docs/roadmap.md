@@ -105,8 +105,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   explicit restore/keep choices resolve database revision conflicts. Disk checks
   block unsafe host saves and use the existing folder-access flow. Recovered-file
   reviews reuse inline diffs and offer guarded reload or explicit draft saves,
-  including missing/empty file recreation. Finish permission/error regression
-  coverage and real-server reload/new-window verification.
+  including missing/empty file recreation. A disposable Spin/SQLite and Chrome
+  check verifies real browser edits, autosave, server restarts and reload/new-window
+  selected-tab/draft restoration in both modes; local recovery is checked without
+  a native folder handle. Finish permission/error regression coverage and native
+  folder-permission/real-device verification.
   Coordinate draft/reload recovery with the existing Offline & error-state recovery
   item instead of implementing separate persistence.
 

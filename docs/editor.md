@@ -114,7 +114,7 @@ editing commands and large-file benchmarks remain roadmap work.
 The edit view retains each file’s caret, selection direction and horizontal/vertical
 scroll position within its project while the app is open, including when switching
 to a diff view and back. New files start at the beginning; changing accounts clears
-these positions. Reload persistence is part of the remaining draft-recovery work.
+these positions. Database recovery also restores these positions on reload, subject to the current file’s scroll bounds.
 
 The syntax/folding foundation uses shared incremental grammar providers for Rust,
 TypeScript/TSX, JavaScript/JSX, Python, Java, C#, C++, PHP, Shell, C, Go, HTML and
@@ -285,7 +285,7 @@ per project; edits arriving during a write are saved after its acknowledgement.
 Failures keep the last acknowledged revision and current drafts; Retry recovery
 resumes writes. A revision conflict pauses writes until Restore saved files or Keep
 this window is confirmed. Late loads cannot discard files opened or edited in flight.
-Real-server reload/permission verification remains in progress.
+The disposable Spin/SQLite and Chrome check below verifies reload/new-window recovery. Native folder-permission and real-device verification remain in progress.
 
 Recovery hydration primitives prepare all documents before publishing any state,
 restore ordered tabs and active or hidden buffers, and preserve unrelated workspace
@@ -302,5 +302,26 @@ file with the draft using the shared inline diff. Cancel retains both versions;
 Reload disk replaces the draft, and Save draft uses the normal save policy with a
 one-use approval for the reviewed disk and draft versions. Missing files can be
 recreated explicitly, including empty files. Changed editor/root/account state or
-disk content rejects the action. End-to-end server/device reload verification
-remains pending.
+disk content rejects the action. Native folder-permission and real-device verification
+remain pending.
+
+
+### Live recovery verification
+
+After building the current app, run the disposable WASI/SQLite check:
+
+```sh
+NO_COLOR=true spin build
+python3 tools/check-editor-recovery.py
+CHROMEDRIVER=<compatible-driver> python3 tools/check-editor-recovery.py --browser
+```
+
+The check creates its own account, database, host files and browser profile, then
+removes them. It preserves the existing development services and database. The
+API check covers both project modes, UTF-8/CRLF drafts and saved baselines, ordered
+selected/hidden tabs, invalid/root/stale revisions, actual Spin restarts and durable
+close-all tombstones. The browser check types into the built WASM editor, observes
+its debounced database save, restarts Spin, reloads and opens a fresh window, and
+checks the selected tab and draft in both modes. Local recovery is tested without
+a native folder handle; it does not establish real-device permission restoration.
+Set `CHROME` if ChromeDriver needs an explicit Chrome binary.
