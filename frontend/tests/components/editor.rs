@@ -9679,3 +9679,126 @@ async fn declared_native_commits_keep_native_value_and_reject_stale_scopes_in_bo
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn trusted_native_commits_skip_full_value_reads_and_other_inputs_reconcile_in_both_modes() {
+    use openwebide_core::editor::{Document, Selection};
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        for multiple in [false, true] {
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("native-read.txt".into()));
+                state.workspace.content.set("a\r\na".into());
+                let mut document = Document::new("a\r\na");
+                document
+                    .set_selections(if multiple {
+                        vec![Selection::caret(0), Selection::caret(3)]
+                    } else {
+                        vec![Selection::caret(0)]
+                    })
+                    .unwrap();
+                state.workspace.editor_documents.update(|documents| {
+                    documents.insert((1, "native-read.txt".into()), document);
+                });
+                editor_view(state)
+            });
+            settle().await;
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            input.focus().unwrap();
+            input.set_selection_range(0, 0).unwrap();
+            let result = js_sys::Function::new_with_args("input", r#"
+                const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+                const audit = {reads: 0, trusted: false};
+                Object.defineProperty(input, 'value', {configurable: true,
+                    get() { audit.reads++; return descriptor.get.call(this); },
+                    set(value) { descriptor.set.call(this, value); }});
+                const capture = event => { audit.reads = 0; audit.trusted = event.isTrusted; };
+                input.addEventListener('input', capture, true);
+                input.dispatchEvent(new InputEvent('beforeinput', {
+                    bubbles: true, cancelable: true, inputType: 'insertText', data: '文😀'
+                }));
+                const inserted = document.execCommand('insertText', false, '文😀');
+                const result = {inserted, ...audit};
+                input.removeEventListener('input', capture, true);
+                delete input.value;
+                return result;
+            "#).call1(&wasm_bindgen::JsValue::NULL, &input).unwrap();
+            assert_eq!(
+                js_sys::Reflect::get(&result, &"inserted".into())
+                    .unwrap()
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                js_sys::Reflect::get(&result, &"trusted".into())
+                    .unwrap()
+                    .as_bool(),
+                Some(true)
+            );
+            let reads = js_sys::Reflect::get(&result, &"reads".into())
+                .unwrap()
+                .as_f64();
+            if multiple {
+                assert!(
+                    reads.is_some_and(|reads| reads > 0.0),
+                    "multiple cursors must reconcile their additional edits"
+                );
+            } else {
+                assert_eq!(
+                    reads,
+                    Some(0.0),
+                    "trusted native commit must not read the full DOM value"
+                );
+            }
+            settle().await;
+            assert_eq!(
+                mounted.state.workspace.content.get_untracked(),
+                if multiple {
+                    "文😀a\r\n文😀a"
+                } else {
+                    "文😀a\r\na"
+                }
+            );
+            assert_eq!(
+                input.value(),
+                if multiple {
+                    "文😀a\n文😀a"
+                } else {
+                    "文😀a\na"
+                }
+            );
+            // Synthetic input has no browser-owned mutation guarantee and must
+            // retain full-value reconciliation even when its declared data matches.
+            let reads = js_sys::Function::new_with_args("input", r#"
+                const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+                let reads = 0;
+                Object.defineProperty(input, 'value', {configurable: true,
+                    get() { reads++; return descriptor.get.call(this); },
+                    set(value) { descriptor.set.call(this, value); }});
+                input.dispatchEvent(new InputEvent('beforeinput', {
+                    bubbles: true, cancelable: true, inputType: 'insertText', data: '!'
+                }));
+                input.setRangeText('!', input.selectionStart, input.selectionEnd, 'end');
+                reads = 0;
+                input.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: '!'}));
+                delete input.value;
+                return reads;
+            "#).call1(&wasm_bindgen::JsValue::NULL, &input).unwrap().as_f64().unwrap();
+            assert!(
+                reads > 0.0,
+                "synthetic events must reconcile the complete value"
+            );
+        }
+    }
+}

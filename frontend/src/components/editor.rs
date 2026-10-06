@@ -2944,17 +2944,21 @@ pub fn Editor(
                                                 {
                                                     if read_only.get_untracked() { editor_actions.cancel_native_text(); return; }
                                                     let input_type = e.dyn_ref::<web_sys::InputEvent>().map_or_else(String::new, |event| if event.is_composing() { "insertCompositionText".to_string() } else { event.input_type() });
+                                                    let mut retain_native_value = false;
                                                     let result = if input_type == "insertText" {
                                                         let data = e.dyn_ref::<web_sys::InputEvent>().and_then(web_sys::InputEvent::data);
                                                         match editor_actions.finish_native_text(data.as_deref(), native_selection_units(textarea), e.time_stamp()) {
-                                                            Ok(Some(_)) => Ok(()),
+                                                            Ok(Some(commit)) => { retain_native_value = e.is_trusted() && commit.retain_native_value; Ok(()) },
                                                             Ok(None) => editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp()),
                                                             Err(error) => Err(error),
                                                         }
                                                     } else { editor_actions.cancel_native_text(); editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp()) };
                                                     action_error.set(result.as_ref().err().map(ToString::to_string));
                                                     refresh_editor_folds(editor_actions);
-                                                    if let Some(selection) = editor_actions.selection(&content.get_untracked()) { render_editor_selection(editor_actions, textarea, selection, result.is_ok()); }
+                                                    // A trusted single-cursor commit already proves the browser's
+                                                    // native value. Fold changes still require full reconciliation.
+                                                    let retain_native_value = retain_native_value && editor_actions.projection().is_some_and(|projection| !projection.is_folded());
+                                                    if !retain_native_value { content.with_untracked(|source| { if let Some(selection) = editor_actions.selection(source) { render_editor_selection(editor_actions, textarea, selection, result.is_ok()); } }); }
                                                 }
                                             }
                                             on:scroll=move |event: web_sys::Event| {

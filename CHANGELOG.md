@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Avoid reading the full textarea value after a validated trusted single-cursor insertion without folds in both modes. Preserve reconciliation for synthetic events, folds, multiple cursors and input fallbacks.
+
 - Stabilize overflowing editor file tabs by removing percentage-height feedback, keeping tab nodes, dirty indicators and horizontal scroll position stable in both workspace modes.
 
 - Commit browser-native ordinary typing through shared grouped editor transactions in both modes, preserving Unicode, CRLF, multiple cursors and rejected-edit state. Keep native IME/non-cancellable replay and share newline policy across both input paths; reject stale source/read/account commits without resetting the full textarea for single-cursor typing.

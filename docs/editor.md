@@ -240,8 +240,10 @@ workspace modes. Real-device input and clipboard verification remain follow-ups.
 Cancellable, noncomposing text insertion records event data before the browser's
 native edit, then commits through the shared document transaction engine after
 validating source, read, account, selection and folded projection ownership.
-Single-cursor insertion keeps the native textarea value; multiple cursors use the
-same typing-history group.
+Single-cursor insertion keeps the native textarea value; trusted browser commits
+without folds also skip the input handler's full DOM-value read. Folded, multiple-
+cursor, synthetic and fallback input still reconcile the complete value. Multiple
+cursors use the same typing-history group.
 Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME retain native replay.
 The native textarea still owns the complete projected source, so input memory and

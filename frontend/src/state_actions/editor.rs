@@ -27,6 +27,13 @@ mod preparation;
 mod rows;
 pub use rows::{EditorFragmentCache, EditorFragmentWindow, EditorRowSourceSlice};
 
+/// Facts established by a guarded native insertion transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeTextCommit {
+    pub selection: Selection,
+    pub retain_native_value: bool,
+}
+
 type TypingState = Option<((i64, String), String, f64)>;
 
 #[derive(Clone, Copy)]
@@ -1091,7 +1098,7 @@ impl EditorActions {
         data: Option<&str>,
         native: Selection,
         timestamp: f64,
-    ) -> Result<Option<Selection>, EditError> {
+    ) -> Result<Option<NativeTextCommit>, EditError> {
         let Some(insertion) = self.workspace.editor_text_insertion.get_untracked() else {
             return Ok(None);
         };
@@ -1116,7 +1123,15 @@ impl EditorActions {
         {
             return Ok(None);
         }
+        let retain_native_value =
+            insertion.selections.len() == 1 && !insertion.projection.is_folded();
         self.insert_native_text(&insertion.text, timestamp)
+            .map(|selection| {
+                selection.map(|selection| NativeTextCommit {
+                    selection,
+                    retain_native_value,
+                })
+            })
     }
 
     /// Cancellable text events supply their insertion, not a complete DOM value.

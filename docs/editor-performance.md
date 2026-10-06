@@ -530,3 +530,14 @@ with the earlier `input` baseline. Large-file latency remains substantial.
 
 Raw records: [wrapped native commit](editor-performance/production-linux-native-commit-wrapped.jsonl),
 [unwrapped native commit](editor-performance/production-linux-native-commit-unwrapped.jsonl).
+
+The following trusted single-cursor value-retention checkpoint also passed all
+twelve workloads in both modes/layouts on 2026-10-06. Browser contracts verify zero
+full DOM-value reads in the successful trusted input handler, while synthetic
+inputs and multiple cursors still reconcile. These one-run `beforeinput` timings
+range from 388 to 1034 ms; they do not establish a latency improvement or
+validate responsiveness limits. Preparation, source publication, initial shaping
+and full native textarea layout remain expensive.
+
+Raw records: [wrapped native retention](editor-performance/production-linux-native-retain-wrapped.jsonl),
+[unwrapped native retention](editor-performance/production-linux-native-retain-unwrapped.jsonl).

@@ -141,7 +141,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   shaping and bidirectional visual-run windows, then further incremental access:
   declared browser-native text now commits through guarded shared grouped
   insertion transactions instead of full-value diff/replay, with common newline policy and native
-  IME/non-cancellable fallbacks. Edits still materialize
+  IME/non-cancellable fallbacks. Trusted, unfolded single-cursor commits skip
+  the input handler's full DOM-value read; preparation and other input paths still
+  access full values. Edits still materialize
   full Strings and shift
   suffix coordinates. Native offset and line/column queries now use shared sparse
   Unicode checkpoints in long rows, including folded views; native/WASM benchmarks
