@@ -3,6 +3,19 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use openwebide_core::{EditDecision, FileDiff, FileEntry, PersistedEdit, SearchHit};
 
+/// An insertion declared by beforeinput, bound to the unchanged source until input.
+#[derive(Clone, Debug)]
+pub struct EditorTextInsertion {
+    pub key: (i64, String),
+    pub source_revision: u64,
+    pub projection: openwebide_core::editor::FoldProjection,
+    pub document_revision: u64,
+    pub account_generation: u64,
+    pub selections: Vec<openwebide_core::editor::Selection>,
+    pub native_caret: usize,
+    pub text: String,
+}
+
 /// Exact publication scope shared by preparation requests and synchronous consumers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditorSyntaxScope {
@@ -255,11 +268,13 @@ pub struct WorkspaceState {
     >,
     pub editor_scroll: RwSignal<HashMap<(i64, String), EditorScroll>>,
     pub editor_composition: RwSignal<Option<EditorComposition>>,
+    pub editor_text_insertion: RwSignal<Option<EditorTextInsertion>>,
     pub editor_rules: RwSignal<HashMap<(i64, String), openwebide_core::editor::EditorRules>>,
     pub editor_indentation: RwSignal<HashMap<(i64, String), openwebide_core::editor::Indentation>>,
     pub editor_fold_revision: RwSignal<u64>,
     pub editor_layout_epoch: RwSignal<u64>,
     pub editor_font_epoch: RwSignal<u64>,
+    pub editor_source_revision: Memo<u64>,
     pub editor_projection_revision: Memo<u64>,
     pub editor_view_revision: Memo<u64>,
     pub editor_rows: RwSignal<Option<EditorRowMeasurements>>,
@@ -290,13 +305,19 @@ impl WorkspaceState {
         let editor_fold_revision = RwSignal::new(0);
         let editor_layout_epoch = RwSignal::new(0);
         let editor_font_epoch = RwSignal::new(0);
-        let view_counter = StoredValue::new(0_u64);
-        let editor_projection_revision = Memo::new(move |_| {
+        let source_counter = StoredValue::new(0_u64);
+        let editor_source_revision = Memo::new(move |_| {
             content.track();
             open_file.track();
             active_project.track();
             pending_epoch.track();
             editor_read_revision.track();
+            source_counter.update_value(|value| *value = value.wrapping_add(1));
+            source_counter.get_value()
+        });
+        let view_counter = StoredValue::new(0_u64);
+        let editor_projection_revision = Memo::new(move |_| {
+            let _ = editor_source_revision.get();
             editor_fold_revision.track();
             view_counter.update_value(|value| *value = value.wrapping_add(1));
             view_counter.get_value()
@@ -342,11 +363,13 @@ impl WorkspaceState {
             editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(Default::default())),
             editor_scroll: RwSignal::new(HashMap::new()),
             editor_composition: RwSignal::new(None),
+            editor_text_insertion: RwSignal::new(None),
             editor_rules: RwSignal::new(HashMap::new()),
             editor_indentation: RwSignal::new(HashMap::new()),
             editor_fold_revision,
             editor_layout_epoch,
             editor_font_epoch,
+            editor_source_revision,
             editor_projection_revision,
             editor_view_revision,
             editor_rows: RwSignal::new(None),
@@ -766,6 +789,7 @@ impl WorkspaceState {
         self.begin_editor_read();
         self.editor_documents.set(HashMap::new());
         self.editor_composition.set(None);
+        self.editor_text_insertion.set(None);
         self.editor_preparation.set(None);
         self.editor_preparation_revision
             .update(|value| *value = value.wrapping_add(1));

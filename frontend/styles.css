@@ -3195,8 +3195,8 @@ button.browser-item {
 
 /* File tabs share project tab selection and standard inline icon actions. */
 .editor-file-tabs { flex: none; padding: 0 8px; min-height: 36px; }
-.editor-file-tab { flex: none; gap: 2px; padding: 0 4px 0 0; }
-.btn.tab-select { display: flex; align-items: center; gap: 6px; min-width: 0; height: 100%; padding: 0 10px; border: 0; border-radius: 6px 0 0 0; background: transparent; color: inherit; }
+.editor-file-tab { flex: none; height: 35px; gap: 2px; padding: 0 4px 0 0; }
+.btn.tab-select { display: flex; align-items: center; gap: 6px; min-width: 0; align-self: stretch; padding: 0 10px; border: 0; border-radius: 6px 0 0 0; background: transparent; color: inherit; }
 .tab-select .tab-name { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .editor-tab-dirty { flex: none; width: 1em; text-align: center; visibility: hidden; font-size: 9px; color: var(--warn); }
 .editor-tab-dirty.is-dirty { visibility: visible; }

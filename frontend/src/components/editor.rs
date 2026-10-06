@@ -2866,6 +2866,7 @@ pub fn Editor(
                                             }
                                             on:beforeinput=move |event: web_sys::InputEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
+                                                    editor_actions.cancel_native_text();
                                                     if !motion_adapter.flush(&textarea) { if event.cancelable() { event.prevent_default(); } return; }
                                                     if event.is_composing() && !editor_actions.is_composing() { if event.cancelable() { event.prevent_default(); } return; }
                                                     if !read_only.get_untracked() { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
@@ -2878,7 +2879,10 @@ pub fn Editor(
                                                         "insertText" => event.data().and_then(|text| pair_character(&text)).map(EditorCommand::TypeCharacter),
                                                         _ => None,
                                                     };
-                                                    if let Some(command) = command && apply_editor_command(editor_actions, command, &textarea, &workspace.content.get_untracked()) { event.prevent_default(); }
+                                                    if let Some(command) = command && apply_editor_command(editor_actions, command, &textarea, &workspace.content.get_untracked()) { event.prevent_default(); return; }
+                                                    if event.input_type() == "insertText" && !editor_actions.is_composing() && let Some(text) = event.data() {
+                                                        editor_actions.begin_native_text(text);
+                                                    }
                                                 }
                                             }
                                             on:compositionstart=move |event: web_sys::CompositionEvent| {
@@ -2897,6 +2901,7 @@ pub fn Editor(
                                             }
                                             on:keydown=move |event: web_sys::KeyboardEvent| {
                                                 if event.is_composing() { return; }
+                                                editor_actions.cancel_native_text();
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 if editor_selection_key(editor_actions, &textarea, &event, action_error, motion_adapter) { event.prevent_default(); event.stop_propagation(); return; }
                                                 if !motion_adapter.flush(&textarea) { event.prevent_default(); event.stop_propagation(); return; }
@@ -2933,13 +2938,20 @@ pub fn Editor(
                                                 }
                                             }
                                             on:input=move |e: web_sys::Event| {
-                                                if read_only.get_untracked() { return; }
                                                 if let Some(target) = e.target()
                                                     && let Some(textarea) = target.dyn_ref::<web_sys::HtmlTextAreaElement>()
                                                     && current_editor_target(editor_actions, textarea)
                                                 {
+                                                    if read_only.get_untracked() { editor_actions.cancel_native_text(); return; }
                                                     let input_type = e.dyn_ref::<web_sys::InputEvent>().map_or_else(String::new, |event| if event.is_composing() { "insertCompositionText".to_string() } else { event.input_type() });
-                                                    let result = editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp());
+                                                    let result = if input_type == "insertText" {
+                                                        let data = e.dyn_ref::<web_sys::InputEvent>().and_then(web_sys::InputEvent::data);
+                                                        match editor_actions.finish_native_text(data.as_deref(), native_selection_units(textarea), e.time_stamp()) {
+                                                            Ok(Some(_)) => Ok(()),
+                                                            Ok(None) => editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp()),
+                                                            Err(error) => Err(error),
+                                                        }
+                                                    } else { editor_actions.cancel_native_text(); editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp()) };
                                                     action_error.set(result.as_ref().err().map(ToString::to_string));
                                                     refresh_editor_folds(editor_actions);
                                                     if let Some(selection) = editor_actions.selection(&content.get_untracked()) { render_editor_selection(editor_actions, textarea, selection, result.is_ok()); }

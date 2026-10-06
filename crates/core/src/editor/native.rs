@@ -175,7 +175,52 @@ fn changes(
         })
         .collect())
 }
+fn native_inserted_text(source: &str, text: &str) -> String {
+    let mut inserted = text.replace("\r\n", "\n").replace('\r', "\n");
+    if inserted.contains('\n')
+        && source
+            .split_once('\n')
+            .is_some_and(|(prefix, _)| prefix.ends_with('\r'))
+    {
+        inserted = inserted.replace('\n', "\r\n");
+    }
+    inserted
+}
+
 impl Document {
+    /// Replay cancellable native text at the existing selections without diffing
+    /// a full textarea value. Composition remains owned by native_input.
+    pub fn insert_native_text(
+        &mut self,
+        text: &str,
+        group: Option<u64>,
+    ) -> Result<bool, EditError> {
+        if self.is_composing() {
+            return Err(EditError::CompositionActive);
+        }
+        if text.len() > super::MAX_DOCUMENT_BYTES {
+            return Err(EditError::OutputTooLarge);
+        }
+        let inserted = native_inserted_text(&self.text, text);
+        self.replace_selections(&inserted, group)
+    }
+
+    /// Convert a complete normalized textarea value to a minimal source edit.
+    /// Non-cancellable input and IME share insertion newline policy with direct typing.
+    pub fn native_replacement(&self, value: &str) -> Option<Edit> {
+        let normalized = self.text.replace("\r\n", "\n").replace('\r', "\n");
+        let change = text_change(&normalized, value)?;
+        let start = change.range.start;
+        let end = change.range.end;
+        let start_doc =
+            super::textarea_to_byte(&self.text, normalized[..start].encode_utf16().count());
+        let end_doc = super::textarea_to_byte(&self.text, normalized[..end].encode_utf16().count());
+        Some(Edit::replace(
+            start_doc..end_doc,
+            native_inserted_text(&self.text, &value[start..change.new_end]),
+        ))
+    }
+
     pub fn is_composing(&self) -> bool {
         self.composition.is_some()
     }
@@ -328,6 +373,50 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn direct_native_text_failure_keeps_editor_state_and_history() {
+        use super::*;
+        let mut doc =
+            Document::for_editor("x".repeat(super::super::MAX_EDITOR_LINE_BYTES)).unwrap();
+        doc.set_selections(vec![Selection::caret(0)]).unwrap();
+        let before = doc.clone();
+        assert!(matches!(
+            doc.insert_native_text("x", Some(1)),
+            Err(EditError::Capacity(_))
+        ));
+        assert_eq!(doc, before);
+        assert!(!doc.undo());
+    }
+
+    #[test]
+    fn direct_native_text_preserves_line_endings_grouped_history_and_composition() {
+        use super::*;
+        for (source, expected) in [
+            ("a\r\na", "文\r\n😀a\r\n文\r\n😀a"),
+            ("a\na", "文\n😀a\n文\n😀a"),
+        ] {
+            let mut doc = Document::new(source);
+            doc.set_selections(vec![
+                Selection::caret(0),
+                Selection::caret(source.len() - 1),
+            ])
+            .unwrap();
+            doc.insert_native_text("文\r\n😀", Some(1)).unwrap();
+            assert_eq!(doc.text(), expected);
+            doc.insert_native_text("!", Some(1)).unwrap();
+            assert!(doc.undo());
+            assert_eq!(doc.text(), source);
+            assert!(doc.redo());
+            doc.begin_composition(Some(2));
+            let before = doc.clone();
+            assert_eq!(
+                doc.insert_native_text("X", Some(2)),
+                Err(EditError::CompositionActive)
+            );
+            assert_eq!(doc, before);
+        }
+    }
+
     use super::*;
     #[test]
     fn native_insert_uses_the_selected_occurrence_in_ambiguous_repeated_text() {

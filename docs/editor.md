@@ -237,8 +237,15 @@ paint equality as well; conflicting measurements for identical rows are not reus
 Browser contracts compare exact source and selections after queued arrows followed
 by typing, composition, paste and cut with cold versus prepared layouts in both
 workspace modes. Real-device input and clipboard verification remain follow-ups.
-Native textarea input owns the complete projected source; this does not yet bound
-input memory.
+Cancellable, noncomposing text insertion records event data before the browser's
+native edit, then commits through the shared document transaction engine after
+validating source, read, account, selection and folded projection ownership.
+Single-cursor insertion keeps the native textarea value; multiple cursors use the
+same typing-history group.
+Direct insertion and native replay share newline normalization; rejected edits
+preserve source and selections. Non-cancellable input and IME retain native replay.
+The native textarea still owns the complete projected source, so input memory and
+full String materialization remain unbounded by the viewport.
 
 The shared document maintains logical-line and UTF-16 prefixes across transactions,
 grouped undo/redo and composition. Commands reuse indexed rows; native caret mapping

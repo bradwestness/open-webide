@@ -1,7 +1,7 @@
 //! Shared editor facade. DOM adapters provide text/selection/events; editing policy
 //! lives in the Rust document engine without filesystem-mode branches.
 use leptos::prelude::*;
-use openwebide_core::editor::{Document, Edit, EditError, Indentation, Selection};
+use openwebide_core::editor::{Document, EditError, Indentation, Selection};
 
 use crate::state::workspace::WorkspaceState;
 
@@ -381,6 +381,7 @@ impl EditorActions {
     }
 
     pub fn record_selection(self, selection: Selection) -> Result<(), EditError> {
+        self.cancel_native_text();
         self.cancel_queued_motion(None);
         let Some(key) = self.key() else {
             return Ok(());
@@ -404,6 +405,17 @@ impl EditorActions {
         let Some(key) = self.key() else {
             return Ok(());
         };
+        if self
+            .workspace
+            .editor_text_insertion
+            .with_untracked(|insertion| {
+                insertion
+                    .as_ref()
+                    .is_some_and(|insertion| insertion.key == key)
+            })
+        {
+            return Ok(());
+        }
         self.workspace
             .editor_documents
             .try_update(|documents| {
@@ -1003,16 +1015,12 @@ impl EditorActions {
         self.native_input(value, selection, input_type, timestamp)
     }
 
-    pub fn native_input(
+    fn native_history_group(
         self,
-        text: String,
-        selection: Selection,
+        key: &(i64, String),
         input_type: &str,
         timestamp: f64,
-    ) -> Result<(), EditError> {
-        let Some(key) = self.key() else {
-            return Ok(());
-        };
+    ) -> (bool, Option<u64>) {
         let coalesces = matches!(
             input_type,
             "insertText"
@@ -1023,12 +1031,140 @@ impl EditorActions {
         let same = coalesces
             && self.typing.with_untracked(|typing| {
                 typing.as_ref().is_some_and(|(previous, kind, time)| {
-                    previous == &key
+                    previous == key
                         && kind == input_type
                         && timestamp >= *time
                         && timestamp - time <= 750.0
                 })
             });
+        let composing = self.is_composing();
+        if !same && !composing {
+            self.group.update(|group| *group = group.wrapping_add(1));
+        }
+        let group = (coalesces || composing).then(|| self.group.get_untracked());
+        (coalesces, group)
+    }
+
+    pub fn cancel_native_text(self) {
+        self.workspace.editor_text_insertion.set(None);
+    }
+
+    /// Capture the declared insertion while the browser still owns its original caret.
+    pub fn begin_native_text(self, text: String) {
+        self.cancel_native_text();
+        if self.is_composing() {
+            return;
+        }
+        let Some(key) = self.key() else {
+            return;
+        };
+        let insertion = self.workspace.editor_documents.with_untracked(|documents| {
+            let document = documents.get(&key)?;
+            let projection = document.projection();
+            let visible = projection
+                .visible_selection(document.selections()[0])
+                .ok()?;
+            let at = projection.byte_to_textarea(visible.range().start).ok()?;
+            let added = text
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .encode_utf16()
+                .count();
+            Some(crate::state::workspace::EditorTextInsertion {
+                key: key.clone(),
+                source_revision: self.workspace.editor_source_revision.get_untracked(),
+                projection,
+                document_revision: document.revision(),
+                account_generation: self.auth.map_or(0, |auth| auth.generation.get_untracked()),
+                selections: document.selections().to_vec(),
+                native_caret: at.checked_add(added)?,
+                text,
+            })
+        });
+        self.workspace.editor_text_insertion.set(insertion);
+    }
+
+    /// Consume a matching native commit without copying/diffing the complete DOM value.
+    /// Source/account changes reject the commit; browser transformations use replay.
+    pub fn finish_native_text(
+        self,
+        data: Option<&str>,
+        native: Selection,
+        timestamp: f64,
+    ) -> Result<Option<Selection>, EditError> {
+        let Some(insertion) = self.workspace.editor_text_insertion.get_untracked() else {
+            return Ok(None);
+        };
+        self.cancel_native_text();
+        let current = self.key().as_ref() == Some(&insertion.key)
+            && self.workspace.editor_source_revision.get_untracked() == insertion.source_revision
+            && self.auth.map_or(0, |auth| auth.generation.get_untracked())
+                == insertion.account_generation
+            && !self.is_composing()
+            && self.workspace.editor_documents.with_untracked(|documents| {
+                documents.get(&insertion.key).is_some_and(|document| {
+                    document.revision() == insertion.document_revision
+                        && document.projection() == insertion.projection
+                        && document.selections() == insertion.selections
+                })
+            });
+        if !current {
+            return Err(EditError::StaleContext);
+        }
+        if data != Some(insertion.text.as_str())
+            || native != Selection::caret(insertion.native_caret)
+        {
+            return Ok(None);
+        }
+        self.insert_native_text(&insertion.text, timestamp)
+    }
+
+    /// Cancellable text events supply their insertion, not a complete DOM value.
+    pub fn insert_native_text(
+        self,
+        text: &str,
+        timestamp: f64,
+    ) -> Result<Option<Selection>, EditError> {
+        if self.is_composing() {
+            return Err(EditError::CompositionActive);
+        }
+        let Some(key) = self.key() else {
+            return Ok(None);
+        };
+        let (_, group) = self.native_history_group(&key, "insertText", timestamp);
+        let result = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| {
+                let document = self.document(documents, key.clone());
+                document.insert_native_text(text, group)?;
+                Ok((document.text().to_string(), document.selections()[0]))
+            })
+            .unwrap_or(Err(EditError::InvalidSelection));
+        match result {
+            Ok((source, selection)) => {
+                self.workspace.content.set(source);
+                self.publish_dirty(key.clone());
+                self.typing.set(Some((key, "insertText".into(), timestamp)));
+                Ok(Some(selection))
+            }
+            Err(error) => {
+                self.typing.set(None);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn native_input(
+        self,
+        text: String,
+        selection: Selection,
+        input_type: &str,
+        timestamp: f64,
+    ) -> Result<(), EditError> {
+        let Some(key) = self.key() else {
+            return Ok(());
+        };
         let composing = self.is_composing();
         if input_type == "insertFromComposition"
             && !composing
@@ -1053,17 +1189,14 @@ impl EditorActions {
             self.cancel_composition();
             return Err(EditError::UnsupportedNativeInput);
         }
-        if !same && !composing {
-            self.group.update(|group| *group = group.wrapping_add(1));
-        }
-        let group = (coalesces || composing).then(|| self.group.get_untracked());
+        let (coalesces, group) = self.native_history_group(&key, input_type, timestamp);
         let result = self
             .workspace
             .editor_documents
             .try_update(|documents| {
                 let document = self.document(documents, key.clone());
                 let outcome = (|| {
-                    let edit = replacement(document.text(), &text);
+                    let edit = document.native_replacement(&text);
                     let mut candidate = document.text().to_string();
                     if let Some(edit) = &edit {
                         candidate.replace_range(edit.range.clone(), &edit.text);
@@ -1366,24 +1499,4 @@ impl EditorActions {
             .with_untracked(|documents| documents.get(&key).is_some_and(Document::is_dirty));
         self.workspace.dirty.set(dirty);
     }
-}
-
-/// Minimal native-input replacement, preserving UTF-8 boundaries and distant text.
-fn replacement(old: &str, new: &str) -> Option<Edit> {
-    let normalized = old.replace("\r\n", "\n").replace('\r', "\n");
-    let change = openwebide_core::editor::text_change(&normalized, new)?;
-    let start = change.range.start;
-    let end = change.range.end;
-    let start_doc =
-        openwebide_core::editor::textarea_to_byte(old, normalized[..start].encode_utf16().count());
-    let end_doc =
-        openwebide_core::editor::textarea_to_byte(old, normalized[..end].encode_utf16().count());
-    let mut inserted = new[start..change.new_end].to_string();
-    if old
-        .split_once('\n')
-        .is_some_and(|(prefix, _)| prefix.ends_with('\r'))
-    {
-        inserted = inserted.replace('\n', "\r\n");
-    }
-    Some(Edit::replace(start_doc..end_doc, inserted))
 }

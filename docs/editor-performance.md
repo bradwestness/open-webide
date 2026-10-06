@@ -490,6 +490,10 @@ identifiers identify the actual build and the checkout its parent commit.
 | Unwrapped | Near 1 MiB line | Local | 1623 | 530 (518–545) | 26 | 1.03 |
 | Unwrapped | Near 1 MiB line | Remote | 1654 | 538 (509–553) | 34 | 1.04 |
 
+These baseline input timings start at `input`. The current harness starts at
+`beforeinput` to include edit preparation; records label this as
+`inputTimingStart`. Timings from the two clocks are not directly comparable.
+
 Raw records: [wrapped](editor-performance/production-linux-wrapped-boundaries.jsonl),
 [unwrapped](editor-performance/production-linux-unwrapped-boundaries.jsonl).
 Earlier exploratory runs without a CJK font are excluded from this baseline;
@@ -502,3 +506,27 @@ current admission limits remain unvalidated as responsiveness limits. Initial
 shaping, bounded native input/source access, bidirectional visual-run windows,
 more repetitions for tail latency and real-device/input-method/permission checks
 remain required before closing the full editor roadmap item.
+
+On 2026-10-06, the browser-owned insertion commit path passed twelve production
+Linux runs (2 MiB, near 8 MiB and near 1 MiB line; both modes and layouts). These
+are one-run correctness and PSS observations, not tail estimates. Input timing
+starts at `beforeinput`, including preparation, so it cannot be compared directly
+with the earlier `input` baseline. Large-file latency remains substantial.
+
+| Layout | Case | Mode | Beforeinput to paint ms | Peak Chrome PSS GiB |
+| --- | --- | --- | ---: | ---: |
+| wrapped | medium | local | 522 | 1.32 |
+| wrapped | medium | remote | 454 | 1.32 |
+| wrapped | byte-limit | local | 644 | 2.06 |
+| wrapped | byte-limit | remote | 620 | 2.17 |
+| wrapped | long-line | local | 1024 | 1.00 |
+| wrapped | long-line | remote | 973 | 1.03 |
+| unwrapped | medium | local | 437 | 0.92 |
+| unwrapped | medium | remote | 467 | 0.99 |
+| unwrapped | byte-limit | local | 480 | 1.27 |
+| unwrapped | byte-limit | remote | 496 | 1.29 |
+| unwrapped | long-line | local | 823 | 0.98 |
+| unwrapped | long-line | remote | 823 | 1.03 |
+
+Raw records: [wrapped native commit](editor-performance/production-linux-native-commit-wrapped.jsonl),
+[unwrapped native commit](editor-performance/production-linux-native-commit-unwrapped.jsonl).

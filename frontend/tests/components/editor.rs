@@ -3801,11 +3801,9 @@ async fn native_edits_clipboard_commands_and_composition_keep_disjoint_folds_in_
         init.set_cancelable(true);
         init.set_input_type("insertText");
         init.set_data(Some("0"));
-        textarea
-            .dispatch_event(
-                &web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap(),
-            )
-            .unwrap();
+        let before = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        textarea.dispatch_event(&before).unwrap();
+        assert!(!before.default_prevented());
         editorNativeInput(&textarea, "0", "insertText", false);
         settle().await;
         assert_eq!(
@@ -3870,11 +3868,10 @@ async fn native_edits_clipboard_commands_and_composition_keep_disjoint_folds_in_
         assert!(actions.fold_state().unwrap().collapsed_at(0).is_some());
         assert!(actions.fold_state().unwrap().collapsed_at(4).is_some());
         select("first");
-        textarea
-            .dispatch_event(
-                &web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap(),
-            )
-            .unwrap();
+        init.set_data(Some("x"));
+        let before = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        textarea.dispatch_event(&before).unwrap();
+        assert!(!before.default_prevented());
         assert!(textarea.value().contains("one();"));
         assert!(!textarea.value().contains("two();"));
         editorNativeInput(&textarea, "x", "insertText", false);
@@ -9277,9 +9274,17 @@ async fn overflowing_file_tabs_keep_height_scroll_and_nodes_stable_in_both_modes
         let first = mounted.element("[data-editor-tab='long-file-name-0.txt']");
         let badge = first.query_selector(".editor-tab-dirty").unwrap().unwrap();
         let width = first.get_bounding_client_rect().width();
+        tabs.style().set_property("overflow-x", "scroll").unwrap();
+        settle().await;
         let height = tabs.get_bounding_client_rect().height();
         tabs.set_scroll_left(120.0);
+        // Force a classic scrollbar and vary the available width: a percentage
+        // button height must not feed back into the strip's intrinsic height.
+        tabs.style().set_property("overflow-x", "scroll").unwrap();
         for dirty in [true, false, true, false] {
+            tabs.style()
+                .set_property("max-width", if dirty { "250px" } else { "300px" })
+                .unwrap();
             mounted.state.workspace.dirty.set(dirty);
             mounted
                 .state
@@ -9475,6 +9480,202 @@ async fn settled_fonts_do_not_invalidate_initial_editor_geometry_in_both_modes()
                 mounted.state.workspace.editor_font_epoch.get_untracked() > epoch
             })
             .await;
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn cancellable_text_groups_unicode_multi_cursor_edits_and_keeps_native_fallback_in_both_modes()
+ {
+    use openwebide_core::editor::{Document, Selection};
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("typing.txt".into()));
+            state.workspace.content.set("a\r\na".into());
+            let mut document = Document::new("a\r\na");
+            document
+                .set_selections(vec![Selection::caret(0), Selection::caret(3)])
+                .unwrap();
+            state.workspace.editor_documents.update(|documents| {
+                documents.insert((1, "typing.txt".into()), document);
+            });
+            editor_view(state)
+        });
+        settle().await;
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        for text in ["文😀", "!"] {
+            let init = web_sys::InputEventInit::new();
+            init.set_bubbles(true);
+            init.set_cancelable(true);
+            init.set_input_type("insertText");
+            init.set_data(Some(text));
+            let before =
+                web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+            input.dispatch_event(&before).unwrap();
+            assert!(!before.default_prevented());
+            editorNativeInput(&input, text, "insertText", false);
+            settle().await;
+        }
+        let expected = "文😀!a\r\n文😀!a";
+        assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+        assert_eq!(input.value(), expected.replace("\r\n", "\n"));
+        editor_key(&input, "z", true, false);
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "a\r\na");
+        editor_key(&input, "y", true, false);
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_input_type("insertText");
+        init.set_data(Some("?"));
+        let before = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        input.dispatch_event(&before).unwrap();
+        assert!(!before.default_prevented());
+        assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+        editorNativeInput(&input, "?", "insertText", false);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "文😀!?a\r\n文😀!?a"
+        );
+        let source_before = mounted.state.workspace.content.get_untracked();
+        let input_before = input.value();
+        let oversized = "x".repeat(openwebide_core::editor::MAX_EDITOR_LINE_BYTES + 1);
+        init.set_cancelable(true);
+        init.set_data(Some(&oversized));
+        let before = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        input.dispatch_event(&before).unwrap();
+        assert!(!before.default_prevented());
+        editorNativeInput(&input, &oversized, "insertText", false);
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            source_before
+        );
+        assert_eq!(input.value(), input_before);
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-error[role='alert']")
+                .unwrap()
+                .is_some()
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn declared_native_commits_keep_native_value_and_reject_stale_scopes_in_both_modes() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        for change in 0..8 {
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("native.txt".into()));
+                state.workspace.content.set("hello".into());
+                editor_view(state)
+            });
+            settle().await;
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            input.set_selection_range(0, 0).unwrap();
+            let audit = js_sys::Function::new_with_args("input", r#"
+                const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+                const state = {sets: 0};
+                Object.defineProperty(input, 'value', {configurable: true,
+                    get() { return descriptor.get.call(this); },
+                    set(value) { state.sets++; descriptor.set.call(this, value); }});
+                return state;
+            "#).call1(&wasm_bindgen::JsValue::NULL, &input).unwrap();
+            let init = web_sys::InputEventInit::new();
+            init.set_bubbles(true);
+            init.set_cancelable(true);
+            init.set_input_type("insertText");
+            init.set_data(Some("X"));
+            let before =
+                web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+            input.dispatch_event(&before).unwrap();
+            assert!(!before.default_prevented());
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_text_insertion
+                    .get_untracked()
+                    .is_some()
+            );
+            match change {
+                1 => mounted.state.workspace.content.set("new source".into()),
+                2 => mounted
+                    .state
+                    .workspace
+                    .editor_read_revision
+                    .update(|revision| *revision += 1),
+                3 => mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation += 1),
+                4 => mounted
+                    .state
+                    .workspace
+                    .editor_fold_revision
+                    .update(|revision| *revision += 1),
+                6 => mounted
+                    .state
+                    .workspace
+                    .pending_epoch
+                    .update(|epoch| *epoch += 1),
+                7 => mounted
+                    .state
+                    .workspace
+                    .open_file
+                    .set(Some("other.txt".into())),
+                _ => {}
+            }
+            editorNativeInput(
+                &input,
+                if change == 5 { "Y" } else { "X" },
+                "insertText",
+                false,
+            );
+            settle().await;
+            assert_eq!(
+                mounted.state.workspace.content.get_untracked(),
+                match change {
+                    0 | 4 => "Xhello",
+                    1 => "new source",
+                    5 => "Yhello",
+                    _ => "hello",
+                }
+            );
+            if change == 0 || change == 4 {
+                assert_eq!(input.value(), "Xhello");
+                assert_eq!(
+                    js_sys::Reflect::get(&audit, &"sets".into())
+                        .unwrap()
+                        .as_f64(),
+                    Some(0.0),
+                    "native insertion must not reset the whole textarea value"
+                );
+            }
+            js_sys::Function::new_with_args("input", "delete input.value")
+                .call1(&wasm_bindgen::JsValue::NULL, &input)
+                .unwrap();
         }
     }
 }

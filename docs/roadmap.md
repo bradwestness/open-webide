@@ -139,7 +139,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   still invalidate them.
   Finish uncached initial/cold
   shaping and bidirectional visual-run windows, then further incremental access:
-  edits still materialize
+  declared browser-native text now commits through guarded shared grouped
+  insertion transactions instead of full-value diff/replay, with common newline policy and native
+  IME/non-cancellable fallbacks. Edits still materialize
   full Strings and shift
   suffix coordinates. Native offset and line/column queries now use shared sparse
   Unicode checkpoints in long rows, including folded views; native/WASM benchmarks

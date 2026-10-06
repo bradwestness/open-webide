@@ -241,7 +241,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                         last = at; requestAnimationFrame(tick);
                     }
                     requestAnimationFrame(tick);
-                    document.addEventListener('input', event => {
+                    document.addEventListener('beforeinput', event => {
                         if (event.target.matches('textarea[data-editor-path]')) editorViewMeasurement.inputAt = performance.now();
                     }, true);
                 """.replace("__TRACE__", json.dumps(trace))}})
@@ -365,6 +365,7 @@ if __name__ == "__main__":
                       **host_constraints(),
                       "repetitions": args.repeat,
                       "measurementImage": os.environ.get("EDITOR_VIEW_IMAGE"),
+                      "inputTimingStart": "beforeinput",
                       "checkoutHead": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                       "browser": subprocess.check_output([os.environ["CHROME"], "--version"], text=True).strip() if os.environ.get("CHROME") else "WebDriver default"}), flush=True)
     for case in args.cases:
