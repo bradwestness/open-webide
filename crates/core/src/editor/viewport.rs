@@ -6,6 +6,42 @@ pub const MAX_MEASURE_BYTES: usize = 64 * 1024;
 /// Give native input and visible paint a turn during cold preparation.
 pub const MAX_MEASURE_BATCHES_PER_FRAME: usize = 8;
 
+/// A window inside an exactly measured wrapped logical line. Reject irregular
+/// heights rather than estimating where the browser placed its wrap boundaries.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "The finite positive row count is bounded before conversion"
+)]
+pub fn wrapped_paint_window(
+    bytes: usize,
+    measured_height: f64,
+    line_height: f64,
+    scroll: f64,
+    viewport_height: f64,
+) -> Option<EditorViewport> {
+    if bytes <= MAX_MEASURE_BYTES
+        || bytes > super::MAX_EDITOR_BYTES
+        || !measured_height.is_finite()
+        || !line_height.is_finite()
+        || !(1.0..=4096.0).contains(&line_height)
+        || !scroll.is_finite()
+        || !viewport_height.is_finite()
+        || viewport_height <= 0.0
+    {
+        return None;
+    }
+    let rows = (measured_height / line_height).round();
+    if !(1.0..=1_000_000_000.0 / line_height).contains(&rows)
+        || (rows * line_height - measured_height).abs() > 0.5
+    {
+        return None;
+    }
+    let window =
+        EditorViewport::unwrapped(rows as usize, scroll, viewport_height, line_height, 0.0);
+    (window.rows.len() < rows as usize).then_some(window)
+}
+
 /// Small projections can be measured in their visible paint. Larger ones use
 /// temporary batches instead of allocating a full document of styled DOM nodes.
 pub const fn needs_measured_batches(rows: usize, bytes: usize) -> bool {
@@ -402,6 +438,34 @@ mod tests {
             let view = EditorViewport::unwrapped(100, value, value, value, value);
             assert!(view.rows.start <= view.rows.end && view.rows.end <= 100);
             assert!(view.top.is_finite() && view.height.is_finite());
+        }
+    }
+
+    #[test]
+    fn wrapped_fragments_use_exact_height_and_bounded_visual_overscan() {
+        let window = wrapped_paint_window(100_000, 195_000.0, 19.5, 19_500.0, 390.0).unwrap();
+        assert_eq!(window.rows, 992..1029);
+        assert!((window.height - 195_000.0).abs() < f64::EPSILON);
+        assert!((window.top - 19_344.0).abs() < f64::EPSILON);
+        let end = wrapped_paint_window(100_000, 195_000.0, 19.5, f64::MAX, 390.0).unwrap();
+        assert_eq!(end.rows, 9991..10_000);
+        for (bytes, height, line, scroll, viewport) in [
+            (64 * 1024, 195_000.0, 19.5, 0.0, 390.0),
+            (
+                super::super::MAX_EDITOR_BYTES + 1,
+                195_000.0,
+                19.5,
+                0.0,
+                390.0,
+            ),
+            (100_000, 195_001.0, 19.5, 0.0, 390.0),
+            (100_000, f64::INFINITY, 19.5, 0.0, 390.0),
+            (100_000, 195_000.0, 0.0, 0.0, 390.0),
+            (100_000, 195_000.0, 19.5, f64::NAN, 390.0),
+            (100_000, 195_000.0, 19.5, 0.0, 0.0),
+            (100_000, 19.5, 19.5, 0.0, 390.0),
+        ] {
+            assert!(wrapped_paint_window(bytes, height, line, scroll, viewport).is_none());
         }
     }
 }

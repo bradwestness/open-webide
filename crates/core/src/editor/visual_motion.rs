@@ -189,6 +189,17 @@ impl VisualLayout {
         Ok(result)
     }
 
+    /// Default soft-wrap affinity for a measured source caret. Consumers that
+    /// reveal a selection use the same following-row affinity as cursor motion.
+    pub fn caret(&self, offset: usize) -> Option<VisualCaret> {
+        self.carets
+            .values()
+            .flat_map(|row| row.iter())
+            .filter(|caret| caret.offset == offset)
+            .max_by_key(|caret| caret.row)
+            .copied()
+    }
+
     pub(super) fn target(
         &self,
         at: usize,

@@ -78,6 +78,29 @@ fn paint_rows(paint: &EditorRowPaint) -> Option<Vec<PaintRow<'_>>> {
         .collect()
 }
 impl EditorActions {
+    /// Shared selection of visual paint windows; DOM adapters supply exact row
+    /// geometry and source boundaries, independent of the workspace transport.
+    pub fn wrapped_paint_window(
+        self,
+        row: usize,
+        line_height: f64,
+        scroll: f64,
+        viewport_height: f64,
+    ) -> Option<openwebide_core::editor::EditorViewport> {
+        if !self.preferences().word_wrap {
+            return None;
+        }
+        let projection = self.projection()?;
+        let measured = self.measured_rows()?;
+        let top = measured.rows.top(row)?;
+        openwebide_core::editor::wrapped_paint_window(
+            projection.lines().get(row)?.source.len(),
+            measured.rows.top(row + 1)? - top,
+            line_height,
+            scroll - top,
+            viewport_height,
+        )
+    }
     pub(super) fn row_paint_current(self, paint: &EditorRowPaint) -> bool {
         self.key().as_ref() == Some(&paint.key)
             && self.workspace.pending_epoch.get_untracked() == paint.epoch

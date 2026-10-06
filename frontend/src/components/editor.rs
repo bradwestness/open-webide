@@ -94,6 +94,7 @@ pub(super) struct EditorPaint {
     pub ticket: u64,
     pub flush: Callback<()>,
     pub neighborhood: Callback<(), Option<openwebide_core::editor::VisualLayout>>,
+    pub caret: Callback<usize, Option<web_sys::DomRect>>,
 }
 
 fn editor_selection_key(
@@ -346,7 +347,12 @@ fn editor_row_height(textarea: &web_sys::HtmlTextAreaElement) -> f64 {
         .unwrap_or(19.5)
 }
 
-fn navigate_editor(actions: EditorActions, textarea: &web_sys::HtmlTextAreaElement, offset: usize) {
+fn navigate_editor(
+    actions: EditorActions,
+    textarea: &web_sys::HtmlTextAreaElement,
+    offset: usize,
+    paint: RwSignal<Option<EditorPaint>>,
+) {
     if let (Some(projection), Some(measured)) = (actions.projection(), actions.measured_rows())
         && let Ok(visible) = projection.visible_offset(offset)
     {
@@ -368,7 +374,7 @@ fn navigate_editor(actions: EditorActions, textarea: &web_sys::HtmlTextAreaEleme
         }
     }
 
-    navigate_editor_with_retry(actions, textarea, offset, true);
+    navigate_editor_with_retry(actions, textarea, offset, true, paint);
 }
 
 fn navigate_editor_with_retry(
@@ -376,6 +382,7 @@ fn navigate_editor_with_retry(
     textarea: &web_sys::HtmlTextAreaElement,
     offset: usize,
     retry: bool,
+    paint: RwSignal<Option<EditorPaint>>,
 ) {
     let Ok(selection) = actions.navigate(offset) else {
         return;
@@ -436,6 +443,7 @@ fn navigate_editor_with_retry(
                     .unwrap_or(40.0);
                 {
                     let rect = caret_rect(&target, column)
+                        .or_else(|| paint.get_untracked()?.caret.run(offset))
                         .unwrap_or_else(|| target.get_bounding_client_rect());
                     textarea.set_scroll_top(
                         (textarea.scroll_top() + rect.top()
@@ -461,7 +469,7 @@ fn navigate_editor_with_retry(
                             && actions.source() == source_at_navigation
                             && actions.selection(&source_at_navigation) == Some(selection)
                         {
-                            navigate_editor_with_retry(actions, &textarea, offset, false);
+                            navigate_editor_with_retry(actions, &textarea, offset, false, paint);
                         }
                     });
                 }
@@ -1069,6 +1077,32 @@ fn HighlightOverlay(
             actions.end_row_preparation(ticket);
         }
     });
+    let fragment_windows = Memo::new(move |_| {
+        layout_revision.track();
+        let Some(input) = textarea_ref.get() else {
+            return Vec::new();
+        };
+        let Some(projection) = actions.projection() else {
+            return Vec::new();
+        };
+        visible
+            .get()
+            .iter()
+            .filter_map(|source_line| {
+                let index = projection
+                    .lines()
+                    .binary_search_by_key(source_line, |line| line.source_line)
+                    .ok()?;
+                let window = actions.wrapped_paint_window(
+                    index,
+                    editor_row_height(&input),
+                    input.scroll_top() - 12.0,
+                    f64::from(input.client_height()),
+                )?;
+                Some((index, window))
+            })
+            .collect::<Vec<_>>()
+    });
     let rendered = RwSignal::new(String::new());
     let rendered_scope = RwSignal::new(0_u64);
     let request = StoredValue::new(None::<i32>);
@@ -1101,6 +1135,17 @@ fn HighlightOverlay(
                 )
             })
         });
+        let html = textarea_ref
+            .get_untracked()
+            .and_then(|input| {
+                super::editor_geometry::window_paint(
+                    actions,
+                    &input,
+                    &html,
+                    &fragment_windows.get_untracked(),
+                )
+            })
+            .unwrap_or(html);
         if immediate && let Some(overlay) = node_ref.get_untracked() {
             if let Ok(Some(content)) = overlay.query_selector(".editor-highlight-content") {
                 content.set_inner_html(&html);
@@ -1142,28 +1187,34 @@ fn HighlightOverlay(
     let callback = StoredValue::new_local(Closure::<dyn FnMut()>::new(move || paint.run(false)));
     paint_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
     let paint_ticket = paint_epoch.get_untracked();
-    paint_request.set(Some(EditorPaint {
-        ticket: paint_ticket,
-        neighborhood: Callback::new(move |()| {
-            if generation.is_disposed() {
-                return None;
-            }
-            let input = textarea_ref.get_untracked()?;
-            super::editor_geometry::neighborhood_layout(actions, &input, |rows, suffix| {
-                tokens.with_untracked(|(prepared, tokens)| {
-                    guides.with_untracked(|guides| {
-                        highlight_html(
-                            tokens,
-                            *prepared,
-                            guides,
-                            PaintRows::measured(rows),
-                            indentation.get_untracked(),
-                            show_whitespace.get_untracked(),
-                            suffix,
-                        )
-                    })
+    let neighborhood = Callback::new(move |()| {
+        if generation.is_disposed() {
+            return None;
+        }
+        let input = textarea_ref.get_untracked()?;
+        super::editor_geometry::neighborhood_layout(actions, &input, |rows, suffix| {
+            tokens.with_untracked(|(prepared, tokens)| {
+                guides.with_untracked(|guides| {
+                    highlight_html(
+                        tokens,
+                        *prepared,
+                        guides,
+                        PaintRows::measured(rows),
+                        indentation.get_untracked(),
+                        show_whitespace.get_untracked(),
+                        suffix,
+                    )
                 })
             })
+        })
+    });
+    paint_request.set(Some(EditorPaint {
+        ticket: paint_ticket,
+        neighborhood,
+        caret: Callback::new(move |offset| {
+            let input = textarea_ref.get_untracked()?;
+            let layout = neighborhood.run(())?;
+            super::editor_geometry::layout_caret_rect(actions, &input, &layout, offset)
         }),
         flush: Callback::new(move |()| {
             if generation.is_disposed() {
@@ -1188,6 +1239,7 @@ fn HighlightOverlay(
         // Resolve the projection before scheduling paint, so reading it in the
         // frame callback cannot invalidate and queue a second paint afterward.
         visible.with(|_| ());
+        fragment_windows.with(|_| ());
         ready.set(false);
         let current_path = open_file.get();
         let mounted = node_ref.get().is_some();
@@ -1868,7 +1920,7 @@ pub fn Editor(
             && current_editor_target(editor_actions, &textarea)
         {
             go_open.set(false);
-            navigate_editor(editor_actions, &textarea, offset);
+            navigate_editor(editor_actions, &textarea, offset, paint_request);
         }
     });
     let jump_bracket = Callback::new(move |()| {
@@ -1878,7 +1930,7 @@ pub fn Editor(
             let source = content.get_untracked();
             let selection = projected_selection(editor_actions, &textarea, &source);
             if let Some((_, target)) = editor_actions.matching_bracket(selection.head) {
-                navigate_editor(editor_actions, &textarea, target);
+                navigate_editor(editor_actions, &textarea, target, paint_request);
             }
         }
     });
@@ -2089,7 +2141,15 @@ pub fn Editor(
                     root.query_selector(&format!(".editor-highlight .editor-source-line[data-line='{line}']"))
                 {
                     let row: web_sys::HtmlElement = row.unchecked_into();
-                    textarea.set_scroll_top(f64::from(row.offset_top().saturating_sub(12)));
+                    let source_offset = openwebide_core::editor::utf16_to_byte(&source, start as usize);
+                    let caret = caret_rect(&row, column)
+                        .or_else(|| paint_request.get_untracked()?.caret.run(source_offset));
+                    if let Some(caret) = caret {
+                        textarea.set_scroll_top((textarea.scroll_top() + caret.top()
+                            - textarea.get_bounding_client_rect().top() - 12.0).max(0.0));
+                    } else {
+                        textarea.set_scroll_top(f64::from(row.offset_top().saturating_sub(12)));
+                    }
                     if let Some(Some(overlay)) = hl.try_get_untracked() {
                         sync_highlight_scroll(&textarea, &overlay);
                         let gutter = window().get_computed_style(&textarea).ok().flatten().and_then(|style| style.get_property_value("padding-left").ok()).and_then(|padding| padding.trim_end_matches("px").parse::<f64>().ok()).unwrap_or(40.0);

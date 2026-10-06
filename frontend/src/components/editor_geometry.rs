@@ -34,7 +34,7 @@ impl TextNodes {
                 return None;
             }
             if node.node_type() == web_sys::Node::TEXT_NODE {
-                let length = u32::try_from(node.node_value()?.encode_utf16().count()).ok()?;
+                let length = node.dyn_ref::<web_sys::Text>()?.length();
                 result.push((node, offset, length));
                 offset = offset.checked_add(length)?;
             } else {
@@ -114,6 +114,164 @@ impl Glyphs {
     }
 }
 
+/// Retain the logical row's exact height while copying only its measured visual
+/// interval. Cloning the DOM range preserves token/whitespace spans. Verify every
+/// retained glyph after reshaping: paragraph-dependent bidi, tabs or ligatures
+/// must never silently move text to a different source position.
+fn window_paint_row(
+    row: &web_sys::Element,
+    body: &str,
+    window: &openwebide_core::editor::EditorViewport,
+    line_height: f64,
+) -> Option<()> {
+    let text = row.text_content()?;
+    if text.strip_suffix('\n').unwrap_or(&text) != body.replace('\r', "\n") {
+        return None;
+    }
+    let bounds = row.get_bounding_client_rect();
+    if (bounds.height() - window.height).abs() > 0.5 {
+        return None;
+    }
+    let metrics = VisualMetrics {
+        identity: String::new(),
+        left: bounds.left(),
+        top: bounds.top(),
+        line_height,
+        caret_height: line_height,
+        caret_inset: 0.0,
+        rows: measured_row((window.height / line_height).round())?,
+    };
+    let mut glyphs = Glyphs::new(row, body)?;
+    let first = glyphs.first_on_row(window.rows.start, &metrics)?;
+    let last = glyphs.first_on_row(window.rows.end, &metrics)?;
+    if first == last || last - first > MAX_VISUAL_CARETS {
+        return None;
+    }
+    let byte_start = glyphs.offsets[first].0;
+    let byte_end = glyphs.offsets[last].0;
+    let native_start = glyphs.offsets[first].1;
+    let native_end = if window.rows.end == metrics.rows {
+        row.get_attribute("data-paint-length")?.parse().ok()?
+    } else {
+        glyphs.offsets[last].1
+    };
+    let expected = (first..last)
+        .map(|index| glyphs.rect(index))
+        .collect::<Option<Vec<_>>>()?;
+    let (start, at) = glyphs.nodes.position(u32::try_from(native_start).ok()?)?;
+    let (end, to) = glyphs.nodes.position(u32::try_from(native_end).ok()?)?;
+    let range = document().create_range().ok()?;
+    range.set_start(start, at).ok()?;
+    range.set_end(end, to).ok()?;
+    let fragment = document().create_element("span").ok()?;
+    fragment.set_class_name("editor-source-fragment");
+    fragment
+        .set_attribute("data-paint-start", &native_start.to_string())
+        .ok()?;
+    fragment
+        .set_attribute("data-paint-end", &native_end.to_string())
+        .ok()?;
+    fragment
+        .set_attribute(
+            "style",
+            &format!(
+                "position:absolute;left:0;right:0;top:{}px;display:block",
+                window.top
+            ),
+        )
+        .ok()?;
+    fragment
+        .append_child(&range.clone_contents().ok()?.into())
+        .ok()?;
+    let original = row.inner_html();
+    let original_style = row.get_attribute("style").unwrap_or_default();
+    row.set_attribute(
+        "style",
+        &format!("{original_style};height:{}px", window.height),
+    )
+    .ok()?;
+    row.set_inner_html("");
+    let valid = (|| {
+        row.append_child(&fragment).ok()?;
+        let mut painted = Glyphs::new(&fragment, &body[byte_start..byte_end])?;
+        for (index, old) in expected.iter().enumerate() {
+            let new = painted.rect(index)?;
+            if (new.left() - old.left()).abs() > 0.5
+                || (new.top() - old.top()).abs() > 0.5
+                || (new.width() - old.width()).abs() > 0.5
+                || (new.height() - old.height()).abs() > 0.5
+            {
+                return None;
+            }
+        }
+        ((row.get_bounding_client_rect().height() - bounds.height()).abs() <= 0.5).then_some(())
+    })();
+    if valid.is_none() {
+        row.set_inner_html(&original);
+        let _ = row.set_attribute("style", &original_style);
+    } else {
+        let _ = row.set_attribute("data-paint-top", &window.top.to_string());
+    }
+    valid
+}
+
+/// A temporary styled probe supplies exact glyph boundaries. Source ownership,
+/// layout identity and window policy come from the common editor facade.
+pub(super) fn window_paint(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+    html: &str,
+    windows: &[(usize, openwebide_core::editor::EditorViewport)],
+) -> Option<String> {
+    if windows.is_empty() {
+        return None;
+    }
+    if !current_editor_target(actions, input) {
+        return None;
+    }
+    let identity = super::editor_rows::metrics_identity(input)?;
+    let measured = actions.measured_rows()?;
+    if measured.metrics != identity {
+        return None;
+    }
+    let projection = actions.projection()?;
+    let revision = actions.view_revision();
+    let style = window().get_computed_style(input).ok()??;
+    let line_height = style
+        .get_property_value("line-height")
+        .ok()?
+        .trim_end_matches("px")
+        .parse::<f64>()
+        .ok()?;
+    let source = actions.source();
+    let (_probe, paint) = super::editor_rows::styled_row_probe(input).ok()?;
+    paint.set_inner_html(html);
+    let mut changed = false;
+    for (index, window) in windows {
+        let line = &projection.lines()[*index];
+        let raw = &source[line.source.clone()];
+        let body = raw
+            .strip_suffix("\r\n")
+            .or_else(|| raw.strip_suffix('\n'))
+            .unwrap_or(raw);
+        let row = paint
+            .query_selector(&format!(
+                ".editor-source-line[data-line='{}']",
+                line.source_line + 1
+            ))
+            .ok()??;
+        changed |= window_paint_row(&row, body, window, line_height).is_some();
+    }
+    if !changed
+        || actions.view_revision() != revision
+        || !current_editor_target(actions, input)
+        || super::editor_rows::metrics_identity(input).as_ref() != Some(&identity)
+    {
+        return None;
+    }
+    Some(paint.inner_html())
+}
+
 pub(super) struct VisualMetrics {
     pub identity: String,
     pub left: f64,
@@ -168,7 +326,17 @@ pub(super) fn visual_metrics(
     {
         return None;
     }
-    let caret = super::editor::caret_rect(&first, 0).filter(|rect| rect.height() > 0.0);
+    let caret_offset = first
+        .query_selector(".editor-source-fragment")
+        .ok()?
+        .and_then(|fragment| fragment.get_attribute("data-paint-start"))
+        .and_then(|offset| offset.parse().ok())
+        .unwrap_or(0);
+    let paint_top = first
+        .get_attribute("data-paint-top")
+        .and_then(|top| top.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let caret = super::editor::caret_rect(&first, caret_offset).filter(|rect| rect.height() > 0.0);
     Some(VisualMetrics {
         identity,
         left: first_rect.left(),
@@ -177,7 +345,7 @@ pub(super) fn visual_metrics(
         caret_height: caret.as_ref().map_or(line_height, web_sys::DomRect::height),
         caret_inset: caret
             .as_ref()
-            .map_or(0.0, |caret| caret.top() - first_rect.top()),
+            .map_or(0.0, |caret| caret.top() - first_rect.top() - paint_top),
         rows: measured_row(
             (if document_height > 0.0 {
                 document_height
@@ -494,6 +662,29 @@ pub(super) fn neighborhood_layout(
         return None;
     }
     VisualLayout::neighborhood(&source, projection, identity, &lines, carets).ok()
+}
+
+/// Reveal an omitted source caret using the same validated neighborhood layout
+/// as wrapped movement, translated from probe coordinates into the viewport.
+pub(super) fn layout_caret_rect(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+    layout: &VisualLayout,
+    offset: usize,
+) -> Option<web_sys::DomRect> {
+    if !current_editor_target(actions, input) {
+        return None;
+    }
+    let metrics = visual_metrics(actions, input)?;
+    let visible = actions.projection()?.visible_offset(offset).ok()?;
+    let caret = layout.caret(visible)?;
+    web_sys::DomRect::new_with_x_and_y_and_width_and_height(
+        metrics.left + caret.column as f64 / 64.0,
+        caret_top(actions, input, &metrics, caret.row)?,
+        0.0,
+        metrics.caret_height,
+    )
+    .ok()
 }
 
 /// Translate a line-relative caret ID only when painting into a real viewport.

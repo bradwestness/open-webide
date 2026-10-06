@@ -112,9 +112,14 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   paint coverage with independent clipping across omitted fragments. Rendered
   rows now publish projected native fragment offsets; pointer hits use the same
   coverage map and reject stale paint scopes.
-  Rendering still paints complete logical rows. Finish fine paint within very
-  long logical rows,
-  then further incremental access: edits still materialize full Strings and shift
+  Very long wrapped logical rows now retain exact logical heights while painting
+  overscanned visual fragments. Temporary probes preserve styled source spans and
+  validate every retained glyph after reshaping, falling back to complete rows if
+  geometry changes. Both-mode contracts cover scrolling, native pointer offsets,
+  queued cursor movement and Find into omitted text. Unwrapped long rows still
+  paint complete source. Finish horizontal fragments and cache visual boundaries
+  so scrolling avoids repeated full-row temporary shaping, then further incremental
+  access: edits still materialize full Strings and shift
   suffix coordinates. Native offset and line/column queries now use shared sparse
   Unicode checkpoints in long rows, including folded views; native/WASM benchmarks
   cover lookup and construction costs. Glyph preparation still scans within a long

@@ -6456,7 +6456,14 @@ async fn long_wrapped_lines_move_cursors_without_measuring_the_entire_line_in_bo
         })
         .await;
         let runs = mounted.root.query_selector_all(".editor-text-run").unwrap();
-        assert!(runs.length() > 100);
+        assert!(runs.length() > 0 && runs.length() < 100);
+        let painted = mounted.element(".editor-highlight-content");
+        assert!(painted.text_content().unwrap().len() < 16_384);
+        assert!(
+            mounted
+                .element(".editor-source-line")
+                .has_attribute("data-paint-top")
+        );
         for index in 0..runs.length() {
             assert!(runs.item(index).unwrap().text_content().unwrap().len() <= 516);
         }
@@ -6476,7 +6483,10 @@ async fn long_wrapped_lines_move_cursors_without_measuring_the_entire_line_in_bo
         input.set_selection_range(at, at).unwrap();
         let before = actions.selections(&expected);
         assert_eq!(before.len(), 2);
-        let measured = measure_wrapped_key(&input, "ArrowDown");
+        let measured =
+            wasm_bindgen_futures::JsFuture::from(measure_wrapped_key(&input, "ArrowDown"))
+                .await
+                .unwrap();
         let measured = js_sys::Array::from(&measured);
         assert_eq!(measured.get(0).as_bool(), Some(true));
         let count = measured.get(1).as_f64().unwrap();
@@ -6492,6 +6502,10 @@ async fn long_wrapped_lines_move_cursors_without_measuring_the_entire_line_in_bo
             assert!(expected.is_char_boundary(after.head));
         }
         assert!(editor_key(&input, "ArrowUp", false, false).default_prevented());
+        wait_until("queued long-line Up", || {
+            actions.selections(&expected) == before
+        })
+        .await;
         assert_eq!(actions.selections(&expected), before);
         assert_eq!(actions.source(), expected);
         assert!(!mounted.state.workspace.dirty.get_untracked());
@@ -6506,24 +6520,25 @@ async fn long_wrapped_lines_move_cursors_without_measuring_the_entire_line_in_bo
 }
 
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
-export function measureWrappedKey(input, key) {
+export async function measureWrappedKey(input, key) {
     const original = Range.prototype.getClientRects;
     let count = 0;
     Range.prototype.getClientRects = function() { ++count; return original.call(this); };
     const event = new KeyboardEvent('keydown', {key, bubbles:true, cancelable:true});
     const start = performance.now();
     try {
+        const before = input.selectionStart;
         input.dispatchEvent(event);
+        for (let frame = 0; input.selectionStart === before && frame < 60; ++frame) {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+        }
         return [event.defaultPrevented, count, performance.now() - start];
     } finally { Range.prototype.getClientRects = original; }
 }
 "#)]
 extern "C" {
     #[wasm_bindgen(js_name = measureWrappedKey)]
-    fn measure_wrapped_key(
-        input: &web_sys::HtmlTextAreaElement,
-        key: &str,
-    ) -> wasm_bindgen::JsValue;
+    fn measure_wrapped_key(input: &web_sys::HtmlTextAreaElement, key: &str) -> js_sys::Promise;
 }
 
 #[wasm_bindgen_test]
@@ -8285,5 +8300,152 @@ async fn cold_neighborhoods_flush_arrows_before_native_edits_composition_and_cli
                 }
             }
         }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = format!(
+            "{}needle-end\r\nshort\r\n",
+            "文😀e\u{301}\t words ".repeat(10_000)
+        );
+        let original = source.clone();
+        let normalized: Vec<_> = source.replace("\r\n", "\n").encode_utf16().collect();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("window.txt".into()));
+            state.workspace.content.set(source.clone());
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = true);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        wait_until("fine wrapped paint", || {
+            mounted
+                .root
+                .query_selector(".editor-source-line[data-paint-top]")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let height = mounted
+            .element(".editor-source-line")
+            .get_bounding_client_rect()
+            .height();
+        assert!(height > 10_000.0);
+        for top in [10_000.0, height - 1000.0, 0.0] {
+            input.set_scroll_top(top);
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("fragment follows scrolling inside one logical row", || {
+                mounted
+                    .element(".editor-source-line")
+                    .get_attribute("data-paint-top")
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .is_some_and(|paint_top| (paint_top - input.scroll_top()).abs() < 200.0)
+            })
+            .await;
+            let row = mounted.element(".editor-source-line");
+            assert!((row.get_bounding_client_rect().height() - height).abs() < 0.5);
+            let fragment = row
+                .query_selector(":scope > .editor-source-fragment")
+                .unwrap()
+                .unwrap();
+            let start: usize = fragment
+                .get_attribute("data-paint-start")
+                .unwrap()
+                .parse()
+                .unwrap();
+            let end: usize = fragment
+                .get_attribute("data-paint-end")
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(
+                fragment.text_content().unwrap(),
+                String::from_utf16(&normalized[start..end]).unwrap()
+            );
+            assert!(fragment.text_content().unwrap().len() < 16_384);
+            assert_eq!(input.value(), original.replace("\r\n", "\n"));
+            let bounds = input.get_bounding_client_rect();
+            let hit = openwebide_frontend::viewport::editor_caret_from_point(
+                &input,
+                bounds.left() + 6.0,
+                bounds.top() + 26.0,
+            )
+            .unwrap() as usize;
+            assert!((start..end).contains(&hit));
+            assert_eq!(
+                web_sys::window()
+                    .unwrap()
+                    .document()
+                    .unwrap()
+                    .query_selector_all(".editor-row-measure")
+                    .unwrap()
+                    .length(),
+                0
+            );
+        }
+        mounted.click("button[aria-label^='Find in file']");
+        settle().await;
+        let search: web_sys::HtmlInputElement =
+            mounted.element(".editor-find input").unchecked_into();
+        search.set_value("needle-end");
+        search
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        wait_until(
+            "find reveals omitted text inside a long logical row",
+            || {
+                if input.scroll_top() <= height - 1000.0 {
+                    return false;
+                }
+                let fragment = mounted.element(".editor-source-fragment");
+                let mut pending = vec![web_sys::Node::from(fragment)];
+                while let Some(node) = pending.pop() {
+                    if node.node_type() == web_sys::Node::TEXT_NODE
+                        && let Some(value) = node.node_value()
+                        && let Some(byte) = value.find("needle-end")
+                    {
+                        let at = u32::try_from(value[..byte].encode_utf16().count()).unwrap();
+                        let range = web_sys::window()
+                            .unwrap()
+                            .document()
+                            .unwrap()
+                            .create_range()
+                            .unwrap();
+                        range.set_start(&node, at).unwrap();
+                        range.set_end(&node, at + 10).unwrap();
+                        let rect = range.get_bounding_client_rect();
+                        let pane = input.get_bounding_client_rect();
+                        return rect.top() >= pane.top() && rect.bottom() <= pane.bottom();
+                    }
+                    let children = node.child_nodes();
+                    pending.extend((0..children.length()).filter_map(|index| children.item(index)));
+                }
+                false
+            },
+        )
+        .await;
+        assert!(input.scroll_top() > height - 1000.0);
+        assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        assert!(
+            mounted
+                .root
+                .query_selector("[role='alert']")
+                .unwrap()
+                .is_none()
+        );
     }
 }
