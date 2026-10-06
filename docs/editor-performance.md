@@ -79,4 +79,69 @@ The existing both-mode Unicode/CRLF regression keeps two cursors deep inside the
 
 Syntax preparation now runs in a Rust/WASM worker, with bounded shared cache retention, validated coordinates and coalesced requests. The built-worker Chrome check exercises all providers, incremental Unicode/CRLF, a UI event during preparation and oversized-source fallback. These correctness checks do not measure total editor memory or latency.
 
-Remaining work: full viewport paint, end-to-end input/scroll latency and memory benchmarks, full-editor large-file fallbacks and real-device verification. Storage microbenchmarks do not prove any of those complete.
+Remaining work: bounded cold and fine wrapped viewport paint, incremental input/source access, responsiveness and memory validation at the admission boundaries, and real-device verification. The production baselines below establish observations rather than completing that validation. Storage microbenchmarks do not prove those items complete.
+
+## Production view and process memory
+
+`python3 tools/measure-editor-view.py` runs the built app against disposable
+Spin/SQLite accounts and fresh Chrome process trees. It hydrates the same saved
+editor source in local and remote modes, inserts text through Chrome's native input
+path, scrolls to 70% of the document, and waits for current source/layout paint.
+Wrapped readiness additionally requires an exact height table. Local cases do not
+grant an OS directory handle; these measure editor behavior rather than filesystem
+permissions. Each source contains Unicode, and multi-line sources retain CRLF.
+
+The harness records load-to-paint, input-to-paint, scroll-to-paint, frame intervals,
+main-thread long tasks, main WASM committed memory before/after input, DOM size, and
+Chrome process-tree RSS at 200 ms intervals. Linux additionally reports apportioned
+PSS when every owned process's `smaps_rollup` is readable. Summed RSS counts shared
+pages repeatedly; it is not unique resident memory. Main WASM allocation excludes
+worker instances; process-tree measurements include their hosting renderer. Samples
+can miss brief peaks. These are complete application workloads, including recovery,
+background preparation and deferred saves, rather than isolated core operations.
+Input timing includes the native event through paint observation; cold timing also
+includes navigation and recovery transport. Results are single observations, not
+percentiles or pass/fail latency budgets.
+
+On 2026-10-06, macOS arm64 and Chrome 148, the built geometry checkpoint `645c91f`
+(with concurrent branding/welcome working changes) produced these observations.
+The raw records identify the compiled JS module hash, browser version and checkout.
+
+| Workload | Mode | Wrap | Cold ms | Input ms | Scroll ms | Main WASM after input MiB | Sampled peak summed RSS GiB |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 58 KB / 1,001 rows | Local | Off | 550 | 37 | 31 | 22.8 | 1.02 |
+| 58 KB / 1,001 rows | Remote | Off | 525 | 36 | 6 | 22.9 | 1.02 |
+| 2 MiB / 36,158 rows | Local | Off | 1,035 | 254 | 124 | 89.0 | 1.34 |
+| 2 MiB / 36,158 rows | Remote | Off | 1,027 | 265 | 124 | 91.0 | 1.38 |
+| 100,000 rows | Local | Off | 896 | 202 | 134 | 46.1 | 1.38 |
+| 100,000 rows | Remote | Off | 1,177 | 200 | 131 | 46.1 | 1.40 |
+| Near 8 MiB byte limit | Local | Off | 1,541 | 358 | 148 | 239.9 | 1.66 |
+| Near 8 MiB byte limit | Remote | Off | 1,631 | 331 | 145 | 234.2 | 1.68 |
+| 58 KB / 1,001 rows | Local | On | 694 | 167 | 26 | 25.9 | 1.10 |
+| 58 KB / 1,001 rows | Remote | On | 721 | 174 | 24 | 26.1 | 1.10 |
+| Near 1 MiB single-line limit | Local | On | 2,122 | 447 | 17 | 48.4 | 3.76 |
+| Near 1 MiB single-line limit | Remote | On | 2,159 | 402 | 11 | 49.1 | 4.39 |
+
+Full records: [unwrapped JSONL](editor-performance/production-view-unwrapped.jsonl),
+[wrapped JSONL](editor-performance/production-view-wrapped.jsonl). To repeat:
+
+```bash
+NO_COLOR=true spin build
+CHROMEDRIVER=<driver> CHROME=<chrome> python3 tools/measure-editor-view.py \
+  --cases small medium line-limit byte-limit
+CHROMEDRIVER=<driver> CHROME=<chrome> python3 tools/measure-editor-view.py \
+  --cases small long-line --wrap
+```
+
+An earlier separate 2 MiB wrapped local attempt timed out waiting for WebDriver
+to observe cold paint. It did not establish a completed latency or memory result,
+and remote completion at that size was not checked. The near-1 MiB wrapped line
+also produced frame stalls above 1.5 seconds and several GiB of sampled summed
+RSS despite a bounded final DOM. A bounded warm row count alone therefore does
+not prove bounded shaping, cold layout, native input or overall memory.
+
+These results contradict treating the current admission limits as validated
+responsiveness limits. Finish bounded cold measurement/paint, finer rendering
+within very long wrapped rows, and incremental input/source access; then repeat
+these cases with memory sampling, including Linux PSS, and verify the previously
+unresponsive wrapped workloads before closing the roadmap item.

@@ -453,6 +453,8 @@ legacy oversized drafts fail recovery admission without replacing current
 buffers or deleting persisted recovery data.
 
 These admission limits bound source and metadata growth; they are not a claim
-that wrapped viewport paint or total editor memory has been benchmarked. The
-remaining roadmap work measures input/scroll latency and total memory, and
-finishes measured wrapped viewport rendering.
+that bounded cold wrapped paint or unique total editor memory has been validated.
+Production input/scroll and process-memory baselines are recorded in
+[editor performance](editor-performance.md); they still reveal stalls at admitted
+file-size boundaries. Remaining work bounds cold and long-row wrapped rendering,
+reduces input/source costs, and repeats responsiveness and memory validation.

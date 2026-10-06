@@ -107,8 +107,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Shared admission now bounds full-editor bytes, display breaks and long lines
   before allocating document metadata. Oversized files use bounded read-only
   pages, including before/after review sources; interactive transactions enforce
-  the same limits. Finish end-to-end input/scroll and total-memory measurements
-  to validate these limits and wrapped rendering at their boundaries.
+  the same limits. Production input/scroll and process-memory baselines now cover
+  admitted byte, row-count and long-line boundaries in both modes; they still show
+  stalls and costly wrapped shaping/cold paint. Finish bounded cold/long-row paint
+  and incremental input, then repeat the boundary workloads (including Linux PSS)
+  and the unresponsive wrapped cases before validating these limits.
   Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,
   preserving multiline state and discarding partial rows on cancellation.
   Reindent preserves
