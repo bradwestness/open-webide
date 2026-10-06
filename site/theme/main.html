@@ -3,9 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ page.title if page else 'Page not found' }} · {{ config.site_name }}</title>
-  <meta name="description" content="{{ page.meta.description if page and page.meta.description else config.site_description }}">
-  {% if page and page.canonical_url %}<link rel="canonical" href="{{ page.canonical_url }}">{% endif %}
+  {% set title = config.site_name if page and page.is_homepage else ((page.title if page else 'Page not found') ~ ' · ' ~ config.site_name) %}
+  {% set description = page.meta.description if page and page.meta.description else config.site_description %}
+  {% set canonical = config.site_url if page and page.is_homepage else (page.canonical_url if page else '') %}
+  {% set image = config.site_url ~ 'assets/social-card.png' %}
+  {% set image_alt = 'Open WebIDE house and terminal logo. Your code. Your models. Your browser. openwebide.com.' %}
+  <title>{{ title | e }}</title>
+  <meta name="description" content="{{ description | e }}">
+  {% if canonical %}<link rel="canonical" href="{{ canonical | e }}">{% endif %}
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{ config.site_name | e }}">
+  <meta property="og:title" content="{{ title | e }}">
+  <meta property="og:description" content="{{ description | e }}">
+  {% if canonical %}<meta property="og:url" content="{{ canonical | e }}">{% endif %}
+  <meta property="og:image" content="{{ image | e }}">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="{{ image_alt | e }}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ title | e }}">
+  <meta name="twitter:description" content="{{ description | e }}">
+  <meta name="twitter:image" content="{{ image | e }}">
+  <meta name="twitter:image:alt" content="{{ image_alt | e }}">
   <link rel="icon" href="{{ 'frontend/pwa/favicon.svg' | url }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ 'assets/shared.css' | url }}">
   <link rel="stylesheet" href="{{ 'assets/site.css' | url }}">
@@ -47,6 +67,6 @@
       {% else %}<h1>Page not found</h1><p><a href="{{ nav.homepage.url | url }}">Return home</a></p>{% endif %}
     </main>
   </div>
-  <footer>Open WebIDE · <a href="{{ config.repo_url }}/blob/main/LICENSE">MIT licensed</a> · <a href="{{ config.repo_url }}/releases">Releases</a> · <a href="{{ config.repo_url }}/issues">Feedback &amp; support</a> · <a href="https://bsky.app/profile/did:plc:vw3hdjhj2253v3hc6cjtt4ys" rel="me">Bluesky</a> · <a href="https://mastodon.social/@openwebide" rel="me">Mastodon</a> · <a href="https://www.youtube.com/@OpenWebIDE">YouTube</a></footer>
+  <footer>Open WebIDE · <a href="{{ 'docs/open-source-software.html' | url }}">Open source credits</a> · <a href="{{ config.repo_url }}/blob/main/LICENSE">MIT licensed</a> · <a href="{{ config.repo_url }}/releases">Releases</a> · <a href="{{ config.repo_url }}/issues">Feedback &amp; support</a> · <a href="https://bsky.app/profile/did:plc:vw3hdjhj2253v3hc6cjtt4ys" rel="me">Bluesky</a> · <a href="https://mastodon.social/@openwebide" rel="me">Mastodon</a> · <a href="https://www.youtube.com/@OpenWebIDE">YouTube</a></footer>
 </body>
 </html>

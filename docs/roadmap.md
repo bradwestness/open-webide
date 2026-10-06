@@ -282,8 +282,8 @@ landed — before sharing the repo publicly.
   Spin variables, settings), upgrade/migration notes and troubleshooting.
 - **Public launch & support:** finish the [generated project site](project-site.md) for 1.0 with
   release-ready landing-page copy and an optional demo. The site already has a dedicated
-  homepage, a PWA screenshot, and builds documentation from repository Markdown, with GitHub Issues for feedback
-  and support. Add a site link to the README once deployed, add issue templates for bugs, feature
+  homepage, a PWA screenshot, social link previews, and generated open-source credits.
+  It builds documentation from repository Markdown, with GitHub Issues for feedback and support. Add a site link to the README once deployed, add issue templates for bugs, feature
   requests and support questions, and prepare community announcements and directory submissions.
 - **Documentation & architecture diagrams** (Mermaid in `docs/`, rendered on GitHub, updated in the
   same PR as the code they describe):

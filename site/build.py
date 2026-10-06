@@ -13,6 +13,8 @@ from urllib.parse import unquote, urlsplit
 
 import yaml
 
+from credits import render as render_credits
+
 ROOT = Path(__file__).resolve().parent.parent
 REPO_URL = "https://github.com/openwebide/openwebide"
 
@@ -77,6 +79,8 @@ def build(output, site_url):
         staging = Path(temporary)
         content = staging / "content"
         shutil.copytree(ROOT / "docs", content / "docs")
+        credits = content / "docs/open-source-software.md"
+        credits.write_text(credits.read_text().replace("<!-- dependency-inventory -->", render_credits(ROOT)))
         for name in ("README.md", "CHANGELOG.md", "LICENSE"):
             shutil.copy2(ROOT / name, content / name)
         shutil.copy2(ROOT / "site/index.md", content / "index.md")

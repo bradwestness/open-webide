@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add Open Graph and Twitter large-image previews to every website page, plus an open-source credits page generated from Cargo and site-build dependency metadata.
+
 - Add a WebFinger discovery alias for `@openwebide@openwebide.com` that resolves to the existing Mastodon account.
 
 - Show a screenshot of the running PWA on the project landing page, with a full-resolution image for sharing.

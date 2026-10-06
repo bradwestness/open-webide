@@ -3,9 +3,9 @@ name: Project site
 on:
   push:
     branches: [main]
-    paths: ['site/**', 'docs/**', 'README.md', 'CHANGELOG.md', 'LICENSE', 'frontend/styles.css', 'frontend/pwa/favicon.svg', '.github/workflows/pages.yml']
+    paths: ['Cargo.toml', 'Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'site/**', 'docs/**', 'README.md', 'CHANGELOG.md', 'LICENSE', 'frontend/styles.css', 'frontend/pwa/favicon.svg', '.github/workflows/pages.yml']
   pull_request:
-    paths: ['site/**', 'docs/**', 'README.md', 'CHANGELOG.md', 'LICENSE', 'frontend/styles.css', 'frontend/pwa/favicon.svg', '.github/workflows/pages.yml']
+    paths: ['Cargo.toml', 'Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'site/**', 'docs/**', 'README.md', 'CHANGELOG.md', 'LICENSE', 'frontend/styles.css', 'frontend/pwa/favicon.svg', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -25,9 +25,13 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: site/requirements.txt
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: pip install -r site/requirements.txt
       - name: Build and validate site
         run: python site/build.py --output "$RUNNER_TEMP/project-site"
+        env:
+          RUSTUP_TOOLCHAIN: stable
       # The Pages convenience action excludes dot directories, including .well-known.
       - name: Package site including WebFinger discovery
         run: |
