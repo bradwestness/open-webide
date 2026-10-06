@@ -1206,6 +1206,7 @@ pub fn Editor(
     let file_tree_actions = use_context::<crate::state_actions::file_tree::FileTreeActions>();
     let read_only = Signal::derive(move || {
         read_only.get()
+            || workspace.editor_loading.get()
             || workspace.is_resolving()
             || file_tree_actions.is_some_and(|actions| actions.busy.get())
     });

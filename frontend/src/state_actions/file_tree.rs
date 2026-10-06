@@ -157,8 +157,15 @@ impl FileTreeActions {
         });
         let ignore_dirty = matches!(mutation, Mutation::Ignore(..))
             && self.workspace.open_file.get_untracked().as_deref() == Some(".gitignore");
-        if self.workspace.dirty.get_untracked()
-            && (affected || ignore_dirty)
+        let retained_dirty = self.workspace.editor_buffers.with_untracked(|buffers| {
+            buffers.iter().any(|((project, path), buffer)| {
+                Some(*project) == self.workspace.active_project.get_untracked()
+                    && buffer.dirty
+                    && (contains_path(mutation.path(), path)
+                        || (matches!(mutation, Mutation::Ignore(..)) && path == ".gitignore"))
+            })
+        });
+        if ((self.workspace.dirty.get_untracked() && (affected || ignore_dirty)) || retained_dirty)
             && !mutation.discards()
         {
             return Err("Save or discard the editor's unsaved changes first".into());
@@ -226,9 +233,13 @@ impl FileTreeActions {
                             .map(|path| moved_path(path, from, to).unwrap_or_else(|| path.clone()))
                             .collect();
                     });
-                    if let Some(path) = self.workspace.open_file.get_untracked()
-                        && let Some(path) = moved_path(&path, from, to)
-                    {
+                    let moved = self
+                        .workspace
+                        .open_file
+                        .get_untracked()
+                        .and_then(|path| moved_path(&path, from, to));
+                    self.close_affected(from);
+                    if let Some(path) = moved {
                         self.open.run(path);
                     }
                 }
@@ -244,6 +255,7 @@ impl FileTreeActions {
                 if current()
                     && self.workspace.open_file.get_untracked().as_deref() == Some(".gitignore")
                 {
+                    self.close_affected(".gitignore");
                     self.open.run(".gitignore".into());
                 }
             }
@@ -268,6 +280,11 @@ impl FileTreeActions {
                     }))?;
                 }
                 repo.path_action(request).await?;
+                if current() && request.action == GitPathAction::Revert {
+                    for path in &paths {
+                        self.invalidate_buffers(path);
+                    }
+                }
                 if current()
                     && request.action == GitPathAction::Revert
                     && let Some(open) = self.workspace.open_file.get_untracked()
@@ -280,6 +297,7 @@ impl FileTreeActions {
                         .is_some();
                     if current() {
                         if exists {
+                            self.close_affected(&open);
                             self.open.run(open);
                         } else {
                             self.close_affected(&open);
@@ -290,7 +308,20 @@ impl FileTreeActions {
         }
         Ok(())
     }
+    fn invalidate_buffers(self, path: &str) {
+        let project = self.workspace.active_project.get_untracked();
+        self.workspace.editor_buffers.update(|buffers| {
+            buffers.retain(|(id, file), _| Some(*id) != project || !contains_path(path, file));
+        });
+        self.workspace.editor_documents.update(|documents| {
+            documents.retain(|(id, file), _| Some(*id) != project || !contains_path(path, file));
+        });
+        self.workspace.editor_scroll.update(|positions| {
+            positions.retain(|(id, file), _| Some(*id) != project || !contains_path(path, file));
+        });
+    }
     fn close_affected(self, path: &str) {
+        self.invalidate_buffers(path);
         self.workspace
             .expanded
             .update(|dirs| dirs.retain(|dir| !contains_path(path, dir)));

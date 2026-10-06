@@ -239,3 +239,16 @@ Search is bounded to 2 MiB source files, 64 KiB patterns and 100,000 matches;
 replacement output is limited to 32 MiB. Empty search input has no matches.
 Zero-width regex matches advance at Unicode boundaries and replacement is one
 finite transaction. Large-file worker/viewport support remains roadmap work.
+
+## File buffers
+
+Opening another file retains unsaved text for the current app lifetime; it no
+longer asks to discard the previous file. Returning restores its document history,
+selection, folds and scroll position. Clean files are read again to pick up disk
+changes; unsaved files keep their text. Save writes only the selected file.
+
+Filesystem actions protect unsaved buffers even when another file is selected.
+Confirmed delete/revert clears affected buffers. Loading temporarily disables
+editing, and late reads cannot replace newer input or another account/project.
+File tabs and database draft/reload recovery are still on the roadmap; refreshing
+currently loses these in-memory buffers.

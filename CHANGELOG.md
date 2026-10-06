@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain independent unsaved editor buffers when navigating between files, alongside each document's undo history, selections, folds and scroll position. Protect pending reads from newer input, project/account switches and repeated opens; guard hidden drafts against file mutations and clear affected buffers after confirmed delete/revert. Both filesystem modes use the same workspace facade. File tabs and database draft/reload recovery remain in progress.
+
 - Use shared parser contexts for paired typing/deletion and Enter, selecting the language per cursor in HTML script/style bodies and exposing template interpolation code while protecting literals. Retain bounded lexical fallback for incomplete input, including nested/escaped JavaScript templates. Reject stale contexts before changing text or history; remaining command contexts and richer highlighting stay on the roadmap.
 
 - Parse JavaScript and CSS bodies inside HTML independently, preserving global fold coordinates through Unicode/CRLF edits and declared-type changes. Share cancellation, recovery and bounded injection policy in both workspace modes; embedded-language editing and highlighting remain in progress. Use stable Chrome in CI and optimize grammar dependencies in development builds.

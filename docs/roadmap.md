@@ -93,8 +93,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   controls, Alt-click/column gestures and secondary selection paint share the same
   facade. Arrow movement retains all cursors with grapheme, word, logical-line and
   sticky-column behavior. Finish visual-row movement when word wrap is enabled and
-  real-device input/clipboard verification for multiple cursors; file tabs
-  still need independent dirty buffers, history, caret and scroll state. Persist the
+  real-device input/clipboard verification for multiple cursors. File navigation now
+  retains independent dirty buffers, history, caret and scroll state in memory,
+  with protected reads and filesystem mutation guards. Add the file tab strip and
+  close/discard controls. Persist the
   selected editor file per project in user-scoped database state and reopen it after
   refresh or in a new window, with workspace permissions and stale-result guards.
   Coordinate draft/reload recovery with the existing Offline & error-state recovery

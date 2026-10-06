@@ -16,6 +16,14 @@ pub struct EditorComposition {
     pub epoch: u64,
 }
 
+/// A loaded file retained independently of the currently selected document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorBuffer {
+    pub content: String,
+    pub dirty: bool,
+    pub read_only: bool,
+}
+
 /// Workspace data preserved while a project is not the active tab.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceSnapshot {
@@ -52,6 +60,9 @@ pub struct WorkspaceState {
     pub counted_agent_writes: RwSignal<HashSet<(i64, String)>>,
     pub media_url: RwSignal<Option<String>>,
     pub snapshots: RwSignal<HashMap<i64, WorkspaceSnapshot>>,
+    pub editor_buffers: RwSignal<HashMap<(i64, String), EditorBuffer>>,
+    pub editor_loading: RwSignal<bool>,
+    pub editor_read_revision: RwSignal<u64>,
     pub editor_documents: RwSignal<HashMap<(i64, String), openwebide_core::editor::Document>>,
     // Browser parser allocation is thread-local; the wrapper enforces owner-thread access.
     pub editor_syntax: RwSignal<
@@ -97,6 +108,9 @@ impl WorkspaceState {
             counted_agent_writes: RwSignal::new(HashSet::new()),
             media_url: RwSignal::new(None),
             snapshots: RwSignal::new(HashMap::new()),
+            editor_buffers: RwSignal::new(HashMap::new()),
+            editor_loading: RwSignal::new(false),
+            editor_read_revision: RwSignal::new(0),
             editor_documents: RwSignal::new(HashMap::new()),
             editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(HashMap::new())),
             editor_scroll: RwSignal::new(HashMap::new()),
@@ -156,7 +170,47 @@ impl WorkspaceState {
         self.apply_snapshot(WorkspaceSnapshot::default());
     }
 
+    /// Retain text separately from Document's history, selections and folds.
+    pub fn retain_editor_buffer(&self, read_only: bool) {
+        if self.editor_loading.get_untracked() && !self.dirty.get_untracked() {
+            return;
+        }
+        if let Some(key) = self
+            .active_project
+            .get_untracked()
+            .zip(self.open_file.get_untracked())
+        {
+            let buffer = EditorBuffer {
+                content: self.content.get_untracked(),
+                dirty: self.dirty.get_untracked(),
+                read_only,
+            };
+            self.editor_buffers.update(|buffers| {
+                buffers.insert(key, buffer);
+            });
+        }
+    }
+
+    /// Every open has its own revision, including reopening the same path.
+    pub fn begin_editor_read(&self) -> u64 {
+        self.editor_read_revision
+            .update(|revision| *revision = revision.wrapping_add(1));
+        self.editor_read_revision.get_untracked()
+    }
+
+    pub fn editor_read_current(&self, revision: u64, project: i64, path: &str) -> bool {
+        self.editor_read_revision.try_get_untracked() == Some(revision)
+            && self.active_project.try_get_untracked() == Some(Some(project))
+            && self
+                .open_file
+                .try_with_untracked(|value| value.as_deref() == Some(path))
+                == Some(true)
+    }
+
     pub fn reset(&self) {
+        self.editor_buffers.set(HashMap::new());
+        self.editor_loading.set(false);
+        self.begin_editor_read();
         self.editor_documents.set(HashMap::new());
         self.editor_composition.set(None);
         self.editor_syntax
@@ -272,6 +326,8 @@ impl WorkspaceState {
     }
 
     fn apply_snapshot(&self, snapshot: WorkspaceSnapshot) {
+        self.begin_editor_read();
+        self.editor_loading.set(false);
         self.entries.set(snapshot.entries);
         self.expanded.set(snapshot.expanded);
         self.open_file.set(snapshot.open_file);
@@ -328,6 +384,32 @@ mod tests {
             );
             assert_eq!(workspace.content.get_untracked(), "project one");
             assert!(workspace.dirty.get_untracked());
+        });
+    }
+
+    #[test]
+    fn file_buffers_and_read_revisions_are_account_and_project_scoped() {
+        Owner::new().with(|| {
+            let workspace = WorkspaceState::with_active_project(RwSignal::new(Some(1)));
+            workspace.open_file.set(Some("one.rs".into()));
+            workspace.content.set("draft".into());
+            workspace.dirty.set(true);
+            workspace.retain_editor_buffer(false);
+            let old = workspace.begin_editor_read();
+            let latest = workspace.begin_editor_read();
+            assert!(!workspace.editor_read_current(old, 1, "one.rs"));
+            assert!(workspace.editor_read_current(latest, 1, "one.rs"));
+            workspace.switch_project(Some(1), 2);
+            assert!(!workspace.editor_read_current(latest, 1, "one.rs"));
+            assert_eq!(
+                workspace.editor_buffers.get_untracked()[&(1, "one.rs".into())].content,
+                "draft"
+            );
+            workspace.reset();
+            assert!(workspace.editor_buffers.get_untracked().is_empty());
+            workspace.active_project.set(Some(1));
+            workspace.open_file.set(Some("one.rs".into()));
+            assert!(!workspace.editor_read_current(latest, 1, "one.rs"));
         });
     }
 

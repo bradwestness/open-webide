@@ -979,3 +979,152 @@ async fn preview_availability_and_pdf_blob_contract_work_in_both_modes() {
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn switching_files_preserves_independent_edits_history_and_positions_in_both_modes() {
+    use openwebide_core::editor::{Indentation, Selection};
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    for local in [false, true] {
+        let folder = if local {
+            Some(treeFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(treeHandle);
+        let capture = std::rc::Rc::new(std::cell::Cell::new(None));
+        let slot = capture.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            if let Some(handle) = handle {
+                state
+                    .projects
+                    .projects
+                    .update(|items| items[0].mode = WorkspaceMode::Local);
+                state.projects.local_handles.update(|items| {
+                    items.insert(1, handle.unchecked_into());
+                });
+            }
+            let actions = WorkspaceActions::new(
+                state.api,
+                state.projects,
+                state.workspace,
+                state.ui,
+                RwSignal::new(false),
+                Callback::new(|()| ()),
+            );
+            slot.set(Some((
+                actions,
+                EditorActions::new(state.workspace),
+                expect_context::<FileTreeActions>(),
+            )));
+            view! { <div /> }
+        });
+        let (actions, editor, tree) = capture.get().unwrap();
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        files.write("a.txt", "Original").await.unwrap();
+        files.write("b.txt", "Second").await.unwrap();
+        actions.request_open.run("a.txt".into());
+        wait_until("File read completed", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        settle().await;
+        editor
+            .native_input("Original!".into(), Selection::caret(9), "insertText", 1.0)
+            .unwrap();
+        editor.record_scroll(1, "a.txt", 90.0, 12.0);
+        actions.request_open.run("b.txt".into());
+        wait_until("File read completed", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        settle().await;
+        assert!(mounted.state.ui.confirm.get_untracked().is_none());
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "Second");
+        editor
+            .native_input("Second?".into(), Selection::caret(7), "insertText", 2.0)
+            .unwrap();
+        actions.request_open.run("a.txt".into());
+        wait_until("File read completed", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "Original!");
+        assert!(mounted.state.workspace.dirty.get_untracked());
+        assert_eq!(editor.selection("Original!"), Some(Selection::caret(9)));
+        assert!((editor.scroll().top - 90.0).abs() < f64::EPSILON);
+        editor
+            .command(
+                EditorCommand::Undo,
+                Selection::caret(9),
+                Indentation::default(),
+            )
+            .unwrap();
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "Original");
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        actions.request_open.run("b.txt".into());
+        wait_until("File read completed", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "Second?");
+        assert_eq!(files.read("a.txt").await.unwrap(), "Original");
+        assert_eq!(files.read("b.txt").await.unwrap(), "Second");
+        // Input arriving while a read is pending must win, even for facade callers.
+        actions.request_open.run("third.txt".into());
+        mounted.state.workspace.content.set("new input".into());
+        mounted.state.workspace.dirty.set(true);
+        wait_until("File read completed", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "new input");
+        assert!(!mounted.state.workspace.editor_loading.get_untracked());
+        tree.move_entry(&file("b.txt"), true);
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .ui
+                .toast
+                .get_untracked()
+                .unwrap()
+                .contains("unsaved")
+        );
+        assert!(mounted.state.ui.prompt.get_untracked().is_none());
+        assert_eq!(files.read("b.txt").await.unwrap(), "Second");
+        if local {
+            mounted.state.projects.local_handles.update(|handles| {
+                handles.remove(&1);
+            });
+        } else {
+            mounted
+                .state
+                .projects
+                .projects
+                .update(|items| items[0].path = Some("/different-root".into()));
+        }
+        actions.request_open.run("a.txt".into());
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("third.txt")
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "new input");
+        assert!(
+            mounted
+                .state
+                .ui
+                .toast
+                .get_untracked()
+                .unwrap()
+                .contains("folder changed")
+        );
+        if let Some(folder) = folder {
+            treeCleanup(&folder).await.unwrap();
+        }
+    }
+}
