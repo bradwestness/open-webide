@@ -10,6 +10,18 @@ impl Document {
         if text.is_empty() {
             return Ok(false);
         }
+        if text.len() > super::MAX_DOCUMENT_BYTES {
+            return Err(EditError::OutputTooLarge);
+        }
+        let retained = self
+            .selections
+            .iter()
+            .fold(self.text.len(), |size, selection| {
+                size - selection.range().len()
+            });
+        let mut budget = super::MAX_DOCUMENT_BYTES
+            .checked_sub(retained)
+            .ok_or(EditError::OutputTooLarge)?;
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         let pasted: Vec<_> = normalized.split('\n').collect();
         let common = pasted
@@ -28,18 +40,14 @@ impl Document {
             .unwrap_or_else(|| LineEnding::detect(&self.text))
             .text();
         if normalized.trim().is_empty() {
+            if normalized.len().saturating_add(
+                normalized.bytes().filter(|byte| *byte == b'\n').count() * (ending.len() - 1),
+            ) > super::MAX_DOCUMENT_BYTES
+            {
+                return Err(EditError::OutputTooLarge);
+            }
             let text = normalized.replace('\n', ending);
-            return self.apply_caret_edits(
-                self.selections
-                    .iter()
-                    .map(|selection| {
-                        (
-                            Edit::replace(selection.range(), &text),
-                            Selection::caret(text.len()),
-                        )
-                    })
-                    .collect(),
-            );
+            return self.replace_selections(&text, None);
         }
         let changes = self
             .selections
@@ -56,7 +64,7 @@ impl Document {
                 let mut inserted = String::new();
                 for (index, line) in pasted.iter().enumerate() {
                     if index > 0 {
-                        inserted.push_str(ending);
+                        push_bounded(&mut inserted, ending, &mut budget)?;
                     }
                     let body = line.trim_start_matches([' ', '\t']);
                     if body.is_empty() {
@@ -64,23 +72,81 @@ impl Document {
                     }
                     let prefix = &line[..line.len() - body.len()];
                     let relative = indentation.visual_width(prefix).saturating_sub(common);
-                    inserted.push_str(&if index == 0 {
-                        indentation.columns_from(indentation.visual_width(before), relative)
+                    let (start, width) = if index == 0 {
+                        (indentation.visual_width(before), relative)
                     } else {
-                        indentation.columns(columns + relative)
-                    });
-                    inserted.push_str(body);
+                        (0, columns + relative)
+                    };
+                    let size = indentation.columns_from_len(start, width);
+                    if size > budget {
+                        return Err(EditError::OutputTooLarge);
+                    }
+                    push_bounded(
+                        &mut inserted,
+                        &indentation.columns_from(start, width),
+                        &mut budget,
+                    )?;
+                    push_bounded(&mut inserted, body, &mut budget)?;
                 }
                 let caret = inserted.len();
-                (Edit::replace(range, inserted), Selection::caret(caret))
+                Ok((Edit::replace(range, inserted), Selection::caret(caret)))
             })
-            .collect();
+            .collect::<Result<Vec<_>, EditError>>()?;
         self.apply_caret_edits(changes)
     }
+}
+fn push_bounded(output: &mut String, text: &str, budget: &mut usize) -> Result<(), EditError> {
+    *budget = budget
+        .checked_sub(text.len())
+        .ok_or(EditError::OutputTooLarge)?;
+    output.push_str(text);
+    Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn replicated_paste_limits_are_atomic_for_text_and_whitespace() {
+        let mut doc = Document::new("x".repeat(super::super::MAX_SELECTIONS));
+        doc.set_selections(
+            (0..super::super::MAX_SELECTIONS)
+                .map(Selection::caret)
+                .collect(),
+        )
+        .unwrap();
+        for clipboard in ["x".repeat(65_536), " ".repeat(65_536)] {
+            let before = doc.clone();
+            assert_eq!(
+                doc.paste_with_indentation(&clipboard, Indentation::default(), None),
+                Err(EditError::OutputTooLarge)
+            );
+            assert_eq!(doc, before);
+        }
+    }
+
+    #[test]
+    fn indentation_preflight_matches_actual_tabs_and_spaces() {
+        for style in [
+            super::super::IndentStyle::Spaces,
+            super::super::IndentStyle::Tabs,
+        ] {
+            for tab_width in 1..=16 {
+                let indentation = Indentation {
+                    style,
+                    tab_width,
+                    width: 4,
+                };
+                for start in 0..=32 {
+                    for width in 0..=64 {
+                        assert_eq!(
+                            indentation.columns_from_len(start, width),
+                            indentation.columns_from(start, width).len()
+                        );
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn empty_clipboard_does_not_delete_a_selection() {
         let mut doc = Document::new("keep");

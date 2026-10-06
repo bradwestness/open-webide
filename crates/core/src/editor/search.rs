@@ -6,7 +6,6 @@ use regex::{Regex, RegexBuilder};
 use super::{Document, Edit, EditError, Selection};
 
 const MAX_MATCHES: usize = 100_000;
-const MAX_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchOptions {
@@ -188,7 +187,7 @@ impl SearchPattern {
         index: Option<usize>,
     ) -> Result<Vec<Edit>, SearchError> {
         let scope = Self::scope(text, scope)?;
-        if replacement.len() > MAX_OUTPUT_BYTES {
+        if replacement.len() > super::MAX_DOCUMENT_BYTES {
             return Err(SearchError::OutputTooLarge);
         }
         let Some(pattern) = &self.compiled else {
@@ -218,7 +217,9 @@ impl SearchPattern {
                     replacement,
                     |index, output| {
                         if let Some(capture) = captures.get(index) {
-                            if output.len().saturating_add(capture.len()) > MAX_OUTPUT_BYTES {
+                            if output.len().saturating_add(capture.len())
+                                > super::MAX_DOCUMENT_BYTES
+                            {
                                 exceeded = true;
                             } else if !exceeded {
                                 output.push_str(capture.as_str());
@@ -237,7 +238,7 @@ impl SearchPattern {
             output = output
                 .saturating_sub(range.len())
                 .saturating_add(inserted.len());
-            if output > MAX_OUTPUT_BYTES {
+            if output > super::MAX_DOCUMENT_BYTES {
                 return Err(SearchError::OutputTooLarge);
             }
             edits.push(Edit::replace(range, inserted));

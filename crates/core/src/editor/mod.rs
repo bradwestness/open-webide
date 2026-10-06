@@ -11,6 +11,10 @@ pub use navigation::{
     indent_guide_columns, line_column, matching_bracket, navigation_target, offset_at_line_column,
 };
 pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
+mod selections;
+pub use selections::{
+    MAX_SELECTIONS, SelectionCommand, SelectionError, column_selections, normalize_selections,
+};
 mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
 mod projection;
@@ -106,6 +110,8 @@ pub enum EditError {
     InvalidRange,
     OverlappingEdits,
     InvalidSelection,
+    TooManySelections,
+    OutputTooLarge,
 }
 
 impl std::fmt::Display for EditError {
@@ -116,6 +122,8 @@ impl std::fmt::Display for EditError {
             Self::InvalidSelection => {
                 "Selection is outside the document or splits a Unicode character"
             }
+            Self::TooManySelections => "The editor supports up to 512 selections",
+            Self::OutputTooLarge => "Edit would exceed the 32 MiB editing limit",
         })
     }
 }
@@ -149,10 +157,12 @@ pub struct Document {
     history_bytes: usize,
     revision: u64,
     folds: FoldState,
+    selection_history: Vec<Vec<Selection>>,
 }
 
 const HISTORY_BYTES: usize = 16 * 1024 * 1024;
 const HISTORY_STEPS: usize = 1_000;
+pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 
 impl Document {
     pub fn new(text: impl Into<String>) -> Self {
@@ -166,6 +176,7 @@ impl Document {
             history_bytes: 0,
             revision: 0,
             folds: FoldState::default(),
+            selection_history: Vec::new(),
         }
     }
 
@@ -191,6 +202,7 @@ impl Document {
     }
 
     pub fn fold_command(&mut self, command: FoldCommand) {
+        let before = self.selections.clone();
         let line = self.text[..self.selections[0].head]
             .bytes()
             .filter(|byte| *byte == b'\n')
@@ -218,6 +230,11 @@ impl Document {
             {
                 *selection = source;
             }
+        }
+        self.selections = normalize_selections(&self.text, self.selections.clone())
+            .expect("fold projections preserve source selection boundaries");
+        if self.selections != before {
+            self.selection_history.clear();
         }
     }
 
@@ -250,7 +267,10 @@ impl Document {
     }
 
     pub fn set_selections(&mut self, selections: Vec<Selection>) -> Result<(), EditError> {
-        validate_selections(&self.text, &selections)?;
+        let selections = normalize_selections(&self.text, selections)?;
+        if selections != self.selections {
+            self.selection_history.clear();
+        }
         self.selections = selections;
         Ok(())
     }
@@ -266,9 +286,22 @@ impl Document {
     ) -> Result<bool, EditError> {
         edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
         validate_edits(&self.text, &edits)?;
+        let output = edits
+            .iter()
+            .try_fold(self.text.len(), |size, edit| {
+                size.checked_sub(edit.range.len())
+                    .and_then(|size| size.checked_add(edit.text.len()))
+            })
+            .ok_or(EditError::OutputTooLarge)?;
+        if output > MAX_DOCUMENT_BYTES {
+            return Err(EditError::OutputTooLarge);
+        }
         let (text, inverse) = replace_edits(&self.text, &edits);
-        validate_selections(&text, &after)?;
+        let after = normalize_selections(&text, after)?;
         if text == self.text {
+            if self.selections != after {
+                self.selection_history.clear();
+            }
             self.selections = after;
             return Ok(false);
         }
@@ -312,6 +345,7 @@ impl Document {
         self.folds.rebase(&self.text, &text);
         self.text = text;
         self.selections = after;
+        self.selection_history.clear();
         self.revision = self.revision.wrapping_add(1);
         Ok(true)
     }
@@ -330,6 +364,7 @@ impl Document {
         self.folds.rebase(&self.text, &text);
         self.text = text;
         self.history_cursor -= 1;
+        self.selection_history.clear();
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -348,6 +383,7 @@ impl Document {
         self.folds.rebase(&self.text, &text);
         self.text = text;
         self.history_cursor += 1;
+        self.selection_history.clear();
         self.revision = self.revision.wrapping_add(1);
         true
     }

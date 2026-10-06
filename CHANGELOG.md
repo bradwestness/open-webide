@@ -11,6 +11,8 @@ for what's still ahead.
 
 ### Changed
 
+- Add shared editor selection primitives: overlap normalization, next/all occurrences, grapheme/tab-aware columns, vertical cursors and expand/shrink selection. Preserve primary order/direction, canonicalize cursors after folds and edits, and replace selected ranges with bounded aggregate allocation and grouped undo. Route selection commands through the scope-checked editor facade and retain secondary selections during editing commands in both modes. Multi-cursor view, native input/IME and clipboard integration remain in progress.
+
 - Enable database-backed Word wrap and Show whitespace controls for Edit. Preserve native source offsets and text, measure wrapped fold rows after panel resizing, keep logical gutter numbers and navigate using rendered caret geometry. Normalize CRLF only in browser paint to match the textarea, retain horizontal scrolling by default and update decorations without regenerating syntax for a wrap-only change in both modes.
 
 - Extend Find with case, Unicode whole-word and Rust regex options, source selection scope and match counts. Add next/all replacement with regex captures and atomic undo; retain Unicode/CRLF, reveal folded matches and reject invalid/stale queries or excessive match/output sizes. Keep pending review, read-only files and diff views protected, and share search/replacement policy in both modes.

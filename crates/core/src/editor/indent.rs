@@ -40,6 +40,18 @@ impl Indentation {
     pub fn columns(self, width: usize) -> String {
         self.columns_from(0, width)
     }
+    pub(super) fn columns_from_len(self, start: usize, width: usize) -> usize {
+        if self.style == IndentStyle::Spaces || width == 0 {
+            return width;
+        }
+        let first = self.tab_width() - start % self.tab_width();
+        if width < first {
+            width
+        } else {
+            let rest = width - first;
+            1 + rest / self.tab_width() + rest % self.tab_width()
+        }
+    }
     pub(super) fn columns_from(self, start: usize, width: usize) -> String {
         if self.style == IndentStyle::Spaces {
             return " ".repeat(width);
@@ -242,6 +254,14 @@ impl Document {
         &mut self,
         changes: Vec<(Edit, Selection)>,
     ) -> Result<bool, EditError> {
+        self.apply_grouped_caret_edits(changes, None)
+    }
+
+    pub(super) fn apply_grouped_caret_edits(
+        &mut self,
+        changes: Vec<(Edit, Selection)>,
+        group: Option<u64>,
+    ) -> Result<bool, EditError> {
         let mut changes: Vec<_> = changes.into_iter().enumerate().collect();
         changes.sort_by_key(|(_, (edit, _))| (edit.range.start, edit.range.end));
         let mut source = 0;
@@ -262,7 +282,7 @@ impl Document {
         self.apply(
             changes.into_iter().map(|(_, (edit, _))| edit).collect(),
             selections,
-            None,
+            group,
         )
     }
 
@@ -408,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_at_multiple_carets_is_atomic_and_overlaps_are_rejected() {
+    fn enter_at_multiple_carets_is_atomic_and_overlapping_selections_are_merged() {
         let mut doc = Document::new("{}\r\n{}");
         doc.set_selections(vec![Selection::caret(5), Selection::caret(1)])
             .unwrap();
@@ -424,16 +444,16 @@ mod tests {
         assert_eq!(doc.text(), "{}\r\n{}");
         doc.set_selections(vec![Selection { anchor: 0, head: 2 }, Selection::caret(1)])
             .unwrap();
-        let before = doc.clone();
-        assert_eq!(
-            doc.newline_with_structure(
-                Indentation::default(),
-                None,
-                crate::highlight::Language::Rust
-            ),
-            Err(EditError::OverlappingEdits)
-        );
-        assert_eq!(doc, before);
+        assert_eq!(doc.selections(), &[Selection { anchor: 0, head: 2 }]);
+        doc.newline_with_structure(
+            Indentation::default(),
+            None,
+            crate::highlight::Language::Rust,
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "\r\n\r\n{}");
+        assert!(doc.undo());
+        assert_eq!(doc.text(), "{}\r\n{}");
     }
 
     #[test]

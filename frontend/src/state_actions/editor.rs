@@ -216,6 +216,53 @@ impl EditorActions {
         })
     }
 
+    pub fn selections(self, text: &str) -> Vec<Selection> {
+        let Some(key) = self.key() else {
+            return Vec::new();
+        };
+        self.workspace.editor_documents.with_untracked(|documents| {
+            documents
+                .get(&key)
+                .filter(|document| document.text() == text)
+                .map(|document| document.selections().to_vec())
+                .unwrap_or_default()
+        })
+    }
+
+    /// Source/scope checked selection commands share the document policy in both modes.
+    pub fn selection_command(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        command: openwebide_core::editor::SelectionCommand,
+    ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
+        if !self.is_current(project, path) || self.source() != source {
+            return Ok(None);
+        }
+        let Some(key) = self.key() else {
+            return Ok(None);
+        };
+        let rules = self.rules_untracked();
+        let language = openwebide_core::highlight::language_from_path(path);
+        let result = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| {
+                let document = self.document(documents, key);
+                document.selection_command(command, language, rules.indentation)?;
+                Ok(Some(document.selections().to_vec()))
+            })
+            .unwrap_or(Ok(None));
+        if matches!(result, Ok(Some(_))) {
+            self.typing.set(None);
+            self.workspace
+                .editor_fold_revision
+                .update(|value| *value = value.wrapping_add(1));
+        }
+        result
+    }
+
     /// Parser-backed folding provider for the active buffer. DOM/worker adapters
     /// supply a deadline or cancellation primitive; all parsing policy is shared.
     pub fn syntax_folds(
@@ -534,7 +581,9 @@ impl EditorActions {
             .editor_documents
             .try_update(|documents| {
                 let document = self.document(documents, key.clone());
-                document.set_selections(vec![selection])?;
+                if document.selections().first() != Some(&selection) {
+                    document.set_selections(vec![selection])?;
+                }
                 match command {
                     EditorCommand::ConvertIndentation => {
                         document.convert_indentation(indentation, indentation.tab_width())?;
@@ -622,7 +671,9 @@ impl EditorActions {
             .editor_documents
             .try_update(|documents| {
                 let document = self.document(documents, key.clone());
-                document.set_selections(vec![selection])?;
+                if document.selections().first() != Some(&selection) {
+                    document.set_selections(vec![selection])?;
+                }
                 document.paste_with_indentation(text, rules.indentation, rules.line_ending)?;
                 Ok(Some((
                     document.text().to_string(),

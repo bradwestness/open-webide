@@ -75,10 +75,14 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   lexical bracket structure and preserves existing Python block depth; language
   formatting remains in Code intelligence.
 
-- **Selections and files:** multiple cursors, next/all matching-occurrence selection, column
-  selection and expand/shrink selection; file tabs with independent dirty buffers,
-  history, caret and scroll state. Coordinate draft/reload recovery with the existing
-  Offline & error-state recovery item instead of implementing separate persistence.
+- **Selections and files:** the shared document now normalizes overlapping selections,
+  selects next/all occurrences, maps column selections using graphemes and tab stops,
+  expands/shrinks selections and replaces multiple ranges in one grouped transaction.
+  The editor facade retains secondary selections during commands. Finish the view,
+  shortcuts, native input/IME and clipboard integration for multiple cursors; file tabs
+  still need independent dirty buffers, history, caret and scroll state. Coordinate
+  draft/reload recovery with the existing Offline & error-state recovery item instead
+  of implementing separate persistence.
 
 **Rust/WebAssembly architecture:** keep the editor in Rust/Leptos compiled to WASM;
 do not embed CodeMirror, Monaco or another substantial JavaScript editor client.

@@ -34,6 +34,104 @@ fn editor_key(
 }
 
 #[wasm_bindgen_test]
+async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_targets() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Indentation, Selection, SelectionCommand},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "文 foo\r\nfoo";
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fixture.rs".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let project = mounted
+            .state
+            .workspace
+            .active_project
+            .get_untracked()
+            .unwrap();
+        actions
+            .record_selection(Selection { anchor: 4, head: 7 })
+            .unwrap();
+        let selections = actions
+            .selection_command(
+                project,
+                "fixture.rs",
+                source,
+                SelectionCommand::AllOccurrences,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(selections.len(), 2);
+        assert_eq!(actions.selections(source), selections);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        for (project, path, source) in [
+            (project + 1, "fixture.rs", source),
+            (project, "other.rs", source),
+            (project, "fixture.rs", "stale"),
+        ] {
+            assert!(
+                actions
+                    .selection_command(project, path, source, SelectionCommand::Single)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(actions.selections(source).len(), 2);
+        let (paired, primary) = actions
+            .command(
+                EditorCommand::TypeCharacter('('),
+                selections[0],
+                Indentation::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(paired, "文 (foo)\r\n(foo)");
+        assert_eq!(actions.selections(&paired).len(), 2);
+        let (pasted, primary) = actions
+            .paste_with_indentation("😀", primary)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pasted, "文 (😀)\r\n(😀)");
+        assert_eq!(actions.selections(&pasted).len(), 2);
+        let (restored, primary) = actions
+            .command(EditorCommand::Undo, primary, Indentation::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored, paired);
+        assert_eq!(actions.selections(&restored).len(), 2);
+        let (restored, _) = actions
+            .command(EditorCommand::Undo, primary, Indentation::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored, source);
+        assert_eq!(actions.selections(&restored), selections);
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        assert!(
+            actions
+                .selection_command(project, "fixture.rs", source, SelectionCommand::Single)
+                .unwrap()
+                .is_none()
+        );
+        assert!(actions.selections(source).is_empty());
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+    }
+}
+
+#[wasm_bindgen_test]
 async fn native_typing_composition_and_invalid_edits_preserve_document_contract() {
     use openwebide_core::editor::{Indentation, Selection};
     use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
