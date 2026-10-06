@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share gap-aware editor paint coordinates for carets, bracket marks and secondary selections, with Unicode, EOF and malformed-coverage browser contracts. Keep current complete-row rendering while preparing fine long-row paint in both workspace modes.
+
 - Measure offscreen wrapped cursor neighborhoods on demand in temporary bounded batches instead of retaining hidden paint rows. Keep persistent editor paint in its viewport window and preserve exact movement for distant cursors in both workspace modes.
 
 - Bound long-line native offset and cursor line/column queries with sparse Unicode coordinate checkpoints shared by documents and folded views in both workspace modes. Preserve CRLF and surrogate boundaries through edits, undo/redo and composition; add matching native/WASM construction and query measurements.

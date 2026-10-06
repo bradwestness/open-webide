@@ -532,7 +532,7 @@ pub enum ViewMode {
     SideBySide,
 }
 
-pub(super) fn text_position(
+pub(super) fn raw_text_position(
     node: &web_sys::Node,
     offset: &mut u32,
 ) -> Option<(web_sys::Node, u32)> {
@@ -565,6 +565,13 @@ pub(super) fn text_position(
     }
     let mut end = None;
     walk(node, offset, &mut end).or(end)
+}
+
+pub(super) fn text_position(
+    node: &web_sys::Node,
+    offset: &mut u32,
+) -> Option<(web_sys::Node, u32)> {
+    super::editor_paint::position(node, *offset)
 }
 
 pub(super) fn caret_rect(text: &web_sys::Element, mut column: u32) -> Option<web_sys::DomRect> {
@@ -1790,16 +1797,10 @@ pub fn Editor(
                     if let Ok(Some(row)) =
                         parent.query_selector(&format!(".editor-source-line[data-line='{line}']"))
                     {
-                        let mut column =
-                            u32::try_from(source[start..offset].encode_utf16().count())
-                                .unwrap_or(u32::MAX);
-                        let mut end_column = column.saturating_add(1);
-                        if let Some((node, at)) = text_position(row.as_ref(), &mut column)
-                            && let Some((end_node, end_at)) =
-                                text_position(row.as_ref(), &mut end_column)
-                            && let Ok(range) = document().create_range()
-                            && range.set_start(&node, at).is_ok()
-                            && range.set_end(&end_node, end_at).is_ok()
+                        let column = u32::try_from(source[start..offset].encode_utf16().count())
+                            .unwrap_or(u32::MAX);
+                        for range in
+                            super::editor_paint::ranges(&row, column..column.saturating_add(1))
                         {
                             let rect = glyph_rect(&range);
                             let bounds = parent.get_bounding_client_rect();

@@ -108,7 +108,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Localized edits now reuse exact unchanged styled prefix/suffix heights, with
   row insertion/deletion/undo and font invalidation contracts in both modes;
   disjoint edits also reuse exactly matching interior rows.
-  Finish fine paint within very long logical rows,
+  Carets, bracket marks and secondary selections now share validated UTF-16
+  paint coverage with independent clipping across omitted fragments.
+  Rendering still paints complete logical rows. Finish fine paint within very
+  long logical rows,
   then further incremental access: edits still materialize full Strings and shift
   suffix coordinates. Native offset and line/column queries now use shared sparse
   Unicode checkpoints in long rows, including folded views; native/WASM benchmarks

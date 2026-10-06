@@ -45,6 +45,8 @@ pub use capacity::{
     EditorLimit, MAX_EDITOR_BYTES, MAX_EDITOR_LINE_BYTES, MAX_EDITOR_LINES, TEXT_PAGE_BYTES,
     TextPage, editor_limit,
 };
+mod paint;
+pub use paint::{PaintCoverage, PaintPosition, PaintSelection};
 mod viewport;
 pub use viewport::{
     EditorViewport, MAX_MEASURE_BATCHES_PER_FRAME, MAX_MEASURE_BYTES, MAX_MEASURE_ROWS,

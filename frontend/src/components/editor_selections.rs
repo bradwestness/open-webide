@@ -1,5 +1,6 @@
 //! Secondary selections reuse syntax paint metrics; editing stays in the facade.
-use super::editor::{caret_rect, current_editor_target, text_position};
+use super::editor::{caret_rect, current_editor_target};
+use super::editor_paint;
 use crate::{state::workspace::WorkspaceState, state_actions::editor::EditorActions};
 use leptos::prelude::*;
 
@@ -167,13 +168,15 @@ pub(super) fn SelectionOverlay(
                             }
                         };
                         if contains_caret {
+                            if !editor_paint::covers(&row, column) {
+                                continue;
+                            }
                             let rect = caret_rect(&row, column)
                                 .filter(|rect| rect.height() > 0.0)
                                 .unwrap_or(bounds);
                             add(rect, true, &mut next);
                         } else {
-                            let mut start_column = column;
-                            let mut end_column = u32::try_from(
+                            let end_column = u32::try_from(
                                 openwebide_core::editor::byte_to_textarea(
                                     body,
                                     end - line.source.start,
@@ -181,17 +184,12 @@ pub(super) fn SelectionOverlay(
                                 .unwrap_or(0),
                             )
                             .unwrap_or(u32::MAX);
-                            if let Some((node, at)) = text_position(row.as_ref(), &mut start_column)
-                                && let Some((end_node, end_at)) =
-                                    text_position(row.as_ref(), &mut end_column)
-                                && let Ok(dom_range) = document().create_range()
-                                && dom_range.set_start(&node, at).is_ok()
-                                && dom_range.set_end(&end_node, end_at).is_ok()
-                                && let Some(rects) = dom_range.get_client_rects()
-                            {
-                                for index in 0..rects.length() {
-                                    if let Some(rect) = rects.item(index) {
-                                        add(rect, false, &mut next);
+                            for dom_range in editor_paint::ranges(&row, column..end_column) {
+                                if let Some(rects) = dom_range.get_client_rects() {
+                                    for index in 0..rects.length() {
+                                        if let Some(rect) = rects.item(index) {
+                                            add(rect, false, &mut next);
+                                        }
                                     }
                                 }
                             }
