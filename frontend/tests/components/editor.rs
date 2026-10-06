@@ -5110,3 +5110,406 @@ async fn editor_recovery_retains_local_draft_until_folder_access_returns() {
     assert_eq!(ws.read("src/a.rs").await.unwrap(), "draft 😀\n  tail\n");
     editorConfigCleanup(&folder).await.unwrap();
 }
+
+#[wasm_bindgen_test]
+async fn recovered_file_review_reload_and_overwrite_share_both_real_adapters() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Document, Selection},
+    };
+    use openwebide_frontend::state_actions::{
+        editor::EditorActions, editor_recovery::RecoveryActions,
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let folder = if mode == WorkspaceMode::Local {
+            Some(editorConfigFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(editorConfigHandle);
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let capture = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            sign_in_recovery(&state);
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            if let Some(handle) = handle {
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+            }
+            state.fake.files.borrow_mut().extend([
+                ((1, "src/a.rs".into()), "external\n".into()),
+                ((1, "src/.editorconfig".into()), "[*.rs]\nend_of_line=lf\ninsert_final_newline=true\ntrim_trailing_whitespace=true\n".into()),
+            ]);
+            let mut record = draft_record(&state.projects.project(1).unwrap());
+            let mut document = Document::new("original");
+            document.replace_selections("draft ", None).unwrap();
+            record.state.files[0].document = Some(document.recovery());
+            record.state.files[0].path = "src/a.rs".into();
+            record.state.selected = Some("src/a.rs".into());
+            state
+                .fake
+                .editor_recovery_records
+                .borrow_mut()
+                .insert(1, record);
+            let view = super::support::recovery_editor_view(state);
+            capture.set(Some(expect_context::<RecoveryActions>()));
+            view
+        });
+        let ws = openwebide_frontend::workspace::Workspace::for_project(
+            mounted.state.api,
+            mounted.state.projects,
+            1,
+        )
+        .unwrap();
+        if mode == WorkspaceMode::Local {
+            ws.write("src/a.rs", "external\n").await.unwrap();
+        }
+        wait_until("reviewable recovered conflict", || {
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Review recovered file")
+        })
+        .await;
+        mounted.click_text("Review recovered file");
+        wait_until("recovered diff dialog", || {
+            mounted.root.query_selector(".modal").unwrap().is_some()
+        })
+        .await;
+        assert!(mounted.root.text_content().unwrap().contains("external"));
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("draft original")
+        );
+        mounted.click_text("Cancel");
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "draft original"
+        );
+        assert_eq!(ws.read("src/a.rs").await.unwrap(), "external\n");
+        mounted.click_text("Review recovered file");
+        wait_until("reload choice", || {
+            mounted.root.query_selector(".modal").unwrap().is_some()
+        })
+        .await;
+        mounted.click_text("Reload disk");
+        wait_until("disk reloaded into editor", || {
+            mounted.state.workspace.content.get_untracked() == "external\n"
+        })
+        .await;
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        let editor = EditorActions::new(mounted.state.workspace);
+        editor
+            .native_input(
+                "replacement  ".into(),
+                Selection::caret(13),
+                "insertText",
+                1.0,
+            )
+            .unwrap();
+        ws.write("src/a.rs", "new disk\n").await.unwrap();
+        let actions = slot.get().unwrap();
+        actions.check_files.run(1);
+        // Check files checks only pending recovered files; request another normal
+        // Save to detect an external edit against the newly loaded baseline.
+        mounted
+            .state
+            .workspace
+            .editor_recovery_checks
+            .update(|checks| {
+                checks.insert(
+                    (1, "src/a.rs".into()),
+                    openwebide_frontend::state::workspace::RecoveredFileIssue::Pending,
+                );
+            });
+        wait_until("second conflict", || {
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Review recovered file")
+        })
+        .await;
+        mounted.click_text("Review recovered file");
+        wait_until("overwrite review", || {
+            mounted.root.query_selector(".modal").unwrap().is_some()
+        })
+        .await;
+        mounted.click_text("Save draft");
+        wait_until("draft saved through normal save policy", || {
+            !mounted.state.workspace.dirty.get_untracked()
+        })
+        .await;
+        assert_eq!(ws.read("src/a.rs").await.unwrap(), "replacement\n");
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_recovery_overwrites
+                .with_untracked(std::collections::HashMap::is_empty)
+        );
+        // Missing and empty recovered files also require the explicit save action.
+        ws.delete("src/a.rs").await.unwrap();
+        editor
+            .native_input("".into(), Selection::caret(0), "deleteContentBackward", 2.0)
+            .unwrap();
+        mounted
+            .state
+            .workspace
+            .editor_recovery_checks
+            .update(|checks| {
+                checks.insert(
+                    (1, "src/a.rs".into()),
+                    openwebide_frontend::state::workspace::RecoveredFileIssue::Pending,
+                );
+            });
+        wait_until("missing file review", || {
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Review recovered file")
+        })
+        .await;
+        mounted.click_text("Review recovered file");
+        wait_until("recreate review", || {
+            mounted.root.query_selector(".modal").unwrap().is_some()
+        })
+        .await;
+        mounted.click_text("Save draft");
+        wait_until("empty draft recreated", || {
+            mounted.root.query_selector(".modal").unwrap().is_none()
+                && mounted
+                    .state
+                    .workspace
+                    .editor_recovery_overwrites
+                    .with_untracked(std::collections::HashMap::is_empty)
+        })
+        .await;
+        // The shared save policy preserves genuinely empty files.
+        for _ in 0..20 {
+            if ws.read_optional_bytes("src/a.rs").await.unwrap().is_some() {
+                break;
+            }
+            settle().await;
+        }
+        assert_eq!(ws.read("src/a.rs").await.unwrap(), "");
+        if let Some(folder) = folder {
+            editorConfigCleanup(&folder).await.unwrap();
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn recovered_file_review_rejects_changed_disk_and_editor_and_cancelled_actions() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::{
+        editor::EditorActions, editor_recovery::RecoveryActions,
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let folder = if mode == WorkspaceMode::Local {
+            Some(editorConfigFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(editorConfigHandle);
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let capture = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            sign_in_recovery(&state);
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            if let Some(handle) = handle {
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+            }
+            let mut record = draft_record(&state.projects.project(1).unwrap());
+            record.state.files[0].path = "src/a.rs".into();
+            record.state.selected = Some("src/a.rs".into());
+            state
+                .fake
+                .files
+                .borrow_mut()
+                .insert((1, "src/a.rs".into()), "first disk".into());
+            state
+                .fake
+                .editor_recovery_records
+                .borrow_mut()
+                .insert(1, record);
+            let view = super::support::recovery_editor_view(state);
+            capture.set(Some(expect_context::<RecoveryActions>()));
+            view
+        });
+        wait_until("conflicting draft ready", || {
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Review recovered file")
+        })
+        .await;
+        let ws = openwebide_frontend::workspace::Workspace::for_project(
+            mounted.state.api,
+            mounted.state.projects,
+            1,
+        )
+        .unwrap();
+        ws.write("src/a.rs", "first disk").await.unwrap();
+        mounted.click_text("Review recovered file");
+        wait_until("first review", || {
+            mounted.root.query_selector(".modal").unwrap().is_some()
+        })
+        .await;
+        ws.write("src/a.rs", "later disk").await.unwrap();
+        mounted.click_text("Save draft");
+        wait_until("changed disk rejects approval", || {
+            mounted.root.query_selector(".modal").unwrap().is_none()
+        })
+        .await;
+        assert_eq!(ws.read("src/a.rs").await.unwrap(), "later disk");
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "draft base"
+        );
+        mounted.click_text("Review recovered file");
+        wait_until("second review", || {
+            mounted.root.query_selector(".modal").unwrap().is_some()
+        })
+        .await;
+        EditorActions::new(mounted.state.workspace)
+            .native_input(
+                "newer draft".into(),
+                Selection::caret(11),
+                "insertText",
+                1.0,
+            )
+            .unwrap();
+        mounted.click_text("Reload disk");
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "newer draft"
+        );
+        assert_eq!(ws.read("src/a.rs").await.unwrap(), "later disk");
+        mounted.click_text("Review recovered file");
+        wait_until("cancel review", || {
+            mounted.root.query_selector(".modal").unwrap().is_some()
+        })
+        .await;
+        mounted.click_text("Cancel");
+        slot.get().unwrap().overwrite_file.run(());
+        settle().await;
+        assert_eq!(ws.read("src/a.rs").await.unwrap(), "later disk");
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_recovery_overwrites
+                .with_untracked(std::collections::HashMap::is_empty)
+        );
+        if let Some(folder) = folder {
+            editorConfigCleanup(&folder).await.unwrap();
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn recovered_file_review_recreates_a_missing_clean_empty_file_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Document};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let folder = if mode == WorkspaceMode::Local {
+            Some(editorConfigFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(editorConfigHandle);
+        if let Some(handle) = &handle {
+            openwebide_frontend::workspace::Workspace::Local {
+                handle: handle.clone().unchecked_into(),
+            }
+            .delete("src/a.rs")
+            .await
+            .unwrap();
+        }
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            sign_in_recovery(&state);
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            if let Some(handle) = handle {
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+            }
+            let mut record = draft_record(&state.projects.project(1).unwrap());
+            record.state.files[0].path = "src/a.rs".into();
+            record.state.selected = Some("src/a.rs".into());
+            record.state.files[0].document = Some(Document::new("").recovery());
+            state
+                .fake
+                .editor_recovery_records
+                .borrow_mut()
+                .insert(1, record);
+            super::support::recovery_editor_view(state)
+        });
+        wait_until("missing clean file preserved", || {
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Review recovered file")
+        })
+        .await;
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        mounted.click_text("Review recovered file");
+        wait_until("empty-file review", || {
+            mounted.root.query_selector(".modal").unwrap().is_some()
+        })
+        .await;
+        mounted.click_text("Save draft");
+        wait_until("recreation approval consumed", || {
+            mounted.root.query_selector(".modal").unwrap().is_none()
+                && mounted
+                    .state
+                    .workspace
+                    .editor_recovery_overwrites
+                    .with_untracked(std::collections::HashMap::is_empty)
+        })
+        .await;
+        let ws = openwebide_frontend::workspace::Workspace::for_project(
+            mounted.state.api,
+            mounted.state.projects,
+            1,
+        )
+        .unwrap();
+        for _ in 0..40 {
+            if ws.read_optional_bytes("src/a.rs").await.unwrap().is_some() {
+                break;
+            }
+            settle().await;
+        }
+        assert_eq!(
+            ws.read_optional_bytes("src/a.rs").await.unwrap(),
+            Some(Vec::new())
+        );
+        if let Some(folder) = folder {
+            editorConfigCleanup(&folder).await.unwrap();
+        }
+    }
+}

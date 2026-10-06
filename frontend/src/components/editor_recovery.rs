@@ -60,8 +60,32 @@ pub fn RecoveryStatus() -> impl IntoView {
                     <Show when=move || issue.get().is_some_and(|issue| issue != crate::state::workspace::RecoveredFileIssue::Pending)>
                         <Button size=ButtonSize::Sm on_click=Callback::new(move |_| { if let (Some(actions), Some(id)) = (actions, workspace.active_project.get_untracked()) { actions.check_files.run(id); } })>"Check disk again"</Button>
                     </Show>
+                    <Show when=move || matches!(issue.get(), Some(crate::state::workspace::RecoveredFileIssue::Conflict | crate::state::workspace::RecoveredFileIssue::Missing))>
+                        <Button size=ButtonSize::Sm on_click=Callback::new(move |_| { if let Some(actions) = actions { actions.review_file.run(()); } })>"Review recovered file"</Button>
+                    </Show>
                 </InlineActions>
             </div>
+        </Show>        {state.zip(actions).map(|(state, actions)| view! { <RecoveryFileDialog state=state actions=actions /> })}
+
+    }
+}
+
+#[component]
+fn RecoveryFileDialog(state: EditorRecoveryState, actions: RecoveryActions) -> impl IntoView {
+    let close = actions.close_file_review;
+    view! {
+        <Show when=move || state.file_review.get().is_some()>
+            <super::modal::Modal title=Signal::derive(move || state.file_review.with(|review| review.as_ref().map(|review| format!("Recovered file: {}", review.path)).unwrap_or_default())) on_close=close size=super::ui::DialogSize::Wide>
+                <super::ui::DialogBody>
+                    <FormNotice tone=NoticeTone::Warning>"Reload disk discards this draft. Save draft replaces the disk file with this draft. Changes made after this review opened require another review."</FormNotice>
+                    {move || state.file_review.get().map(|review| super::editor::render_inline_diff(openwebide_core::FileDiff { path: review.path, old: review.disk, new: review.draft, old_unavailable: false, backup_path: None }))}
+                </super::ui::DialogBody>
+                <super::ui::DialogActions>
+                    <Button on_click=Callback::new(move |_| close.run(()))>"Cancel"</Button>
+                    <Button disabled=Signal::derive(move || state.file_review.with(|review| review.as_ref().is_none_or(|review| review.disk.is_none()))) on_click=Callback::new(move |_| actions.reload_file.run(()))>"Reload disk"</Button>
+                    <Button disabled=Signal::derive(move || state.file_review.with(|review| review.as_ref().is_none_or(|review| review.read_only))) variant=super::ui::ButtonVariant::Danger on_click=Callback::new(move |_| actions.overwrite_file.run(()))>"Save draft"</Button>
+                </super::ui::DialogActions>
+            </super::modal::Modal>
         </Show>
     }
 }

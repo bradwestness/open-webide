@@ -465,6 +465,9 @@ impl WorkspaceActions {
             });
             save_editor.cancel_composition();
             if changed {
+                workspace.editor_recovery_overwrites.update(|permits| {
+                    permits.retain(|(id, _), _| *id != project_id);
+                });
                 workspace.editor_recovery_checks.update(|checks| {
                     checks.retain(|(id, _), _| *id != project_id);
                 });
@@ -685,10 +688,24 @@ impl WorkspaceActions {
             let Some(path) = workspace.open_file.get_untracked() else {
                 return;
             };
-            if !workspace.dirty.get_untracked()
+            let overwrite = workspace
+                .editor_recovery_overwrites
+                .with_untracked(|permits| permits.contains_key(&(project_id, path.clone())));
+            if (!workspace.dirty.get_untracked() && !overwrite)
                 || read_only.get_untracked()
                 || workspace.is_resolving()
             {
+                if overwrite {
+                    workspace.editor_recovery_overwrites.update(|permits| {
+                        permits.remove(&(project_id, path.clone()));
+                    });
+                    workspace.editor_recovery_checks.update(|checks| {
+                        checks.insert(
+                            (project_id, path.clone()),
+                            crate::state::workspace::RecoveredFileIssue::Pending,
+                        );
+                    });
+                }
                 return;
             }
             if let Some(issue) = workspace
@@ -705,6 +722,15 @@ impl WorkspaceActions {
                     })
                 })
             {
+                workspace.editor_recovery_overwrites.update(|permits| {
+                    permits.remove(&(project_id, path.clone()));
+                });
+                workspace.editor_recovery_checks.update(|checks| {
+                    checks.insert(
+                        (project_id, path.clone()),
+                        crate::state::workspace::RecoveredFileIssue::Pending,
+                    );
+                });
                 ui.notify("The project folder changed while this file was open. Restore the original folder before saving its draft.");
                 return;
             }
@@ -804,6 +830,16 @@ impl WorkspaceActions {
                     }
                     Err(error) => {
                         if current() {
+                            if overwrite {
+                                workspace.editor_recovery_checks.update(|checks| {
+                                    checks.insert(
+                                        (project_id, path.clone()),
+                                        crate::state::workspace::RecoveredFileIssue::Unavailable(
+                                            error.to_string(),
+                                        ),
+                                    );
+                                });
+                            }
                             ui.notify(error.to_string());
                         }
                     }

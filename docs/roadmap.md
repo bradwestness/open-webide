@@ -103,9 +103,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   editor activity. The shared frontend facade now loads tabs/selected files and
   drafts and serializes debounced database saves. Failed writes retain drafts;
   explicit restore/keep choices resolve database revision conflicts. Disk checks
-  block unsafe host saves and use the existing folder-access flow. Finish host
-  conflict review/reload/overwrite controls, permission/error regression coverage
-  and real-server reload/new-window verification.
+  block unsafe host saves and use the existing folder-access flow. Recovered-file
+  reviews reuse inline diffs and offer guarded reload or explicit draft saves,
+  including missing/empty file recreation. Finish permission/error regression
+  coverage and real-server reload/new-window verification.
   Coordinate draft/reload recovery with the existing Offline & error-state recovery
   item instead of implementing separate persistence.
 

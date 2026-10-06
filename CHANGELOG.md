@@ -9,16 +9,19 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Wire automatic editor tab/draft restoration and debounced, serialized database recovery saves through one facade. Retain edits arriving during writes, show retry feedback, guard late loads and account/root changes, and require explicit choices for database revision conflicts. Check recovered baselines before enabling host Save and again before writes. Host conflict resolution controls and real-server reload verification remain in progress.
+- Add recovered-file conflict reviews using the shared inline diff and modal components. Reload disk discards the draft; Save draft uses normal EditorConfig/save rules with one-use approval for the reviewed disk and draft versions. Preserve drafts on cancellation or stale editor/disk/root/account state, and explicitly recreate missing or empty files. Real-server/device reload verification remains in progress.
 
 
-- Add shared recovery client transport and coherent active/hidden buffer snapshots. Classify revision conflicts by HTTP status, validate recovery replies and save acknowledgements, keep transient IME text out of snapshots, and refuse dirty snapshots without a saved baseline. Guard shared REST session-expiry handling against old-session responses. Host conflict resolution and real-server reload verification remain in progress.
+- Wire automatic editor tab/draft restoration and debounced, serialized database recovery saves through one facade. Retain edits arriving during writes, show retry feedback, guard late loads and account/root changes, and require explicit choices for database revision conflicts. Check recovered baselines before enabling host Save and again before writes. Real-server reload verification remains in progress.
 
-- Add validated editor recovery snapshots and versioned user-scoped database/API storage. Preserve committed UTF-8/CRLF text, saved baselines, selections and collapsed folds; restore drafts as an undoable change. Guard project ownership/root identity and stale window revisions, retain close-all revisions, and keep draft bodies out of general settings reads. Host conflict resolution and real-server reload verification remain in progress.
 
-- Add editor file tabs with shared selected-tab styling, unsaved indicators, keyboard navigation and inline close icons. Keep independent buffers when selecting tabs; confirm unsaved closes, reject stale confirmations, and select an adjacent file after closing the active tab. Both workspace modes share the same facade. Host conflict resolution and server/device reload verification remain in progress.
+- Add shared recovery client transport and coherent active/hidden buffer snapshots. Classify revision conflicts by HTTP status, validate recovery replies and save acknowledgements, keep transient IME text out of snapshots, and refuse dirty snapshots without a saved baseline. Guard shared REST session-expiry handling against old-session responses. Real-server reload verification remains in progress.
 
-- Retain independent unsaved editor buffers when navigating between files, alongside each document's undo history, selections, folds and scroll position. Protect pending reads from newer input, project/account switches and repeated opens; guard hidden drafts against file mutations and clear affected buffers after confirmed delete/revert. Both filesystem modes use the same workspace facade. Host conflict resolution and server/device reload verification remain in progress.
+- Add validated editor recovery snapshots and versioned user-scoped database/API storage. Preserve committed UTF-8/CRLF text, saved baselines, selections and collapsed folds; restore drafts as an undoable change. Guard project ownership/root identity and stale window revisions, retain close-all revisions, and keep draft bodies out of general settings reads. Real-server reload verification remains in progress.
+
+- Add editor file tabs with shared selected-tab styling, unsaved indicators, keyboard navigation and inline close icons. Keep independent buffers when selecting tabs; confirm unsaved closes, reject stale confirmations, and select an adjacent file after closing the active tab. Both workspace modes share the same facade. Server/device reload verification remains in progress.
+
+- Retain independent unsaved editor buffers when navigating between files, alongside each document's undo history, selections, folds and scroll position. Protect pending reads from newer input, project/account switches and repeated opens; guard hidden drafts against file mutations and clear affected buffers after confirmed delete/revert. Both filesystem modes use the same workspace facade. Server/device reload verification remains in progress.
 
 - Use shared parser contexts for paired typing/deletion and Enter, selecting the language per cursor in HTML script/style bodies and exposing template interpolation code while protecting literals. Retain bounded lexical fallback for incomplete input, including nested/escaped JavaScript templates. Reject stale contexts before changing text or history; remaining command contexts and richer highlighting stay on the roadmap.
 
@@ -178,7 +181,7 @@ for what's still ahead.
 
 ### Added
 
-- Add transactional editor recovery hydration and shared disk reconciliation primitives. Preserve saved baselines, ordered tabs and hidden drafts; reject stale editor activity and distinguish changed, missing and already-written disk text. Host conflict resolution and real-server reload verification remain in progress.
+- Add transactional editor recovery hydration and shared disk reconciliation primitives. Preserve saved baselines, ordered tabs and hidden drafts; reject stale editor activity and distinguish changed, missing and already-written disk text. Real-server reload verification remains in progress.
 
 - Add [file and folder context menus](docs/file-tree-menus.md) in both workspace modes: create, rename, move, copy path, confirmed delete/revert, status-aware Git tracking/staging/unstaging/ignore, and Explain/Summarize/Review chat shortcuts. Share filesystem policy and Git planning across adapters; guard unsaved buffers, pending reviews, concurrent operations and stale account/project/folder results. Preserve originals on failed moves and untracked files on revert.
 

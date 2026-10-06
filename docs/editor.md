@@ -285,8 +285,7 @@ per project; edits arriving during a write are saved after its acknowledgement.
 Failures keep the last acknowledged revision and current drafts; Retry recovery
 resumes writes. A revision conflict pauses writes until Restore saved files or Keep
 this window is confirmed. Late loads cannot discard files opened or edited in flight.
-Real-server reload/permission verification and richer host-file conflict resolution
-remain in progress.
+Real-server reload/permission verification remains in progress.
 
 Recovery hydration primitives prepare all documents before publishing any state,
 restore ordered tabs and active or hidden buffers, and preserve unrelated workspace
@@ -298,5 +297,10 @@ missing ancestors from permission/transport errors through the same Workspace
 primitive used by rewind. Recovered files are checked before host Save is enabled,
 and their baseline is checked again before a write. Missing/changed/unavailable host
 files preserve drafts and show feedback with Check disk again. Existing folder access
-controls restore local permissions. Explicit host conflict review/reload/overwrite
-controls and end-to-end server/device reload verification remain pending.
+controls restore local permissions. Review recovered file compares the current disk
+file with the draft using the shared inline diff. Cancel retains both versions;
+Reload disk replaces the draft, and Save draft uses the normal save policy with a
+one-use approval for the reviewed disk and draft versions. Missing files can be
+recreated explicitly, including empty files. Changed editor/root/account state or
+disk content rejects the action. End-to-end server/device reload verification
+remains pending.

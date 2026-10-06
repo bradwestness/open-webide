@@ -47,6 +47,12 @@ impl RecoveredFileIssue {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryOverwrite {
+    pub disk: Option<String>,
+    pub draft: String,
+}
+
 /// Captured before an asynchronous recovery load. A hydration must not replace
 /// editor activity, pending reads, or a reset that occurred while loading.
 #[derive(Clone, Debug)]
@@ -180,6 +186,8 @@ pub struct WorkspaceState {
     /// Recovered files cannot overwrite host text before their baseline is checked.
     pub editor_recovery_checks: RwSignal<HashMap<(i64, String), RecoveredFileIssue>>,
     pub editor_recovered: RwSignal<HashSet<(i64, String)>>,
+    /// A one-use disk version explicitly approved in the recovered-file review.
+    pub editor_recovery_overwrites: RwSignal<HashMap<(i64, String), RecoveryOverwrite>>,
     pub editor_read_revision: RwSignal<u64>,
     pub editor_documents: RwSignal<HashMap<(i64, String), openwebide_core::editor::Document>>,
     // Browser parser allocation is thread-local; the wrapper enforces owner-thread access.
@@ -231,6 +239,7 @@ impl WorkspaceState {
             editor_loading: RwSignal::new(false),
             editor_recovery_checks: RwSignal::new(HashMap::new()),
             editor_recovered: RwSignal::new(HashSet::new()),
+            editor_recovery_overwrites: RwSignal::new(HashMap::new()),
             editor_read_revision: RwSignal::new(0),
             editor_documents: RwSignal::new(HashMap::new()),
             editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(HashMap::new())),
@@ -561,6 +570,9 @@ impl WorkspaceState {
             }
         });
         let key = (project, path.to_string());
+        self.editor_recovery_overwrites.update(|permits| {
+            permits.remove(&key);
+        });
         self.editor_recovery_checks.update(|checks| {
             checks.remove(&key);
         });
@@ -631,6 +643,7 @@ impl WorkspaceState {
         self.editor_loading.set(false);
         self.editor_recovery_checks.set(HashMap::new());
         self.editor_recovered.set(HashSet::new());
+        self.editor_recovery_overwrites.set(HashMap::new());
         self.begin_editor_read();
         self.editor_documents.set(HashMap::new());
         self.editor_composition.set(None);

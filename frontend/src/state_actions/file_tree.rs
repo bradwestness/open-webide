@@ -315,6 +315,9 @@ impl FileTreeActions {
                 paths.retain(|file| !contains_path(path, file));
             }
         });
+        self.workspace.editor_recovery_overwrites.update(|permits| {
+            permits.retain(|(id, file), _| Some(*id) != project || !contains_path(path, file));
+        });
         self.workspace.editor_recovery_checks.update(|checks| {
             checks.retain(|(id, file), _| Some(*id) != project || !contains_path(path, file));
         });

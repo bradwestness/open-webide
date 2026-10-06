@@ -31,6 +31,19 @@ struct RecoveryContext {
     counter: StoredValue<u64>,
     timers: StoredValue<std::collections::HashMap<i64, u64>>,
     checking: StoredValue<std::collections::HashMap<i64, u64>>,
+    file_guard: StoredValue<send_wrapper::SendWrapper<Option<FileReviewGuard>>>,
+    save_file: Callback<()>,
+}
+
+struct FileReviewGuard {
+    ticket: u64,
+    project: Project,
+    account: u64,
+    handle: Option<web_sys::FileSystemDirectoryHandle>,
+    bridge: String,
+    guard: crate::state::workspace::EditorRecoveryGuard,
+    disk: Option<String>,
+    path: String,
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +55,10 @@ enum LoadPolicy {
 
 #[derive(Clone, Copy)]
 pub struct RecoveryActions {
+    pub review_file: Callback<()>,
+    pub close_file_review: Callback<()>,
+    pub reload_file: Callback<()>,
+    pub overwrite_file: Callback<()>,
     pub retry: Callback<i64>,
     pub restore: Callback<i64>,
     pub keep_current: Callback<i64>,
@@ -319,6 +336,8 @@ impl RecoveryActions {
             counter: StoredValue::new(0),
             timers: StoredValue::new(Default::default()),
             checking: StoredValue::new(Default::default()),
+            file_guard: StoredValue::new(send_wrapper::SendWrapper::new(None)),
+            save_file: expect_context::<super::workspace::WorkspaceActions>().on_save,
         };
         let account = StoredValue::new(auth.generation.get_untracked());
         Effect::new(move |_| {
@@ -328,6 +347,9 @@ impl RecoveryActions {
                 ctx.timers.set_value(Default::default());
                 ctx.checking.set_value(Default::default());
                 state.projects.set(Default::default());
+                state.file_review.set(None);
+                ctx.file_guard
+                    .set_value(send_wrapper::SendWrapper::new(None));
             }
         });
         Effect::new(move |_| {
@@ -438,6 +460,15 @@ impl RecoveryActions {
             }));
         };
         Self {
+            review_file: Callback::new(move |()| ctx.review_file()),
+            close_file_review: Callback::new(move |()| {
+                state.file_review_ticket.set(ctx.next_ticket());
+                state.file_review.set(None);
+                ctx.file_guard
+                    .set_value(send_wrapper::SendWrapper::new(None));
+            }),
+            reload_file: Callback::new(move |()| ctx.resolve_file(false)),
+            overwrite_file: Callback::new(move |()| ctx.resolve_file(true)),
             retry,
             check_files: recheck_files,
             restore: Callback::new(move |id| choice(id, LoadPolicy::Restore)),
@@ -684,6 +715,16 @@ pub async fn verify_recovered_save(
                 .transpose()
                 .map_err(|_| "The disk file is no longer valid UTF-8".into())
         });
+    let approved = workspace
+        .editor_recovery_overwrites
+        .try_update(|permits| permits.remove(&key))
+        .flatten();
+    if let Some(expected) = approved
+        && workspace.content.get_untracked() == expected.draft
+        && disk.as_ref().is_ok_and(|actual| *actual == expected.disk)
+    {
+        return Ok(());
+    }
     let recovery = workspace.editor_documents.with_untracked(|documents| {
         documents
             .get(&key)
@@ -706,4 +747,182 @@ pub async fn verify_recovered_save(
         checks.insert(key, issue);
     });
     Err(message)
+}
+
+impl RecoveryContext {
+    fn review_current(self, scope: &FileReviewGuard) -> bool {
+        self.state.file_review_ticket.try_get_untracked() == Some(scope.ticket)
+            && self.auth.generation.try_get_untracked() == Some(scope.account)
+            && self.projects.active_project.try_get_untracked() == Some(Some(scope.project.id))
+            && self
+                .projects
+                .project(scope.project.id)
+                .is_some_and(|project| {
+                    Workspace::root_identity(&project) == Workspace::root_identity(&scope.project)
+                })
+            && self
+                .projects
+                .local_handles
+                .try_with_untracked(|handles| handles.get(&scope.project.id).cloned())
+                == Some(scope.handle.clone())
+            && self.settings.bridge_url.try_get_untracked().as_ref() == Some(&scope.bridge)
+            && self.workspace.editor_recovery_guard_matches(
+                &scope.project,
+                &scope.guard,
+                self.read_only.get_untracked(),
+            )
+    }
+
+    fn review_file(self) {
+        let Some(id) = self.projects.active_project.get_untracked() else {
+            return;
+        };
+        let Some(project) = self.projects.project(id) else {
+            return;
+        };
+        let Some(path) = self.workspace.open_file.get_untracked() else {
+            return;
+        };
+        let Some(ws) = Workspace::for_project(self.api, self.projects, id) else {
+            return;
+        };
+        let Ok(guard) = self
+            .workspace
+            .editor_recovery_guard(&project, self.read_only.get_untracked())
+        else {
+            return;
+        };
+        let ticket = self.next_ticket();
+        self.state.file_review_ticket.set(ticket);
+        let mut scope = FileReviewGuard {
+            ticket,
+            project,
+            account: self.auth.generation.get_untracked(),
+            handle: self
+                .projects
+                .local_handles
+                .with_untracked(|handles| handles.get(&id).cloned()),
+            bridge: self.settings.bridge_url.get_untracked(),
+            guard,
+            path: path.clone(),
+            disk: None,
+        };
+        spawn_local(async move {
+            let result = read_review_disk(&ws, &path).await;
+            if !self.review_current(&scope) {
+                return;
+            }
+            match result {
+                Ok(disk) => {
+                    scope.disk.clone_from(&disk);
+                    self.state.file_review.set(Some(
+                        crate::state::editor_recovery::RecoveryFileReview {
+                            path,
+                            disk,
+                            draft: self.workspace.content.get_untracked(),
+                            read_only: self.read_only.get_untracked(),
+                        },
+                    ));
+                    self.file_guard
+                        .set_value(send_wrapper::SendWrapper::new(Some(scope)));
+                }
+                Err(error) => self.ui.notify(error),
+            }
+        });
+    }
+
+    fn invalidate_review(self, scope: &FileReviewGuard) {
+        if self.auth.generation.try_get_untracked() == Some(scope.account)
+            && self.state.file_review_ticket.try_get_untracked() == Some(scope.ticket)
+        {
+            self.state.file_review.set(None);
+            self.ui.notify("The editor changed while its review was open. Review the recovered file again before choosing an action.");
+        }
+    }
+
+    fn resolve_file(self, overwrite: bool) {
+        let scope = self
+            .file_guard
+            .try_update_value(|guard| (**guard).take())
+            .flatten();
+        let Some(scope) = scope else {
+            return;
+        };
+        if !self.review_current(&scope) || (overwrite && self.read_only.get_untracked()) {
+            self.invalidate_review(&scope);
+            return;
+        }
+        let Some(ws) = Workspace::for_project(self.api, self.projects, scope.project.id) else {
+            return;
+        };
+        spawn_local(async move {
+            let result = read_review_disk(&ws, &scope.path).await;
+            if !self.review_current(&scope) {
+                self.invalidate_review(&scope);
+                return;
+            }
+            let disk = match result {
+                Ok(disk) => disk,
+                Err(error) => {
+                    self.ui.notify(error);
+                    self.state.file_review.set(None);
+                    return;
+                }
+            };
+            if disk != scope.disk {
+                self.state.file_review.set(None);
+                self.ui.notify("The disk file changed while its review was open. Review it again before choosing an action.");
+                return;
+            }
+            let key = (scope.project.id, scope.path.clone());
+            if overwrite {
+                self.workspace.editor_recovery_overwrites.update(|permits| {
+                    permits.insert(
+                        key.clone(),
+                        crate::state::workspace::RecoveryOverwrite {
+                            disk,
+                            draft: self.workspace.content.get_untracked(),
+                        },
+                    );
+                });
+                self.workspace.editor_recovery_checks.update(|checks| {
+                    checks.remove(&key);
+                });
+                self.state.file_review.set(None);
+                self.save_file.run(());
+            } else if let Some(disk) = disk {
+                batch(|| {
+                    self.workspace.editor_documents.update(|documents| {
+                        documents.insert(
+                            key.clone(),
+                            openwebide_core::editor::Document::new(disk.clone()),
+                        );
+                    });
+                    self.read_only.set(false);
+                    self.workspace.editor_buffers.update(|buffers| {
+                        if let Some(buffer) = buffers.get_mut(&key) {
+                            buffer.read_only = false;
+                        }
+                    });
+                    update_buffer(self.workspace, scope.project.id, &scope.path, &disk, false);
+                    self.workspace.editor_recovery_checks.update(|checks| {
+                        checks.remove(&key);
+                    });
+                    self.workspace
+                        .editor_fold_revision
+                        .update(|revision| *revision = revision.wrapping_add(1));
+                    self.state.file_review.set(None);
+                });
+            }
+        });
+    }
+}
+
+async fn read_review_disk(ws: &Workspace, path: &str) -> Result<Option<String>, String> {
+    ws.read_optional_bytes(path)
+        .await
+        .map_err(|error| error.to_string())?
+        .map(String::from_utf8)
+        .transpose()
+        .map_err(|_| "The disk file cannot be reviewed as UTF-8 text".into())
 }
