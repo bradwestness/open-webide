@@ -63,10 +63,19 @@ Alt-click adds/removes a cursor. Alt+Shift click/drag selects a column from the
 primary anchor, honoring tab stops and complete Unicode graphemes. Secondary
 carets and selections use the same font metrics as the syntax paint, including
 wrapped text; screen readers receive the cursor count. Arrow keys move all cursors
-by grapheme or logical line; Ctrl/Alt+Left/Right move by word, and Shift extends
+by grapheme or logical line; with word wrap enabled, Up/Down use measured visual
+rows. Ctrl/Alt+Left/Right move by word, and Shift extends
 each selection. Home/End move to line boundaries, Ctrl/Cmd+Home/End to document
 boundaries; on macOS Cmd+arrows use line/document boundaries. Vertical movement
-retains the desired column across short lines. Multiple selection movement and
+retains the desired column across short lines, using pixels for wrapped rows.
+The shared engine retains soft-wrap affinity, skips folded rows and resets its
+horizontal goal after width/font changes. Measured primary and secondary carets
+share the existing selection overlay so a wrap boundary stays on the selected row.
+Measurements bind to the complete source and fold projection; stale/missing
+coverage rejects the entire movement without changing text, selections or history.
+The DOM adapter measures neighboring logical lines and caps preparation at 65,536
+caret positions. Queuing while paint is pending and viewport preparation for larger
+wrapped lines remain follow-ups. Multiple selection movement and
 structural selection commands are bounded to files up to 2 MiB; Escape still
 returns to the primary cursor in larger files.
 

@@ -14,6 +14,8 @@ pub use navigation::{
 pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
 mod clipboard;
 mod motion;
+mod visual_motion;
+pub use visual_motion::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_caret_offsets};
 mod native;
 pub use clipboard::{CLIPBOARD_SELECTIONS_MIME, ClipboardContent};
 pub use motion::SelectionMotion;
@@ -192,7 +194,7 @@ pub struct Document {
     folds: FoldState,
     selection_history: Vec<Vec<Selection>>,
     composition: Option<Box<native::Composition>>,
-    motion_columns: Option<Vec<usize>>,
+    motion_columns: Option<visual_motion::MotionColumns>,
 }
 
 const HISTORY_BYTES: usize = 16 * 1024 * 1024;
@@ -221,6 +223,7 @@ impl Document {
         &self.folds
     }
     pub fn fold_state_mut(&mut self) -> &mut FoldState {
+        self.motion_columns = None;
         &mut self.folds
     }
     pub fn projection(&self) -> FoldProjection {
@@ -242,6 +245,7 @@ impl Document {
         if self.is_composing() {
             return;
         }
+        self.motion_columns = None;
         let before = self.selections.clone();
         let line = self.text[..self.selections[0].head]
             .bytes()

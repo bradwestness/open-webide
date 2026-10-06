@@ -1170,6 +1170,7 @@ body {
 
 .editor-code.highlight-ready .editor-highlight { visibility: visible; }
 .editor-code.highlight-ready .editor-textarea { color: transparent; }
+.editor-textarea.editor-visual-carets { caret-color: transparent; }
 
 .editor-textarea {
   position: absolute;

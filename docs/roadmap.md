@@ -97,8 +97,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Occurrence/vertical/expand/shrink
   controls, Alt-click/column gestures and secondary selection paint share the same
   facade. Arrow movement retains all cursors with grapheme, word, logical-line and
-  sticky-column behavior. Finish visual-row movement when word wrap is enabled and
-  real-device input/clipboard verification for multiple cursors. File navigation now
+  sticky-column behavior. Wrapped Up/Down now use measured visual rows, retained
+  pixel goals and soft-wrap caret affinity, skipping folds and rejecting stale
+  source/projection measurements. Finish pending-paint motion queuing, viewport
+  preparation for large wrapped lines and real-device input/clipboard verification
+  for multiple cursors. File navigation now
   retains independent dirty buffers, history, caret and scroll state in memory,
   with protected reads and filesystem mutation guards. File tabs share selected-tab
   styling, keyboard navigation and guarded close/discard controls. Validated recovery

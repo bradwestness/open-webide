@@ -85,13 +85,14 @@ impl DiffPaint {
 fn paint_source(source: &str, path: &str) -> Vec<Vec<Token>> {
     let language = language_from_path(path);
     #[cfg(feature = "editor-parser")]
-    let parsed = crate::editor::SyntaxDocument::new(language).and_then(|mut document| {
-        document.update(source, || true);
-        document.highlight_lines()
-    });
+    let mut lines = crate::editor::SyntaxDocument::new(language)
+        .and_then(|mut document| {
+            document.update(source, || true);
+            document.highlight_lines()
+        })
+        .unwrap_or_else(|| highlight_lines(source, language));
     #[cfg(not(feature = "editor-parser"))]
-    let parsed: Option<Vec<Vec<Token>>> = None;
-    let mut lines = parsed.unwrap_or_else(|| highlight_lines(source, language));
+    let mut lines = highlight_lines(source, language);
     // DiffLine excludes CRLF terminators. A final bare CR is source content.
     for (line, source) in lines.iter_mut().zip(source.split_inclusive('\n')) {
         if source.ends_with("\r\n")

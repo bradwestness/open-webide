@@ -342,6 +342,21 @@ impl EditorActions {
         })
     }
 
+    pub fn visual_caret(
+        self,
+        source: &str,
+        index: usize,
+        identity: &str,
+    ) -> Option<openwebide_core::editor::VisualCaret> {
+        let key = self.key()?;
+        self.workspace.editor_documents.with_untracked(|documents| {
+            documents
+                .get(&key)
+                .filter(|document| document.text() == source)
+                .and_then(|document| document.visual_caret(index, identity))
+        })
+    }
+
     /// Source/scope checked selection commands share the document policy in both modes.
     pub fn selection_command(
         self,
@@ -375,9 +390,37 @@ impl EditorActions {
         motion: openwebide_core::editor::SelectionMotion,
         extend: bool,
     ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
+        self.move_selections_in(project, path, source, motion, extend, None)
+    }
+
+    pub fn move_selections_with_layout(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        motion: openwebide_core::editor::SelectionMotion,
+        extend: bool,
+        layout: &openwebide_core::editor::VisualLayout,
+    ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
+        self.move_selections_in(project, path, source, motion, extend, Some(layout))
+    }
+
+    fn move_selections_in(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        motion: openwebide_core::editor::SelectionMotion,
+        extend: bool,
+        layout: Option<&openwebide_core::editor::VisualLayout>,
+    ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
         let indentation = self.rules_untracked().indentation;
         self.operate_selections(project, path, source, move |document| {
-            document.move_selections(motion, extend, indentation)
+            if let Some(layout) = layout {
+                document.move_selections_with_layout(motion, extend, indentation, layout)
+            } else {
+                document.move_selections(motion, extend, indentation)
+            }
         })
     }
 

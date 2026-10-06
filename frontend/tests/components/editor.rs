@@ -5945,3 +5945,156 @@ async fn diff_syntax_paint_keeps_word_changes_and_embedded_context_in_both_modes
         assert_eq!(mounted.state.workspace.content.get_untracked(), new);
     }
 }
+
+#[wasm_bindgen_test]
+async fn wrapped_multi_cursor_arrows_follow_measured_rows_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Selection, byte_to_textarea, line_column},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let line = format!("\tlet café = \"{}\";", "文😀 words ".repeat(12));
+        let source = format!("{line}\r\nx\r\n{line}\r\n");
+        let third = line.len() + 5;
+        let expected = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("visual.rs".into()));
+            state.workspace.content.set(source.clone());
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = true);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        wait_until("wrapped paint ready", || {
+            mounted
+                .root
+                .query_selector(".editor-code.highlight-ready")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        actions.record_selection(Selection::caret(5)).unwrap();
+        actions
+            .toggle_cursor(1, "visual.rs", &expected, third + 5)
+            .unwrap();
+        let primary = actions.selections(&expected)[0].head;
+        let utf16 = u32::try_from(byte_to_textarea(&expected, primary).unwrap()).unwrap();
+        textarea.set_selection_range(utf16, utf16).unwrap();
+        let before = actions.selections(&expected);
+        assert!(editor_key(&textarea, "ArrowDown", false, false).default_prevented());
+        let after = actions.selections(&expected);
+        assert_eq!(after.len(), 2);
+        for (before, after) in before.iter().zip(&after) {
+            assert_eq!(
+                line_column(&expected, before.head).0,
+                line_column(&expected, after.head).0,
+                "first Down must remain inside the same wrapped source line"
+            );
+            assert!(after.head > before.head);
+            assert!(expected.is_char_boundary(after.head));
+        }
+        assert!(
+            mounted
+                .root
+                .query_selector("[role='alert']")
+                .unwrap()
+                .is_none()
+        );
+        wait_until("measured primary and secondary caret paint", || {
+            textarea.class_list().contains("editor-visual-carets")
+                && mounted
+                    .root
+                    .query_selector_all(".editor-secondary-caret")
+                    .unwrap()
+                    .length()
+                    == 2
+        })
+        .await;
+        assert!(editor_key(&textarea, "ArrowUp", false, false).default_prevented());
+        assert_eq!(actions.selections(&expected), before);
+        assert_eq!(actions.source(), expected);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn measured_multi_cursor_motion_skips_folded_rows_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{FoldCommand, Selection, byte_to_textarea, line_column},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = "fn first() {\r\n    first();\r\n}\r\nfn second() {\r\n    second();\r\n}\r\n";
+    let second = source.find("fn second").unwrap();
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("folded.rs".into()));
+            state.workspace.content.set(source.into());
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = true);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        wait_until("folded row provider", || {
+            mounted
+                .root
+                .query_selector(".editor-fold-control")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        actions.record_selection(Selection::caret(5)).unwrap();
+        actions
+            .toggle_cursor(1, "folded.rs", source, second + 5)
+            .unwrap();
+        let before = actions.selections(source);
+        actions.fold_command(FoldCommand::Toggle(0));
+        wait_until("collapsed source projection paint", || {
+            mounted
+                .root
+                .query_selector(".editor-source-line[data-line='2']")
+                .unwrap()
+                .is_none()
+                && mounted
+                    .element(".editor-highlight-content")
+                    .text_content()
+                    .unwrap()
+                    == textarea.value()
+        })
+        .await;
+        // Native selection coordinates come from the current folded projection.
+        let projection = actions.projection().unwrap();
+        let visible = projection.visible_selection(before[0]).unwrap();
+        let primary =
+            u32::try_from(byte_to_textarea(projection.text(), visible.head).unwrap()).unwrap();
+        textarea.set_selection_range(primary, primary).unwrap();
+        assert!(editor_key(&textarea, "ArrowDown", false, false).default_prevented());
+        let after = actions.selections(source);
+        assert_eq!(after.len(), 2);
+        assert_eq!(line_column(source, after[0].head).0, 5);
+        assert_eq!(line_column(source, after[1].head).0, 4);
+        assert!(editor_key(&textarea, "ArrowUp", false, false).default_prevented());
+        assert_eq!(actions.selections(source), before);
+        assert_eq!(actions.source(), source);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}

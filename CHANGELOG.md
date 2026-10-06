@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Move multiple cursors by measured visual rows when word wrap is enabled, retaining horizontal position across short rows and soft-wrap affinity in the shared selection overlay. Skip hidden folds, preserve Unicode/CRLF and selection direction, and reject stale measurements atomically in both modes. Pending-paint queuing and larger-file viewport preparation remain follow-ups.
+- Fix parser-disabled diff highlighting lint failures in backend and bridge builds by using the lexical fallback directly.
 - Share full-document grammar and lexical paint across Inline/Split diffs, Git and recovery reviews, and chat diff previews. Combine syntax colors with word-change highlights, preserve Unicode and line-ending notes, and keep original line coordinates through alignment gaps in both modes.
 - Add grammar-aware Edit highlighting through the cached shared editor facade and extensible provider selectors. Paint functions/types, HTML tags and CSS properties, preserve multiline literals/comments, and color interpolation and embedded script/style code independently. Preserve source text and CRLF overlay alignment in both modes; richer classifications remain follow-ups.
 
@@ -46,7 +48,7 @@ for what's still ahead.
 
 - Preserve multiline clipboard fragments across multiple editor selections using compact validated metadata. Restore each cursor’s fragment, including Unicode, CRLF and empty selections; match indentation per fragment when requested. Fall back to plain-text paste when metadata is missing, changed or invalid, with atomic limits and one undo step. Both workspace modes share the Rust engine and clipboard facade; native-device clipboard verification remains in progress.
 
-- Add multi-cursor controls to Edit: occurrence, vertical cursor and expand/shrink commands in the shared editing menu and shortcuts; Alt-click toggles cursors and Alt+Shift click/drag selects columns. Paint secondary selections/carets with the syntax layer's text metrics and announce cursor counts. Move all cursors by grapheme, word, logical line or document boundary, retaining columns across short lines and skipping folded source. Both modes use the same Rust engine and facade; visual-row navigation with word wrap and real-device verification remain in progress.
+- Add multi-cursor controls to Edit: occurrence, vertical cursor and expand/shrink commands in the shared editing menu and shortcuts; Alt-click toggles cursors and Alt+Shift click/drag selects columns. Paint secondary selections/carets with the syntax layer's text metrics and announce cursor counts. Move all cursors by grapheme, word, logical line or document boundary, retaining columns across short lines and skipping folded source. Both modes use the same Rust engine and facade; pending-paint motion queuing, large-file viewport preparation and real-device verification remain in progress.
 
 - Integrate multi-selection clipboard operations with the shared editor engine. Copy/cut use source ranges across folds, cut waits for a successful clipboard write, and paste distributes matching lines or repeats the full text with one undo step. Failed clipboard access keeps the source unchanged in both modes. Real-device clipboard verification remains in progress.
 

@@ -87,14 +87,38 @@ pub(super) fn SelectionOverlay(
                 return;
             }
             let mut next = Vec::new();
+            let mut visual_primary = false;
+            let metrics = (ready && actions.preferences().word_wrap)
+                .then(|| super::editor_geometry::visual_metrics(&input))
+                .flatten();
             if ready
                 && selections.len() > 1
                 && let Some(parent) = input.parent_element()
                 && let Some(projection) = actions.projection()
             {
                 let viewport = parent.get_bounding_client_rect();
-                for selection in selections.iter().skip(1) {
+                for (index, selection) in selections.iter().enumerate() {
                     let range = selection.range();
+                    if range.is_empty()
+                        && let Some(metrics) = &metrics
+                        && let Some(caret) = actions.visual_caret(&source, index, &metrics.identity)
+                    {
+                        visual_primary |= index == 0;
+                        next.push(Mark {
+                            left: metrics.left + caret.column as f64 / 64.0 - viewport.left(),
+                            top: metrics.top
+                                + caret.row as f64 * metrics.line_height
+                                + metrics.caret_inset
+                                - viewport.top(),
+                            width: 2.0,
+                            height: metrics.caret_height,
+                            caret: true,
+                        });
+                        continue;
+                    }
+                    if index == 0 {
+                        continue;
+                    }
                     for line in projection.lines() {
                         let contains_caret = range.is_empty()
                             && range.start >= line.source.start
@@ -176,6 +200,9 @@ pub(super) fn SelectionOverlay(
                     }
                 }
             }
+            let _ = input
+                .class_list()
+                .toggle_with_force("editor-visual-carets", visual_primary);
             marks.set(merge_marks(next));
         });
     });

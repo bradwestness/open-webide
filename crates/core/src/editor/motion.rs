@@ -1,4 +1,5 @@
 //! Selection movement is source policy; the browser only maps keys and paints.
+use super::visual_motion::{MotionColumns, VisualGoal, VisualLayout};
 use super::{
     Document, EditError, Indentation, Selection, SelectionError,
     lines::{lines, row_at},
@@ -77,11 +78,50 @@ fn word_right(text: &str, at: usize) -> usize {
 }
 
 impl Document {
+    /// Affinity is transient view state, validated against current measurements.
+    pub fn visual_caret(&self, index: usize, identity: &str) -> Option<super::VisualCaret> {
+        let MotionColumns::Visual {
+            identity: current,
+            goals,
+        } = self.motion_columns.as_ref()?
+        else {
+            return None;
+        };
+        if current != identity {
+            return None;
+        }
+        let goal = goals.get(index)?;
+        (self.selections.get(index)?.head == goal.source_head).then_some(goal.caret)
+    }
+
     pub fn move_selections(
         &mut self,
         motion: SelectionMotion,
         extend: bool,
         indentation: Indentation,
+    ) -> Result<bool, SelectionError> {
+        self.move_selections_in(motion, extend, indentation, None)
+    }
+
+    pub fn move_selections_with_layout(
+        &mut self,
+        motion: SelectionMotion,
+        extend: bool,
+        indentation: Indentation,
+        layout: &VisualLayout,
+    ) -> Result<bool, SelectionError> {
+        if layout.source != self.text || layout.projection != self.projection() {
+            return Err(EditError::StaleContext.into());
+        }
+        self.move_selections_in(motion, extend, indentation, Some(layout))
+    }
+
+    fn move_selections_in(
+        &mut self,
+        motion: SelectionMotion,
+        extend: bool,
+        indentation: Indentation,
+        layout: Option<&VisualLayout>,
     ) -> Result<bool, SelectionError> {
         if self.is_composing() {
             return Err(EditError::CompositionActive.into());
@@ -95,6 +135,7 @@ impl Document {
         let vertical = matches!(motion, SelectionMotion::Up | SelectionMotion::Down);
         let mut columns = Vec::with_capacity(self.selections.len());
         let mut selections = Vec::with_capacity(self.selections.len());
+        let mut visual_goals: Vec<VisualGoal> = Vec::with_capacity(self.selections.len());
         for (index, selection) in self.selections.iter().enumerate() {
             let visible = projection
                 .visible_selection(*selection)
@@ -105,7 +146,14 @@ impl Document {
             let column = self
                 .motion_columns
                 .as_ref()
-                .filter(|columns| vertical && columns.len() == self.selections.len())
+                .and_then(|columns| match columns {
+                    MotionColumns::Logical(columns)
+                        if vertical && columns.len() == self.selections.len() =>
+                    {
+                        Some(columns)
+                    }
+                    _ => None,
+                })
                 .map_or_else(
                     || {
                         display_column(
@@ -136,6 +184,25 @@ impl Document {
                     SelectionMotion::LineEnd => line.body_end,
                     SelectionMotion::DocumentStart => 0,
                     SelectionMotion::DocumentEnd => text.len(),
+                    SelectionMotion::Up | SelectionMotion::Down if layout.is_some() => {
+                        let layout = layout.unwrap();
+                        let previous =
+                            self.motion_columns
+                                .as_ref()
+                                .and_then(|columns| match columns {
+                                    MotionColumns::Visual { identity, goals }
+                                        if identity == &layout.identity
+                                            && goals.len() == self.selections.len() =>
+                                    {
+                                        goals.get(index)
+                                    }
+                                    _ => None,
+                                });
+                        let (target, goal) =
+                            layout.target(at, motion == SelectionMotion::Down, previous)?;
+                        visual_goals.push(goal);
+                        target
+                    }
                     SelectionMotion::Up | SelectionMotion::Down => {
                         let target = if motion == SelectionMotion::Up {
                             row.saturating_sub(1)
@@ -156,6 +223,12 @@ impl Document {
             let head = projection
                 .source_offset(head)
                 .map_err(|_| EditError::InvalidSelection)?;
+            if layout.is_some()
+                && vertical
+                && let Some(goal) = visual_goals.last_mut()
+            {
+                goal.source_head = head;
+            }
             selections.push(Selection {
                 anchor: if extend { selection.anchor } else { head },
                 head,
@@ -163,8 +236,18 @@ impl Document {
         }
         let before = self.selections.clone();
         self.set_selections(selections)?;
-        self.motion_columns =
-            (vertical && self.selections.len() == columns.len()).then_some(columns);
+        self.motion_columns = if vertical && self.selections.len() == columns.len() {
+            Some(if let Some(layout) = layout {
+                MotionColumns::Visual {
+                    identity: layout.identity.clone(),
+                    goals: visual_goals,
+                }
+            } else {
+                MotionColumns::Logical(columns)
+            })
+        } else {
+            None
+        };
         Ok(self.selections != before)
     }
 }

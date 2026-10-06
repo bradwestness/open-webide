@@ -165,6 +165,19 @@ fn editor_selection_key(
     }
     let result = if let Some(command) = command {
         actions.selection_command(project, &path, &source, command)
+    } else if actions.preferences().word_wrap && matches!(motion, Some(Motion::Up | Motion::Down)) {
+        if let Some(layout) = super::editor_geometry::visual_layout(actions, textarea) {
+            actions.move_selections_with_layout(
+                project,
+                &path,
+                &source,
+                motion.unwrap(),
+                event.shift_key(),
+                &layout,
+            )
+        } else {
+            Err(openwebide_core::editor::EditError::StaleContext.into())
+        }
     } else {
         actions.move_selections(project, &path, &source, motion.unwrap(), event.shift_key())
     };
