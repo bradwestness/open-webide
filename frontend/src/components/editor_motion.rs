@@ -71,6 +71,12 @@ impl MotionAdapter {
                 paint.flush.run(());
                 layout = visual_layout(self.actions, input);
             }
+            if request.needs_layout()
+                && layout.is_none()
+                && let Some(paint) = self.paint.get_untracked()
+            {
+                layout = paint.neighborhood.run(());
+            }
             if request.needs_layout() && layout.is_none() {
                 if immediate {
                     return self.fail(ticket, SelectionError::LayoutUnavailable);

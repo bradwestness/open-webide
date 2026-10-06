@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Apply queued wrapped cursor movement before typing, composition, paste and cut while the full editor layout is still preparing in both workspace modes. Measure exact styled cursor neighborhoods through the shared motion engine, retaining Unicode, folds, sticky columns and stale ownership guards.
+
 - Give the expanded frontend browser CI suite a five-minute runner budget, retaining individual UI readiness deadlines and all behavioral checks.
 
 - Reuse exact unchanged wrapped-row heights after localized and disjoint edits, row insertions/deletions and undo in both workspace modes. Guard reuse by document ownership, layout, styled tokens and line endings; invalidate cached heights on font changes.

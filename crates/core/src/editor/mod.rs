@@ -17,9 +17,13 @@ mod motion;
 mod motion_queue;
 pub use motion_queue::{MotionQueue, MotionRequest};
 mod visual_motion;
+mod visual_neighbors;
 pub use visual_motion::{
     MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_caret_offsets, visual_line_offsets,
     visual_text_runs,
+};
+pub use visual_neighbors::{
+    VisualLineRows, visual_neighbor_rows, visual_probe_rows, visual_row_id,
 };
 mod native;
 pub use clipboard::{CLIPBOARD_SELECTIONS_MIME, ClipboardContent};

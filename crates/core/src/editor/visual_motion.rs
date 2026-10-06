@@ -11,6 +11,8 @@ pub const MAX_VISUAL_CARETS: usize = 65_536;
 pub struct VisualCaret {
     pub offset: usize,
     pub column: i64,
+    /// A global row index for `new`, or a stable line-relative ID for
+    /// `neighborhood`. Neighbor links, rather than numeric gaps, drive motion.
     pub row: usize,
 }
 
@@ -19,8 +21,8 @@ pub struct VisualLayout {
     pub(super) source: String,
     pub(super) projection: FoldProjection,
     pub(super) identity: String,
-    rows: usize,
     carets: BTreeMap<usize, Vec<VisualCaret>>,
+    neighbors: BTreeMap<usize, (Option<usize>, Option<usize>)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,13 +136,57 @@ impl VisualLayout {
             row.sort_by_key(|caret| (caret.column, caret.offset));
             row.dedup();
         }
+        let neighbors = by_row
+            .keys()
+            .map(|&row| {
+                (
+                    row,
+                    (Some(row.saturating_sub(1)), Some((row + 1).min(rows - 1))),
+                )
+            })
+            .collect();
         Ok(Self {
             source: source.into(),
             projection,
             identity,
-            rows,
             carets: by_row,
+            neighbors,
         })
+    }
+
+    /// Line-relative row IDs remain stable without a full document-height table.
+    /// The same target policy consumes either complete or neighborhood geometry.
+    pub fn neighborhood(
+        source: &str,
+        projection: FoldProjection,
+        identity: String,
+        lines: &[super::VisualLineRows],
+        carets: Vec<VisualCaret>,
+    ) -> Result<Self, SelectionError> {
+        for caret in &carets {
+            let line = |at| {
+                projection
+                    .lines()
+                    .partition_point(|line| line.visible_start <= at)
+                    .checked_sub(1)
+            };
+            if line(caret.row).is_none() || line(caret.row) != line(caret.offset) {
+                return Err(EditError::InvalidSelection.into());
+            }
+        }
+        let ids = carets
+            .iter()
+            .map(|caret| caret.row)
+            .collect::<BTreeSet<_>>();
+        let neighbors = super::visual_neighbors::neighbors(&projection, lines, &ids)?;
+        let bound = projection
+            .text()
+            .len()
+            .checked_add(1)
+            .ok_or(SelectionError::TooLarge)?;
+        let mut result = Self::new(source, projection, identity, bound, carets)?;
+        result.neighbors = neighbors;
+        Ok(result)
     }
 
     pub(super) fn target(
@@ -165,11 +211,12 @@ impl VisualLayout {
             })
             .ok_or(EditError::InvalidSelection)?;
         let column = previous.map_or(current.column, |goal| goal.column);
-        let target_row = if down {
-            (current.row + 1).min(self.rows - 1)
-        } else {
-            current.row.saturating_sub(1)
-        };
+        let neighbors = self
+            .neighbors
+            .get(&current.row)
+            .ok_or(EditError::InvalidSelection)?;
+        let target_row =
+            if down { neighbors.1 } else { neighbors.0 }.ok_or(EditError::InvalidSelection)?;
         let target = if target_row == current.row {
             current
         } else {

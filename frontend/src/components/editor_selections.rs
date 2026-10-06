@@ -102,14 +102,13 @@ pub(super) fn SelectionOverlay(
                     if range.is_empty()
                         && let Some(metrics) = &metrics
                         && let Some(caret) = actions.visual_caret(&source, index, &metrics.identity)
+                        && let Some(top) =
+                            super::editor_geometry::caret_top(actions, &input, metrics, caret.row)
                     {
                         visual_primary |= index == 0;
                         next.push(Mark {
                             left: metrics.left + caret.column as f64 / 64.0 - viewport.left(),
-                            top: metrics.top
-                                + caret.row as f64 * metrics.line_height
-                                + metrics.caret_inset
-                                - viewport.top(),
+                            top: top - viewport.top(),
                             width: 2.0,
                             height: metrics.caret_height,
                             caret: true,

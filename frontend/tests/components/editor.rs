@@ -6114,7 +6114,12 @@ fn seed_wrapped_carets(mounted: &Mounted, source: &str, second: usize) {
     let input: web_sys::HtmlTextAreaElement = mounted.element(".editor-textarea").unchecked_into();
     actions.record_selection(Selection::caret(5)).unwrap();
     actions
-        .toggle_cursor(1, "queued.rs", source, second + 5)
+        .toggle_cursor(
+            1,
+            &mounted.state.workspace.open_file.get_untracked().unwrap(),
+            source,
+            second + 5,
+        )
         .unwrap();
     let at = u32::try_from(byte_to_textarea(source, actions.selections(source)[0].head).unwrap())
         .unwrap();
@@ -7945,5 +7950,216 @@ async fn localized_wrapped_edits_reuse_exact_row_heights_in_both_modes() {
             count > 0.0 && count < 10.0,
             "measured {count} rows between disjoint edits"
         );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn measured_neighborhoods_move_queued_cursors_through_the_shared_facade_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Selection, SelectionMotion, VisualCaret, VisualLayout, VisualLineRows},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = "文😀ab\r\nxy\r\nabcdef";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+        let slot = saved.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("neighbors.txt".into()));
+            state.workspace.content.set(source.into());
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = true);
+            slot.set(Some(EditorActions::new(state.workspace)));
+            editor_view(state)
+        });
+        settle().await;
+        let actions = saved.get().unwrap();
+        actions.record_selection(Selection::caret(8)).unwrap();
+        actions
+            .toggle_cursor(1, "neighbors.txt", source, 16)
+            .unwrap();
+        assert_eq!(
+            actions.selections(source),
+            [Selection::caret(16), Selection::caret(8)]
+        );
+        let mut carets = Vec::new();
+        for (row, offsets) in [
+            (0, vec![0, 3, 7]),
+            (1, vec![7, 8, 9]),
+            (11, vec![11, 12, 13]),
+            (15, vec![15, 16, 17, 18]),
+            (16, vec![18, 19, 20, 21]),
+        ] {
+            for (column, offset) in offsets.into_iter().enumerate() {
+                carets.push(VisualCaret {
+                    row,
+                    offset,
+                    column: i64::try_from(column * 64).unwrap(),
+                });
+            }
+        }
+        let geometry = [
+            VisualLineRows { line: 0, rows: 2 },
+            VisualLineRows { line: 1, rows: 1 },
+            VisualLineRows { line: 2, rows: 2 },
+        ];
+        let layout = VisualLayout::neighborhood(
+            source,
+            actions.projection().unwrap(),
+            "sampled rows".into(),
+            &geometry,
+            carets,
+        )
+        .unwrap();
+        let (ticket, _) = actions
+            .queue_motion(1, "neighbors.txt", source, SelectionMotion::Down, false)
+            .unwrap()
+            .unwrap();
+        let moved = actions
+            .apply_queued_motion(ticket, Some(&layout))
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved, [Selection::caret(19), Selection::caret(12)]);
+        assert!(actions.queued_motion_ticket().is_none());
+        assert_eq!(actions.source(), source);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn cold_neighborhoods_flush_arrows_before_native_edits_composition_and_clipboard_in_both_modes()
+ {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let row = "line row 文😀 café\t words for wrapping more words\r\n";
+    let source = row.repeat(12_000);
+    let second = row.len() * 9_000;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for operation in 0..4 {
+            let mut eager: Option<(String, Vec<openwebide_core::editor::Selection>)> = None;
+            for cold in [false, true] {
+                let mounted = mount_test({
+                    let source = source.clone();
+                    move |state| {
+                        state.seed_project();
+                        state
+                            .projects
+                            .projects
+                            .update(|projects| projects[0].mode = mode);
+                        state.workspace.open_file.set(Some("cold-edits.txt".into()));
+                        state.workspace.content.set(source);
+                        state
+                            .settings
+                            .editor_preferences
+                            .update(|preferences| preferences.word_wrap = true);
+                        view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+                    }
+                });
+                let actions = EditorActions::new(mounted.state.workspace);
+                if cold {
+                    wait_until("cold layout is still preparing", || {
+                        mounted
+                            .state
+                            .workspace
+                            .editor_row_preparation
+                            .get_untracked()
+                            .is_some_and(|job| job.completed > 0 && job.completed < job.total)
+                            && actions.measured_rows().is_none()
+                    })
+                    .await;
+                    assert!(
+                        !mounted
+                            .element(".editor-code")
+                            .class_list()
+                            .contains("highlight-ready")
+                    );
+                } else {
+                    wait_until("eager layout is painted", || {
+                        actions.measured_rows().is_some()
+                            && mounted
+                                .element(".editor-code")
+                                .class_list()
+                                .contains("highlight-ready")
+                    })
+                    .await;
+                }
+                seed_wrapped_carets(&mounted, &source, second);
+                let textarea: web_sys::HtmlTextAreaElement =
+                    mounted.element(".editor-textarea").unchecked_into();
+                editor_key(&textarea, "ArrowDown", false, false);
+                editor_key(&textarea, "ArrowDown", false, operation == 3);
+                if cold {
+                    assert!(actions.queued_motion_ticket().is_some());
+                }
+                match operation {
+                    0 => {
+                        let init = web_sys::InputEventInit::new();
+                        init.set_bubbles(true);
+                        init.set_cancelable(true);
+                        init.set_input_type("insertText");
+                        init.set_data(Some("X"));
+                        let before =
+                            web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init)
+                                .unwrap();
+                        textarea.dispatch_event(&before).unwrap();
+                        assert!(!before.default_prevented());
+                        editorNativeInput(&textarea, "X", "insertText", false);
+                    }
+                    1 => {
+                        textarea
+                            .dispatch_event(
+                                &web_sys::CompositionEvent::new("compositionstart").unwrap(),
+                            )
+                            .unwrap();
+                        assert!(actions.is_composing());
+                        editorNativeInput(&textarea, "文😀", "insertCompositionText", true);
+                        textarea
+                            .dispatch_event(
+                                &web_sys::CompositionEvent::new("compositionend").unwrap(),
+                            )
+                            .unwrap();
+                        assert!(!actions.is_composing());
+                    }
+                    2 => {
+                        assert!(editorClipboardPaste(&textarea, "pasted 文😀").default_prevented());
+                    }
+                    _ => {
+                        assert!(editorClipboardCut(&textarea).default_prevented());
+                    }
+                }
+                assert!(actions.queued_motion_ticket().is_none());
+                assert!(
+                    mounted
+                        .root
+                        .query_selector("[role='alert']")
+                        .unwrap()
+                        .is_none()
+                );
+                let result = (actions.source(), actions.selections(&actions.source()));
+                assert!(
+                    result.0 != source,
+                    "operation {operation} did not edit in {mode:?}, cold={cold}"
+                );
+                if let Some(expected) = &eager {
+                    assert!(
+                        result.0 == expected.0,
+                        "cold source differs for operation {operation} in {mode:?}"
+                    );
+                    assert_eq!(
+                        result.1, expected.1,
+                        "cold selection differs for operation {operation} in {mode:?}"
+                    );
+                } else {
+                    eager = Some(result);
+                }
+            }
+        }
     }
 }

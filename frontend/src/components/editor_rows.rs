@@ -5,34 +5,19 @@ use leptos::prelude::*;
 use openwebide_core::editor::MeasuredRows;
 use wasm_bindgen::JsCast;
 
-struct RowProbe(web_sys::HtmlElement);
+pub(super) struct RowProbe(web_sys::HtmlElement);
 impl Drop for RowProbe {
     fn drop(&mut self) {
         self.0.remove();
     }
 }
 
-/// Browser primitives only: styled HTML, exact rectangles and yielding. The
-/// shared core chooses batch sizes and validates the completed height table;
-/// the editor facade rechecks document/layout ownership before publication.
-pub(super) async fn measure_batches(
-    input: web_sys::HtmlTextAreaElement,
-    projection: openwebide_core::editor::FoldProjection,
-    metrics: String,
-    mut plan: openwebide_core::editor::RowMeasurementPlan,
-    current: impl Fn() -> bool,
-    progress: impl Fn(usize),
-    render: impl Fn(&[usize], bool) -> String,
-) -> Result<Option<MeasuredRows>, ()> {
-    if !current()
-        || !input.is_connected()
-        || input.client_width() <= 0
-        || input.client_height() <= 0
-    {
-        return Ok(None);
-    }
+/// One styled DOM primitive shared by height and cursor-neighborhood probes.
+pub(super) fn styled_row_probe(
+    input: &web_sys::HtmlTextAreaElement,
+) -> Result<(RowProbe, web_sys::Element), ()> {
     let style = window()
-        .get_computed_style(&input)
+        .get_computed_style(input)
         .map_err(|_| ())?
         .ok_or(())?;
     let probe = document()
@@ -77,7 +62,29 @@ pub(super) async fn measure_batches(
         .ok_or(())?
         .append_child(&probe)
         .map_err(|_| ())?;
-    let _probe = RowProbe(probe);
+    Ok((RowProbe(probe), paint))
+}
+
+/// Browser primitives only: styled HTML, exact rectangles and yielding. The
+/// shared core chooses batch sizes and validates the completed height table;
+/// the editor facade rechecks document/layout ownership before publication.
+pub(super) async fn measure_batches(
+    input: web_sys::HtmlTextAreaElement,
+    projection: openwebide_core::editor::FoldProjection,
+    metrics: String,
+    mut plan: openwebide_core::editor::RowMeasurementPlan,
+    current: impl Fn() -> bool,
+    progress: impl Fn(usize),
+    render: impl Fn(&[usize], bool) -> String,
+) -> Result<Option<MeasuredRows>, ()> {
+    if !current()
+        || !input.is_connected()
+        || input.client_width() <= 0
+        || input.client_height() <= 0
+    {
+        return Ok(None);
+    }
+    let (_probe, paint) = styled_row_probe(&input)?;
     let lengths = projection
         .lines()
         .iter()

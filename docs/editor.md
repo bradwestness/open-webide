@@ -79,8 +79,11 @@ neighboring visual rows. Oversized paint tokens use Unicode-safe text runs so
 range measurements stay within short text nodes. It reuses measurements across
 cursors and caps prepared
 caret positions at 65,536. While paint is pending, arrow requests queue in order, including
-Shift selections. Typing, commands, composition and clipboard actions flush fresh
-paint and apply queued motion first. File/account/source/fold changes cancel stale
+Shift selections. Typing, commands, composition and clipboard actions apply queued motion first.
+When a full row-height table is still preparing, styled probes measure the current
+and neighboring logical lines using the same caret sampler as prepared paint.
+Explicit neighbor links preserve wrapped movement without estimating unmeasured
+heights; stable line-relative IDs are mapped separately to screen coordinates. File/account/source/fold changes cancel stale
 requests; unavailable layout cancels after eight frames with an error. Full paint
 viewport rendering remains a follow-up. Multiple selection movement and
 structural selection commands are bounded to files up to 2 MiB; Escape still
@@ -228,7 +231,9 @@ deletions and undo. Reuse checks account, project, file-read, font/width,
 indentation, whitespace, token styles and line-ending scope; font changes clear the
 cache. Large regions between disjoint edits reuse matching interior rows through exact
 paint equality as well; conflicting measurements for identical rows are not reused.
-Ordered edits/IME/clipboard during cold queued motion remain follow-ups.
+Browser contracts compare exact source and selections after queued arrows followed
+by typing, composition, paste and cut with cold versus prepared layouts in both
+workspace modes. Real-device input and clipboard verification remain follow-ups.
 Native textarea input owns the complete projected source; this does not yet bound
 input memory.
 

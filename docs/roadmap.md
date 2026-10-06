@@ -140,8 +140,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   pixel goals and soft-wrap caret affinity, skipping folds and rejecting stale
   source/projection measurements. Pending-paint motion now queues in order and
   flushes before edits, IME and clipboard actions, with bounded retries and stale
-  account/file/projection guards. Finish ordered edits/IME/clipboard when a cold
-  row table is still preparing. Long wrapped lines now use shared Unicode
+  account/file/projection guards. Cold layout now measures styled cursor neighborhoods
+  before typing, IME and clipboard actions; browser contracts compare exact text
+  and selections against prepared layouts in both modes. Long wrapped lines use shared Unicode
   indexing and bounded DOM searches to prepare only neighboring visual rows,
   reusing measurements across cursors. Finish real-device input/clipboard
   verification for multiple cursors. File navigation now

@@ -3,7 +3,7 @@ use super::editor::{current_editor_target, sync_highlight_scroll};
 use crate::state_actions::editor::EditorActions;
 use leptos::prelude::*;
 use openwebide_core::editor::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_line_offsets};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use wasm_bindgen::JsCast;
 
 /// DOM values are rounded first and bounded well inside exact integer precision.
@@ -224,117 +224,303 @@ pub(super) fn visual_layout(
     if metrics.rows == 0 {
         return None;
     }
-    let row_element = |index: usize| {
-        parent
-            .query_selector(&format!(
-                ".editor-source-line[data-line='{}']",
-                projection.lines().get(index)?.source_line + 1
-            ))
-            .ok()
-            .flatten()
-    };
-    let selections = actions.selections(&source);
-    let mut selected_rows = BTreeSet::new();
-    for selection in &selections {
+    measured_layout(
+        actions,
+        input,
+        &source,
+        projection,
+        Some(&metrics),
+        |index| {
+            parent
+                .query_selector(&format!(".editor-source-line[data-line='{}']", index + 1))
+                .ok()
+                .flatten()
+        },
+    )
+}
+
+fn selected_lines(
+    actions: EditorActions,
+    source: &str,
+    projection: &openwebide_core::editor::FoldProjection,
+) -> Option<BTreeMap<usize, Vec<(usize, usize)>>> {
+    let mut selected = BTreeMap::<usize, Vec<(usize, usize)>>::new();
+    for (caret, selection) in actions.selections(source).iter().enumerate() {
         let visible = projection.visible_selection(*selection).ok()?;
         let index = projection
             .lines()
             .partition_point(|line| line.visible_start <= visible.head)
             .saturating_sub(1);
-        selected_rows
-            .extend(index.saturating_sub(1)..=(index + 1).min(projection.lines().len() - 1));
+        for row in index.saturating_sub(1)..=(index + 1).min(projection.lines().len() - 1) {
+            selected.entry(row).or_default();
+        }
+        selected
+            .entry(index)
+            .or_default()
+            .push((caret, visible.head));
     }
-    let mut prepared = BTreeMap::new();
-    for index in selected_rows {
-        let line = &projection.lines()[index];
-        let row = row_element(index)?;
-        let raw = &source[line.source.clone()];
+    Some(selected)
+}
+
+struct RowMeasurement<'a> {
+    actions: EditorActions,
+    source: &'a str,
+    projection: &'a openwebide_core::editor::FoldProjection,
+    identity: &'a str,
+    line_height: f64,
+}
+impl RowMeasurement<'_> {
+    fn sample(
+        &self,
+        index: usize,
+        cursors: &[(usize, usize)],
+        row: web_sys::Element,
+    ) -> Option<(openwebide_core::editor::VisualLineRows, Vec<VisualCaret>)> {
+        use openwebide_core::editor::{VisualLineRows, visual_probe_rows, visual_row_id};
+        let line = &self.projection.lines()[index];
+        let raw = &self.source[line.source.clone()];
         let body = raw
             .strip_suffix("\r\n")
             .or_else(|| raw.strip_suffix('\n'))
             .unwrap_or(raw);
-        let painted_body = row.text_content()?;
-        let painted_body = painted_body.strip_suffix('\n').unwrap_or(&painted_body);
-        if painted_body != body.replace('\r', "\n") {
+        let painted = row.text_content()?;
+        if painted.strip_suffix('\n').unwrap_or(&painted) != body.replace('\r', "\n") {
             return None;
         }
-        if let Some(measured) = actions.measured_rows()
-            && (row.get_bounding_client_rect().top() - metrics.top - measured.rows.top(index)?)
-                .abs()
-                > 0.5
-        {
+        let bounds = row.get_bounding_client_rect();
+        let rows = measured_row((bounds.height() / self.line_height).round())?;
+        if rows == 0 || (bounds.height() - rows as f64 * self.line_height).abs() > 0.5 {
             return None;
         }
-        let glyphs = if body.is_empty() {
+        let metrics = VisualMetrics {
+            identity: self.identity.into(),
+            left: bounds.left(),
+            top: bounds.top(),
+            line_height: self.line_height,
+            caret_height: self.line_height,
+            caret_inset: 0.0,
+            rows,
+        };
+        let mut glyphs = if body.is_empty() {
             None
         } else {
             Some(Glyphs::new(&row, body)?)
         };
-        prepared.insert(index, (row, glyphs));
-    }
-    let mut wanted = BTreeSet::new();
-    for (caret, selection) in selections.iter().enumerate() {
-        let visible = projection.visible_selection(*selection).ok()?;
-        let index = projection
-            .lines()
-            .partition_point(|line| line.visible_start <= visible.head)
-            .saturating_sub(1);
-        let line = &projection.lines()[index];
-        let (row, glyphs) = prepared.get_mut(&index)?;
-        let current = if let Some(caret) = actions.visual_caret(&source, caret, &metrics.identity) {
-            caret.row
-        } else if glyphs.is_none() {
-            measured_row(
-                ((row.get_bounding_client_rect().top() - metrics.top) / metrics.line_height)
-                    .round(),
-            )?
-        } else {
+        let mut current = Vec::new();
+        for &(caret, head) in cursors {
+            let within =
+                if let Some(goal) = self.actions.visual_caret(self.source, caret, self.identity) {
+                    goal.row.checked_sub(line.visible_start)?
+                } else if body.is_empty() {
+                    0
+                } else if body.ends_with('\r') && head == line.visible_start + body.len() {
+                    rows - 1
+                } else {
+                    let glyphs = glyphs.as_mut()?;
+                    let byte = head
+                        .saturating_sub(line.visible_start)
+                        .min(glyphs.offsets.last()?.0);
+                    let glyph = glyphs
+                        .offsets
+                        .partition_point(|(at, _)| *at <= byte)
+                        .saturating_sub(1)
+                        .min(glyphs.offsets.len() - 2);
+                    glyphs.row(glyph, &metrics)?
+                };
+            current.push(within);
+        }
+        let mut carets = Vec::new();
+        for wanted in visual_probe_rows(rows, &current).ok()? {
+            let id = visual_row_id(self.projection, index, wanted).ok()?;
+            if body.is_empty() || (body.ends_with('\r') && wanted + 1 == rows) {
+                carets.push(VisualCaret {
+                    offset: line.visible_start + body.len(),
+                    column: 0,
+                    row: id,
+                });
+                continue;
+            }
             let glyphs = glyphs.as_mut()?;
-            let byte = visible
-                .head
-                .saturating_sub(line.visible_start)
-                .min(glyphs.offsets.last()?.0);
-            let glyph = glyphs
-                .offsets
-                .partition_point(|(offset, _)| *offset <= byte)
-                .saturating_sub(1)
-                .min(glyphs.offsets.len() - 2);
-            glyphs.row(glyph, &metrics)?
-        };
-        wanted.extend(current.saturating_sub(1)..=(current + 1).min(metrics.rows - 1));
-    }
-    let mut carets = Vec::new();
-    for (index, (row, glyphs)) in prepared {
-        let line = &projection.lines()[index];
-        let Some(mut glyphs) = glyphs else {
-            let bounds = row.get_bounding_client_rect();
-            carets.push(VisualCaret {
-                offset: line.visible_start,
-                column: 0,
-                row: measured_row(((bounds.top() - metrics.top) / metrics.line_height).round())?,
-            });
-            continue;
-        };
-        for &wanted in &wanted {
             let start = glyphs.first_on_row(wanted, &metrics)?;
             let end = glyphs.first_on_row(wanted + 1, &metrics)?;
             if carets.len() + (end - start) * 2 > MAX_VISUAL_CARETS {
                 return None;
             }
-            for index in start..end {
-                let rect = glyphs.rect(index)?;
+            for glyph in start..end {
+                let rect = glyphs.rect(glyph)?;
                 for (offset, x) in [
-                    (glyphs.offsets[index].0, rect.left()),
-                    (glyphs.offsets[index + 1].0, rect.right()),
+                    (glyphs.offsets[glyph].0, rect.left()),
+                    (glyphs.offsets[glyph + 1].0, rect.right()),
                 ] {
                     carets.push(VisualCaret {
                         offset: line.visible_start + offset,
-                        column: measured_integer(((x - metrics.left) * 64.0).round())?,
-                        row: wanted,
+                        column: measured_integer(((x - bounds.left()) * 64.0).round())?,
+                        row: id,
                     });
                 }
             }
         }
+        Some((VisualLineRows { line: index, rows }, carets))
     }
-    VisualLayout::new(&source, projection, metrics.identity, metrics.rows, carets).ok()
+}
+
+fn measurement_context<'a>(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+    source: &'a str,
+    projection: &'a openwebide_core::editor::FoldProjection,
+    identity: &'a str,
+) -> Option<RowMeasurement<'a>> {
+    let style = window().get_computed_style(input).ok()??;
+    let line_height: f64 = style
+        .get_property_value("line-height")
+        .ok()?
+        .trim_end_matches("px")
+        .parse()
+        .ok()?;
+    if !line_height.is_finite() || line_height <= 0.0 {
+        return None;
+    }
+    Some(RowMeasurement {
+        actions,
+        source,
+        projection,
+        identity,
+        line_height,
+    })
+}
+
+fn measured_layout(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+    source: &str,
+    projection: openwebide_core::editor::FoldProjection,
+    global: Option<&VisualMetrics>,
+    row_element: impl Fn(usize) -> Option<web_sys::Element>,
+) -> Option<VisualLayout> {
+    let geometry = super::editor_rows::metrics_identity(input)?;
+    let revision = actions.view_revision();
+    let identity = format!("{geometry}:{revision}");
+    let context = measurement_context(actions, input, source, &projection, &identity)?;
+    let mut lines = Vec::new();
+    let mut carets = Vec::new();
+    for (index, cursors) in selected_lines(actions, source, &projection)? {
+        let row = row_element(projection.lines()[index].source_line)?;
+        if let (Some(global), Some(measured)) = (global, actions.measured_rows())
+            && (row.get_bounding_client_rect().top() - global.top - measured.rows.top(index)?).abs()
+                > 0.5
+        {
+            return None;
+        }
+        let (line, sampled) = context.sample(index, &cursors, row)?;
+        lines.push(line);
+        carets.extend(sampled);
+        if carets.len() > MAX_VISUAL_CARETS {
+            return None;
+        }
+    }
+    if actions.view_revision() != revision
+        || super::editor_rows::metrics_identity(input).as_ref() != Some(&geometry)
+        || !current_editor_target(actions, input)
+    {
+        return None;
+    }
+    VisualLayout::neighborhood(source, projection, identity, &lines, carets).ok()
+}
+
+/// Cold measurement uses the same exact row sampler as warm paint, with bounded
+/// temporary DOM batches. No document-height table is needed for neighbor links.
+pub(super) fn neighborhood_layout(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+    render: impl Fn(&[usize], bool) -> String,
+) -> Option<VisualLayout> {
+    if !current_editor_target(actions, input)
+        || input.client_width() <= 0
+        || input.client_height() <= 0
+    {
+        return None;
+    }
+    let revision = actions.view_revision();
+    let geometry = super::editor_rows::metrics_identity(input)?;
+    let identity = format!("{geometry}:{revision}");
+    let source = actions.source();
+    let projection = actions.projection()?;
+    let selected = selected_lines(actions, &source, &projection)?
+        .into_iter()
+        .collect::<Vec<_>>();
+    let context = measurement_context(actions, input, &source, &projection, &identity)?;
+    let (_probe, paint) = super::editor_rows::styled_row_probe(input).ok()?;
+    let mut lines = Vec::new();
+    let mut carets = Vec::new();
+    let mut start = 0;
+    while start < selected.len() {
+        let count = openwebide_core::editor::row_measurement_batch(
+            selected[start..]
+                .iter()
+                .map(|(index, _)| projection.lines()[*index].source.len()),
+        );
+        if count == 0 {
+            return None;
+        }
+        let batch = &selected[start..start + count];
+        let indices = batch
+            .iter()
+            .map(|(index, _)| projection.lines()[*index].source_line)
+            .collect::<Vec<_>>();
+        let suffix = batch.last()?.0 + 1 < projection.lines().len();
+        paint.set_inner_html(&render(&indices, suffix));
+        for (index, cursors) in batch {
+            let row = paint
+                .query_selector(&format!(
+                    ".editor-source-line[data-line='{}']",
+                    projection.lines()[*index].source_line + 1
+                ))
+                .ok()??;
+            let (line, sampled) = context.sample(*index, cursors, row)?;
+            lines.push(line);
+            carets.extend(sampled);
+            if carets.len() > MAX_VISUAL_CARETS {
+                return None;
+            }
+        }
+        paint.set_inner_html("");
+        start += count;
+    }
+    if actions.view_revision() != revision
+        || super::editor_rows::metrics_identity(input).as_ref() != Some(&geometry)
+        || !current_editor_target(actions, input)
+    {
+        return None;
+    }
+    VisualLayout::neighborhood(&source, projection, identity, &lines, carets).ok()
+}
+
+/// Translate a line-relative caret ID only when painting into a real viewport.
+pub(super) fn caret_top(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+    metrics: &VisualMetrics,
+    id: usize,
+) -> Option<f64> {
+    let projection = actions.projection()?;
+    let index = projection
+        .lines()
+        .partition_point(|line| line.visible_start <= id)
+        .checked_sub(1)?;
+    let within = id.checked_sub(projection.lines()[index].visible_start)?;
+    let top = if let Some(rows) = actions.measured_rows() {
+        metrics.top + rows.rows.top(index)?
+    } else {
+        input
+            .parent_element()?
+            .query_selector(&format!(
+                ".editor-source-line[data-line='{}']",
+                projection.lines()[index].source_line + 1
+            ))
+            .ok()??
+            .get_bounding_client_rect()
+            .top()
+    };
+    Some(top + within as f64 * metrics.line_height + metrics.caret_inset)
 }

@@ -93,6 +93,7 @@ fn editor_clipboard_copy(
 pub(super) struct EditorPaint {
     pub ticket: u64,
     pub flush: Callback<()>,
+    pub neighborhood: Callback<(), Option<openwebide_core::editor::VisualLayout>>,
 }
 
 fn editor_selection_key(
@@ -1139,6 +1140,27 @@ fn HighlightOverlay(
     let paint_ticket = paint_epoch.get_untracked();
     paint_request.set(Some(EditorPaint {
         ticket: paint_ticket,
+        neighborhood: Callback::new(move |()| {
+            if generation.is_disposed() {
+                return None;
+            }
+            let input = textarea_ref.get_untracked()?;
+            super::editor_geometry::neighborhood_layout(actions, &input, |rows, suffix| {
+                tokens.with_untracked(|(prepared, tokens)| {
+                    guides.with_untracked(|guides| {
+                        highlight_html(
+                            tokens,
+                            *prepared,
+                            guides,
+                            rows,
+                            indentation.get_untracked(),
+                            show_whitespace.get_untracked(),
+                            suffix,
+                        )
+                    })
+                })
+            })
+        }),
         flush: Callback::new(move |()| {
             if generation.is_disposed() {
                 return;
