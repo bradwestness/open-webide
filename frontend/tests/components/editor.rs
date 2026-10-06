@@ -7734,3 +7734,216 @@ async fn cold_wrapped_preparation_keeps_input_visible_and_rejects_superseded_bat
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn localized_wrapped_edits_reuse_exact_row_heights_in_both_modes() {
+    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+    export function watch_row_measurements() {
+        let count = 0;
+        const consume = records => {
+            for (const record of records) {
+                if (!record.target.closest?.('.editor-row-measure')) continue;
+                for (const node of record.addedNodes) {
+                    if (node.nodeType !== 1) continue;
+                    count += Number(node.matches('.editor-source-line'));
+                    count += node.querySelectorAll('.editor-source-line').length;
+                }
+            }
+        };
+        const observer = new MutationObserver(consume);
+        observer.observe(document.body, {childList: true, subtree: true});
+        return () => {consume(observer.takeRecords()); observer.disconnect(); return count;};
+    }
+    "#)]
+    extern "C" {
+        fn watch_row_measurements() -> js_sys::Function;
+    }
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = (0..1200)
+        .map(|row| format!("row {row} 文😀 café\t words for wrapping\r\n"))
+        .collect::<String>();
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test({
+            let source = source.clone();
+            move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("row-reuse.txt".into()));
+                state.workspace.content.set(source);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = true);
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        wait_until("initial reusable wrapped rows", || {
+            actions.measured_rows().is_some()
+        })
+        .await;
+        let old = actions.measured_rows().unwrap().rows;
+        let observed = watch_row_measurements();
+        let changed = source.replace(
+            "row 500 ",
+            &format!("row 500 {} ", "more words ".repeat(30)),
+        );
+        input(&mounted, &changed);
+        wait_until("changed row measured with reused neighbors", || {
+            actions.measured_rows().is_some_and(|rows| {
+                rows.rows.top(501).unwrap() - rows.rows.top(500).unwrap()
+                    > old.top(501).unwrap() - old.top(500).unwrap()
+            })
+        })
+        .await;
+        let rows = actions.measured_rows().unwrap().rows;
+        assert_eq!(rows.len(), old.len());
+        for row in [0, 499, 501, 1199, 1200] {
+            assert!(
+                (rows.top(row + 1).unwrap()
+                    - rows.top(row).unwrap()
+                    - (old.top(row + 1).unwrap() - old.top(row).unwrap()))
+                .abs()
+                    < f64::EPSILON
+            );
+        }
+        settle().await;
+        let count = observed
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(
+            count > 0.0 && count < 10.0,
+            "measured {count} logical rows after a one-row edit"
+        );
+        let observed = watch_row_measurements();
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert!(editor_key(&textarea, "z", true, false).default_prevented());
+        wait_until("undo restores exact reusable height table", || {
+            actions.source() == source
+                && actions.measured_rows().is_some_and(|rows| rows.rows == old)
+        })
+        .await;
+        settle().await;
+        let count = observed
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(
+            count > 0.0 && count < 10.0,
+            "measured {count} logical rows after undo"
+        );
+        let observed = watch_row_measurements();
+        let inserted = format!("new row\r\n{source}");
+        input(&mounted, &inserted);
+        wait_until("inserted row preserves suffix measurements", || {
+            actions
+                .measured_rows()
+                .is_some_and(|rows| rows.rows.len() == old.len() + 1)
+        })
+        .await;
+        let shifted = actions.measured_rows().unwrap().rows;
+        for row in [0, 500, 1199, 1200] {
+            assert!(
+                (shifted.top(row + 2).unwrap()
+                    - shifted.top(row + 1).unwrap()
+                    - (old.top(row + 1).unwrap() - old.top(row).unwrap()))
+                .abs()
+                    < f64::EPSILON
+            );
+        }
+        settle().await;
+        let count = observed
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(
+            count > 0.0 && count < 10.0,
+            "measured {count} rows after insertion"
+        );
+        let observed = watch_row_measurements();
+        input(&mounted, &source);
+        wait_until("deleted row restores suffix measurements", || {
+            actions.measured_rows().is_some_and(|rows| rows.rows == old)
+        })
+        .await;
+        settle().await;
+        let count = observed
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(count < 10.0, "measured {count} rows after deletion");
+        let observed = watch_row_measurements();
+        actions.invalidate_measured_font();
+        wait_until("font invalidation prepares all rows again", || {
+            actions.measured_rows().is_some()
+        })
+        .await;
+        settle().await;
+        let count = observed
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(
+            count >= 1201.0,
+            "reused rows after font invalidation: {count}"
+        );
+        let cache = mounted
+            .state
+            .workspace
+            .editor_row_cache
+            .get_untracked()
+            .unwrap();
+        actions.invalidate_measured_rows();
+        for owner in 0..4 {
+            let mut stale = cache.paint.clone();
+            match owner {
+                0 => stale.key.0 += 1,
+                1 => stale.epoch += 1,
+                2 => stale.read_revision += 1,
+                _ => stale.account_generation += 1,
+            }
+            let ticket = actions
+                .begin_row_preparation(actions.view_revision(), old.len())
+                .unwrap();
+            assert!(
+                actions
+                    .finish_row_preparation(ticket, stale, Ok(Some(cache.rows.clone())))
+                    .is_none()
+            );
+            assert!(
+                actions.measured_rows().is_none(),
+                "published stale owner {owner}"
+            );
+        }
+        let observed = watch_row_measurements();
+        let disjoint = source
+            .replace("row 200 ", "row 200 additional words additional words ")
+            .replace("row 1000 ", "row 1000 additional words additional words ");
+        input(&mounted, &disjoint);
+        wait_until("disjoint edits reuse unchanged interior rows", || {
+            actions.measured_rows().is_some()
+        })
+        .await;
+        settle().await;
+        let count = observed
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(
+            count > 0.0 && count < 10.0,
+            "measured {count} rows between disjoint edits"
+        );
+    }
+}

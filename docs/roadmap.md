@@ -103,7 +103,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   guards. Cold measurement now uses bounded temporary logical-row batches,
   yielding tasks and frames while native input remains visible; progressing jobs
   retain queued arrow requests and reject superseded results in both modes.
-  Finish incremental height reuse and fine paint within very long logical rows,
+  Localized edits now reuse exact unchanged styled prefix/suffix heights, with
+  row insertion/deletion/undo and font invalidation contracts in both modes;
+  disjoint edits also reuse exactly matching interior rows.
+  Finish fine paint within very long logical rows,
   then further incremental access: edits still materialize full Strings and shift
   suffix coordinates, and
   long-line queries still scan within the line. Native textarea input retains the

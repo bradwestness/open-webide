@@ -974,13 +974,24 @@ fn HighlightOverlay(
             return;
         };
         batch_ticket.set_value(Some(ticket));
-        let guides = guides.get_untracked();
-        let publish_metrics = metrics.clone();
+        let guides: std::sync::Arc<[usize]> = guides.get_untracked().into();
+        let Some((paint, plan)) = actions.prepare_row_measurements(
+            metrics.clone(),
+            projection.clone(),
+            prepared_tokens.clone(),
+            guides.clone(),
+            tab,
+            whitespace,
+        ) else {
+            actions.end_row_preparation(ticket);
+            return;
+        };
         wasm_bindgen_futures::spawn_local(async move {
             let result = super::editor_rows::measure_batches(
                 input,
                 projection,
                 metrics,
+                plan,
                 move || {
                     batch_key.try_get_value().as_ref().and_then(Option::as_ref) == Some(&key)
                         && actions.row_preparation_current(ticket)
@@ -1002,7 +1013,7 @@ fn HighlightOverlay(
             if batch_key.is_disposed() {
                 return;
             }
-            if let Some(message) = actions.finish_row_preparation(ticket, publish_metrics, result) {
+            if let Some(message) = actions.finish_row_preparation(ticket, paint, result) {
                 error.set(Some(message.into()));
             }
         });

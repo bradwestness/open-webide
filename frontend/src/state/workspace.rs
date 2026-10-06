@@ -28,6 +28,26 @@ pub struct EditorRowMeasurements {
     pub rows: openwebide_core::editor::MeasuredRows,
 }
 
+#[derive(Clone, Debug)]
+pub struct EditorRowPaint {
+    pub key: (i64, String),
+    pub epoch: u64,
+    pub read_revision: u64,
+    pub account_generation: u64,
+    pub metrics: String,
+    pub projection: openwebide_core::editor::FoldProjection,
+    pub tokens: std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+    pub prepared_source: bool,
+    pub guides: std::sync::Arc<[usize]>,
+    pub indentation: openwebide_core::editor::Indentation,
+    pub whitespace: bool,
+}
+#[derive(Clone, Debug)]
+pub struct EditorRowCache {
+    pub paint: EditorRowPaint,
+    pub rows: openwebide_core::editor::MeasuredRows,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EditorRowPreparation {
     pub ticket: u64,
@@ -239,6 +259,7 @@ pub struct WorkspaceState {
     pub editor_projection_revision: Memo<u64>,
     pub editor_view_revision: Memo<u64>,
     pub editor_rows: RwSignal<Option<EditorRowMeasurements>>,
+    pub editor_row_cache: RwSignal<Option<EditorRowCache>>,
     pub editor_row_preparation: RwSignal<Option<EditorRowPreparation>>,
     pub editor_row_ticket: RwSignal<u64>,
     pub editor_group: RwSignal<u64>,
@@ -322,6 +343,7 @@ impl WorkspaceState {
             editor_projection_revision,
             editor_view_revision,
             editor_rows: RwSignal::new(None),
+            editor_row_cache: RwSignal::new(None),
             editor_row_preparation: RwSignal::new(None),
             editor_row_ticket: RwSignal::new(0),
             editor_group: RwSignal::new(0),
@@ -720,6 +742,7 @@ impl WorkspaceState {
 
     pub fn reset(&self) {
         self.editor_rows.set(None);
+        self.editor_row_cache.set(None);
         self.editor_row_preparation.set(None);
         self.editor_row_ticket
             .update(|ticket| *ticket = ticket.wrapping_add(1));

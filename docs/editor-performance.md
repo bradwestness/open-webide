@@ -170,3 +170,28 @@ and retains queued arrows, but ordered edits/IME/clipboard after a queued arrow
 still need work. Incremental height reuse, finer shaping within long logical rows,
 native input/source access and Linux PSS/device validation remain open. Completing
 these cases does not validate the admission boundaries as responsiveness limits.
+
+
+## Incremental styled-row reuse
+
+The follow-on working tree at checkout `166ba6b`, built JS
+`openwebide-frontend-9099131cd6992d5e.js`, reuses exact unchanged styled rows after
+edits. The same Chrome 148/macOS workload on 2026-10-06 produced:
+
+| Workload | Mode | Cold ms | Input ms | Scroll ms | Main WASM after input MiB | Sampled peak summed RSS GiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 2 MiB / 36,158 rows | Local | 2,375 | 315 | 89 | 102.6 | 1.81 |
+| 2 MiB / 36,158 rows | Remote | 2,673 | 303 | 87 | 103.4 | 1.82 |
+
+Full records: [incremental wrapped JSONL](editor-performance/production-view-row-reuse.jsonl).
+Localized and disjoint edits reuse unchanged paint only when text, token styles,
+line endings, font/width and ownership match. Identical rows with conflicting
+previous heights are remeasured. Browser contracts count actual measurement DOM
+for single-row changes, insertion/deletion, undo and two distant edits, and verify
+full remeasurement after font invalidation in both modes.
+
+Input-to-paint improves from roughly 2.6 seconds to 303–315 ms. Cold preparation
+still takes 2.4–2.7 seconds, with frame stalls around 550 ms; native input retains
+full projected text. The long-line/byte/row admission boundaries, Linux PSS and
+real-device workflows still need the remaining validation described above. These
+single observations establish improvement, not final responsiveness limits.

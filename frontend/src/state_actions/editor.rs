@@ -24,6 +24,7 @@ pub enum EditorCommand {
 
 mod motion;
 mod preparation;
+mod rows;
 
 type TypingState = Option<((i64, String), String, f64)>;
 
@@ -431,16 +432,24 @@ impl EditorActions {
     pub fn finish_row_preparation(
         self,
         ticket: u64,
-        metrics: String,
+        paint: crate::state::workspace::EditorRowPaint,
         result: Result<Option<openwebide_core::editor::MeasuredRows>, ()>,
     ) -> Option<&'static str> {
-        if !self.row_preparation_current(ticket) {
+        if !self.row_preparation_current(ticket) || !self.row_paint_current(&paint) {
             self.end_row_preparation(ticket);
             return None;
         }
         let message = match result {
             Ok(Some(rows)) => {
-                self.publish_measured_rows(self.view_revision(), metrics, rows);
+                if self.publish_measured_rows(
+                    self.view_revision(),
+                    paint.metrics.clone(),
+                    rows.clone(),
+                ) {
+                    self.workspace.editor_row_cache.set(Some(
+                        crate::state::workspace::EditorRowCache { paint, rows },
+                    ));
+                }
                 None
             }
             Ok(None) => None,

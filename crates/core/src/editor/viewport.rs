@@ -1,5 +1,5 @@
 //! A document row window; browser adapters supply measured scroll geometry.
-use std::ops::Range;
+use std::{collections::HashMap, hash::Hash, ops::Range};
 
 pub const MAX_MEASURE_ROWS: usize = 128;
 pub const MAX_MEASURE_BYTES: usize = 64 * 1024;
@@ -32,6 +32,128 @@ pub fn row_measurement_batch(lengths: impl IntoIterator<Item = usize>) -> usize 
         rows += 1;
     }
     rows
+}
+
+/// Exact unchanged paint rows retain their measured height after a transaction.
+/// Adapters measure only missing rows; no hashes or wrapping estimates are used.
+#[derive(Clone, Debug)]
+pub struct RowMeasurementPlan {
+    heights: Vec<Option<f64>>,
+    next: usize,
+    completed: usize,
+}
+impl RowMeasurementPlan {
+    pub fn new(rows: usize) -> Option<Self> {
+        (rows <= super::MAX_EDITOR_LINES).then(|| Self {
+            heights: vec![None; rows],
+            next: 0,
+            completed: 0,
+        })
+    }
+    pub fn reuse<T: Eq + Hash>(
+        previous: &[T],
+        current: &[T],
+        measured: &MeasuredRows,
+    ) -> Option<Self> {
+        if previous.len() != measured.len() {
+            return None;
+        }
+        let mut plan = Self::new(current.len())?;
+        let prefix = previous
+            .iter()
+            .zip(current)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let suffix = previous
+            .iter()
+            .rev()
+            .zip(current.iter().rev())
+            .take(previous.len().min(current.len()) - prefix)
+            .take_while(|(a, b)| a == b)
+            .count();
+        for row in 0..prefix {
+            plan.heights[row] = Some(measured.top(row + 1)? - measured.top(row)?);
+        }
+        for offset in 0..suffix {
+            let old = previous.len() - 1 - offset;
+            plan.heights[current.len() - 1 - offset] =
+                Some(measured.top(old + 1)? - measured.top(old)?);
+        }
+        plan.completed = prefix + suffix;
+        if current.len() - plan.completed > MAX_MEASURE_ROWS {
+            let mut known = HashMap::<&T, Option<f64>>::new();
+            for (row, key) in previous
+                .iter()
+                .enumerate()
+                .take(previous.len() - suffix)
+                .skip(prefix)
+            {
+                let height = measured.top(row + 1)? - measured.top(row)?;
+                known
+                    .entry(key)
+                    .and_modify(|value| {
+                        // Context-sensitive or rounded duplicates are not reusable.
+                        if value.is_some_and(|old| old.to_bits() != height.to_bits()) {
+                            *value = None;
+                        }
+                    })
+                    .or_insert(Some(height));
+            }
+            for (row, key) in current
+                .iter()
+                .enumerate()
+                .take(current.len() - suffix)
+                .skip(prefix)
+            {
+                if let Some(Some(height)) = known.get(key) {
+                    plan.heights[row] = Some(*height);
+                    plan.completed += 1;
+                }
+            }
+        }
+        Some(plan)
+    }
+    pub fn completed(&self) -> usize {
+        self.completed
+    }
+    pub fn pending_batch(&mut self, lengths: &[usize]) -> Option<Range<usize>> {
+        if lengths.len() != self.heights.len() {
+            return None;
+        }
+        while self.next < self.heights.len() && self.heights[self.next].is_some() {
+            self.next += 1;
+        }
+        let start = self.next;
+        let count = row_measurement_batch(
+            lengths[start..]
+                .iter()
+                .copied()
+                .zip(&self.heights[start..])
+                .take_while(|(_, height)| height.is_none())
+                .map(|(length, _)| length),
+        );
+        (count > 0).then_some(start..start + count)
+    }
+    pub fn record(&mut self, rows: Range<usize>, heights: &[f64]) -> bool {
+        if rows.start != self.next
+            || rows.end > self.heights.len()
+            || rows.len() != heights.len()
+            || heights.is_empty()
+            || MeasuredRows::new(heights.iter().copied()).is_none()
+            || self.heights[rows.clone()].iter().any(Option::is_some)
+        {
+            return false;
+        }
+        for (row, height) in rows.clone().zip(heights) {
+            self.heights[row] = Some(*height);
+        }
+        self.completed += rows.len();
+        self.next = rows.end;
+        true
+    }
+    pub fn finish(self) -> Option<MeasuredRows> {
+        MeasuredRows::new(self.heights.into_iter().collect::<Option<Vec<_>>>()?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -152,6 +274,69 @@ impl EditorViewport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disjoint_edits_reuse_exact_interior_rows_and_skip_ambiguous_duplicates() {
+        let old = (0..200).map(|row| format!("row {row}")).collect::<Vec<_>>();
+        let mut current = old.clone();
+        current[20] = "changed first".into();
+        current[170] = "changed second".into();
+        let measured = MeasuredRows::new(std::iter::repeat_n(20.0, 200)).unwrap();
+        let mut plan = RowMeasurementPlan::reuse(&old, &current, &measured).unwrap();
+        assert_eq!(plan.completed(), 198);
+        let lengths = vec![1; 200];
+        assert_eq!(plan.pending_batch(&lengths), Some(20..21));
+        assert!(plan.record(20..21, &[40.0]));
+        assert_eq!(plan.pending_batch(&lengths), Some(170..171));
+        assert!(plan.record(170..171, &[60.0]));
+        assert!(plan.pending_batch(&lengths).is_none());
+        assert!(plan.finish().is_some());
+        let old = vec!["duplicate"; 200];
+        let current = vec!["other"; 201]
+            .into_iter()
+            .enumerate()
+            .map(|(i, key)| if i == 100 { "duplicate" } else { key })
+            .collect::<Vec<_>>();
+        let varied =
+            MeasuredRows::new((0..200).map(|i| if i == 100 { 40.0 } else { 20.0 })).unwrap();
+        assert_eq!(
+            RowMeasurementPlan::reuse(&old, &current, &varied)
+                .unwrap()
+                .completed(),
+            0
+        );
+    }
+
+    #[test]
+    fn exact_row_reuse_tracks_insert_delete_and_changed_paint() {
+        let old = ["a", "b", "c", "last"];
+        let measured = MeasuredRows::new([20.0, 40.0, 60.0, 20.0]).unwrap();
+        for (keys, expected, batch) in [
+            (vec!["a", "new", "b", "c", "last"], 4, Some(1..2)),
+            (vec!["a", "c", "last"], 3, None),
+            (vec!["a", "changed style", "c", "last"], 3, Some(1..2)),
+            (old.to_vec(), 4, None),
+        ] {
+            let mut plan = RowMeasurementPlan::reuse(&old, &keys, &measured).unwrap();
+            assert_eq!(plan.completed(), expected);
+            assert_eq!(plan.pending_batch(&vec![1; keys.len()]), batch);
+            if let Some(batch) = batch {
+                assert!(!plan.record(batch.clone(), &[f64::NAN]));
+                assert_eq!(plan.completed(), expected);
+                assert!(plan.record(batch, &[80.0]));
+            }
+            let result = plan.finish().unwrap();
+            assert_eq!(result.len(), keys.len());
+            assert!(
+                (result.top(keys.len()).unwrap() - result.top(keys.len() - 1).unwrap() - 20.0)
+                    .abs()
+                    < f64::EPSILON
+            );
+        }
+        assert!(RowMeasurementPlan::reuse(&old[..2], &old, &measured).is_none());
+        assert!(RowMeasurementPlan::new(super::super::MAX_EDITOR_LINES + 1).is_none());
+        assert!(RowMeasurementPlan::new(1).unwrap().finish().is_none());
+    }
 
     #[test]
     fn measurement_batches_bound_rows_and_bytes_without_splitting_long_rows() {

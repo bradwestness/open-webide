@@ -222,8 +222,13 @@ scope, and rejects a height table that disagrees with native scrolling. Offscree
 cursor-neighbor probes preserve multi-cursor visual motion without repainting the
 whole document. Cursor motion preserves the projection revision when folds do not
 change. Resize, font and styled-paint changes require fresh measurements; collapsed
-panels cancel pending work and restart when visible. Incremental reuse after edits
-and ordered edits/IME/clipboard during cold queued motion remain follow-ups.
+panels cancel pending work and restart when visible. Localized edits reuse exact
+heights for unchanged styled prefixes and suffixes, including row insertions,
+deletions and undo. Reuse checks account, project, file-read, font/width,
+indentation, whitespace, token styles and line-ending scope; font changes clear the
+cache. Large regions between disjoint edits reuse matching interior rows through exact
+paint equality as well; conflicting measurements for identical rows are not reused.
+Ordered edits/IME/clipboard during cold queued motion remain follow-ups.
 Native textarea input owns the complete projected source; this does not yet bound
 input memory.
 

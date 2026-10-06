@@ -19,6 +19,7 @@ pub(super) async fn measure_batches(
     input: web_sys::HtmlTextAreaElement,
     projection: openwebide_core::editor::FoldProjection,
     metrics: String,
+    mut plan: openwebide_core::editor::RowMeasurementPlan,
     current: impl Fn() -> bool,
     progress: impl Fn(usize),
     render: impl Fn(&[usize], bool) -> String,
@@ -77,25 +78,23 @@ pub(super) async fn measure_batches(
         .append_child(&probe)
         .map_err(|_| ())?;
     let _probe = RowProbe(probe);
-    let mut heights = Vec::with_capacity(projection.lines().len());
+    let lengths = projection
+        .lines()
+        .iter()
+        .map(|line| line.source.len())
+        .collect::<Vec<_>>();
+    progress(plan.completed());
     let mut batches = 0_usize;
-    while heights.len() < projection.lines().len() {
+    while let Some(range) = plan.pending_batch(&lengths) {
         if !current()
             || !input.is_connected()
             || metrics_identity(&input).as_ref() != Some(&metrics)
         {
             return Ok(None);
         }
-        let start = heights.len();
-        let count = openwebide_core::editor::row_measurement_batch(
-            projection.lines()[start..]
-                .iter()
-                .map(|line| line.source.len()),
-        );
-        if count == 0 {
-            return Err(());
-        }
-        let end = start + count;
+        let start = range.start;
+        let end = range.end;
+        let count = range.len();
         let rows = projection.lines()[start..end]
             .iter()
             .map(|line| line.source_line)
@@ -118,9 +117,10 @@ pub(super) async fn measure_batches(
             previous_bottom = Some(bounds.bottom());
             batch.push(bounds.height());
         }
-        MeasuredRows::new(batch.iter().copied()).ok_or(())?;
-        heights.extend(batch);
-        progress(heights.len());
+        if !plan.record(range, &batch) {
+            return Err(());
+        }
+        progress(plan.completed());
         // Release the previous batch before allowing another input/render task.
         paint.set_inner_html("");
         batches += 1;
@@ -135,7 +135,7 @@ pub(super) async fn measure_batches(
     if !current() || !input.is_connected() || metrics_identity(&input).as_ref() != Some(&metrics) {
         return Ok(None);
     }
-    let rows = MeasuredRows::new(heights).ok_or(())?;
+    let rows = plan.finish().ok_or(())?;
     let expected = (rows.height() + 24.0).max(f64::from(input.client_height()));
     if (f64::from(input.scroll_height()) - expected).abs() > 2.0 {
         return Err(());
@@ -167,7 +167,7 @@ pub(super) fn update_measurements(
         return;
     }
     if font_changed {
-        actions.invalidate_measured_rows();
+        actions.invalidate_measured_font();
     }
     if input.client_width() <= 0 || input.client_height() <= 0 {
         return;
