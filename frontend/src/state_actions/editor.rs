@@ -807,6 +807,63 @@ impl EditorActions {
         result
     }
 
+    pub fn clipboard_text(self, selection: Selection) -> Result<Option<String>, EditError> {
+        if self.is_composing() {
+            return Err(EditError::CompositionActive);
+        }
+        self.record_native_selection(selection)?;
+        let Some(key) = self.key() else {
+            return Ok(None);
+        };
+        Ok(self.workspace.editor_documents.with_untracked(|documents| {
+            documents
+                .get(&key)
+                .filter(|document| document.text() == self.source())
+                .map(Document::selected_text)
+        }))
+    }
+
+    pub fn paste(self, text: &str, selection: Selection) -> Result<Option<Selection>, EditError> {
+        self.edit_clipboard(Some(text), selection)
+    }
+
+    pub fn cut(self, selection: Selection) -> Result<Option<Selection>, EditError> {
+        self.edit_clipboard(None, selection)
+    }
+
+    fn edit_clipboard(
+        self,
+        pasted: Option<&str>,
+        selection: Selection,
+    ) -> Result<Option<Selection>, EditError> {
+        self.record_native_selection(selection)?;
+        let Some(key) = self.key() else {
+            return Ok(None);
+        };
+        self.typing.set(None);
+        let result = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| {
+                let document = self.document(documents, key.clone());
+                if let Some(text) = pasted {
+                    document.paste_selections(text)?;
+                } else {
+                    document.replace_selections("", None)?;
+                }
+                Ok(Some((
+                    document.text().to_string(),
+                    document.selections()[0],
+                )))
+            })
+            .unwrap_or(Ok(None));
+        if let Ok(Some((text, _))) = &result {
+            self.workspace.content.set(text.clone());
+            self.publish_dirty(key);
+        }
+        result.map(|value| value.map(|(_, selection)| selection))
+    }
+
     pub fn paste_with_indentation(
         self,
         text: &str,

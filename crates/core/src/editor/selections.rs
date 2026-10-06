@@ -232,6 +232,59 @@ impl Document {
             .join("\n")
     }
 
+    /// Distribute one clipboard line per selection when their counts match.
+    /// Otherwise paste the complete text into every selection. Whitespace and
+    /// source line endings outside the replaced ranges stay untouched.
+    pub fn paste_selections(&mut self, text: &str) -> Result<bool, EditError> {
+        if self.is_composing() {
+            return Err(EditError::CompositionActive);
+        }
+        if text.len() > super::MAX_DOCUMENT_BYTES {
+            return Err(EditError::OutputTooLarge);
+        }
+        if self.selections.len() == 1 {
+            return self.replace_selections(text, None);
+        }
+        let mut fragments = text
+            .split('\n')
+            .take(self.selections.len() + 1)
+            .collect::<Vec<_>>();
+        if fragments.len() != self.selections.len() {
+            return self.replace_selections(text, None);
+        }
+        // CR belongs to a CRLF delimiter, not to the distributed line's body.
+        let last = fragments.len() - 1;
+        for fragment in &mut fragments[..last] {
+            *fragment = fragment.strip_suffix('\r').unwrap_or(fragment);
+        }
+        let remaining = self
+            .selections
+            .iter()
+            .fold(self.text.len(), |size, selection| {
+                size - selection.range().len()
+            });
+        let output = fragments.iter().try_fold(remaining, |size, fragment| {
+            size.checked_add(fragment.len())
+                .ok_or(EditError::OutputTooLarge)
+        })?;
+        if output > super::MAX_DOCUMENT_BYTES {
+            return Err(EditError::OutputTooLarge);
+        }
+        self.apply_grouped_caret_edits(
+            self.selections
+                .iter()
+                .zip(fragments)
+                .map(|(selection, fragment)| {
+                    (
+                        super::Edit::replace(selection.range(), fragment),
+                        Selection::caret(fragment.len()),
+                    )
+                })
+                .collect(),
+            None,
+        )
+    }
+
     pub fn toggle_cursor(&mut self, offset: usize) -> Result<bool, EditError> {
         super::validate_selections(&self.text, &[Selection::caret(offset)])?;
         let mut selections = self.selections.clone();
@@ -465,6 +518,26 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clipboard_lines_follow_primary_order_and_undo_with_selections() {
+        let mut doc = Document::new("foo\r\nfoo");
+        let selections = vec![
+            Selection { anchor: 8, head: 5 },
+            Selection { anchor: 0, head: 3 },
+        ];
+        doc.set_selections(selections.clone()).unwrap();
+        doc.paste_selections("文\r\n😀").unwrap();
+        assert_eq!(doc.text(), "😀\r\n文");
+        assert_eq!(
+            doc.selections(),
+            &[Selection::caret(9), Selection::caret(4)]
+        );
+        doc.undo();
+        assert_eq!(doc.text(), "foo\r\nfoo");
+        assert_eq!(doc.selections(), selections);
+        doc.paste_selections("a\nb\nc").unwrap();
+        assert_eq!(doc.text(), "a\nb\nc\r\na\nb\nc");
+    }
     #[test]
     fn collapsing_folds_merges_hidden_cursors_before_the_next_edit() {
         let mut doc = Document::new("header\nfirst\nsecond\nend");

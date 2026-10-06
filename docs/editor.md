@@ -38,6 +38,13 @@ undo step. Reindent aligns selected bracket-delimited blocks, leaves multiline
 string contents untouched and preserves Python's existing block depth; it is not
 a language formatter. Unsupported comment/reindent actions appear disabled.
 
+With multiple selections, Copy joins their source text in primary-selection order;
+Cut removes those ranges in one undo step after writing the clipboard. Paste puts
+one clipboard line into each selection when the line and selection counts match;
+otherwise it repeats the complete text at every selection. CRLF separators between
+distributed lines are removed from their bodies. Clipboard failures leave the source
+unchanged. Clipboard edits are disabled during an active input composition.
+
 The editor footer shows Spaces/Tabs, the indentation width and the tab width.
 These are separate: an indentation step can be four columns while a hard tab
 occupies three. Tabs fill as many complete tab stops as possible, then spaces fill

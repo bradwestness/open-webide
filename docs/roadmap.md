@@ -84,7 +84,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   The editor facade retains secondary selections during commands and native input.
   IME previews change the primary range, then commit all ranges in one undo step;
   cancellation and stale file/project/account events preserve document state.
-  Finish the view, shortcuts, clipboard integration and real-device input verification
+  Copy/cut use full source selections, and paste distributes matching clipboard lines
+  or repeats the complete text in one transaction. Finish the view, shortcuts and real-device input verification
   for multiple cursors; file tabs
   still need independent dirty buffers, history, caret and scroll state. Persist the
   selected editor file per project in user-scoped database state and reopen it after

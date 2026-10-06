@@ -132,6 +132,81 @@ async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_t
 }
 
 #[wasm_bindgen_test]
+async fn multi_selection_clipboard_uses_source_ranges_and_atomic_history_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Selection, SelectionCommand},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("clipboard.rs".into()));
+            state.workspace.content.set("foo\r\nfoo".into());
+            editor_view(state)
+        });
+        settle().await;
+        frame().await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        textarea.set_selection_range(0, 3).unwrap();
+        actions
+            .record_selection(Selection { anchor: 0, head: 3 })
+            .unwrap();
+        actions
+            .selection_command(
+                1,
+                "clipboard.rs",
+                "foo\r\nfoo",
+                SelectionCommand::AllOccurrences,
+            )
+            .unwrap();
+        assert_eq!(editorClipboardCopy(&textarea), "foo\nfoo");
+        assert!(editorClipboardPaste(&textarea, "文\r\n😀").default_prevented());
+        assert_eq!(actions.source(), "文\r\n😀");
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(actions.source(), "foo\r\nfoo");
+        assert_eq!(actions.selections(&actions.source()).len(), 2);
+        assert!(editorClipboardPaste(&textarea, "first\nsecond\nthird").default_prevented());
+        assert_eq!(
+            actions.source(),
+            "first\nsecond\nthird\r\nfirst\nsecond\nthird"
+        );
+        editor_key(&textarea, "z", true, false);
+        let cut = editorClipboardCut(&textarea);
+        assert!(cut.default_prevented());
+        assert_eq!(
+            cut.unchecked_ref::<web_sys::ClipboardEvent>()
+                .clipboard_data()
+                .unwrap()
+                .get_data("text/plain")
+                .unwrap(),
+            "foo\nfoo"
+        );
+        assert_eq!(actions.source(), "\r\n");
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(actions.source(), "foo\r\nfoo");
+        assert_eq!(actions.selections(&actions.source()).len(), 2);
+        let cut = web_sys::ClipboardEvent::new("cut").unwrap();
+        textarea.dispatch_event(&cut).unwrap();
+        assert_eq!(
+            actions.source(),
+            "foo\r\nfoo",
+            "missing clipboard access must not cut the primary range"
+        );
+        actions.begin_composition();
+        assert!(actions.cut(Selection { anchor: 0, head: 3 }).is_err());
+        assert_eq!(actions.source(), "foo\r\nfoo");
+        actions.cancel_composition();
+    }
+}
+
+#[wasm_bindgen_test]
 async fn composition_scope_changes_and_failed_frames_preserve_documents_in_both_modes() {
     use openwebide_core::editor::{EditError, Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -2875,10 +2950,18 @@ async fn native_edits_clipboard_commands_and_composition_keep_disjoint_folds_in_
         let end = u32::try_from(byte_to_textarea(&view, view.find("let middle").unwrap()).unwrap())
             .unwrap();
         textarea.set_selection_range(0, end).unwrap();
-        assert!(!editorClipboardCut(&textarea).default_prevented());
-        assert!(textarea.value().contains("one();"));
+        let cut = editorClipboardCut(&textarea);
+        assert!(cut.default_prevented());
+        assert_eq!(
+            cut.unchecked_ref::<web_sys::ClipboardEvent>()
+                .clipboard_data()
+                .unwrap()
+                .get_data("text/plain")
+                .unwrap(),
+            before_cut[..before_cut.find("let middle").unwrap()]
+        );
+        assert!(!textarea.value().contains("one();"));
         assert!(!textarea.value().contains("two();"));
-        editorNativeInput(&textarea, "", "deleteByCut", false);
         settle().await;
         assert_eq!(
             mounted.state.workspace.content.get_untracked(),

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Integrate multi-selection clipboard operations with the shared editor engine. Copy/cut use source ranges across folds, cut waits for a successful clipboard write, and paste distributes matching lines or repeats the full text with one undo step. Failed clipboard access keeps the source unchanged in both modes. Cursor controls and real-device verification remain in progress.
+
 - Replay native editor input across selections through the shared Rust document engine. IME previews retain the browser's primary input, then commit all selections in one undo step; cancellation, invalid frames and stale project/file/account events preserve the original document and history in both modes. Multi-cursor controls, clipboard integration and real-device verification remain in progress.
 
 ### Changed

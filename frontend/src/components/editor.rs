@@ -22,6 +22,65 @@ fn current_editor_target(actions: EditorActions, textarea: &web_sys::HtmlTextAre
             .is_some_and(|(project, path)| actions.is_current(project, &path))
 }
 
+/// The DOM adapter supplies clipboard access; source selection and transactions
+/// stay in EditorActions and the shared document engine.
+fn editor_clipboard_copy(
+    actions: EditorActions,
+    textarea: &web_sys::HtmlTextAreaElement,
+    event: &web_sys::ClipboardEvent,
+    cut: bool,
+    read_only: bool,
+    error: RwSignal<Option<String>>,
+) {
+    let source = actions.source();
+    let selection = projected_selection(actions, textarea, &source);
+    let multiple = actions.selections(&source).len() > 1;
+    if !multiple
+        && !actions
+            .projection()
+            .is_some_and(|projection| projection.is_folded())
+    {
+        if cut {
+            prepare_editor_edit(actions, textarea, &source);
+        }
+        return;
+    }
+    // Never let a failed multi-selection copy delete only the native primary.
+    if cut {
+        event.prevent_default();
+    }
+    match actions.clipboard_text(selection) {
+        Ok(Some(text)) => {
+            if let Some(clipboard) = event.clipboard_data()
+                && clipboard.set_data("text/plain", &text).is_ok()
+            {
+                event.prevent_default();
+                error.set(None);
+                if cut && !read_only {
+                    match actions.cut(selection) {
+                        Ok(Some(selection)) => {
+                            refresh_editor_folds(actions);
+                            render_editor_selection(actions, textarea, selection, false);
+                        }
+                        Err(failure) => error.set(Some(failure.to_string())),
+                        Ok(None) => {}
+                    }
+                }
+            } else {
+                event.prevent_default();
+                error.set(Some(
+                    "Could not write the clipboard; the document was kept unchanged".into(),
+                ));
+            }
+        }
+        Err(failure) => {
+            event.prevent_default();
+            error.set(Some(failure.to_string()));
+        }
+        Ok(None) => {}
+    }
+}
+
 fn editor_selection(textarea: &web_sys::HtmlTextAreaElement) -> openwebide_core::editor::Selection {
     use openwebide_core::editor::{Selection, utf16_to_byte};
     let text = textarea.value();
@@ -1903,26 +1962,30 @@ pub fn Editor(
                                             on:paste=move |event: web_sys::ClipboardEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
                                                 let matching = paste_matches_indentation.get_untracked(); paste_matches_indentation.set(false);
-                                                if !matching || read_only.get_untracked() { return; }
+                                                if read_only.get_untracked() { return; }
+                                                let multiple = editor_actions.selections(&content.get_untracked()).len() > 1;
+                                                if !matching && !multiple { return; }
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 let Some(clipboard) = event.clipboard_data() else { return; };
                                                 let Ok(pasted) = clipboard.get_data("text/plain") else { return; };
                                                 if pasted.is_empty() { return; }
-                                                if let Ok(Some((_text, selection))) = editor_actions.paste_with_indentation(&pasted, projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())) {
-                                                    event.prevent_default(); refresh_editor_folds(editor_actions); render_editor_selection(editor_actions, &textarea, selection, false);
+                                                event.prevent_default();
+                                                let selection = projected_selection(editor_actions, &textarea, &workspace.content.get_untracked());
+                                                let result = if matching { editor_actions.paste_with_indentation(&pasted, selection).map(|result| result.map(|(_, selection)| selection)) } else { editor_actions.paste(&pasted, selection) };
+                                                match result {
+                                                    Ok(Some(selection)) => { replacement_error.set(None); refresh_editor_folds(editor_actions); render_editor_selection(editor_actions, &textarea, selection, false); }
+                                                    Err(error) => replacement_error.set(Some(error.to_string())),
+                                                    Ok(None) => {}
                                                 }
                                             }
                                             on:copy=move |event: web_sys::ClipboardEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea))
-                                                    && editor_actions.projection().is_some_and(|projection| projection.is_folded())
                                                 {
-                                                    let source = content.get_untracked(); let selection = projected_selection(editor_actions, &textarea, &source);
-                                                    if let Some(clipboard) = event.clipboard_data() && clipboard.set_data("text/plain", &source[selection.range()]).is_ok() { event.prevent_default(); }
-                                                    else { prepare_editor_edit(editor_actions, &textarea, &source); }
+                                                    editor_clipboard_copy(editor_actions, &textarea, &event, false, read_only.get_untracked(), replacement_error);
                                                 }
                                             }
                                             on:cut=move |event: web_sys::ClipboardEvent| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { editor_clipboard_copy(editor_actions, &textarea, &event, true, read_only.get_untracked(), replacement_error); }
                                             }
                                             on:beforeinput=move |event: web_sys::InputEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
