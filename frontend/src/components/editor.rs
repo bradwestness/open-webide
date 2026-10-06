@@ -52,11 +52,16 @@ fn editor_clipboard_copy(
     if cut {
         event.prevent_default();
     }
-    match actions.clipboard_text(selection) {
-        Ok(Some(text)) => {
+    match actions.clipboard_content(selection) {
+        Ok(Some(content)) => {
             if let Some(clipboard) = event.clipboard_data()
-                && clipboard.set_data("text/plain", &text).is_ok()
+                && clipboard.set_data("text/plain", &content.text).is_ok()
             {
+                // Browsers/apps may strip custom types; plain text remains usable.
+                let _ = clipboard.set_data(
+                    openwebide_core::editor::CLIPBOARD_SELECTIONS_MIME,
+                    &content.metadata,
+                );
                 event.prevent_default();
                 error.set(None);
                 if cut && !read_only {
@@ -2169,7 +2174,8 @@ pub fn Editor(
                                                 if pasted.is_empty() { return; }
                                                 event.prevent_default();
                                                 let selection = projected_selection(editor_actions, &textarea, &workspace.content.get_untracked());
-                                                let result = if matching { editor_actions.paste_with_indentation(&pasted, selection).map(|result| result.map(|(_, selection)| selection)) } else { editor_actions.paste(&pasted, selection) };
+                                                let metadata = clipboard.get_data(openwebide_core::editor::CLIPBOARD_SELECTIONS_MIME).ok();
+                                                let result = if matching { editor_actions.paste_clipboard_with_indentation(&pasted, metadata.as_deref(), selection).map(|result| result.map(|(_, selection)| selection)) } else { editor_actions.paste_clipboard(&pasted, metadata.as_deref(), selection) };
                                                 match result {
                                                     Ok(Some(selection)) => { action_error.set(None); refresh_editor_folds(editor_actions); render_editor_selection(editor_actions, &textarea, selection, false); }
                                                     Err(error) => action_error.set(Some(error.to_string())),

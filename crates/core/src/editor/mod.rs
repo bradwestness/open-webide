@@ -11,8 +11,10 @@ pub use navigation::{
     indent_guide_columns, line_column, matching_bracket, navigation_target, offset_at_line_column,
 };
 pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
+mod clipboard;
 mod motion;
 mod native;
+pub use clipboard::{CLIPBOARD_SELECTIONS_MIME, ClipboardContent};
 pub use motion::SelectionMotion;
 mod selections;
 pub use native::NativeInputKind;

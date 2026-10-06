@@ -132,6 +132,105 @@ async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_t
 }
 
 #[wasm_bindgen_test]
+async fn multiline_clipboard_fragments_round_trip_in_both_modes_and_reject_bad_metadata() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{CLIPBOARD_SELECTIONS_MIME, Selection, byte_to_textarea},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "文\r\na\n---\n😀\nb";
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fragments.rs".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        settle().await;
+        frame().await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        actions
+            .record_selection(Selection {
+                anchor: source.len(),
+                head: 11,
+            })
+            .unwrap();
+        // Seed two disjoint, multiline ranges in primary-first order.
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .update(|documents| {
+                documents
+                    .get_mut(&(1, "fragments.rs".into()))
+                    .unwrap()
+                    .set_selections(vec![
+                        Selection {
+                            anchor: source.len(),
+                            head: 11,
+                        },
+                        Selection { anchor: 0, head: 7 },
+                    ])
+                    .unwrap();
+            });
+        textarea
+            .set_selection_range_with_direction(
+                u32::try_from(byte_to_textarea(source, 11).unwrap()).unwrap(),
+                u32::try_from(byte_to_textarea(source, source.len()).unwrap()).unwrap(),
+                "backward",
+            )
+            .unwrap();
+        let cut = editorClipboardCut(&textarea);
+        let data = cut
+            .unchecked_ref::<web_sys::ClipboardEvent>()
+            .clipboard_data()
+            .unwrap();
+        assert_eq!(data.get_data("text/plain").unwrap(), "😀\nb\n文\r\na\n");
+        assert!(!data.get_data(CLIPBOARD_SELECTIONS_MIME).unwrap().is_empty());
+        assert_eq!(actions.source(), "---\n");
+        assert!(editorClipboardPasteData(&textarea, &cut).default_prevented());
+        assert_eq!(actions.source(), source);
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(actions.source(), "---\n");
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(actions.source(), source);
+        assert_eq!(
+            actions.selections(source)[0],
+            Selection {
+                anchor: source.len(),
+                head: 11
+            }
+        );
+        editor_key(&textarea, "v", true, true);
+        assert!(editorClipboardPasteData(&textarea, &cut).default_prevented());
+        assert_eq!(actions.source(), "文\r\na\r\n---\n😀\r\nb");
+        editor_key(&textarea, "z", true, false);
+        assert_eq!(actions.source(), source);
+        data.set_data(CLIPBOARD_SELECTIONS_MIME, "{broken").unwrap();
+        data.set_data("text/plain", "a\nb").unwrap();
+        assert!(editorClipboardPasteData(&textarea, &cut).default_prevented());
+        assert_eq!(actions.source(), "b---\na");
+        actions.begin_composition();
+        let before = mounted.state.workspace.editor_documents.get_untracked();
+        assert_eq!(
+            actions.paste_clipboard_with_indentation("x", None, Selection::caret(0)),
+            Err(openwebide_core::editor::EditError::CompositionActive)
+        );
+        assert_eq!(
+            mounted.state.workspace.editor_documents.get_untracked(),
+            before
+        );
+        actions.cancel_composition();
+    }
+}
+
+#[wasm_bindgen_test]
 async fn multi_cursor_pointer_and_column_gestures_share_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -2488,6 +2587,10 @@ export function editorClipboardPaste(target, text) {
     const event = new ClipboardEvent('paste', {bubbles:true, cancelable:true, clipboardData:data});
     target.dispatchEvent(event); return event;
 }
+export function editorClipboardPasteData(target, copiedEvent) {
+    const event = new ClipboardEvent('paste', {bubbles:true, cancelable:true, clipboardData:copiedEvent.clipboardData});
+    target.dispatchEvent(event); return event;
+}
 export function editorGesture(target, line, column, shift, moving) {
     const row = target.parentElement.querySelector(`.editor-source-line[data-line='${line}']`);
     const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
@@ -2510,6 +2613,10 @@ extern "C" {
     fn editorClipboardCut(target: &web_sys::HtmlTextAreaElement) -> web_sys::Event;
     fn editorClipboardCopy(target: &web_sys::HtmlTextAreaElement) -> String;
     fn editorClipboardPaste(target: &web_sys::HtmlTextAreaElement, text: &str) -> web_sys::Event;
+    fn editorClipboardPasteData(
+        target: &web_sys::HtmlTextAreaElement,
+        copied_event: &web_sys::Event,
+    ) -> web_sys::Event;
     fn editorGesture(
         target: &web_sys::HtmlTextAreaElement,
         line: u32,

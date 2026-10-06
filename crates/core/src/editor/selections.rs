@@ -257,32 +257,7 @@ impl Document {
         for fragment in &mut fragments[..last] {
             *fragment = fragment.strip_suffix('\r').unwrap_or(fragment);
         }
-        let remaining = self
-            .selections
-            .iter()
-            .fold(self.text.len(), |size, selection| {
-                size - selection.range().len()
-            });
-        let output = fragments.iter().try_fold(remaining, |size, fragment| {
-            size.checked_add(fragment.len())
-                .ok_or(EditError::OutputTooLarge)
-        })?;
-        if output > super::MAX_DOCUMENT_BYTES {
-            return Err(EditError::OutputTooLarge);
-        }
-        self.apply_grouped_caret_edits(
-            self.selections
-                .iter()
-                .zip(fragments)
-                .map(|(selection, fragment)| {
-                    (
-                        super::Edit::replace(selection.range(), fragment),
-                        Selection::caret(fragment.len()),
-                    )
-                })
-                .collect(),
-            None,
-        )
+        self.replace_fragments(&fragments)
     }
 
     pub fn toggle_cursor(&mut self, offset: usize) -> Result<bool, EditError> {

@@ -41,9 +41,13 @@ a language formatter. Unsupported comment/reindent actions appear disabled.
 With multiple selections, Copy joins their source text in primary-selection order;
 Cut removes those ranges in one undo step after writing the clipboard. Paste puts
 one clipboard line into each selection when the line and selection counts match;
-otherwise it repeats the complete text at every selection. CRLF separators between
-distributed lines are removed from their bodies. Clipboard failures leave the source
-unchanged. Clipboard edits are disabled during an active input composition.
+otherwise it repeats the complete text at every selection. Copy also includes compact
+selection metadata: when it survives the clipboard and the cursor counts match,
+each cursor receives its original fragment, including multiline and empty fragments.
+Paste and match indentation rebases each fragment at its receiving line. Changed,
+invalid or stripped metadata uses the plain-text behavior above. CRLF separators
+between distributed plain-text lines are removed from their bodies. Clipboard
+failures leave the source unchanged. Clipboard edits are disabled during an active input composition.
 
 Use **Editing commands** or these shortcuts for multiple selections:
 

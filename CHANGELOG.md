@@ -9,17 +9,19 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Preserve multiline clipboard fragments across multiple editor selections using compact validated metadata. Restore each cursor’s fragment, including Unicode, CRLF and empty selections; match indentation per fragment when requested. Fall back to plain-text paste when metadata is missing, changed or invalid, with atomic limits and one undo step. Both workspace modes share the Rust engine and clipboard facade; native-device clipboard verification remains in progress.
+
 - Add multi-cursor controls to Edit: occurrence, vertical cursor and expand/shrink commands in the shared editing menu and shortcuts; Alt-click toggles cursors and Alt+Shift click/drag selects columns. Paint secondary selections/carets with the syntax layer's text metrics and announce cursor counts. Move all cursors by grapheme, word, logical line or document boundary, retaining columns across short lines and skipping folded source. Both modes use the same Rust engine and facade; visual-row navigation with word wrap and real-device verification remain in progress.
 
-- Integrate multi-selection clipboard operations with the shared editor engine. Copy/cut use source ranges across folds, cut waits for a successful clipboard write, and paste distributes matching lines or repeats the full text with one undo step. Failed clipboard access keeps the source unchanged in both modes. Cursor controls and real-device verification remain in progress.
+- Integrate multi-selection clipboard operations with the shared editor engine. Copy/cut use source ranges across folds, cut waits for a successful clipboard write, and paste distributes matching lines or repeats the full text with one undo step. Failed clipboard access keeps the source unchanged in both modes. Real-device clipboard verification remains in progress.
 
-- Replay native editor input across selections through the shared Rust document engine. IME previews retain the browser's primary input, then commit all selections in one undo step; cancellation, invalid frames and stale project/file/account events preserve the original document and history in both modes. Multi-cursor controls, clipboard integration and real-device verification remain in progress.
+- Replay native editor input across selections through the shared Rust document engine. IME previews retain the browser's primary input, then commit all selections in one undo step; cancellation, invalid frames and stale project/file/account events preserve the original document and history in both modes. Real-device input verification remains in progress.
 
 ### Changed
 
 - Preserve Edit viewport offsets while folding and unfolding. Refocus the native input without scrolling its distant caret into view, and keep syntax paint aligned in both modes.
 
-- Add shared editor selection primitives: overlap normalization, next/all occurrences, grapheme/tab-aware columns, vertical cursors and expand/shrink selection. Preserve primary order/direction, canonicalize cursors after folds and edits, and replace selected ranges with bounded aggregate allocation and grouped undo. Route selection commands through the scope-checked editor facade and retain secondary selections during editing commands in both modes. Multi-cursor view, native input/IME and clipboard integration remain in progress.
+- Add shared editor selection primitives: overlap normalization, next/all occurrences, grapheme/tab-aware columns, vertical cursors and expand/shrink selection. Preserve primary order/direction, canonicalize cursors after folds and edits, and replace selected ranges with bounded aggregate allocation and grouped undo. Route selection commands through the scope-checked editor facade and retain secondary selections during editing commands in both modes. Real-device verification remains in progress.
 
 - Enable database-backed Word wrap and Show whitespace controls for Edit. Preserve native source offsets and text, measure wrapped fold rows after panel resizing, keep logical gutter numbers and navigate using rendered caret geometry. Normalize CRLF only in browser paint to match the textarea, retain horizontal scrolling by default and update decorations without regenerating syntax for a wrap-only change in both modes.
 

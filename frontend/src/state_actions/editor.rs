@@ -859,7 +859,10 @@ impl EditorActions {
         result
     }
 
-    pub fn clipboard_text(self, selection: Selection) -> Result<Option<String>, EditError> {
+    pub fn clipboard_content(
+        self,
+        selection: Selection,
+    ) -> Result<Option<openwebide_core::editor::ClipboardContent>, EditError> {
         if self.is_composing() {
             return Err(EditError::CompositionActive);
         }
@@ -867,16 +870,26 @@ impl EditorActions {
         let Some(key) = self.key() else {
             return Ok(None);
         };
-        Ok(self.workspace.editor_documents.with_untracked(|documents| {
+        self.workspace.editor_documents.with_untracked(|documents| {
             documents
                 .get(&key)
                 .filter(|document| document.text() == self.source())
-                .map(Document::selected_text)
-        }))
+                .map(Document::clipboard_content)
+                .transpose()
+        })
     }
 
     pub fn paste(self, text: &str, selection: Selection) -> Result<Option<Selection>, EditError> {
-        self.edit_clipboard(Some(text), selection)
+        self.paste_clipboard(text, None, selection)
+    }
+
+    pub fn paste_clipboard(
+        self,
+        text: &str,
+        metadata: Option<&str>,
+        selection: Selection,
+    ) -> Result<Option<Selection>, EditError> {
+        self.edit_clipboard(Some((text, metadata)), selection)
     }
 
     pub fn cut(self, selection: Selection) -> Result<Option<Selection>, EditError> {
@@ -885,7 +898,7 @@ impl EditorActions {
 
     fn edit_clipboard(
         self,
-        pasted: Option<&str>,
+        pasted: Option<(&str, Option<&str>)>,
         selection: Selection,
     ) -> Result<Option<Selection>, EditError> {
         self.record_native_selection(selection)?;
@@ -898,8 +911,8 @@ impl EditorActions {
             .editor_documents
             .try_update(|documents| {
                 let document = self.document(documents, key.clone());
-                if let Some(text) = pasted {
-                    document.paste_selections(text)?;
+                if let Some((text, metadata)) = pasted {
+                    document.paste_clipboard(text, metadata)?;
                 } else {
                     document.replace_selections("", None)?;
                 }
@@ -921,6 +934,18 @@ impl EditorActions {
         text: &str,
         selection: Selection,
     ) -> Result<Option<(String, Selection)>, EditError> {
+        self.paste_clipboard_with_indentation(text, None, selection)
+    }
+
+    pub fn paste_clipboard_with_indentation(
+        self,
+        text: &str,
+        metadata: Option<&str>,
+        selection: Selection,
+    ) -> Result<Option<(String, Selection)>, EditError> {
+        if self.is_composing() {
+            return Err(EditError::CompositionActive);
+        }
         let Some(key) = self.key() else {
             return Ok(None);
         };
@@ -934,7 +959,12 @@ impl EditorActions {
                 if document.selections().first() != Some(&selection) {
                     document.set_selections(vec![selection])?;
                 }
-                document.paste_with_indentation(text, rules.indentation, rules.line_ending)?;
+                document.paste_clipboard_with_indentation(
+                    text,
+                    metadata,
+                    rules.indentation,
+                    rules.line_ending,
+                )?;
                 Ok(Some((
                     document.text().to_string(),
                     document.selections()[0],

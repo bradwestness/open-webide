@@ -10,8 +10,24 @@ impl Document {
         if text.is_empty() {
             return Ok(false);
         }
-        if text.len() > super::MAX_DOCUMENT_BYTES {
-            return Err(EditError::OutputTooLarge);
+        self.paste_fragments_with_indentation(
+            &vec![text; self.selections.len()],
+            indentation,
+            ending,
+        )
+    }
+
+    pub(super) fn paste_fragments_with_indentation(
+        &mut self,
+        fragments: &[&str],
+        indentation: Indentation,
+        ending: Option<LineEnding>,
+    ) -> Result<bool, EditError> {
+        if self.is_composing() {
+            return Err(EditError::CompositionActive);
+        }
+        if fragments.len() != self.selections.len() {
+            return Err(EditError::InvalidSelection);
         }
         let retained = self
             .selections
@@ -22,71 +38,82 @@ impl Document {
         let mut budget = super::MAX_DOCUMENT_BYTES
             .checked_sub(retained)
             .ok_or(EditError::OutputTooLarge)?;
-        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        let pasted: Vec<_> = normalized.split('\n').collect();
-        let common = pasted
-            .iter()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let prefix: String = line
-                    .chars()
-                    .take_while(|ch| matches!(ch, ' ' | '\t'))
-                    .collect();
-                indentation.visual_width(&prefix)
-            })
-            .min()
-            .unwrap_or(0);
         let ending = ending
             .unwrap_or_else(|| LineEnding::detect(&self.text))
             .text();
-        if normalized.trim().is_empty() {
-            if normalized.len().saturating_add(
-                normalized.bytes().filter(|byte| *byte == b'\n').count() * (ending.len() - 1),
-            ) > super::MAX_DOCUMENT_BYTES
-            {
-                return Err(EditError::OutputTooLarge);
-            }
-            let text = normalized.replace('\n', ending);
-            return self.replace_selections(&text, None);
-        }
+        // Repeated plain-text paste prepares the same snippet once, even with 512 cursors.
+        let mut prepared: Option<(&str, String, usize, bool)> = None;
         let changes = self
             .selections
             .iter()
-            .map(|selection| {
+            .zip(fragments)
+            .map(|(selection, text)| {
+                if text.len() > super::MAX_DOCUMENT_BYTES {
+                    return Err(EditError::OutputTooLarge);
+                }
+                if prepared
+                    .as_ref()
+                    .is_none_or(|(source, _, _, _)| !std::ptr::eq(*source, *text))
+                {
+                    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                    let common = normalized
+                        .split('\n')
+                        .filter(|line| !line.trim().is_empty())
+                        .map(|line| {
+                            let prefix =
+                                &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
+                            indentation.visual_width(prefix)
+                        })
+                        .min()
+                        .unwrap_or(0);
+                    let whitespace = normalized.trim().is_empty();
+                    prepared = Some((text, normalized, common, whitespace));
+                }
+                let (_, normalized, common, whitespace) =
+                    prepared.as_ref().expect("current snippet is prepared");
                 let range = selection.range();
-                let start = line_start(&self.text, range.start);
-                let before = &self.text[start..range.start];
-                let base: String = before
-                    .chars()
-                    .take_while(|ch| matches!(ch, ' ' | '\t'))
-                    .collect();
-                let columns = indentation.visual_width(&base);
                 let mut inserted = String::new();
-                for (index, line) in pasted.iter().enumerate() {
-                    if index > 0 {
-                        push_bounded(&mut inserted, ending, &mut budget)?;
+                if *whitespace {
+                    for (index, line) in normalized.split('\n').enumerate() {
+                        if index > 0 {
+                            push_bounded(&mut inserted, ending, &mut budget)?;
+                        }
+                        push_bounded(&mut inserted, line, &mut budget)?;
                     }
-                    let body = line.trim_start_matches([' ', '\t']);
-                    if body.is_empty() {
-                        continue;
+                } else {
+                    let pasted: Vec<_> = normalized.split('\n').collect();
+                    let start = line_start(&self.text, range.start);
+                    let before = &self.text[start..range.start];
+                    let base: String = before
+                        .chars()
+                        .take_while(|ch| matches!(ch, ' ' | '\t'))
+                        .collect();
+                    let columns = indentation.visual_width(&base);
+                    for (index, line) in pasted.iter().enumerate() {
+                        if index > 0 {
+                            push_bounded(&mut inserted, ending, &mut budget)?;
+                        }
+                        let body = line.trim_start_matches([' ', '\t']);
+                        if body.is_empty() {
+                            continue;
+                        }
+                        let prefix = &line[..line.len() - body.len()];
+                        let relative = indentation.visual_width(prefix).saturating_sub(*common);
+                        let (start, width) = if index == 0 {
+                            (indentation.visual_width(before), relative)
+                        } else {
+                            (0, columns + relative)
+                        };
+                        if indentation.columns_from_len(start, width) > budget {
+                            return Err(EditError::OutputTooLarge);
+                        }
+                        push_bounded(
+                            &mut inserted,
+                            &indentation.columns_from(start, width),
+                            &mut budget,
+                        )?;
+                        push_bounded(&mut inserted, body, &mut budget)?;
                     }
-                    let prefix = &line[..line.len() - body.len()];
-                    let relative = indentation.visual_width(prefix).saturating_sub(common);
-                    let (start, width) = if index == 0 {
-                        (indentation.visual_width(before), relative)
-                    } else {
-                        (0, columns + relative)
-                    };
-                    let size = indentation.columns_from_len(start, width);
-                    if size > budget {
-                        return Err(EditError::OutputTooLarge);
-                    }
-                    push_bounded(
-                        &mut inserted,
-                        &indentation.columns_from(start, width),
-                        &mut budget,
-                    )?;
-                    push_bounded(&mut inserted, body, &mut budget)?;
                 }
                 let caret = inserted.len();
                 Ok((Edit::replace(range, inserted), Selection::caret(caret)))

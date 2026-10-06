@@ -84,13 +84,14 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   The editor facade retains secondary selections during commands and native input.
   IME previews change the primary range, then commit all ranges in one undo step;
   cancellation and stale file/project/account events preserve document state.
-  Copy/cut use full source selections, and paste distributes matching clipboard lines
-  or repeats the complete text in one transaction. Occurrence/vertical/expand/shrink
+  Copy/cut use full source selections and preserve multiline fragment boundaries
+  through clipboard metadata; foreign or stripped metadata falls back to matching
+  clipboard lines or repeating the complete text in one transaction.
+  Occurrence/vertical/expand/shrink
   controls, Alt-click/column gestures and secondary selection paint share the same
   facade. Arrow movement retains all cursors with grapheme, word, logical-line and
-  sticky-column behavior. Finish visual-row movement when word wrap is enabled,
-  clipboard fragment round trips for multiline selections and real-device input verification
-  for multiple cursors; file tabs
+  sticky-column behavior. Finish visual-row movement when word wrap is enabled and
+  real-device input/clipboard verification for multiple cursors; file tabs
   still need independent dirty buffers, history, caret and scroll state. Persist the
   selected editor file per project in user-scoped database state and reopen it after
   refresh or in a new window, with workspace permissions and stale-result guards.
