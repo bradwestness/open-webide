@@ -73,12 +73,14 @@ horizontal goal after width/font changes. Measured primary and secondary carets
 share the existing selection overlay so a wrap boundary stays on the selected row.
 Measurements bind to the complete source and fold projection; stale/missing
 coverage rejects the entire movement without changing text, selections or history.
-The DOM adapter measures neighboring logical lines and caps preparation at 65,536
-caret positions. While paint is pending, arrow requests queue in order, including
+The DOM adapter indexes bounded logical lines by grapheme byte/UTF-16 coordinates,
+locates visual rows with binary DOM range searches and measures only current and
+neighboring visual rows. It reuses measurements across cursors and caps prepared
+caret positions at 65,536. While paint is pending, arrow requests queue in order, including
 Shift selections. Typing, commands, composition and clipboard actions flush fresh
 paint and apply queued motion first. File/account/source/fold changes cancel stale
-requests; unavailable layout cancels after eight frames with an error. Viewport
-preparation for larger wrapped lines remains a follow-up. Multiple selection movement and
+requests; unavailable layout cancels after eight frames with an error. Full paint
+viewport rendering and worker preparation remain follow-ups. Multiple selection movement and
 structural selection commands are bounded to files up to 2 MiB; Escape still
 returns to the primary cursor in larger files.
 

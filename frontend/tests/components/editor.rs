@@ -6377,3 +6377,101 @@ async fn literal_contexts_and_paint_preserve_heredocs_and_nested_interpolation_i
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn long_wrapped_lines_move_cursors_without_measuring_the_entire_line_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Selection, byte_to_textarea},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = format!("{}\r\nshort\r\n", "文😀e\u{301} words ".repeat(20_000));
+        let expected = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("long.txt".into()));
+            state.workspace.content.set(source.clone());
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = true);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        wait_until("long wrapped paint", || {
+            mounted
+                .root
+                .query_selector(".editor-code.highlight-ready")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let first = "文😀e\u{301} words ".len() * 15_000 + 3;
+        let second = "文😀e\u{301} words ".len() * 18_000 + 3;
+        actions.record_selection(Selection::caret(first)).unwrap();
+        actions
+            .toggle_cursor(1, "long.txt", &expected, second)
+            .unwrap();
+        let at = u32::try_from(
+            byte_to_textarea(&expected, actions.selections(&expected)[0].head).unwrap(),
+        )
+        .unwrap();
+        input.set_selection_range(at, at).unwrap();
+        let before = actions.selections(&expected);
+        assert_eq!(before.len(), 2);
+        let measured = measure_wrapped_key(&input, "ArrowDown");
+        let measured = js_sys::Array::from(&measured);
+        assert_eq!(measured.get(0).as_bool(), Some(true));
+        let count = measured.get(1).as_f64().unwrap();
+        assert!(count < 2_000.0, "{mode:?}: {count} range measurements");
+        wasm_bindgen_test::console_log!(
+            "{mode:?}: long-line Down measured {count} ranges in {}ms",
+            measured.get(2).as_f64().unwrap()
+        );
+        let after = actions.selections(&expected);
+        assert_eq!(after.len(), 2);
+        for (before, after) in before.iter().zip(after.iter()) {
+            assert!(after.head > before.head && after.head - before.head < 200);
+            assert!(expected.is_char_boundary(after.head));
+        }
+        assert!(editor_key(&input, "ArrowUp", false, false).default_prevented());
+        assert_eq!(actions.selections(&expected), before);
+        assert_eq!(actions.source(), expected);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        assert!(
+            mounted
+                .root
+                .query_selector("[role='alert']")
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function measureWrappedKey(input, key) {
+    const original = Range.prototype.getClientRects;
+    let count = 0;
+    Range.prototype.getClientRects = function() { ++count; return original.call(this); };
+    const event = new KeyboardEvent('keydown', {key, bubbles:true, cancelable:true});
+    const start = performance.now();
+    try {
+        input.dispatchEvent(event);
+        return [event.defaultPrevented, count, performance.now() - start];
+    } finally { Range.prototype.getClientRects = original; }
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = measureWrappedKey)]
+    fn measure_wrapped_key(
+        input: &web_sys::HtmlTextAreaElement,
+        key: &str,
+    ) -> wasm_bindgen::JsValue;
+}

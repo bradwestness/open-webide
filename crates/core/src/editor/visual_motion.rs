@@ -53,6 +53,22 @@ pub fn visual_caret_offsets(text: &str) -> Result<Vec<usize>, SelectionError> {
     Ok(offsets)
 }
 
+/// Index a bounded logical line independently of the number of measured carets.
+/// Each pair is a grapheme boundary in source bytes and browser UTF-16 units.
+pub fn visual_line_offsets(text: &str) -> Result<Vec<(usize, usize)>, SelectionError> {
+    if text.len() > super::MAX_STRUCTURE_BYTES {
+        return Err(SelectionError::TooLarge);
+    }
+    let mut utf16 = 0;
+    let mut offsets = Vec::new();
+    for (byte, grapheme) in text.grapheme_indices(true) {
+        offsets.push((byte, utf16));
+        utf16 += grapheme.encode_utf16().count();
+    }
+    offsets.push((text.len(), utf16));
+    Ok(offsets)
+}
+
 impl VisualLayout {
     /// Partial measurement is allowed, but every moved cursor must have its
     /// current and neighboring visual row. Missing coverage rejects atomically.
@@ -163,6 +179,20 @@ impl VisualLayout {
 mod tests {
     use super::*;
     use crate::editor::{Document, Indentation, Selection, SelectionMotion};
+
+    #[test]
+    fn long_line_index_keeps_unicode_byte_and_utf16_boundaries() {
+        let text = "文😀e\u{301} ".repeat(20_000);
+        assert_eq!(visual_caret_offsets(&text), Err(SelectionError::TooLarge));
+        let offsets = visual_line_offsets(&text).unwrap();
+        assert_eq!(&offsets[..5], &[(0, 0), (3, 1), (7, 3), (10, 5), (11, 6)]);
+        assert_eq!(offsets.last(), Some(&(text.len(), 120_000)));
+        assert_eq!(offsets.len(), 80_001);
+        assert_eq!(
+            visual_line_offsets(&"x".repeat(super::super::MAX_STRUCTURE_BYTES + 1)),
+            Err(SelectionError::TooLarge)
+        );
+    }
 
     fn wrapped(doc: &Document, identity: &str) -> VisualLayout {
         let carets = [

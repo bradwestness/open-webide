@@ -2,8 +2,8 @@
 use super::editor::current_editor_target;
 use crate::state_actions::editor::EditorActions;
 use leptos::prelude::*;
-use openwebide_core::editor::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_caret_offsets};
-use std::collections::BTreeSet;
+use openwebide_core::editor::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_line_offsets};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// DOM values are rounded first and bounded well inside exact integer precision.
 #[allow(
@@ -54,6 +54,62 @@ impl TextNodes {
         let (node, start, length) = self.0.get(index).or_else(|| self.0.last())?;
         let at = offset.checked_sub(*start)?;
         (at <= *length).then_some((node, at))
+    }
+}
+
+struct Glyphs {
+    offsets: Vec<(usize, usize)>,
+    nodes: TextNodes,
+    range: web_sys::Range,
+    measured: BTreeMap<usize, web_sys::DomRect>,
+}
+impl Glyphs {
+    fn new(row: &web_sys::Element, body: &str) -> Option<Self> {
+        Some(Self {
+            offsets: visual_line_offsets(body).ok()?,
+            nodes: TextNodes::new(row)?,
+            range: document().create_range().ok()?,
+            measured: BTreeMap::new(),
+        })
+    }
+    fn rect(&mut self, index: usize) -> Option<web_sys::DomRect> {
+        if let Some(rect) = self.measured.get(&index) {
+            return Some(rect.clone());
+        }
+        if self.measured.len() >= MAX_VISUAL_CARETS {
+            return None;
+        }
+        let (start_node, start_at) = self
+            .nodes
+            .position(u32::try_from(self.offsets.get(index)?.1).ok()?)?;
+        let (end_node, end_at) = self
+            .nodes
+            .position(u32::try_from(self.offsets.get(index + 1)?.1).ok()?)?;
+        self.range.set_start(start_node, start_at).ok()?;
+        self.range.set_end(end_node, end_at).ok()?;
+        let rects = self.range.get_client_rects()?;
+        let rect = (0..rects.length())
+            .filter_map(|index| rects.item(index))
+            .find(|rect| rect.height() > 0.0)?;
+        self.measured.insert(index, rect.clone());
+        Some(rect)
+    }
+    fn row(&mut self, index: usize, metrics: &VisualMetrics) -> Option<usize> {
+        measured_row(((self.rect(index)?.top() - metrics.top) / metrics.line_height).floor())
+    }
+    // Visual rows increase in source order even when a row contains bidi text.
+    fn first_on_row(&mut self, minimum: usize, metrics: &VisualMetrics) -> Option<usize> {
+        let mut start = 0;
+        let mut end = self.offsets.len().checked_sub(1)?;
+        while start < end {
+            let middle = start + (end - start) / 2;
+            if self.row(middle, metrics)? < minimum {
+                start = middle + 1;
+            } else {
+                end = middle;
+            }
+        }
+        Some(start)
     }
 }
 
@@ -123,6 +179,9 @@ pub(super) fn visual_layout(
         return None;
     }
     let metrics = visual_metrics(input)?;
+    if metrics.rows == 0 {
+        return None;
+    }
     let row_element = |index: usize| {
         parent
             .query_selector(&format!(
@@ -134,8 +193,8 @@ pub(super) fn visual_layout(
     };
     let selections = actions.selections(&source);
     let mut selected_rows = BTreeSet::new();
-    for selection in selections {
-        let visible = projection.visible_selection(selection).ok()?;
+    for selection in &selections {
+        let visible = projection.visible_selection(*selection).ok()?;
         let index = projection
             .lines()
             .partition_point(|line| line.visible_start <= visible.head)
@@ -143,7 +202,7 @@ pub(super) fn visual_layout(
         selected_rows
             .extend(index.saturating_sub(1)..=(index + 1).min(projection.lines().len() - 1));
     }
-    let mut carets = Vec::new();
+    let mut prepared = BTreeMap::new();
     for index in selected_rows {
         let line = &projection.lines()[index];
         let row = row_element(index)?;
@@ -152,7 +211,48 @@ pub(super) fn visual_layout(
             .strip_suffix("\r\n")
             .or_else(|| raw.strip_suffix('\n'))
             .unwrap_or(raw);
-        if body.is_empty() {
+        let glyphs = if body.is_empty() {
+            None
+        } else {
+            Some(Glyphs::new(&row, body)?)
+        };
+        prepared.insert(index, (row, glyphs));
+    }
+    let mut wanted = BTreeSet::new();
+    for (caret, selection) in selections.iter().enumerate() {
+        let visible = projection.visible_selection(*selection).ok()?;
+        let index = projection
+            .lines()
+            .partition_point(|line| line.visible_start <= visible.head)
+            .saturating_sub(1);
+        let line = &projection.lines()[index];
+        let (row, glyphs) = prepared.get_mut(&index)?;
+        let current = if let Some(caret) = actions.visual_caret(&source, caret, &metrics.identity) {
+            caret.row
+        } else if glyphs.is_none() {
+            measured_row(
+                ((row.get_bounding_client_rect().top() - metrics.top) / metrics.line_height)
+                    .round(),
+            )?
+        } else {
+            let glyphs = glyphs.as_mut()?;
+            let byte = visible
+                .head
+                .saturating_sub(line.visible_start)
+                .min(glyphs.offsets.last()?.0);
+            let glyph = glyphs
+                .offsets
+                .partition_point(|(offset, _)| *offset <= byte)
+                .saturating_sub(1)
+                .min(glyphs.offsets.len() - 2);
+            glyphs.row(glyph, &metrics)?
+        };
+        wanted.extend(current.saturating_sub(1)..=(current + 1).min(metrics.rows - 1));
+    }
+    let mut carets = Vec::new();
+    for (index, (row, glyphs)) in prepared {
+        let line = &projection.lines()[index];
+        let Some(mut glyphs) = glyphs else {
             let bounds = row.get_bounding_client_rect();
             carets.push(VisualCaret {
                 offset: line.visible_start,
@@ -160,34 +260,26 @@ pub(super) fn visual_layout(
                 row: measured_row(((bounds.top() - metrics.top) / metrics.line_height).round())?,
             });
             continue;
-        }
-        let offsets = visual_caret_offsets(body).ok()?;
-        if carets.len() + offsets.len() * 2 > MAX_VISUAL_CARETS {
-            return None;
-        }
-        let nodes = TextNodes::new(&row)?;
-        let range = document().create_range().ok()?;
-        let mut utf16 = 0;
-        for ends in offsets.windows(2) {
-            let next = utf16 + u32::try_from(body[ends[0]..ends[1]].encode_utf16().count()).ok()?;
-            let (start_node, start_at) = nodes.position(utf16)?;
-            let (end_node, end_at) = nodes.position(next)?;
-            range.set_start(start_node, start_at).ok()?;
-            range.set_end(end_node, end_at).ok()?;
-            let rects = range.get_client_rects()?;
-            let rect = (0..rects.length())
-                .filter_map(|index| rects.item(index))
-                .find(|rect| rect.height() > 0.0 && rect.width() > 0.0)?;
-            let visual_row =
-                measured_row(((rect.top() - metrics.top) / metrics.line_height).floor())?;
-            for (offset, x) in [(ends[0], rect.left()), (ends[1], rect.right())] {
-                carets.push(VisualCaret {
-                    offset: line.visible_start + offset,
-                    column: measured_integer(((x - metrics.left) * 64.0).round())?,
-                    row: visual_row,
-                });
+        };
+        for &wanted in &wanted {
+            let start = glyphs.first_on_row(wanted, &metrics)?;
+            let end = glyphs.first_on_row(wanted + 1, &metrics)?;
+            if carets.len() + (end - start) * 2 > MAX_VISUAL_CARETS {
+                return None;
             }
-            utf16 = next;
+            for index in start..end {
+                let rect = glyphs.rect(index)?;
+                for (offset, x) in [
+                    (glyphs.offsets[index].0, rect.left()),
+                    (glyphs.offsets[index + 1].0, rect.right()),
+                ] {
+                    carets.push(VisualCaret {
+                        offset: line.visible_start + offset,
+                        column: measured_integer(((x - metrics.left) * 64.0).round())?,
+                        row: wanted,
+                    });
+                }
+            }
         }
     }
     VisualLayout::new(&source, projection, metrics.identity, metrics.rows, carets).ok()

@@ -104,9 +104,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   pixel goals and soft-wrap caret affinity, skipping folds and rejecting stale
   source/projection measurements. Pending-paint motion now queues in order and
   flushes before edits, IME and clipboard actions, with bounded retries and stale
-  account/file/projection guards. Finish viewport preparation for large wrapped
-  lines and real-device input/clipboard verification
-  for multiple cursors. File navigation now
+  account/file/projection guards. Long wrapped lines now use shared Unicode
+  indexing and bounded DOM searches to prepare only neighboring visual rows,
+  reusing measurements across cursors. Finish real-device input/clipboard
+  verification for multiple cursors. File navigation now
   retains independent dirty buffers, history, caret and scroll state in memory,
   with protected reads and filesystem mutation guards. File tabs share selected-tab
   styling, keyboard navigation and guarded close/discard controls. Validated recovery
