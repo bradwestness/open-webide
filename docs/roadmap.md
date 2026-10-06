@@ -81,8 +81,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
 - **Selections and files:** the shared document now normalizes overlapping selections,
   selects next/all occurrences, maps column selections using graphemes and tab stops,
   expands/shrinks selections and replaces multiple ranges in one grouped transaction.
-  The editor facade retains secondary selections during commands. Finish the view,
-  shortcuts, native input/IME and clipboard integration for multiple cursors; file tabs
+  The editor facade retains secondary selections during commands and native input.
+  IME previews change the primary range, then commit all ranges in one undo step;
+  cancellation and stale file/project/account events preserve document state.
+  Finish the view, shortcuts, clipboard integration and real-device input verification
+  for multiple cursors; file tabs
   still need independent dirty buffers, history, caret and scroll state. Persist the
   selected editor file per project in user-scoped database state and reopen it after
   refresh or in a new window, with workspace permissions and stale-result guards.

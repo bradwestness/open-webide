@@ -11,7 +11,9 @@ pub use navigation::{
     indent_guide_columns, line_column, matching_bracket, navigation_target, offset_at_line_column,
 };
 pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
+mod native;
 mod selections;
+pub use native::NativeInputKind;
 pub use selections::{
     MAX_SELECTIONS, SelectionCommand, SelectionError, column_selections, normalize_selections,
 };
@@ -112,6 +114,8 @@ pub enum EditError {
     InvalidSelection,
     TooManySelections,
     OutputTooLarge,
+    CompositionActive,
+    UnsupportedNativeInput,
 }
 
 impl std::fmt::Display for EditError {
@@ -124,6 +128,12 @@ impl std::fmt::Display for EditError {
             }
             Self::TooManySelections => "The editor supports up to 512 selections",
             Self::OutputTooLarge => "Edit would exceed the 32 MiB editing limit",
+            Self::CompositionActive => {
+                "Finish the input composition before running an editor command"
+            }
+            Self::UnsupportedNativeInput => {
+                "This native input cannot be applied to multiple selections"
+            }
         })
     }
 }
@@ -158,6 +168,7 @@ pub struct Document {
     revision: u64,
     folds: FoldState,
     selection_history: Vec<Vec<Selection>>,
+    composition: Option<Box<native::Composition>>,
 }
 
 const HISTORY_BYTES: usize = 16 * 1024 * 1024;
@@ -177,6 +188,7 @@ impl Document {
             revision: 0,
             folds: FoldState::default(),
             selection_history: Vec::new(),
+            composition: None,
         }
     }
 
@@ -202,6 +214,9 @@ impl Document {
     }
 
     pub fn fold_command(&mut self, command: FoldCommand) {
+        if self.is_composing() {
+            return;
+        }
         let before = self.selections.clone();
         let line = self.text[..self.selections[0].head]
             .bytes()
@@ -252,12 +267,18 @@ impl Document {
     }
     pub fn mark_saved(&mut self) {
         self.saved.clone_from(&self.text);
+        if let Some(composition) = &mut self.composition {
+            composition.mark_saved_version(&self.text);
+        }
     }
     /// A write can finish after another edit. Record the version actually written
     /// without treating the newer in-memory document as saved.
     pub fn mark_saved_version(&mut self, text: &str) {
         self.saved.clear();
         self.saved.push_str(text);
+        if let Some(composition) = &mut self.composition {
+            composition.mark_saved_version(text);
+        }
     }
     pub const fn can_undo(&self) -> bool {
         self.history_cursor > 0
@@ -267,6 +288,9 @@ impl Document {
     }
 
     pub fn set_selections(&mut self, selections: Vec<Selection>) -> Result<(), EditError> {
+        if self.is_composing() {
+            return Err(EditError::CompositionActive);
+        }
         let selections = normalize_selections(&self.text, selections)?;
         if selections != self.selections {
             self.selection_history.clear();
@@ -284,6 +308,9 @@ impl Document {
         after: Vec<Selection>,
         group: Option<u64>,
     ) -> Result<bool, EditError> {
+        if self.is_composing() {
+            return Err(EditError::CompositionActive);
+        }
         edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
         validate_edits(&self.text, &edits)?;
         let output = edits
@@ -351,7 +378,7 @@ impl Document {
     }
 
     pub fn undo(&mut self) -> bool {
-        if !self.can_undo() {
+        if self.is_composing() || !self.can_undo() {
             return false;
         }
         let step = &self.history[self.history_cursor - 1];
@@ -370,7 +397,7 @@ impl Document {
     }
 
     pub fn redo(&mut self) -> bool {
-        if !self.can_redo() {
+        if self.is_composing() || !self.can_redo() {
             return false;
         }
         let step = &self.history[self.history_cursor];

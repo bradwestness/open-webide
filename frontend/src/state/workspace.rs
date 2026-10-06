@@ -10,6 +10,12 @@ pub struct EditorScroll {
     pub left: f64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorComposition {
+    pub key: (i64, String),
+    pub epoch: u64,
+}
+
 /// Workspace data preserved while a project is not the active tab.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceSnapshot {
@@ -52,6 +58,7 @@ pub struct WorkspaceState {
         send_wrapper::SendWrapper<HashMap<(i64, String), openwebide_core::editor::SyntaxDocument>>,
     >,
     pub editor_scroll: RwSignal<HashMap<(i64, String), EditorScroll>>,
+    pub editor_composition: RwSignal<Option<EditorComposition>>,
     pub editor_rules: RwSignal<HashMap<(i64, String), openwebide_core::editor::EditorRules>>,
     pub editor_indentation: RwSignal<HashMap<(i64, String), openwebide_core::editor::Indentation>>,
     pub editor_fold_revision: RwSignal<u64>,
@@ -93,6 +100,7 @@ impl WorkspaceState {
             editor_documents: RwSignal::new(HashMap::new()),
             editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(HashMap::new())),
             editor_scroll: RwSignal::new(HashMap::new()),
+            editor_composition: RwSignal::new(None),
             editor_rules: RwSignal::new(HashMap::new()),
             editor_indentation: RwSignal::new(HashMap::new()),
             editor_fold_revision: RwSignal::new(0),
@@ -150,6 +158,7 @@ impl WorkspaceState {
 
     pub fn reset(&self) {
         self.editor_documents.set(HashMap::new());
+        self.editor_composition.set(None);
         self.editor_syntax
             .set(send_wrapper::SendWrapper::new(HashMap::new()));
         self.editor_scroll.set(HashMap::new());

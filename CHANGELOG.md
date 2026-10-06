@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Replay native editor input across selections through the shared Rust document engine. IME previews retain the browser's primary input, then commit all selections in one undo step; cancellation, invalid frames and stale project/file/account events preserve the original document and history in both modes. Multi-cursor controls, clipboard integration and real-device verification remain in progress.
+
 ### Changed
 
 - Preserve Edit viewport offsets while folding and unfolding. Refocus the native input without scrolling its distant caret into view, and keep syntax paint aligned in both modes.

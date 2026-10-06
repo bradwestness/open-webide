@@ -30,7 +30,6 @@ pub struct EditorActions {
     preferences: Option<crate::state::settings::SettingsState>,
     group: RwSignal<u64>,
     typing: RwSignal<TypingState>,
-    composing: RwSignal<bool>,
 }
 
 impl EditorActions {
@@ -40,7 +39,6 @@ impl EditorActions {
             preferences: use_context::<crate::state::settings::SettingsState>(),
             group: workspace.editor_group,
             typing: RwSignal::new(None),
-            composing: RwSignal::new(false),
         }
     }
 
@@ -123,14 +121,109 @@ impl EditorActions {
     }
 
     pub fn begin_composition(self) {
+        if self.is_composing() {
+            return;
+        }
+        self.cancel_composition();
+        let Some(key) = self.key() else {
+            return;
+        };
         self.group.update(|group| *group = group.wrapping_add(1));
         self.typing.set(None);
-        self.composing.set(true);
+        let group = self.group.get_untracked();
+        self.workspace.editor_documents.update(|documents| {
+            self.document(documents, key.clone())
+                .begin_composition(Some(group));
+        });
+        self.workspace
+            .editor_composition
+            .set(Some(crate::state::workspace::EditorComposition {
+                key,
+                epoch: self.workspace.pending_epoch.get_untracked(),
+            }));
     }
 
-    pub fn end_composition(self) {
-        self.composing.set(false);
+    pub fn is_composing(self) -> bool {
+        self.workspace.editor_composition.with_untracked(|owner| {
+            owner.as_ref().is_some_and(|owner| {
+                self.key().as_ref() == Some(&owner.key)
+                    && self.workspace.pending_epoch.get_untracked() == owner.epoch
+            })
+        })
+    }
+
+    pub fn cancel_composition(self) {
+        let Some(owner) = self.workspace.editor_composition.get_untracked() else {
+            return;
+        };
+        self.workspace.editor_composition.set(None);
         self.typing.set(None);
+        let result = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| {
+                let document = documents.get_mut(&owner.key)?;
+                let preview = document.text().to_string();
+                document
+                    .cancel_composition()
+                    .then(|| (preview, document.text().to_string(), document.is_dirty()))
+            })
+            .flatten();
+        if let Some((preview, source, dirty)) = result
+            && self.workspace.pending_epoch.get_untracked() == owner.epoch
+        {
+            self.workspace.snapshots.update(|snapshots| {
+                if let Some(snapshot) = snapshots.get_mut(&owner.key.0)
+                    && snapshot.open_file.as_deref() == Some(&owner.key.1)
+                    && snapshot.content == preview
+                {
+                    snapshot.content.clone_from(&source);
+                    snapshot.dirty = dirty;
+                }
+            });
+            if self.key().as_ref() == Some(&owner.key) && self.source() == preview {
+                self.workspace.content.set(source);
+                self.workspace.dirty.set(dirty);
+            }
+        }
+    }
+
+    pub fn end_composition(self) -> Result<Option<(String, Selection)>, EditError> {
+        let Some(owner) = self.workspace.editor_composition.get_untracked() else {
+            return Ok(None);
+        };
+        if self.key().as_ref() != Some(&owner.key)
+            || self.workspace.pending_epoch.get_untracked() != owner.epoch
+        {
+            self.cancel_composition();
+            return Ok(None);
+        }
+        self.workspace.editor_composition.set(None);
+        self.typing.set(None);
+        let result = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| {
+                let document = documents.get_mut(&owner.key)?;
+                if document.text() != self.source() {
+                    document.cancel_composition();
+                    return None;
+                }
+                let outcome = document.end_composition();
+                Some((
+                    outcome,
+                    document.text().to_string(),
+                    document.selections()[0],
+                    document.is_dirty(),
+                ))
+            })
+            .flatten();
+        if let Some((outcome, source, selection, dirty)) = result {
+            self.workspace.content.set(source.clone());
+            self.workspace.dirty.set(dirty);
+            return outcome.map(|_| Some((source, selection)));
+        }
+        Ok(None)
     }
 
     fn key(self) -> Option<(i64, String)> {
@@ -175,6 +268,26 @@ impl EditorActions {
                 if document.selections() != [selection] {
                     self.typing.set(None);
                 }
+                document.set_selections(vec![selection])
+            })
+            .unwrap_or(Ok(()))
+    }
+
+    /// Native select/scroll notifications also fire after programmatic restores.
+    /// Keep secondary selections when the primary did not move; IME previews own
+    /// their selections until the composition commits or cancels.
+    pub fn record_native_selection(self, selection: Selection) -> Result<(), EditError> {
+        let Some(key) = self.key() else {
+            return Ok(());
+        };
+        self.workspace
+            .editor_documents
+            .try_update(|documents| {
+                let document = self.document(documents, key);
+                if document.is_composing() || document.selections().first() == Some(&selection) {
+                    return Ok(());
+                }
+                self.typing.set(None);
                 document.set_selections(vec![selection])
             })
             .unwrap_or(Ok(()))
@@ -420,7 +533,7 @@ impl EditorActions {
     }
 
     pub fn prepare_edit(self, selection: Selection) -> Result<(), EditError> {
-        self.record_selection(selection)?;
+        self.record_native_selection(selection)?;
         let Some(key) = self.key() else {
             return Ok(());
         };
@@ -528,42 +641,80 @@ impl EditorActions {
                         && timestamp - time <= 750.0
                 })
             });
-        if !same && !self.composing.get_untracked() {
+        let composing = self.is_composing();
+        if input_type == "insertFromComposition"
+            && !composing
+            && text == self.source().replace("\r\n", "\n").replace('\r', "\n")
+        {
+            return Ok(());
+        }
+        if matches!(
+            input_type,
+            "insertCompositionText" | "insertFromComposition"
+        ) && !composing
+        {
+            return Err(EditError::UnsupportedNativeInput);
+        }
+        if composing
+            && !self.workspace.editor_documents.with_untracked(|documents| {
+                documents.get(&key).is_some_and(|document| {
+                    document.is_composing() && document.text() == self.source()
+                })
+            })
+        {
+            self.cancel_composition();
+            return Err(EditError::UnsupportedNativeInput);
+        }
+        if !same && !composing {
             self.group.update(|group| *group = group.wrapping_add(1));
         }
-        let group =
-            (coalesces || self.composing.get_untracked()).then(|| self.group.get_untracked());
+        let group = (coalesces || composing).then(|| self.group.get_untracked());
         let result = self
             .workspace
             .editor_documents
             .try_update(|documents| {
                 let document = self.document(documents, key.clone());
-                let edit = replacement(document.text(), &text);
-                let mut candidate = document.text().to_string();
-                if let Some(edit) = &edit {
-                    candidate.replace_range(edit.range.clone(), &edit.text);
+                let outcome = (|| {
+                    let edit = replacement(document.text(), &text);
+                    let mut candidate = document.text().to_string();
+                    if let Some(edit) = &edit {
+                        candidate.replace_range(edit.range.clone(), &edit.text);
+                    }
+                    let after = Selection {
+                        anchor: openwebide_core::editor::textarea_to_byte(
+                            &candidate,
+                            openwebide_core::editor::byte_to_utf16(&text, selection.anchor)?,
+                        ),
+                        head: openwebide_core::editor::textarea_to_byte(
+                            &candidate,
+                            openwebide_core::editor::byte_to_utf16(&text, selection.head)?,
+                        ),
+                    };
+                    document.native_input(
+                        &candidate,
+                        after,
+                        openwebide_core::editor::NativeInputKind::from_input_type(input_type),
+                        group,
+                    )?;
+                    Ok(())
+                })();
+                if outcome.is_err() {
+                    document.cancel_composition();
                 }
-                let after = Selection {
-                    anchor: openwebide_core::editor::textarea_to_byte(
-                        &candidate,
-                        openwebide_core::editor::byte_to_utf16(&text, selection.anchor)?,
-                    ),
-                    head: openwebide_core::editor::textarea_to_byte(
-                        &candidate,
-                        openwebide_core::editor::byte_to_utf16(&text, selection.head)?,
-                    ),
-                };
-                document.apply(edit.into_iter().collect(), vec![after], group)?;
-                Ok(Some(candidate))
+                Some((outcome, document.text().to_string()))
             })
-            .unwrap_or(Ok(None));
-        if let Ok(Some(text)) = &result {
-            self.workspace.content.set(text.clone());
+            .flatten();
+        if let Some((outcome, text)) = result {
+            self.workspace.content.set(text);
             self.publish_dirty(key.clone());
             self.typing
-                .set(coalesces.then(|| (key, input_type.into(), timestamp)));
+                .set((outcome.is_ok() && coalesces).then(|| (key, input_type.into(), timestamp)));
+            if outcome.is_err() && composing {
+                self.workspace.editor_composition.set(None);
+            }
+            return outcome;
         }
-        result.map(|_| ())
+        Ok(())
     }
 
     pub fn command(

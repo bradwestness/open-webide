@@ -132,6 +132,246 @@ async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_t
 }
 
 #[wasm_bindgen_test]
+async fn composition_scope_changes_and_failed_frames_preserve_documents_in_both_modes() {
+    use openwebide_core::editor::{EditError, Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("ime.rs".into()));
+            state.workspace.content.set("before".into());
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        actions.record_selection(Selection::caret(0)).unwrap();
+        actions.begin_composition();
+        actions.begin_composition();
+        actions
+            .native_input(
+                "文before".into(),
+                Selection::caret(3),
+                "insertCompositionText",
+                1.0,
+            )
+            .unwrap();
+        assert!(
+            actions
+                .native_input(
+                    "文before".into(),
+                    Selection::caret(1),
+                    "insertCompositionText",
+                    2.0
+                )
+                .is_err()
+        );
+        assert_eq!(actions.source(), "before");
+        assert!(!actions.is_composing());
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        actions.begin_composition();
+        actions
+            .native_input(
+                "文before".into(),
+                Selection::caret(3),
+                "insertCompositionText",
+                3.0,
+            )
+            .unwrap();
+        mounted.state.workspace.save_active(1);
+        mounted.state.workspace.active_project.set(Some(2));
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        mounted.state.workspace.content.set("different".into());
+        settle().await;
+        assert_eq!(actions.source(), "different");
+        assert_eq!(
+            mounted.state.workspace.snapshots.get_untracked()[&1].content,
+            "before"
+        );
+        assert!(actions.end_composition().unwrap().is_none());
+        assert_eq!(
+            actions.native_input(
+                "文before".into(),
+                Selection::caret(3),
+                "insertCompositionText",
+                4.0
+            ),
+            Err(EditError::UnsupportedNativeInput)
+        );
+        assert_eq!(actions.source(), "different");
+        mounted.state.workspace.active_project.set(Some(1));
+        mounted.state.workspace.open_file.set(Some("ime.rs".into()));
+        mounted.state.workspace.content.set("before".into());
+        settle().await;
+        actions.record_selection(Selection::caret(0)).unwrap();
+        actions.begin_composition();
+        actions
+            .native_input(
+                "文before".into(),
+                Selection::caret(3),
+                "insertCompositionText",
+                5.0,
+            )
+            .unwrap();
+        mounted
+            .state
+            .workspace
+            .content
+            .set("external change".into());
+        settle().await;
+        assert!(!actions.is_composing());
+        assert_eq!(actions.source(), "external change");
+        assert!(actions.end_composition().unwrap().is_none());
+        actions.record_selection(Selection::caret(0)).unwrap();
+        actions.begin_composition();
+        actions
+            .native_input(
+                "文external change".into(),
+                Selection::caret(3),
+                "insertCompositionText",
+                6.0,
+            )
+            .unwrap();
+        mounted.state.workspace.reset();
+        mounted.state.workspace.active_project.set(Some(1));
+        mounted.state.workspace.open_file.set(Some("ime.rs".into()));
+        mounted.state.workspace.content.set("new account".into());
+        settle().await;
+        assert!(actions.end_composition().unwrap().is_none());
+        assert_eq!(
+            actions.native_input(
+                "文external change".into(),
+                Selection::caret(3),
+                "insertCompositionText",
+                7.0
+            ),
+            Err(EditError::UnsupportedNativeInput)
+        );
+        assert_eq!(actions.source(), "new account");
+        assert_eq!(
+            actions.native_input(
+                "文external change".into(),
+                Selection::caret(3),
+                "insertFromComposition",
+                8.0
+            ),
+            Err(EditError::UnsupportedNativeInput)
+        );
+        actions
+            .native_input(
+                "new account".into(),
+                Selection::caret(0),
+                "insertFromComposition",
+                9.0,
+            )
+            .unwrap();
+        assert_eq!(actions.source(), "new account");
+    }
+}
+
+#[wasm_bindgen_test]
+async fn multi_native_input_and_composition_preserve_secondary_selections_in_both_modes() {
+    use openwebide_core::editor::{Selection, SelectionCommand};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("multi.rs".into()));
+            state.workspace.content.set("foo\r\nfoo".into());
+            editor_view(state)
+        });
+        settle().await;
+        frame().await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let actions = EditorActions::new(mounted.state.workspace);
+        let project = mounted
+            .state
+            .workspace
+            .active_project
+            .get_untracked()
+            .unwrap();
+        textarea.set_selection_range(0, 3).unwrap();
+        actions
+            .record_selection(Selection { anchor: 0, head: 3 })
+            .unwrap();
+        actions
+            .selection_command(
+                project,
+                "multi.rs",
+                "foo\r\nfoo",
+                SelectionCommand::AllOccurrences,
+            )
+            .unwrap();
+        settle().await;
+        frame().await;
+        assert_eq!(actions.selections(&actions.source()).len(), 2);
+        textarea
+            .dispatch_event(&web_sys::CompositionEvent::new("compositionstart").unwrap())
+            .unwrap();
+        assert!(
+            actions.is_composing(),
+            "composition owner is shared by facade instances"
+        );
+        editorNativeInput(&textarea, "文", "insertCompositionText", true);
+        settle().await;
+        frame().await;
+        assert_eq!(textarea.value(), "文\nfoo");
+        assert_eq!(actions.source(), "文\r\nfoo");
+        assert_eq!(actions.selections(&actions.source()).len(), 2);
+        textarea.set_selection_range(0, 1).unwrap();
+        editorNativeInput(&textarea, "文字", "insertCompositionText", true);
+        settle().await;
+        frame().await;
+        assert_eq!(
+            textarea.value(),
+            "文字\nfoo",
+            "IME owns primary-only native value"
+        );
+        assert_eq!(textarea.selection_start().unwrap(), Some(2));
+        textarea
+            .dispatch_event(&web_sys::CompositionEvent::new("compositionend").unwrap())
+            .unwrap();
+        settle().await;
+        frame().await;
+        assert_eq!(textarea.value(), "文字\n文字");
+        assert_eq!(actions.source(), "文字\r\n文字");
+        assert_eq!(actions.selections(&actions.source()).len(), 2);
+        assert!(!actions.is_composing());
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        frame().await;
+        assert_eq!(actions.source(), "foo\r\nfoo");
+        assert_eq!(actions.selections(&actions.source()).len(), 2);
+        editorNativeInput(&textarea, "bar", "insertText", false);
+        settle().await;
+        frame().await;
+        assert_eq!(textarea.value(), "bar\nbar");
+        assert_eq!(actions.source(), "bar\r\nbar");
+        assert_eq!(actions.selections(&actions.source()).len(), 2);
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert_eq!(actions.source(), "foo\r\nfoo");
+    }
+}
+
+#[wasm_bindgen_test]
 async fn native_typing_composition_and_invalid_edits_preserve_document_contract() {
     use openwebide_core::editor::{Indentation, Selection};
     use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
@@ -200,7 +440,7 @@ async fn native_typing_composition_and_invalid_edits_preserve_document_contract(
                 4000.0,
             )
             .unwrap();
-        actions.end_composition();
+        actions.end_composition().unwrap();
         actions
             .command(
                 EditorCommand::Undo,
@@ -1872,6 +2112,13 @@ async fn block_indentation_pairs_and_mobile_input_share_both_workspace_modes() {
         init.set_input_type("insertText");
         init.set_data(Some("{"));
         init.set_is_composing(true);
+        let composition =
+            web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        textarea.dispatch_event(&composition).unwrap();
+        assert!(composition.default_prevented());
+        textarea
+            .dispatch_event(&web_sys::CompositionEvent::new("compositionstart").unwrap())
+            .unwrap();
         let composition =
             web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
         textarea.dispatch_event(&composition).unwrap();

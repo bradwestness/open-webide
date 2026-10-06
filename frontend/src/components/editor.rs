@@ -200,7 +200,7 @@ fn apply_fold_command(
     source: &str,
 ) {
     let scroll = (textarea.scroll_top(), textarea.scroll_left());
-    let _ = actions.record_selection(projected_selection(actions, textarea, source));
+    let _ = actions.record_native_selection(projected_selection(actions, textarea, source));
     if let Some((projection, selection)) = actions.fold_command(command)
         && let Ok(visible) = projection.visible_selection(selection)
     {
@@ -988,6 +988,25 @@ pub fn Editor(
 ) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let editor_actions = EditorActions::new(workspace);
+    Effect::new(move || {
+        let key = workspace
+            .active_project
+            .get()
+            .zip(workspace.open_file.get());
+        let epoch = workspace.pending_epoch.get();
+        if let Some(owner) = workspace.editor_composition.get()
+            && (Some(&owner.key) != key.as_ref()
+                || owner.epoch != epoch
+                || !workspace.editor_documents.with(|documents| {
+                    documents.get(&owner.key).is_some_and(|document| {
+                        document.is_composing()
+                            && workspace.content.with(|source| document.text() == source)
+                    })
+                }))
+        {
+            editor_actions.cancel_composition();
+        }
+    });
     let paint_indentation = Memo::new(move |_| editor_actions.rules().indentation);
     let paint_whitespace = Memo::new(move |_| editor_actions.preferences().show_whitespace);
     let tab_moves_focus = RwSignal::new(false);
@@ -1872,14 +1891,14 @@ pub fn Editor(
                                             title="Tab indents; Ctrl+M toggles Tab moving focus"
                                             node_ref=ta
                                             on:select=move |event: web_sys::Event| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); }
                                             }
                                             on:blur=move |event: web_sys::FocusEvent| {
                                                 paste_matches_indentation.set(false);
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); }
                                             }
                                             on:keyup=move |event: web_sys::KeyboardEvent| { if event.key().eq_ignore_ascii_case("v") { paste_matches_indentation.set(false); }
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &content.get_untracked())); } }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &content.get_untracked())); } }
                                             on:click=move |event: web_sys::MouseEvent| { if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &content.get_untracked())); } }
                                             on:paste=move |event: web_sys::ClipboardEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
@@ -1907,9 +1926,10 @@ pub fn Editor(
                                             }
                                             on:beforeinput=move |event: web_sys::InputEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
+                                                    if event.is_composing() && !editor_actions.is_composing() { if event.cancelable() { event.prevent_default(); } return; }
                                                     if !read_only.get_untracked() { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
                                                     let selection = projected_selection(editor_actions, &textarea, &workspace.content.get_untracked());
-                                                    let _ = editor_actions.record_selection(selection);
+                                                    let _ = editor_actions.record_native_selection(selection);
                                                     if read_only.get_untracked() || event.is_composing() || !event.cancelable() { return; }
                                                     let command = match event.input_type().as_str() {
                                                         "insertLineBreak" | "insertParagraph" => Some(EditorCommand::Newline),
@@ -1923,11 +1943,15 @@ pub fn Editor(
                                             on:compositionstart=move |event: web_sys::CompositionEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
                                                     prepare_editor_edit(editor_actions, &textarea, &content.get_untracked());
-                                                    let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); editor_actions.begin_composition();
+                                                    let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); editor_actions.begin_composition();
                                                 }
                                             }
                                             on:compositionend=move |event: web_sys::CompositionEvent| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { editor_actions.end_composition(); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
+                                                    if editor_actions.is_composing() { let _ = editor_actions.projected_input(textarea.value(), editor_selection(&textarea), "insertCompositionText", event.time_stamp()); }
+                                                    let _ = editor_actions.end_composition(); refresh_editor_folds(editor_actions);
+                                                    if let Some(selection) = editor_actions.selection(&workspace.content.get_untracked()) { render_editor_selection(editor_actions, &textarea, selection, false); }
+                                                }
                                             }
                                             on:keydown=move |event: web_sys::KeyboardEvent| {
                                                 if event.is_composing() { return; }
@@ -1970,7 +1994,7 @@ pub fn Editor(
                                                     && let Some(textarea) = target.dyn_ref::<web_sys::HtmlTextAreaElement>()
                                                     && current_editor_target(editor_actions, textarea)
                                                 {
-                                                    let input_type = e.dyn_ref::<web_sys::InputEvent>().map_or_else(String::new, web_sys::InputEvent::input_type);
+                                                    let input_type = e.dyn_ref::<web_sys::InputEvent>().map_or_else(String::new, |event| if event.is_composing() { "insertCompositionText".to_string() } else { event.input_type() });
                                                     let result = editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp());
                                                     refresh_editor_folds(editor_actions);
                                                     if let Some(selection) = editor_actions.selection(&content.get_untracked()) { render_editor_selection(editor_actions, textarea, selection, result.is_ok()); }
@@ -1980,7 +2004,7 @@ pub fn Editor(
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
                                                     && current_editor_target(editor_actions, &textarea)
                                                 {
-                                                    let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked()));
+                                                    let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked()));
                                                     editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), textarea.scroll_top(), textarea.scroll_left());
                                                     if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
                                                 }
