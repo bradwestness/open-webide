@@ -151,8 +151,8 @@ The raw records identify the compiled JS module hash, browser version and checko
 | Near 8 MiB byte limit | Remote | Off | 1,631 | 331 | 145 | 234.2 | 1.68 |
 | 58 KB / 1,001 rows | Local | On | 694 | 167 | 26 | 25.9 | 1.10 |
 | 58 KB / 1,001 rows | Remote | On | 721 | 174 | 24 | 26.1 | 1.10 |
-| Near 1 MiB single-line limit | Local | On | 2,122 | 447 | 17 | 48.4 | 3.76 |
-| Near 1 MiB single-line limit | Remote | On | 2,159 | 402 | 11 | 49.1 | 4.39 |
+| Near 1 MiB single-line limit | Local | On | 2,122 | 447 | — | 48.4 | 3.76 |
+| Near 1 MiB single-line limit | Remote | On | 2,159 | 402 | — | 49.1 | 4.39 |
 
 Full records: [unwrapped JSONL](editor-performance/production-view-unwrapped.jsonl),
 [wrapped JSONL](editor-performance/production-view-wrapped.jsonl). To repeat:
@@ -261,3 +261,32 @@ clock resolution and are observations rather than thresholds. Reference queries
 are one direction while indexed queries include both directions. These measurements
 do not establish native input/shaping, fine wrapped paint, memory or admission-boundary
 responsiveness. Grapheme indexing for browser geometry still scans a complete line.
+
+
+## Destination-verified long-line scrolling
+
+The measurement harness now scrolls horizontally for an unwrapped single logical
+row, and vertically for wrapped or multiline source. Single-row readiness requires
+fragment offsets covering the destination and current document paint ownership.
+Earlier single-row scroll readings lacked that destination check; their wrapped
+scroll values above are unverified, and an unwrapped single-row vertical scroll
+would be a no-op. Historical raw records are retained.
+
+On 2026-10-06, macOS arm64 / Chrome 148, checkpoint `26bbd18` with the concurrent
+branding/welcome edits compiled into module `f5175cf8ffc15d3` produced these single
+observations for 1,048,572 source bytes:
+
+| Mode | Wrap | Cold ms | Native input ms | Scroll ms | Main WASM after input MiB | Sampled peak summed RSS GiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Local | Off | 1,602 | 768 | 38 | 46.6 | 1.61 |
+| Remote | Off | 1,609 | 434 | 43 | 50.8 | 1.58 |
+| Local | On | 3,849 | 1,460 | 359 | 47.7 | 3.57 |
+| Remote | On | 4,433 | 1,467 | 367 | 49.6 | 4.15 |
+
+The horizontal runs moved 4,406,358 pixels; wrapped runs moved 340,803 pixels.
+Raw records: [horizontal JSONL](editor-performance/production-horizontal-anchors.jsonl)
+and [wrapped JSONL](editor-performance/production-wrapped-destination.jsonl).
+Native input, cold shaping and wrapped scrolling still have substantial stalls;
+these observations do not validate the admission limits or complete the editor
+performance goal. Linux PSS and actual local folder permissions remain unmeasured
+here. Repeat with `--cases long-line` and additionally `--wrap` for the wrapped case.

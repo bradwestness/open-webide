@@ -146,7 +146,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   admitted byte, row-count and long-line boundaries in both modes; they still show
   stalls and costly wrapped shaping/cold paint. Finish fine long-row paint,
   incremental measurement and input, then repeat the boundary workloads (including Linux PSS)
-  and the unresponsive wrapped cases before validating these limits.
+  and the unresponsive wrapped cases before validating these limits. The corrected
+  destination-verified 1 MiB single-row workload now covers horizontal and wrapped
+  scrolling in both modes; wrapped input/layout and process-memory stalls remain.
   Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,
   preserving multiline state and discarding partial rows on cancellation.
   Reindent preserves
