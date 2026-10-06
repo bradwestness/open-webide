@@ -127,9 +127,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   measurements cover construction, distributed queries and metadata retention.
   Validated fragment paint is now retained for revisited unchanged scroll intervals
   within a bounded shared cache, with source/account/read/fold/syntax/font/layout
-  invalidation. Finish bidirectional visual-run windows and reusable styled visual
-  boundaries for unvisited intervals so scrolling avoids full-row temporary
-  shaping, then further incremental access:
+  invalidation. Horizontal rows now retain exact styled source anchors; new
+  intervals isolate bounded source slices before layout and validate the retained
+  anchors, falling back on unsupported geometry or shaping. Finish initial/cold
+  shaping, bidirectional visual-run windows and reusable wrapped visual boundaries
+  for unvisited intervals, then further incremental access:
   edits still materialize
   full Strings and shift
   suffix coordinates. Native offset and line/column queries now use shared sparse

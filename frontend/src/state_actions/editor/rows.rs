@@ -205,6 +205,7 @@ pub struct EditorFragmentWindow {
 #[derive(Default)]
 pub struct EditorFragmentCache {
     scope: Option<(EditorRowPaint, u64, u64)>,
+    geometry: std::collections::VecDeque<(usize, Arc<openwebide_core::editor::HorizontalGeometry>)>,
     paint: openwebide_core::editor::PaintCache<EditorFragmentWindow>,
 }
 impl EditorActions {
@@ -228,6 +229,7 @@ impl EditorActions {
         let Some(paint) = paint else {
             cache.scope = None;
             cache.paint.clear();
+            cache.geometry.clear();
             return false;
         };
         let revision = self.view_revision();
@@ -251,9 +253,49 @@ impl EditorActions {
             });
         if !same {
             cache.paint.clear();
+            cache.geometry.clear();
             cache.scope = Some((paint, revision, layout));
         }
         true
+    }
+    pub fn horizontal_geometry(
+        self,
+        cache: &mut EditorFragmentCache,
+        row: usize,
+    ) -> Option<Arc<openwebide_core::editor::HorizontalGeometry>> {
+        let (paint, revision, layout) = cache.scope.as_ref()?;
+        if !self.row_paint_current(paint)
+            || *revision != self.view_revision()
+            || *layout != self.workspace.editor_layout_epoch.get_untracked()
+        {
+            return None;
+        }
+        let at = cache.geometry.iter().position(|(index, _)| *index == row)?;
+        let entry = cache.geometry.remove(at)?;
+        let result = entry.1.clone();
+        cache.geometry.push_back(entry);
+        Some(result)
+    }
+    pub fn retain_horizontal_geometry(
+        self,
+        cache: &mut EditorFragmentCache,
+        row: usize,
+        geometry: openwebide_core::editor::HorizontalGeometry,
+    ) {
+        let Some((paint, revision, layout)) = cache.scope.as_ref() else {
+            return;
+        };
+        if !self.row_paint_current(paint)
+            || *revision != self.view_revision()
+            || *layout != self.workspace.editor_layout_epoch.get_untracked()
+        {
+            return;
+        }
+        cache.geometry.retain(|(index, _)| *index != row);
+        if cache.geometry.len() == 8 {
+            cache.geometry.pop_front();
+        }
+        cache.geometry.push_back((row, Arc::new(geometry)));
     }
     pub fn cached_fragment(
         self,

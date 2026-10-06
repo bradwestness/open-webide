@@ -8483,6 +8483,40 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
             mounted.element(".editor-textarea").unchecked_into();
         let width = input.scroll_width();
         assert!(width > 100_000);
+        // Initial font/syntax readiness can replace the paint scope. Establish
+        // its first measured anchors before auditing previously unseen intervals.
+        for x in [10_000.0, 0.0] {
+            input.set_scroll_left(x);
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("initial horizontal geometry settled", || {
+                mounted
+                    .element(".editor-source-line")
+                    .get_attribute("data-paint-left")
+                    .and_then(|left| left.parse::<f64>().ok())
+                    .is_some_and(|left| if x == 0.0 { left == 0.0 } else { left > 9000.0 })
+            })
+            .await;
+            settle().await;
+        }
+        let measured_source = js_sys::Function::new_no_args(
+            r#"
+            const state = {max: 0};
+            const old = Range.prototype.getClientRects;
+            Range.prototype.getClientRects = function(...args) {
+                const node = this.startContainer;
+                const element = node.nodeType === 1 ? node : node.parentElement;
+                const row = element?.closest('.editor-row-measure .editor-source-line');
+                if (row) state.max = Math.max(state.max, row.textContent.length);
+                return old.apply(this, args);
+            };
+            state.restore = () => { Range.prototype.getClientRects = old; };
+            return state;
+        "#,
+        )
+        .call0(&wasm_bindgen::JsValue::NULL)
+        .unwrap();
         for x in [
             10_000.0,
             f64::from(width) / 2.0,
@@ -8558,6 +8592,20 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
                 0
             );
         }
+        let largest_measured_source = js_sys::Reflect::get(&measured_source, &"max".into())
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        js_sys::Reflect::get(&measured_source, &"restore".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap()
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap();
+        assert!(
+            largest_measured_source > 0.0 && largest_measured_source <= 65_536.0,
+            "new horizontal intervals must measure source slices, not the complete logical row: {largest_measured_source}"
+        );
         mounted.click("button[aria-label^='Find in file']");
         settle().await;
         let search: web_sys::HtmlInputElement =

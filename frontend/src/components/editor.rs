@@ -1186,7 +1186,13 @@ fn HighlightOverlay(
             input
                 .as_ref()
                 .and_then(|input| {
-                    super::editor_geometry::window_paint(actions, input, &html, &windows)
+                    let mut result = None;
+                    fragment_cache.update_value(|cache| {
+                        result = super::editor_geometry::window_paint(
+                            actions, input, &html, &windows, cache,
+                        );
+                    });
+                    result
                 })
                 .map_or(html, |fragment| {
                     if let Some(key) = cache_window {

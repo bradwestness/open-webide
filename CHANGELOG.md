@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain exact styled horizontal glyph anchors for long editor rows in both workspace modes. Newly visited intervals isolate bounded source slices before layout, validate cached anchors and preserve full extents, Unicode offsets and tab origins; unsupported geometry or shaping restores full-row measurement. Initial shaping, wrapped and bidirectional windows remain in progress.
+
 - Reuse validated editor fragment paint when revisiting unchanged scroll intervals in both workspace modes. Bound retained paint to 16 entries and 2 MiB, invalidate source/account/read/fold/syntax/indentation/font/layout changes, and include shaping properties in row-measurement identity. New intervals still require styled probes.
 
 - Share sparse long-row grapheme coordinates and horizontal-fragment eligibility across unchanged editor rows and folded views in both workspace modes. Paint and cursor probes reuse them; native/WASM measurements compare construction, distributed Unicode queries and metadata retention. Styled visual boundaries and row shaping remain in progress.

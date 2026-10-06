@@ -55,6 +55,15 @@ impl VisualLineIndex {
             horizontal,
         })))
     }
+    /// Exact cluster checkpoints for a styled geometry adapter; omit EOF.
+    pub fn anchor_glyphs(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0
+            .points
+            .iter()
+            .map(|point| point.glyph)
+            .filter(|glyph| *glyph < self.0.end.glyph)
+            .chain(self.0.end.glyph.checked_sub(1))
+    }
     /// Includes the terminal insertion point, matching visual_line_offsets.
     pub fn len(&self) -> usize {
         self.0.end.glyph + 1

@@ -144,6 +144,7 @@ fn window_paint_row(
     window: &openwebide_core::editor::RowPaintWindow,
     line_height: f64,
     index: Option<VisualLineIndex>,
+    geometry: &mut Option<openwebide_core::editor::HorizontalGeometry>,
 ) -> Option<()> {
     let text = row.text_content()?;
     if text.strip_suffix('\n').unwrap_or(&text) != body.replace('\r', "\n") {
@@ -187,6 +188,38 @@ fn window_paint_row(
             )
         }
     };
+    let sampled = if horizontal {
+        use openwebide_core::editor::{GlyphRectangle, HorizontalGeometry, MAX_HORIZONTAL_ANCHORS};
+        let mut indices = glyphs.index.anchor_glyphs().collect::<Vec<_>>();
+        indices.dedup();
+        if indices.len() <= MAX_HORIZONTAL_ANCHORS {
+            let anchors = indices
+                .into_iter()
+                .map(|glyph| {
+                    let rect = glyphs.rect(glyph)?;
+                    Some(GlyphRectangle {
+                        glyph,
+                        left: rect.left() - bounds.left(),
+                        top: rect.top() - bounds.top(),
+                        width: rect.width(),
+                        height: rect.height(),
+                    })
+                })
+                .collect::<Option<Vec<_>>>();
+            anchors.and_then(|anchors| {
+                HorizontalGeometry::new(
+                    glyphs.index.len() - 1,
+                    bounds.width(),
+                    bounds.height(),
+                    anchors,
+                )
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     if horizontal && first == last {
         let original_style = row.get_attribute("style").unwrap_or_default();
         row.set_attribute(
@@ -199,6 +232,7 @@ fn window_paint_row(
         .ok()?;
         row.set_inner_html("");
         row.set_attribute("data-paint-top", "0").ok()?;
+        *geometry = sampled;
         return Some(());
     }
     if first == last || last - first > MAX_VISUAL_CARETS {
@@ -288,6 +322,139 @@ fn window_paint_row(
             );
         }
     }
+    if valid.is_some() {
+        *geometry = sampled;
+    }
+    valid
+}
+
+/// Crop source before asking the browser for layout, using exact anchors from
+/// this immutable styled row. Validate retained anchors and restore complete
+/// source on any reshaping discrepancy.
+fn anchored_horizontal_row(
+    row: &web_sys::Element,
+    body: &str,
+    index: &VisualLineIndex,
+    columns: std::ops::Range<f64>,
+    geometry: &openwebide_core::editor::HorizontalGeometry,
+) -> Option<()> {
+    let interval = geometry.source_interval(columns.clone())?;
+    let original = row.inner_html();
+    let original_style = row.get_attribute("style").unwrap_or_default();
+    if interval.is_empty() {
+        row.set_attribute(
+            "style",
+            &format!(
+                "{original_style};height:{}px;width:{}px",
+                geometry.height, geometry.width
+            ),
+        )
+        .ok()?;
+        row.set_inner_html("");
+        row.set_attribute("data-paint-top", "0").ok()?;
+        return Some(());
+    }
+    let (start_byte, start_native) = index.at(body, interval.start)?;
+    let (end_byte, end_native) = index.at(body, interval.end)?;
+    let source = body.get(start_byte..end_byte)?;
+    if source.len() > openwebide_core::editor::MAX_MEASURE_BYTES {
+        return None;
+    }
+    let end_native = if interval.end + 1 == index.len() {
+        row.get_attribute("data-paint-length")?
+            .parse::<usize>()
+            .ok()?
+    } else {
+        end_native
+    };
+    let anchors = geometry.anchors(interval.clone())?;
+    let left = anchors.first()?.left;
+    let nodes = TextNodes::new(row)?;
+    let (start, at) = nodes.position(u32::try_from(start_native).ok()?)?;
+    let (end, to) = nodes.position(u32::try_from(end_native).ok()?)?;
+    let range = document().create_range().ok()?;
+    range.set_start(start, at).ok()?;
+    range.set_end(end, to).ok()?;
+    let fragment = document().create_element("span").ok()?;
+    fragment.set_class_name("editor-source-fragment");
+    fragment
+        .set_attribute("data-paint-start", &start_native.to_string())
+        .ok()?;
+    fragment
+        .set_attribute("data-paint-end", &end_native.to_string())
+        .ok()?;
+    fragment
+        .set_attribute(
+            "style",
+            "position:absolute;left:0;right:0;top:0;display:block",
+        )
+        .ok()?;
+    let gap = document().create_element("span").ok()?;
+    gap.set_attribute("style", &format!("display:inline-block;width:{left}px"))
+        .ok()?;
+    fragment.append_child(&gap).ok()?;
+    fragment
+        .append_child(&range.clone_contents().ok()?.into())
+        .ok()?;
+    // No geometry read occurred while the complete row was attached.
+    row.set_attribute(
+        "style",
+        &format!(
+            "{original_style};height:{}px;width:{}px",
+            geometry.height, geometry.width
+        ),
+    )
+    .ok()?;
+    row.set_inner_html("");
+    let valid = (|| {
+        row.append_child(&fragment).ok()?;
+        let bounds = row.get_bounding_client_rect();
+        let mut glyphs = Glyphs::new(&fragment, source, None)?;
+        for anchor in anchors {
+            let rect = glyphs.rect(anchor.glyph - interval.start)?;
+            if (rect.left() - bounds.left() - anchor.left).abs() > 0.5
+                || (rect.top() - bounds.top() - anchor.top).abs() > 0.5
+                || (rect.width() - anchor.width).abs() > 0.5
+                || (rect.height() - anchor.height).abs() > 0.5
+            {
+                return None;
+            }
+        }
+        let full_length = row.get_attribute("data-paint-length")?;
+        row.set_attribute(
+            "data-paint-length",
+            &(end_native - start_native).to_string(),
+        )
+        .ok()?;
+        let mut ignored = None;
+        let cropped = window_paint_row(
+            row,
+            source,
+            &openwebide_core::editor::RowPaintWindow::Horizontal(columns.clone()),
+            geometry.height,
+            None,
+            &mut ignored,
+        );
+        row.set_attribute("data-paint-length", &full_length).ok()?;
+        cropped?;
+        let fragments = row
+            .query_selector_all(":scope > .editor-source-fragment")
+            .ok()?;
+        for at in 0..fragments.length() {
+            let fragment = fragments.item(at)?.dyn_into::<web_sys::Element>().ok()?;
+            for attribute in ["data-paint-start", "data-paint-end"] {
+                let local = fragment.get_attribute(attribute)?.parse::<usize>().ok()?;
+                fragment
+                    .set_attribute(attribute, &(local + start_native).to_string())
+                    .ok()?;
+            }
+        }
+        Some(())
+    })();
+    if valid.is_none() {
+        row.set_inner_html(&original);
+        let _ = row.set_attribute("style", &original_style);
+    }
     valid
 }
 
@@ -298,6 +465,7 @@ pub(super) fn window_paint(
     input: &web_sys::HtmlTextAreaElement,
     html: &str,
     windows: &[(usize, openwebide_core::editor::RowPaintWindow)],
+    cache: &mut crate::state_actions::editor::EditorFragmentCache,
 ) -> Option<String> {
     if windows.is_empty() {
         return None;
@@ -353,14 +521,28 @@ pub(super) fn window_paint(
                 line.source_line + 1
             ))
             .ok()??;
+        if let openwebide_core::editor::RowPaintWindow::Horizontal(columns) = window
+            && let Some(geometry) = actions.horizontal_geometry(cache, *index)
+            && let Some(source_index) = projection.visual_line_index(*index)
+            && anchored_horizontal_row(&row, body, &source_index, columns.clone(), &geometry)
+                .is_some()
+        {
+            changed = true;
+            continue;
+        }
+        let mut geometry = None;
         changed |= window_paint_row(
             &row,
             body,
             window,
             line_height,
             projection.visual_line_index(*index),
+            &mut geometry,
         )
         .is_some();
+        if let Some(geometry) = geometry {
+            actions.retain_horizontal_geometry(cache, *index, geometry);
+        }
     }
     if !changed
         || actions.view_revision() != revision

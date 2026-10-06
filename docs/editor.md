@@ -252,8 +252,14 @@ unchanged rows retain their allocation. Lookups scan from exact cluster boundari
 instead of preparing a complete glyph array on each probe. Validated fragment paint is retained for revisited intervals (at most 16 entries
 and 2 MiB of HTML), scoped by document, account, read/pending ownership, projection,
 syntax/guide allocation, indentation, whitespace and browser shaping/layout. Font
-events invalidate even when computed font text stays the same. New intervals still
-require styled visual-boundary measurement and temporary row shaping.
+events invalidate even when computed font text stays the same. Horizontal rows additionally retain at most eight geometry tables with 4,096
+allocated glyph anchors each. They preserve rectangles relative to the original
+logical row, including glyph overflow beyond its CSS box. Newly visited horizontal
+intervals clone a bounded source slice before reading layout, validate measured
+anchors and then apply the existing complete fragment glyph check. Full source
+measurement remains the fallback for invalid geometry, oversized cluster slices
+or reshaping differences. Initial layout, wrapped/bidirectional rows and complete
+source HTML construction still need performance work.
 CRLF inverse mapping still selects the original CR, and surrogate offsets retain
 the existing boundary behavior. Projected text, normalized textarea text and
 visible-row coordinates share immutable allocations until source or folds change.
