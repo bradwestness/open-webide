@@ -136,8 +136,17 @@ Each provider can supply an injection selector returning validated source ranges
 The shared engine limits a document to 64 embedded bodies and discards every tree
 on cancellation or an exceeded limit.
 
-Provider-backed editing contexts, template interpolation, embedded-language
-commands, richer highlighting and worker/viewport rendering remain roadmap work. Editing commands continue to use their documented bounded lexical structure.
+Paired typing/deletion and Enter use immutable parser contexts from the shared
+per-document cache. Each cursor uses its own language, including JavaScript/CSS
+in HTML, and template interpolation code remains editable while literal text is
+protected. Incomplete input uses bounded lexical fallback; JavaScript template
+interpolation also works during incomplete typing. Contexts verify their exact
+source before a command can mutate history. Custom provider classifiers use the
+same traversal, limits and fallback policy.
+
+Comment/reindent commands, selection/navigation, richer highlighting and
+worker/viewport rendering remain roadmap work; those commands continue to use
+their documented bounded lexical structure.
 
 The shared document now owns fold state independently of undo history. Commands
 can collapse/expand at the caret, recursively or all, and reveal a navigation target.

@@ -1,7 +1,10 @@
 //! Incremental syntax analysis shared by browser and native editor adapters.
 use super::{FoldRange, MAX_STRUCTURE_BYTES, SyntaxProvider, normalize_folds, syntax_provider};
+use super::{Structure, SyntaxContextKind, structure::RegionKind};
 use crate::highlight::Language;
+use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::ops::Range as ByteRange;
 use tree_sitter::{InputEdit, Node, ParseOptions, Parser, Point, Range, Tree};
 
 const MAX_PROGRESS_CHECKS: usize = 4_096;
@@ -169,6 +172,131 @@ impl SyntaxDocument {
         self.language
     }
 
+    /// Immutable editing contexts from the current tree; failed/stale parses publish nothing.
+    pub fn structure(&self) -> Option<Structure> {
+        if !self.ready || self.provider.is_none() {
+            return None;
+        }
+        let fallback = Structure::new(&self.text, self.language);
+        let mut opaque_starts = fallback.opaque_starts;
+        let mut baseline = fallback.protected;
+        let scopes: Vec<_> = self
+            .embedded
+            .iter()
+            .map(|body| {
+                (
+                    body.range.start_byte..body.range.end_byte,
+                    body.provider.language,
+                )
+            })
+            .collect();
+        baseline.retain(|(range, _, _)| !scopes.iter().any(|(body, _)| overlaps(range, body)));
+        opaque_starts.retain(|position| !scopes.iter().any(|(body, _)| body.contains(position)));
+        for (body, language) in &scopes {
+            let fallback = Structure::new(&self.text[body.clone()], *language);
+            opaque_starts.extend(
+                fallback
+                    .opaque_starts
+                    .into_iter()
+                    .map(|position| position + body.start),
+            );
+            baseline.extend(fallback.protected.into_iter().map(|(range, closed, kind)| {
+                (
+                    (range.start + body.start)..(range.end + body.start),
+                    closed,
+                    kind,
+                )
+            }));
+        }
+        let mut visited = 0;
+        let mut captured = Vec::new();
+        let mut holes = Vec::new();
+        if let (Some(tree), Some(provider)) = (&self.tree, self.provider) {
+            collect_contexts(
+                tree,
+                provider,
+                &self.text,
+                &mut visited,
+                &mut captured,
+                &mut holes,
+            )
+            .ok()?;
+        }
+        for body in &self.embedded {
+            if let Some(tree) = &body.tree {
+                collect_contexts(
+                    tree,
+                    body.provider,
+                    &self.text,
+                    &mut visited,
+                    &mut captured,
+                    &mut holes,
+                )
+                .ok()?;
+            }
+        }
+        let mut coverage: Vec<_> = captured.iter().map(|(range, _, _)| range.clone()).collect();
+        coverage.sort_by_key(|range| (range.start, range.end));
+        let mut recognized: Vec<ByteRange<usize>> = Vec::new();
+        for range in coverage {
+            if let Some(previous) = recognized.last_mut()
+                && range.start < previous.end
+            {
+                previous.end = previous.end.max(range.end);
+            } else {
+                recognized.push(range);
+            }
+        }
+        baseline.retain(|(range, _, _)| {
+            let end = recognized.partition_point(|parsed| parsed.start <= range.start);
+            !end.checked_sub(1)
+                .and_then(|index| recognized.get(index))
+                .is_some_and(|parsed| range.end <= parsed.end || parsed.start == range.start)
+        });
+        let mut by_owner: HashMap<(usize, usize), Vec<ByteRange<usize>>> = HashMap::new();
+        for (owner, hole) in holes {
+            by_owner
+                .entry((owner.start, owner.end))
+                .or_default()
+                .push(hole);
+        }
+        for (range, closed, kind) in captured {
+            if kind == RegionKind::Text {
+                opaque_starts.push(range.start);
+            }
+            let mut start = range.start;
+            let mut owned = by_owner
+                .remove(&(range.start, range.end))
+                .unwrap_or_default();
+            owned.sort_by_key(|hole| hole.start);
+            for hole in owned {
+                if start < hole.start {
+                    baseline.push((start..hole.start, false, kind));
+                }
+                start = start.max(hole.end);
+                opaque_starts.push(start);
+            }
+            if start < range.end {
+                baseline.push((start..range.end, closed, kind));
+            }
+        }
+        baseline.sort_by_key(|(range, _, _)| (range.start, range.end));
+        let mut protected: Vec<(ByteRange<usize>, bool, RegionKind)> = Vec::new();
+        for (range, closed, kind) in baseline {
+            if let Some((previous, previous_closed, _)) = protected.last_mut()
+                && range.start < previous.end
+            {
+                if range.end > previous.end {
+                    previous.end = range.end;
+                    *previous_closed = closed;
+                }
+            } else {
+                protected.push((range, closed, kind));
+            }
+        }
+        Structure::parsed(&self.text, self.language, protected, scopes, opaque_starts)
+    }
+
     fn clear(&mut self) {
         if let Some(parser) = self.parser.as_mut() {
             parser.reset();
@@ -213,6 +341,83 @@ impl SyntaxDocument {
         }
         normalize_folds(ranges, lines.len())
     }
+}
+
+fn overlaps(left: &ByteRange<usize>, right: &ByteRange<usize>) -> bool {
+    left.start < right.end && right.start < left.end
+}
+
+fn collect_contexts(
+    tree: &Tree,
+    provider: SyntaxProvider,
+    text: &str,
+    visited: &mut usize,
+    captured: &mut Vec<(ByteRange<usize>, bool, RegionKind)>,
+    holes: &mut Vec<(ByteRange<usize>, ByteRange<usize>)>,
+) -> Result<(), SyntaxStatus> {
+    let Some(classify) = provider.context else {
+        return Ok(());
+    };
+    let mut ancestry = 0;
+    visit_tree(tree, visited, |node| {
+        let Some(class) = classify(node) else {
+            return Ok(());
+        };
+        let range = node.start_byte()..node.end_byte();
+        if range.start > range.end
+            || !text.is_char_boundary(range.start)
+            || !text.is_char_boundary(range.end)
+        {
+            return Err(SyntaxStatus::Cancelled);
+        }
+        if range.is_empty() {
+            return Ok(());
+        }
+        if class == SyntaxContextKind::Interpolation {
+            let mut parent = node.parent();
+            while let Some(owner) = parent {
+                ancestry += 1;
+                if ancestry > MAX_FOLD_NODES {
+                    return Err(SyntaxStatus::TooLarge);
+                }
+                if matches!(
+                    classify(owner),
+                    Some(
+                        SyntaxContextKind::String
+                            | SyntaxContextKind::Template
+                            | SyntaxContextKind::Regex
+                    )
+                ) {
+                    holes.push((owner.start_byte()..owner.end_byte(), range));
+                    break;
+                }
+                parent = owner.parent();
+            }
+            return Ok(());
+        }
+        let value = &text[range.clone()];
+        let (kind, closed) = match class {
+            SyntaxContextKind::String => (RegionKind::String, !node.has_error()),
+            SyntaxContextKind::Template => (RegionKind::Template, !node.has_error()),
+            SyntaxContextKind::Text => (RegionKind::Text, true),
+            SyntaxContextKind::Regex => (RegionKind::Regex, !node.has_error()),
+            SyntaxContextKind::Comment if value.starts_with("/*") => {
+                (RegionKind::BlockComment, value.ends_with("*/"))
+            }
+            SyntaxContextKind::Comment if value.starts_with("<!--") => {
+                (RegionKind::BlockComment, value.ends_with("-->"))
+            }
+            SyntaxContextKind::Comment => (RegionKind::LineComment, false),
+            SyntaxContextKind::Interpolation => unreachable!(),
+        };
+        captured.push((range, closed, kind));
+        Ok(())
+    })?;
+    *visited += ancestry;
+    if *visited > MAX_FOLD_NODES {
+        return Err(SyntaxStatus::TooLarge);
+    }
+    Ok(())
 }
 
 fn new_parser(provider: SyntaxProvider) -> Result<Parser, SyntaxStatus> {
@@ -486,6 +691,210 @@ mod tests {
     }
 
     #[test]
+    fn parsed_contexts_keep_interpolation_code_nested_literals_and_embedded_scopes() {
+        let source = "const s = `hello ${call({x: \"}\"})} tail`;";
+        let mut syntax = SyntaxDocument::new(Language::JavaScript).unwrap();
+        syntax.update(source, || true);
+        let structure = syntax.structure().unwrap();
+        assert!(!structure.is_code(source.find("hello").unwrap()));
+        assert!(structure.is_code(source.find("call").unwrap()));
+        assert!(!structure.is_code(source.find("\"}\"").unwrap() + 1));
+        assert!(!structure.is_code(source.find(" tail").unwrap()));
+        assert!(!structure.is_code(source.find("tail").unwrap()));
+        assert_eq!(structure.brackets.len(), 6);
+        assert!(structure.brackets.iter().all(|(_, _, pair)| pair.is_some()));
+        let html = format!(
+            "<script>{source}</script><style>a {{ content: \"}}\"; }}</style><script>({{x:1}})</script>"
+        );
+        syntax = SyntaxDocument::new(Language::Html).unwrap();
+        syntax.update(&html, || true);
+        let structure = syntax.structure().unwrap();
+        assert_eq!(
+            structure.language_at(html.find("call").unwrap()),
+            Language::JavaScript
+        );
+        assert_eq!(
+            structure.language_at(html.find("content").unwrap()),
+            Language::Css
+        );
+        assert_eq!(structure.language_at(0), Language::Html);
+        assert!(!structure.is_code(html.find("\"}\"").unwrap() + 1));
+        assert_eq!(structure.brackets.len(), 12);
+        assert!(structure.brackets.iter().all(|(_, _, pair)| pair.is_some()));
+        syntax.update(&html, || false);
+        assert!(syntax.structure().is_none());
+    }
+
+    #[test]
+    fn prepared_commands_use_each_cursor_language_and_reject_stale_contexts_atomically() {
+        use super::super::{Document, EditError, Indentation, Selection};
+        let source = "<script>const s = `text ${call()} tail`;</script><style>a { color: ; }</style><p>plain</p>";
+        let mut syntax = SyntaxDocument::new(Language::Html).unwrap();
+        syntax.update(source, || true);
+        let context = syntax.structure().unwrap();
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![
+                Selection::caret(source.find("call()").unwrap() + "call(".len()),
+                Selection::caret(source.find("; }").unwrap()),
+                Selection::caret(source.find("plain").unwrap()),
+            ])
+            .unwrap();
+        let before = document.clone();
+        document.type_character_with_context('(', &context).unwrap();
+        assert_eq!(
+            document.text(),
+            "<script>const s = `text ${call(())} tail`;</script><style>a { color: (); }</style><p>(plain</p>"
+        );
+        let changed = document.clone();
+        assert_eq!(
+            document.newline_with_context(Indentation::default(), None, &context),
+            Err(EditError::StaleContext)
+        );
+        assert_eq!(document, changed);
+        assert_eq!(
+            document.delete_pairs_with_context(&context),
+            Err(EditError::StaleContext)
+        );
+        assert_eq!(document, changed);
+        assert!(document.undo());
+        assert_eq!(document.text(), before.text());
+        assert_eq!(document.selections(), before.selections());
+        for source in ["`text $`", "`text $"] {
+            let mut document = Document::new(source);
+            document
+                .set_selections(vec![Selection::caret(source.find('$').unwrap() + 1)])
+                .unwrap();
+            document.type_character('{', Language::JavaScript).unwrap();
+            assert_eq!(document.text(), source.replace('$', "${}"));
+        }
+        let transition = "<script>const s = `text $`;</script>";
+        syntax.update(transition, || true);
+        let context = syntax.structure().unwrap();
+        let mut document = Document::new(transition);
+        document
+            .set_selections(vec![Selection::caret(transition.find('$').unwrap() + 1)])
+            .unwrap();
+        document.type_character_with_context('{', &context).unwrap();
+        assert_eq!(document.text(), transition.replace('$', "${}"));
+        let escaped = "`text \\ $`".replace("\\ ", "\\");
+        let mut document = Document::new(&escaped);
+        document
+            .set_selections(vec![Selection::caret(escaped.find('$').unwrap() + 1)])
+            .unwrap();
+        document.type_character('{', Language::JavaScript).unwrap();
+        assert_eq!(document.text(), escaped.replace('$', "${"));
+        let comment = "<script>// note</script>";
+        syntax.update(comment, || true);
+        let context = syntax.structure().unwrap();
+        let mut comment_document = Document::new(comment);
+        comment_document
+            .set_selections(vec![Selection::caret(comment.find("</script>").unwrap())])
+            .unwrap();
+        comment_document
+            .type_character_with_context('(', &context)
+            .unwrap();
+        assert_eq!(comment_document.text(), "<script>// note(</script>");
+        for source in ["// note", "// note\nnext"] {
+            let mut document = Document::new(source);
+            document
+                .set_selections(vec![Selection::caret("// note".len())])
+                .unwrap();
+            document.type_character('(', Language::JavaScript).unwrap();
+            assert_eq!(document.text(), source.replace("// note", "// note("));
+        }
+        let empty = "<script></script><style></style>";
+        syntax.update(empty, || true);
+        let context = syntax.structure().unwrap();
+        let mut empty_document = Document::new(empty);
+        empty_document
+            .set_selections(vec![
+                Selection::caret(empty.find("</script>").unwrap()),
+                Selection::caret(empty.find("</style>").unwrap()),
+            ])
+            .unwrap();
+        empty_document
+            .type_character_with_context('(', &context)
+            .unwrap();
+        assert_eq!(
+            empty_document.text(),
+            "<script>()</script><style>()</style>"
+        );
+        let blocks = "<script>\nfunction run() {}\n</script>\n<style>\na {}\n</style>";
+        syntax.update(blocks, || true);
+        let context = syntax.structure().unwrap();
+        let mut document = Document::new(blocks);
+        document
+            .set_selections(vec![
+                Selection::caret(blocks.find("{}").unwrap() + 1),
+                Selection::caret(blocks.rfind("{}").unwrap() + 1),
+            ])
+            .unwrap();
+        document
+            .newline_with_context(Indentation::default(), None, &context)
+            .unwrap();
+        assert_eq!(
+            document.text(),
+            "<script>\nfunction run() {\n    \n}\n</script>\n<style>\na {\n    \n}\n</style>"
+        );
+        let nested = "`a ${`b ${call({key: '} '})} c`} d`";
+        let fallback = Structure::new(nested, Language::JavaScript);
+        assert!(fallback.is_code(nested.find("call").unwrap()));
+        assert!(!fallback.is_code(nested.find(" c").unwrap()));
+        assert!(!fallback.is_code(nested.find(" d").unwrap()));
+        assert!(fallback.brackets.iter().all(|(_, _, pair)| pair.is_some()));
+        let escaped = "`a \\${notCode} tail`";
+        assert!(
+            !Structure::new(escaped, Language::JavaScript)
+                .is_code(escaped.find("notCode").unwrap())
+        );
+    }
+
+    #[test]
+    fn parsed_contexts_cover_builtin_literals_and_incomplete_interpolation() {
+        for &(path, source, _) in super::super::syntax_contracts::LANGUAGE_CASES {
+            let language = crate::highlight::language_from_path(path);
+            let mut syntax = SyntaxDocument::new(language).unwrap();
+            syntax.update(source, || true);
+            let structure = syntax.structure().unwrap();
+            if language != Language::Html {
+                assert!(
+                    !structure.is_code(source.find("文😀").unwrap() + "文".len()),
+                    "{path}"
+                );
+            }
+        }
+        for (language, source, code) in [
+            (Language::JavaScript, "`text ${call(", "call"),
+            (Language::Python, "f'hello {call(\"x\")} end'", "call"),
+            (
+                Language::CSharp,
+                "class C { string s = $\"text {Call(1)} tail\"; }",
+                "Call",
+            ),
+        ] {
+            let mut syntax = SyntaxDocument::new(language).unwrap();
+            syntax.update(source, || true);
+            let structure = syntax.structure().unwrap();
+            assert!(
+                structure.is_code(source.find(code).unwrap()),
+                "{language:?}: {structure:?} {}",
+                syntax.tree.as_ref().unwrap().root_node().to_sexp()
+            );
+            assert!(
+                !structure.is_code(
+                    source
+                        .find("text")
+                        .or_else(|| source.find("hello"))
+                        .unwrap()
+                        + 1
+                ),
+                "{language:?}"
+            );
+        }
+    }
+
+    #[test]
     fn html_mime_defaults_empty_bodies_and_independent_broken_scripts() {
         for (opening, expected) in [
             ("<script>", Some(Language::JavaScript)),
@@ -710,6 +1119,7 @@ mod tests {
     fn custom_provider_uses_shared_parse_and_fold_policy() {
         let provider = SyntaxProvider {
             language: Language::Rust,
+            context: None,
             injection: None,
             grammar: || tree_sitter_rust::LANGUAGE.into(),
             fold_nodes: &["arguments"],

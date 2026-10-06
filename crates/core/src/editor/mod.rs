@@ -36,7 +36,10 @@ mod syntax_providers;
 #[cfg(feature = "editor-parser")]
 pub use syntax::{SyntaxDocument, SyntaxStatus};
 #[cfg(feature = "editor-parser")]
-pub use syntax_providers::{InjectionSelector, SYNTAX_PROVIDERS, SyntaxProvider, syntax_provider};
+pub use syntax_providers::{
+    ContextSelector, InjectionSelector, SYNTAX_PROVIDERS, SyntaxContextKind, SyntaxProvider,
+    syntax_provider,
+};
 mod comments;
 pub use comments::{block_comment, line_comment};
 mod lines;
@@ -122,6 +125,7 @@ impl Edit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditError {
     InvalidRange,
+    StaleContext,
     OverlappingEdits,
     InvalidSelection,
     TooManySelections,
@@ -134,6 +138,7 @@ impl std::fmt::Display for EditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::InvalidRange => "Edit is outside the document or splits a Unicode character",
+            Self::StaleContext => "Editing context no longer matches this document",
             Self::OverlappingEdits => "Edits overlap",
             Self::InvalidSelection => {
                 "Selection is outside the document or splits a Unicode character"

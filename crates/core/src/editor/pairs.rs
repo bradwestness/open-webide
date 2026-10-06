@@ -9,10 +9,27 @@ use crate::highlight::Language;
 impl Document {
     pub fn type_character(&mut self, ch: char, language: Language) -> Result<bool, EditError> {
         let syntax = Structure::new(&self.text, language);
+        self.type_character_in(ch, &syntax)
+    }
+
+    pub fn type_character_with_context(
+        &mut self,
+        ch: char,
+        syntax: &Structure,
+    ) -> Result<bool, EditError> {
+        if !syntax.matches_source(&self.text) {
+            return Err(EditError::StaleContext);
+        }
+        self.type_character_in(ch, syntax)
+    }
+
+    fn type_character_in(&mut self, ch: char, syntax: &Structure) -> Result<bool, EditError> {
         let mut changes = Vec::new();
         for selection in &self.selections {
             let range = selection.range();
-            let after = self.text[range.end..].chars().next();
+            let language = syntax.language_at(range.start);
+            let interpolation = syntax.opens_interpolation(range.start, ch);
+            let after = syntax.next_character(range.end);
             let quote = language != Language::Html && supports_quote(language, ch);
             let close = supports_brackets(language)
                 .then(|| closing(ch))
@@ -72,10 +89,10 @@ impl Document {
                 && ch == '\''
                 && previous.is_some_and(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '&' | '<'));
             if let Some(close) = close
-                && syntax.is_code(range.start)
+                && (syntax.is_code(range.start) || interpolation)
                 && !word_quote
                 && !(language == Language::Rust && ch == '\'' && range.is_empty())
-                && (!range.is_empty() || safe_after)
+                && (!range.is_empty() || safe_after || interpolation)
             {
                 let selected = &self.text[range.clone()];
                 let text = format!("{ch}{selected}{close}");
@@ -103,6 +120,17 @@ impl Document {
     /// Return false when Backspace should retain the browser's native behavior.
     pub fn delete_empty_pairs(&mut self, language: Language) -> Result<bool, EditError> {
         let syntax = Structure::new(&self.text, language);
+        self.delete_pairs_in(&syntax)
+    }
+
+    pub fn delete_pairs_with_context(&mut self, syntax: &Structure) -> Result<bool, EditError> {
+        if !syntax.matches_source(&self.text) {
+            return Err(EditError::StaleContext);
+        }
+        self.delete_pairs_in(syntax)
+    }
+
+    fn delete_pairs_in(&mut self, syntax: &Structure) -> Result<bool, EditError> {
         let mut changes = Vec::new();
         for selection in &self.selections {
             if selection.anchor != selection.head {

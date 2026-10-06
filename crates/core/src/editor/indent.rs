@@ -179,13 +179,35 @@ impl Document {
         ending: Option<super::LineEnding>,
         language: crate::highlight::Language,
     ) -> Result<bool, EditError> {
+        let syntax = super::Structure::new(&self.text, language);
+        self.newline_in(indentation, ending, &syntax)
+    }
+
+    pub fn newline_with_context(
+        &mut self,
+        indentation: Indentation,
+        ending: Option<super::LineEnding>,
+        syntax: &super::Structure,
+    ) -> Result<bool, EditError> {
+        if !syntax.matches_source(&self.text) {
+            return Err(EditError::StaleContext);
+        }
+        self.newline_in(indentation, ending, syntax)
+    }
+
+    fn newline_in(
+        &mut self,
+        indentation: Indentation,
+        ending: Option<super::LineEnding>,
+        syntax: &super::Structure,
+    ) -> Result<bool, EditError> {
         let ending = ending
             .unwrap_or_else(|| super::LineEnding::detect(&self.text))
             .text();
-        let syntax = super::Structure::new(&self.text, language);
         let mut changes = Vec::new();
         for selection in &self.selections {
             let range = selection.range();
+            let language = syntax.language_at(range.start);
             let start = line_start(&self.text, range.start);
             let prefix: String = self.text[start..range.start]
                 .chars()

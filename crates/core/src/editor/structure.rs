@@ -1,6 +1,7 @@
 //! Lexical structure for editing commands. Strings and comments are opaque;
 //! unsupported languages retain plain-text editing rather than guessing syntax.
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::highlight::Language;
 
@@ -9,17 +10,35 @@ pub const MAX_STRUCTURE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_BRACKETS: usize = 65_536;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RegionKind {
+pub(super) enum RegionKind {
     String,
+    Template,
+    #[cfg(feature = "editor-parser")]
+    Text,
     LineComment,
     BlockComment,
     Regex,
 }
 
+impl RegionKind {
+    fn is_literal(self) -> bool {
+        match self {
+            Self::String | Self::Template | Self::Regex => true,
+            #[cfg(feature = "editor-parser")]
+            Self::Text => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Structure {
+    source: Arc<str>,
+    language: Language,
+    scopes: Vec<(Range<usize>, Language)>,
+    pub(super) opaque_starts: Vec<usize>,
     available: bool,
-    protected: Vec<(Range<usize>, bool, RegionKind)>,
+    pub(super) protected: Vec<(Range<usize>, bool, RegionKind)>,
     pub brackets: Vec<(usize, char, Option<usize>)>,
 }
 
@@ -29,6 +48,8 @@ impl Structure {
             return Self::unavailable();
         }
         let mut protected = Vec::new();
+        let mut opaque_starts = Vec::new();
+        let mut template_holes = Vec::new();
         let mut brackets: Vec<(usize, char, Option<usize>)> = Vec::new();
         let mut stack: Vec<usize> = Vec::new();
         let mut i = 0;
@@ -48,7 +69,7 @@ impl Structure {
                 || (language == Language::Sql && rest.starts_with("--"));
             if line_comment {
                 let end = rest.find('\n').map_or(text.len(), |n| i + n);
-                protected.push((i..end, end < text.len(), RegionKind::LineComment));
+                protected.push((i..end, false, RegionKind::LineComment));
                 i = end;
                 continue;
             }
@@ -148,6 +169,22 @@ impl Structure {
                     .is_some_and(|c| c.is_alphabetic() || c == '_')
                     && !after.chars().nth(1).is_some_and(|c| c == '\'')
             };
+            if ch == '`'
+                && matches!(
+                    language,
+                    Language::JavaScript | Language::TypeScript | Language::Jsx | Language::Tsx
+                )
+            {
+                let (end, closed, hole) = template_fragment(text, i, true);
+                protected.push((i..end, closed, RegionKind::Template));
+                if let Some(hole) = hole {
+                    template_holes.push(hole);
+                    i = hole;
+                } else {
+                    i = end;
+                }
+                continue;
+            }
             if quotes && !lifetime {
                 let start = i;
                 let triple =
@@ -187,11 +224,31 @@ impl Structure {
                     stack.pop();
                     brackets[open].2 = Some(i);
                     brackets[index].2 = Some(brackets[open].0);
+                    if template_holes.last() == Some(&brackets[open].0) {
+                        template_holes.pop();
+                        let start = i + ch.len_utf8();
+                        let (end, closed, hole) = template_fragment(text, start, false);
+                        if start < end {
+                            opaque_starts.push(start);
+                            protected.push((start..end, closed, RegionKind::Template));
+                        }
+                        if let Some(hole) = hole {
+                            template_holes.push(hole);
+                            i = hole;
+                        } else {
+                            i = end;
+                        }
+                        continue;
+                    }
                 }
             }
             i += ch.len_utf8();
         }
         Self {
+            source: text.into(),
+            language,
+            scopes: Vec::new(),
+            opaque_starts,
             available: true,
             protected,
             brackets,
@@ -200,10 +257,143 @@ impl Structure {
 
     fn unavailable() -> Self {
         Self {
+            source: "".into(),
+            language: Language::Plain,
+            scopes: Vec::new(),
+            opaque_starts: Vec::new(),
             available: false,
             protected: Vec::new(),
             brackets: Vec::new(),
         }
+    }
+
+    pub fn matches_source(&self, text: &str) -> bool {
+        self.source.as_ref() == text
+    }
+
+    pub fn opens_interpolation(&self, position: usize, ch: char) -> bool {
+        if ch != '{'
+            || !matches!(
+                self.language_at(position),
+                Language::JavaScript | Language::TypeScript | Language::Jsx | Language::Tsx
+            )
+        {
+            return false;
+        }
+        let Some(prefix) = self
+            .source
+            .get(..position)
+            .and_then(|prefix| prefix.strip_suffix('$'))
+        else {
+            return false;
+        };
+        prefix.chars().rev().take_while(|ch| *ch == '\\').count() % 2 == 0
+            && self
+                .region_at(position)
+                .is_some_and(|(range, closed, kind)| {
+                    *kind == RegionKind::Template
+                        && range.start < position
+                        && (range.contains(&position) || !closed && range.end == position)
+                })
+    }
+
+    /// Next character within the current language body.
+    pub fn next_character(&self, position: usize) -> Option<char> {
+        if self.scopes.iter().any(|(range, _)| range.end == position) {
+            return None;
+        }
+        self.source.get(position..)?.chars().next()
+    }
+
+    /// The language of an insertion, including the end of an embedded body.
+    pub fn language_at(&self, position: usize) -> Language {
+        self.scopes
+            .iter()
+            .find(|(range, _)| range.start <= position && position <= range.end)
+            .map_or(self.language, |(_, language)| *language)
+    }
+
+    #[cfg(feature = "editor-parser")]
+    pub(super) fn parsed(
+        text: &str,
+        language: Language,
+        mut protected: Vec<(Range<usize>, bool, RegionKind)>,
+        scopes: Vec<(Range<usize>, Language)>,
+        mut opaque_starts: Vec<usize>,
+    ) -> Option<Self> {
+        protected.sort_by_key(|(range, _, _)| (range.start, range.end));
+        let mut end = 0;
+        for (range, _, _) in &protected {
+            if range.start < end
+                || range.start > range.end
+                || !text.is_char_boundary(range.start)
+                || !text.is_char_boundary(range.end)
+            {
+                return None;
+            }
+            end = range.end;
+        }
+        opaque_starts.sort_unstable();
+        opaque_starts.dedup();
+        let mut result = Self {
+            source: text.into(),
+            language,
+            scopes,
+            opaque_starts,
+            available: true,
+            protected,
+            brackets: Vec::new(),
+        };
+        let mut stack = Vec::<usize>::new();
+        let mut last_scope = None;
+        let mut scope_index = 0;
+        for (position, ch) in text.char_indices() {
+            while result
+                .scopes
+                .get(scope_index)
+                .is_some_and(|(range, _)| range.end <= position)
+            {
+                scope_index += 1;
+            }
+            let scope = result
+                .scopes
+                .get(scope_index)
+                .filter(|(range, _)| range.contains(&position))
+                .map(|_| scope_index);
+            let current_language = scope.map_or(language, |index| result.scopes[index].1);
+            if scope != last_scope {
+                stack.clear();
+                last_scope = scope;
+            }
+            if !supports_brackets(current_language)
+                || result
+                    .region_at(position)
+                    .is_some_and(|(range, _, _)| range.contains(&position))
+            {
+                continue;
+            }
+            if closing(ch).is_some() {
+                if result.brackets.len() == MAX_BRACKETS {
+                    return None;
+                }
+                stack.push(result.brackets.len());
+                result.brackets.push((position, ch, None));
+            } else if matches!(ch, ')' | ']' | '}') {
+                if result.brackets.len() == MAX_BRACKETS {
+                    return None;
+                }
+                let index = result.brackets.len();
+                result.brackets.push((position, ch, None));
+                if let Some(open) = stack.last().copied()
+                    && closing(result.brackets[open].1) == Some(ch)
+                {
+                    stack.pop();
+                    result.brackets[open].2 = Some(position);
+                    result.brackets[index].2 = Some(result.brackets[open].0);
+                }
+            }
+        }
+        Some(result)
     }
 
     pub fn available(&self) -> bool {
@@ -212,19 +402,24 @@ impl Structure {
 
     pub(super) fn literals(&self) -> impl Iterator<Item = &Range<usize>> {
         self.protected.iter().filter_map(|(range, _, kind)| {
-            matches!(kind, RegionKind::String | RegionKind::BlockComment).then_some(range)
+            matches!(
+                kind,
+                RegionKind::String | RegionKind::Template | RegionKind::BlockComment
+            )
+            .then_some(range)
         })
     }
 
     pub(super) fn is_literal(&self, position: usize) -> bool {
-        self.region_at(position).is_some_and(|(range, _, kind)| {
-            matches!(kind, RegionKind::String | RegionKind::Regex) && range.contains(&position)
-        })
+        self.region_at(position)
+            .is_some_and(|(range, _, kind)| kind.is_literal() && range.contains(&position))
     }
 
     pub(super) fn is_opaque_body(&self, position: usize) -> bool {
-        self.region_at(position)
-            .is_some_and(|(range, _, _)| range.start < position && range.contains(&position))
+        self.region_at(position).is_some_and(|(range, _, _)| {
+            (range.start < position || self.opaque_starts.binary_search(&position).is_ok())
+                && range.contains(&position)
+        })
     }
 
     pub(super) fn is_line_comment(&self, position: usize) -> bool {
@@ -251,7 +446,7 @@ impl Structure {
     pub fn is_code(&self, position: usize) -> bool {
         self.available
             && !self.region_at(position).is_some_and(|(range, closed, _)| {
-                position > range.start
+                (position > range.start || self.opaque_starts.binary_search(&position).is_ok())
                     && (position < range.end || (!closed && position == range.end))
             })
     }
@@ -265,7 +460,9 @@ impl Structure {
 
     pub fn quote_closes_at(&self, position: usize) -> bool {
         self.protected.iter().any(|(range, closed, kind)| {
-            *kind == RegionKind::String && *closed && range.end == position + 1
+            matches!(kind, RegionKind::String | RegionKind::Template)
+                && *closed
+                && range.end == position + 1
         })
     }
     pub fn empty_quote_pair(&self, position: usize) -> bool {
@@ -325,6 +522,26 @@ fn yaml_scalar_end(text: &str, offset: usize) -> Option<usize> {
         end += line.len();
     }
     Some(end)
+}
+
+/// Scan literal text up to a closing backtick or an interpolation opening brace.
+fn template_fragment(text: &str, start: usize, opening: bool) -> (usize, bool, Option<usize>) {
+    let mut position = start + usize::from(opening);
+    while position < text.len() {
+        let rest = &text[position..];
+        if rest.starts_with("${") {
+            return (position, false, Some(position + 1));
+        }
+        let ch = rest.chars().next().unwrap();
+        position += ch.len_utf8();
+        if ch == '`' {
+            return (position, true, None);
+        }
+        if ch == '\\' && position < text.len() {
+            position += text[position..].chars().next().unwrap().len_utf8();
+        }
+    }
+    (position, false, None)
 }
 
 fn regex_position(before: &str) -> bool {

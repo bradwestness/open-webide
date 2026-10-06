@@ -1061,6 +1061,113 @@ async fn built_in_language_parser_folds_share_local_remote_and_wasm_contracts() 
 }
 
 #[wasm_bindgen_test]
+async fn parsed_typing_contexts_share_modes_mixed_cursors_and_stale_guards() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Indentation, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    let source = "<script>const s = `text ${call()} tail`;</script><style>a { color: ; }</style>";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            editor_view(state)
+        });
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("context.html".into()));
+        mounted.state.workspace.content.set(source.into());
+        let actions = EditorActions::new(mounted.state.workspace);
+        let primary = Selection::caret(source.find("call()").unwrap() + "call(".len());
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .update(|documents| {
+                let mut document = openwebide_core::editor::Document::new(source);
+                document
+                    .set_selections(vec![primary, Selection::caret(source.find("; }").unwrap())])
+                    .unwrap();
+                documents.insert((1, "context.html".into()), document);
+            });
+        actions
+            .command(
+                EditorCommand::TypeCharacter('('),
+                primary,
+                Indentation::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "<script>const s = `text ${call(())} tail`;</script><style>a { color: (); }</style>"
+        );
+        let selections = actions.selections(&mounted.state.workspace.content.get_untracked());
+        actions
+            .command(
+                EditorCommand::DeletePair,
+                selections[0],
+                Indentation::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        let before = mounted.state.workspace.content.get_untracked();
+        assert!(actions.syntax_structure(|| false).is_none());
+        assert_eq!(mounted.state.workspace.content.get_untracked(), before);
+        let context = actions.syntax_structure(|| true).unwrap();
+        assert!(context.is_code(source.find("call").unwrap()));
+        assert!(!context.is_code(source.find(" tail").unwrap()));
+        let blocks = "<script>\nfunction run() {}\n</script>\n<style>\na {}\n</style>";
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("blocks.html".into()));
+        mounted.state.workspace.content.set(blocks.into());
+        let primary = Selection::caret(blocks.find("{}").unwrap() + 1);
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .update(|documents| {
+                let mut document = openwebide_core::editor::Document::new(blocks);
+                document
+                    .set_selections(vec![
+                        primary,
+                        Selection::caret(blocks.rfind("{}").unwrap() + 1),
+                    ])
+                    .unwrap();
+                documents.insert((1, "blocks.html".into()), document);
+            });
+        actions
+            .command(EditorCommand::Newline, primary, Indentation::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "<script>\nfunction run() {\n    \n}\n</script>\n<style>\na {\n    \n}\n</style>"
+        );
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.txt".into()));
+        mounted.state.workspace.content.set("unrelated".into());
+        let other = actions.syntax_structure(|| true);
+        assert!(other.is_none());
+        mounted.state.workspace.reset();
+        assert!(actions.syntax_structure(|| true).is_none());
+    }
+}
+
+#[wasm_bindgen_test]
 async fn html_embedded_folds_share_workspace_modes_and_discard_stale_bodies() {
     use openwebide_core::{
         WorkspaceMode,

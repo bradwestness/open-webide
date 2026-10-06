@@ -4,10 +4,58 @@ use crate::highlight::Language;
 pub type InjectionSelector =
     for<'tree> fn(tree_sitter::Node<'tree>, &str) -> Option<(Language, tree_sitter::Range)>;
 
+/// Classification supplied by a grammar provider; policies remain in the shared engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyntaxContextKind {
+    String,
+    Template,
+    Text,
+    Regex,
+    Comment,
+    Interpolation,
+}
+
+pub type ContextSelector = for<'tree> fn(tree_sitter::Node<'tree>) -> Option<SyntaxContextKind>;
+
+fn built_in_context(node: tree_sitter::Node<'_>) -> Option<SyntaxContextKind> {
+    match node.kind() {
+        "string"
+        | "string_literal"
+        | "raw_string_literal"
+        | "character_literal"
+        | "char_literal"
+        | "rune_literal"
+        | "string_value"
+        | "encapsed_string"
+        | "nowdoc_string"
+        | "interpreted_string_literal"
+        | "interpolated_string_expression"
+        | "verbatim_string_literal"
+        | "raw_string"
+        | "ansi_c_string"
+        | "translated_string" => Some(SyntaxContextKind::String),
+        "template_string" => Some(SyntaxContextKind::Template),
+        "jsx_text" | "text" | "html_character_reference" | "entity" => {
+            Some(SyntaxContextKind::Text)
+        }
+        "regex" => Some(SyntaxContextKind::Regex),
+        "comment" | "html_comment" | "line_comment" | "block_comment" => {
+            Some(SyntaxContextKind::Comment)
+        }
+        "template_substitution"
+        | "interpolation"
+        | "string_interpolation"
+        | "command_substitution"
+        | "process_substitution" => Some(SyntaxContextKind::Interpolation),
+        _ => None,
+    }
+}
+
 /// Custom providers use the same incremental update, limits, cancellation and fold policy.
 #[derive(Clone, Copy)]
 pub struct SyntaxProvider {
     pub language: Language,
+    pub context: Option<ContextSelector>,
     pub injection: Option<InjectionSelector>,
     pub grammar: fn() -> tree_sitter::Language,
     pub fold_nodes: &'static [&'static str],
@@ -18,6 +66,7 @@ pub struct SyntaxProvider {
 pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Rust,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_rust::LANGUAGE.into(),
         parent_headers: &[],
@@ -39,6 +88,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::JavaScript,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         parent_headers: &[],
@@ -56,6 +106,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Jsx,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         parent_headers: &[],
@@ -73,6 +124,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::TypeScript,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         parent_headers: &[],
@@ -92,6 +144,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Tsx,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_typescript::LANGUAGE_TSX.into(),
         parent_headers: &[],
@@ -112,6 +165,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Python,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_python::LANGUAGE.into(),
         parent_headers: &["block"],
@@ -129,6 +183,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Java,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_java::LANGUAGE.into(),
         parent_headers: &[],
@@ -146,6 +201,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::CSharp,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_c_sharp::LANGUAGE.into(),
         parent_headers: &[],
@@ -164,6 +220,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Cpp,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_cpp::LANGUAGE.into(),
         parent_headers: &[],
@@ -180,6 +237,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::C,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_c::LANGUAGE.into(),
         parent_headers: &[],
@@ -195,6 +253,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Php,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_php::LANGUAGE_PHP.into(),
         parent_headers: &[],
@@ -212,6 +271,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Shell,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_bash::LANGUAGE.into(),
         parent_headers: &[],
@@ -230,6 +290,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Go,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_go::LANGUAGE.into(),
         parent_headers: &[],
@@ -245,6 +306,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Html,
+        context: Some(built_in_context),
         injection: Some(super::syntax_injections::html_injection),
         grammar: || tree_sitter_html::LANGUAGE.into(),
         parent_headers: &[],
@@ -252,6 +314,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Css,
+        context: Some(built_in_context),
         injection: None,
         grammar: || tree_sitter_css::LANGUAGE.into(),
         parent_headers: &[],

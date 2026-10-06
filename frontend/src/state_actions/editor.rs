@@ -437,11 +437,32 @@ impl EditorActions {
         openwebide_core::editor::SyntaxStatus,
         Vec<openwebide_core::editor::FoldRange>,
     )> {
+        let tab_width = self.rules_untracked().indentation.tab_width();
+        self.analyze_syntax(should_continue, |document, status| {
+            (status, document.folds_with_tab_width(tab_width))
+        })
+    }
+
+    pub fn syntax_structure(
+        self,
+        should_continue: impl FnMut() -> bool,
+    ) -> Option<openwebide_core::editor::Structure> {
+        self.analyze_syntax(should_continue, |document, _| document.structure())
+            .flatten()
+    }
+
+    fn analyze_syntax<T>(
+        self,
+        should_continue: impl FnMut() -> bool,
+        result_for: impl FnOnce(
+            &openwebide_core::editor::SyntaxDocument,
+            openwebide_core::editor::SyntaxStatus,
+        ) -> T,
+    ) -> Option<T> {
         let key = self.key()?;
         let epoch = self.workspace.pending_epoch.get_untracked();
         let language = openwebide_core::highlight::language_from_path(&key.1);
         let text = self.workspace.content.get_untracked();
-        let tab_width = self.rules_untracked().indentation.tab_width();
         let result = self
             .workspace
             .editor_syntax
@@ -453,7 +474,7 @@ impl EditorActions {
                     }
                 };
                 let status = document.update(&text, should_continue);
-                Some((status, document.folds_with_tab_width(tab_width)))
+                Some(result_for(document, status))
             })
             .flatten();
         (self.key() == Some(key)
@@ -778,6 +799,17 @@ impl EditorActions {
         let Some(key) = self.key() else {
             return Ok(None);
         };
+        let syntax = if matches!(
+            command,
+            EditorCommand::TypeCharacter(_) | EditorCommand::DeletePair | EditorCommand::Newline
+        ) {
+            self.syntax_structure(|| true)
+        } else {
+            None
+        };
+        if self.key() != Some(key.clone()) {
+            return Ok(None);
+        }
         self.typing.set(None);
         let result = self
             .workspace
@@ -798,22 +830,39 @@ impl EditorActions {
                         document.indent_lines(indentation, true)?;
                     }
                     EditorCommand::Newline => {
-                        document.newline_with_structure(
-                            indentation,
-                            self.rules_untracked().line_ending,
-                            openwebide_core::highlight::language_from_path(&key.1),
-                        )?;
+                        if let Some(syntax) = &syntax {
+                            document.newline_with_context(
+                                indentation,
+                                self.rules_untracked().line_ending,
+                                syntax,
+                            )?;
+                        } else {
+                            document.newline_with_structure(
+                                indentation,
+                                self.rules_untracked().line_ending,
+                                openwebide_core::highlight::language_from_path(&key.1),
+                            )?;
+                        }
                     }
                     EditorCommand::TypeCharacter(ch) => {
-                        document.type_character(
-                            ch,
-                            openwebide_core::highlight::language_from_path(&key.1),
-                        )?;
+                        if let Some(syntax) = &syntax {
+                            document.type_character_with_context(ch, syntax)?;
+                        } else {
+                            document.type_character(
+                                ch,
+                                openwebide_core::highlight::language_from_path(&key.1),
+                            )?;
+                        }
                     }
                     EditorCommand::DeletePair => {
-                        if !document.delete_empty_pairs(
-                            openwebide_core::highlight::language_from_path(&key.1),
-                        )? {
+                        let changed = if let Some(syntax) = &syntax {
+                            document.delete_pairs_with_context(syntax)?
+                        } else {
+                            document.delete_empty_pairs(
+                                openwebide_core::highlight::language_from_path(&key.1),
+                            )?
+                        };
+                        if !changed {
                             return Ok(None);
                         }
                     }
