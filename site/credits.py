@@ -76,7 +76,7 @@ def render(root):
         table(transitive_rows) + "\n\n</details>\n\n## Website build libraries\n\n"
         "These packages build the documentation site. Versions reflect the environment used for this build.\n\n" +
         python_packages(root / "site/requirements.txt") + "\n\n## Website browser library\n\n" +
-        table([("Mermaid", mermaid[1], "MIT", f"https://github.com/mermaid-js/mermaid/tree/v{mermaid[1]}")]) +
+        table([("Mermaid", mermaid[1], "MIT", "https://github.com/mermaid-js/mermaid")]) +
         "\n\nMermaid renders the architecture diagrams and includes its own bundled dependencies. "
         "See its upstream distribution for third-party notices.\n"
     )

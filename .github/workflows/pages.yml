@@ -18,6 +18,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,11 +29,12 @@ jobs:
           cache-dependency-path: site/requirements.txt
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pages-metadata
+          cache-targets: false
       - run: pip install -r site/requirements.txt
       - name: Build and validate site
         run: python site/build.py --output "$RUNNER_TEMP/project-site"
-        env:
-          RUSTUP_TOOLCHAIN: stable
       # The Pages convenience action excludes dot directories, including .well-known.
       - name: Package site including WebFinger discovery
         run: |
