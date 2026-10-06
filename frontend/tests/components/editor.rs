@@ -3422,10 +3422,10 @@ async fn fold_controls_preserve_scrolled_viewport_with_a_distant_caret_in_both_m
             state.workspace.content.set(source.clone());
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:280px">{editor_view(state)}</div> }
         });
-        wait_until("scrolled fold control", || {
+        wait_until("initial fold paint", || {
             mounted
                 .root
-                .query_selector("button[aria-label='Collapse block at line 101']")
+                .query_selector(".editor-source-line")
                 .unwrap()
                 .is_some()
         })
@@ -3438,6 +3438,14 @@ async fn fold_controls_preserve_scrolled_viewport_with_a_distant_caret_in_both_m
         textarea
             .dispatch_event(&web_sys::Event::new("scroll").unwrap())
             .unwrap();
+        wait_until("scrolled fold control", || {
+            mounted
+                .root
+                .query_selector("button[aria-label='Collapse block at line 101']")
+                .unwrap()
+                .is_some()
+        })
+        .await;
         frame().await;
         let scroll = (textarea.scroll_top(), textarea.scroll_left());
         assert!(scroll.0 > 1000.0 && scroll.1 > 50.0);
@@ -6938,5 +6946,171 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
                 .unwrap(),
             revised.replace("\r\n", "\n")
         );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    let source = (0..10_000)
+        .map(|line| format!("row {line} 文😀\r\n"))
+        .collect::<String>();
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let text = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("viewport.txt".into()));
+            state.workspace.content.set(text);
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = false);
+            editor_view(state)
+        });
+        let style = document().create_element("style").unwrap();
+        style.set_text_content(Some(&format!(
+            "{}\n.editor-code {{width:440px;height:180px;flex:none}}",
+            include_str!("../../styles.css")
+        )));
+        mounted.root.append_child(&style).unwrap();
+        wait_until("viewport paint mounted", || {
+            mounted
+                .root
+                .query_selector(".editor-source-line")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(textarea.value(), source.replace("\r\n", "\n"));
+        assert!(
+            mounted
+                .root
+                .query_selector_all(".editor-source-line")
+                .unwrap()
+                .length()
+                < 80
+        );
+        for line in [5000, 9990, 0, 2000] {
+            textarea.set_scroll_top(f64::from(line) * 19.5);
+            textarea
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("scrolled row window", || {
+                let row = mounted.element(".editor-source-line");
+                let first = row
+                    .get_attribute("data-line")
+                    .unwrap()
+                    .parse::<i32>()
+                    .unwrap()
+                    - 1;
+                (first - line).abs() <= 12
+            })
+            .await;
+            assert!(
+                mounted
+                    .root
+                    .query_selector_all(".editor-source-line")
+                    .unwrap()
+                    .length()
+                    < 80
+            );
+            assert!(
+                mounted
+                    .root
+                    .query_selector_all(".editor-fold-row")
+                    .unwrap()
+                    .length()
+                    < 80
+            );
+            let paint = mounted.element(".editor-highlight-content");
+            let offset = paint
+                .get_attribute("data-textarea-start")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            let first = mounted.element(".editor-source-line");
+            let first_line = first
+                .get_attribute("data-line")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+                - 1;
+            let expected = source
+                .split_inclusive('\n')
+                .take(first_line)
+                .collect::<String>()
+                .replace("\r\n", "\n")
+                .encode_utf16()
+                .count();
+            assert_eq!(offset, expected);
+            let visible = mounted.element(&format!(
+                ".editor-source-line[data-line='{}']",
+                (line + 2).min(10_000)
+            ));
+            let rect = visible.get_bounding_client_rect();
+            let caret = openwebide_frontend::viewport::editor_caret_from_point(
+                &textarea,
+                rect.left() + 3.0,
+                rect.top() + 5.0,
+            )
+            .unwrap();
+            let target = usize::try_from((line + 1).min(9999)).unwrap();
+            let target_start = source
+                .split_inclusive('\n')
+                .take(target)
+                .collect::<String>()
+                .replace("\r\n", "\n")
+                .encode_utf16()
+                .count();
+            let target_end = target_start
+                + source
+                    .split('\n')
+                    .nth(target)
+                    .unwrap()
+                    .trim_end_matches('\r')
+                    .encode_utf16()
+                    .count();
+            assert!(
+                (target_start..=target_end).contains(&(caret as usize)),
+                "caret maps to the clicked source row"
+            );
+        }
+        mounted.click("button[aria-label^='Find in file']");
+        settle().await;
+        let search: web_sys::HtmlInputElement =
+            mounted.element(".editor-find input").unchecked_into();
+        search.set_value("row 9000");
+        search
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        wait_until("find reveals a row outside the paint window", || {
+            textarea.scroll_top() > 170_000.0
+                && mounted
+                    .root
+                    .query_selector(".editor-source-line[data-line='9001']")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
+        mounted.click("button[aria-label='Close find']");
+        mounted.state.workspace.content.set("short 文😀\r\n".into());
+        textarea.set_scroll_top(0.0);
+        textarea
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        wait_until("shrinking file resets row window", || {
+            mounted
+                .element(".editor-highlight-content")
+                .text_content()
+                .as_deref()
+                == Some("short 文😀\n")
+        })
+        .await;
     }
 }

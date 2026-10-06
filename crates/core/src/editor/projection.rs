@@ -9,6 +9,8 @@ pub struct VisibleLine {
     pub source_line: usize,
     pub source: Range<usize>,
     pub visible_start: usize,
+    /// UTF-16 offset in the native textarea, whose CRLF endings normalize to LF.
+    pub textarea_start: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +33,7 @@ pub struct FoldProjection {
     source_len: usize,
     lines: Vec<VisibleLine>,
     hidden: Vec<HiddenText>,
+    uniform_rows: bool,
 }
 
 impl FoldProjection {
@@ -40,14 +43,18 @@ impl FoldProjection {
         let mut visible = Vec::new();
         let mut hidden: Vec<HiddenText> = Vec::new();
         let mut row = 0;
+        let mut textarea_start = 0;
         while row < logical.len() {
             let line = &logical[row];
             visible.push(VisibleLine {
                 source_line: row,
                 source: line.start..line.end,
                 visible_start: text.len(),
+                textarea_start,
             });
             text.push_str(&source[line.start..line.end]);
+            textarea_start += source[line.start..line.end].encode_utf16().count()
+                - usize::from(source[line.start..line.end].ends_with("\r\n"));
             if let Some(range) = folds.collapsed_at(row) {
                 let end = range.end_line.min(logical.len() - 1);
                 if end > row {
@@ -75,10 +82,17 @@ impl FoldProjection {
                 source_line: logical.len() - 1,
                 source: source.len()..source.len(),
                 visible_start: text.len(),
+                textarea_start,
             });
         }
+        // Lone CR normalizes to a native line break inside one logical source
+        // row. Such rows need measured heights rather than fixed-row windowing.
+        let uniform_rows = !text.as_bytes().iter().enumerate().any(|(offset, byte)| {
+            *byte == b'\r' && text.as_bytes().get(offset + 1) != Some(&b'\n')
+        });
         Self {
             text,
+            uniform_rows,
             source_len: source.len(),
             lines: visible,
             hidden,
@@ -91,6 +105,10 @@ impl FoldProjection {
     pub fn lines(&self) -> &[VisibleLine] {
         &self.lines
     }
+    pub fn has_uniform_rows(&self) -> bool {
+        self.uniform_rows
+    }
+
     pub fn is_folded(&self) -> bool {
         !self.hidden.is_empty()
     }
@@ -319,6 +337,36 @@ mod tests {
                     let original = projection.source_offset(offset).unwrap();
                     proptest::prop_assert_eq!(projection.visible_offset(original).unwrap(), offset);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn window_offsets_preserve_native_utf16_after_unicode_crlf_and_folds() {
+        assert!(FoldProjection::new("a\r\nb", &FoldState::default()).has_uniform_rows());
+        assert!(!FoldProjection::new("a\rb", &FoldState::default()).has_uniform_rows());
+        let source = "head 😀\r\nbody 文\r\nend\r\nnext 🦀";
+        let mut folds = FoldState::default();
+        folds.set_ranges(
+            vec![FoldRange {
+                start_line: 0,
+                end_line: 2,
+            }],
+            4,
+        );
+        for collapsed in [false, true] {
+            if collapsed {
+                folds.collapse_all();
+            }
+            let projection = FoldProjection::new(source, &folds);
+            for line in projection.lines() {
+                assert_eq!(
+                    line.textarea_start,
+                    projection.text()[..line.visible_start]
+                        .replace("\r\n", "\n")
+                        .encode_utf16()
+                        .count()
+                );
             }
         }
     }

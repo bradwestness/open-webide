@@ -202,6 +202,14 @@ Languages with lexical highlighting, including JSON, TOML, YAML, SQL and Markdow
 use the same preparation cache and worker. Multiline lexical state stays intact;
 cancellation returns no partial rows. Plain text retains plain rendering.
 
+Unwrapped edit views render an overscanned row window for syntax, line-number
+gutters and fold controls. The shared row-window policy receives browser geometry;
+projected rows retain global native UTF-16 offsets for Unicode/CRLF pointer mapping.
+Syntax tokens and indentation guides are reused across scrolling. Find and navigation
+can reveal rows outside the current paint window. Wrapped views and rows containing standalone CR retain their measured
+full projection while wrapped viewport rendering is in progress. Native textarea
+input still owns the complete projected source; this does not yet bound input memory.
+
 Both adapters retain at most eight syntax documents and 8 MiB of source, using LRU
 eviction. Preparation falls back beyond 2 MiB, 50,000 lines or 100,000
 metadata records; bracket and embedded-body limits still apply. Wire envelopes

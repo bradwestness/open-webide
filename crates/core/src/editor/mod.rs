@@ -36,6 +36,8 @@ pub use recovery::{
 };
 mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
+mod viewport;
+pub use viewport::EditorViewport;
 mod projection;
 pub use projection::{FoldProjection, ProjectionError, VisibleLine};
 #[cfg(feature = "editor-parser")]

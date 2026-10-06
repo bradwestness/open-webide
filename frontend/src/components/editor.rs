@@ -318,7 +318,26 @@ pub(super) fn render_editor_selection(
     }
 }
 
+fn editor_row_height(textarea: &web_sys::HtmlTextAreaElement) -> f64 {
+    window()
+        .get_computed_style(textarea)
+        .ok()
+        .flatten()
+        .and_then(|style| style.get_property_value("line-height").ok())
+        .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
+        .unwrap_or(19.5)
+}
+
 fn navigate_editor(actions: EditorActions, textarea: &web_sys::HtmlTextAreaElement, offset: usize) {
+    navigate_editor_with_retry(actions, textarea, offset, true);
+}
+
+fn navigate_editor_with_retry(
+    actions: EditorActions,
+    textarea: &web_sys::HtmlTextAreaElement,
+    offset: usize,
+    retry: bool,
+) {
     let Ok(selection) = actions.navigate(offset) else {
         return;
     };
@@ -359,13 +378,7 @@ fn navigate_editor(actions: EditorActions, textarea: &web_sys::HtmlTextAreaEleme
                 .iter()
                 .position(|row| row.source_line == line - 1)
                 .unwrap_or(0);
-            let height = window()
-                .get_computed_style(&textarea)
-                .ok()
-                .flatten()
-                .and_then(|style| style.get_property_value("line-height").ok())
-                .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
-                .unwrap_or(19.5);
+            let height = editor_row_height(&textarea);
             if let Some(parent) = textarea.parent_element()
                 && let Ok(Some(target)) =
                     parent.query_selector(&format!(".editor-source-line[data-line='{line}']"))
@@ -402,6 +415,17 @@ fn navigate_editor(actions: EditorActions, textarea: &web_sys::HtmlTextAreaEleme
                         - f64::from(textarea.client_height()) / 2.0)
                         .max(0.0),
                 );
+                if retry {
+                    let textarea = textarea.clone();
+                    leptos::leptos_dom::helpers::request_animation_frame(move || {
+                        if current_editor_target(actions, &textarea)
+                            && actions.source() == source_at_navigation
+                            && actions.selection(&source_at_navigation) == Some(selection)
+                        {
+                            navigate_editor_with_retry(actions, &textarea, offset, false);
+                        }
+                    });
+                }
             }
         });
     });
@@ -679,20 +703,15 @@ fn paint_text(text: &str, show_whitespace: bool) -> String {
 
 /// Render the highlighted source as an HTML string for the overlay.
 fn highlight_html(
-    source: &str,
-    language: Language,
+    lines: &[Vec<openwebide_core::highlight::Token>],
+    prepared_source: bool,
+    guides: &[usize],
     visible: &[usize],
     indentation: openwebide_core::editor::Indentation,
     show_whitespace: bool,
-    prepared: Option<std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>>,
 ) -> String {
     #[cfg(feature = "test-support")]
     HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
-    let normalized = source.replace("\r\n", "\n");
-    let prepared_source = prepared.is_some();
-    let lines =
-        prepared.unwrap_or_else(|| std::sync::Arc::new(highlight_lines(&normalized, language)));
-    let guides = openwebide_core::editor::indent_guide_columns(source, indentation);
     let mut html = String::new();
     for &idx in visible {
         let Some(line) = lines.get(idx) else {
@@ -768,6 +787,8 @@ fn HighlightOverlay(
     textarea_ref: NodeRef<leptos::html::Textarea>,
     ready: RwSignal<bool>,
     visible: Memo<Vec<usize>>,
+    viewport: Memo<openwebide_core::editor::EditorViewport>,
+    textarea_start: Memo<usize>,
     indentation: Signal<openwebide_core::editor::Indentation>,
     show_whitespace: Signal<bool>,
     layout_revision: RwSignal<u64>,
@@ -803,6 +824,27 @@ fn HighlightOverlay(
             }
         });
     });
+    let tokens = Memo::new(move |_| {
+        content.track();
+        actions.preparation_revision();
+        let language = open_file
+            .with(|path| path.as_deref().map(language_from_path))
+            .unwrap_or(Language::Plain);
+        if let Some(tokens) = actions.syntax_highlights() {
+            (true, tokens)
+        } else {
+            (
+                false,
+                std::sync::Arc::new(
+                    content.with(|source| highlight_lines(&source.replace("\r\n", "\n"), language)),
+                ),
+            )
+        }
+    });
+    let guides = Memo::new(move |_| {
+        content
+            .with(|source| openwebide_core::editor::indent_guide_columns(source, indentation.get()))
+    });
     let rendered = RwSignal::new(String::new());
     let request = StoredValue::new(None::<i32>);
     let generation = StoredValue::new(0_u64);
@@ -816,19 +858,17 @@ fn HighlightOverlay(
         {
             return;
         }
-        let language = open_file
-            .with_untracked(|path| path.as_deref().map(language_from_path))
-            .unwrap_or(Language::Plain);
-        let prepared = actions.syntax_highlights();
-        let html = content.with_untracked(|text| {
-            highlight_html(
-                text,
-                language,
-                &visible.get_untracked(),
-                indentation.get_untracked(),
-                show_whitespace.get_untracked(),
-                prepared,
-            )
+        let html = tokens.with_untracked(|(prepared, tokens)| {
+            guides.with_untracked(|guides| {
+                highlight_html(
+                    tokens,
+                    *prepared,
+                    guides,
+                    &visible.get_untracked(),
+                    indentation.get_untracked(),
+                    show_whitespace.get_untracked(),
+                )
+            })
         });
         if immediate && let Some(overlay) = node_ref.get_untracked() {
             if let Ok(Some(content)) = overlay.query_selector(".editor-highlight-content") {
@@ -881,6 +921,8 @@ fn HighlightOverlay(
         actions.preparation_revision();
         indentation.get();
         show_whitespace.get();
+        tokens.with(|_| ());
+        guides.with(|_| ());
         // Resolve the projection before scheduling paint, so reading it in the
         // frame callback cannot invalidate and queue a second paint afterward.
         visible.with(|_| ());
@@ -921,7 +963,7 @@ fn HighlightOverlay(
         }
     });
 
-    view! { <div class="editor-highlight" node_ref=node_ref><div class="editor-highlight-content" inner_html=move || rendered.get() /></div> }
+    view! { <div class="editor-highlight" node_ref=node_ref><div class="editor-highlight-content" data-textarea-start=move || textarea_start.get().to_string() style=move || viewport.with(|view| if view.height > 0.0 { format!("padding-top:{}px;min-height:max(100%, {}px)", 12.0 + view.top, 24.0 + view.height) } else { String::new() }) inner_html=move || rendered.get() /></div> }
 }
 
 /// Syntax paint and word changes share spans without injecting source HTML.
@@ -1318,15 +1360,6 @@ pub fn Editor(
             )
         })
     });
-    let visible_rows = Memo::new(move |_| {
-        projection.with(|projection| {
-            projection
-                .lines()
-                .iter()
-                .map(|line| line.source_line)
-                .collect::<Vec<_>>()
-        })
-    });
     let fold_state = Memo::new(move |_| {
         workspace.editor_fold_revision.track();
         content.track();
@@ -1395,6 +1428,43 @@ pub fn Editor(
     let hl = NodeRef::<leptos::html::Div>::new();
     let highlight_ready = RwSignal::new(false);
     let layout_revision = RwSignal::new(0_u64);
+    let viewport = Memo::new(move |_| {
+        layout_revision.track();
+        let (rows, uniform) = projection.with(|view| (view.lines().len(), view.has_uniform_rows()));
+        if editor_actions.preferences().word_wrap || !uniform {
+            return openwebide_core::editor::EditorViewport {
+                rows: 0..rows,
+                top: 0.0,
+                height: 0.0,
+            };
+        }
+        let input = ta.get();
+        let row_height = input.as_ref().map_or(19.5, editor_row_height);
+        openwebide_core::editor::EditorViewport::unwrapped(
+            rows,
+            input.as_ref().map_or(0.0, |input| input.scroll_top()),
+            input
+                .as_ref()
+                .map_or(390.0, |input| f64::from(input.client_height())),
+            row_height,
+            12.0,
+        )
+    });
+    let visible_rows = Memo::new(move |_| {
+        projection.with(|view| {
+            view.lines()[viewport.get().rows]
+                .iter()
+                .map(|line| line.source_line)
+                .collect::<Vec<_>>()
+        })
+    });
+    let textarea_start = Memo::new(move |_| {
+        projection.with(|view| {
+            view.lines()
+                .get(viewport.get().rows.start)
+                .map_or(0, |line| line.textarea_start)
+        })
+    });
     let bracket_marks = RwSignal::new(Vec::<(f64, f64, f64, f64)>::new());
     let view_mode = RwSignal::new(ViewMode::Code);
 
@@ -1752,6 +1822,13 @@ pub fn Editor(
                         reveal_match_column(&row, &textarea, column, gutter);
                         sync_highlight_scroll(&textarea, &overlay);
                     }
+                } else if !editor_actions.preferences().word_wrap
+                    && let Some(projection) = editor_actions.projection()
+                {
+                    // The selected row may be outside the paint window. Scroll
+                    // by its projected row; the next paint handles column reveal.
+                    let row = projection.lines().partition_point(|row| row.source_line < line.saturating_sub(1));
+                    textarea.set_scroll_top(f64::from(u32::try_from(row).unwrap_or(u32::MAX)) * editor_row_height(&textarea));
                 }
             } else if let Ok(Some(row)) =
                 root.query_selector(&format!(".editor-diff-inline [data-line='{line}'], .sbs-pane:last-child [data-line='{line}']"))
@@ -2181,16 +2258,15 @@ pub fn Editor(
                             _ => {
                                 view! {
                                     <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
-                                        <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
+                                        <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
                                         <super::editor_selections::SelectionOverlay textarea=ta ready=highlight_ready layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>
-                                        <div class="editor-fold-column"><div class="editor-fold-track">{move || {
+                                        <div class="editor-fold-column"><div class="editor-fold-track" style=move || format!("padding-top:{}px", viewport.get().top)>{move || {
                                             let state = fold_state.get();
                                             let headers: std::collections::HashSet<_> = state.ranges().iter().map(|range| range.start_line).collect();
                                             let project = workspace.active_project.get_untracked();
                                             let path = open_file.get_untracked();
-                                            projection.get().lines().iter().map(|line| {
-                                                let header = line.source_line;
+                                            visible_rows.get().into_iter().map(|header| {
                                                 let control = headers.contains(&header);
                                                 let collapsed = state.collapsed_at(header).is_some();
                                                 let path = path.clone();
@@ -2380,7 +2456,7 @@ pub fn Editor(
                                                     let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked()));
                                                     editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), textarea.scroll_top(), textarea.scroll_left());
                                                     if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
-                                                    if editor_actions.selections(&content.get_untracked()).len() > 1 { layout_revision.update(|revision| *revision = revision.wrapping_add(1)); }
+                                                    layout_revision.update(|revision| *revision = revision.wrapping_add(1));
                                                 }
                                             }
                                         />

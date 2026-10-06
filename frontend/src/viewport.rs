@@ -193,7 +193,7 @@ export function editor_caret_from_point(input, x, y) {
         if (!caret || !paint.contains(caret.startContainer)) return undefined;
         const prefix = document.createRange(); prefix.selectNodeContents(paint);
         prefix.setEnd(caret.startContainer, caret.startOffset);
-        return prefix.toString().length;
+        return Number(paint.dataset.textareaStart || 0) + prefix.toString().length;
     } finally {
         input.style.pointerEvents = inputEvents; overlay.style.pointerEvents = paintEvents;
     }

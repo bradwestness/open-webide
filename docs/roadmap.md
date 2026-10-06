@@ -92,7 +92,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   retention and synchronous/lexical fallbacks. Native/browser contracts and the
   built-worker Chrome check cover providers, incremental Unicode/CRLF, stale
   scopes, transport failure, size limits and PWA asset inclusion. Finish viewport
-  paint and end-to-end latency/memory measurements below.
+  paint and end-to-end latency/memory measurements below. Unwrapped paint,
+  gutters and fold controls now use a bounded overscanned row window, with cached
+  tokens/guides and global projected UTF-16 caret offsets. Finish wrapped viewport
+  rendering and incremental document access; native textarea input still retains
+  the full projected source.
   Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,
   preserving multiline state and discarding partial rows on cancellation.
   Reindent preserves

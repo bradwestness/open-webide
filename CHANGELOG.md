@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Bound unwrapped editor paint, line-number gutters and fold controls to an overscanned row window. Cache syntax paint and indentation guides across scrolling, preserve global Unicode/CRLF caret offsets, and reveal offscreen Find/navigation targets in both workspace modes. Wrapped viewport rendering remains in progress.
+
 - Prepare lexical JSON, TOML, YAML, SQL and Markdown paint through the same immutable syntax cache and Rust/WASM worker as grammar-backed languages. Preserve multiline comments, Unicode and CRLF; discard partial results on cancellation and reject stale source replies in both modes.
 
 - Match wasm-bindgen's headless Linux Chrome flags in production-worker and recovery checks when running in CI, and include WebDriver failure details in test output.
