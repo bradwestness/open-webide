@@ -47,7 +47,12 @@ mod syntax_injections;
 #[cfg(feature = "editor-parser")]
 mod syntax_providers;
 #[cfg(feature = "editor-parser")]
-pub use syntax::{SyntaxAnalysis, SyntaxDocument, SyntaxStatus};
+pub use syntax::{
+    MAX_ANALYSIS_MESSAGE_BYTES, MAX_SYNTAX_DOCUMENTS, MAX_SYNTAX_REQUEST_BYTES,
+    MAX_SYNTAX_SOURCE_BYTES, SYNTAX_PROTOCOL_VERSION, SyntaxAnalysis, SyntaxAnalysisData,
+    SyntaxDocument, SyntaxPreparations, SyntaxReply, SyntaxRequest, SyntaxStatus,
+    preparation_exceeds_limits,
+};
 #[cfg(feature = "editor-parser")]
 pub use syntax_providers::{
     ContextSelector, HighlightSelector, InjectionSelector, SYNTAX_PROVIDERS, SyntaxContextKind,

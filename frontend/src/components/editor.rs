@@ -878,6 +878,7 @@ fn HighlightOverlay(
 
     Effect::new(move || {
         content.track();
+        actions.preparation_revision();
         indentation.get();
         show_whitespace.get();
         // Resolve the projection before scheduling paint, so reading it in the
@@ -1252,6 +1253,7 @@ pub fn Editor(
 ) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let editor_actions = EditorActions::new(workspace);
+    editor_actions.install_syntax_worker();
     Effect::new(move || {
         let key = workspace
             .active_project
@@ -1337,6 +1339,7 @@ pub fn Editor(
         open_file.track();
         workspace.active_project.track();
         editor_actions.rules();
+        workspace.editor_preparation_revision.track();
         untrack(|| refresh_editor_folds(editor_actions));
     });
     let dirty = workspace.dirty.read_only();

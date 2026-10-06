@@ -96,6 +96,18 @@ jobs:
       - name: Build frontend
         run: cd frontend && trunk build --release
 
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+          install-chromedriver: true
+
+      - name: Check production Rust/WASM editor worker
+        env:
+          CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: python3 tools/check-editor-worker.py
+
   frontend-ui-tests:
     runs-on: ubuntu-latest
     steps:

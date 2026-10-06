@@ -87,8 +87,12 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Shared contracts also cover Python and C# interpolation and nested literals.
   Fold, structural-command and highlight consumers now share one immutable,
   source-bound preparation per document/tab width, with cancellation and stale
-  account/read/source/indentation guards. Move this shared preparation into the
-  Rust/WASM worker and retain explicit bounded fallbacks.
+  account/read/source/indentation guards. This preparation now runs in a dedicated
+  Rust/WASM worker, with coalesced requests, validated replies, bounded shared LRU
+  retention and synchronous/lexical fallbacks. Native/browser contracts and the
+  built-worker Chrome check cover providers, incremental Unicode/CRLF, stale
+  scopes, transport failure, size limits and PWA asset inclusion. Finish viewport
+  paint and end-to-end latency/memory measurements below.
   Reindent preserves
   existing Python block depth; language formatting remains in Code intelligence.
 

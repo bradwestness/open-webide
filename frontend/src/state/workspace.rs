@@ -3,6 +3,23 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use openwebide_core::{EditDecision, FileDiff, FileEntry, PersistedEdit, SearchHit};
 
+/// Exact publication scope shared by preparation requests and synchronous consumers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorSyntaxScope {
+    pub key: (i64, String),
+    pub source: std::sync::Arc<str>,
+    pub epoch: u64,
+    pub read_revision: u64,
+    pub account_generation: u64,
+    pub tab_width: usize,
+}
+#[derive(Clone, Debug)]
+pub struct PreparedEditorSyntax {
+    pub scope: EditorSyntaxScope,
+    pub status: openwebide_core::editor::SyntaxStatus,
+    pub analysis: Option<std::sync::Arc<openwebide_core::editor::SyntaxAnalysis>>,
+}
+
 /// Scroll position for a document's edit view; caret and selection live in Document.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EditorScroll {
@@ -189,10 +206,13 @@ pub struct WorkspaceState {
     /// A one-use disk version explicitly approved in the recovered-file review.
     pub editor_recovery_overwrites: RwSignal<HashMap<(i64, String), RecoveryOverwrite>>,
     pub editor_read_revision: RwSignal<u64>,
+    pub editor_worker_active: RwSignal<bool>,
+    pub editor_preparation: RwSignal<Option<PreparedEditorSyntax>>,
+    pub editor_preparation_revision: RwSignal<u64>,
     pub editor_documents: RwSignal<HashMap<(i64, String), openwebide_core::editor::Document>>,
     // Browser parser allocation is thread-local; the wrapper enforces owner-thread access.
     pub editor_syntax: RwSignal<
-        send_wrapper::SendWrapper<HashMap<(i64, String), openwebide_core::editor::SyntaxDocument>>,
+        send_wrapper::SendWrapper<openwebide_core::editor::SyntaxPreparations<(i64, String)>>,
     >,
     pub editor_scroll: RwSignal<HashMap<(i64, String), EditorScroll>>,
     pub editor_composition: RwSignal<Option<EditorComposition>>,
@@ -244,7 +264,10 @@ impl WorkspaceState {
             editor_recovery_overwrites: RwSignal::new(HashMap::new()),
             editor_read_revision: RwSignal::new(0),
             editor_documents: RwSignal::new(HashMap::new()),
-            editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(HashMap::new())),
+            editor_worker_active: RwSignal::new(false),
+            editor_preparation: RwSignal::new(None),
+            editor_preparation_revision: RwSignal::new(0),
+            editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(Default::default())),
             editor_scroll: RwSignal::new(HashMap::new()),
             editor_composition: RwSignal::new(None),
             editor_rules: RwSignal::new(HashMap::new()),
@@ -521,7 +544,7 @@ impl WorkspaceState {
                 values.extend(scroll);
             });
             self.editor_syntax.update(|values| {
-                values.retain(|(id, _), _| *id != project.id);
+                values.retain(|(id, _)| *id != project.id);
             });
             self.editor_rules.update(|values| {
                 values.retain(|(id, _), _| *id != project.id);
@@ -651,8 +674,11 @@ impl WorkspaceState {
         self.begin_editor_read();
         self.editor_documents.set(HashMap::new());
         self.editor_composition.set(None);
+        self.editor_preparation.set(None);
+        self.editor_preparation_revision
+            .update(|value| *value = value.wrapping_add(1));
         self.editor_syntax
-            .set(send_wrapper::SendWrapper::new(HashMap::new()));
+            .set(send_wrapper::SendWrapper::new(Default::default()));
         self.editor_scroll.set(HashMap::new());
         self.editor_rules.set(HashMap::new());
         self.editor_indentation.set(HashMap::new());

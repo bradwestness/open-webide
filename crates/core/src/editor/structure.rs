@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use crate::highlight::Language;
 
-/// Bound synchronous structural commands until incremental parsing is available.
+/// Bound structural commands and source snapshots independently of transport.
 pub const MAX_STRUCTURE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_BRACKETS: usize = 65_536;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum RegionKind {
     String,
     Template,
@@ -681,5 +681,134 @@ mod tests {
                 .brackets
                 .is_empty()
         );
+    }
+}
+
+/// Coordinate-only representation, accepted only through validated reconstruction.
+#[cfg(feature = "editor-parser")]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct StructureData {
+    language: Language,
+    scopes: Vec<(Range<usize>, Language)>,
+    selections: Vec<Range<usize>>,
+    opaque_starts: Vec<usize>,
+    protected: Vec<(Range<usize>, bool, RegionKind)>,
+    brackets: Vec<(usize, char, Option<usize>)>,
+}
+
+#[cfg(feature = "editor-parser")]
+impl Structure {
+    pub(super) fn record_count(&self) -> usize {
+        self.scopes
+            .len()
+            .saturating_add(self.selection_ranges.len())
+            .saturating_add(self.opaque_starts.len())
+            .saturating_add(self.protected.len())
+            .saturating_add(self.brackets.len())
+    }
+    pub(super) fn transfer_data(&self) -> StructureData {
+        StructureData {
+            language: self.language,
+            scopes: self.scopes.clone(),
+            selections: self.selection_ranges.clone(),
+            opaque_starts: self.opaque_starts.clone(),
+            protected: self.protected.clone(),
+            brackets: self.brackets.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "editor-parser")]
+impl StructureData {
+    pub(super) fn record_count(&self) -> usize {
+        self.scopes
+            .len()
+            .saturating_add(self.selections.len())
+            .saturating_add(self.opaque_starts.len())
+            .saturating_add(self.protected.len())
+            .saturating_add(self.brackets.len())
+    }
+    pub(super) fn validate(self, source: Arc<str>) -> Option<Structure> {
+        let valid_range = |range: &Range<usize>| {
+            range.start < range.end
+                && source.is_char_boundary(range.start)
+                && source.is_char_boundary(range.end)
+        };
+        if self.brackets.len() > MAX_BRACKETS
+            || self.scopes.iter().any(|(range, _)| {
+                range.start > range.end
+                    || !source.is_char_boundary(range.start)
+                    || !source.is_char_boundary(range.end)
+            })
+            || self
+                .scopes
+                .windows(2)
+                .any(|pair| pair[0].0.end > pair[1].0.start)
+            || self.selections.iter().any(|range| !valid_range(range))
+            || self
+                .selections
+                .windows(2)
+                .any(|pair| (pair[0].start, pair[0].end) >= (pair[1].start, pair[1].end))
+            || self
+                .protected
+                .iter()
+                .any(|(range, _, _)| !valid_range(range))
+            || self
+                .protected
+                .windows(2)
+                .any(|pair| pair[0].0.end > pair[1].0.start)
+            || self
+                .opaque_starts
+                .iter()
+                .any(|&offset| !source.is_char_boundary(offset))
+            || self.opaque_starts.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.brackets.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+        {
+            return None;
+        }
+        let result = Structure {
+            source,
+            language: self.language,
+            scopes: self.scopes,
+            selection_ranges: self.selections,
+            opaque_starts: self.opaque_starts,
+            available: true,
+            protected: self.protected,
+            brackets: self.brackets,
+        };
+        for &(position, ch, partner) in &result.brackets {
+            if !matches!(ch, '(' | ')' | '[' | ']' | '{' | '}')
+                || !result
+                    .source
+                    .get(position..)
+                    .is_some_and(|text| text.starts_with(ch))
+                || result
+                    .region_at(position)
+                    .is_some_and(|(range, _, _)| range.contains(&position))
+                || !supports_brackets(result.language_at(position))
+            {
+                return None;
+            }
+            if let Some(partner) = partner {
+                let index = result
+                    .brackets
+                    .binary_search_by_key(&partner, |bracket| bracket.0)
+                    .ok()?;
+                let (_, other, back) = result.brackets[index];
+                let ordered = if position < partner {
+                    closing(ch) == Some(other)
+                } else {
+                    closing(other) == Some(ch)
+                };
+                if back != Some(position)
+                    || !ordered
+                    || !result.same_language_body(position, partner)
+                {
+                    return None;
+                }
+            }
+        }
+        Some(result)
     }
 }

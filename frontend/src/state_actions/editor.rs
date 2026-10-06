@@ -23,6 +23,7 @@ pub enum EditorCommand {
 }
 
 mod motion;
+mod preparation;
 
 type TypingState = Option<((i64, String), String, f64)>;
 
@@ -516,6 +517,10 @@ impl EditorActions {
         .flatten()
     }
 
+    pub fn preparation_revision(self) {
+        self.workspace.editor_preparation_revision.track();
+    }
+
     pub fn syntax_highlights(
         self,
     ) -> Option<std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>> {
@@ -528,7 +533,7 @@ impl EditorActions {
 
     fn analyze_syntax<T>(
         self,
-        should_continue: impl FnMut() -> bool,
+        mut should_continue: impl FnMut() -> bool,
         result_for: impl FnOnce(
             Option<&openwebide_core::editor::SyntaxAnalysis>,
             openwebide_core::editor::SyntaxStatus,
@@ -541,20 +546,38 @@ impl EditorActions {
         let language = openwebide_core::highlight::language_from_path(&key.1);
         let text = self.workspace.content.get_untracked();
         let tab_width = self.rules_untracked().indentation.tab_width();
-        let result = self
-            .workspace
-            .editor_syntax
-            .try_update(|documents| {
-                let document = match documents.entry(key.clone()) {
-                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(openwebide_core::editor::SyntaxDocument::new(language)?)
-                    }
-                };
-                let (status, prepared) = document.prepare(&text, tab_width, should_continue);
-                Some(result_for(prepared.as_deref(), status))
-            })
-            .flatten();
+        let result = if self.workspace.editor_worker_active.get_untracked() {
+            if !should_continue() {
+                Some(result_for(
+                    None,
+                    openwebide_core::editor::SyntaxStatus::Cancelled,
+                ))
+            } else {
+                let scope = self.syntax_scope()?;
+                self.workspace
+                    .editor_preparation
+                    .with_untracked(|prepared| {
+                        prepared
+                            .as_ref()
+                            .filter(|prepared| prepared.scope == scope)
+                            .map(|prepared| {
+                                result_for(prepared.analysis.as_deref(), prepared.status)
+                            })
+                    })
+            }
+        } else {
+            let deadline = js_sys::Date::now() + 12.0;
+            self.workspace
+                .editor_syntax
+                .try_update(|documents| {
+                    let (status, prepared) =
+                        documents.prepare(key.clone(), language, &text, tab_width, || {
+                            js_sys::Date::now() <= deadline && should_continue()
+                        });
+                    Some(result_for(prepared.as_deref(), status))
+                })
+                .flatten()
+        };
         (self.key() == Some(key)
             && self.workspace.pending_epoch.get_untracked() == epoch
             && self.workspace.editor_read_revision.get_untracked() == read_revision

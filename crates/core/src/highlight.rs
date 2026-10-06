@@ -10,7 +10,7 @@
 //! altered, so the colored text stays pixel-aligned with the raw text.
 
 /// The syntactic category of a token, used to pick a display color.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TokenKind {
     /// Whitespace, identifiers, and anything unclassified.
     Plain,
@@ -37,7 +37,7 @@ pub struct Token {
 }
 
 /// The language a file is written in, chosen from its extension.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Language {
     Rust,
     Python,
@@ -121,7 +121,7 @@ pub fn highlight_lines(source: &str, language: Language) -> Vec<Vec<Token>> {
 }
 
 /// Tokenizer state carried across lines (a block comment may span lines).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum State {
     Normal,
     BlockComment,

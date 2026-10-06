@@ -9,7 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Share one immutable syntax preparation per source and tab width across editor folds, structural commands and highlighting. Reuse source/context/token snapshots, preserve old snapshots across edits, and reject results after account, file-read, source or indentation changes in both modes. Worker execution remains in progress.
+- Prepare editor folds, structural contexts and syntax tokens in a dedicated Rust/WASM worker. Share the preparation engine and bounded LRU cache with the synchronous fallback, coalesce pending edits, reject stale or malformed replies, and wait for worker readiness before sending requests. Cache the matching hashed worker/WASM assets for PWA use; CI exercises the built worker in Chrome. Full viewport rendering and device verification remain in progress.
+
+- Share one immutable syntax preparation per source and tab width across editor folds, structural commands and highlighting. Reuse source/context/token snapshots, preserve old snapshots across edits, and reject results after account, file-read, source or indentation changes in both modes.
 
 - Split oversized Edit paint into escaped, Unicode-safe text runs so browser range measurement avoids scanning one enormous text node. Preserve grapheme clusters, syntax classes, source coordinates and wrap behavior in both modes.
 - Add reproducible native/browser-WASM editor storage workloads with optional Crop/Ropey comparisons, CRLF-aware offset checks and recorded results. CI checks workload correctness without timing thresholds; production storage remains unchanged while viewport/worker work continues.

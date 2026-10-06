@@ -82,7 +82,7 @@ caret positions at 65,536. While paint is pending, arrow requests queue in order
 Shift selections. Typing, commands, composition and clipboard actions flush fresh
 paint and apply queued motion first. File/account/source/fold changes cancel stale
 requests; unavailable layout cancels after eight frames with an error. Full paint
-viewport rendering and worker preparation remain follow-ups. Multiple selection movement and
+viewport rendering remains a follow-up. Multiple selection movement and
 structural selection commands are bounded to files up to 2 MiB; Escape still
 returns to the primary cursor in larger files.
 
@@ -188,7 +188,24 @@ interpolation also works during incomplete typing. Contexts verify their exact
 source before a command can mutate history. Custom provider classifiers use the
 same traversal, limits and fallback policy.
 
-Worker/viewport rendering remains roadmap work. Edit paint retains the same
+The production editor runs preparation in a dedicated module worker using the
+same Rust/WASM build. The browser adapter handles messages, startup readiness,
+timeouts and termination; the shared Rust engine owns analysis, validation and
+cache policy. One request runs at a time and one latest source waits, so repeated
+typing replaces queued work. Replies must match the exact source, file/project,
+account generation, read revision, epoch and tab width before publication.
+UTF-8 ranges, folds, token coverage and bracket links are validated without parsing
+the document again on the UI thread. Transport/startup failures use the same
+preparation engine synchronously with a 12 ms parser budget; unavailable contexts
+retain ordinary lexical editing. Worker parsing has a 100 ms budget.
+
+Both adapters retain at most eight syntax documents and 8 MiB of source, using LRU
+eviction. Preparation falls back beyond 2 MiB, 50,000 lines or 100,000
+metadata records; bracket and embedded-body limits still apply. Wire envelopes
+are versioned and bounded before JSON parsing. These are preparation/cache limits,
+not a measurement of total editor memory or final large-file performance.
+Full viewport rendering and end-to-end latency/memory measurements remain roadmap
+work. Edit paint retains the same
 10,000-byte plain-line fallback as the lexical renderer and falls back after
 cancelled, oversized or unavailable analysis.
 
@@ -364,7 +381,8 @@ The check creates its own account, database, host files and browser profile, the
 removes them. It preserves the existing development services and database. The
 API check covers both project modes, UTF-8/CRLF drafts and saved baselines, ordered
 selected/hidden tabs, invalid/root/stale revisions, actual Spin restarts and durable
-close-all tombstones. The browser check types into the built WASM editor, observes
+close-all tombstones. The browser check types into the built WASM editor, verifies
+worker preparation for the current source, observes
 its debounced database save, restarts Spin, reloads and opens a fresh window, and
 checks the selected tab and draft in both modes. Local recovery is tested without
 a native folder handle; it does not establish real-device permission restoration.
@@ -375,5 +393,16 @@ include `--window-size=1280,900` in `goog:chromeOptions.args` in `webdriver.json
 Desktop panel contracts require that viewport; individual narrow-layout tests
 set their own container sizes.
 
+Check the production worker independently with a compatible ChromeDriver:
+
+```sh
+CHROMEDRIVER=<compatible-driver> python3 tools/check-editor-worker.py
+```
+
+This serves the built assets from a disposable local HTTP server and verifies
+all grammar variants, startup readiness, incremental Unicode/CRLF, a UI event
+during preparation and oversized-source fallback. It checks worker inclusion in
+the PWA shell; it does not establish offline editing or real-device behavior.
+
 See [editor performance measurements](editor-performance.md) for native/WASM
-text-storage comparisons and the remaining viewport/worker verification.
+text-storage comparisons and the remaining viewport/performance verification.

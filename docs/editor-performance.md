@@ -40,4 +40,6 @@ Both ropes make isolated edits and indexed queries much cheaper. In this workloa
 
 The existing both-mode Unicode/CRLF regression keeps two cursors deep inside the same large wrapped line. It checks exact Down/Up restoration, unchanged source/history and fewer than 2,000 DOM range measurements. Paint now splits oversized tokens into Unicode-safe text runs, retaining complete grapheme clusters and escaped source. In the local debug browser fixture, splitting runs reduced elapsed fixture time from 9.05 seconds to 1.27 seconds; a Down press used 225 ranges in approximately 130 ms. This is a regression observation, not a claim of final large-file responsiveness.
 
-Remaining work: full viewport paint, Rust worker preparation, end-to-end input/scroll latency and memory benchmarks, explicit large-file fallbacks and real-device verification. Storage microbenchmarks do not prove any of those complete.
+Syntax preparation now runs in a Rust/WASM worker, with bounded shared cache retention, validated coordinates and coalesced requests. The built-worker Chrome check exercises all providers, incremental Unicode/CRLF, a UI event during preparation and oversized-source fallback. These correctness checks do not measure total editor memory or latency.
+
+Remaining work: full viewport paint, end-to-end input/scroll latency and memory benchmarks, full-editor large-file fallbacks and real-device verification. Storage microbenchmarks do not prove any of those complete.

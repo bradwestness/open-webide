@@ -6603,3 +6603,239 @@ async fn syntax_preparation_cannot_publish_after_scope_changes_in_both_modes() {
         }
     }
 }
+
+struct DeferredSyntaxReply {
+    message: String,
+    sender: futures::channel::oneshot::Sender<
+        Result<String, openwebide_frontend::editor_worker::WorkerError>,
+    >,
+}
+#[derive(Default)]
+struct DeferredSyntax {
+    pending: std::cell::RefCell<std::collections::VecDeque<DeferredSyntaxReply>>,
+    service: std::cell::RefCell<openwebide_core::editor::SyntaxPreparations<String>>,
+    calls: std::cell::Cell<usize>,
+    stopped: std::cell::Cell<bool>,
+}
+impl openwebide_frontend::editor_worker::SyntaxTransport for DeferredSyntax {
+    fn request(
+        &self,
+        _ticket: u32,
+        message: String,
+    ) -> futures::future::LocalBoxFuture<
+        '_,
+        Result<String, openwebide_frontend::editor_worker::WorkerError>,
+    > {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        self.calls.set(self.calls.get() + 1);
+        self.pending
+            .borrow_mut()
+            .push_back(DeferredSyntaxReply { message, sender });
+        Box::pin(async move {
+            receiver.await.unwrap_or(Err(
+                openwebide_frontend::editor_worker::WorkerError::Unavailable,
+            ))
+        })
+    }
+    fn stop(&self) {
+        self.stopped.set(true);
+        for reply in self.pending.borrow_mut().drain(..) {
+            let _ = reply.sender.send(Err(
+                openwebide_frontend::editor_worker::WorkerError::Unavailable,
+            ));
+        }
+    }
+}
+impl DeferredSyntax {
+    fn respond(&self, valid: bool) {
+        let DeferredSyntaxReply { message, sender } =
+            self.pending.borrow_mut().pop_front().unwrap();
+        let output = if valid {
+            Ok(self
+                .service
+                .borrow_mut()
+                .handle_message(&message, || true)
+                .unwrap())
+        } else {
+            Err(openwebide_frontend::editor_worker::WorkerError::Transport)
+        };
+        sender.send(output).unwrap();
+    }
+    fn source(&self) -> String {
+        serde_json::from_str::<openwebide_core::editor::SyntaxRequest>(
+            &self.pending.borrow()[0].message,
+        )
+        .unwrap()
+        .source
+    }
+}
+
+#[wasm_bindgen_test]
+async fn worker_preparation_coalesces_edits_rejects_stale_scopes_and_falls_back_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let captured = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+        let capture = captured.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|projects| {
+                projects[0].mode = mode;
+                let mut other = projects[0].clone();
+                other.id = 2;
+                projects.push(other);
+            });
+            state.workspace.open_file.set(Some("worker.rs".into()));
+            state
+                .workspace
+                .content
+                .set("fn main() {\r\n call(\"文😀\");\r\n}".into());
+            let actions = EditorActions::new(state.workspace);
+            actions.install_syntax_transport(installed);
+            capture.set(Some(actions));
+            editor_view(state)
+        });
+        let actions = captured.get().unwrap();
+        wait_until("first deferred worker request", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        assert!(actions.syntax_structure(|| true).is_none());
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_syntax
+                .with_untracked(|cache| cache.is_empty())
+        );
+        for update in 0..50 {
+            mounted
+                .state
+                .workspace
+                .content
+                .set(format!("fn latest_{update}() {{\r\n call(\"文😀\");\r\n}}"));
+            settle().await;
+        }
+        assert_eq!(transport.calls.get(), 1);
+        assert_eq!(transport.pending.borrow().len(), 1);
+        transport.respond(true);
+        wait_until("latest coalesced request", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        assert!(transport.source().contains("latest_49"));
+        assert_eq!(transport.calls.get(), 2);
+        assert!(actions.syntax_structure(|| true).is_none());
+        transport.respond(true);
+        wait_until("worker contexts published", || {
+            actions.syntax_structure(|| true).is_some()
+        })
+        .await;
+        wait_until("worker syntax paint", || {
+            mounted
+                .root
+                .query_selector(".tok-function")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert!(
+            actions
+                .syntax_structure(|| true)
+                .unwrap()
+                .matches_source(&actions.source())
+        );
+        assert!(!actions.fold_state().unwrap().ranges().is_empty());
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_syntax
+                .with_untracked(|cache| cache.is_empty())
+        );
+        for change in 0..6 {
+            mounted
+                .state
+                .workspace
+                .content
+                .set(format!("fn changed_{change}() {{\n call();\n}}"));
+            wait_until("request before scope change", || {
+                !transport.pending.borrow().is_empty()
+            })
+            .await;
+            match change {
+                0 => mounted.state.auth.generation.update(|value| *value += 1),
+                1 => mounted
+                    .state
+                    .workspace
+                    .editor_read_revision
+                    .update(|value| *value += 1),
+                2 => mounted
+                    .state
+                    .workspace
+                    .pending_epoch
+                    .update(|value| *value += 1),
+                3 => mounted.state.workspace.editor_indentation.update(|values| {
+                    values.insert(
+                        (1, "worker.rs".into()),
+                        openwebide_core::editor::Indentation {
+                            tab_width: 8,
+                            ..Default::default()
+                        },
+                    );
+                }),
+                4 => mounted
+                    .state
+                    .workspace
+                    .open_file
+                    .set(Some("other.rs".into())),
+                _ => mounted.state.workspace.active_project.set(Some(2)),
+            }
+            settle().await;
+            transport.respond(true);
+            wait_until("new scope request replaces stale reply", || {
+                !transport.pending.borrow().is_empty()
+            })
+            .await;
+            assert!(
+                actions.syntax_structure(|| true).is_none(),
+                "{mode:?} scope {change}"
+            );
+            transport.respond(true);
+            wait_until("current scope published", || {
+                actions.syntax_structure(|| true).is_some()
+            })
+            .await;
+        }
+        mounted
+            .state
+            .workspace
+            .content
+            .set("fn fallback() {}".into());
+        wait_until("request for failure", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        transport.respond(false);
+        wait_until("shared synchronous fallback", || {
+            !mounted.state.workspace.editor_worker_active.get_untracked()
+        })
+        .await;
+        assert!(
+            actions
+                .syntax_structure(|| true)
+                .unwrap()
+                .matches_source("fn fallback() {}")
+        );
+        assert!(
+            !mounted
+                .state
+                .workspace
+                .editor_syntax
+                .with_untracked(|cache| cache.is_empty())
+        );
+        assert!(transport.stopped.get());
+    }
+}

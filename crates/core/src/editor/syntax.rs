@@ -1,5 +1,10 @@
 //! Incremental syntax analysis shared by browser and native editor adapters.
+mod cache;
+pub use cache::{MAX_SYNTAX_DOCUMENTS, MAX_SYNTAX_SOURCE_BYTES, SyntaxPreparations};
 mod highlighting;
+mod service;
+pub use service::{MAX_SYNTAX_REQUEST_BYTES, SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxRequest};
+mod transfer;
 use super::{FoldRange, MAX_STRUCTURE_BYTES, SyntaxProvider, normalize_folds, syntax_provider};
 use super::{Structure, SyntaxContextKind, structure::RegionKind};
 use crate::highlight::Language;
@@ -7,13 +12,14 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::ops::Range as ByteRange;
 use std::sync::Arc;
+pub use transfer::{MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData};
 use tree_sitter::{InputEdit, Node, ParseOptions, Parser, Point, Range, Tree};
 
 const MAX_PROGRESS_CHECKS: usize = 4_096;
 const MAX_FOLD_NODES: usize = 100_000;
 const MAX_INJECTIONS: usize = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SyntaxStatus {
     Ready { incremental: bool },
     TooLarge,
@@ -44,6 +50,17 @@ impl SyntaxAnalysis {
     pub fn highlights(&self) -> Option<&Arc<Vec<Vec<crate::highlight::Token>>>> {
         self.highlights.as_ref()
     }
+}
+
+/// Shared cheap gate before parser allocation or worker source serialization.
+pub fn preparation_exceeds_limits(text: &str) -> bool {
+    text.len() > MAX_STRUCTURE_BYTES
+        || text
+            .bytes()
+            .filter(|&byte| byte == b'\n')
+            .take(50_000)
+            .count()
+            >= 50_000
 }
 
 struct EmbeddedSyntax {
@@ -150,6 +167,10 @@ impl SyntaxDocument {
         tab_width: usize,
         should_continue: impl FnMut() -> bool,
     ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
+        if preparation_exceeds_limits(text) {
+            self.clear();
+            return (SyntaxStatus::TooLarge, None);
+        }
         let status = self.update(text, should_continue);
         if !matches!(status, SyntaxStatus::Ready { .. }) {
             return (status, None);
@@ -170,6 +191,10 @@ impl SyntaxDocument {
             structure,
             highlights,
         });
+        if analysis.record_count() > transfer::MAX_ANALYSIS_RECORDS {
+            self.clear();
+            return (SyntaxStatus::TooLarge, None);
+        }
         self.prepared = Some((tab_width, analysis.clone()));
         (status, Some(analysis))
     }

@@ -251,6 +251,39 @@ class Browser:
     def script(self, source):
         return self.call("POST", "/execute/sync", {"script": source, "args": []})
 
+    def observe_workers(self):
+        self.call("POST", "/goog/cdp/execute", {"cmd": "Page.addScriptToEvaluateOnNewDocument", "params": {
+            "source": r"""
+                window.editorWorkerEvidence = {instances: 0, sources: []};
+                const NativeWorker = window.Worker;
+                window.Worker = class extends NativeWorker {
+                    constructor(url, options) {
+                        super(url, options);
+                        if (!String(url).includes('editor-worker.js')) return;
+                        window.editorWorkerEvidence.instances++;
+                        this.addEventListener('message', event => {
+                            if (typeof event.data !== 'string' || !event.data.startsWith('{')) return;
+                            const reply = JSON.parse(event.data);
+                            if (reply.status?.Ready && reply.analysis?.source !== undefined) {
+                                const sources = window.editorWorkerEvidence.sources;
+                                sources.push(reply.analysis.source.replace(/\r\n/g, '\n'));
+                                if (sources.length > 32) sources.shift();
+                            }
+                        });
+                    }
+                };
+            """,
+        }})
+
+    def wait_worker(self, expected):
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            evidence = self.script("return window.editorWorkerEvidence;")
+            if evidence and evidence["instances"] and expected in evidence["sources"]:
+                return
+            time.sleep(0.1)
+        raise AssertionError("The production editor did not prepare its current source in the WASM worker")
+
     def wait_editor(self, expected):
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
@@ -291,6 +324,7 @@ def check_browser(runtime, records, files):
     with tempfile.TemporaryDirectory(prefix="openwebide-recovery-browser-") as directory:
         browser = Browser(directory)
         try:
+            browser.observe_workers()
             browser.call("POST", "/url", {"url": runtime.url + "/"})
             for cookie in runtime.cookies:
                 browser.call("POST", "/cookie", {"cookie": {
@@ -308,6 +342,7 @@ def check_browser(runtime, records, files):
                 expected = base64.b64decode(original["state"]["files"][0]["document"]["text"]).decode().replace("\r\n", "\n")
                 browser.call("POST", "/url", {"url": runtime.url + "/"})
                 browser.wait_editor(expected)
+                browser.wait_worker(expected)
                 # Use the real browser input path, then observe the app's debounced save.
                 browser.script("""
                     const input = document.querySelector('textarea[data-editor-path]');
@@ -319,6 +354,7 @@ def check_browser(runtime, records, files):
                 browser.call("POST", f"/element/{element}/value", {"text": "// browser edit"})
                 expected += "// browser edit"
                 browser.wait_editor(expected)
+                browser.wait_worker(expected)
                 deadline = time.monotonic() + 15
                 while time.monotonic() < deadline:
                     saved = runtime.request("GET", endpoint)
@@ -332,14 +368,17 @@ def check_browser(runtime, records, files):
                 runtime.start()
                 browser.call("POST", "/refresh", {})
                 browser.wait_editor(expected)
+                browser.wait_worker(expected)
                 previous = browser.call("GET", "/window")
                 window = browser.call("POST", "/window/new", {"type": "window"})
                 browser.call("POST", "/window", {"handle": window["handle"]})
+                browser.observe_workers()
                 browser.call("POST", "/url", {"url": runtime.url + "/"})
                 browser.wait_editor(expected)
+                browser.wait_worker(expected)
                 browser.call("DELETE", "/window")
                 browser.call("POST", "/window", {"handle": previous})
-                print(f"PASS: {original['state']['root']['mode']} actual edits, autosave, server restart, reload/new-window tabs and draft")
+                print(f"PASS: {original['state']['root']['mode']} actual edits, WASM worker preparation, autosave, server restart, reload/new-window tabs and draft")
         finally:
             browser.stop()
 

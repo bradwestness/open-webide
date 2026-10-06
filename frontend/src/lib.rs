@@ -13,6 +13,8 @@ pub mod commands;
 #[cfg(target_arch = "wasm32")]
 pub mod components;
 pub mod conversation;
+#[cfg(target_arch = "wasm32")]
+pub mod editor_worker;
 pub mod history;
 #[cfg(target_arch = "wasm32")]
 pub mod idb;
@@ -52,6 +54,10 @@ pub fn mount() {
     std::panic::set_hook(Box::new(|info| {
         web_sys::console::error_1(&info.to_string().into());
     }));
+    if editor_worker::mount_worker() {
+        return;
+    }
+    editor_worker::enable();
     leptos::mount::mount_to_body(app::App);
 }
 
