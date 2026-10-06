@@ -433,6 +433,10 @@ When running the full WASM UI test suite locally, match CI’s Chrome capabiliti
 include `--window-size=1280,900` in `goog:chromeOptions.args` in `webdriver.json`.
 Desktop panel contracts require that viewport; individual narrow-layout tests
 set their own container sizes.
+CI gives the expanded frontend browser test binary 300 seconds via
+`WASM_BINDGEN_TEST_TIMEOUT`; this is a whole-suite budget, independent of each
+UI readiness assertion’s short deadline. Set the same environment variable locally
+when running the full suite on a slower host.
 
 Check the production worker independently with a compatible ChromeDriver:
 

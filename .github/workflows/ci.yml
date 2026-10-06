@@ -146,6 +146,9 @@ jobs:
       - name: Tests (frontend UI)
         env:
           CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
+          # The timeout covers the whole expanded browser test binary. Individual
+          # UI readiness assertions retain their own short deadlines.
+          WASM_BINDGEN_TEST_TIMEOUT: "300"
         run: cargo test -p openwebide-frontend --target wasm32-unknown-unknown
 
       - name: Measure shared editor storage in browser WASM
