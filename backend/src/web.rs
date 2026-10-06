@@ -17,7 +17,7 @@ use openwebide_agent::WebClient;
 use openwebide_core::{WebSearchResult, html_to_markdown};
 use spin_sdk::http::{self, FullBody, Request, Response, Uri, box_body};
 
-const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 OpenWebIDE/0.1 (https://github.com/bradwestness/open-webide)";
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 OpenWebIDE/0.1 (https://github.com/openwebide/app)";
 
 /// Outbound web client backed by Spin's HTTP handler.
 #[derive(Debug, Clone, Copy, Default)]

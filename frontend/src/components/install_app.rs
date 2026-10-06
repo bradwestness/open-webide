@@ -44,7 +44,7 @@ pub fn InstallApp() -> impl IntoView {
                 <Show when=move || state.get().installed fallback=move || view! {
                     <Show when=move || state.get().secure fallback=|| view! {
                         <p>"To install Open WebIDE, open it over HTTPS. Tailscale Serve can provide a private HTTPS address without managing certificates."</p>
-                        <a class="btn" href="https://github.com/bradwestness/open-webide/blob/main/docs/tailscale.md" target="_blank" rel="noopener noreferrer">"Set up HTTPS"</a>
+                        <a class="btn" href="https://github.com/openwebide/app/blob/main/docs/tailscale.md" target="_blank" rel="noopener noreferrer">"Set up HTTPS"</a>
                     }>
                         <Show when=move || state.get().available fallback=|| view! {
                             <p>"Use your browser’s Install app command. On iPhone or iPad, open Safari, choose Share, then Add to Home Screen. If your browser does not support installation, you can keep using Open WebIDE in a tab."</p>

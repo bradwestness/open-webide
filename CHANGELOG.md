@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Update project links and Pages configuration guidance for the repository transfer to `openwebide/app`.
+
 - Synchronize native editor viewport dimensions before paint and wrapped cursor measurements, keeping immediate and queued movement aligned when resize or scrollbar geometry settles between frames in both workspace modes.
 
 - Add a dedicated project landing page and GitHub Pages build workflow for openwebide.com. Generate documentation directly from repository Markdown with automatic navigation, validated links, shared app colors and buttons, GitHub Issues links for feedback and support, and Bluesky, Mastodon, and YouTube profile links with Mastodon website verification support.

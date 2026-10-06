@@ -49,7 +49,7 @@ and `www` with these records:
 | A | `@` | `185.199.109.153` |
 | A | `@` | `185.199.110.153` |
 | A | `@` | `185.199.111.153` |
-| CNAME | `www` | `bradwestness.github.io` |
+| CNAME | `www` | `openwebide.github.io` |
 
 GitHub redirects `www` to the configured apex domain. Enable **Enforce HTTPS**
 once GitHub has provisioned its certificate. See

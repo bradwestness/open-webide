@@ -15,7 +15,7 @@ An IDE in your browser, powered by the models you choose. Edit code, ask an agen
 for help, review its changes, and work with Git and a terminal—all in one place.
 
 [Get started](README.md#run-with-docker){ .btn .send }
-[View on GitHub](https://github.com/bradwestness/open-webide){ .btn }
+[View on GitHub](https://github.com/openwebide/app){ .btn }
 
 <p class="release-note">Under active development toward 1.0. Try the current source build and share your feedback.</p>
 
@@ -59,4 +59,4 @@ Keep the same editor, chat, and review workflow across both.
 
 [Explore the architecture](docs/architecture.md) ·
 [Read the roadmap](docs/roadmap.md) ·
-[Report a bug or ask a question](https://github.com/bradwestness/open-webide/issues)
+[Report a bug or ask a question](https://github.com/openwebide/app/issues)
