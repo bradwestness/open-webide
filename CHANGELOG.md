@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Open files beyond full-editor byte, line-count or long-line limits in bounded, read-only Unicode text pages in both workspace modes. Keep complete source separate from page text, preserve before/after review access, reject oversized interactive transactions before indexing, and recover clean oversized tabs by reopening their host file.
+
 - Maintain incremental document line/UTF-16 coordinates through edits, grouped undo/redo and IME; reuse immutable folded/normalized view allocations across scrolling and caret consumers. Use indexed rows for commands and native selections, record native/WASM query and projection measurements, and keep composer growth compatible with the shared welcome container. Full wrapped viewport and end-to-end resource measurements remain in progress.
 
 - Bound unwrapped editor paint, line-number gutters and fold controls to an overscanned row window. Cache syntax paint and indentation guides across scrolling, preserve global Unicode/CRLF caret offsets, and reveal offscreen Find/navigation targets in both workspace modes. Wrapped viewport rendering remains in progress.

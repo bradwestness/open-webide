@@ -3196,3 +3196,13 @@ button.browser-item {
 .btn.tab-select { display: flex; align-items: center; gap: 6px; min-width: 0; height: 100%; padding: 0 10px; border: 0; border-radius: 6px 0 0 0; background: transparent; color: inherit; }
 .tab-select .tab-name { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .editor-tab-dirty { font-size: 9px; color: var(--warn); }
+
+/* Shared bounded text viewer for files outside interactive editor limits. */
+.editor-large-file-page {
+  font-family: var(--mono);
+  color: var(--text);
+  background: var(--bg-panel);
+  white-space: pre;
+  margin: 12px 0 0;
+  padding: 12px;
+}

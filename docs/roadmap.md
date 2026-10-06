@@ -102,6 +102,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   access: edits still materialize full Strings and shift suffix coordinates, and
   long-line queries still scan within the line. Native textarea input retains the
   full projected source.
+  Shared admission now bounds full-editor bytes, display breaks and long lines
+  before allocating document metadata. Oversized files use bounded read-only
+  pages, including before/after review sources; interactive transactions enforce
+  the same limits. Finish end-to-end input/scroll and total-memory measurements
+  to validate these limits and wrapped rendering at their boundaries.
   Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,
   preserving multiline state and discarding partial rows on cancellation.
   Reindent preserves

@@ -95,7 +95,7 @@ impl DocumentRecovery {
                 if text.len() > MAX_DOCUMENT_BYTES {
                     return Err("Disk document exceeds the editor's size limit".into());
                 }
-                document = Document::new(text);
+                document = Document::for_editor(text).map_err(|error| error.to_string())?;
                 RecoveryDiskState::Reloaded
             }
             Some(_) => RecoveryDiskState::Conflict,
@@ -106,7 +106,8 @@ impl DocumentRecovery {
     /// The recovered draft is one undoable change against its original disk text.
     pub fn restore(&self) -> Result<Document, String> {
         self.validate()?;
-        let mut document = Document::new(self.saved.clone());
+        let mut document =
+            Document::for_editor(self.saved.clone()).map_err(|error| error.to_string())?;
         if self.text != self.saved {
             document
                 .apply(

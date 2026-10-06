@@ -403,6 +403,9 @@ impl WorkspaceState {
                             "The saved baseline for `{path}` is not ready for recovery"
                         ));
                     }
+                    if openwebide_core::editor::editor_limit(text).is_some() {
+                        return Ok(None);
+                    }
                     return Ok(Some(Document::new(text.clone()).recovery()));
                 }
                 Ok(documents.get(&key).map(Document::recovery))

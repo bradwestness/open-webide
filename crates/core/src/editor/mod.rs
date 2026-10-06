@@ -36,6 +36,11 @@ pub use recovery::{
 };
 mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
+mod capacity;
+pub use capacity::{
+    EditorLimit, MAX_EDITOR_BYTES, MAX_EDITOR_LINE_BYTES, MAX_EDITOR_LINES, TEXT_PAGE_BYTES,
+    TextPage, editor_limit,
+};
 mod viewport;
 pub use viewport::EditorViewport;
 mod projection;
@@ -151,12 +156,16 @@ pub enum EditError {
     InvalidSelection,
     TooManySelections,
     OutputTooLarge,
+    Capacity(EditorLimit),
     CompositionActive,
     UnsupportedNativeInput,
 }
 
 impl std::fmt::Display for EditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Self::Capacity(limit) = self {
+            return std::fmt::Display::fmt(limit, f);
+        }
         f.write_str(match self {
             Self::InvalidRange => "Edit is outside the document or splits a Unicode character",
             Self::StaleContext => "Editing context no longer matches this document",
@@ -165,6 +174,7 @@ impl std::fmt::Display for EditError {
                 "Selection is outside the document or splits a Unicode character"
             }
             Self::TooManySelections => "The editor supports up to 512 selections",
+            Self::Capacity(_) => unreachable!(),
             Self::OutputTooLarge => "Edit would exceed the 32 MiB editing limit",
             Self::CompositionActive => {
                 "Finish the input composition before running an editor command"
@@ -198,6 +208,7 @@ struct HistoryStep {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {
     text: String,
+    editor_limits: bool,
     line_index: index::LineIndex,
     projection: ProjectionCache,
     saved: String,
@@ -237,6 +248,7 @@ impl Document {
         let text = text.into();
         Self {
             saved: text.clone(),
+            editor_limits: false,
             line_index: index::LineIndex::new(&text),
             projection: ProjectionCache::default(),
             text,
@@ -250,6 +262,23 @@ impl Document {
             composition: None,
             motion_columns: None,
         }
+    }
+
+    /// Admit an interactive document before allocating per-line metadata.
+    pub fn for_editor(text: impl Into<String>) -> Result<Self, EditError> {
+        let text = text.into();
+        if let Some(limit) = editor_limit(&text) {
+            return Err(EditError::Capacity(limit));
+        }
+        let mut document = Self::new(text);
+        document.enforce_editor_limits();
+        Ok(document)
+    }
+
+    /// Interactive hosts apply the same admission limits to every transaction,
+    /// including commands, multi-cursor replication and composition previews.
+    pub fn enforce_editor_limits(&mut self) {
+        self.editor_limits = true;
     }
 
     pub fn fold_state(&self) -> &FoldState {
@@ -415,6 +444,11 @@ impl Document {
             .first()
             .map(|first| first.range.start..edits.last().unwrap().range.end);
         let (text, inverse) = replace_edits(&self.text, &edits);
+        if self.editor_limits
+            && let Some(limit) = editor_limit(&text)
+        {
+            return Err(EditError::Capacity(limit));
+        }
         let after = normalize_selections(&text, after)?;
         if text == self.text {
             if self.selections != after {

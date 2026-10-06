@@ -767,6 +767,47 @@ fn sync_highlight_scroll(textarea: &web_sys::HtmlTextAreaElement, overlay: &web_
 }
 
 #[component]
+fn LargeTextViewer(
+    content: ReadSignal<String>,
+    limit: openwebide_core::editor::EditorLimit,
+    #[prop(default = None)] old: Option<String>,
+) -> impl IntoView {
+    let requested = RwSignal::new(0_usize);
+    let old = StoredValue::new(old);
+    let show_old = RwSignal::new(false);
+    let page = Memo::new(move |_| {
+        if show_old.get() {
+            old.with_value(|source| {
+                openwebide_core::editor::TextPage::new(
+                    source.as_deref().unwrap_or_default(),
+                    requested.get(),
+                )
+            })
+        } else {
+            content.with(|source| openwebide_core::editor::TextPage::new(source, requested.get()))
+        }
+    });
+    view! {
+        <div class="editor-preview editor-large-file">
+            <p class="form-hint" role="status">{format!("{limit}. Showing read-only text pages; the complete file remains unchanged.")}</p>
+            <PanelSearchRow>
+                {old.with_value(Option::is_some).then(move || view! {
+                    <SegmentedControl options=vec![SegmentOption::new("Before", true), SegmentOption::new("After", false)] value=show_old.read_only().into() on_change=Callback::new(move |before| { requested.set(0); show_old.set(before); }) />
+                })}
+                <Button class="editor-page-previous" size=ButtonSize::Sm disabled=Signal::derive(move || page.get().index == 0) on_click=Callback::new(move |_| requested.set(page.get_untracked().index.saturating_sub(1)))>"Previous"</Button>
+                <span class="form-hint" aria-live="polite">{move || page.with(|page| format!("Page {} of {} · bytes {}–{}", page.index + 1, page.pages, page.range.start, page.range.end))}</span>
+                <Button class="editor-page-next" size=ButtonSize::Sm disabled=Signal::derive(move || page.with(|page| page.index + 1 == page.pages)) on_click=Callback::new(move |_| requested.set(page.get_untracked().index + 1))>"Next"</Button>
+            </PanelSearchRow>
+            <pre class="editor-large-file-page" data-page=move || page.get().index.to_string() tabindex="0" aria-label="Read-only file page"><code>{move || {
+                let range = page.get().range;
+                if show_old.get() { old.with_value(|source| source.as_deref().unwrap_or_default()[range].to_string()) }
+                else { content.with(|source| source[range].to_string()) }
+            }}</code></pre>
+        </div>
+    }
+}
+
+#[component]
 fn HighlightOverlay(
     actions: EditorActions,
     paint_request: RwSignal<Option<EditorPaint>>,
@@ -1343,6 +1384,9 @@ pub fn Editor(
         open_file.track();
         workspace.active_project.track();
         workspace.editor_fold_revision.track();
+        if editor_actions.limit().is_some() {
+            return openwebide_core::editor::FoldProjection::new("", &Default::default());
+        }
         editor_actions.projection().unwrap_or_else(|| {
             openwebide_core::editor::FoldProjection::new(
                 &content.get_untracked(),
@@ -2136,7 +2180,7 @@ pub fn Editor(
                         </Button>
                     </div>
                 </Show>
-                <IconButton label="Find in file (Ctrl/⌘F)" disabled=Signal::derive(move || open_file.get().is_none() || view_mode.get() == ViewMode::Preview) on_click=Callback::new(move |_| find_open.set(!find_open.get_untracked()))><Icon name=IconName::Search /></IconButton>
+                <IconButton label="Find in file (Ctrl/⌘F)" disabled=Signal::derive(move || open_file.get().is_none() || editor_actions.limit().is_some() || view_mode.get() == ViewMode::Preview) on_click=Callback::new(move |_| find_open.set(!find_open.get_untracked()))><Icon name=IconName::Search /></IconButton>
             </div>
             <Show when=move || go_open.get() && open_file.get().is_some() && view_mode.get() == ViewMode::Code>
                 <PanelSearchRow class="editor-navigation">
@@ -2189,7 +2233,17 @@ pub fn Editor(
                 {move || {
                     let editor_project = workspace.active_project.get();
                     let mode = view_mode.get();
+                    if let Some(limit) = editor_actions.limit() {
+                        let old = pending_diff.with(|diff| diff.as_ref().and_then(|diff| diff.old.clone())).or_else(|| {
+                            if matches!(mode, ViewMode::InlineDiff | ViewMode::SideBySide | ViewMode::Preview) { git_head_diff.with(|diff| diff.as_ref().and_then(|diff| diff.old.clone())) } else { None }
+                        });
+                        return view! { <LargeTextViewer content=content limit=limit old=old /> }.into_any();
+                    }
                     if let Some(diff) = pending_diff.get() {
+                        if let Some(limit) = openwebide_core::editor::editor_limit(&diff.new).or_else(|| diff.old.as_deref().and_then(openwebide_core::editor::editor_limit)) {
+                            let source = RwSignal::new(diff.new);
+                            return view! { <LargeTextViewer content=source.read_only() limit=limit old=diff.old /> }.into_any();
+                        }
                         let metadata = workspace.open_file.get().and_then(|path| workspace.persisted_edits.with(|edits| edits.get(&path).and_then(|edit| edit.file.clone())));
                         if metadata.as_ref().is_some_and(|file| file.deleted) {
                             view! { <p class="empty editor-empty">"File deleted. Reject the file changes to restore it."</p> }.into_any()
@@ -2201,6 +2255,9 @@ pub fn Editor(
                             ViewMode::Preview => {
                                 let path = open_file.get().unwrap_or_default();
                                 if FileKind::from_path(&path) == FileKind::Markdown {
+                                    if let Some(limit) = diff.old.as_deref().and_then(openwebide_core::editor::editor_limit) {
+                                        return view! { <LargeTextViewer content=content limit=limit old=diff.old /> }.into_any();
+                                    }
                                     return render_markdown_diff(&diff).into_any();
                                 }
                                 render_preview_view(
@@ -2219,6 +2276,9 @@ pub fn Editor(
                         view! { <p class="empty editor-empty">"Binary file — no text diff"</p> }.into_any()
                     } else if (mode == ViewMode::InlineDiff || mode == ViewMode::SideBySide) && git_head_diff.get().is_some() {
                         let diff = git_head_diff.get().unwrap();
+                        if let Some(limit) = diff.old.as_deref().and_then(openwebide_core::editor::editor_limit) {
+                            return view! { <LargeTextViewer content=content limit=limit old=diff.old /> }.into_any();
+                        }
                         match mode {
                             ViewMode::InlineDiff => render_inline_diff(diff).into_any(),
                             ViewMode::SideBySide => render_side_by_side(diff).into_any(),
@@ -2229,6 +2289,9 @@ pub fn Editor(
                             ViewMode::Preview => {
                                 let path = open_file.get().unwrap_or_default();
                                 if FileKind::from_path(&path) == FileKind::Markdown && let Some(diff) = git_head_diff.get() {
+                                    if let Some(limit) = diff.old.as_deref().and_then(openwebide_core::editor::editor_limit) {
+                                        return view! { <LargeTextViewer content=content limit=limit old=diff.old /> }.into_any();
+                                    }
                                     return render_markdown_diff(&diff).into_any();
                                 }
                                 let text = content.get();
@@ -2435,6 +2498,7 @@ pub fn Editor(
                                                 {
                                                     let input_type = e.dyn_ref::<web_sys::InputEvent>().map_or_else(String::new, |event| if event.is_composing() { "insertCompositionText".to_string() } else { event.input_type() });
                                                     let result = editor_actions.projected_input(textarea.value(), editor_selection(textarea), &input_type, e.time_stamp());
+                                                    action_error.set(result.as_ref().err().map(ToString::to_string));
                                                     refresh_editor_folds(editor_actions);
                                                     if let Some(selection) = editor_actions.selection(&content.get_untracked()) { render_editor_selection(editor_actions, textarea, selection, result.is_ok()); }
                                                 }

@@ -7114,3 +7114,247 @@ async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_bot
         .await;
     }
 }
+
+#[wasm_bindgen_test]
+async fn large_file_viewer_bounds_pages_without_constructing_documents_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{MAX_EDITOR_LINE_BYTES, MAX_EDITOR_LINES, TEXT_PAGE_BYTES},
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for source in [
+            "\n".repeat(MAX_EDITOR_LINES),
+            "😀".repeat(MAX_EDITOR_LINE_BYTES / 4 + 1),
+        ] {
+            let mounted = mount_test({
+                let source = source.clone();
+                move |state| {
+                    state.seed_project();
+                    state
+                        .projects
+                        .projects
+                        .update(|projects| projects[0].mode = mode);
+                    state.workspace.open_file.set(Some("large.txt".into()));
+                    state.workspace.content.set(source);
+                    editor_view(state)
+                }
+            });
+            wait_until("bounded read-only page", || {
+                mounted
+                    .root
+                    .query_selector(".editor-large-file-page")
+                    .unwrap()
+                    .is_some()
+            })
+            .await;
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".editor-textarea")
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_documents
+                    .with_untracked(std::collections::HashMap::is_empty)
+            );
+            openwebide_frontend::util::sleep_ms(10).await;
+            let mut rebuilt = String::new();
+            loop {
+                let text = mounted
+                    .element(".editor-large-file-page")
+                    .text_content()
+                    .unwrap();
+                assert!(text.len() <= TEXT_PAGE_BYTES + 3);
+                rebuilt.push_str(&text);
+                let next = mounted.element(".editor-page-next");
+                if next.has_attribute("disabled") {
+                    break;
+                }
+                let previous = mounted
+                    .element(".editor-large-file-page")
+                    .get_attribute("data-page");
+                next.click();
+                wait_until("next text page painted", || {
+                    mounted
+                        .element(".editor-large-file-page")
+                        .get_attribute("data-page")
+                        != previous
+                })
+                .await;
+                settle().await;
+            }
+            assert!(
+                rebuilt == source,
+                "read-only pages must reproduce the complete source ({} vs {} bytes)",
+                rebuilt.len(),
+                source.len()
+            );
+            mounted.click(".editor-page-previous");
+            settle().await;
+            assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+            assert!(!mounted.state.workspace.dirty.get_untracked());
+            let project = mounted.state.projects.projects.get_untracked()[0].clone();
+            let recovery = mounted
+                .state
+                .workspace
+                .editor_recovery(&project, false)
+                .unwrap();
+            assert!(recovery.files[0].document.is_none());
+            mounted.state.workspace.content.set("small again\n".into());
+            wait_until("regular editor after source changes", || {
+                mounted
+                    .root
+                    .query_selector(".editor-textarea")
+                    .unwrap()
+                    .is_some()
+            })
+            .await;
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".editor-large-file-page")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                mounted.state.workspace.content.get_untracked(),
+                "small again\n"
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn editor_capacity_rejection_preserves_native_document_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{EditError, EditorLimit, MAX_EDITOR_LINE_BYTES, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("small.txt".into()));
+            state.workspace.content.set("kept".into());
+            editor_view(state)
+        });
+        wait_until("editor admitted", || {
+            mounted
+                .root
+                .query_selector(".editor-textarea")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        actions.record_selection(Selection::caret(4)).unwrap();
+        let before = mounted.state.workspace.editor_documents.get_untracked();
+        assert_eq!(
+            actions.native_input(
+                "x".repeat(MAX_EDITOR_LINE_BYTES + 1),
+                Selection::caret(1),
+                "insertFromPaste",
+                0.0
+            ),
+            Err(EditError::Capacity(EditorLimit::LineBytes))
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "kept");
+        assert_eq!(
+            mounted.state.workspace.editor_documents.get_untracked(),
+            before
+        );
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn oversized_change_review_retains_before_and_after_pages_in_both_modes() {
+    use openwebide_core::{FileDiff, WorkspaceMode, editor::MAX_EDITOR_LINE_BYTES};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("review.txt".into()));
+            let text = "😀".repeat(MAX_EDITOR_LINE_BYTES / 4 + 1);
+            state.workspace.content.set(text.clone());
+            state.workspace.pending_edits.update(|edits| {
+                edits.insert(
+                    "review.txt".into(),
+                    FileDiff {
+                        path: "review.txt".into(),
+                        old: Some("\noriginal\n".into()),
+                        new: text,
+                        old_unavailable: false,
+                        backup_path: None,
+                    },
+                );
+            });
+            editor_view(state)
+        });
+        wait_until("bounded change review", || {
+            mounted
+                .root
+                .query_selector(".editor-large-file-page")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        openwebide_frontend::util::sleep_ms(10).await;
+        let after = mounted
+            .element(".editor-large-file-page")
+            .text_content()
+            .unwrap();
+        assert!(after.starts_with('😀'));
+        mounted.click(".editor-large-file .ui-seg-btn:first-child");
+        wait_until("before source page painted", || {
+            mounted
+                .element(".editor-large-file-page")
+                .text_content()
+                .as_deref()
+                == Some("\noriginal\n")
+        })
+        .await;
+        assert_eq!(
+            mounted
+                .element(".editor-large-file-page")
+                .text_content()
+                .unwrap(),
+            "\noriginal\n"
+        );
+        mounted.click(".editor-large-file .ui-seg-btn:last-child");
+        wait_until("after source page painted", || {
+            mounted
+                .element(".editor-large-file-page")
+                .text_content()
+                .as_deref()
+                == Some(after.as_str())
+        })
+        .await;
+        assert_eq!(
+            mounted
+                .element(".editor-large-file-page")
+                .text_content()
+                .unwrap(),
+            after
+        );
+        assert!(
+            mounted
+                .state
+                .workspace
+                .pending_diff
+                .get_untracked()
+                .is_some()
+        );
+    }
+}

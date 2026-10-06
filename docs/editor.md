@@ -425,3 +425,26 @@ the PWA shell; it does not establish offline editing or real-device behavior.
 
 See [editor performance measurements](editor-performance.md) for native/WASM
 text-storage comparisons and the remaining viewport/performance verification.
+
+### Full-editor admission and large text
+
+The shared `editor_limit` policy checks 8 MiB of source, 100,000 display lines
+(LF/CRLF/standalone CR) and 1 MiB per line before interactive document metadata
+is allocated. `Document::for_editor` also enforces admission on transactions,
+including native input, composition previews and replicated multi-cursor edits.
+The frontend facade applies this contract to existing documents. General
+`Document::new` remains available for core storage experiments; its benchmarks
+above these limits do not demonstrate full-editor support.
+
+Files outside these limits open as read-only, 16 KiB text pages. Adjacent pages
+preserve exact UTF-8 content, including a leading newline, and before/after
+review sources remain separately accessible. Paging never replaces the full
+workspace source or changes its saved state. Clean oversized recovery tabs
+retain their file reference and reopen through the shared Workspace adapter;
+legacy oversized drafts fail recovery admission without replacing current
+buffers or deleting persisted recovery data.
+
+These admission limits bound source and metadata growth; they are not a claim
+that wrapped viewport paint or total editor memory has been benchmarked. The
+remaining roadmap work measures input/scroll latency and total memory, and
+finishes measured wrapped viewport rendering.

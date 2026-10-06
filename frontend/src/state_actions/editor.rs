@@ -32,6 +32,7 @@ pub struct EditorActions {
     workspace: WorkspaceState,
     auth: Option<crate::state::auth::AuthState>,
     preferences: Option<crate::state::settings::SettingsState>,
+    capacity: Memo<Option<openwebide_core::editor::EditorLimit>>,
     group: RwSignal<u64>,
     typing: RwSignal<TypingState>,
 }
@@ -42,6 +43,11 @@ impl EditorActions {
             workspace,
             auth: use_context::<crate::state::auth::AuthState>(),
             preferences: use_context::<crate::state::settings::SettingsState>(),
+            capacity: Memo::new(move |_| {
+                workspace
+                    .content
+                    .with(|source| openwebide_core::editor::editor_limit(source))
+            }),
             group: workspace.editor_group,
             typing: RwSignal::new(None),
         }
@@ -232,7 +238,14 @@ impl EditorActions {
         Ok(None)
     }
 
+    pub fn limit(self) -> Option<openwebide_core::editor::EditorLimit> {
+        self.capacity.get()
+    }
+
     fn key(self) -> Option<(i64, String)> {
+        if self.capacity.get_untracked().is_some() {
+            return None;
+        }
         Some((
             self.workspace.active_project.get_untracked()?,
             self.workspace.open_file.get_untracked()?,
@@ -260,6 +273,7 @@ impl EditorActions {
                 *document = Document::new(text.clone());
             }
         });
+        document.enforce_editor_limits();
         if !self.workspace.dirty.get_untracked() {
             document.mark_saved();
         }
@@ -518,6 +532,17 @@ impl EditorActions {
         openwebide_core::editor::SyntaxStatus,
         Vec<openwebide_core::editor::FoldRange>,
     )> {
+        if self.capacity.get_untracked().is_some() {
+            let key = self
+                .workspace
+                .active_project
+                .get_untracked()
+                .zip(self.workspace.open_file.get_untracked())?;
+            self.workspace
+                .editor_syntax
+                .update(|cache| cache.remove(&key));
+            return Some((openwebide_core::editor::SyntaxStatus::TooLarge, Vec::new()));
+        }
         self.analyze_syntax(should_continue, |document, status| {
             (
                 status,
