@@ -45,6 +45,27 @@ otherwise it repeats the complete text at every selection. CRLF separators betwe
 distributed lines are removed from their bodies. Clipboard failures leave the source
 unchanged. Clipboard edits are disabled during an active input composition.
 
+Use **Editing commands** or these shortcuts for multiple selections:
+
+| Action | Shortcut |
+| --- | --- |
+| Select word, then next occurrence | Ctrl/Cmd+D |
+| Select all occurrences | Ctrl/Cmd+Shift+L |
+| Add cursor above/below | Ctrl/Cmd+Alt+Up/Down |
+| Expand/shrink selection | Alt+Shift+Right/Left |
+| Keep primary cursor | Escape |
+
+Alt-click adds/removes a cursor. Alt+Shift click/drag selects a column from the
+primary anchor, honoring tab stops and complete Unicode graphemes. Secondary
+carets and selections use the same font metrics as the syntax paint, including
+wrapped text; screen readers receive the cursor count. Arrow keys move all cursors
+by grapheme or logical line; Ctrl/Alt+Left/Right move by word, and Shift extends
+each selection. Home/End move to line boundaries, Ctrl/Cmd+Home/End to document
+boundaries; on macOS Cmd+arrows use line/document boundaries. Vertical movement
+retains the desired column across short lines. Multiple selection movement and
+structural selection commands are bounded to files up to 2 MiB; Escape still
+returns to the primary cursor in larger files.
+
 The editor footer shows Spaces/Tabs, the indentation width and the tab width.
 These are separate: an indentation step can be four columns while a hard tab
 occupies three. Tabs fill as many complete tab stops as possible, then spaces fill

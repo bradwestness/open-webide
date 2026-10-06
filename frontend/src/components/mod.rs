@@ -4,6 +4,7 @@ mod commands;
 mod confirm_dialog;
 mod editor;
 mod editor_options;
+mod editor_selections;
 mod file_browser;
 mod file_tree;
 pub(crate) mod modal;

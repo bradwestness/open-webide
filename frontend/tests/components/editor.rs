@@ -132,6 +132,246 @@ async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_t
 }
 
 #[wasm_bindgen_test]
+async fn multi_cursor_pointer_and_column_gestures_share_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("columns.rs".into()));
+            state.workspace.content.set("a\t文z\r\nxy\r\na\t文z".into());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:600px;height:350px">{editor_view(state)}</div> }
+        });
+        settle().await;
+        frame().await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        textarea.set_selection_range(0, 0).unwrap();
+        actions.record_selection(Selection::caret(0)).unwrap();
+        assert!(editorGesture(&textarea, 3, 3, false, false).default_prevented());
+        assert_eq!(
+            actions.selections(&actions.source()),
+            vec![Selection::caret(17), Selection::caret(0)]
+        );
+        assert!(editorGesture(&textarea, 3, 3, false, false).default_prevented());
+        assert_eq!(
+            actions.selections(&actions.source()),
+            vec![Selection::caret(0)]
+        );
+        textarea.set_selection_range(1, 1).unwrap();
+        actions.record_selection(Selection::caret(1)).unwrap();
+        assert!(editorGesture(&textarea, 3, 4, true, false).default_prevented());
+        assert_eq!(actions.selections(&actions.source()).len(), 3);
+        assert_eq!(editorClipboardCopy(&textarea), "\t文z\n\t文z\ny");
+        assert!(editorGesture(&textarea, 3, 3, true, true).default_prevented());
+        assert_eq!(editorClipboardCopy(&textarea), "\t文\n\t文\ny");
+        let before = actions.selections(&actions.source());
+        mounted.state.workspace.content.set("external".into());
+        settle().await;
+        editorGesture(&textarea, 1, 1, true, true);
+        assert_eq!(actions.source(), "external");
+        assert_ne!(
+            actions.selections(&actions.source()),
+            before,
+            "stale drag cannot restore old selections"
+        );
+        mounted
+            .state
+            .workspace
+            .content
+            .set("fn foo() {}\r\nfn bar() {}".into());
+        settle().await;
+        frame().await;
+        textarea.set_selection_range(0, 0).unwrap();
+        actions.record_selection(Selection::caret(0)).unwrap();
+        editor_key(&textarea, "d", true, false);
+        editor_key(&textarea, "d", true, false);
+        wait_until("keyword selection paint", || {
+            mounted
+                .root
+                .query_selector(".editor-secondary-selection")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all(".editor-secondary-selection")
+                .unwrap()
+                .length(),
+            1,
+            "nested syntax tokens must not stack translucent selection rectangles"
+        );
+        assert_eq!(editorClipboardCopy(&textarea), "fn\nfn");
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn multi_cursor_shortcuts_motion_and_paint_share_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = format!("foo {}\r\nfoo", "x".repeat(500));
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("cursors.rs".into()));
+            state.workspace.content.set(source.clone());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:600px;height:350px">{editor_view(state)}</div> }
+        });
+        settle().await;
+        frame().await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        textarea.set_selection_range(0, 0).unwrap();
+        assert!(editor_key(&textarea, "d", true, false).default_prevented());
+        assert_eq!(actions.selections(&actions.source()).len(), 1);
+        assert!(editor_key(&textarea, "d", true, false).default_prevented());
+        assert_eq!(actions.selections(&actions.source()).len(), 2);
+        wait_until("painted secondary selection", || {
+            mounted
+                .root
+                .query_selector(".editor-secondary-selection")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert_eq!(editorClipboardCopy(&textarea), "foo\nfoo");
+        assert!(editor_key(&textarea, "ArrowRight", false, false).default_prevented());
+        wait_until("painted secondary caret", || {
+            mounted
+                .root
+                .query_selector(".editor-secondary-caret")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert_eq!(actions.selections(&actions.source()).len(), 2);
+        let before = mounted
+            .element(".editor-secondary-caret")
+            .get_bounding_client_rect();
+        // Next occurrence promotes the newly added range to primary; the first
+        // source occurrence is the secondary caret after collapsing selections.
+        let row = mounted.element(".editor-source-line[data-line='1']");
+        let node = row.first_child().unwrap();
+        let range = document().create_range().unwrap();
+        range.set_start(&node, 3).unwrap();
+        range.set_end(&node, 3).unwrap();
+        let expected = range.get_bounding_client_rect();
+        assert!(
+            (before.top() - expected.top()).abs() < 0.5,
+            "secondary caret must align with the text baseline: actual={} expected={} style={:?} parent={}",
+            before.top(),
+            expected.top(),
+            mounted
+                .element(".editor-secondary-caret")
+                .get_attribute("style"),
+            mounted
+                .element(".editor-code")
+                .get_bounding_client_rect()
+                .top()
+        );
+        assert!(
+            (before.left() - expected.left()).abs() < 0.5,
+            "secondary caret must align with its source column"
+        );
+        textarea.set_scroll_left(16.0);
+        textarea
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        settle().await;
+        let after = mounted
+            .element(".editor-secondary-caret")
+            .get_bounding_client_rect();
+        assert!((before.left() - after.left() - textarea.scroll_left()).abs() < 1.0);
+        assert!(editor_key(&textarea, "ArrowLeft", false, true).default_prevented());
+        assert_eq!(editorClipboardCopy(&textarea), "o\no");
+        assert!(editor_key(&textarea, "Escape", false, false).default_prevented());
+        settle().await;
+        assert_eq!(actions.selections(&actions.source()).len(), 1);
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-secondary-caret, .editor-secondary-selection")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mounted
+                .element(".editor-code [role='status']")
+                .text_content()
+                .unwrap()
+                .contains("1 editor cursor")
+        );
+        mounted.click("button[aria-label='Editing commands']");
+        settle().await;
+        mounted.click_text("Select all occurrences");
+        settle().await;
+        assert_eq!(actions.selections(&actions.source()).len(), 4);
+        assert!(
+            document()
+                .active_element()
+                .unwrap()
+                .is_same_node(Some(&textarea))
+        );
+        mounted.click("button[aria-label='Editing commands']");
+        settle().await;
+        mounted.click_text("Keep primary cursor");
+        settle().await;
+        assert_eq!(actions.selections(&actions.source()).len(), 1);
+        mounted
+            .state
+            .settings
+            .editor_preferences
+            .update(|preferences| preferences.word_wrap = true);
+        let source = actions.source();
+        actions
+            .record_selection(openwebide_core::editor::Selection::caret(504))
+            .unwrap();
+        actions
+            .toggle_cursor(1, "cursors.rs", &source, source.len())
+            .unwrap();
+        let end = u32::try_from(
+            openwebide_core::editor::byte_to_textarea(&source, source.len()).unwrap(),
+        )
+        .unwrap();
+        textarea.set_selection_range(end, end).unwrap();
+        frame().await;
+        settle().await;
+        wait_until("wrapped secondary caret", || {
+            mounted
+                .root
+                .query_selector(".editor-secondary-caret")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let wrapped = mounted
+            .element(".editor-secondary-caret")
+            .get_bounding_client_rect();
+        let row = mounted.element(".editor-source-line[data-line='1']");
+        let range = document().create_range().unwrap();
+        range.set_start(&row.first_child().unwrap(), 504).unwrap();
+        range.collapse_with_to_start(true);
+        let expected = range.get_bounding_client_rect();
+        assert!((wrapped.top() - expected.top()).abs() < 0.5);
+        assert!((wrapped.left() - expected.left()).abs() < 0.5);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
 async fn multi_selection_clipboard_uses_source_ranges_and_atomic_history_in_both_modes() {
     use openwebide_core::{
         WorkspaceMode,
@@ -198,6 +438,14 @@ async fn multi_selection_clipboard_uses_source_ranges_and_atomic_history_in_both
             actions.source(),
             "foo\r\nfoo",
             "missing clipboard access must not cut the primary range"
+        );
+        settle().await;
+        assert!(
+            mounted
+                .element(".editor-error[role='alert']")
+                .text_content()
+                .unwrap()
+                .contains("Could not write the clipboard")
         );
         actions.begin_composition();
         assert!(actions.cut(Selection { anchor: 0, head: 3 }).is_err());
@@ -2240,6 +2488,17 @@ export function editorClipboardPaste(target, text) {
     const event = new ClipboardEvent('paste', {bubbles:true, cancelable:true, clipboardData:data});
     target.dispatchEvent(event); return event;
 }
+export function editorGesture(target, line, column, shift, moving) {
+    const row = target.parentElement.querySelector(`.editor-source-line[data-line='${line}']`);
+    const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    let node, offset = column;
+    while ((node = walker.nextNode())) { if (offset <= node.length) break; offset -= node.length; }
+    if (!node) throw new Error('Missing gesture text position');
+    const range = document.createRange(); range.setStart(node, offset); range.collapse(true);
+    const rect = range.getBoundingClientRect();
+    const event = new MouseEvent(moving ? 'mousemove' : 'mousedown', {bubbles:true, cancelable:true, altKey:true, shiftKey:shift, button:0, buttons:1, clientX:rect.left + .25, clientY:rect.top + rect.height / 2});
+    target.dispatchEvent(event); return event;
+}
 "#)]
 extern "C" {
     fn editorNativeInput(
@@ -2251,6 +2510,13 @@ extern "C" {
     fn editorClipboardCut(target: &web_sys::HtmlTextAreaElement) -> web_sys::Event;
     fn editorClipboardCopy(target: &web_sys::HtmlTextAreaElement) -> String;
     fn editorClipboardPaste(target: &web_sys::HtmlTextAreaElement, text: &str) -> web_sys::Event;
+    fn editorGesture(
+        target: &web_sys::HtmlTextAreaElement,
+        line: u32,
+        column: u32,
+        shift: bool,
+        moving: bool,
+    ) -> web_sys::Event;
 }
 fn editor_alt_key(
     textarea: &web_sys::HtmlTextAreaElement,

@@ -11,7 +11,9 @@ pub use navigation::{
     indent_guide_columns, line_column, matching_bracket, navigation_target, offset_at_line_column,
 };
 pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
+mod motion;
 mod native;
+pub use motion::SelectionMotion;
 mod selections;
 pub use native::NativeInputKind;
 pub use selections::{
@@ -169,6 +171,7 @@ pub struct Document {
     folds: FoldState,
     selection_history: Vec<Vec<Selection>>,
     composition: Option<Box<native::Composition>>,
+    motion_columns: Option<Vec<usize>>,
 }
 
 const HISTORY_BYTES: usize = 16 * 1024 * 1024;
@@ -189,6 +192,7 @@ impl Document {
             folds: FoldState::default(),
             selection_history: Vec::new(),
             composition: None,
+            motion_columns: None,
         }
     }
 
@@ -250,6 +254,7 @@ impl Document {
             .expect("fold projections preserve source selection boundaries");
         if self.selections != before {
             self.selection_history.clear();
+            self.motion_columns = None;
         }
     }
 
@@ -294,6 +299,7 @@ impl Document {
         let selections = normalize_selections(&self.text, selections)?;
         if selections != self.selections {
             self.selection_history.clear();
+            self.motion_columns = None;
         }
         self.selections = selections;
         Ok(())
@@ -328,6 +334,7 @@ impl Document {
         if text == self.text {
             if self.selections != after {
                 self.selection_history.clear();
+                self.motion_columns = None;
             }
             self.selections = after;
             return Ok(false);
@@ -373,6 +380,7 @@ impl Document {
         self.text = text;
         self.selections = after;
         self.selection_history.clear();
+        self.motion_columns = None;
         self.revision = self.revision.wrapping_add(1);
         Ok(true)
     }
@@ -392,6 +400,7 @@ impl Document {
         self.text = text;
         self.history_cursor -= 1;
         self.selection_history.clear();
+        self.motion_columns = None;
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -411,6 +420,7 @@ impl Document {
         self.text = text;
         self.history_cursor += 1;
         self.selection_history.clear();
+        self.motion_columns = None;
         self.revision = self.revision.wrapping_add(1);
         true
     }

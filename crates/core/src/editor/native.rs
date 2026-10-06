@@ -470,6 +470,23 @@ mod tests {
         let mut doc = Document::new("ab");
         doc.begin_composition(Some(1));
         let before = doc.clone();
+        for command in [
+            super::super::SelectionCommand::Expand,
+            super::super::SelectionCommand::Shrink,
+            super::super::SelectionCommand::Single,
+        ] {
+            assert_eq!(
+                doc.selection_command(
+                    command,
+                    crate::highlight::Language::Rust,
+                    super::super::Indentation::default()
+                ),
+                Err(super::super::SelectionError::Edit(
+                    EditError::CompositionActive
+                ))
+            );
+            assert_eq!(doc, before);
+        }
         assert_eq!(
             doc.replace_selections("x", None),
             Err(EditError::CompositionActive)

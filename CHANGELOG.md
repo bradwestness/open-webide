@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add multi-cursor controls to Edit: occurrence, vertical cursor and expand/shrink commands in the shared editing menu and shortcuts; Alt-click toggles cursors and Alt+Shift click/drag selects columns. Paint secondary selections/carets with the syntax layer's text metrics and announce cursor counts. Move all cursors by grapheme, word, logical line or document boundary, retaining columns across short lines and skipping folded source. Both modes use the same Rust engine and facade; visual-row navigation with word wrap and real-device verification remain in progress.
+
 - Integrate multi-selection clipboard operations with the shared editor engine. Copy/cut use source ranges across folds, cut waits for a successful clipboard write, and paste distributes matching lines or repeats the full text with one undo step. Failed clipboard access keeps the source unchanged in both modes. Cursor controls and real-device verification remain in progress.
 
 - Replay native editor input across selections through the shared Rust document engine. IME previews retain the browser's primary input, then commit all selections in one undo step; cancellation, invalid frames and stale project/file/account events preserve the original document and history in both modes. Multi-cursor controls, clipboard integration and real-device verification remain in progress.

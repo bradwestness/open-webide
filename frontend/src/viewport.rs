@@ -179,3 +179,30 @@ extern "C" {
         on_layout: &js_sys::Function,
     ) -> JsValue;
 }
+
+#[wasm_bindgen(inline_js = r#"
+export function editor_caret_from_point(input, x, y) {
+    const paint = input.parentElement?.querySelector('.editor-highlight-content');
+    const overlay = paint?.parentElement;
+    if (!paint || !overlay) return undefined;
+    const inputEvents = input.style.pointerEvents, paintEvents = overlay.style.pointerEvents;
+    try {
+        input.style.pointerEvents = 'none'; overlay.style.pointerEvents = 'auto';
+        const position = document.caretPositionFromPoint?.(x, y);
+        const caret = position ? {startContainer:position.offsetNode, startOffset:position.offset} : document.caretRangeFromPoint?.(x, y);
+        if (!caret || !paint.contains(caret.startContainer)) return undefined;
+        const prefix = document.createRange(); prefix.selectNodeContents(paint);
+        prefix.setEnd(caret.startContainer, caret.startOffset);
+        return prefix.toString().length;
+    } finally {
+        input.style.pointerEvents = inputEvents; overlay.style.pointerEvents = paintEvents;
+    }
+}
+"#)]
+extern "C" {
+    pub fn editor_caret_from_point(
+        input: &web_sys::HtmlTextAreaElement,
+        x: f64,
+        y: f64,
+    ) -> Option<u32>;
+}

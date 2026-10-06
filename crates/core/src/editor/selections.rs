@@ -104,7 +104,7 @@ fn word_at(text: &str, offset: usize) -> Option<Range<usize>> {
         .find(|word| word.start() <= offset && offset <= word.end())
         .map(|word| word.range())
 }
-fn display_column(text: &str, tab_width: usize) -> usize {
+pub(super) fn display_column(text: &str, tab_width: usize) -> usize {
     text.graphemes(true).fold(0, |column, grapheme| {
         column
             + if grapheme == "\t" {
@@ -114,7 +114,7 @@ fn display_column(text: &str, tab_width: usize) -> usize {
             }
     })
 }
-fn byte_at_column(text: &str, target: usize, tab_width: usize, end: bool) -> usize {
+pub(super) fn byte_at_column(text: &str, target: usize, tab_width: usize, end: bool) -> usize {
     let mut column = 0;
     for (offset, grapheme) in text.grapheme_indices(true) {
         let width = if grapheme == "\t" {
@@ -323,6 +323,9 @@ impl Document {
         language: Language,
         indentation: Indentation,
     ) -> Result<bool, SelectionError> {
+        if self.is_composing() {
+            return Err(EditError::CompositionActive.into());
+        }
         if command == SelectionCommand::Single {
             let primary = self.selections[0];
             let changed = self.selections.len() > 1;
@@ -334,6 +337,7 @@ impl Document {
                 return Ok(false);
             };
             self.selections = before;
+            self.motion_columns = None;
             self.reveal_selection();
             return Ok(true);
         }
@@ -508,6 +512,7 @@ impl Document {
             }
             self.selection_history.push(self.selections.clone());
             self.selections = selections;
+            self.motion_columns = None;
         } else {
             self.set_selections(selections)?;
         }

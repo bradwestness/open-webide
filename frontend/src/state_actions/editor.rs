@@ -350,20 +350,72 @@ impl EditorActions {
         source: &str,
         command: openwebide_core::editor::SelectionCommand,
     ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
+        let rules = self.rules_untracked();
+        let language = openwebide_core::highlight::language_from_path(path);
+        self.operate_selections(project, path, source, move |document| {
+            document.selection_command(command, language, rules.indentation)
+        })
+    }
+
+    pub fn move_selections(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        motion: openwebide_core::editor::SelectionMotion,
+        extend: bool,
+    ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
+        let indentation = self.rules_untracked().indentation;
+        self.operate_selections(project, path, source, move |document| {
+            document.move_selections(motion, extend, indentation)
+        })
+    }
+
+    pub fn toggle_cursor(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        offset: usize,
+    ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
+        self.operate_selections(project, path, source, move |document| {
+            Ok(document.toggle_cursor(offset)?)
+        })
+    }
+
+    pub fn select_columns(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        anchor: usize,
+        head: usize,
+    ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
+        let indentation = self.rules_untracked().indentation;
+        self.operate_selections(project, path, source, move |document| {
+            document.select_columns(anchor, head, indentation)
+        })
+    }
+
+    fn operate_selections(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        operation: impl FnOnce(&mut Document) -> Result<bool, openwebide_core::editor::SelectionError>,
+    ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
         if !self.is_current(project, path) || self.source() != source {
             return Ok(None);
         }
         let Some(key) = self.key() else {
             return Ok(None);
         };
-        let rules = self.rules_untracked();
-        let language = openwebide_core::highlight::language_from_path(path);
         let result = self
             .workspace
             .editor_documents
             .try_update(|documents| {
                 let document = self.document(documents, key);
-                document.selection_command(command, language, rules.indentation)?;
+                operation(document)?;
                 Ok(Some(document.selections().to_vec()))
             })
             .unwrap_or(Ok(None));
