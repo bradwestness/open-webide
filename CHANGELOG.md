@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse validated editor fragment paint when revisiting unchanged scroll intervals in both workspace modes. Bound retained paint to 16 entries and 2 MiB, invalidate source/account/read/fold/syntax/indentation/font/layout changes, and include shaping properties in row-measurement identity. New intervals still require styled probes.
+
 - Share sparse long-row grapheme coordinates and horizontal-fragment eligibility across unchanged editor rows and folded views in both workspace modes. Paint and cursor probes reuse them; native/WASM measurements compare construction, distributed Unicode queries and metadata retention. Styled visual boundaries and row shaping remain in progress.
 
 - Default chat and agent replies to the remaining model context capacity, recalculated after tool results and compaction in both workspace modes. Honor explicit output limits, retain bounded summary generation and use the provider default when context capacity is unknown.

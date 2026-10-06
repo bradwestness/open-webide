@@ -860,3 +860,6 @@ mod tests {
         }
     }
 }
+
+mod paint_cache;
+pub use paint_cache::PaintCache;

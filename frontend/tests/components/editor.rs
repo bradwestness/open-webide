@@ -8610,3 +8610,146 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
         assert!(input.scroll_left().abs() < 0.5);
     }
 }
+
+#[wasm_bindgen_test]
+async fn repeated_fragment_windows_reuse_validated_paint_and_font_changes_remeasure_in_both_modes()
+{
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "文😀e\u{301} words ".repeat(10_000);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("cached.txt".into()));
+            state.workspace.content.set(source.clone());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        wait_until("cached horizontal paint", || {
+            mounted
+                .root
+                .query_selector(".editor-source-line[data-paint-left]")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let observer = js_sys::Function::new_no_args(r#"
+            const state = {count: 0};
+            const observer = new MutationObserver(records => {
+                for (const record of records) for (const node of record.addedNodes)
+                    if (node.nodeType === 1 && node.classList.contains('editor-row-measure')) state.count++;
+            });
+            observer.observe(document.body, {childList: true});
+            state.stop = () => observer.disconnect();
+            return state;
+        "#).call0(&wasm_bindgen::JsValue::NULL).unwrap();
+        let count = || {
+            js_sys::Reflect::get(&observer, &"count".into())
+                .unwrap()
+                .as_f64()
+                .unwrap()
+        };
+        // Warm both intervals after native scroll extents have settled.
+        for _ in 0..2 {
+            for x in [10_000.0, 0.0] {
+                input.set_scroll_left(x);
+                input
+                    .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                    .unwrap();
+                wait_until("cached window follows input", || {
+                    let left = mounted
+                        .element(".editor-source-line")
+                        .get_attribute("data-paint-left")
+                        .unwrap()
+                        .parse::<f64>()
+                        .unwrap();
+                    if x == 0.0 {
+                        left == 0.0
+                    } else {
+                        left > 9000.0 && left < 10_100.0
+                    }
+                })
+                .await;
+                settle().await;
+            }
+        }
+        let before = count();
+        for x in [10_000.0, 0.0] {
+            input.set_scroll_left(x);
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("retained fragment revisited", || {
+                let left = mounted
+                    .element(".editor-source-line")
+                    .get_attribute("data-paint-left")
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap();
+                if x == 0.0 { left == 0.0 } else { left > 9000.0 }
+            })
+            .await;
+            settle().await;
+        }
+        assert!(
+            (count() - before).abs() < 0.5,
+            "revisiting exact intervals must avoid styled probes"
+        );
+        input
+            .unchecked_ref::<web_sys::HtmlElement>()
+            .style()
+            .set_property("letter-spacing", "1px")
+            .unwrap();
+        input.set_scroll_left(10_000.0);
+        input
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        wait_until("changed shaping invalidates fragments", || count() > before).await;
+        input.set_scroll_left(0.0);
+        input
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        wait_until("shaped origin", || {
+            mounted
+                .element(".editor-source-line")
+                .get_attribute("data-paint-left")
+                .as_deref()
+                == Some("0")
+        })
+        .await;
+        settle().await;
+        let before_source = count();
+        mounted
+            .state
+            .workspace
+            .content
+            .update(|source| source.replace_range(0..3, "界"));
+        wait_until("source replacement rejects retained paint", || {
+            mounted
+                .root
+                .query_selector(".editor-source-fragment")
+                .unwrap()
+                .is_some_and(|fragment| {
+                    fragment
+                        .text_content()
+                        .is_some_and(|text| text.starts_with('界'))
+                })
+        })
+        .await;
+        assert!(
+            count() > before_source,
+            "changed source must be measured afresh"
+        );
+
+        js_sys::Reflect::get(&observer, &"stop".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap()
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap();
+    }
+}

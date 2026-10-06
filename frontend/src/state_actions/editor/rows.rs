@@ -136,7 +136,7 @@ impl EditorActions {
             && self.auth.map_or(0, |auth| auth.generation.get_untracked())
                 == paint.account_generation
     }
-    pub fn prepare_row_measurements(
+    fn row_paint_snapshot(
         self,
         metrics: String,
         projection: FoldProjection,
@@ -144,8 +144,8 @@ impl EditorActions {
         guides: Arc<[usize]>,
         indentation: Indentation,
         whitespace: bool,
-    ) -> Option<(EditorRowPaint, RowMeasurementPlan)> {
-        let paint = EditorRowPaint {
+    ) -> Option<EditorRowPaint> {
+        Some(EditorRowPaint {
             key: self.key()?,
             epoch: self.workspace.pending_epoch.get_untracked(),
             read_revision: self.workspace.editor_read_revision.get_untracked(),
@@ -157,7 +157,19 @@ impl EditorActions {
             guides,
             indentation,
             whitespace,
-        };
+        })
+    }
+    pub fn prepare_row_measurements(
+        self,
+        metrics: String,
+        projection: FoldProjection,
+        tokens: (bool, Arc<Vec<Vec<Token>>>),
+        guides: Arc<[usize]>,
+        indentation: Indentation,
+        whitespace: bool,
+    ) -> Option<(EditorRowPaint, RowMeasurementPlan)> {
+        let paint =
+            self.row_paint_snapshot(metrics, projection, tokens, guides, indentation, whitespace)?;
         let reused = self.workspace.editor_row_cache.with_untracked(|cache| {
             let cache = cache.as_ref()?;
             let old = &cache.paint;
@@ -179,5 +191,96 @@ impl EditorActions {
     pub fn invalidate_measured_font(self) {
         self.workspace.editor_row_cache.set(None);
         self.invalidate_measured_rows();
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorFragmentWindow {
+    pub rows: Vec<usize>,
+    pub windows: Vec<(usize, openwebide_core::editor::RowPaintWindow)>,
+    pub width: i32,
+    pub height: i32,
+    pub trailing: bool,
+}
+#[derive(Default)]
+pub struct EditorFragmentCache {
+    scope: Option<(EditorRowPaint, u64, u64)>,
+    paint: openwebide_core::editor::PaintCache<EditorFragmentWindow>,
+}
+impl EditorActions {
+    /// Select one exact source/paint/layout scope before retaining any DOM result.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Immutable paint primitives accompany the adapter's measured layout"
+    )]
+    pub fn fragment_scope(
+        self,
+        cache: &mut EditorFragmentCache,
+        metrics: String,
+        tokens: (bool, Arc<Vec<Vec<Token>>>),
+        guides: Arc<[usize]>,
+        indentation: Indentation,
+        whitespace: bool,
+    ) -> bool {
+        let paint = self.projection().and_then(|projection| {
+            self.row_paint_snapshot(metrics, projection, tokens, guides, indentation, whitespace)
+        });
+        let Some(paint) = paint else {
+            cache.scope = None;
+            cache.paint.clear();
+            return false;
+        };
+        let revision = self.view_revision();
+        let layout = self.workspace.editor_layout_epoch.get_untracked();
+        let same = cache
+            .scope
+            .as_ref()
+            .is_some_and(|(old, old_revision, old_layout)| {
+                *old_revision == revision
+                    && *old_layout == layout
+                    && old.key == paint.key
+                    && old.epoch == paint.epoch
+                    && old.read_revision == paint.read_revision
+                    && old.account_generation == paint.account_generation
+                    && old.metrics == paint.metrics
+                    && old.indentation == paint.indentation
+                    && old.whitespace == paint.whitespace
+                    && old.prepared_source == paint.prepared_source
+                    && Arc::ptr_eq(&old.tokens, &paint.tokens)
+                    && Arc::ptr_eq(&old.guides, &paint.guides)
+            });
+        if !same {
+            cache.paint.clear();
+            cache.scope = Some((paint, revision, layout));
+        }
+        true
+    }
+    pub fn cached_fragment(
+        self,
+        cache: &mut EditorFragmentCache,
+        window: &EditorFragmentWindow,
+    ) -> Option<String> {
+        let (paint, revision, layout) = cache.scope.as_ref()?;
+        if !self.row_paint_current(paint)
+            || *revision != self.view_revision()
+            || *layout != self.workspace.editor_layout_epoch.get_untracked()
+        {
+            return None;
+        }
+        cache.paint.get(window)
+    }
+    pub fn retain_fragment(
+        self,
+        cache: &mut EditorFragmentCache,
+        window: EditorFragmentWindow,
+        html: String,
+    ) {
+        if let Some((paint, revision, layout)) = cache.scope.as_ref()
+            && self.row_paint_current(paint)
+            && *revision == self.view_revision()
+            && *layout == self.workspace.editor_layout_epoch.get_untracked()
+        {
+            cache.paint.insert(window, html);
+        }
     }
 }

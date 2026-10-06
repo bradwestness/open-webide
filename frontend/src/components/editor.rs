@@ -975,8 +975,9 @@ fn HighlightOverlay(
         }
     });
     let guides = Memo::new(move |_| {
-        content
-            .with(|source| openwebide_core::editor::indent_guide_columns(source, indentation.get()))
+        std::sync::Arc::<[usize]>::from(content.with(|source| {
+            openwebide_core::editor::indent_guide_columns(source, indentation.get())
+        }))
     });
     let batch_key = StoredValue::new(None::<(u64, String, usize, bool)>);
     let batch_ticket = StoredValue::new(None::<u64>);
@@ -1034,7 +1035,7 @@ fn HighlightOverlay(
             return;
         };
         batch_ticket.set_value(Some(ticket));
-        let guides: std::sync::Arc<[usize]> = guides.get_untracked().into();
+        let guides: std::sync::Arc<[usize]> = guides.get_untracked();
         let Some((paint, plan)) = actions.prepare_row_measurements(
             metrics.clone(),
             projection.clone(),
@@ -1112,6 +1113,8 @@ fn HighlightOverlay(
             })
             .collect::<Vec<_>>()
     });
+    let fragment_cache =
+        StoredValue::new(crate::state_actions::editor::EditorFragmentCache::default());
     let rendered = RwSignal::new(String::new());
     let rendered_scope = RwSignal::new(0_u64);
     let request = StoredValue::new(None::<i32>);
@@ -1126,35 +1129,74 @@ fn HighlightOverlay(
         {
             return;
         }
-        let html = tokens.with_untracked(|(prepared, tokens)| {
-            guides.with_untracked(|guides| {
-                highlight_html(
-                    tokens,
-                    *prepared,
-                    guides,
-                    PaintRows {
-                        indices: &visible.get_untracked(),
-                        projection: actions.projection().as_ref(),
-                    },
+        let render = || {
+            tokens.with_untracked(|(prepared, tokens)| {
+                guides.with_untracked(|guides| {
+                    highlight_html(
+                        tokens,
+                        *prepared,
+                        guides,
+                        PaintRows {
+                            indices: &visible.get_untracked(),
+                            projection: actions.projection().as_ref(),
+                        },
+                        indentation.get_untracked(),
+                        show_whitespace.get_untracked(),
+                        actions.projection().is_some_and(|projection| {
+                            viewport.get_untracked().rows.end < projection.lines().len()
+                        }),
+                    )
+                })
+            })
+        };
+        let input = textarea_ref.get_untracked();
+        let windows = fragment_windows.get_untracked();
+        let mut cached = None;
+        let mut cache_window = None;
+        if !windows.is_empty()
+            && let Some(input) = input.as_ref()
+            && current_editor_target(actions, input)
+            && let Some(metrics) = super::editor_rows::metrics_identity(input)
+        {
+            let key = crate::state_actions::editor::EditorFragmentWindow {
+                rows: visible.get_untracked(),
+                windows: windows.clone(),
+                width: input.scroll_width(),
+                height: input.client_height(),
+                trailing: actions.projection().is_some_and(|projection| {
+                    viewport.get_untracked().rows.end < projection.lines().len()
+                }),
+            };
+            fragment_cache.update_value(|cache| {
+                if actions.fragment_scope(
+                    cache,
+                    metrics,
+                    tokens.get_untracked(),
+                    guides.get_untracked(),
                     indentation.get_untracked(),
                     show_whitespace.get_untracked(),
-                    actions.projection().is_some_and(|projection| {
-                        viewport.get_untracked().rows.end < projection.lines().len()
-                    }),
-                )
-            })
+                ) {
+                    cached = actions.cached_fragment(cache, &key);
+                    cache_window = Some(key);
+                }
+            });
+        }
+        let html = cached.unwrap_or_else(|| {
+            let html = render();
+            input
+                .as_ref()
+                .and_then(|input| {
+                    super::editor_geometry::window_paint(actions, input, &html, &windows)
+                })
+                .map_or(html, |fragment| {
+                    if let Some(key) = cache_window {
+                        fragment_cache.update_value(|cache| {
+                            actions.retain_fragment(cache, key, fragment.clone());
+                        });
+                    }
+                    fragment
+                })
         });
-        let html = textarea_ref
-            .get_untracked()
-            .and_then(|input| {
-                super::editor_geometry::window_paint(
-                    actions,
-                    &input,
-                    &html,
-                    &fragment_windows.get_untracked(),
-                )
-            })
-            .unwrap_or(html);
         if immediate && let Some(overlay) = node_ref.get_untracked() {
             if let Ok(Some(content)) = overlay.query_selector(".editor-highlight-content") {
                 content.set_inner_html(&html);

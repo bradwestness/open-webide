@@ -125,8 +125,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   retain complete paint. Source eligibility and sparse grapheme/UTF-16 coordinates
   now share unchanged-row allocations across document and folded views; native/WASM
   measurements cover construction, distributed queries and metadata retention.
-  Finish bidirectional visual-run windows and cache styled visual boundaries so
-  scrolling avoids full-row temporary shaping, then further incremental access:
+  Validated fragment paint is now retained for revisited unchanged scroll intervals
+  within a bounded shared cache, with source/account/read/fold/syntax/font/layout
+  invalidation. Finish bidirectional visual-run windows and reusable styled visual
+  boundaries for unvisited intervals so scrolling avoids full-row temporary
+  shaping, then further incremental access:
   edits still materialize
   full Strings and shift
   suffix coordinates. Native offset and line/column queries now use shared sparse

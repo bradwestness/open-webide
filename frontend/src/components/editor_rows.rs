@@ -153,14 +153,19 @@ pub(super) async fn measure_batches(
 pub(super) fn metrics_identity(input: &web_sys::HtmlTextAreaElement) -> Option<String> {
     let style = window().get_computed_style(input).ok()??;
     Some(format!(
-        "{}:{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         input.client_width(),
         style.get_property_value("font").ok()?,
         style.get_property_value("line-height").ok()?,
         style.get_property_value("tab-size").ok()?,
         style.get_property_value("white-space").ok()?,
         style.get_property_value("overflow-wrap").ok()?,
-        style.get_property_value("padding-right").ok()?
+        style.get_property_value("padding-right").ok()?,
+        input.offset_left(),
+        style.get_property_value("letter-spacing").ok()?,
+        style.get_property_value("font-kerning").ok()?,
+        style.get_property_value("font-feature-settings").ok()?,
+        style.get_property_value("font-variant-ligatures").ok()?
     ))
 }
 

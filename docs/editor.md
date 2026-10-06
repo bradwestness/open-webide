@@ -249,8 +249,11 @@ after a checkpoint. Rows outside the rebuilt edit region retain their indexes;
 folded views share the same immutable checkpoints. Long-row paint and cursor probes
 also share sparse grapheme/UTF-16 coordinates and cached horizontal eligibility;
 unchanged rows retain their allocation. Lookups scan from exact cluster boundaries
-instead of preparing a complete glyph array on each probe. Styled visual-boundary
-measurement and temporary row shaping remain uncached.
+instead of preparing a complete glyph array on each probe. Validated fragment paint is retained for revisited intervals (at most 16 entries
+and 2 MiB of HTML), scoped by document, account, read/pending ownership, projection,
+syntax/guide allocation, indentation, whitespace and browser shaping/layout. Font
+events invalidate even when computed font text stays the same. New intervals still
+require styled visual-boundary measurement and temporary row shaping.
 CRLF inverse mapping still selects the original CR, and surrogate offsets retain
 the existing boundary behavior. Projected text, normalized textarea text and
 visible-row coordinates share immutable allocations until source or folds change.
