@@ -119,7 +119,11 @@ Selection expansion follows parsed words, expressions, blocks and functions
 before whole-line fallbacks, with validated source ranges and reversible shrink
 history. Bracket navigation and its decorations use the same contexts, including
 interpolation code and separate embedded bodies. Both retain bounded lexical
-fallbacks when a parser is unavailable; language-aware highlighting remains pending.
+fallbacks when a parser is unavailable. Edit highlighting uses the same cached
+providers, with extensible highlight selectors and parser-protected literal/comment
+spans, including interpolation code and HTML script/style bodies. Tokens preserve
+source bytes; the DOM adapter only normalizes CRLF for textarea alignment.
+Read-only diff paint and richer literal/provider classifications remain pending.
 Files over 2 MiB or 65,536 bracket tokens fall back to ordinary indentation and
 typing. Richer highlighting and large-file benchmarks stay on the roadmap.
 
@@ -156,8 +160,10 @@ interpolation also works during incomplete typing. Contexts verify their exact
 source before a command can mutate history. Custom provider classifiers use the
 same traversal, limits and fallback policy.
 
-Richer highlighting and worker/viewport rendering remain roadmap work.
-Highlighting continues to use its documented bounded lexical structure.
+Richer literal/provider classifications, read-only diff highlighting and
+worker/viewport rendering remain roadmap work. Edit paint retains the same
+10,000-byte plain-line fallback as the lexical renderer and falls back after
+cancelled, oversized or unavailable analysis.
 
 The shared document now owns fold state independently of undo history. Commands
 can collapse/expand at the caret, recursively or all, and reveal a navigation target.

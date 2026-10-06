@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add grammar-aware Edit highlighting through the cached shared editor facade and extensible provider selectors. Paint functions/types, HTML tags and CSS properties, preserve multiline literals/comments, and color interpolation and embedded script/style code independently. Preserve source text and CRLF overlay alignment in both modes; read-only diff paint and richer classifications remain follow-ups.
+
 - Use parser contexts for structural selection expansion and bracket navigation. Expand through named syntax nodes, expressions, blocks and functions while preserving selection direction and shrink history. Match interpolation code and embedded-language brackets, reject stale source data, and share the editor facade and bounded fallbacks in both modes.
 
 - Use parser contexts for line comments, combining per-cursor line markers and CSS/HTML block-comment fallbacks in one undoable transaction. Clip inline script edits to their bodies, reject stale or escaping selections, deduplicate same-line targets, and share selection mapping with other editor commands in both modes.

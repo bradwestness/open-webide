@@ -35,7 +35,7 @@ impl RegionKind {
 pub struct Structure {
     source: Arc<str>,
     language: Language,
-    scopes: Vec<(Range<usize>, Language)>,
+    pub(super) scopes: Vec<(Range<usize>, Language)>,
     selection_ranges: Vec<Range<usize>>,
     pub(super) opaque_starts: Vec<usize>,
     available: bool,

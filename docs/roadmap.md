@@ -78,8 +78,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   structural selection expansion and bracket navigation now consume parser-backed
   contexts, including template interpolation and HTML embedded JavaScript/CSS.
   Selection expansion uses validated named syntax-node ranges and retains shrink
-  history and direction. Extend those contexts to language-aware highlighting;
-  highlighting still uses bounded lexical structure. Reindent preserves
+  history and direction. Edit highlighting now uses cached providers for grammar
+  classifications, literals/comments, template interpolation and embedded bodies.
+  Finish richer literal/provider classifications and shared highlighting for
+  read-only diff renderers. Reindent preserves
   existing Python block depth; language formatting remains in Code intelligence.
 
 - **Selections and files:** the shared document now normalizes overlapping selections,

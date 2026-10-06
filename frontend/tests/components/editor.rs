@@ -323,6 +323,50 @@ async fn parser_selection_and_navigation_share_modes_and_reject_old_file_events(
 }
 
 #[wasm_bindgen_test]
+async fn grammar_highlights_paint_embedded_code_and_preserve_crlf_overlay_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "<script>\r\nconst t = `文 ${call(42)} tail`;\r\n</script><style>a { color: red; }</style>";
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("paint.html".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        wait_until("grammar colors", || {
+            mounted
+                .root
+                .query_selector(".tok-function")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert_eq!(
+            mounted.element(".tok-function").text_content().unwrap(),
+            "call"
+        );
+        assert_eq!(
+            mounted.element(".tok-attribute").text_content().unwrap(),
+            "color"
+        );
+        assert_eq!(
+            mounted
+                .element(".editor-highlight-content")
+                .text_content()
+                .unwrap(),
+            source.replace("\r\n", "\n")
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        drop(mounted);
+        settle().await;
+    }
+}
+
+#[wasm_bindgen_test]
 async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_targets() {
     use openwebide_core::{
         WorkspaceMode,

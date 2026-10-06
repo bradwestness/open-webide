@@ -56,6 +56,7 @@ fn built_in_context(node: tree_sitter::Node<'_>) -> Option<SyntaxContextKind> {
 pub struct SyntaxProvider {
     pub language: Language,
     pub context: Option<ContextSelector>,
+    pub highlight: Option<HighlightSelector>,
     pub injection: Option<InjectionSelector>,
     pub grammar: fn() -> tree_sitter::Language,
     pub fold_nodes: &'static [&'static str],
@@ -67,6 +68,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Rust,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_rust::LANGUAGE.into(),
         parent_headers: &[],
@@ -89,6 +91,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::JavaScript,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         parent_headers: &[],
@@ -107,6 +110,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Jsx,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         parent_headers: &[],
@@ -125,6 +129,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::TypeScript,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         parent_headers: &[],
@@ -145,6 +150,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Tsx,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_typescript::LANGUAGE_TSX.into(),
         parent_headers: &[],
@@ -166,6 +172,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Python,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_python::LANGUAGE.into(),
         parent_headers: &["block"],
@@ -184,6 +191,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Java,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_java::LANGUAGE.into(),
         parent_headers: &[],
@@ -202,6 +210,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::CSharp,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_c_sharp::LANGUAGE.into(),
         parent_headers: &[],
@@ -221,6 +230,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Cpp,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_cpp::LANGUAGE.into(),
         parent_headers: &[],
@@ -238,6 +248,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::C,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_c::LANGUAGE.into(),
         parent_headers: &[],
@@ -254,6 +265,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Php,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_php::LANGUAGE_PHP.into(),
         parent_headers: &[],
@@ -272,6 +284,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Shell,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_bash::LANGUAGE.into(),
         parent_headers: &[],
@@ -291,6 +304,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Go,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_go::LANGUAGE.into(),
         parent_headers: &[],
@@ -307,6 +321,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Html,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: Some(super::syntax_injections::html_injection),
         grammar: || tree_sitter_html::LANGUAGE.into(),
         parent_headers: &[],
@@ -315,6 +330,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Css,
         context: Some(built_in_context),
+        highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_css::LANGUAGE.into(),
         parent_headers: &[],
@@ -327,4 +343,45 @@ pub fn syntax_provider(language: Language) -> Option<SyntaxProvider> {
         .iter()
         .find(|provider| provider.language == language)
         .copied()
+}
+
+pub type HighlightSelector =
+    for<'tree> fn(tree_sitter::Node<'tree>) -> Option<crate::highlight::TokenKind>;
+
+fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::TokenKind> {
+    use crate::highlight::TokenKind;
+    match node.kind() {
+        "type_identifier" | "predefined_type" | "primitive_type" => return Some(TokenKind::Type),
+        "tag_name" => return Some(TokenKind::Keyword),
+        "attribute_name" | "property_name" => return Some(TokenKind::Attribute),
+        "function_name" | "command_name" => return Some(TokenKind::Function),
+        _ => {}
+    }
+    if node.child_count() != 0 {
+        return None;
+    }
+    let parent = node.parent()?;
+    let same = |field| {
+        parent
+            .child_by_field_name(field)
+            .is_some_and(|child| child.id() == node.id())
+    };
+    let kind = parent.kind();
+    if (kind.contains("function")
+        || kind.contains("method")
+        || kind == "call_expression"
+        || kind == "call")
+        && (same("name") || same("function"))
+    {
+        return Some(TokenKind::Function);
+    }
+    if (kind.contains("class")
+        || kind.contains("struct")
+        || kind.contains("interface")
+        || kind.contains("enum"))
+        && same("name")
+    {
+        return Some(TokenKind::Type);
+    }
+    None
 }

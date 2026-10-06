@@ -1,4 +1,5 @@
 //! Incremental syntax analysis shared by browser and native editor adapters.
+mod highlighting;
 use super::{FoldRange, MAX_STRUCTURE_BYTES, SyntaxProvider, normalize_folds, syntax_provider};
 use super::{Structure, SyntaxContextKind, structure::RegionKind};
 use crate::highlight::Language;
@@ -1494,6 +1495,7 @@ mod tests {
         let provider = SyntaxProvider {
             language: Language::Rust,
             context: None,
+            highlight: None,
             injection: None,
             grammar: || tree_sitter_rust::LANGUAGE.into(),
             fold_nodes: &["arguments"],

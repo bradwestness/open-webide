@@ -461,6 +461,11 @@ impl EditorActions {
             .flatten()
     }
 
+    pub fn syntax_highlights(self) -> Option<Vec<Vec<openwebide_core::highlight::Token>>> {
+        self.analyze_syntax(|| true, |document, _| document.highlight_lines())
+            .flatten()
+    }
+
     fn analyze_syntax<T>(
         self,
         should_continue: impl FnMut() -> bool,

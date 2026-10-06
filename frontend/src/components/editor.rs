@@ -642,11 +642,24 @@ fn highlight_html(
     visible: &[usize],
     indentation: openwebide_core::editor::Indentation,
     show_whitespace: bool,
+    prepared: Option<Vec<Vec<openwebide_core::highlight::Token>>>,
 ) -> String {
     #[cfg(feature = "test-support")]
     HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
     let normalized = source.replace("\r\n", "\n");
-    let lines = highlight_lines(&normalized, language);
+    let lines = prepared
+        .map(|mut lines| {
+            let count = lines.len();
+            for line in lines.iter_mut().take(count.saturating_sub(1)) {
+                if let Some(token) = line.last_mut()
+                    && token.text.ends_with('\r')
+                {
+                    token.text.pop();
+                }
+            }
+            lines
+        })
+        .unwrap_or_else(|| highlight_lines(&normalized, language));
     let guides = openwebide_core::editor::indent_guide_columns(source, indentation);
     let mut html = String::new();
     for &idx in visible {
@@ -709,6 +722,7 @@ fn sync_highlight_scroll(textarea: &web_sys::HtmlTextAreaElement, overlay: &web_
 
 #[component]
 fn HighlightOverlay(
+    actions: EditorActions,
     content: ReadSignal<String>,
     open_file: ReadSignal<Option<String>>,
     node_ref: NodeRef<leptos::html::Div>,
@@ -766,6 +780,7 @@ fn HighlightOverlay(
         let language = open_file
             .with_untracked(|path| path.as_deref().map(language_from_path))
             .unwrap_or(Language::Plain);
+        let prepared = actions.syntax_highlights();
         rendered.set(content.with_untracked(|text| {
             highlight_html(
                 text,
@@ -773,6 +788,7 @@ fn HighlightOverlay(
                 &visible.get_untracked(),
                 indentation.get_untracked(),
                 show_whitespace.get_untracked(),
+                prepared,
             )
         }));
         ready.set(true);
@@ -2093,7 +2109,7 @@ pub fn Editor(
                             _ => {
                                 view! {
                                     <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
-                                        <HighlightOverlay content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
+                                        <HighlightOverlay actions=editor_actions content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
                                         <super::editor_selections::SelectionOverlay textarea=ta ready=highlight_ready layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>
                                         <div class="editor-fold-column"><div class="editor-fold-track">{move || {

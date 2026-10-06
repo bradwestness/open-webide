@@ -43,8 +43,8 @@ mod syntax_providers;
 pub use syntax::{SyntaxDocument, SyntaxStatus};
 #[cfg(feature = "editor-parser")]
 pub use syntax_providers::{
-    ContextSelector, InjectionSelector, SYNTAX_PROVIDERS, SyntaxContextKind, SyntaxProvider,
-    syntax_provider,
+    ContextSelector, HighlightSelector, InjectionSelector, SYNTAX_PROVIDERS, SyntaxContextKind,
+    SyntaxProvider, syntax_provider,
 };
 mod comments;
 pub use comments::{block_comment, line_comment};
