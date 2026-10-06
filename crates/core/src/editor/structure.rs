@@ -313,6 +313,17 @@ impl Structure {
             .map_or(self.language, |(_, language)| *language)
     }
 
+    /// Separate embedded bodies cannot share indentation or bracket ancestry,
+    /// even when both use the same language.
+    pub fn same_language_body(&self, first: usize, second: usize) -> bool {
+        let body = |position| {
+            self.scopes
+                .iter()
+                .position(|(range, _)| range.contains(&position))
+        };
+        body(first) == body(second)
+    }
+
     #[cfg(feature = "editor-parser")]
     pub(super) fn parsed(
         text: &str,

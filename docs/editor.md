@@ -106,10 +106,13 @@ files are limited to 256 KiB. Saving `.editorconfig` refreshes the active file's
 rules; switching files rediscovers rules. A pending discovery is discarded after
 a project, folder, bridge or account change.
 
-Structural commands currently use bounded lexical analysis: files over 2 MiB or
-65,536 bracket tokens fall back to ordinary indentation and typing. JavaScript
-template strings remain opaque, including their interpolations. Parser-backed
-editing commands and large-file benchmarks remain roadmap work.
+Paired typing/deletion, Enter and selected-line reindent use validated parser
+contexts when available, including JavaScript template interpolation and HTML
+script/style bodies. Reindent keeps multiline literal content unchanged and
+separates embedded bodies, including after an unclosed block. Other structural
+commands still use bounded lexical analysis. Files over 2 MiB or 65,536 bracket
+tokens fall back to ordinary indentation and typing. Remaining parser-backed
+commands and large-file benchmarks stay on the roadmap.
 
 The edit view retains each file’s caret, selection direction and horizontal/vertical
 scroll position within its project while the app is open, including when switching

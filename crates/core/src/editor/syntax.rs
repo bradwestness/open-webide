@@ -851,6 +851,106 @@ mod tests {
     }
 
     #[test]
+    fn reindent_uses_embedded_bodies_without_leaking_unclosed_blocks() {
+        use super::super::{Document, EditError, Indentation, Selection};
+        let source = "<script>\r\nfunction first() {\r\nx();\r\n</script>\r\n<style>\r\na {\r\ncolor: red;\r\n}\r\n</style>\r\n<script>\r\nfunction second() {\r\ny();\r\n}\r\n</script>";
+        let mut parser = SyntaxDocument::new(Language::Html).unwrap();
+        parser.update(source, || true);
+        let context = parser.structure().unwrap();
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![Selection {
+                anchor: source.len(),
+                head: 0,
+            }])
+            .unwrap();
+        document
+            .reindent_with_context(Indentation::default(), &context)
+            .unwrap();
+        assert_eq!(
+            document.text(),
+            "<script>\r\nfunction first() {\r\n    x();\r\n</script>\r\n<style>\r\na {\r\n    color: red;\r\n}\r\n</style>\r\n<script>\r\nfunction second() {\r\n    y();\r\n}\r\n</script>"
+        );
+        let edited = document.clone();
+        assert_eq!(
+            document.reindent_with_context(Indentation::default(), &context),
+            Err(EditError::StaleContext)
+        );
+        assert_eq!(document, edited);
+        assert!(document.undo());
+        assert_eq!(document.text(), source);
+    }
+
+    #[test]
+    fn reindent_preserves_parser_classified_multiline_literals() {
+        use super::super::{Document, Indentation, Selection};
+        let source = "class C {\nvoid F() {\nvar text = @\"first\n  unchanged literal\nlast\";\nCall();\n}\n}";
+        let mut parser = SyntaxDocument::new(Language::CSharp).unwrap();
+        parser.update(source, || true);
+        let context = parser.structure().unwrap();
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![Selection {
+                anchor: 0,
+                head: source.len(),
+            }])
+            .unwrap();
+        document
+            .reindent_with_context(Indentation::default(), &context)
+            .unwrap();
+        assert_eq!(
+            document.text(),
+            "class C {\n    void F() {\n        var text = @\"first\n  unchanged literal\nlast\";\n        Call();\n    }\n}"
+        );
+    }
+
+    #[test]
+    fn reindent_does_not_change_literal_whitespace_before_interpolation_code() {
+        use super::super::{Document, Indentation, Selection};
+        let source = "class C {\nvoid F() {\nvar text = $@\"first\n  {Call()}\nlast\";\n}\n}";
+        let mut parser = SyntaxDocument::new(Language::CSharp).unwrap();
+        parser.update(source, || true);
+        let context = parser.structure().unwrap();
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![Selection {
+                anchor: 0,
+                head: source.len(),
+            }])
+            .unwrap();
+        document
+            .reindent_with_context(Indentation::default(), &context)
+            .unwrap();
+        assert_eq!(
+            document.text(),
+            "class C {\n    void F() {\n        var text = $@\"first\n  {Call()}\nlast\";\n    }\n}"
+        );
+    }
+
+    #[test]
+    fn reindent_preserves_python_fstring_whitespace_around_code_holes() {
+        use super::super::{Document, Indentation, Selection};
+        let source = "values = [\nf\"\"\"first\n  {call()}\nlast\"\"\"\n]";
+        let mut parser = SyntaxDocument::new(Language::Python).unwrap();
+        parser.update(source, || true);
+        let context = parser.structure().unwrap();
+        let mut document = Document::new(source);
+        document
+            .set_selections(vec![Selection {
+                anchor: 0,
+                head: source.len(),
+            }])
+            .unwrap();
+        document
+            .reindent_with_context(Indentation::default(), &context)
+            .unwrap();
+        assert_eq!(
+            document.text(),
+            "values = [\n    f\"\"\"first\n  {call()}\nlast\"\"\"\n]"
+        );
+    }
+
+    #[test]
     fn parsed_contexts_cover_builtin_literals_and_incomplete_interpolation() {
         for &(path, source, _) in super::super::syntax_contracts::LANGUAGE_CASES {
             let language = crate::highlight::language_from_path(path);

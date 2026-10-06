@@ -801,7 +801,10 @@ impl EditorActions {
         };
         let syntax = if matches!(
             command,
-            EditorCommand::TypeCharacter(_) | EditorCommand::DeletePair | EditorCommand::Newline
+            EditorCommand::TypeCharacter(_)
+                | EditorCommand::DeletePair
+                | EditorCommand::Newline
+                | EditorCommand::Reindent
         ) {
             self.syntax_structure(|| true)
         } else {
@@ -883,10 +886,14 @@ impl EditorActions {
                         )?;
                     }
                     EditorCommand::Reindent => {
-                        document.reindent(
-                            indentation,
-                            openwebide_core::highlight::language_from_path(&key.1),
-                        )?;
+                        if let Some(syntax) = &syntax {
+                            document.reindent_with_context(indentation, syntax)?;
+                        } else {
+                            document.reindent(
+                                indentation,
+                                openwebide_core::highlight::language_from_path(&key.1),
+                            )?;
+                        }
                     }
                     EditorCommand::Undo => {
                         document.undo();

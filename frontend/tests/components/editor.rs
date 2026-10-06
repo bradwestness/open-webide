@@ -34,6 +34,69 @@ fn editor_key(
 }
 
 #[wasm_bindgen_test]
+async fn parser_reindent_preserves_literals_and_embedded_boundaries_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Indentation, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for (path, source, expected) in [
+            (
+                "fixture.html",
+                "<script>\nfunction first() {\nx();\n</script>\n<style>\na {\ncolor: red;\n}\n</style>\n<script>\nfunction second() {\ny();\n}\n</script>",
+                "<script>\nfunction first() {\n    x();\n</script>\n<style>\na {\n    color: red;\n}\n</style>\n<script>\nfunction second() {\n    y();\n}\n</script>",
+            ),
+            (
+                "fixture.cs",
+                "class C {\nvoid F() {\nvar text = @\"文\n  keep 🦀\nlast\";\nCall();\n}\n}",
+                "class C {\n    void F() {\n        var text = @\"文\n  keep 🦀\nlast\";\n        Call();\n    }\n}",
+            ),
+            (
+                "fixture.py",
+                "values = [\nf\"\"\"first\n  {call()}\nlast\"\"\"\n]",
+                "values = [\n    f\"\"\"first\n  {call()}\nlast\"\"\"\n]",
+            ),
+        ] {
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some(path.into()));
+                state.workspace.content.set(source.into());
+                editor_view(state)
+            });
+            let actions = EditorActions::new(mounted.state.workspace);
+            let selection = Selection {
+                anchor: source.len(),
+                head: 0,
+            };
+            actions
+                .command(EditorCommand::Reindent, selection, Indentation::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+            let after = actions.selections(expected)[0];
+            actions
+                .command(EditorCommand::Undo, after, Indentation::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+            // Reusing the parser cache after undo must revalidate its source.
+            actions
+                .command(EditorCommand::Reindent, selection, Indentation::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+            drop(mounted);
+            settle().await;
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_targets() {
     use openwebide_core::{
         WorkspaceMode,

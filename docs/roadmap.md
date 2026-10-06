@@ -74,9 +74,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   parsed folds, incremental Unicode/CRLF updates, cancellation and size fallbacks.
   HTML script/style bodies now use separate incremental JavaScript/CSS parsers
   with full-file fold coordinates, declared-type selection and shared limits.
-  Paired typing/deletion and Enter now consume parser-backed per-cursor contexts,
+  Paired typing/deletion, Enter and selected-line reindent now consume parser-backed contexts,
   including template interpolation and HTML embedded JavaScript/CSS. Extend those
-  contexts to comment/reindent commands, selection/navigation and language-aware
+  contexts to comment commands, selection/navigation and language-aware
   highlighting; those paths still use bounded lexical structure. Reindent preserves
   existing Python block depth; language formatting remains in Code intelligence.
 

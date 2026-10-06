@@ -1,4 +1,4 @@
-//! Reindent selected lines from shared lexical block structure; not a formatter.
+//! Reindent selected lines from shared block contexts; not a formatter.
 use super::{
     Document, Edit, EditError, Indentation, Structure,
     lines::{lines, selected_rows},
@@ -12,7 +12,26 @@ impl Document {
         language: Language,
     ) -> Result<bool, EditError> {
         let syntax = Structure::new(&self.text, language);
-        if !syntax.available() || !super::structure::supports_brackets(language) {
+        self.reindent_in(indentation, &syntax)
+    }
+
+    pub fn reindent_with_context(
+        &mut self,
+        indentation: Indentation,
+        syntax: &Structure,
+    ) -> Result<bool, EditError> {
+        if !syntax.matches_source(&self.text) {
+            return Err(EditError::StaleContext);
+        }
+        self.reindent_in(indentation, syntax)
+    }
+
+    fn reindent_in(
+        &mut self,
+        indentation: Indentation,
+        syntax: &Structure,
+    ) -> Result<bool, EditError> {
+        if !syntax.available() {
             return Ok(false);
         }
         let rows = lines(&self.text);
@@ -25,6 +44,12 @@ impl Document {
             let trimmed = body.trim_start_matches([' ', '\t']);
             let prefix = &body[..body.len() - trimmed.len()];
             let first = row.start + prefix.len();
+            if stack
+                .last()
+                .is_some_and(|(position, _)| !syntax.same_language_body(*position, first))
+            {
+                stack.clear();
+            }
             let existing = indentation.visual_width(prefix);
             let mut columns = stack
                 .last()
@@ -39,6 +64,8 @@ impl Document {
 
             if selected.iter().any(|range| range.contains(&index))
                 && !trimmed.is_empty()
+                && super::structure::supports_brackets(syntax.language_at(first))
+                && syntax.is_code(row.start)
                 && syntax.is_code(first)
             {
                 let replacement = indentation.columns(columns);
@@ -53,6 +80,12 @@ impl Document {
                 .get(cursor)
                 .filter(|(position, _, _)| *position < row.end)
             {
+                if stack
+                    .last()
+                    .is_some_and(|(open, _)| !syntax.same_language_body(*open, position))
+                {
+                    stack.clear();
+                }
                 if closing(bracket).is_some() {
                     stack.push((position, columns));
                 } else if let Some(open) = pair
