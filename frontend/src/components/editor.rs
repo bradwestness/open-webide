@@ -1757,6 +1757,7 @@ pub fn Editor(
                 if let Some(textarea) = ta.get_untracked() { let _ = textarea.focus(); }
             }
         }>
+            <super::editor_tabs::EditorTabs />
             <div class="editor-header">
                 <span class="editor-path" title="Open file">
                     {move || match open_file.get() {

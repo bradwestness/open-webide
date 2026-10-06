@@ -310,6 +310,11 @@ impl FileTreeActions {
     }
     fn invalidate_buffers(self, path: &str) {
         let project = self.workspace.active_project.get_untracked();
+        self.workspace.editor_tabs.update(|tabs| {
+            if let Some(paths) = project.and_then(|project| tabs.get_mut(&project)) {
+                paths.retain(|file| !contains_path(path, file));
+            }
+        });
         self.workspace.editor_buffers.update(|buffers| {
             buffers.retain(|(id, file), _| Some(*id) != project || !contains_path(path, file));
         });

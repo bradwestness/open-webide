@@ -1128,3 +1128,216 @@ async fn switching_files_preserves_independent_edits_history_and_positions_in_bo
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn editor_file_tabs_close_discard_and_keyboard_navigation_share_both_modes() {
+    use openwebide_core::editor::Selection;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for local in [false, true] {
+        let folder = if local {
+            Some(treeFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(treeHandle);
+        let capture = std::rc::Rc::new(std::cell::Cell::new(None));
+        let slot = capture.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            if let Some(handle) = handle {
+                state
+                    .projects
+                    .projects
+                    .update(|items| items[0].mode = WorkspaceMode::Local);
+                state.projects.local_handles.update(|items| {
+                    items.insert(1, handle.unchecked_into());
+                });
+            }
+            let read_only = RwSignal::new(false);
+            let actions = WorkspaceActions::new(
+                state.api,
+                state.projects,
+                state.workspace,
+                state.ui,
+                read_only,
+                Callback::new(|()| ()),
+            );
+            slot.set(Some((actions, EditorActions::new(state.workspace))));
+            view! { <style>{include_str!("../../styles.css")}</style><openwebide_frontend::components::Editor read_only=read_only.into() on_open_lossy=actions.on_open_lossy on_save=actions.on_save on_accept=actions.on_accept on_reject=actions.on_reject /><ConfirmDialog /> }
+        });
+        let (actions, editor) = capture.get().unwrap();
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        for (path, content) in [("a.txt", "One"), ("b.txt", "Two")] {
+            files.write(path, content).await.unwrap();
+            actions.request_open.run(path.into());
+            wait_until("Read completed", || {
+                !mounted.state.workspace.editor_loading.get_untracked()
+            })
+            .await;
+            settle().await;
+        }
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all("[role=tab]")
+                .unwrap()
+                .length(),
+            2
+        );
+        editor
+            .native_input("Two!".into(), Selection::caret(4), "insertText", 1.0)
+            .unwrap();
+        mounted.click("[data-editor-tab='a.txt']");
+        wait_until("Selected first file", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        settle().await;
+        assert_eq!(
+            mounted
+                .element("[data-editor-tab='a.txt']")
+                .get_attribute("aria-selected")
+                .as_deref(),
+            Some("true")
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-tab-dirty")
+                .unwrap()
+                .is_some()
+        );
+        mounted.click("[aria-label='Close b.txt']");
+        settle().await;
+        assert!(mounted.state.ui.confirm.get_untracked().is_some());
+        mounted.click_text("Cancel");
+        settle().await;
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all("[role=tab]")
+                .unwrap()
+                .length(),
+            2
+        );
+        mounted.click("[aria-label='Close b.txt']");
+        settle().await;
+        mounted.click_text("Discard and close");
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("a.txt")
+        );
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all("[role=tab]")
+                .unwrap()
+                .length(),
+            1
+        );
+        assert!(
+            !mounted
+                .state
+                .workspace
+                .editor_buffers
+                .get_untracked()
+                .contains_key(&(1, "b.txt".into()))
+        );
+        assert_eq!(files.read("b.txt").await.unwrap(), "Two");
+        actions.request_open.run("b.txt".into());
+        wait_until("Reopened discarded file", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "Two");
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("ArrowLeft");
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        mounted
+            .element("[data-editor-tab='b.txt']")
+            .dispatch_event(
+                &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+                    .unwrap(),
+            )
+            .unwrap();
+        wait_until("Keyboard selected adjacent file", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("a.txt")
+        );
+        assert_eq!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .get_attribute("data-editor-tab")
+                .as_deref(),
+            Some("a.txt")
+        );
+        // A confirmation cannot discard text entered after it was opened.
+        editor
+            .native_input("One!".into(), Selection::caret(4), "insertText", 2.0)
+            .unwrap();
+        actions.close_file.run("a.txt".into());
+        settle().await;
+        editor
+            .native_input("One!!".into(), Selection::caret(5), "insertText", 3.0)
+            .unwrap();
+        mounted.click_text("Discard and close");
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "One!!");
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("a.txt")
+        );
+        actions.close_file.run("a.txt".into());
+        settle().await;
+        let old_account_close = mounted.state.ui.confirm.get_untracked().unwrap().action;
+        mounted
+            .state
+            .auth
+            .generation
+            .update(|generation| *generation += 1);
+        old_account_close.run(());
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "One!!");
+        assert!(
+            mounted.state.workspace.editor_tabs.get_untracked()[&1].contains(&"a.txt".to_string())
+        );
+        mounted.state.ui.clear_confirm();
+        actions.close_file.run("a.txt".into());
+        settle().await;
+        mounted.click_text("Discard and close");
+        wait_until("Closed active file selected neighbor", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("b.txt")
+        );
+        actions.close_file.run("b.txt".into());
+        settle().await;
+        assert!(mounted.state.workspace.open_file.get_untracked().is_none());
+        assert!(mounted.state.workspace.editor_tabs.get_untracked()[&1].is_empty());
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-file-tabs")
+                .unwrap()
+                .is_none()
+        );
+        if let Some(folder) = folder {
+            treeCleanup(&folder).await.unwrap();
+        }
+    }
+}

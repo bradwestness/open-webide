@@ -122,6 +122,7 @@ pub struct WorkspaceActions {
     pub ensure_root: Callback<i64>,
     pub on_open_lossy: Callback<()>,
     pub request_open: Callback<String>,
+    pub close_file: Callback<String>,
     pub on_toggle: Callback<String>,
     pub on_save: Callback<()>,
     pub on_accept: Callback<()>,
@@ -144,6 +145,11 @@ impl WorkspaceActions {
         refresh_git: Callback<()>,
     ) -> Self {
         let active_project = projects.active_project;
+        Effect::new(move |_| {
+            if let Some((project, path)) = active_project.get().zip(workspace.open_file.get()) {
+                workspace.register_editor_tab(project, path);
+            }
+        });
         let auth = expect_context::<AuthState>();
         let workspace_for = Callback::new(move |project_id: i64| -> Option<Workspace> {
             Workspace::for_project(api, projects, project_id)
@@ -440,6 +446,9 @@ impl WorkspaceActions {
             });
             save_editor.cancel_composition();
             if changed {
+                workspace.editor_tabs.update(|tabs| {
+                    tabs.remove(&project_id);
+                });
                 workspace
                     .editor_buffers
                     .update(|buffers| buffers.retain(|(id, _), _| *id != project_id));
@@ -537,6 +546,92 @@ impl WorkspaceActions {
         });
 
         let request_open = on_open;
+
+        let close_file = Callback::new(move |path: String| {
+            let Some(project) = active_project.get_untracked() else {
+                return;
+            };
+            if workspace.is_resolving() {
+                ui.notify("Wait for the current editor operation to finish");
+                return;
+            }
+            let generation = auth.generation.get_untracked();
+            let epoch = directory_epoch.get_untracked();
+            let buffer = || {
+                if workspace.open_file.get_untracked().as_deref() == Some(&path) {
+                    Some((
+                        workspace.content.get_untracked(),
+                        workspace.dirty.get_untracked(),
+                    ))
+                } else {
+                    workspace.editor_buffers.with_untracked(|buffers| {
+                        buffers
+                            .get(&(project, path.clone()))
+                            .map(|buffer| (buffer.content.clone(), buffer.dirty))
+                    })
+                }
+            };
+            let captured = buffer();
+            let dirty = captured.as_ref().is_some_and(|(_, dirty)| *dirty);
+            let close_path = path.clone();
+            let close = Callback::new(move |()| {
+                if auth.generation.try_get_untracked() != Some(generation)
+                    || directory_epoch.try_get_untracked() != Some(epoch)
+                    || active_project.try_get_untracked() != Some(Some(project))
+                    || workspace.is_resolving()
+                {
+                    return;
+                }
+                let latest = if workspace.open_file.get_untracked().as_deref() == Some(&close_path)
+                {
+                    Some((
+                        workspace.content.get_untracked(),
+                        workspace.dirty.get_untracked(),
+                    ))
+                } else {
+                    workspace.editor_buffers.with_untracked(|buffers| {
+                        buffers
+                            .get(&(project, close_path.clone()))
+                            .map(|buffer| (buffer.content.clone(), buffer.dirty))
+                    })
+                };
+                if latest != captured {
+                    ui.notify("The file changed while the close dialog was open. Close it again to review your latest edits.");
+                    return;
+                }
+                let active = workspace.open_file.get_untracked().as_deref() == Some(&close_path);
+                if active {
+                    save_editor.cancel_composition();
+                }
+                let next = batch(|| {
+                    let next = workspace.remove_editor_tab(project, &close_path);
+                    if active {
+                        workspace.begin_editor_read();
+                        workspace.editor_loading.set(false);
+                        revoke_object_url(workspace.media_url.get_untracked());
+                        workspace.media_url.set(None);
+                        workspace.open_file.set(None);
+                        workspace.content.set(String::new());
+                        workspace.dirty.set(false);
+                        read_only.set(false);
+                    }
+                    next
+                });
+                if active && let Some(next) = next {
+                    request_open.run(next);
+                }
+            });
+            if dirty {
+                ui.confirm.set(Some(ConfirmRequest {
+                    title: "Close unsaved file".into(),
+                    message: format!("Discard unsaved changes to `{path}` and close the file?"),
+                    confirm_label: "Discard and close".into(),
+                    action: close,
+                }));
+            } else {
+                close.run(());
+            }
+        });
 
         let on_toggle = Callback::new(move |dir: String| {
             let mut expanded = workspace.expanded.get();
@@ -1017,12 +1112,13 @@ impl WorkspaceActions {
             workspace.search.set(None);
         });
 
-        Self {
+        let actions = Self {
             workspace_for,
             on_grant_access,
             ensure_root,
             on_open_lossy,
             request_open,
+            close_file,
             on_toggle,
             on_save,
             on_accept,
@@ -1033,7 +1129,9 @@ impl WorkspaceActions {
             on_cancel_search,
             on_search,
             on_clear_search,
-        }
+        };
+        provide_context(actions);
+        actions
     }
 }
 

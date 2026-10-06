@@ -250,5 +250,9 @@ changes; unsaved files keep their text. Save writes only the selected file.
 Filesystem actions protect unsaved buffers even when another file is selected.
 Confirmed delete/revert clears affected buffers. Loading temporarily disables
 editing, and late reads cannot replace newer input or another account/project.
-File tabs and database draft/reload recovery are still on the roadmap; refreshing
-currently loses these in-memory buffers.
+The file tab strip keeps opening order, shows unsaved indicators, and supports
+Left/Right/Home/End navigation. Closing an unsaved file asks before discarding it;
+Cancel leaves it open. Closing the selected file chooses an adjacent tab. A close
+confirmation cannot discard newer edits or files from another account/project.
+Database draft/reload recovery is still on the roadmap; refreshing currently loses
+these in-memory buffers.

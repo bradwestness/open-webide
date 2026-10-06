@@ -95,8 +95,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   sticky-column behavior. Finish visual-row movement when word wrap is enabled and
   real-device input/clipboard verification for multiple cursors. File navigation now
   retains independent dirty buffers, history, caret and scroll state in memory,
-  with protected reads and filesystem mutation guards. Add the file tab strip and
-  close/discard controls. Persist the
+  with protected reads and filesystem mutation guards. File tabs share selected-tab
+  styling, keyboard navigation and guarded close/discard controls. Persist the
   selected editor file per project in user-scoped database state and reopen it after
   refresh or in a new window, with workspace permissions and stale-result guards.
   Coordinate draft/reload recovery with the existing Offline & error-state recovery

@@ -9,7 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Retain independent unsaved editor buffers when navigating between files, alongside each document's undo history, selections, folds and scroll position. Protect pending reads from newer input, project/account switches and repeated opens; guard hidden drafts against file mutations and clear affected buffers after confirmed delete/revert. Both filesystem modes use the same workspace facade. File tabs and database draft/reload recovery remain in progress.
+- Add editor file tabs with shared selected-tab styling, unsaved indicators, keyboard navigation and inline close icons. Keep independent buffers when selecting tabs; confirm unsaved closes, reject stale confirmations, and select an adjacent file after closing the active tab. Both workspace modes share the same facade. Database draft/reload recovery remains in progress.
+
+- Retain independent unsaved editor buffers when navigating between files, alongside each document's undo history, selections, folds and scroll position. Protect pending reads from newer input, project/account switches and repeated opens; guard hidden drafts against file mutations and clear affected buffers after confirmed delete/revert. Both filesystem modes use the same workspace facade. Database draft/reload recovery remains in progress.
 
 - Use shared parser contexts for paired typing/deletion and Enter, selecting the language per cursor in HTML script/style bodies and exposing template interpolation code while protecting literals. Retain bounded lexical fallback for incomplete input, including nested/escaped JavaScript templates. Reject stale contexts before changing text or history; remaining command contexts and richer highlighting stay on the roadmap.
 

@@ -60,6 +60,7 @@ pub struct WorkspaceState {
     pub counted_agent_writes: RwSignal<HashSet<(i64, String)>>,
     pub media_url: RwSignal<Option<String>>,
     pub snapshots: RwSignal<HashMap<i64, WorkspaceSnapshot>>,
+    pub editor_tabs: RwSignal<HashMap<i64, Vec<String>>>,
     pub editor_buffers: RwSignal<HashMap<(i64, String), EditorBuffer>>,
     pub editor_loading: RwSignal<bool>,
     pub editor_read_revision: RwSignal<u64>,
@@ -108,6 +109,7 @@ impl WorkspaceState {
             counted_agent_writes: RwSignal::new(HashSet::new()),
             media_url: RwSignal::new(None),
             snapshots: RwSignal::new(HashMap::new()),
+            editor_tabs: RwSignal::new(HashMap::new()),
             editor_buffers: RwSignal::new(HashMap::new()),
             editor_loading: RwSignal::new(false),
             editor_read_revision: RwSignal::new(0),
@@ -170,6 +172,51 @@ impl WorkspaceState {
         self.apply_snapshot(WorkspaceSnapshot::default());
     }
 
+    pub fn register_editor_tab(&self, project: i64, path: String) {
+        self.editor_tabs.update(|tabs| {
+            let paths = tabs.entry(project).or_default();
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        });
+    }
+
+    /// Remove a document and choose an adjacent tab without losing other buffers.
+    pub fn remove_editor_tab(&self, project: i64, path: &str) -> Option<String> {
+        let mut next = None;
+        self.editor_tabs.update(|tabs| {
+            if let Some(paths) = tabs.get_mut(&project)
+                && let Some(index) = paths.iter().position(|item| item == path)
+            {
+                paths.remove(index);
+                next = paths
+                    .get(index)
+                    .or_else(|| index.checked_sub(1).and_then(|index| paths.get(index)))
+                    .cloned();
+            }
+        });
+        let key = (project, path.to_string());
+        self.editor_buffers.update(|buffers| {
+            buffers.remove(&key);
+        });
+        self.editor_documents.update(|documents| {
+            documents.remove(&key);
+        });
+        self.editor_syntax.update(|syntax| {
+            syntax.remove(&key);
+        });
+        self.editor_scroll.update(|positions| {
+            positions.remove(&key);
+        });
+        self.editor_rules.update(|rules| {
+            rules.remove(&key);
+        });
+        self.editor_indentation.update(|values| {
+            values.remove(&key);
+        });
+        next
+    }
+
     /// Retain text separately from Document's history, selections and folds.
     pub fn retain_editor_buffer(&self, read_only: bool) {
         if self.editor_loading.get_untracked() && !self.dirty.get_untracked() {
@@ -208,6 +255,7 @@ impl WorkspaceState {
     }
 
     pub fn reset(&self) {
+        self.editor_tabs.set(HashMap::new());
         self.editor_buffers.set(HashMap::new());
         self.editor_loading.set(false);
         self.begin_editor_read();
@@ -410,6 +458,48 @@ mod tests {
             workspace.active_project.set(Some(1));
             workspace.open_file.set(Some("one.rs".into()));
             assert!(!workspace.editor_read_current(latest, 1, "one.rs"));
+        });
+    }
+
+    #[test]
+    fn closing_a_tab_keeps_other_documents_and_project_order() {
+        Owner::new().with(|| {
+            let workspace = WorkspaceState::new();
+            for path in ["one.rs", "two.rs", "three.rs", "two.rs"] {
+                workspace.register_editor_tab(1, path.into());
+                workspace.editor_documents.update(|documents| {
+                    documents.insert(
+                        (1, path.into()),
+                        openwebide_core::editor::Document::new(path),
+                    );
+                });
+            }
+            workspace.register_editor_tab(2, "two.rs".into());
+            assert_eq!(workspace.editor_tabs.get_untracked()[&1].len(), 3);
+            assert_eq!(
+                workspace.remove_editor_tab(1, "two.rs").as_deref(),
+                Some("three.rs")
+            );
+            assert!(
+                workspace
+                    .editor_documents
+                    .get_untracked()
+                    .contains_key(&(1, "one.rs".into()))
+            );
+            assert!(
+                !workspace
+                    .editor_documents
+                    .get_untracked()
+                    .contains_key(&(1, "two.rs".into()))
+            );
+            assert_eq!(workspace.editor_tabs.get_untracked()[&2], vec!["two.rs"]);
+            assert_eq!(
+                workspace.remove_editor_tab(1, "three.rs").as_deref(),
+                Some("one.rs")
+            );
+            assert!(workspace.remove_editor_tab(1, "one.rs").is_none());
+            workspace.reset();
+            assert!(workspace.editor_tabs.get_untracked().is_empty());
         });
     }
 
