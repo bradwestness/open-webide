@@ -22,11 +22,14 @@ pub enum EditorCommand {
     Reindent,
 }
 
+mod motion;
+
 type TypingState = Option<((i64, String), String, f64)>;
 
 #[derive(Clone, Copy)]
 pub struct EditorActions {
     workspace: WorkspaceState,
+    auth: Option<crate::state::auth::AuthState>,
     preferences: Option<crate::state::settings::SettingsState>,
     group: RwSignal<u64>,
     typing: RwSignal<TypingState>,
@@ -36,6 +39,7 @@ impl EditorActions {
     pub fn new(workspace: WorkspaceState) -> Self {
         Self {
             workspace,
+            auth: use_context::<crate::state::auth::AuthState>(),
             preferences: use_context::<crate::state::settings::SettingsState>(),
             group: workspace.editor_group,
             typing: RwSignal::new(None),
@@ -121,6 +125,7 @@ impl EditorActions {
     }
 
     pub fn begin_composition(self) {
+        self.cancel_queued_motion(None);
         if self.is_composing() {
             return;
         }
@@ -258,6 +263,7 @@ impl EditorActions {
     }
 
     pub fn record_selection(self, selection: Selection) -> Result<(), EditError> {
+        self.cancel_queued_motion(None);
         let Some(key) = self.key() else {
             return Ok(());
         };
@@ -287,6 +293,7 @@ impl EditorActions {
                 if document.is_composing() || document.selections().first() == Some(&selection) {
                     return Ok(());
                 }
+                self.cancel_queued_motion(None);
                 self.typing.set(None);
                 document.set_selections(vec![selection])
             })
@@ -460,6 +467,7 @@ impl EditorActions {
         if !self.is_current(project, path) || self.source() != source {
             return Ok(None);
         }
+        self.cancel_queued_motion(None);
         let Some(key) = self.key() else {
             return Ok(None);
         };
@@ -698,6 +706,7 @@ impl EditorActions {
         command: openwebide_core::editor::FoldCommand,
     ) -> Option<(openwebide_core::editor::FoldProjection, Selection)> {
         let key = self.key()?;
+        self.cancel_queued_motion(None);
         self.typing.set(None);
         let result = self.workspace.editor_documents.try_update(|documents| {
             let document = self.document(documents, key);

@@ -4,6 +4,7 @@ mod commands;
 mod confirm_dialog;
 mod editor;
 mod editor_geometry;
+mod editor_motion;
 mod editor_options;
 mod editor_selections;
 mod editor_tabs;

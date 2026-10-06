@@ -27,6 +27,8 @@ pub enum SelectionCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SelectionError {
+    TooManyMotions,
+    LayoutUnavailable,
     Edit(EditError),
     Search(SearchError),
     TooLarge,
@@ -34,6 +36,12 @@ pub enum SelectionError {
 impl std::fmt::Display for SelectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TooManyMotions => {
+                f.write_str("Too many pending cursor movements; wait for editor paint")
+            }
+            Self::LayoutUnavailable => {
+                f.write_str("Editor layout is not ready; remaining cursor movement was cancelled")
+            }
             Self::Edit(error) => error.fmt(f),
             Self::Search(error) => error.fmt(f),
             Self::TooLarge => f.write_str("Selection commands are limited to files up to 2 MiB"),

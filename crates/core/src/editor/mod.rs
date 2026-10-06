@@ -14,6 +14,8 @@ pub use navigation::{
 pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
 mod clipboard;
 mod motion;
+mod motion_queue;
+pub use motion_queue::{MotionQueue, MotionRequest};
 mod visual_motion;
 pub use visual_motion::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_caret_offsets};
 mod native;

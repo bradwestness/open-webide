@@ -89,11 +89,18 @@ fn editor_clipboard_copy(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct EditorPaint {
+    pub ticket: u64,
+    pub flush: Callback<()>,
+}
+
 fn editor_selection_key(
     actions: EditorActions,
     textarea: &web_sys::HtmlTextAreaElement,
     event: &web_sys::KeyboardEvent,
     error: RwSignal<Option<String>>,
+    motion_adapter: super::editor_motion::MotionAdapter,
 ) -> bool {
     use openwebide_core::editor::{SelectionCommand as Command, SelectionMotion as Motion};
     let modified = event.ctrl_key() || event.meta_key();
@@ -158,9 +165,19 @@ fn editor_selection_key(
     let Some(path) = textarea.get_attribute("data-editor-path") else {
         return false;
     };
+    if command.is_some() && !motion_adapter.flush(textarea) {
+        return true;
+    }
+    let source = actions.source();
     let selection = projected_selection(actions, textarea, &source);
     if let Err(failure) = actions.record_native_selection(selection) {
         error.set(Some(failure.to_string()));
+        return true;
+    }
+    if let Some(motion) = motion
+        && actions.queued_motion_ticket().is_some()
+    {
+        motion_adapter.queue(textarea, motion, event.shift_key());
         return true;
     }
     let result = if let Some(command) = command {
@@ -176,7 +193,8 @@ fn editor_selection_key(
                 &layout,
             )
         } else {
-            Err(openwebide_core::editor::EditError::StaleContext.into())
+            motion_adapter.queue(textarea, motion.unwrap(), event.shift_key());
+            return true;
         }
     } else {
         actions.move_selections(project, &path, &source, motion.unwrap(), event.shift_key())
@@ -277,7 +295,7 @@ fn refresh_editor_folds(actions: EditorActions) {
 
 // Avoid replacing an unchanged textarea value/selection while its native IME
 // owns the composition range. Commands explicitly restore their source caret.
-fn render_editor_selection(
+pub(super) fn render_editor_selection(
     actions: EditorActions,
     textarea: &web_sys::HtmlTextAreaElement,
     selection: openwebide_core::editor::Selection,
@@ -736,6 +754,8 @@ fn sync_highlight_scroll(textarea: &web_sys::HtmlTextAreaElement, overlay: &web_
 #[component]
 fn HighlightOverlay(
     actions: EditorActions,
+    paint_request: RwSignal<Option<EditorPaint>>,
+    paint_epoch: RwSignal<u64>,
     content: ReadSignal<String>,
     open_file: ReadSignal<Option<String>>,
     node_ref: NodeRef<leptos::html::Div>,
@@ -782,7 +802,7 @@ fn HighlightOverlay(
     let generation = StoredValue::new(0_u64);
     let queued_generation = StoredValue::new(0_u64);
     let path = StoredValue::new(None::<String>);
-    let callback = StoredValue::new_local(Closure::<dyn FnMut()>::new(move || {
+    let paint = Callback::new(move |immediate: bool| {
         request.set_value(None);
         if generation.get_value() != queued_generation.get_value()
             || open_file.get_untracked() != path.get_value()
@@ -794,7 +814,7 @@ fn HighlightOverlay(
             .with_untracked(|path| path.as_deref().map(language_from_path))
             .unwrap_or(Language::Plain);
         let prepared = actions.syntax_highlights();
-        rendered.set(content.with_untracked(|text| {
+        let html = content.with_untracked(|text| {
             highlight_html(
                 text,
                 language,
@@ -803,7 +823,19 @@ fn HighlightOverlay(
                 show_whitespace.get_untracked(),
                 prepared,
             )
-        }));
+        });
+        if immediate && let Some(overlay) = node_ref.get_untracked() {
+            if let Ok(Some(content)) = overlay.query_selector(".editor-highlight-content") {
+                content.set_inner_html(&html);
+            }
+            if let Some(parent) = overlay.parent_element() {
+                let _ = parent.class_list().add_1("highlight-ready");
+            }
+            if let Some(textarea) = textarea_ref.get_untracked() {
+                sync_highlight_scroll(&textarea, &overlay);
+            }
+        }
+        rendered.set(html);
         ready.set(true);
         let published_generation = generation.get_value();
         // Re-align after the highlighted HTML reaches the DOM.
@@ -820,6 +852,22 @@ fn HighlightOverlay(
                 sync_highlight_scroll(&textarea, &overlay);
             }
         });
+    });
+    let callback = StoredValue::new_local(Closure::<dyn FnMut()>::new(move || paint.run(false)));
+    paint_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+    let paint_ticket = paint_epoch.get_untracked();
+    paint_request.set(Some(EditorPaint {
+        ticket: paint_ticket,
+        flush: Callback::new(move |()| {
+            if generation.is_disposed() {
+                return;
+            }
+            if let Some(id) = request.get_value() {
+                let _ = window().cancel_animation_frame(id);
+            }
+            queued_generation.set_value(generation.get_value());
+            paint.run(true);
+        }),
     }));
 
     Effect::new(move || {
@@ -853,6 +901,14 @@ fn HighlightOverlay(
     });
     // Keep the JS closure owned here so cancellation also releases its captures.
     on_cleanup(move || {
+        paint_request.try_update(|binding| {
+            if binding
+                .as_ref()
+                .is_some_and(|binding| binding.ticket == paint_ticket)
+            {
+                *binding = None;
+            }
+        });
         if let Some(id) = request.get_value() {
             let _ = window().cancel_animation_frame(id);
         }
@@ -1342,6 +1398,13 @@ pub fn Editor(
     let replace_open = RwSignal::new(false);
     let replacement_error = RwSignal::new(None::<String>);
     let action_error = RwSignal::new(None::<String>);
+    let paint_request = RwSignal::new(None::<EditorPaint>);
+    let paint_epoch = RwSignal::new(0_u64);
+    let motion_adapter = super::editor_motion::MotionAdapter {
+        actions: editor_actions,
+        paint: paint_request,
+        error: action_error,
+    };
     Effect::new(move || {
         workspace.active_project.track();
         workspace.open_file.track();
@@ -2109,7 +2172,7 @@ pub fn Editor(
                             _ => {
                                 view! {
                                     <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
-                                        <HighlightOverlay actions=editor_actions content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
+                                        <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
                                         <super::editor_selections::SelectionOverlay textarea=ta ready=highlight_ready layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>
                                         <div class="editor-fold-column"><div class="editor-fold-track">{move || {
@@ -2193,7 +2256,7 @@ pub fn Editor(
                                             }
                                             on:mouseup=move |_| column_anchor.set_value(None)
                                             on:paste=move |event: web_sys::ClipboardEvent| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { if !motion_adapter.flush(&textarea) { event.prevent_default(); return; } prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
                                                 let matching = paste_matches_indentation.get_untracked(); paste_matches_indentation.set(false);
                                                 if read_only.get_untracked() { return; }
                                                 let multiple = editor_actions.selections(&content.get_untracked()).len() > 1;
@@ -2214,15 +2277,16 @@ pub fn Editor(
                                             }
                                             on:copy=move |event: web_sys::ClipboardEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea))
-                                                {
+                                                { if !motion_adapter.flush(&textarea) { event.prevent_default(); return; }
                                                     editor_clipboard_copy(editor_actions, &textarea, &event, false, read_only.get_untracked(), action_error);
                                                 }
                                             }
                                             on:cut=move |event: web_sys::ClipboardEvent| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { editor_clipboard_copy(editor_actions, &textarea, &event, true, read_only.get_untracked(), action_error); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { if !motion_adapter.flush(&textarea) { event.prevent_default(); return; } editor_clipboard_copy(editor_actions, &textarea, &event, true, read_only.get_untracked(), action_error); }
                                             }
                                             on:beforeinput=move |event: web_sys::InputEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
+                                                    if !motion_adapter.flush(&textarea) { if event.cancelable() { event.prevent_default(); } return; }
                                                     if event.is_composing() && !editor_actions.is_composing() { if event.cancelable() { event.prevent_default(); } return; }
                                                     if !read_only.get_untracked() { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
                                                     let selection = projected_selection(editor_actions, &textarea, &workspace.content.get_untracked());
@@ -2239,6 +2303,7 @@ pub fn Editor(
                                             }
                                             on:compositionstart=move |event: web_sys::CompositionEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
+                                                    if !motion_adapter.flush(&textarea) { editor_actions.cancel_queued_motion(None); }
                                                     prepare_editor_edit(editor_actions, &textarea, &content.get_untracked());
                                                     let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); editor_actions.begin_composition();
                                                 }
@@ -2253,7 +2318,8 @@ pub fn Editor(
                                             on:keydown=move |event: web_sys::KeyboardEvent| {
                                                 if event.is_composing() { return; }
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
-                                                if editor_selection_key(editor_actions, &textarea, &event, action_error) { event.prevent_default(); event.stop_propagation(); return; }
+                                                if editor_selection_key(editor_actions, &textarea, &event, action_error, motion_adapter) { event.prevent_default(); event.stop_propagation(); return; }
+                                                if !motion_adapter.flush(&textarea) { event.prevent_default(); event.stop_propagation(); return; }
                                                 let modified = event.ctrl_key() || event.meta_key();
                                                 paste_matches_indentation.set(false);
                                                 if modified && event.alt_key() && (matches!(event.key().as_str(), "[" | "]") || matches!(event.code().as_str(), "BracketLeft" | "BracketRight")) {

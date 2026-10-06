@@ -74,8 +74,11 @@ share the existing selection overlay so a wrap boundary stays on the selected ro
 Measurements bind to the complete source and fold projection; stale/missing
 coverage rejects the entire movement without changing text, selections or history.
 The DOM adapter measures neighboring logical lines and caps preparation at 65,536
-caret positions. Queuing while paint is pending and viewport preparation for larger
-wrapped lines remain follow-ups. Multiple selection movement and
+caret positions. While paint is pending, arrow requests queue in order, including
+Shift selections. Typing, commands, composition and clipboard actions flush fresh
+paint and apply queued motion first. File/account/source/fold changes cancel stale
+requests; unavailable layout cancels after eight frames with an error. Viewport
+preparation for larger wrapped lines remains a follow-up. Multiple selection movement and
 structural selection commands are bounded to files up to 2 MiB; Escape still
 returns to the primary cursor in larger files.
 

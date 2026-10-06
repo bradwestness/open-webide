@@ -6098,3 +6098,227 @@ async fn measured_multi_cursor_motion_skips_folded_rows_in_both_modes() {
         assert!(!mounted.state.workspace.dirty.get_untracked());
     }
 }
+
+fn seed_wrapped_carets(mounted: &Mounted, source: &str, second: usize) {
+    use openwebide_core::editor::{Selection, byte_to_textarea};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let actions = EditorActions::new(mounted.state.workspace);
+    let input: web_sys::HtmlTextAreaElement = mounted.element(".editor-textarea").unchecked_into();
+    actions.record_selection(Selection::caret(5)).unwrap();
+    actions
+        .toggle_cursor(1, "queued.rs", source, second + 5)
+        .unwrap();
+    let at = u32::try_from(byte_to_textarea(source, actions.selections(source)[0].head).unwrap())
+        .unwrap();
+    input.set_selection_range(at, at).unwrap();
+}
+
+#[wasm_bindgen_test]
+async fn pending_paint_motion_preserves_key_order_and_flushes_before_edits_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let line = format!("\tlet café = \"{}\";", "文😀 words ".repeat(12));
+        let source = format!("{line}\r\nx\r\n{line}\r\n");
+        let second = line.len() + 5;
+        let expected = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("queued.rs".into()));
+            state.workspace.content.set(source.clone());
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = true);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        wait_until("initial queued-motion paint", || {
+            mounted
+                .root
+                .query_selector(".editor-code.highlight-ready")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        seed_wrapped_carets(&mounted, &expected, second);
+        for (key, shift) in [
+            ("ArrowDown", false),
+            ("ArrowDown", false),
+            ("ArrowUp", true),
+        ] {
+            editor_key(&input, key, false, shift);
+        }
+        let ordered = actions.selections(&expected);
+        seed_wrapped_carets(&mounted, &expected, second);
+        let before = actions.selections(&expected);
+        let code = mounted.element(".editor-code");
+        code.class_list().remove_1("highlight-ready").unwrap();
+        for (key, shift) in [
+            ("ArrowDown", false),
+            ("ArrowDown", false),
+            ("ArrowUp", true),
+        ] {
+            assert!(editor_key(&input, key, false, shift).default_prevented());
+        }
+        assert_eq!(actions.selections(&expected), before);
+        assert!(actions.queued_motion_ticket().is_some());
+        code.class_list().add_1("highlight-ready").unwrap();
+        wait_until("ordered deferred arrows", || {
+            actions.queued_motion_ticket().is_none()
+        })
+        .await;
+        assert_eq!(actions.selections(&expected), ordered);
+        assert_eq!(actions.source(), expected);
+        assert!(
+            mounted
+                .root
+                .query_selector("[role='alert']")
+                .unwrap()
+                .is_none()
+        );
+
+        seed_wrapped_carets(&mounted, &expected, second);
+        editor_key(&input, "ArrowDown", false, false);
+        editor_key(&input, "ArrowDown", false, false);
+        editor_key(&input, "Enter", false, false);
+        let immediate_edit = actions.source();
+        assert_ne!(immediate_edit, expected);
+        editor_key(&input, "z", true, false);
+        wait_until("restored source paint", || {
+            mounted
+                .element(".editor-highlight-content")
+                .text_content()
+                .unwrap()
+                == input.value()
+                && code.class_list().contains("highlight-ready")
+        })
+        .await;
+        assert_eq!(actions.source(), expected);
+        seed_wrapped_carets(&mounted, &expected, second);
+        code.class_list().remove_1("highlight-ready").unwrap();
+        editor_key(&input, "ArrowDown", false, false);
+        editor_key(&input, "ArrowDown", false, false);
+        assert!(actions.queued_motion_ticket().is_some());
+        assert!(editor_key(&input, "Enter", false, false).default_prevented());
+        assert_eq!(
+            actions.source(),
+            immediate_edit,
+            "the edit must use the completed queued caret positions"
+        );
+        assert!(actions.queued_motion_ticket().is_none());
+        settle().await;
+        frame().await;
+        assert_eq!(
+            actions.source(),
+            immediate_edit,
+            "the old frame cannot replay the completed queue"
+        );
+
+        // Mobile/native input can arrive without a keydown. Its beforeinput
+        // handler must also finish pending navigation before browser mutation.
+        editor_key(&input, "z", true, false);
+        wait_until("paint before native queued edit", || {
+            mounted
+                .element(".editor-highlight-content")
+                .text_content()
+                .unwrap()
+                == input.value()
+                && code.class_list().contains("highlight-ready")
+        })
+        .await;
+        seed_wrapped_carets(&mounted, &expected, second);
+        editor_key(&input, "ArrowDown", false, false);
+        let edit_at = actions.selections(&expected);
+        let mut reference = openwebide_core::editor::Document::new(expected.clone());
+        reference.set_selections(edit_at).unwrap();
+        reference.replace_selections("X", None).unwrap();
+        seed_wrapped_carets(&mounted, &expected, second);
+        code.class_list().remove_1("highlight-ready").unwrap();
+        editor_key(&input, "ArrowDown", false, false);
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_input_type("insertText");
+        init.set_data(Some("X"));
+        let event = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        input.dispatch_event(&event).unwrap();
+        assert!(!event.default_prevented());
+        editorNativeInput(&input, "X", "insertText", false);
+        assert_eq!(actions.source(), reference.text());
+        assert!(actions.queued_motion_ticket().is_none());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn queued_motion_cannot_cross_accounts_files_or_newer_tickets_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::SelectionMotion};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let facade = std::rc::Rc::new(std::cell::RefCell::new(None::<EditorActions>));
+        let captured = facade.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("queued.rs".into()));
+            state.workspace.content.set("one\r\ntwo\r\nthree".into());
+            captured.replace(Some(EditorActions::new(state.workspace)));
+            editor_view(state)
+        });
+        settle().await;
+        let actions = facade.borrow().expect("facade created within app context");
+        let source = actions.source();
+        actions
+            .record_selection(openwebide_core::editor::Selection::caret(0))
+            .unwrap();
+        let old = actions
+            .queue_motion(1, "queued.rs", &source, SelectionMotion::Down, false)
+            .unwrap()
+            .unwrap()
+            .0;
+        mounted
+            .state
+            .auth
+            .generation
+            .update(|generation| *generation += 1);
+        assert!(actions.next_queued_motion(old).is_none());
+        assert_eq!(actions.selection(&source).unwrap().head, 0);
+        let old = actions
+            .queue_motion(1, "queued.rs", &source, SelectionMotion::Down, false)
+            .unwrap()
+            .unwrap()
+            .0;
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.rs".into()));
+        assert!(actions.next_queued_motion(old).is_none());
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("queued.rs".into()));
+        let new = actions
+            .queue_motion(1, "queued.rs", &source, SelectionMotion::Right, false)
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_ne!(new, old);
+        assert!(actions.apply_queued_motion(old, None).unwrap().is_none());
+        assert_eq!(actions.queued_motion_ticket(), Some(new));
+        actions.apply_queued_motion(new, None).unwrap();
+        assert_eq!(actions.selection(&source).unwrap().head, 1);
+        assert_eq!(actions.source(), source);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}
