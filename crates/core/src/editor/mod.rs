@@ -42,7 +42,10 @@ pub use capacity::{
     TextPage, editor_limit,
 };
 mod viewport;
-pub use viewport::{EditorViewport, MeasuredRows};
+pub use viewport::{
+    EditorViewport, MAX_MEASURE_BATCHES_PER_FRAME, MAX_MEASURE_BYTES, MAX_MEASURE_ROWS,
+    MeasuredRows, needs_measured_batches, row_measurement_batch,
+};
 mod projection;
 pub use projection::{FoldProjection, ProjectionError, VisibleLine};
 #[cfg(feature = "editor-parser")]

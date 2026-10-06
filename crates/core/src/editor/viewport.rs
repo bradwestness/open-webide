@@ -1,6 +1,39 @@
 //! A document row window; browser adapters supply measured scroll geometry.
 use std::ops::Range;
 
+pub const MAX_MEASURE_ROWS: usize = 128;
+pub const MAX_MEASURE_BYTES: usize = 64 * 1024;
+/// Give native input and visible paint a turn during cold preparation.
+pub const MAX_MEASURE_BATCHES_PER_FRAME: usize = 8;
+
+/// Small projections can be measured in their visible paint. Larger ones use
+/// temporary batches instead of allocating a full document of styled DOM nodes.
+pub const fn needs_measured_batches(rows: usize, bytes: usize) -> bool {
+    rows > MAX_MEASURE_ROWS || bytes > MAX_MEASURE_BYTES
+}
+
+/// Keep a complete logical row together, including an individually long row.
+/// The first row may exceed the byte budget, but never the editor admission cap.
+/// Finer rendering inside such rows is a separate visual-row concern.
+pub fn row_measurement_batch(lengths: impl IntoIterator<Item = usize>) -> usize {
+    let mut rows = 0;
+    let mut bytes = 0_usize;
+    for length in lengths.into_iter().take(MAX_MEASURE_ROWS) {
+        if length > super::MAX_EDITOR_BYTES {
+            break;
+        }
+        let Some(next) = bytes.checked_add(length) else {
+            break;
+        };
+        if rows > 0 && next > MAX_MEASURE_BYTES {
+            break;
+        }
+        bytes = next;
+        rows += 1;
+    }
+    rows
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditorViewport {
     pub rows: Range<usize>,
@@ -119,6 +152,20 @@ impl EditorViewport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measurement_batches_bound_rows_and_bytes_without_splitting_long_rows() {
+        assert_eq!(
+            row_measurement_batch(std::iter::repeat(0)),
+            MAX_MEASURE_ROWS
+        );
+        assert_eq!(row_measurement_batch([32_768, 32_768, 1]), 2);
+        assert_eq!(row_measurement_batch([MAX_MEASURE_BYTES + 1, 1]), 1);
+        assert_eq!(row_measurement_batch([usize::MAX]), 0);
+        assert!(needs_measured_batches(1, MAX_MEASURE_BYTES + 1));
+        assert!(!needs_measured_batches(MAX_MEASURE_ROWS, MAX_MEASURE_BYTES));
+        assert!(needs_measured_batches(MAX_MEASURE_ROWS + 1, 0));
+    }
     #[test]
     fn measured_windows_use_actual_wrap_heights_and_clamp_stale_scroll() {
         let rows =

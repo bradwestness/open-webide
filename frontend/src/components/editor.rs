@@ -852,6 +852,7 @@ fn HighlightOverlay(
     node_ref: NodeRef<leptos::html::Div>,
     textarea_ref: NodeRef<leptos::html::Textarea>,
     ready: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
     visible: Memo<Vec<usize>>,
     viewport: Memo<openwebide_core::editor::EditorViewport>,
     textarea_start: Memo<usize>,
@@ -917,6 +918,100 @@ fn HighlightOverlay(
         content
             .with(|source| openwebide_core::editor::indent_guide_columns(source, indentation.get()))
     });
+    let batch_key = StoredValue::new(None::<(u64, String, usize, bool)>);
+    let batch_ticket = StoredValue::new(None::<u64>);
+    Effect::new(move || {
+        layout_revision.track();
+        actions.view_revision();
+        let preferences = actions.preferences();
+        let prepared_tokens = tokens.get();
+        let whitespace = show_whitespace.get();
+        let tab = indentation.get();
+        let Some(input) = textarea_ref.get() else {
+            return;
+        };
+        if input.client_width() <= 0 || input.client_height() <= 0 {
+            batch_key.set_value(None);
+            if let Some(ticket) = batch_ticket.get_value() {
+                actions.end_row_preparation(ticket);
+            }
+            return;
+        }
+        let Some(projection) = actions.projection() else {
+            return;
+        };
+        if (!preferences.word_wrap && projection.has_uniform_rows())
+            || !openwebide_core::editor::needs_measured_batches(
+                projection.lines().len(),
+                projection.text().len(),
+            )
+        {
+            batch_key.set_value(None);
+            return;
+        }
+        let Some(metrics) = super::editor_rows::metrics_identity(&input) else {
+            return;
+        };
+        let revision = actions.view_revision();
+        let key = (
+            revision,
+            metrics.clone(),
+            std::sync::Arc::as_ptr(&prepared_tokens.1) as usize,
+            whitespace,
+        );
+        if let Some(measured) = actions.measured_rows() {
+            if measured.metrics == metrics && batch_key.get_value().as_ref() == Some(&key) {
+                return;
+            }
+            actions.invalidate_measured_rows();
+            return;
+        }
+        if batch_key.get_value().as_ref() == Some(&key) {
+            return;
+        }
+        batch_key.set_value(Some(key.clone()));
+        let Some(ticket) = actions.begin_row_preparation(revision, projection.lines().len()) else {
+            return;
+        };
+        batch_ticket.set_value(Some(ticket));
+        let guides = guides.get_untracked();
+        let publish_metrics = metrics.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = super::editor_rows::measure_batches(
+                input,
+                projection,
+                metrics,
+                move || {
+                    batch_key.try_get_value().as_ref().and_then(Option::as_ref) == Some(&key)
+                        && actions.row_preparation_current(ticket)
+                },
+                move |completed| actions.report_row_preparation(ticket, completed),
+                move |rows, suffix| {
+                    highlight_html(
+                        &prepared_tokens.1,
+                        prepared_tokens.0,
+                        &guides,
+                        rows,
+                        tab,
+                        whitespace,
+                        suffix,
+                    )
+                },
+            )
+            .await;
+            if batch_key.is_disposed() {
+                return;
+            }
+            if let Some(message) = actions.finish_row_preparation(ticket, publish_metrics, result) {
+                error.set(Some(message.into()));
+            }
+        });
+    });
+    on_cleanup(move || {
+        if let Some(ticket) = batch_ticket.get_value() {
+            actions.end_row_preparation(ticket);
+        }
+    });
     let rendered = RwSignal::new(String::new());
     let rendered_scope = RwSignal::new(0_u64);
     let request = StoredValue::new(None::<i32>);
@@ -955,7 +1050,11 @@ fn HighlightOverlay(
                 );
             }
             if let Some(parent) = overlay.parent_element() {
-                let _ = parent.class_list().add_1("highlight-ready");
+                if viewport.get_untracked().rows.is_empty() {
+                    let _ = parent.class_list().remove_1("highlight-ready");
+                } else {
+                    let _ = parent.class_list().add_1("highlight-ready");
+                }
             }
             if let Some(textarea) = textarea_ref.get_untracked() {
                 sync_highlight_scroll(&textarea, &overlay);
@@ -963,7 +1062,7 @@ fn HighlightOverlay(
         }
         rendered_scope.set(actions.projection_revision());
         rendered.set(html);
-        ready.set(true);
+        ready.set(!viewport.get_untracked().rows.is_empty());
         let published_generation = generation.get_value();
         // Re-align after the highlighted HTML reaches the DOM.
         leptos::leptos_dom::helpers::queue_microtask(move || {
@@ -1577,8 +1676,11 @@ pub fn Editor(
                     12.0,
                 );
             }
+            let batched = projection.with(|view| {
+                openwebide_core::editor::needs_measured_batches(rows, view.text().len())
+            });
             return openwebide_core::editor::EditorViewport {
-                rows: 0..rows,
+                rows: 0..if batched { 0 } else { rows },
                 top: 0.0,
                 height: 0.0,
             };
@@ -2425,7 +2527,7 @@ pub fn Editor(
                             _ => {
                                 view! {
                                     <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
-                                        <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
+                                        <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready error=action_error visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
                                         <super::editor_selections::SelectionOverlay textarea=ta ready=highlight_ready layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>
                                         <div class="editor-fold-column"><div class="editor-fold-track" style=move || format!("padding-top:{}px", viewport.get().top)>{move || {

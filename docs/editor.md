@@ -209,14 +209,23 @@ Syntax tokens and indentation guides are reused across scrolling. Paint and curs
 measurements synchronize native viewport dimensions as well as scroll offsets,
 so a delayed resize/scrollbar observer cannot move a cursor using stale wrap width. Find and navigation
 can reveal rows outside the current paint window. Wrapped views and rows containing
-standalone CR also use exact measured row-height windows after their initial full
-paint. Measurement publication checks source, folds, project, account and font/width
+standalone CR also use exact measured row-height windows. Cold measurement and
+remeasurement use temporary batches of at most 128 logical rows and 64 KiB of
+source, keeping each logical row intact. An individually longer row may exceed
+that byte budget up to the admission cap; finer rendering within these rows
+remains a follow-up. Batches release their DOM before yielding, with a frame turn
+every eight batches. The native input stays visible and editable until exact
+measurements are ready. Shared progress permits queued cursor movement to wait
+while preparation advances, retaining a bounded retry for stalled work.
+Measurement publication checks source, folds, project, account and font/width
 scope, and rejects a height table that disagrees with native scrolling. Offscreen
 cursor-neighbor probes preserve multi-cursor visual motion without repainting the
-whole document. Resize or font changes require fresh measurements. The initial
-paint and remeasurement remain full-document work; bounded cold measurement is
-still a follow-up. Native textarea input owns the complete projected source; this
-does not yet bound input memory.
+whole document. Cursor motion preserves the projection revision when folds do not
+change. Resize, font and styled-paint changes require fresh measurements; collapsed
+panels cancel pending work and restart when visible. Incremental reuse after edits
+and ordered edits/IME/clipboard during cold queued motion remain follow-ups.
+Native textarea input owns the complete projected source; this does not yet bound
+input memory.
 
 The shared document maintains logical-line and UTF-16 prefixes across transactions,
 grouped undo/redo and composition. Commands reuse indexed rows; native caret mapping

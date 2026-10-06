@@ -100,8 +100,12 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   use the index. Native/WASM measurements cover indexed queries and cold/warm
   projection access. Warm wrapped paint now uses exact measured row-height windows
   and bounded offscreen cursor-neighbor probes, with source/project/account/layout
-  guards. Finish bounded cold paint and remeasurement, then further incremental
-  access: edits still materialize full Strings and shift suffix coordinates, and
+  guards. Cold measurement now uses bounded temporary logical-row batches,
+  yielding tasks and frames while native input remains visible; progressing jobs
+  retain queued arrow requests and reject superseded results in both modes.
+  Finish incremental height reuse and fine paint within very long logical rows,
+  then further incremental access: edits still materialize full Strings and shift
+  suffix coordinates, and
   long-line queries still scan within the line. Native textarea input retains the
   full projected source.
   Shared admission now bounds full-editor bytes, display breaks and long lines
@@ -109,8 +113,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   pages, including before/after review sources; interactive transactions enforce
   the same limits. Production input/scroll and process-memory baselines now cover
   admitted byte, row-count and long-line boundaries in both modes; they still show
-  stalls and costly wrapped shaping/cold paint. Finish bounded cold/long-row paint
-  and incremental input, then repeat the boundary workloads (including Linux PSS)
+  stalls and costly wrapped shaping/cold paint. Finish fine long-row paint,
+  incremental measurement and input, then repeat the boundary workloads (including Linux PSS)
   and the unresponsive wrapped cases before validating these limits.
   Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,
   preserving multiline state and discarding partial rows on cancellation.
@@ -133,7 +137,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   pixel goals and soft-wrap caret affinity, skipping folds and rejecting stale
   source/projection measurements. Pending-paint motion now queues in order and
   flushes before edits, IME and clipboard actions, with bounded retries and stale
-  account/file/projection guards. Long wrapped lines now use shared Unicode
+  account/file/projection guards. Finish ordered edits/IME/clipboard when a cold
+  row table is still preparing. Long wrapped lines now use shared Unicode
   indexing and bounded DOM searches to prepare only neighboring visual rows,
   reusing measurements across cursors. Finish real-device input/clipboard
   verification for multiple cursors. File navigation now

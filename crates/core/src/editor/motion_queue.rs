@@ -28,6 +28,7 @@ pub struct MotionQueue {
     revision: u64,
     requests: VecDeque<MotionRequest>,
     waits: usize,
+    preparation: Option<(u64, usize)>,
 }
 impl MotionQueue {
     pub fn new(document: &Document) -> Result<Self, SelectionError> {
@@ -44,6 +45,7 @@ impl MotionQueue {
             revision: document.revision(),
             requests: VecDeque::new(),
             waits: 0,
+            preparation: None,
         })
     }
     pub fn matches(&self, document: &Document) -> bool {
@@ -69,6 +71,23 @@ impl MotionQueue {
             return Err(SelectionError::LayoutUnavailable);
         }
         Ok(())
+    }
+    /// Continued measured progress permits longer preparation, while a stalled
+    /// adapter retains the same bounded wait as an unavailable paint frame.
+    pub fn wait_for_preparation(
+        &mut self,
+        progress: Option<(u64, usize)>,
+    ) -> Result<(), SelectionError> {
+        if let Some(progress) =
+            progress.filter(|(_, completed)| *completed <= super::MAX_EDITOR_LINES)
+            && self
+                .preparation
+                .is_none_or(|previous| progress.0 != previous.0 || progress.1 > previous.1)
+        {
+            self.waits = 0;
+            self.preparation = Some(progress);
+        }
+        self.wait_for_layout()
     }
     pub fn apply_next(
         &mut self,
@@ -105,6 +124,22 @@ impl MotionQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measured_progress_extends_wait_but_a_stalled_preparation_still_fails() {
+        let document = Document::new("one\ntwo");
+        let mut queue = MotionQueue::new(&document).unwrap();
+        for completed in 0..100 {
+            queue.wait_for_preparation(Some((1, completed))).unwrap();
+        }
+        for _ in 0..MAX_WAIT_FRAMES - 1 {
+            queue.wait_for_preparation(Some((1, 98))).unwrap();
+        }
+        assert_eq!(
+            queue.wait_for_preparation(Some((1, 99))),
+            Err(SelectionError::LayoutUnavailable)
+        );
+    }
     use crate::editor::VisualCaret;
 
     #[test]

@@ -5,6 +5,144 @@ use leptos::prelude::*;
 use openwebide_core::editor::MeasuredRows;
 use wasm_bindgen::JsCast;
 
+struct RowProbe(web_sys::HtmlElement);
+impl Drop for RowProbe {
+    fn drop(&mut self) {
+        self.0.remove();
+    }
+}
+
+/// Browser primitives only: styled HTML, exact rectangles and yielding. The
+/// shared core chooses batch sizes and validates the completed height table;
+/// the editor facade rechecks document/layout ownership before publication.
+pub(super) async fn measure_batches(
+    input: web_sys::HtmlTextAreaElement,
+    projection: openwebide_core::editor::FoldProjection,
+    metrics: String,
+    current: impl Fn() -> bool,
+    progress: impl Fn(usize),
+    render: impl Fn(&[usize], bool) -> String,
+) -> Result<Option<MeasuredRows>, ()> {
+    if !current()
+        || !input.is_connected()
+        || input.client_width() <= 0
+        || input.client_height() <= 0
+    {
+        return Ok(None);
+    }
+    let style = window()
+        .get_computed_style(&input)
+        .map_err(|_| ())?
+        .ok_or(())?;
+    let probe = document()
+        .create_element("div")
+        .map_err(|_| ())?
+        .dyn_into::<web_sys::HtmlElement>()
+        .map_err(|_| ())?;
+    probe.set_class_name("editor-highlight editor-row-measure");
+    let gutter = input.offset_left();
+    let width = input.client_width() + gutter;
+    probe
+        .set_attribute("style", &format!("position:fixed;left:-10000px;top:0;width:{width}px;height:auto;visibility:hidden;pointer-events:none;contain:layout style paint;--editor-gutter-width:{gutter}px"))
+        .map_err(|_| ())?;
+    for property in [
+        "font-family",
+        "font-size",
+        "font-style",
+        "font-weight",
+        "line-height",
+        "tab-size",
+        "white-space",
+        "overflow-wrap",
+        "letter-spacing",
+        "font-kerning",
+        "font-feature-settings",
+        "font-variant-ligatures",
+    ] {
+        probe
+            .style()
+            .set_property(
+                property,
+                &style.get_property_value(property).map_err(|_| ())?,
+            )
+            .map_err(|_| ())?;
+    }
+    let paint = document().create_element("div").map_err(|_| ())?;
+    paint.set_class_name("editor-highlight-content");
+    paint.set_attribute("style", &format!("transform:none;will-change:auto;min-height:0;min-width:0;width:{width}px;padding-left:{gutter}px;padding-right:{}", style.get_property_value("padding-right").map_err(|_| ())?)).map_err(|_| ())?;
+    probe.append_child(&paint).map_err(|_| ())?;
+    document()
+        .body()
+        .ok_or(())?
+        .append_child(&probe)
+        .map_err(|_| ())?;
+    let _probe = RowProbe(probe);
+    let mut heights = Vec::with_capacity(projection.lines().len());
+    let mut batches = 0_usize;
+    while heights.len() < projection.lines().len() {
+        if !current()
+            || !input.is_connected()
+            || metrics_identity(&input).as_ref() != Some(&metrics)
+        {
+            return Ok(None);
+        }
+        let start = heights.len();
+        let count = openwebide_core::editor::row_measurement_batch(
+            projection.lines()[start..]
+                .iter()
+                .map(|line| line.source.len()),
+        );
+        if count == 0 {
+            return Err(());
+        }
+        let end = start + count;
+        let rows = projection.lines()[start..end]
+            .iter()
+            .map(|line| line.source_line)
+            .collect::<Vec<_>>();
+        paint.set_inner_html(&render(&rows, end < projection.lines().len()));
+        let measured = paint
+            .query_selector_all(".editor-source-line")
+            .map_err(|_| ())?;
+        if usize::try_from(measured.length()).ok() != Some(count) {
+            return Err(());
+        }
+        let mut previous_bottom = None;
+        let mut batch = Vec::with_capacity(count);
+        for index in 0..measured.length() {
+            let row: web_sys::Element = measured.item(index).ok_or(())?.unchecked_into();
+            let bounds = row.get_bounding_client_rect();
+            if previous_bottom.is_some_and(|bottom: f64| (bounds.top() - bottom).abs() > 0.25) {
+                return Err(());
+            }
+            previous_bottom = Some(bounds.bottom());
+            batch.push(bounds.height());
+        }
+        MeasuredRows::new(batch.iter().copied()).ok_or(())?;
+        heights.extend(batch);
+        progress(heights.len());
+        // Release the previous batch before allowing another input/render task.
+        paint.set_inner_html("");
+        batches += 1;
+        if end < projection.lines().len() {
+            if batches.is_multiple_of(openwebide_core::editor::MAX_MEASURE_BATCHES_PER_FRAME) {
+                crate::util::yield_frame().await;
+            } else {
+                crate::util::yield_task().await;
+            }
+        }
+    }
+    if !current() || !input.is_connected() || metrics_identity(&input).as_ref() != Some(&metrics) {
+        return Ok(None);
+    }
+    let rows = MeasuredRows::new(heights).ok_or(())?;
+    let expected = (rows.height() + 24.0).max(f64::from(input.client_height()));
+    if (f64::from(input.scroll_height()) - expected).abs() > 2.0 {
+        return Err(());
+    }
+    Ok(Some(rows))
+}
+
 pub(super) fn metrics_identity(input: &web_sys::HtmlTextAreaElement) -> Option<String> {
     let style = window().get_computed_style(input).ok()??;
     Some(format!(
@@ -30,6 +168,9 @@ pub(super) fn update_measurements(
     }
     if font_changed {
         actions.invalidate_measured_rows();
+    }
+    if input.client_width() <= 0 || input.client_height() <= 0 {
+        return;
     }
     let Some(projection) = actions.projection() else {
         return;

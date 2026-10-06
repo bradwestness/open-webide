@@ -28,6 +28,14 @@ pub struct EditorRowMeasurements {
     pub rows: openwebide_core::editor::MeasuredRows,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditorRowPreparation {
+    pub ticket: u64,
+    pub revision: u64,
+    pub completed: usize,
+    pub total: usize,
+}
+
 /// Scroll position for a document's edit view; caret and selection live in Document.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EditorScroll {
@@ -231,6 +239,8 @@ pub struct WorkspaceState {
     pub editor_projection_revision: Memo<u64>,
     pub editor_view_revision: Memo<u64>,
     pub editor_rows: RwSignal<Option<EditorRowMeasurements>>,
+    pub editor_row_preparation: RwSignal<Option<EditorRowPreparation>>,
+    pub editor_row_ticket: RwSignal<u64>,
     pub editor_group: RwSignal<u64>,
     pub editor_motion: RwSignal<Option<super::editor_motion::PendingEditorMotion>>,
     pub editor_motion_ticket: RwSignal<u64>,
@@ -312,6 +322,8 @@ impl WorkspaceState {
             editor_projection_revision,
             editor_view_revision,
             editor_rows: RwSignal::new(None),
+            editor_row_preparation: RwSignal::new(None),
+            editor_row_ticket: RwSignal::new(0),
             editor_group: RwSignal::new(0),
             editor_motion: RwSignal::new(None),
             editor_motion_ticket: RwSignal::new(0),
@@ -708,6 +720,9 @@ impl WorkspaceState {
 
     pub fn reset(&self) {
         self.editor_rows.set(None);
+        self.editor_row_preparation.set(None);
+        self.editor_row_ticket
+            .update(|ticket| *ticket = ticket.wrapping_add(1));
         self.editor_layout_epoch
             .update(|epoch| *epoch = epoch.wrapping_add(1));
         self.editor_tabs.set(HashMap::new());

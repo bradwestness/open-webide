@@ -6185,6 +6185,7 @@ async fn pending_paint_motion_preserves_key_order_and_flushes_before_edits_in_bo
         assert_eq!(actions.selections(&expected), ordered);
         seed_wrapped_carets(&mounted, &expected, second);
         let before = actions.selections(&expected);
+        let projection_revision = actions.projection_revision();
         let code = mounted.element(".editor-code");
         code.class_list().remove_1("highlight-ready").unwrap();
         for (key, shift) in [
@@ -6202,6 +6203,7 @@ async fn pending_paint_motion_preserves_key_order_and_flushes_before_edits_in_bo
         })
         .await;
         assert_eq!(actions.selections(&expected), ordered);
+        assert_eq!(actions.projection_revision(), projection_revision);
         assert_eq!(actions.source(), expected);
         assert!(
             mounted
@@ -7417,8 +7419,13 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
         let actions = EditorActions::new(mounted.state.workspace);
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
-        wait_until("exact wrapped height table", || {
+        wait_until("exact wrapped height table and paint", || {
             actions.measured_rows().is_some()
+                && mounted
+                    .root
+                    .query_selector(".editor-code.highlight-ready .editor-source-line")
+                    .unwrap()
+                    .is_some()
         })
         .await;
         let measured = actions.measured_rows().unwrap();
@@ -7537,5 +7544,193 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
         .await;
         assert_eq!(input.value(), "small\n");
         assert!(mounted.root.query_selector_all(selector).unwrap().length() <= 2);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn cold_wrapped_preparation_keeps_input_visible_and_rejects_superseded_batches_in_both_modes()
+{
+    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+    export function without_scheduler() {
+        const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'scheduler');
+        Object.defineProperty(globalThis, 'scheduler', {value: undefined, configurable: true});
+        return () => {
+            if (descriptor) Object.defineProperty(globalThis, 'scheduler', descriptor);
+            else delete globalThis.scheduler;
+        };
+    }
+    "#)]
+    extern "C" {
+        fn without_scheduler() -> js_sys::Function;
+    }
+    struct SchedulerRestore(js_sys::Function);
+    impl Drop for SchedulerRestore {
+        fn drop(&mut self) {
+            self.0.call0(&wasm_bindgen::JsValue::NULL).unwrap();
+        }
+    }
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = "row 文😀 café\t words for wrapping more words\n".repeat(12_000);
+    for (mode, fallback) in [
+        (WorkspaceMode::Local, false),
+        (WorkspaceMode::Remote, false),
+        (WorkspaceMode::Local, true),
+        (WorkspaceMode::Remote, true),
+    ] {
+        let _scheduler = fallback.then(|| SchedulerRestore(without_scheduler()));
+        let mounted = mount_test({
+            let source = source.clone();
+            move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("cold-window.txt".into()));
+                state.workspace.content.set(source);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = true);
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        wait_until("cold row preparation advances", || {
+            mounted
+                .state
+                .workspace
+                .editor_row_preparation
+                .get_untracked()
+                .is_some_and(|preparation| {
+                    preparation.completed > 0 && preparation.completed < preparation.total
+                })
+        })
+        .await;
+        let previous = mounted
+            .state
+            .workspace
+            .editor_row_preparation
+            .get_untracked()
+            .unwrap();
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all(".editor-source-line")
+                .unwrap()
+                .length(),
+            0
+        );
+        assert!(
+            !mounted
+                .element(".editor-code")
+                .class_list()
+                .contains("highlight-ready")
+        );
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_eq!(textarea.value(), source);
+        assert_ne!(
+            web_sys::window()
+                .unwrap()
+                .get_computed_style(&textarea)
+                .unwrap()
+                .unwrap()
+                .get_property_value("color")
+                .unwrap(),
+            "rgba(0, 0, 0, 0)"
+        );
+        let changed = format!("z{source}");
+        input(&mounted, &changed);
+        assert_eq!(actions.source(), changed);
+        assert!(mounted.state.workspace.dirty.get_untracked());
+        assert!(!actions.row_preparation_current(previous.ticket));
+        actions.report_row_preparation(previous.ticket, usize::MAX);
+        wait_until("new cold preparation advances", || {
+            mounted
+                .state
+                .workspace
+                .editor_row_preparation
+                .get_untracked()
+                .is_some_and(|preparation| {
+                    preparation.ticket != previous.ticket
+                        && preparation.completed > 0
+                        && preparation.completed < preparation.total
+                })
+        })
+        .await;
+        actions
+            .record_selection(openwebide_core::editor::Selection::caret(5))
+            .unwrap();
+        let distant = 1
+            + source
+                .split_inclusive('\n')
+                .take(9_000)
+                .map(str::len)
+                .sum::<usize>()
+            + 4;
+        actions
+            .toggle_cursor(1, "cold-window.txt", &changed, distant)
+            .unwrap();
+        let before = actions.selections(&changed);
+        let native = u32::try_from(
+            openwebide_core::editor::byte_to_textarea(&changed, before[0].head).unwrap(),
+        )
+        .unwrap();
+        textarea.set_selection_range(native, native).unwrap();
+        assert!(editor_key(&textarea, "ArrowDown", false, false).default_prevented());
+        assert!(actions.queued_motion_ticket().is_some());
+        assert_eq!(actions.selections(&changed), before);
+        wait_until("replacement source owns measured paint", || {
+            actions
+                .measured_rows()
+                .is_some_and(|rows| rows.rows.len() == 12_001)
+                && mounted
+                    .root
+                    .query_selector(".editor-code.highlight-ready .editor-source-line")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
+        wait_until("cold queued cursors retain their movement", || {
+            actions.queued_motion_ticket().is_none()
+                && actions
+                    .selections(&changed)
+                    .iter()
+                    .zip(&before)
+                    .all(|(after, before)| after.head > before.head)
+        })
+        .await;
+        assert_eq!(actions.source(), changed);
+        assert_eq!(textarea.value(), changed);
+        assert!(
+            mounted
+                .root
+                .query_selector_all(".editor-source-line")
+                .unwrap()
+                .length()
+                < 80
+        );
+        wait_until("temporary probes are released", || {
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .query_selector(".editor-row-measure")
+                .unwrap()
+                .is_none()
+        })
+        .await;
+        assert!(
+            mounted
+                .root
+                .query_selector("[role='alert']")
+                .unwrap()
+                .is_none()
+        );
     }
 }

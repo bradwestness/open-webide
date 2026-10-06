@@ -258,6 +258,58 @@ impl EditorActions {
             .editor_layout_epoch
             .update(|epoch| *epoch = epoch.wrapping_add(1));
     }
+    pub fn begin_row_preparation(self, revision: u64, total: usize) -> Option<u64> {
+        if self.view_revision() != revision || total > openwebide_core::editor::MAX_EDITOR_LINES {
+            return None;
+        }
+        self.workspace
+            .editor_row_ticket
+            .update(|ticket| *ticket = ticket.wrapping_add(1));
+        let ticket = self.workspace.editor_row_ticket.get_untracked();
+        self.workspace.editor_row_preparation.set(Some(
+            crate::state::workspace::EditorRowPreparation {
+                ticket,
+                revision,
+                completed: 0,
+                total,
+            },
+        ));
+        Some(ticket)
+    }
+    pub fn row_preparation_current(self, ticket: u64) -> bool {
+        self.workspace
+            .editor_row_preparation
+            .with_untracked(|preparation| {
+                preparation.is_some_and(|preparation| {
+                    preparation.ticket == ticket && preparation.revision == self.view_revision()
+                })
+            })
+    }
+    pub fn report_row_preparation(self, ticket: u64, completed: usize) {
+        if !self.row_preparation_current(ticket) {
+            return;
+        }
+        self.workspace.editor_row_preparation.update(|preparation| {
+            if let Some(preparation) = preparation.as_mut()
+                && completed >= preparation.completed
+                && completed <= preparation.total
+            {
+                preparation.completed = completed;
+            }
+        });
+    }
+    pub fn end_row_preparation(self, ticket: u64) {
+        self.workspace
+            .editor_row_preparation
+            .try_update(|preparation| {
+                if preparation
+                    .as_ref()
+                    .is_some_and(|preparation| preparation.ticket == ticket)
+                {
+                    *preparation = None;
+                }
+            });
+    }
     pub fn publish_measured_rows(
         self,
         revision: u64,
@@ -375,6 +427,29 @@ impl EditorActions {
                 },
             );
         });
+    }
+    pub fn finish_row_preparation(
+        self,
+        ticket: u64,
+        metrics: String,
+        result: Result<Option<openwebide_core::editor::MeasuredRows>, ()>,
+    ) -> Option<&'static str> {
+        if !self.row_preparation_current(ticket) {
+            self.end_row_preparation(ticket);
+            return None;
+        }
+        let message = match result {
+            Ok(Some(rows)) => {
+                self.publish_measured_rows(self.view_revision(), metrics, rows);
+                None
+            }
+            Ok(None) => None,
+            Err(()) => Some(
+                "The highlighted view is unavailable for this layout. You can keep editing the file.",
+            ),
+        };
+        self.end_row_preparation(ticket);
+        message
     }
 
     pub fn scroll(self) -> crate::state::workspace::EditorScroll {

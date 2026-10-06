@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Measure cold wrapped editor layouts in temporary row/byte batches, keeping native input visible and yielding to browser tasks and frames in both modes. Reject superseded jobs, preserve queued arrows while progress advances, and keep projection identity stable when cursor motion does not change folds. Incremental height reuse and fine long-row rendering remain in progress.
+
 - Add Open Graph and Twitter large-image previews to every website page, plus an open-source credits page generated from Cargo and site-build dependency metadata.
 
 - Add a WebFinger discovery alias for `@openwebide@openwebide.com` that resolves to the existing Mastodon account.

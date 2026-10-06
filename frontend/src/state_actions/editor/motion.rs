@@ -113,6 +113,14 @@ impl EditorActions {
     }
 
     pub fn wait_for_motion_layout(self, ticket: u64) -> Result<(), SelectionError> {
+        let progress = self
+            .workspace
+            .editor_row_preparation
+            .with_untracked(|preparation| {
+                preparation
+                    .filter(|preparation| self.row_preparation_current(preparation.ticket))
+                    .map(|preparation| (preparation.ticket, preparation.completed))
+            });
         self.workspace
             .editor_motion
             .try_update(|pending| {
@@ -120,7 +128,7 @@ impl EditorActions {
                 else {
                     return Ok(());
                 };
-                pending.queue.wait_for_layout()
+                pending.queue.wait_for_preparation(progress)
             })
             .unwrap_or(Ok(()))
     }
@@ -146,6 +154,7 @@ impl EditorActions {
             return Ok(None);
         }
         let indentation = self.rules_untracked().indentation;
+        let mut folds_changed = false;
         let result = self
             .workspace
             .editor_documents
@@ -153,7 +162,10 @@ impl EditorActions {
                 let Some(document) = documents.get_mut(&pending.key) else {
                     return Ok(None);
                 };
-                pending.queue.apply_next(document, indentation, layout)
+                let folds = document.fold_state().clone();
+                let result = pending.queue.apply_next(document, indentation, layout);
+                folds_changed = document.fold_state() != &folds;
+                result
             })
             .unwrap_or(Ok(None));
         if result.is_ok() && pending.queue.next_request().is_some() {
@@ -161,9 +173,11 @@ impl EditorActions {
         }
         if matches!(result, Ok(Some(_))) {
             self.typing.set(None);
-            self.workspace
-                .editor_fold_revision
-                .update(|value| *value = value.wrapping_add(1));
+            if folds_changed {
+                self.workspace
+                    .editor_fold_revision
+                    .update(|value| *value = value.wrapping_add(1));
+            }
         }
         result
     }

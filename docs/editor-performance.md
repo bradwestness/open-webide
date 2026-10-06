@@ -145,3 +145,28 @@ responsiveness limits. Finish bounded cold measurement/paint, finer rendering
 within very long wrapped rows, and incremental input/source access; then repeat
 these cases with memory sampling, including Linux PSS, and verify the previously
 unresponsive wrapped workloads before closing the roadmap item.
+
+
+## Cold measurement batches
+
+The batched-layout working tree on 2026-10-06 (checkout `f628df9`, concurrent
+branding changes, built JS `openwebide-frontend-1866e76a7cfeee5f.js`) completed
+both previously unverified 2 MiB wrapped cases. The same Chrome 148/macOS harness
+used bounded temporary row DOM, task yields and a frame turn every eight batches.
+These are single observations, including concurrent host workloads; summed RSS
+retains the shared-page caveat above.
+
+| Workload | Mode | Cold ms | Input ms | Scroll ms | Main WASM after input MiB | Sampled peak summed RSS GiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 58 KB / 1,001 rows | Local | 711 | 91 | 17 | 24.4 | 1.08 |
+| 58 KB / 1,001 rows | Remote | 762 | 107 | 32 | 24.6 | 1.09 |
+| 2 MiB / 36,158 rows | Local | 2,366 | 2,579 | 89 | 105.4 | 2.02 |
+| 2 MiB / 36,158 rows | Remote | 2,616 | 2,628 | 89 | 104.6 | 2.03 |
+
+Full records: [batched wrapped JSONL](editor-performance/production-view-cold-batches.jsonl).
+The larger cases still produce frame stalls around 533 ms and rebuild the complete
+height table after input. Progressing preparation accepts ordinary native typing
+and retains queued arrows, but ordered edits/IME/clipboard after a queued arrow
+still need work. Incremental height reuse, finer shaping within long logical rows,
+native input/source access and Linux PSS/device validation remain open. Completing
+these cases does not validate the admission boundaries as responsiveness limits.

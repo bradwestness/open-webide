@@ -6,3 +6,37 @@ pub async fn sleep_ms(ms: i32) {
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function yield_browser_task() {
+    if (globalThis.scheduler?.yield) return globalThis.scheduler.yield();
+    return new Promise(resolve => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => {
+            channel.port1.close(); channel.port2.close(); resolve();
+        };
+        channel.port2.postMessage(0);
+    });
+}
+export function next_browser_frame() {
+    return new Promise(resolve => {
+        if (document.hidden) setTimeout(resolve, 0);
+        else requestAnimationFrame(resolve);
+    });
+}
+"#)]
+extern "C" {
+    fn yield_browser_task() -> js_sys::Promise;
+    fn next_browser_frame() -> js_sys::Promise;
+}
+
+/// Browser task scheduling is a runtime primitive. Unlike repeated timers, this
+/// does not accumulate the browser's nested-timeout delay between work batches.
+pub async fn yield_task() {
+    let _ = wasm_bindgen_futures::JsFuture::from(yield_browser_task()).await;
+}
+
+pub async fn yield_frame() {
+    let _ = wasm_bindgen_futures::JsFuture::from(next_browser_frame()).await;
+    yield_task().await;
+}
