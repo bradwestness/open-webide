@@ -1091,50 +1091,6 @@ fn HighlightOverlay(
             }
         });
     });
-    let documents = expect_context::<WorkspaceState>().editor_documents;
-    let extra = Memo::new(move |_| {
-        actions.view_revision();
-        documents.track();
-        layout_revision.track();
-        let Some(measured) = actions.measured_rows() else {
-            return Vec::new();
-        };
-        let Some(projection) = actions.projection() else {
-            return Vec::new();
-        };
-        let window = viewport.get().rows;
-        let mut rows = std::collections::BTreeSet::new();
-        for selection in content.with(|source| actions.selections(source)) {
-            let Ok(selection) = projection.visible_selection(selection) else {
-                continue;
-            };
-            let index = projection
-                .lines()
-                .partition_point(|line| line.visible_start <= selection.head)
-                .saturating_sub(1);
-            rows.extend(index.saturating_sub(1)..=(index + 1).min(projection.lines().len() - 1));
-        }
-        rows.into_iter()
-            .filter(|index| !window.contains(index))
-            .filter_map(|index| {
-                let line = projection.lines().get(index)?;
-                let html = tokens.with(|(prepared, tokens)| {
-                    guides.with(|guides| {
-                        highlight_html(
-                            tokens,
-                            *prepared,
-                            guides,
-                            &[line.source_line],
-                            indentation.get(),
-                            show_whitespace.get(),
-                            index + 1 < projection.lines().len(),
-                        )
-                    })
-                });
-                Some((measured.rows.top(index)?, html, measured.revision))
-            })
-            .collect::<Vec<_>>()
-    });
     let callback = StoredValue::new_local(Closure::<dyn FnMut()>::new(move || paint.run(false)));
     paint_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
     let paint_ticket = paint_epoch.get_untracked();
@@ -1222,11 +1178,7 @@ fn HighlightOverlay(
     });
 
     view! { <div class="editor-highlight" node_ref=node_ref><div class="editor-highlight-content" data-editor-scope=move || rendered_scope.get().to_string() data-viewport-top=move || viewport.get().top.to_string() data-document-height=move || viewport.get().height.to_string() data-textarea-start=move || textarea_start.get().to_string() style=move || viewport.with(|view| if view.height > 0.0 { format!("padding-top:{}px;min-height:max(100%, {}px)", 12.0 + view.top, 24.0 + view.height) } else { String::new() }) inner_html=move || rendered.get() /></div>
-        <div class="editor-highlight editor-caret-measure" aria-hidden="true" style=move || { layout_revision.track(); format!("visibility:hidden;--editor-text-width:{}px", textarea_ref.get().map_or(0, |input| input.client_width())) }>
-            {move || extra.get().into_iter().map(|(top, html, revision)| view! {
-                <div class="editor-highlight-content" data-editor-scope=revision.to_string() style=format!("position:absolute;top:{top}px;min-height:0;padding-bottom:0") inner_html=html />
-            }).collect_view()}
-        </div>
+
     }
 }
 
@@ -2092,7 +2044,7 @@ pub fn Editor(
                     let _ = editor_actions.record_selection(source_selection);
                 } else { let _ = textarea.set_selection_range(start, end); }
                 if let Ok(Some(row)) =
-                    root.query_selector(&format!(".editor-highlight:not(.editor-caret-measure) .editor-source-line[data-line='{line}']"))
+                    root.query_selector(&format!(".editor-highlight .editor-source-line[data-line='{line}']"))
                 {
                     let row: web_sys::HtmlElement = row.unchecked_into();
                     textarea.set_scroll_top(f64::from(row.offset_top().saturating_sub(12)));

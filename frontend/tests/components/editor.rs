@@ -6173,7 +6173,7 @@ async fn pending_paint_motion_preserves_key_order_and_flushes_before_edits_in_bo
         // A native scrollbar/resize may settle after the observer's last width.
         // Immediate and queued motion must use the same current input geometry.
         mounted
-            .element(".editor-highlight:not(.editor-caret-measure)")
+            .element(".editor-highlight")
             .style()
             .set_property(
                 "--editor-text-width",
@@ -7387,6 +7387,26 @@ async fn oversized_change_review_retains_before_and_after_pages_in_both_modes() 
 
 #[wasm_bindgen_test]
 async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_both_modes() {
+    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+    export function watch_cursor_probes() {
+        let batches = 0, rows = 0, bytes = 0;
+        const consume = records => {
+            for (const record of records) {
+                if (!record.target.closest?.('.editor-row-measure')) continue;
+                const added = [...record.addedNodes].filter(node => node.nodeType === 1 && node.matches('.editor-source-line'));
+                if (!added.length) continue;
+                ++batches; rows = Math.max(rows, added.length);
+                bytes = Math.max(bytes, added.reduce((sum, node) => sum + new TextEncoder().encode(node.textContent).length, 0));
+            }
+        };
+        const observer = new MutationObserver(consume);
+        observer.observe(document.body, {childList:true, subtree:true});
+        return () => {consume(observer.takeRecords()); observer.disconnect(); return [batches,rows,bytes];};
+    }
+    "#)]
+    extern "C" {
+        fn watch_cursor_probes() -> js_sys::Function;
+    }
     use openwebide_core::{
         WorkspaceMode,
         editor::{Selection, byte_to_textarea, line_column},
@@ -7436,7 +7456,7 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
         let measured = actions.measured_rows().unwrap();
         assert_eq!(measured.rows.len(), 1201);
         assert_eq!(input.value(), source.replace("\r\n", "\n"));
-        let selector = ".editor-highlight:not(.editor-caret-measure) .editor-source-line";
+        let selector = ".editor-highlight .editor-source-line";
         for target in [500, 1100, 0, 700] {
             input.set_scroll_top(measured.rows.top(target).unwrap() + 12.0);
             input
@@ -7472,7 +7492,7 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
             assert!((first.get_bounding_client_rect().top() - expected_top).abs() < 0.5);
             assert!((f64::from(input.scroll_height()) - measured.rows.height() - 24.0).abs() < 2.0);
             let visible = mounted.element(&format!(
-                ".editor-highlight:not(.editor-caret-measure) .editor-source-line[data-line='{}']",
+                ".editor-highlight .editor-source-line[data-line='{}']",
                 target + 1
             ));
             let rect = visible.get_bounding_client_rect();
@@ -7500,17 +7520,37 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
         actions
             .toggle_cursor(1, "wrapped-window.txt", &source, distant)
             .unwrap();
+        // Disjoint cursor neighborhoods exceed one 128-row probe batch. They
+        // must not become a persistent hidden DOM copy alongside visible paint.
+        let projection = actions.projection().unwrap();
+        for row in (20..1200).step_by(20) {
+            let at = projection.lines()[row].source.start + 4;
+            if at != distant {
+                actions
+                    .toggle_cursor(1, "wrapped-window.txt", &source, at)
+                    .unwrap();
+            }
+        }
         let before = actions.selections(&source);
+        assert!(before.len() > 50);
         let native = u32::try_from(byte_to_textarea(&source, before[0].head).unwrap()).unwrap();
         input.set_selection_range(native, native).unwrap();
-        wait_until("offscreen cursor row probes", || {
+        assert!(
             mounted
                 .root
-                .query_selector(".editor-caret-measure .editor-source-line")
+                .query_selector(".editor-caret-measure")
                 .unwrap()
-                .is_some()
-        })
-        .await;
+                .is_none()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector_all(".editor-source-line")
+                .unwrap()
+                .length()
+                < 80
+        );
+        let probes = watch_cursor_probes();
         assert!(editor_key(&input, "ArrowDown", false, false).default_prevented());
         wait_until("both wrapped cursors moved", || {
             actions
@@ -7526,6 +7566,36 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
                 line_column(&source, before.head).0
             );
         }
+        assert!(editor_key(&input, "ArrowUp", false, false).default_prevented());
+        wait_until("offscreen cursor probes restore exact selections", || {
+            actions.selections(&source) == before
+        })
+        .await;
+        let observed = js_sys::Array::from(&probes.call0(&wasm_bindgen::JsValue::NULL).unwrap());
+        assert!(observed.get(0).as_f64().unwrap() >= 4.0);
+        assert!(observed.get(1).as_f64().unwrap() <= 128.0);
+        assert!(observed.get(2).as_f64().unwrap() <= 65_536.0);
+        wasm_bindgen_test::console_log!(
+            "{mode:?}: {} cursors, {} temporary batches, peak {} rows / {} bytes",
+            before.len(),
+            observed.get(0).as_f64().unwrap(),
+            observed.get(1).as_f64().unwrap(),
+            observed.get(2).as_f64().unwrap()
+        );
+        assert!(
+            document()
+                .query_selector(".editor-row-measure")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector_all(".editor-source-line")
+                .unwrap()
+                .length()
+                < 80
+        );
         assert_eq!(actions.source(), source);
         assert!(!mounted.state.workspace.dirty.get_untracked());
         mounted

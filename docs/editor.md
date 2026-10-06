@@ -222,8 +222,11 @@ measurements are ready. Shared progress permits queued cursor movement to wait
 while preparation advances, retaining a bounded retry for stalled work.
 Measurement publication checks source, folds, project, account and font/width
 scope, and rejects a height table that disagrees with native scrolling. Offscreen
-cursor-neighbor probes preserve multi-cursor visual motion without repainting the
-whole document. Cursor motion preserves the projection revision when folds do not
+cursor-neighbor probes measure exact geometry on demand in temporary row/byte
+batches; no hidden neighbor paint is retained between key presses. Both-mode
+browser contracts move 60 distant cursors and restore their exact selections,
+check the actual probe limits and release, and keep persistent paint in its viewport
+window. Cursor motion preserves the projection revision when folds do not
 change. Resize, font and styled-paint changes require fresh measurements; collapsed
 panels cancel pending work and restart when visible. Localized edits reuse exact
 heights for unchanged styled prefixes and suffixes, including row insertions,

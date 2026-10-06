@@ -99,8 +99,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   projections across view consumers; commands, cursor status and native selections
   use the index. Native/WASM measurements cover indexed queries and cold/warm
   projection access. Warm wrapped paint now uses exact measured row-height windows
-  and bounded offscreen cursor-neighbor probes, with source/project/account/layout
-  guards. Cold measurement now uses bounded temporary logical-row batches,
+  and on-demand offscreen cursor-neighbor probes, with source/project/account/layout
+  guards. Temporary batches replace retained hidden neighbor paint; both-mode
+  browser contracts cover 60 distant cursors, probe limits/release and exact movement.
+  Cold measurement now uses bounded temporary logical-row batches,
   yielding tasks and frames while native input remains visible; progressing jobs
   retain queued arrow requests and reject superseded results in both modes.
   Localized edits now reuse exact unchanged styled prefix/suffix heights, with

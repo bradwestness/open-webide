@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Measure offscreen wrapped cursor neighborhoods on demand in temporary bounded batches instead of retaining hidden paint rows. Keep persistent editor paint in its viewport window and preserve exact movement for distant cursors in both workspace modes.
+
 - Bound long-line native offset and cursor line/column queries with sparse Unicode coordinate checkpoints shared by documents and folded views in both workspace modes. Preserve CRLF and surrogate boundaries through edits, undo/redo and composition; add matching native/WASM construction and query measurements.
 
 - Apply queued wrapped cursor movement before typing, composition, paste and cut while the full editor layout is still preparing in both workspace modes. Measure exact styled cursor neighborhoods through the shared motion engine, retaining Unicode, folds, sticky columns and stale ownership guards.
