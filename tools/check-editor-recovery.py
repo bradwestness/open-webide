@@ -228,6 +228,9 @@ class Browser:
                     time.sleep(0.1)
             options = {"args": ["--headless=new", "--window-size=1280,900",
                                  "--user-data-dir=" + str(Path(directory) / "chrome")]}
+            if os.environ.get("CI"):
+                # Match wasm-bindgen's headless runner on hosted Linux machines.
+                options["args"] += ["--no-sandbox", "--disable-dev-shm-usage"]
             if os.environ.get("CHROME"):
                 options["binary"] = os.environ["CHROME"]
             value = self.call("POST", "/session", {"capabilities": {
@@ -245,8 +248,12 @@ class Browser:
             data=None if body is None else json.dumps(body).encode(),
             headers={"Content-Type": "application/json"}, method=method,
         )
-        with self.client.open(request, timeout=30) as response:
-            return json.loads(response.read())["value"]
+        try:
+            with self.client.open(request, timeout=30) as response:
+                return json.loads(response.read())["value"]
+        except urllib.error.HTTPError as error:
+            detail = json.loads(error.read()).get("value", {})
+            raise RuntimeError(f"WebDriver {path}: {detail.get('message', detail)}") from error
 
     def script(self, source):
         return self.call("POST", "/execute/sync", {"script": source, "args": []})

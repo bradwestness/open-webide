@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Match wasm-bindgen's headless Linux Chrome flags in production-worker and recovery checks when running in CI, and include WebDriver failure details in test output.
+
 - Prepare editor folds, structural contexts and syntax tokens in a dedicated Rust/WASM worker. Share the preparation engine and bounded LRU cache with the synchronous fallback, coalesce pending edits, reject stale or malformed replies, and wait for worker readiness before sending requests. Cache the matching hashed worker/WASM assets for PWA use; CI exercises the built worker in Chrome. Full viewport rendering and device verification remain in progress.
 
 - Share one immutable syntax preparation per source and tab width across editor folds, structural commands and highlighting. Reuse source/context/token snapshots, preserve old snapshots across edits, and reject results after account, file-read, source or indentation changes in both modes.
