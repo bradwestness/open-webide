@@ -25,6 +25,17 @@ SUPPORT = runpy.run_path(str(ROOT / "tools/check-editor-recovery.py"))
 Browser, Runtime = SUPPORT["Browser"], SUPPORT["Runtime"]
 
 
+def host_constraints():
+    """Record Linux resource limits so container samples keep their context."""
+    constraints = {"cpuCount": os.cpu_count()}
+    for field, name in [("cgroupMemoryMax", "memory.max"), ("cgroupCpuMax", "cpu.max")]:
+        try:
+            constraints[field] = Path("/sys/fs/cgroup", name).read_text().strip()
+        except OSError:
+            constraints[field] = None
+    return constraints
+
+
 def process_memory(driver):
     records = {}
     for line in subprocess.check_output(["ps", "-axo", "pid=,ppid=,rss="], text=True).splitlines():
@@ -115,7 +126,7 @@ READY = """
 """
 
 
-def measure(case, mode, wrapped, trace=False):
+def measure(case, mode, wrapped, trace=False, repetition=1):
     source = source_for(case)
     native = source.replace("\r\n", "\n")
     # JS lengths are UTF-16, not Python's Unicode scalar count.
@@ -313,7 +324,7 @@ def measure(case, mode, wrapped, trace=False):
             sampled = samples.finish()
             samples = None
             tasks = browser.script("return {...window.editorViewMeasurement, wasmBytes: window.editorViewWasmMemory.buffer.byteLength};")
-            return {"case": case, "mode": mode, "wrap": wrapped, "sourceBytes": len(source.encode()),
+            return {"case": case, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
                     "loadToPaintMs": load_ms, **snapshot, **scroll, **edited, **memory,
                     "afterInputMemory": process_memory(browser.process.pid), **sampled,
                     "afterInputWasmCommittedBytes": tasks["wasmBytes"],
@@ -323,7 +334,7 @@ def measure(case, mode, wrapped, trace=False):
         except (AssertionError, TimeoutError, RuntimeError) as error:
             observed = samples.finish() if samples else {}
             samples = None
-            print(json.dumps({"case": case, "mode": mode, "wrap": wrapped, "sourceBytes": len(source.encode()),
+            print(json.dumps({"case": case, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
                               "failedPhase": phase, "failure": type(error).__name__, **observed}), flush=True)
             raise
         finally:
@@ -344,11 +355,23 @@ if __name__ == "__main__":
     parser.add_argument("--modes", nargs="+", choices=["local", "remote"], default=["local", "remote"])
     parser.add_argument("--wrap", action="store_true")
     parser.add_argument("--trace", action="store_true", help="Record bounded probe/worker diagnostics; timings include instrumentation overhead")
+    parser.add_argument("--repeat", type=int, default=1, help="Fresh browser/runtime runs for each case and mode")
+    parser.add_argument("--require-pss", action="store_true", help="Fail if apportioned Chrome process memory cannot be measured")
     args = parser.parse_args()
+    if args.repeat < 1:
+        parser.error("--repeat must be positive")
     assert os.environ.get("CHROMEDRIVER"), "Set CHROMEDRIVER to a compatible driver"
     print(json.dumps({"host": platform.platform(), "measurement": "production editor; process-tree memory",
+                      **host_constraints(),
+                      "repetitions": args.repeat,
+                      "measurementImage": os.environ.get("EDITOR_VIEW_IMAGE"),
                       "checkoutHead": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                       "browser": subprocess.check_output([os.environ["CHROME"], "--version"], text=True).strip() if os.environ.get("CHROME") else "WebDriver default"}), flush=True)
     for case in args.cases:
         for mode in args.modes:
-            print(json.dumps(measure(case, mode, args.wrap, args.trace)), flush=True)
+            for repetition in range(1, args.repeat + 1):
+                result = measure(case, mode, args.wrap, args.trace, repetition)
+                print(json.dumps(result), flush=True)
+                if args.require_pss:
+                    assert result["peakChromePssKiB"] is not None, "Chrome peak PSS was unavailable"
+                    assert result["afterInputMemory"]["chrome_pss_kib"] is not None, "Chrome final PSS was unavailable"

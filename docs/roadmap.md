@@ -150,15 +150,17 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   before allocating document metadata. Oversized files use bounded read-only
   pages, including before/after review sources; interactive transactions enforce
   the same limits. Production input/scroll and process-memory baselines now cover
-  admitted byte, row-count and long-line boundaries in both modes; they still show
-  stalls and costly wrapped shaping/cold paint. Finish fine long-row paint,
+  admitted byte, row-count and long-line boundaries in both modes. Repeated Linux
+  container runs now provide Chrome PSS with CJK/emoji fonts; input and cold paint
+  still stall. Finish fine long-row paint,
   incremental measurement and input, then repeat the boundary workloads (including Linux PSS)
   and the unresponsive wrapped cases before validating these limits. The corrected
   destination-verified 1 MiB single-row workload now covers horizontal and wrapped
   scrolling in both modes; broader startup scroll latency remains unverified
   despite bounded steady-state HTML and layout checks. The reproduced
   syntax-paint/height-reconciliation anchor loss is fixed with independent font
-  provenance; verify broader startup samples and duplicate initial height shaping.
+  provenance. Settled font readiness no longer causes duplicate initial height
+  shaping; verify broader startup samples.
   Trace remaining uncached probes; wrapped input/layout and
   process-memory stalls remain.
   Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,

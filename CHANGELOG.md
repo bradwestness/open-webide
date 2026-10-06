@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add reproducible Linux browser measurements for the built editor, with CJK/emoji fonts, required apportioned Chrome memory, recorded resource limits and fresh-run repetitions. Record wrapped and unwrapped byte, row-count and long-line boundary observations in both workspace modes; keep responsiveness and device validation open.
+
 - Avoid discarding initial editor geometry when browser fonts are already settled in both workspace modes. Keep font completion/failure invalidation and source-bound measurement diagnostics.
 
 - Preserve validated editor glyph anchors when equivalent syntax paint precedes row-height reconciliation in both workspace modes. Track actual font invalidation independently so layout bookkeeping retains proven geometry while font loading and stale source/read/account callbacks remain rejected. Add opt-in bounded production probe, worker and font timing traces.

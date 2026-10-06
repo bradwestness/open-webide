@@ -436,3 +436,69 @@ Both builds include concurrent branding/welcome changes; module identifiers
 identify the builds and `checkoutHead` their parent commit. Initial full-row
 shaping, native textarea/input and full String costs, bidirectional windows,
 Linux PSS, percentiles and boundary/device gates remain outstanding.
+
+### Repeated Linux boundary baseline
+
+`tools/measure-editor-view-linux.sh` runs the same built Rust/WASM editor harness
+in a disposable Linux container, with matching distribution Chromium/ChromeDriver,
+DejaVu, Noto CJK and color emoji fonts. It reuses the existing built WASM files;
+there is no second Cargo target directory. Every repetition creates fresh browser,
+account and runtime state. The launcher requires numeric peak and final Chrome
+PSS, runs by immutable image ID, and records that ID, the browser version, CPU
+count and cgroup memory/CPU limits alongside the parent checkout and app module.
+
+```bash
+NO_COLOR=true spin build
+tools/measure-editor-view-linux.sh \
+  --cases medium line-limit byte-limit long-line --wrap --repeat 3
+tools/measure-editor-view-linux.sh \
+  --cases medium line-limit byte-limit long-line --repeat 3
+```
+
+The container has a four-CPU quota, a 10 GiB memory limit and 1 GiB shared memory.
+These are observations on a Linux arm64 Docker Desktop VM, not deployment-host
+percentiles or phone/device checks. The same source/destination readiness checks
+cover local and remote editor behavior; local folder permissions are not exercised.
+PSS apportions shared Chrome pages; it excludes the Spin runtime and ChromeDriver.
+The 200 ms sampler can miss brief peaks. Three repetitions establish observed
+variation, not reliable tail percentiles or pass/fail responsiveness budgets.
+
+On 2026-10-06, Chromium 154.0.8037.92 on Linux arm64 completed all 48
+Unicode-capable boundary runs. Each table entry summarizes three fresh runs.
+Cold and scroll values are medians; input shows median and observed range; PSS
+is the largest sampled peak among those runs. Both image exports share the same
+runtime configuration and package layers; build attestation IDs differ.
+The built worktree includes concurrent branding/welcome changes; module
+identifiers identify the actual build and the checkout its parent commit.
+
+| Layout | Workload | Mode | Cold median ms | Input median (min–max) ms | Scroll median ms | Largest peak Chrome PSS GiB |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| Wrapped | 2 MiB | Local | 3943 | 500 (484–529) | 178 | 1.34 |
+| Wrapped | 2 MiB | Remote | 4188 | 461 (457–498) | 177 | 1.34 |
+| Wrapped | 100,000 rows | Local | 3702 | 397 (349–412) | 270 | 1.43 |
+| Wrapped | 100,000 rows | Remote | 4045 | 335 (332–346) | 253 | 1.37 |
+| Wrapped | Near 8 MiB | Local | 4217 | 644 (610–661) | 320 | 2.06 |
+| Wrapped | Near 8 MiB | Remote | 5575 | 579 (577–622) | 322 | 2.25 |
+| Wrapped | Near 1 MiB line | Local | 1763 | 556 (528–556) | 48 | 1.00 |
+| Wrapped | Near 1 MiB line | Remote | 1766 | 496 (485–568) | 42 | 1.02 |
+| Unwrapped | 2 MiB | Local | 1736 | 440 (346–451) | 193 | 0.95 |
+| Unwrapped | 2 MiB | Remote | 1880 | 397 (381–456) | 354 | 0.97 |
+| Unwrapped | 100,000 rows | Local | 1518 | 397 (388–399) | 275 | 1.07 |
+| Unwrapped | 100,000 rows | Remote | 1539 | 282 (266–287) | 270 | 1.09 |
+| Unwrapped | Near 8 MiB | Local | 2170 | 473 (468–664) | 413 | 1.28 |
+| Unwrapped | Near 8 MiB | Remote | 2348 | 472 (454–474) | 439 | 1.29 |
+| Unwrapped | Near 1 MiB line | Local | 1623 | 530 (518–545) | 26 | 1.03 |
+| Unwrapped | Near 1 MiB line | Remote | 1654 | 538 (509–553) | 34 | 1.04 |
+
+Raw records: [wrapped](editor-performance/production-linux-wrapped-boundaries.jsonl),
+[unwrapped](editor-performance/production-linux-unwrapped-boundaries.jsonl).
+Earlier exploratory runs without a CJK font are excluded from this baseline;
+font availability materially changed long-line shaping and memory. These font
+fixture changes are not production editor performance improvements.
+
+The completed runs provide Linux PSS evidence and repeated byte/row/long-line
+boundary observations in both modes. They still show costly input and cold paint;
+current admission limits remain unvalidated as responsiveness limits. Initial
+shaping, bounded native input/source access, bidirectional visual-run windows,
+more repetitions for tail latency and real-device/input-method/permission checks
+remain required before closing the full editor roadmap item.
