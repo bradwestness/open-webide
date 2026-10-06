@@ -696,7 +696,12 @@ async fn multi_cursor_shortcuts_motion_and_paint_share_both_modes() {
         // Next occurrence promotes the newly added range to primary; the first
         // source occurrence is the secondary caret after collapsing selections.
         let row = mounted.element(".editor-source-line[data-line='1']");
-        let node = row.first_child().unwrap();
+        let node = row
+            .query_selector(":scope > .editor-source-fragment")
+            .unwrap()
+            .unwrap()
+            .first_child()
+            .unwrap();
         let range = document().create_range().unwrap();
         range.set_start(&node, 3).unwrap();
         range.set_end(&node, 3).unwrap();
@@ -794,7 +799,13 @@ async fn multi_cursor_shortcuts_motion_and_paint_share_both_modes() {
             .get_bounding_client_rect();
         let row = mounted.element(".editor-source-line[data-line='1']");
         let range = document().create_range().unwrap();
-        range.set_start(&row.first_child().unwrap(), 504).unwrap();
+        let node = row
+            .query_selector(":scope > .editor-source-fragment")
+            .unwrap()
+            .unwrap()
+            .first_child()
+            .unwrap();
+        range.set_start(&node, 504).unwrap();
         range.collapse_with_to_start(true);
         let expected = range.get_bounding_client_rect();
         assert!((wrapped.top() - expected.top()).abs() < 0.5);
@@ -2276,7 +2287,7 @@ async fn file_switch_reads_latest_path_and_mode_exit_cancels() {
     assert_eq!(highlight_count(), before + 1);
     assert_eq!(
         mounted
-            .element(".editor-source-line[data-line='1']")
+            .element(".editor-source-line[data-line='1'] > .editor-source-fragment")
             .inner_html(),
         "fn plain <span class=\"tok-operator\">&lt;&gt;&amp;</span>\n"
     );
@@ -7075,6 +7086,30 @@ async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_bot
                 .encode_utf16()
                 .count();
             assert_eq!(offset, expected);
+            assert_eq!(
+                first
+                    .get_attribute("data-textarea-start")
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap(),
+                expected
+            );
+            let fragment = first
+                .query_selector(":scope > .editor-source-fragment")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                fragment.get_attribute("data-paint-start").as_deref(),
+                Some("0")
+            );
+            assert_eq!(
+                first
+                    .get_attribute("data-paint-length")
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap(),
+                first.text_content().unwrap().encode_utf16().count()
+            );
             let visible = mounted.element(&format!(
                 ".editor-source-line[data-line='{}']",
                 (line + 2).min(10_000)
@@ -7086,6 +7121,25 @@ async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_bot
                 rect.top() + 5.0,
             )
             .unwrap();
+            let scope = paint.get_attribute("data-editor-scope").unwrap();
+            paint.set_attribute("data-editor-scope", "stale").unwrap();
+            assert!(
+                openwebide_frontend::viewport::editor_caret_from_point(
+                    &textarea,
+                    rect.left() + 3.0,
+                    rect.top() + 5.0
+                )
+                .is_none()
+            );
+            paint.set_attribute("data-editor-scope", &scope).unwrap();
+            assert_eq!(
+                openwebide_frontend::viewport::editor_caret_from_point(
+                    &textarea,
+                    rect.left() + 3.0,
+                    rect.top() + 5.0
+                ),
+                Some(caret)
+            );
             let target = usize::try_from((line + 1).min(9999)).unwrap();
             let target_start = source
                 .split_inclusive('\n')

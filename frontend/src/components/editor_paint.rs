@@ -21,7 +21,7 @@ impl PaintNodes {
             let element = fragments.item(index)?.dyn_into::<web_sys::Element>().ok()?;
             let start: usize = element.get_attribute("data-paint-start")?.parse().ok()?;
             let end: usize = element.get_attribute("data-paint-end")?.parse().ok()?;
-            if end.checked_sub(start)? != element.text_content()?.encode_utf16().count() {
+            if end.checked_sub(start)? != native_length(element.as_ref())? {
                 return None;
             }
             ranges.push(start..end);
@@ -32,6 +32,16 @@ impl PaintNodes {
             nodes,
         })
     }
+}
+
+fn native_length(node: &web_sys::Node) -> Option<usize> {
+    if let Some(text) = node.dyn_ref::<web_sys::Text>() {
+        return usize::try_from(text.length()).ok();
+    }
+    let children = node.child_nodes();
+    (0..children.length()).try_fold(0_usize, |length, index| {
+        length.checked_add(native_length(&children.item(index)?)?)
+    })
 }
 
 pub(super) fn position(node: &web_sys::Node, offset: u32) -> Option<(web_sys::Node, u32)> {
@@ -91,6 +101,49 @@ fn dom_range(node: &web_sys::Node, selected: Range<u32>) -> Option<web_sys::Rang
     Some(range)
 }
 
+/// DOM prefix measurement is a browser primitive; interval mapping belongs to
+/// PaintCoverage. Never count omitted fragments as if their text were present.
+pub(crate) fn native_offset(
+    paint: &web_sys::Element,
+    node: &web_sys::Node,
+    offset: u32,
+) -> Option<u32> {
+    if !paint.contains(Some(node)) {
+        return None;
+    }
+    let element = node
+        .dyn_ref::<web_sys::Element>()
+        .cloned()
+        .or_else(|| node.parent_element())?;
+    if let Some(row) = element
+        .closest(".editor-source-line[data-paint-length]")
+        .ok()?
+    {
+        let mapping = PaintNodes::read(&row)?;
+        let index = mapping
+            .nodes
+            .iter()
+            .position(|fragment| fragment.contains(Some(node)))?;
+        let range = document().create_range().ok()?;
+        range.select_node_contents(&mapping.nodes[index]).ok()?;
+        range.set_end(node, offset).ok()?;
+        let within = usize::try_from(range.to_string().length()).ok()?;
+        let column = mapping.coverage.source_offset(index, within)?;
+        let start: usize = row.get_attribute("data-textarea-start")?.parse().ok()?;
+        return u32::try_from(start.checked_add(column)?).ok();
+    }
+    let range = document().create_range().ok()?;
+    range.select_node_contents(paint).ok()?;
+    range.set_end(node, offset).ok()?;
+    let start: u32 = paint
+        .get_attribute("data-textarea-start")
+        .as_deref()
+        .unwrap_or("0")
+        .parse()
+        .ok()?;
+    start.checked_add(range.to_string().length())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +152,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn painted_fragments_preserve_utf16_coordinates_and_selection_gaps() {
         let row = document().create_element("span").unwrap();
+        row.set_class_name("editor-source-line");
         row.set_attribute("data-paint-length", "16").unwrap();
         row.set_inner_html(concat!(
             "<span class='editor-source-fragment' data-paint-start='2' data-paint-end='7'>",
@@ -106,6 +160,9 @@ mod tests {
             "<span class='editor-source-fragment' data-paint-start='10' data-paint-end='16'>",
             "<span>cd</span><span>🌍ef</span></span>"
         ));
+        let paint = document().create_element("div").unwrap();
+        row.set_attribute("data-textarea-start", "100").unwrap();
+        paint.append_child(&row).unwrap();
         let node: web_sys::Node = row.clone().into();
         for offset in [0, 1, 7, 8, 9, 17] {
             assert!(!covers(&row, offset));
@@ -117,6 +174,24 @@ mod tests {
         let (text, at) = position(&node, 16).unwrap();
         assert_eq!(text.node_value().as_deref(), Some("🌍ef"));
         assert_eq!(at, 4);
+        assert_eq!(native_offset(&paint, &text, at), Some(116));
+        let second = row
+            .query_selector(".editor-source-fragment:last-child span:first-child")
+            .unwrap()
+            .unwrap()
+            .first_child()
+            .unwrap();
+        assert_eq!(native_offset(&paint, &second, 1), Some(111));
+        let first = row
+            .query_selector(".editor-source-fragment:first-child span:last-child")
+            .unwrap()
+            .unwrap()
+            .first_child()
+            .unwrap();
+        assert_eq!(native_offset(&paint, &first, 2), Some(107));
+        assert_eq!(native_offset(&paint, &first, 3), None);
+        let outside = document().create_text_node("outside");
+        assert_eq!(native_offset(&paint, outside.as_ref(), 0), None);
         let strings = |selected| {
             ranges(&row, selected)
                 .into_iter()
@@ -134,6 +209,7 @@ mod tests {
             .set_attribute("data-paint-end", "6")
             .unwrap();
         assert!(position(&node, 5).is_none());
+        assert_eq!(native_offset(&paint, &first, 0), None);
         assert!(strings(0..16).is_empty());
     }
 

@@ -721,11 +721,36 @@ fn paint_text(text: &str, show_whitespace: bool) -> String {
 }
 
 /// Render the highlighted source as an HTML string for the overlay.
+struct PaintRows<'a> {
+    indices: &'a [usize],
+    projection: Option<&'a openwebide_core::editor::FoldProjection>,
+}
+impl<'a> PaintRows<'a> {
+    fn measured(indices: &'a [usize]) -> Self {
+        Self {
+            indices,
+            projection: None,
+        }
+    }
+    fn fragment(&self, source_line: usize) -> Option<(usize, usize)> {
+        let projection = self.projection?;
+        let index = projection
+            .lines()
+            .binary_search_by_key(&source_line, |line| line.source_line)
+            .ok()?;
+        let line = &projection.lines()[index];
+        let end = projection
+            .byte_to_textarea(line.visible_start + line.source.len())
+            .ok()?;
+        Some((line.textarea_start, end.checked_sub(line.textarea_start)?))
+    }
+}
+
 fn highlight_html(
     lines: &[Vec<openwebide_core::highlight::Token>],
     prepared_source: bool,
     guides: &[usize],
-    visible: &[usize],
+    rows: PaintRows<'_>,
     indentation: openwebide_core::editor::Indentation,
     show_whitespace: bool,
     trailing_line_ending: bool,
@@ -733,7 +758,7 @@ fn highlight_html(
     #[cfg(feature = "test-support")]
     HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
     let mut html = String::new();
-    for &idx in visible {
+    for &idx in rows.indices {
         let Some(line) = lines.get(idx) else {
             continue;
         };
@@ -741,6 +766,16 @@ fn highlight_html(
             "<span class=\"editor-source-line\" data-line=\"{}\" style=\"--editor-indent-columns:{};--editor-indent-step:{}\">",
             idx + 1, guides.get(idx).copied().unwrap_or(0), indentation.width()
         ));
+        let fragment = rows.fragment(idx);
+        if let Some((start, length)) = fragment {
+            // Append metadata to the logical wrapper before inserting its text.
+            let end = html.len() - 1;
+            html.insert_str(
+                end,
+                &format!(" data-paint-length=\"{length}\" data-textarea-start=\"{start}\""),
+            );
+            html.push_str(&format!("<span class=\"editor-source-fragment\" data-paint-start=\"0\" data-paint-end=\"{length}\">"));
+        }
         for (position, tok) in line.iter().enumerate() {
             let text = if prepared_source && idx + 1 < lines.len() && position + 1 == line.len() {
                 tok.text.strip_suffix('\r').unwrap_or(&tok.text)
@@ -758,11 +793,14 @@ fn highlight_html(
                 }
             }
         }
-        if idx != *visible.last().unwrap_or(&idx) || trailing_line_ending {
+        if idx != *rows.indices.last().unwrap_or(&idx) || trailing_line_ending {
             if show_whitespace {
                 html.push_str("<span class=\"editor-line-ending\"></span>");
             }
             html.push('\n');
+        }
+        if fragment.is_some() {
+            html.push_str("</span>");
         }
         html.push_str("</span>");
     }
@@ -1010,7 +1048,7 @@ fn HighlightOverlay(
                         &prepared_tokens.1,
                         prepared_tokens.0,
                         &guides,
-                        rows,
+                        PaintRows::measured(rows),
                         tab,
                         whitespace,
                         suffix,
@@ -1051,7 +1089,10 @@ fn HighlightOverlay(
                     tokens,
                     *prepared,
                     guides,
-                    &visible.get_untracked(),
+                    PaintRows {
+                        indices: &visible.get_untracked(),
+                        projection: actions.projection().as_ref(),
+                    },
                     indentation.get_untracked(),
                     show_whitespace.get_untracked(),
                     actions.projection().is_some_and(|projection| {
@@ -1115,7 +1156,7 @@ fn HighlightOverlay(
                             tokens,
                             *prepared,
                             guides,
-                            rows,
+                            PaintRows::measured(rows),
                             indentation.get_untracked(),
                             show_whitespace.get_untracked(),
                             suffix,

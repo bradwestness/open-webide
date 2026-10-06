@@ -57,6 +57,13 @@ impl PaintCoverage {
             },
         )
     }
+    /// Map a DOM fragment endpoint back to its native source coordinate. A hit
+    /// at the fragment's trailing edge retains that exact endpoint, even when
+    /// the following source is not painted yet.
+    pub fn source_offset(&self, fragment: usize, offset: usize) -> Option<usize> {
+        let range = self.fragments.get(fragment)?;
+        (offset <= range.len()).then(|| range.start + offset)
+    }
     /// Clip selections independently against each rendered interval. This
     /// avoids clamping endpoints across gaps or joining unrelated DOM ranges.
     pub fn selection(&self, range: Range<usize>) -> Result<Vec<PaintSelection>, EditError> {
@@ -162,6 +169,12 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(coverage.source_offset(0, 4), Some(8));
+        assert_eq!(coverage.source_offset(1, 4), Some(12));
+        assert_eq!(coverage.source_offset(2, 3), Some(23));
+        assert_eq!(coverage.source_offset(3, 2), Some(30));
+        assert_eq!(coverage.source_offset(0, 5), None);
+        assert_eq!(coverage.source_offset(4, 0), None);
         assert!(coverage.selection(12..20).unwrap().is_empty());
         assert!(coverage.selection(12..12).unwrap().is_empty());
         assert!(coverage.selection(0..31).is_err());

@@ -109,7 +109,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   row insertion/deletion/undo and font invalidation contracts in both modes;
   disjoint edits also reuse exactly matching interior rows.
   Carets, bracket marks and secondary selections now share validated UTF-16
-  paint coverage with independent clipping across omitted fragments.
+  paint coverage with independent clipping across omitted fragments. Rendered
+  rows now publish projected native fragment offsets; pointer hits use the same
+  coverage map and reject stale paint scopes.
   Rendering still paints complete logical rows. Finish fine paint within very
   long logical rows,
   then further incremental access: edits still materialize full Strings and shift

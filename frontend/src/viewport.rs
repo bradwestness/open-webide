@@ -185,8 +185,9 @@ extern "C" {
     ) -> JsValue;
 }
 
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(inline_js = r#"
-export function editor_caret_from_point(input, x, y) {
+export function editor_point(input, x, y) {
     const paint = input.parentElement?.querySelector('.editor-highlight-content');
     const overlay = paint?.parentElement;
     if (!paint || !overlay) return undefined;
@@ -196,18 +197,54 @@ export function editor_caret_from_point(input, x, y) {
         const position = document.caretPositionFromPoint?.(x, y);
         const caret = position ? {startContainer:position.offsetNode, startOffset:position.offset} : document.caretRangeFromPoint?.(x, y);
         if (!caret || !paint.contains(caret.startContainer)) return undefined;
-        const prefix = document.createRange(); prefix.selectNodeContents(paint);
-        prefix.setEnd(caret.startContainer, caret.startOffset);
-        return Number(paint.dataset.textareaStart || 0) + prefix.toString().length;
+        return [caret.startContainer, caret.startOffset];
     } finally {
         input.style.pointerEvents = inputEvents; overlay.style.pointerEvents = paintEvents;
     }
 }
 "#)]
 extern "C" {
-    pub fn editor_caret_from_point(
+    #[wasm_bindgen(catch)]
+    fn editor_point(
         input: &web_sys::HtmlTextAreaElement,
         x: f64,
         y: f64,
-    ) -> Option<u32>;
+    ) -> Result<JsValue, JsValue>;
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "DOM point offsets are checked for integer value and the u32 range before conversion"
+)]
+pub fn editor_caret_from_point(
+    input: &web_sys::HtmlTextAreaElement,
+    x: f64,
+    y: f64,
+) -> Option<u32> {
+    let paint = input
+        .parent_element()?
+        .query_selector(".editor-highlight-content")
+        .ok()??;
+    if paint.get_attribute("data-editor-scope") != input.get_attribute("data-editor-scope") {
+        return None;
+    }
+    let point = editor_point(input, x, y).ok()?;
+    if !js_sys::Array::is_array(&point) {
+        return None;
+    }
+    let point = point.unchecked_into::<js_sys::Array>();
+    if point.length() != 2 {
+        return None;
+    }
+    let node = point.get(0).dyn_into::<web_sys::Node>().ok()?;
+    let offset = point.get(1).as_f64()?;
+    if !offset.is_finite()
+        || offset.fract() != 0.0
+        || !(0.0..=f64::from(u32::MAX)).contains(&offset)
+    {
+        return None;
+    }
+    crate::components::editor_paint::native_offset(&paint, &node, offset as u32)
 }
