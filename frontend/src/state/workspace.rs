@@ -20,6 +20,14 @@ pub struct PreparedEditorSyntax {
     pub analysis: Option<std::sync::Arc<openwebide_core::editor::SyntaxAnalysis>>,
 }
 
+/// Browser measurements are bound to one exact source/projection/layout revision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorRowMeasurements {
+    pub revision: u64,
+    pub metrics: String,
+    pub rows: openwebide_core::editor::MeasuredRows,
+}
+
 /// Scroll position for a document's edit view; caret and selection live in Document.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EditorScroll {
@@ -219,6 +227,10 @@ pub struct WorkspaceState {
     pub editor_rules: RwSignal<HashMap<(i64, String), openwebide_core::editor::EditorRules>>,
     pub editor_indentation: RwSignal<HashMap<(i64, String), openwebide_core::editor::Indentation>>,
     pub editor_fold_revision: RwSignal<u64>,
+    pub editor_layout_epoch: RwSignal<u64>,
+    pub editor_projection_revision: Memo<u64>,
+    pub editor_view_revision: Memo<u64>,
+    pub editor_rows: RwSignal<Option<EditorRowMeasurements>>,
     pub editor_group: RwSignal<u64>,
     pub editor_motion: RwSignal<Option<super::editor_motion::PendingEditorMotion>>,
     pub editor_motion_ticket: RwSignal<u64>,
@@ -237,12 +249,35 @@ impl WorkspaceState {
             let open_file = open_file.get()?;
             pending_edits.with(|pending| pending.get(&open_file).cloned())
         });
+        let content = RwSignal::new(String::new());
+        let pending_epoch = RwSignal::new(0);
+        let editor_read_revision = RwSignal::new(0);
+        let editor_fold_revision = RwSignal::new(0);
+        let editor_layout_epoch = RwSignal::new(0);
+        let view_counter = StoredValue::new(0_u64);
+        let editor_projection_revision = Memo::new(move |_| {
+            content.track();
+            open_file.track();
+            active_project.track();
+            pending_epoch.track();
+            editor_read_revision.track();
+            editor_fold_revision.track();
+            view_counter.update_value(|value| *value = value.wrapping_add(1));
+            view_counter.get_value()
+        });
+        let layout_counter = StoredValue::new(0_u64);
+        let editor_view_revision = Memo::new(move |_| {
+            let _ = editor_projection_revision.get();
+            editor_layout_epoch.track();
+            layout_counter.update_value(|value| *value = value.wrapping_add(1));
+            layout_counter.get_value()
+        });
         Self {
             active_project,
             entries: RwSignal::new(HashMap::new()),
             expanded: RwSignal::new(HashSet::new()),
             open_file,
-            content: RwSignal::new(String::new()),
+            content,
             dirty: RwSignal::new(false),
             search: RwSignal::new(None),
             active_session: RwSignal::new(None),
@@ -251,7 +286,7 @@ impl WorkspaceState {
             persisted_edits: RwSignal::new(HashMap::new()),
             resolving_edits: RwSignal::new(HashSet::new()),
             pending_generation: RwSignal::new(HashMap::new()),
-            pending_epoch: RwSignal::new(0),
+            pending_epoch,
             agent_writes: RwSignal::new(HashMap::new()),
             counted_agent_writes: RwSignal::new(HashSet::new()),
             media_url: RwSignal::new(None),
@@ -262,7 +297,7 @@ impl WorkspaceState {
             editor_recovery_checks: RwSignal::new(HashMap::new()),
             editor_recovered: RwSignal::new(HashSet::new()),
             editor_recovery_overwrites: RwSignal::new(HashMap::new()),
-            editor_read_revision: RwSignal::new(0),
+            editor_read_revision,
             editor_documents: RwSignal::new(HashMap::new()),
             editor_worker_active: RwSignal::new(false),
             editor_preparation: RwSignal::new(None),
@@ -272,7 +307,11 @@ impl WorkspaceState {
             editor_composition: RwSignal::new(None),
             editor_rules: RwSignal::new(HashMap::new()),
             editor_indentation: RwSignal::new(HashMap::new()),
-            editor_fold_revision: RwSignal::new(0),
+            editor_fold_revision,
+            editor_layout_epoch,
+            editor_projection_revision,
+            editor_view_revision,
+            editor_rows: RwSignal::new(None),
             editor_group: RwSignal::new(0),
             editor_motion: RwSignal::new(None),
             editor_motion_ticket: RwSignal::new(0),
@@ -668,6 +707,9 @@ impl WorkspaceState {
     }
 
     pub fn reset(&self) {
+        self.editor_rows.set(None);
+        self.editor_layout_epoch
+            .update(|epoch| *epoch = epoch.wrapping_add(1));
         self.editor_tabs.set(HashMap::new());
         self.editor_buffers.set(HashMap::new());
         self.editor_loading.set(false);
@@ -829,6 +871,37 @@ mod tests {
             old_unavailable: false,
             backup_path: None,
         }
+    }
+
+    #[test]
+    fn measured_row_scope_changes_with_source_project_layout_and_account() {
+        use openwebide_core::editor::MeasuredRows;
+        let owner = Owner::new();
+        owner.with(|| {
+            let workspace = WorkspaceState::with_active_project(RwSignal::new(Some(1)));
+            workspace.open_file.set(Some("same.rs".into()));
+            workspace.content.set("one\ntwo".into());
+            let revision = workspace.editor_view_revision.get();
+            workspace.editor_rows.set(Some(EditorRowMeasurements {
+                revision,
+                metrics: "font".into(),
+                rows: MeasuredRows::new([19.5, 39.0]).unwrap(),
+            }));
+            workspace.content.set("one\nchanged".into());
+            assert_ne!(workspace.editor_view_revision.get(), revision);
+            let revision = workspace.editor_view_revision.get();
+            workspace.active_project.set(Some(2));
+            assert_ne!(workspace.editor_view_revision.get(), revision);
+            let revision = workspace.editor_view_revision.get();
+            workspace
+                .editor_layout_epoch
+                .update(|epoch| *epoch = epoch.wrapping_add(1));
+            assert_ne!(workspace.editor_view_revision.get(), revision);
+            let revision = workspace.editor_view_revision.get();
+            workspace.reset();
+            assert_ne!(workspace.editor_view_revision.get(), revision);
+            assert!(workspace.editor_rows.get_untracked().is_none());
+        });
     }
 
     #[test]

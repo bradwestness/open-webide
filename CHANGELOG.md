@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Window wrapped editor paint using exact browser row heights in both workspace modes. Preserve global Unicode/CRLF caret mapping, offscreen multi-cursor motion and resize remeasurement; reject stale layout tables. Initial full paint and bounded cold measurement remain in progress.
+
 - Open files beyond full-editor byte, line-count or long-line limits in bounded, read-only Unicode text pages in both workspace modes. Keep complete source separate from page text, preserve before/after review access, reject oversized interactive transactions before indexing, and recover clean oversized tabs by reopening their host file.
 
 - Maintain incremental document line/UTF-16 coordinates through edits, grouped undo/redo and IME; reuse immutable folded/normalized view allocations across scrolling and caret consumers. Use indexed rows for commands and native selections, record native/WASM query and projection measurements, and keep composer growth compatible with the shared welcome container. Full wrapped viewport and end-to-end resource measurements remain in progress.

@@ -150,26 +150,31 @@ pub fn install_action_tooltips() {
 #[wasm_bindgen(inline_js = r#"
 export function observe_editor_viewport(input, overlay, onLayout) {
     const pane = input.parentElement;
-    let frame = 0;
+    let frame = 0, fontChanged = false, active = true;
     const update = () => {
         frame = 0;
-        if (!input.isConnected || !overlay.isConnected) return;
+        if (!active || !input.isConnected || !overlay.isConnected) return;
         overlay.style.setProperty('--editor-viewport-height', `${input.clientHeight}px`);
         overlay.style.setProperty('--editor-text-width', `${input.clientWidth}px`);
         const rows = overlay.querySelectorAll('.editor-source-line');
         const grips = pane.querySelectorAll('.editor-fold-row');
         rows.forEach((row, index) => grips[index]?.style.setProperty('--editor-row-height', `${row.getBoundingClientRect().height}px`));
-        onLayout();
+        const changed = fontChanged; fontChanged = false;
+        onLayout(changed);
     };
-    const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
-    const observer = new ResizeObserver(schedule);
+    const schedule = (changed = false) => { fontChanged ||= changed; if (active && !frame) frame = requestAnimationFrame(update); };
+    const observer = new ResizeObserver(() => schedule());
     observer.observe(input);
-    const mutation = new MutationObserver(schedule);
+    const mutation = new MutationObserver(() => schedule());
     mutation.observe(overlay, {childList: true, subtree: true});
-    const preferences = new MutationObserver(schedule);
-    preferences.observe(pane, {attributes: true, attributeFilter: ['class']});
+    const preferences = new MutationObserver(() => schedule());
+    preferences.observe(pane, {attributes: true, attributeFilter: ['class', 'style']});
+    preferences.observe(document.documentElement, {attributes: true});
+    const fontsChanged = () => schedule(true);
+    document.fonts?.addEventListener('loadingdone', fontsChanged);
+    document.fonts?.ready.then(() => { if (active) fontsChanged(); });
     update();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); mutation.disconnect(); preferences.disconnect(); };
+    return () => { active = false; cancelAnimationFrame(frame); observer.disconnect(); mutation.disconnect(); preferences.disconnect(); document.fonts?.removeEventListener('loadingdone', fontsChanged); };
 }
 "#)]
 extern "C" {

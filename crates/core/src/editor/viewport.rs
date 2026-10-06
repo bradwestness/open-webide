@@ -8,6 +8,73 @@ pub struct EditorViewport {
     pub height: f64,
 }
 
+/// Exact browser-measured logical row heights. Shared Rust validates the
+/// measurements and chooses windows; it never estimates text wrapping.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredRows(std::sync::Arc<[f64]>);
+impl MeasuredRows {
+    pub fn new(heights: impl IntoIterator<Item = f64>) -> Option<Self> {
+        let mut offsets = vec![0.0];
+        for height in heights {
+            if !height.is_finite() || height <= 0.0 || offsets.len() > super::MAX_EDITOR_LINES {
+                return None;
+            }
+            let end = offsets.last()? + height;
+            if !end.is_finite() || end > 1_000_000_000.0 {
+                return None;
+            }
+            offsets.push(end);
+        }
+        Some(Self(offsets.into()))
+    }
+    pub fn len(&self) -> usize {
+        self.0.len() - 1
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn top(&self, row: usize) -> Option<f64> {
+        self.0.get(row).copied()
+    }
+    pub fn height(&self) -> f64 {
+        *self.0.last().unwrap()
+    }
+    pub fn window(&self, scroll: f64, height: f64, padding: f64) -> EditorViewport {
+        let scroll = if scroll.is_finite() {
+            scroll.max(0.0)
+        } else {
+            0.0
+        };
+        let height = if height.is_finite() {
+            height.max(1.0)
+        } else {
+            1.0
+        };
+        let padding = if padding.is_finite() {
+            padding.max(0.0)
+        } else {
+            0.0
+        };
+        let top = (scroll - padding).max(0.0).min(self.height());
+        let first = self
+            .0
+            .partition_point(|offset| *offset <= top)
+            .saturating_sub(1)
+            .min(self.len().saturating_sub(1));
+        let end = self
+            .0
+            .partition_point(|offset| *offset < top + height)
+            .min(self.len());
+        let start = first.saturating_sub(8);
+        let end = end.saturating_add(8).min(self.len());
+        EditorViewport {
+            rows: start..end,
+            top: self.0[start],
+            height: self.height(),
+        }
+    }
+}
+
 impl EditorViewport {
     /// Keep overscan on both sides and clamp stale scroll positions after edits.
     #[expect(
@@ -52,6 +119,31 @@ impl EditorViewport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn measured_windows_use_actual_wrap_heights_and_clamp_stale_scroll() {
+        let rows =
+            MeasuredRows::new((0..100).map(|row| if row == 20 { 195.0 } else { 19.5 })).unwrap();
+        let view = rows.window(12.0 + 390.0 + 97.5, 39.0, 12.0);
+        assert_eq!(view.rows, 12..29);
+        assert!((view.top - 234.0).abs() < 0.001);
+        assert!((rows.top(21).unwrap() - 585.0).abs() < 0.001);
+        assert_eq!(rows.window(f64::MAX, 39.0, 12.0).rows, 91..100);
+        assert_eq!(
+            MeasuredRows::new([]).unwrap().window(0.0, 100.0, 12.0).rows,
+            0..0
+        );
+        for height in [0.0, -1.0, f64::NAN, f64::INFINITY, 1_000_000_001.0] {
+            assert!(MeasuredRows::new([height]).is_none());
+        }
+        assert!(
+            MeasuredRows::new(std::iter::repeat_n(
+                19.5,
+                super::super::MAX_EDITOR_LINES + 1
+            ))
+            .is_none()
+        );
+    }
+
     #[test]
     fn window_bounds_follow_scroll_and_recover_after_document_shrinks() {
         let view = EditorViewport::unwrapped(100_000, 19_512.0, 390.0, 19.5, 12.0);

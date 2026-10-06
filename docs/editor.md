@@ -206,9 +206,15 @@ Unwrapped edit views render an overscanned row window for syntax, line-number
 gutters and fold controls. The shared row-window policy receives browser geometry;
 projected rows retain global native UTF-16 offsets for Unicode/CRLF pointer mapping.
 Syntax tokens and indentation guides are reused across scrolling. Find and navigation
-can reveal rows outside the current paint window. Wrapped views and rows containing standalone CR retain their measured
-full projection while wrapped viewport rendering is in progress. Native textarea
-input still owns the complete projected source; this does not yet bound input memory.
+can reveal rows outside the current paint window. Wrapped views and rows containing
+standalone CR also use exact measured row-height windows after their initial full
+paint. Measurement publication checks source, folds, project, account and font/width
+scope, and rejects a height table that disagrees with native scrolling. Offscreen
+cursor-neighbor probes preserve multi-cursor visual motion without repainting the
+whole document. Resize or font changes require fresh measurements. The initial
+paint and remeasurement remain full-document work; bounded cold measurement is
+still a follow-up. Native textarea input owns the complete projected source; this
+does not yet bound input memory.
 
 The shared document maintains logical-line and UTF-16 prefixes across transactions,
 grouped undo/redo and composition. Commands reuse indexed rows; native caret mapping

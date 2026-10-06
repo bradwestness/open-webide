@@ -7358,3 +7358,165 @@ async fn oversized_change_review_retains_before_and_after_pages_in_both_modes() 
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Selection, byte_to_textarea, line_column},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = (0..1200)
+        .map(|line| {
+            format!(
+                "row {line} 文😀 café\t{}\r\n",
+                "wrapped words ".repeat(8 + line % 3)
+            )
+        })
+        .collect::<String>();
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test({
+            let source = source.clone();
+            move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("wrapped-window.txt".into()));
+                state.workspace.content.set(source);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = true);
+                view! { <style>{include_str!("../../styles.css")}</style><div class="wrapped-window-fixture" style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        wait_until("exact wrapped height table", || {
+            actions.measured_rows().is_some()
+        })
+        .await;
+        let measured = actions.measured_rows().unwrap();
+        assert_eq!(measured.rows.len(), 1201);
+        assert_eq!(input.value(), source.replace("\r\n", "\n"));
+        let selector = ".editor-highlight:not(.editor-caret-measure) .editor-source-line";
+        for target in [500, 1100, 0, 700] {
+            input.set_scroll_top(measured.rows.top(target).unwrap() + 12.0);
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("bounded wrapped paint at target", || {
+                let first = mounted
+                    .element(selector)
+                    .get_attribute("data-line")
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap()
+                    - 1;
+                first.abs_diff(target) <= 8
+                    && mounted.root.query_selector_all(selector).unwrap().length() < 80
+                    && mounted
+                        .root
+                        .query_selector(".editor-code.highlight-ready")
+                        .unwrap()
+                        .is_some()
+            })
+            .await;
+            let first = mounted.element(selector);
+            let index = first
+                .get_attribute("data-line")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+                - 1;
+            let expected_top =
+                input.get_bounding_client_rect().top() + 12.0 + measured.rows.top(index).unwrap()
+                    - input.scroll_top();
+            assert!((first.get_bounding_client_rect().top() - expected_top).abs() < 0.5);
+            assert!((f64::from(input.scroll_height()) - measured.rows.height() - 24.0).abs() < 2.0);
+            let visible = mounted.element(&format!(
+                ".editor-highlight:not(.editor-caret-measure) .editor-source-line[data-line='{}']",
+                target + 1
+            ));
+            let rect = visible.get_bounding_client_rect();
+            let caret = openwebide_frontend::viewport::editor_caret_from_point(
+                &input,
+                rect.left() + 3.0,
+                rect.top() + 5.0,
+            )
+            .unwrap() as usize;
+            let start = source
+                .split_inclusive('\n')
+                .take(target)
+                .map(str::len)
+                .sum::<usize>();
+            let start = byte_to_textarea(&source, start).unwrap();
+            assert!((start..=start + 1).contains(&caret));
+        }
+        let distant = source
+            .split_inclusive('\n')
+            .take(900)
+            .map(str::len)
+            .sum::<usize>()
+            + 4;
+        actions.record_selection(Selection::caret(4)).unwrap();
+        actions
+            .toggle_cursor(1, "wrapped-window.txt", &source, distant)
+            .unwrap();
+        let before = actions.selections(&source);
+        let native = u32::try_from(byte_to_textarea(&source, before[0].head).unwrap()).unwrap();
+        input.set_selection_range(native, native).unwrap();
+        wait_until("offscreen cursor row probes", || {
+            mounted
+                .root
+                .query_selector(".editor-caret-measure .editor-source-line")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert!(editor_key(&input, "ArrowDown", false, false).default_prevented());
+        wait_until("both wrapped cursors moved", || {
+            actions
+                .selections(&source)
+                .iter()
+                .zip(&before)
+                .all(|(after, before)| after.head > before.head)
+        })
+        .await;
+        for (after, before) in actions.selections(&source).iter().zip(&before) {
+            assert_eq!(
+                line_column(&source, after.head).0,
+                line_column(&source, before.head).0
+            );
+        }
+        assert_eq!(actions.source(), source);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        mounted
+            .element(".wrapped-window-fixture")
+            .style()
+            .set_property("width", "580px")
+            .unwrap();
+        wait_until("new exact wrap heights after resize", || {
+            actions.measured_rows().is_some_and(|next| {
+                next.metrics != measured.metrics && next.rows.height() < measured.rows.height()
+            })
+        })
+        .await;
+        assert!(!actions.publish_measured_rows(measured.revision, measured.metrics, measured.rows));
+        mounted.state.workspace.content.set("small\r\n".into());
+        wait_until("shrunken document height table", || {
+            actions
+                .measured_rows()
+                .is_some_and(|next| next.rows.len() == 2)
+        })
+        .await;
+        assert_eq!(input.value(), "small\n");
+        assert!(mounted.root.query_selector_all(selector).unwrap().length() <= 2);
+    }
+}

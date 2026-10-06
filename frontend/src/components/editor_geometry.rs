@@ -123,10 +123,19 @@ pub(super) struct VisualMetrics {
     pub rows: usize,
 }
 
-pub(super) fn visual_metrics(input: &web_sys::HtmlTextAreaElement) -> Option<VisualMetrics> {
+pub(super) fn visual_metrics(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+) -> Option<VisualMetrics> {
     let parent = input.parent_element()?;
-    let first = parent.query_selector(".editor-source-line").ok()??;
-    let last = parent
+    let paint = parent.query_selector(".editor-highlight-content").ok()??;
+    if paint.get_attribute("data-editor-scope").as_deref()
+        != Some(actions.projection_revision().to_string().as_str())
+    {
+        return None;
+    }
+    let first = paint.query_selector(".editor-source-line").ok()??;
+    let last = paint
         .query_selector(".editor-source-line:last-child")
         .ok()??;
     let first_rect = first.get_bounding_client_rect();
@@ -141,24 +150,41 @@ pub(super) fn visual_metrics(input: &web_sys::HtmlTextAreaElement) -> Option<Vis
     if !line_height.is_finite() || line_height <= 0.0 {
         return None;
     }
-    let identity = format!(
-        "{}:{}:{}:{}",
-        first_rect.width(),
-        style.get_property_value("font").ok()?,
-        line_height,
-        style.get_property_value("tab-size").ok()?
-    );
+    let geometry = super::editor_rows::metrics_identity(input)?;
+    if actions
+        .measured_rows()
+        .is_some_and(|rows| rows.metrics != geometry)
+    {
+        return None;
+    }
+    let identity = format!("{geometry}:{}", actions.view_revision());
+    let window_top: f64 = paint.get_attribute("data-viewport-top")?.parse().ok()?;
+    let document_height: f64 = paint.get_attribute("data-document-height")?.parse().ok()?;
+    if !window_top.is_finite()
+        || window_top < 0.0
+        || !document_height.is_finite()
+        || document_height < 0.0
+    {
+        return None;
+    }
     let caret = super::editor::caret_rect(&first, 0).filter(|rect| rect.height() > 0.0);
     Some(VisualMetrics {
         identity,
         left: first_rect.left(),
-        top: first_rect.top(),
+        top: first_rect.top() - window_top,
         line_height,
         caret_height: caret.as_ref().map_or(line_height, web_sys::DomRect::height),
         caret_inset: caret
             .as_ref()
             .map_or(0.0, |caret| caret.top() - first_rect.top()),
-        rows: measured_row(((last_rect.bottom() - first_rect.top()) / line_height).round())?,
+        rows: measured_row(
+            (if document_height > 0.0 {
+                document_height
+            } else {
+                last_rect.bottom() - first_rect.top()
+            } / line_height)
+                .round(),
+        )?,
     })
 }
 
@@ -173,12 +199,22 @@ pub(super) fn visual_layout(
     let projection = actions.projection()?;
     let parent = input.parent_element()?;
     let paint = parent.query_selector(".editor-highlight-content").ok()??;
+    let painted = paint.text_content()?;
+    let start: usize = paint.get_attribute("data-textarea-start")?.parse().ok()?;
+    let end = start.checked_add(painted.encode_utf16().count())?;
+    let start_byte = projection.textarea_to_byte(start);
+    let end_byte = projection.textarea_to_byte(end);
     if !parent.class_list().contains("highlight-ready")
-        || paint.text_content()? != projection.textarea_text()
+        || projection.byte_to_textarea(start_byte).ok()? != start
+        || projection.byte_to_textarea(end_byte).ok()? != end
+        || projection.text()[start_byte..end_byte]
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            != painted
     {
         return None;
     }
-    let metrics = visual_metrics(input)?;
+    let metrics = visual_metrics(actions, input)?;
     if metrics.rows == 0 {
         return None;
     }
@@ -211,6 +247,18 @@ pub(super) fn visual_layout(
             .strip_suffix("\r\n")
             .or_else(|| raw.strip_suffix('\n'))
             .unwrap_or(raw);
+        let painted_body = row.text_content()?;
+        let painted_body = painted_body.strip_suffix('\n').unwrap_or(&painted_body);
+        if painted_body != body.replace('\r', "\n") {
+            return None;
+        }
+        if let Some(measured) = actions.measured_rows()
+            && (row.get_bounding_client_rect().top() - metrics.top - measured.rows.top(index)?)
+                .abs()
+                > 0.5
+        {
+            return None;
+        }
         let glyphs = if body.is_empty() {
             None
         } else {

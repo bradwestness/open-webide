@@ -238,6 +238,49 @@ impl EditorActions {
         Ok(None)
     }
 
+    pub fn projection_revision(self) -> u64 {
+        self.workspace.editor_projection_revision.get()
+    }
+    pub fn view_revision(self) -> u64 {
+        self.workspace.editor_view_revision.get()
+    }
+    pub fn measured_rows(self) -> Option<crate::state::workspace::EditorRowMeasurements> {
+        let revision = self.view_revision();
+        self.workspace.editor_rows.with(|rows| {
+            rows.as_ref()
+                .filter(|rows| rows.revision == revision)
+                .cloned()
+        })
+    }
+    pub fn invalidate_measured_rows(self) {
+        self.workspace.editor_rows.set(None);
+        self.workspace
+            .editor_layout_epoch
+            .update(|epoch| *epoch = epoch.wrapping_add(1));
+    }
+    pub fn publish_measured_rows(
+        self,
+        revision: u64,
+        metrics: String,
+        rows: openwebide_core::editor::MeasuredRows,
+    ) -> bool {
+        if self.view_revision() != revision
+            || self
+                .projection()
+                .is_none_or(|projection| projection.lines().len() != rows.len())
+        {
+            return false;
+        }
+        self.workspace
+            .editor_rows
+            .set(Some(crate::state::workspace::EditorRowMeasurements {
+                revision,
+                metrics,
+                rows,
+            }));
+        true
+    }
+
     pub fn limit(self) -> Option<openwebide_core::editor::EditorLimit> {
         self.capacity.get()
     }
@@ -505,20 +548,25 @@ impl EditorActions {
         let Some(key) = self.key() else {
             return Ok(None);
         };
+        let mut folds_changed = false;
         let result = self
             .workspace
             .editor_documents
             .try_update(|documents| {
                 let document = self.document(documents, key);
+                let folds = document.fold_state().clone();
                 operation(document)?;
+                folds_changed = document.fold_state() != &folds;
                 Ok(Some(document.selections().to_vec()))
             })
             .unwrap_or(Ok(None));
         if matches!(result, Ok(Some(_))) {
             self.typing.set(None);
-            self.workspace
-                .editor_fold_revision
-                .update(|value| *value = value.wrapping_add(1));
+            if folds_changed {
+                self.workspace
+                    .editor_fold_revision
+                    .update(|value| *value = value.wrapping_add(1));
+            }
         }
         result
     }
@@ -653,14 +701,16 @@ impl EditorActions {
             return None;
         }
         let ranges = result.1;
-        self.workspace.editor_documents.update(|documents| {
-            let document = self.document(documents, key);
-            let count = document.line_count();
-            document.fold_state_mut().set_ranges(ranges, count);
-        });
-        self.workspace
-            .editor_fold_revision
-            .update(|value| *value = value.wrapping_add(1));
+        let changed = self
+            .workspace
+            .editor_documents
+            .try_update(|documents| self.document(documents, key).set_fold_ranges(ranges))
+            .unwrap_or(false);
+        if changed {
+            self.workspace
+                .editor_fold_revision
+                .update(|value| *value = value.wrapping_add(1));
+        }
         Some(result.0)
     }
 
@@ -804,13 +854,15 @@ impl EditorActions {
         self.typing.set(None);
         let result = self.workspace.editor_documents.try_update(|documents| {
             let document = self.document(documents, key);
-            document.fold_command(command);
-            (document.projection(), document.selections()[0])
+            let changed = document.fold_command(command);
+            (changed, (document.projection(), document.selections()[0]))
         });
-        self.workspace
-            .editor_fold_revision
-            .update(|value| *value = value.wrapping_add(1));
-        result
+        if result.as_ref().is_some_and(|(changed, _)| *changed) {
+            self.workspace
+                .editor_fold_revision
+                .update(|value| *value = value.wrapping_add(1));
+        }
+        result.map(|(_, view)| view)
     }
 
     pub fn projection(self) -> Option<openwebide_core::editor::FoldProjection> {

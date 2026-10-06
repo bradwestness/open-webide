@@ -346,6 +346,27 @@ fn editor_row_height(textarea: &web_sys::HtmlTextAreaElement) -> f64 {
 }
 
 fn navigate_editor(actions: EditorActions, textarea: &web_sys::HtmlTextAreaElement, offset: usize) {
+    if let (Some(projection), Some(measured)) = (actions.projection(), actions.measured_rows())
+        && let Ok(visible) = projection.visible_offset(offset)
+    {
+        let index = projection
+            .lines()
+            .partition_point(|line| line.visible_start <= visible)
+            .saturating_sub(1);
+        if let Some(top) = measured.rows.top(index) {
+            let height = measured
+                .rows
+                .top(index + 1)
+                .unwrap_or(measured.rows.height())
+                - top;
+            if top < textarea.scroll_top()
+                || top + height > textarea.scroll_top() + f64::from(textarea.client_height())
+            {
+                textarea.set_scroll_top(top);
+            }
+        }
+    }
+
     navigate_editor_with_retry(actions, textarea, offset, true);
 }
 
@@ -699,6 +720,7 @@ fn highlight_html(
     visible: &[usize],
     indentation: openwebide_core::editor::Indentation,
     show_whitespace: bool,
+    trailing_line_ending: bool,
 ) -> String {
     #[cfg(feature = "test-support")]
     HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
@@ -728,7 +750,7 @@ fn highlight_html(
                 }
             }
         }
-        if idx != *visible.last().unwrap_or(&idx) {
+        if idx != *visible.last().unwrap_or(&idx) || trailing_line_ending {
             if show_whitespace {
                 html.push_str("<span class=\"editor-line-ending\"></span>");
             }
@@ -826,12 +848,18 @@ fn HighlightOverlay(
 ) -> impl IntoView {
     use wasm_bindgen::closure::Closure;
 
-    let layout_callback = StoredValue::new_local(Closure::<dyn FnMut()>::new(move || {
-        if layout_revision.is_disposed() {
-            return;
-        }
-        layout_revision.update(|value| *value = value.wrapping_add(1));
-    }));
+    let layout_callback =
+        StoredValue::new_local(Closure::<dyn FnMut(bool)>::new(move |font_changed| {
+            if layout_revision.is_disposed() {
+                return;
+            }
+            if let (Some(input), Some(overlay)) =
+                (textarea_ref.get_untracked(), node_ref.get_untracked())
+            {
+                super::editor_rows::update_measurements(actions, &input, &overlay, font_changed);
+            }
+            layout_revision.update(|value| *value = value.wrapping_add(1));
+        }));
     let viewport_observer = StoredValue::new_local(None::<wasm_bindgen::JsValue>);
     Effect::new(move || {
         if let (Some(input), Some(overlay)) = (textarea_ref.get(), node_ref.get())
@@ -877,6 +905,7 @@ fn HighlightOverlay(
             .with(|source| openwebide_core::editor::indent_guide_columns(source, indentation.get()))
     });
     let rendered = RwSignal::new(String::new());
+    let rendered_scope = RwSignal::new(0_u64);
     let request = StoredValue::new(None::<i32>);
     let generation = StoredValue::new(0_u64);
     let queued_generation = StoredValue::new(0_u64);
@@ -898,12 +927,19 @@ fn HighlightOverlay(
                     &visible.get_untracked(),
                     indentation.get_untracked(),
                     show_whitespace.get_untracked(),
+                    actions.projection().is_some_and(|projection| {
+                        viewport.get_untracked().rows.end < projection.lines().len()
+                    }),
                 )
             })
         });
         if immediate && let Some(overlay) = node_ref.get_untracked() {
             if let Ok(Some(content)) = overlay.query_selector(".editor-highlight-content") {
                 content.set_inner_html(&html);
+                let _ = content.set_attribute(
+                    "data-editor-scope",
+                    &actions.projection_revision().to_string(),
+                );
             }
             if let Some(parent) = overlay.parent_element() {
                 let _ = parent.class_list().add_1("highlight-ready");
@@ -912,6 +948,7 @@ fn HighlightOverlay(
                 sync_highlight_scroll(&textarea, &overlay);
             }
         }
+        rendered_scope.set(actions.projection_revision());
         rendered.set(html);
         ready.set(true);
         let published_generation = generation.get_value();
@@ -929,6 +966,50 @@ fn HighlightOverlay(
                 sync_highlight_scroll(&textarea, &overlay);
             }
         });
+    });
+    let documents = expect_context::<WorkspaceState>().editor_documents;
+    let extra = Memo::new(move |_| {
+        actions.view_revision();
+        documents.track();
+        layout_revision.track();
+        let Some(measured) = actions.measured_rows() else {
+            return Vec::new();
+        };
+        let Some(projection) = actions.projection() else {
+            return Vec::new();
+        };
+        let window = viewport.get().rows;
+        let mut rows = std::collections::BTreeSet::new();
+        for selection in content.with(|source| actions.selections(source)) {
+            let Ok(selection) = projection.visible_selection(selection) else {
+                continue;
+            };
+            let index = projection
+                .lines()
+                .partition_point(|line| line.visible_start <= selection.head)
+                .saturating_sub(1);
+            rows.extend(index.saturating_sub(1)..=(index + 1).min(projection.lines().len() - 1));
+        }
+        rows.into_iter()
+            .filter(|index| !window.contains(index))
+            .filter_map(|index| {
+                let line = projection.lines().get(index)?;
+                let html = tokens.with(|(prepared, tokens)| {
+                    guides.with(|guides| {
+                        highlight_html(
+                            tokens,
+                            *prepared,
+                            guides,
+                            &[line.source_line],
+                            indentation.get(),
+                            show_whitespace.get(),
+                            index + 1 < projection.lines().len(),
+                        )
+                    })
+                });
+                Some((measured.rows.top(index)?, html, measured.revision))
+            })
+            .collect::<Vec<_>>()
     });
     let callback = StoredValue::new_local(Closure::<dyn FnMut()>::new(move || paint.run(false)));
     paint_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
@@ -949,6 +1030,7 @@ fn HighlightOverlay(
 
     Effect::new(move || {
         content.track();
+        actions.projection_revision();
         actions.preparation_revision();
         indentation.get();
         show_whitespace.get();
@@ -994,7 +1076,13 @@ fn HighlightOverlay(
         }
     });
 
-    view! { <div class="editor-highlight" node_ref=node_ref><div class="editor-highlight-content" data-textarea-start=move || textarea_start.get().to_string() style=move || viewport.with(|view| if view.height > 0.0 { format!("padding-top:{}px;min-height:max(100%, {}px)", 12.0 + view.top, 24.0 + view.height) } else { String::new() }) inner_html=move || rendered.get() /></div> }
+    view! { <div class="editor-highlight" node_ref=node_ref><div class="editor-highlight-content" data-editor-scope=move || rendered_scope.get().to_string() data-viewport-top=move || viewport.get().top.to_string() data-document-height=move || viewport.get().height.to_string() data-textarea-start=move || textarea_start.get().to_string() style=move || viewport.with(|view| if view.height > 0.0 { format!("padding-top:{}px;min-height:max(100%, {}px)", 12.0 + view.top, 24.0 + view.height) } else { String::new() }) inner_html=move || rendered.get() /></div>
+        <div class="editor-highlight editor-caret-measure" aria-hidden="true" style=move || { layout_revision.track(); format!("visibility:hidden;--editor-text-width:{}px", textarea_ref.get().map_or(0, |input| input.client_width())) }>
+            {move || extra.get().into_iter().map(|(top, html, revision)| view! {
+                <div class="editor-highlight-content" data-editor-scope=revision.to_string() style=format!("position:absolute;top:{top}px;min-height:0;padding-bottom:0") inner_html=html />
+            }).collect_view()}
+        </div>
+    }
 }
 
 /// Syntax paint and word changes share spans without injecting source HTML.
@@ -1466,6 +1554,16 @@ pub fn Editor(
         layout_revision.track();
         let (rows, uniform) = projection.with(|view| (view.lines().len(), view.has_uniform_rows()));
         if editor_actions.preferences().word_wrap || !uniform {
+            if let Some(measured) = editor_actions.measured_rows() {
+                let input = ta.get();
+                return measured.rows.window(
+                    input.as_ref().map_or(0.0, |input| input.scroll_top()),
+                    input
+                        .as_ref()
+                        .map_or(390.0, |input| f64::from(input.client_height())),
+                    12.0,
+                );
+            }
             return openwebide_core::editor::EditorViewport {
                 rows: 0..rows,
                 top: 0.0,
@@ -1846,7 +1944,7 @@ pub fn Editor(
                     let _ = editor_actions.record_selection(source_selection);
                 } else { let _ = textarea.set_selection_range(start, end); }
                 if let Ok(Some(row)) =
-                    root.query_selector(&format!(".editor-source-line[data-line='{line}']"))
+                    root.query_selector(&format!(".editor-highlight:not(.editor-caret-measure) .editor-source-line[data-line='{line}']"))
                 {
                     let row: web_sys::HtmlElement = row.unchecked_into();
                     textarea.set_scroll_top(f64::from(row.offset_top().saturating_sub(12)));
@@ -1856,6 +1954,9 @@ pub fn Editor(
                         reveal_match_column(&row, &textarea, column, gutter);
                         sync_highlight_scroll(&textarea, &overlay);
                     }
+                } else if let (Some(measured), Some(projection)) = (editor_actions.measured_rows(), editor_actions.projection()) {
+                    let row = projection.lines().partition_point(|row| row.source_line < line.saturating_sub(1));
+                    if let Some(top) = measured.rows.top(row) { textarea.set_scroll_top(top); }
                 } else if !editor_actions.preferences().word_wrap
                     && let Some(projection) = editor_actions.projection()
                 {
@@ -2336,6 +2437,7 @@ pub fn Editor(
                                         <textarea
                                             data-editor-project=editor_project.map(|project| project.to_string())
                                             data-editor-path=open_file.get()
+                                            data-editor-scope=move || editor_actions.projection_revision().to_string()
                                             class="editor-textarea"
                                             wrap=move || if editor_actions.preferences().word_wrap { "soft" } else { "off" }
                                             spellcheck="false"

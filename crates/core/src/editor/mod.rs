@@ -42,7 +42,7 @@ pub use capacity::{
     TextPage, editor_limit,
 };
 mod viewport;
-pub use viewport::EditorViewport;
+pub use viewport::{EditorViewport, MeasuredRows};
 mod projection;
 pub use projection::{FoldProjection, ProjectionError, VisibleLine};
 #[cfg(feature = "editor-parser")]
@@ -284,6 +284,17 @@ impl Document {
     pub fn fold_state(&self) -> &FoldState {
         &self.folds
     }
+    /// Refresh fold providers without invalidating an unchanged projection.
+    pub fn set_fold_ranges(&mut self, ranges: Vec<FoldRange>) -> bool {
+        let before = self.folds.clone();
+        self.folds.set_ranges(ranges, self.line_index.rows.len());
+        let changed = before != self.folds;
+        if changed {
+            self.projection.0.take();
+            self.motion_columns = None;
+        }
+        changed
+    }
     pub fn fold_state_mut(&mut self) -> &mut FoldState {
         self.motion_columns = None;
         self.projection.0.take();
@@ -310,9 +321,9 @@ impl Document {
         changed
     }
 
-    pub fn fold_command(&mut self, command: FoldCommand) {
+    pub fn fold_command(&mut self, command: FoldCommand) -> bool {
         if self.is_composing() {
-            return;
+            return false;
         }
         self.motion_columns = None;
         let before = self.selections.clone();
@@ -334,7 +345,8 @@ impl Document {
                 self.folds.reveal(line);
             }
         }
-        if previous_folds != self.folds {
+        let changed = previous_folds != self.folds;
+        if changed {
             self.projection.0.take();
         }
         let projection = self.projection();
@@ -351,6 +363,7 @@ impl Document {
             self.selection_history.clear();
             self.motion_columns = None;
         }
+        changed
     }
 
     pub fn byte_to_textarea(&self, offset: usize) -> Result<usize, EditError> {

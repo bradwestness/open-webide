@@ -89,7 +89,7 @@ pub(super) fn SelectionOverlay(
             let mut next = Vec::new();
             let mut visual_primary = false;
             let metrics = (ready && actions.preferences().word_wrap)
-                .then(|| super::editor_geometry::visual_metrics(&input))
+                .then(|| super::editor_geometry::visual_metrics(actions, &input))
                 .flatten();
             if ready
                 && selections.len() > 1

@@ -98,7 +98,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   logical-line/UTF-16 prefixes from transaction envelopes and shares immutable
   projections across view consumers; commands, cursor status and native selections
   use the index. Native/WASM measurements cover indexed queries and cold/warm
-  projection access. Finish wrapped viewport rendering and further incremental
+  projection access. Warm wrapped paint now uses exact measured row-height windows
+  and bounded offscreen cursor-neighbor probes, with source/project/account/layout
+  guards. Finish bounded cold paint and remeasurement, then further incremental
   access: edits still materialize full Strings and shift suffix coordinates, and
   long-line queries still scan within the line. Native textarea input retains the
   full projected source.
