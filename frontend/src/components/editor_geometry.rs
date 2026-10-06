@@ -415,9 +415,14 @@ fn anchored_row(
     } else {
         0.0
     };
+    let source_start = row
+        .get_attribute("data-source-start")
+        .map(|offset| offset.parse::<usize>().ok())
+        .unwrap_or(Some(0))?;
     let nodes = TextNodes::new(row)?;
-    let (start, at) = nodes.position(u32::try_from(start_native).ok()?)?;
-    let (end, to) = nodes.position(u32::try_from(end_native).ok()?)?;
+    let (start, at) =
+        nodes.position(u32::try_from(start_native.checked_sub(source_start)?).ok()?)?;
+    let (end, to) = nodes.position(u32::try_from(end_native.checked_sub(source_start)?).ok()?)?;
     let range = document().create_range().ok()?;
     range.set_start(start, at).ok()?;
     range.set_end(end, to).ok()?;
@@ -503,7 +508,7 @@ fn anchored_row(
 pub(super) fn window_paint(
     actions: EditorActions,
     input: &web_sys::HtmlTextAreaElement,
-    html: &str,
+    render: impl Fn(&[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
     windows: &[(usize, openwebide_core::editor::RowPaintWindow)],
     cache: &mut crate::state_actions::editor::EditorFragmentCache,
 ) -> Option<String> {
@@ -546,7 +551,11 @@ pub(super) fn window_paint(
             )
             .ok()?;
     }
-    paint.set_inner_html(html);
+    let slices = windows
+        .iter()
+        .filter_map(|(index, window)| actions.row_source_slice(cache, *index, window, line_height))
+        .collect::<Vec<_>>();
+    paint.set_inner_html(&render(&slices));
     let mut changed = false;
     for (index, window) in windows {
         let line = &projection.lines()[*index];
@@ -567,6 +576,15 @@ pub(super) fn window_paint(
         {
             changed = true;
             continue;
+        }
+        if slices
+            .iter()
+            .any(|slice| slice.source_line == line.source_line)
+        {
+            // Never measure a partial row as complete. The caller renders the full
+            // source on a shaping mismatch; the next probe obtains fresh anchors.
+            actions.forget_measured_row_geometry(cache, *index);
+            return None;
         }
         let mut geometry = None;
         changed |= window_paint_row(

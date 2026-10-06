@@ -25,7 +25,7 @@ pub enum EditorCommand {
 mod motion;
 mod preparation;
 mod rows;
-pub use rows::{EditorFragmentCache, EditorFragmentWindow};
+pub use rows::{EditorFragmentCache, EditorFragmentWindow, EditorRowSourceSlice};
 
 type TypingState = Option<((i64, String), String, f64)>;
 

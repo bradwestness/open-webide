@@ -30,7 +30,7 @@ pub use commands::CommandDialogs;
 pub use confirm_dialog::ConfirmDialog;
 pub use editor::Editor;
 #[cfg(feature = "test-support")]
-pub use editor::highlight_count;
+pub use editor::{highlight_count, take_highlight_source_bytes};
 pub use file_browser::FileBrowser;
 pub use file_tree::{FileTree, SearchPane};
 pub use panel_resizer::PanelResizer;

@@ -266,8 +266,14 @@ Equivalent syntax results preserve proven geometry for identical styled rows;
 font loading clears that measurement provenance even if computed font text is
 unchanged. Geometry publication checks the
 original source/view and font-layout epochs as well as read, account, syntax and
-style ownership. First measurement still shapes the complete row. Initial layout,
-full source HTML construction and native
+style ownership. Retained anchors select bounded token source before HTML
+generation and parsing. Partial measurement failure discards those anchors and
+restores complete source before a fresh probe; Unicode offsets, token styles and
+logical extents remain intact. Unwrapped rows retain equivalent styled geometry
+within the same font/layout epoch without requiring a wrapped height table.
+Changed epochs require height provenance, and font loading clears it.
+First measurement still shapes the complete row. Initial layout,
+uncached full-row HTML construction and native
 input costs remain performance follow-ups.
 CRLF inverse mapping still selects the original CR, and surrogate offsets retain
 the existing boundary behavior. Projected text, normalized textarea text and

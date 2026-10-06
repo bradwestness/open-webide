@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Slice long editor rows from validated styled anchors before generating and parsing HTML in both workspace modes. Preserve token styles, Unicode offsets, tab origins and complete logical extents; reject partial measurement failures and restore complete source before reprobe. Retain equivalent styled syntax geometry for unwrapped rows within the same font/layout epoch.
+
 - Stabilize editor file tabs in both workspace modes: allow room for horizontal scrollbars without vertical overflow, retain tab nodes through unrelated updates, and reserve dirty-indicator space to prevent width jumps.
 
 - Reuse wrapped glyph anchors from cold row-height measurement for first paint in both workspace modes. Keep geometry in the bounded shared cache, reject older source/read/account/syntax/font scopes, and remeasure when fonts load even if computed font text is unchanged. Preserve proven geometry across equivalent styled syntax results; cold measurement still shapes complete rows.

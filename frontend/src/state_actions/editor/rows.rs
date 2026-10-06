@@ -91,6 +91,14 @@ fn same_paint_scope(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
         && Arc::ptr_eq(&old.tokens, &paint.tokens)
         && Arc::ptr_eq(&old.guides, &paint.guides)
 }
+/// Exact source interval selected from immutable styled anchors before HTML generation.
+#[derive(Clone, Debug)]
+pub struct EditorRowSourceSlice {
+    pub source_line: usize,
+    pub bytes: std::ops::Range<usize>,
+    pub native_start: usize,
+    pub reaches_end: bool,
+}
 impl EditorActions {
     pub fn paint_window(
         self,
@@ -257,12 +265,14 @@ impl EditorActions {
                 self.workspace
                     .editor_row_cache
                     .with_untracked(|height_cache| {
-                        let height_cache = height_cache.as_ref()?;
-                        // Font loading clears height provenance even when computed
-                        // metrics survive. Only the proven old styled scope may transfer.
-                        if !same_paint_scope(&height_cache.paint, old)
-                            || !same_measurement_environment(old, &paint)
-                        {
+                        // Unwrapped rows do not need a height table. Their geometry
+                        // may transfer within the same font/layout epoch. A changed
+                        // epoch needs exact height provenance; font loading clears it.
+                        let proven = old.layout_epoch == paint.layout_epoch
+                            || height_cache.as_ref().is_some_and(|height_cache| {
+                                same_paint_scope(&height_cache.paint, old)
+                            });
+                        if !proven || !same_measurement_environment(old, &paint) {
                             return None;
                         }
                         Some(
@@ -302,6 +312,46 @@ impl EditorActions {
         let result = entry.1.clone();
         cache.geometry.push_back(entry);
         Some(result)
+    }
+    pub fn row_source_slice(
+        self,
+        cache: &mut EditorFragmentCache,
+        row: usize,
+        window: &openwebide_core::editor::RowPaintWindow,
+        line_height: f64,
+    ) -> Option<EditorRowSourceSlice> {
+        let geometry = self.measured_row_geometry(cache, row)?;
+        let paint = &cache.scope.as_ref()?.0;
+        let line = paint.projection.lines().get(row)?;
+        let end = paint
+            .projection
+            .lines()
+            .get(row + 1)
+            .map_or(paint.projection.text().len(), |next| next.visible_start);
+        let raw = paint.projection.text().get(line.visible_start..end)?;
+        let body = raw
+            .strip_suffix("\r\n")
+            .or_else(|| raw.strip_suffix('\n'))
+            .unwrap_or(raw);
+        let index = paint.projection.visual_line_index(row)?;
+        if !index.source_paint_eligible() {
+            return None;
+        }
+        let interval = geometry.source_interval(window, line_height)?;
+        let (start, native_start) = index.at(body, interval.start)?;
+        let (end, _) = index.at(body, interval.end)?;
+        if end.checked_sub(start)? > openwebide_core::editor::MAX_MEASURE_BYTES {
+            return None;
+        }
+        Some(EditorRowSourceSlice {
+            source_line: line.source_line,
+            bytes: start..end,
+            native_start,
+            reaches_end: end == body.len(),
+        })
+    }
+    pub fn forget_measured_row_geometry(self, cache: &mut EditorFragmentCache, row: usize) {
+        cache.geometry.retain(|(index, _)| *index != row);
     }
     pub fn retain_measured_row_geometry(
         self,

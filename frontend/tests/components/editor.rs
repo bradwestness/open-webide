@@ -8416,6 +8416,7 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
             .await;
             settle().await;
         }
+        openwebide_frontend::components::take_highlight_source_bytes();
         let measured_source = audit_source.call0(&wasm_bindgen::JsValue::NULL).unwrap();
         for top in [height / 2.0, height - 1000.0, 0.0] {
             input.set_scroll_top(top);
@@ -8430,6 +8431,11 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
                     .is_some_and(|paint_top| (paint_top - input.scroll_top()).abs() < 200.0)
             })
             .await;
+            let generated = openwebide_frontend::components::take_highlight_source_bytes();
+            assert!(
+                generated <= 65_536,
+                "new intervals must slice source before HTML generation: {generated}"
+            );
             let row = mounted.element(".editor-source-line");
             assert!((row.get_bounding_client_rect().height() - height).abs() < 0.5);
             let fragment = row
@@ -8654,6 +8660,7 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
         )
         .call0(&wasm_bindgen::JsValue::NULL)
         .unwrap();
+        openwebide_frontend::components::take_highlight_source_bytes();
         for x in [
             10_000.0,
             f64::from(width) / 2.0,
@@ -8679,6 +8686,11 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
                 },
             )
             .await;
+            let generated = openwebide_frontend::components::take_highlight_source_bytes();
+            assert!(
+                generated <= 65_536,
+                "horizontal intervals must slice source before HTML generation: {generated}"
+            );
             let row = mounted.element(".editor-source-line");
             let fragment = row
                 .query_selector(":scope > .editor-source-fragment")
@@ -8950,7 +8962,7 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
     use std::sync::Arc;
     let source = "a".repeat(70_000);
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for change in 0..8 {
+        for change in 0..9 {
             let action_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let mounted = mount_test({
                 let source = source.clone();
@@ -9017,6 +9029,34 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
             );
             actions.retain_preparation_geometry(&mut cache, &paint, 0, geometry.clone());
             assert!(actions.measured_row_geometry(&mut cache, 0).is_some());
+            if change == 8 {
+                assert!(actions.fragment_scope(
+                    &mut cache,
+                    metrics.clone(),
+                    (true, Arc::new((*tokens).clone())),
+                    guides.clone(),
+                    Indentation::default(),
+                    false
+                ));
+                assert!(
+                    actions.measured_row_geometry(&mut cache, 0).is_some(),
+                    "equivalent syntax retains geometry without a wrapped height table"
+                );
+                actions.invalidate_measured_font();
+                assert!(actions.fragment_scope(
+                    &mut cache,
+                    metrics.clone(),
+                    (true, Arc::new((*tokens).clone())),
+                    guides.clone(),
+                    Indentation::default(),
+                    false
+                ));
+                assert!(
+                    actions.measured_row_geometry(&mut cache, 0).is_none(),
+                    "font loading rejects geometry without height provenance"
+                );
+                continue;
+            }
             if change == 6 {
                 let ticket = actions
                     .begin_row_preparation(actions.view_revision(), 1)
@@ -9224,5 +9264,121 @@ async fn overflowing_file_tabs_keep_height_scroll_and_nodes_stable_in_both_modes
                 Some(if dirty { "false" } else { "true" })
             );
         }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "word 文😀\t ".repeat(15_000);
+        let original = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("slice.txt".into()));
+            state.workspace.content.set(source.clone());
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = true);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        wait_until("wrapped source anchors ready", || {
+            mounted
+                .root
+                .query_selector(".editor-source-line[data-paint-top]")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        for top in [10_000.0, 0.0] {
+            input.set_scroll_top(top);
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("source anchor scope settled", || {
+                mounted
+                    .element(".editor-source-line")
+                    .get_attribute("data-paint-top")
+                    .and_then(|top| top.parse::<f64>().ok())
+                    .is_some_and(|top| (top - input.scroll_top()).abs() < 200.0)
+            })
+            .await;
+            settle().await;
+        }
+        let audit = js_sys::Function::new_no_args(r#"
+            const state = {failed: false};
+            const old = Range.prototype.getClientRects;
+            Range.prototype.getClientRects = function(...args) {
+                const node = this.startContainer;
+                const element = node.nodeType === 1 ? node : node.parentElement;
+                if (!state.failed && element?.closest('.editor-row-measure .editor-source-line[data-source-start]')) {
+                    state.failed = true;
+                    return {length: 0, item() {return null;}};
+                }
+                return old.apply(this, args);
+            };
+            state.restore = () => {Range.prototype.getClientRects = old;};
+            return state;
+        "#).call0(&wasm_bindgen::JsValue::NULL).unwrap();
+        input.set_scroll_top(20_000.0);
+        input
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        wait_until(
+            "failed partial measurement restores complete source",
+            || {
+                js_sys::Reflect::get(&audit, &"failed".into())
+                    .unwrap()
+                    .as_bool()
+                    == Some(true)
+                    && mounted
+                        .element(".editor-source-line")
+                        .text_content()
+                        .as_deref()
+                        == Some(original.as_str())
+            },
+        )
+        .await;
+        js_sys::Reflect::get(&audit, &"restore".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap()
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap();
+        assert_eq!(input.value(), original);
+        assert!(
+            mounted
+                .element(".editor-source-line")
+                .get_attribute("data-source-start")
+                .is_none()
+        );
+        input.set_scroll_top(30_000.0);
+        input
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        wait_until("fresh full probe restores bounded paint", || {
+            mounted
+                .element(".editor-source-line")
+                .get_attribute("data-paint-top")
+                .and_then(|top| top.parse::<f64>().ok())
+                .is_some_and(|top| (top - input.scroll_top()).abs() < 200.0)
+        })
+        .await;
+        assert!(
+            mounted
+                .element(".editor-source-line")
+                .text_content()
+                .unwrap()
+                .len()
+                < 65_536
+        );
+        assert_eq!(input.value(), original);
     }
 }

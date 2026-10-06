@@ -334,3 +334,39 @@ These individual observations support further investigation, not percentiles or
 admission validation. Complete cold row shaping, long-line input and multi-GiB
 summed Chrome RSS remain costly. Summed RSS can double-count shared pages; Linux
 PSS and full boundary/device gates remain outstanding.
+
+### Source slices before HTML generation
+
+The shared facade now selects bounded source from retained styled anchors before
+HTML generation and parsing. Browser contracts in both modes audit the largest
+source row passed to HTML escaping on unseen horizontal/wrapped intervals and
+verify it stays within 64 KiB, preserving Unicode/native hits and Find. An injected
+partial measurement failure restores complete source, drops the rejected anchors
+and obtains fresh bounded paint on the next probe. Equivalent styled syntax can
+retain unwrapped geometry within the same font/layout epoch without a height
+table; font loading still invalidates it.
+
+The final [horizontal observation](editor-performance/production-source-slices-horizontal.jsonl)
+and [wrapped observation](editor-performance/production-source-slices-wrapped.jsonl)
+use the same destination-verified 1 MiB workload, module `d4e04563118f0285`.
+The build contains the current worktree and concurrent branding/welcome changes;
+`checkoutHead` records its parent commit. Browser tests were terminal before these
+sequential runs started.
+
+| Layout | Mode | Cold ready (ms) | Input to paint (ms) | Destination scroll to paint (ms) | Peak summed Chrome RSS (GiB) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Horizontal | Local | 1676.7 | 455.4 | 22.8 | 1.55 |
+| Horizontal | Remote | 1282.1 | 429.3 | 367.7 | 1.57 |
+| Wrapped | Local | 2631.2 | 850.0 | 455.8 | 4.59 |
+| Wrapped | Remote | 3164.6 | 497.5 | 458.4 | 4.63 |
+
+Earlier samples of the same source-slicing build before the unwrapped reuse fix
+are retained for comparison: [horizontal](editor-performance/production-source-slices-horizontal-before-reuse.jsonl)
+recorded 715.5/371.6 ms destination scroll; [wrapped](editor-performance/production-source-slices-before-unwrapped-reuse.jsonl)
+recorded 35.7/39.1 ms. The initial height-provenance requirement excluded unwrapped
+rows from equivalent syntax reuse; the shared contract now covers that correction.
+These single observations remain inconsistent immediately after readiness and do
+not prove stable startup scroll latency. Trace late syntax/font/layout changes and
+uncached probes before claiming that gate complete. Full initial shaping, input
+costs, process memory, Linux PSS, percentiles and admission/device gates remain
+outstanding; summed RSS can double-count shared pages.

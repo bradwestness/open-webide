@@ -699,12 +699,19 @@ use crate::text::escape_html;
 #[cfg(feature = "test-support")]
 thread_local! {
     static HIGHLIGHT_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static HIGHLIGHT_SOURCE_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Number of overlay generations, for browser performance regressions.
 #[cfg(feature = "test-support")]
 pub fn highlight_count() -> usize {
     HIGHLIGHT_COUNT.get()
+}
+
+/// Largest source row passed to HTML escaping since the last browser audit.
+#[cfg(feature = "test-support")]
+pub fn take_highlight_source_bytes() -> usize {
+    HIGHLIGHT_SOURCE_BYTES.replace(0)
 }
 
 /// Whitespace markers retain their original text node and therefore source offsets.
@@ -738,12 +745,14 @@ fn paint_text(text: &str, show_whitespace: bool) -> String {
 struct PaintRows<'a> {
     indices: &'a [usize],
     projection: Option<&'a openwebide_core::editor::FoldProjection>,
+    source_slices: &'a [crate::state_actions::editor::EditorRowSourceSlice],
 }
 impl<'a> PaintRows<'a> {
     fn measured(indices: &'a [usize]) -> Self {
         Self {
             indices,
             projection: None,
+            source_slices: &[],
         }
     }
     fn fragment(&self, source_line: usize) -> Option<(usize, usize)> {
@@ -780,7 +789,18 @@ fn highlight_html(
             "<span class=\"editor-source-line\" data-line=\"{}\" style=\"--editor-indent-columns:{};--editor-indent-step:{}\">",
             idx + 1, guides.get(idx).copied().unwrap_or(0), indentation.width()
         ));
+        let source_slice = rows
+            .source_slices
+            .iter()
+            .find(|slice| slice.source_line == idx);
         let fragment = rows.fragment(idx);
+        if let Some(slice) = source_slice {
+            let end = html.len() - 1;
+            html.insert_str(
+                end,
+                &format!(" data-source-start=\"{}\"", slice.native_start),
+            );
+        }
         if let Some((start, length)) = fragment {
             // Append metadata to the logical wrapper before inserting its text.
             let end = html.len() - 1;
@@ -790,12 +810,31 @@ fn highlight_html(
             );
             html.push_str(&format!("<span class=\"editor-source-fragment\" data-paint-start=\"0\" data-paint-end=\"{length}\">"));
         }
+        let mut source_offset = 0;
+        #[cfg(feature = "test-support")]
+        let mut painted_bytes = 0;
         for (position, tok) in line.iter().enumerate() {
             let text = if prepared_source && idx + 1 < lines.len() && position + 1 == line.len() {
                 tok.text.strip_suffix('\r').unwrap_or(&tok.text)
             } else {
                 &tok.text
             };
+            let token_start = source_offset;
+            source_offset += text.len();
+            let text = if let Some(slice) = source_slice {
+                let start = slice.bytes.start.max(token_start);
+                let finish = slice.bytes.end.min(source_offset);
+                if start >= finish {
+                    continue;
+                }
+                &text[start - token_start..finish - token_start]
+            } else {
+                text
+            };
+            #[cfg(feature = "test-support")]
+            {
+                painted_bytes += text.len();
+            }
             match tok.kind {
                 TokenKind::Plain => html.push_str(&paint_text(text, show_whitespace)),
                 kind => {
@@ -807,7 +846,11 @@ fn highlight_html(
                 }
             }
         }
-        if idx != *rows.indices.last().unwrap_or(&idx) || trailing_line_ending {
+        #[cfg(feature = "test-support")]
+        HIGHLIGHT_SOURCE_BYTES.set(HIGHLIGHT_SOURCE_BYTES.get().max(painted_bytes));
+        if source_slice.is_none_or(|slice| slice.reaches_end)
+            && (idx != *rows.indices.last().unwrap_or(&idx) || trailing_line_ending)
+        {
             if show_whitespace {
                 html.push_str("<span class=\"editor-line-ending\"></span>");
             }
@@ -1152,7 +1195,7 @@ fn HighlightOverlay(
         {
             return;
         }
-        let render = || {
+        let render = |source_slices: &[crate::state_actions::editor::EditorRowSourceSlice]| {
             tokens.with_untracked(|(prepared, tokens)| {
                 guides.with_untracked(|guides| {
                     highlight_html(
@@ -1162,6 +1205,7 @@ fn HighlightOverlay(
                         PaintRows {
                             indices: &visible.get_untracked(),
                             projection: actions.projection().as_ref(),
+                            source_slices,
                         },
                         indentation.get_untracked(),
                         show_whitespace.get_untracked(),
@@ -1205,26 +1249,26 @@ fn HighlightOverlay(
             });
         }
         let html = cached.unwrap_or_else(|| {
-            let html = render();
-            input
-                .as_ref()
-                .and_then(|input| {
-                    let mut result = None;
-                    fragment_cache.update_value(|cache| {
-                        result = super::editor_geometry::window_paint(
-                            actions, input, &html, &windows, cache,
-                        );
-                    });
-                    result
-                })
-                .map_or(html, |fragment| {
+            let fragment = input.as_ref().and_then(|input| {
+                let mut result = None;
+                fragment_cache.update_value(|cache| {
+                    result = super::editor_geometry::window_paint(
+                        actions, input, render, &windows, cache,
+                    );
+                });
+                result
+            });
+            fragment.map_or_else(
+                || render(&[]),
+                |fragment| {
                     if let Some(key) = cache_window {
                         fragment_cache.update_value(|cache| {
                             actions.retain_fragment(cache, key, fragment.clone());
                         });
                     }
                     fragment
-                })
+                },
+            )
         });
         if immediate && let Some(overlay) = node_ref.get_untracked() {
             if let Ok(Some(content)) = overlay.query_selector(".editor-highlight-content") {
