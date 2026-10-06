@@ -21,6 +21,8 @@ pub enum BridgeClientMessage {
         model: Option<String>,
         editor_context: Option<EditorContext>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        browser_preferences: Option<crate::BrowserPreferences>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         queued_prompt: Option<crate::QueuedPromptKey>,
     },
     RunAttach {
@@ -414,6 +416,12 @@ mod tests {
                     content: "hello".into(),
                     model: None,
                     editor_context: None,
+                    browser_preferences: Some(crate::BrowserPreferences {
+                        timezone: Some("Europe/London".into()),
+                        locale: Some("en-GB".into()),
+                        hour_cycle: Some("h23".into()),
+                        utc_offset_minutes: Some(60),
+                    }),
                     queued_prompt: None,
                 },
             ),

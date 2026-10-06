@@ -129,9 +129,15 @@ need the parser or a WASI C SDK. A shared browser compiler adapter supplies port
 C headers; see `vendor/tree-sitter-language/PATCH.md`. The existing Rust grammar
 patch remains compatible with that adapter.
 
-Provider-backed editing contexts, template interpolation, embedded JavaScript/CSS
-inside HTML, richer highlighting and worker/viewport rendering remain roadmap
-work. Editing commands continue to use their documented bounded lexical structure.
+HTML script/style bodies use independent JavaScript/CSS parsers and full-file
+fold coordinates, including after Unicode/CRLF edits. Declared types select
+supported bodies; JSON data scripts and unsupported style types stay in HTML.
+Each provider can supply an injection selector returning validated source ranges.
+The shared engine limits a document to 64 embedded bodies and discards every tree
+on cancellation or an exceeded limit.
+
+Provider-backed editing contexts, template interpolation, embedded-language
+commands, richer highlighting and worker/viewport rendering remain roadmap work. Editing commands continue to use their documented bounded lexical structure.
 
 The shared document now owns fold state independently of undo history. Commands
 can collapse/expand at the caret, recursively or all, and reveal a navigation target.
@@ -145,7 +151,7 @@ These primitives and the folding view use the shared editor facade in both modes
 
 ## Folding
 
-Rust files show fold controls beside the logical line numbers for declarations,
+Supported code files show fold controls beside the logical line numbers for declarations,
 blocks and multiline comments/literals. Click a control to collapse or expand;
 the editing menu also offers cursor, recursive and all-document commands.
 Ctrl/Cmd+Alt+[ folds at the cursor and Ctrl/Cmd+Alt+] unfolds; add Shift for
@@ -160,7 +166,7 @@ remaining anchors and restore the source caret through the updated projection.
 Input-only browser events replay their change against the complete source.
 Unchanged projected values and selections stay under the native input method's
 control during composition.
-Other files use the shared language-aware lexer for bracket blocks and multiline
+Languages without a grammar use the shared language-aware lexer for bracket blocks and multiline
 comments/literals, with indentation fallback when no parser is available. Adjacent
 full-line comments can fold as a group. Indentation uses the configured tab width;
 blank rows do not create blocks, and multiline literal contents do not contribute
@@ -170,10 +176,10 @@ Balanced, nested `region` / `endregion` markers in language comments also fold
 (for example `// #region Name` / `// #endregion` or `# region Name` /
 `# endregion`). Plain text supports `#region` / `#endregion`, and C/C++ supports
 `#pragma region` / `#pragma endregion`. Unmatched markers remain ordinary text.
-Rust parser ranges take precedence over indentation; all ranges retain one
+Parser ranges take precedence over indentation; all ranges retain one
 control per header and cannot cross one another. Synchronous fallback work is
-limited to 2 MiB, 100,000 lines and the lexer's bracket limit. Richer language
-parsers, worker rendering and real-device input verification remain roadmap work.
+limited to 2 MiB, 100,000 lines and the lexer's bracket limit. Worker rendering
+and real-device input verification remain roadmap work.
 
 ## Reading and navigation
 

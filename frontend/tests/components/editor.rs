@@ -1061,6 +1061,85 @@ async fn built_in_language_parser_folds_share_local_remote_and_wasm_contracts() 
 }
 
 #[wasm_bindgen_test]
+async fn html_embedded_folds_share_workspace_modes_and_discard_stale_bodies() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{FoldRange, SyntaxDocument, SyntaxStatus},
+        highlight::Language,
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let original = "<p>文😀</p>\n<script type=module>\nfunction run() {\n  return '}';\n}\n</script>\n<style>\na {\n  color: red;\n}\n</style>";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("embedded.html".into()));
+        mounted.state.workspace.content.set(original.into());
+        let (status, folds) = actions.syntax_folds(|| true).unwrap();
+        assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+        assert!(folds.contains(&FoldRange {
+            start_line: 2,
+            end_line: 4
+        }));
+        assert!(folds.contains(&FoldRange {
+            start_line: 7,
+            end_line: 9
+        }));
+        for revised in [
+            original
+                .replace("文😀", "😀 changed 文")
+                .replace('\n', "\r\n"),
+            original.replace("type=module", "type=application/json"),
+            format!("<script>function unfinished() {{</script>\n{original}"),
+        ] {
+            mounted.state.workspace.content.set(revised.clone());
+            let (status, folds) = actions.syntax_folds(|| true).unwrap();
+            assert_eq!(status, SyntaxStatus::Ready { incremental: true });
+            let mut fresh = SyntaxDocument::new(Language::Html).unwrap();
+            fresh.update(&revised, || true);
+            assert_eq!(folds, fresh.folds(), "{mode:?}");
+        }
+        assert_eq!(
+            actions.syntax_folds(|| false).unwrap(),
+            (SyntaxStatus::Cancelled, vec![])
+        );
+        mounted
+            .state
+            .workspace
+            .content
+            .set("<script></script>\n".repeat(65));
+        assert_eq!(
+            actions.syntax_folds(|| true).unwrap(),
+            (SyntaxStatus::TooLarge, vec![])
+        );
+        mounted.state.workspace.content.set(original.into());
+        assert_eq!(
+            actions.syntax_folds(|| true).unwrap().0,
+            SyntaxStatus::Ready { incremental: false }
+        );
+        mounted.state.workspace.reset();
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_syntax
+                .with_untracked(|cache| cache.is_empty())
+        );
+        assert!(actions.syntax_folds(|| true).is_none());
+    }
+}
+
+#[wasm_bindgen_test]
 async fn incremental_syntax_and_fold_provider_share_both_modes_and_account_reset() {
     use openwebide_core::{
         WorkspaceMode,

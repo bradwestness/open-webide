@@ -294,6 +294,7 @@ async fn multiplexed_commands_require_hello_and_terminal_still_streams() {
         content: "hi".into(),
         model: None,
         editor_context: None,
+        browser_preferences: None,
         queued_prompt: None,
     };
     let completion = BridgeClientMessage::CompletionStart {

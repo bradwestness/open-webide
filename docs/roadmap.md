@@ -72,8 +72,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   providers and fold descriptors for Rust, TypeScript/TSX, JavaScript/JSX, Python,
   Java, C#, C++, PHP, Shell, C, Go, HTML and CSS. Native/browser contracts cover
   parsed folds, incremental Unicode/CRLF updates, cancellation and size fallbacks.
+  HTML script/style bodies now use separate incremental JavaScript/CSS parsers
+  with full-file fold coordinates, declared-type selection and shared limits.
   Finish provider-backed editing and literal contexts, including template
-  interpolation, HTML embedded JavaScript/CSS and language-aware highlighting;
+  interpolation, embedded-language commands and language-aware highlighting;
   the editing commands still use bounded lexical structure. Reindent preserves
   existing Python block depth; language formatting remains in Code intelligence.
 

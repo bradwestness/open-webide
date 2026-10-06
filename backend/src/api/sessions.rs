@@ -347,6 +347,8 @@ pub(crate) async fn queued_prompts(
 
 #[derive(Deserialize)]
 pub(super) struct SendMessageBody {
+    #[serde(default)]
+    pub(super) browser_preferences: Option<openwebide_core::BrowserPreferences>,
     pub(super) content: String,
     #[serde(default)]
     pub(super) model: Option<String>,
@@ -388,6 +390,7 @@ pub(super) async fn build_run_plan(
         None => None,
     };
     let environment = openwebide_core::RunEnvironment {
+        browser_preferences: send.browser_preferences,
         project_name: project.as_ref().map(|project| project.name.clone()),
         project_root: project
             .as_ref()

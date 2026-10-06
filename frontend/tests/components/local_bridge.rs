@@ -964,6 +964,7 @@ async fn startup_instructions_use_browser_filesystem_and_actual_local_tools() {
     files.set(&"shared.md".into(), &"Imported instruction".into());
     let vfs = BrowserFsaVfs::new(folder.unchecked_into());
     let mut context = openwebide_agent::context::RunContext::new(openwebide_core::RunEnvironment {
+        browser_preferences: openwebide_frontend::browser_preferences::capture(),
         project_name: Some("Browser project".into()),
         mode: Some(openwebide_core::WorkspaceMode::Local),
         ..Default::default()
@@ -978,6 +979,8 @@ async fn startup_instructions_use_browser_filesystem_and_actual_local_tools() {
     assert_eq!(text.matches("Browser root instruction").count(), 1);
     assert!(text.contains("Imported instruction"));
     assert!(text.contains("Workspace mode: local"));
+    assert!(text.contains("User timezone (browser):"));
+    assert!(text.contains("User locale preference (browser):"));
     assert!(!text.contains("- run_command:"));
 }
 

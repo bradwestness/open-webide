@@ -160,6 +160,7 @@ pub struct StartRun {
     pub content: String,
     pub model: Option<String>,
     pub editor_context: Option<EditorContext>,
+    pub browser_preferences: Option<openwebide_core::BrowserPreferences>,
     pub queued_prompt: Option<openwebide_core::QueuedPromptKey>,
 }
 
@@ -301,6 +302,7 @@ impl RunRegistry {
                 )
                 .await
                 .map_err(|e| (RunRejectCode::PlanFailed, e))?;
+            plan.environment.browser_preferences = start.browser_preferences.clone();
             let dir = match &plan.kind {
                 RunKind::Chat | RunKind::WebChat => None,
                 RunKind::Agent { project_path } => Some(

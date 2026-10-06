@@ -397,6 +397,7 @@ impl Connection {
             content,
             model,
             editor_context,
+            browser_preferences,
             queued_prompt,
         } = message
         else {
@@ -435,6 +436,7 @@ impl Connection {
             content,
             model,
             editor_context,
+            browser_preferences,
             queued_prompt,
         };
         let run = match config.runs.reserve(&principal, &start) {

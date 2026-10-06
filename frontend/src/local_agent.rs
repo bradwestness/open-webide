@@ -767,6 +767,7 @@ pub async fn run_local_agent(
     user_content: String,
     model: Option<String>,
     editor_context: Option<EditorContext>,
+    browser_preferences: Option<openwebide_core::BrowserPreferences>,
     connection_id: i64,
     system_prompt: Option<String>,
     handle: web_sys::FileSystemDirectoryHandle,
@@ -795,6 +796,7 @@ pub async fn run_local_agent(
         chat.notify_bridge_folder_once(session_id);
     }
     let environment = openwebide_core::RunEnvironment {
+        browser_preferences,
         project_name: Some(project.name),
         project_root: Some(
             cwd.clone()

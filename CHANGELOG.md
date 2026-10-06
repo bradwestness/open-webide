@@ -9,7 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Parse JavaScript and CSS bodies inside HTML independently, preserving global fold coordinates through Unicode/CRLF edits and declared-type changes. Share cancellation, recovery and bounded injection policy in both workspace modes; embedded-language editing and highlighting remain in progress. Use stable Chrome in CI and optimize grammar dependencies in development builds.
+
 - Add shared incremental grammar/folding providers for TypeScript/TSX, JavaScript/JSX, Python, Java, C#, C++, PHP, Shell, C, Go, HTML and CSS alongside Rust. Retain Python suite headers and distinguish JSX/TSX and Java/C#/PHP file types. Use extensible grammar descriptors and one browser C compatibility adapter; native and both-mode browser contracts exercise Unicode/CRLF updates, cancellation, size limits and recovery. Provider-backed editing, embedded-language contexts, richer highlighting and worker rendering remain in progress.
+
+- Include fresh browser timezone, local date/time and UTC offset, locale, and 12/24-hour formatting defaults in run context for local, remote, and projectless chats. Share formatting across startup context and run transports, and omit unavailable values.
 
 - Preserve multiline clipboard fragments across multiple editor selections using compact validated metadata. Restore each cursor’s fragment, including Unicode, CRLF and empty selections; match indentation per fragment when requested. Fall back to plain-text paste when metadata is missing, changed or invalid, with atomic limits and one undo step. Both workspace modes share the Rust engine and clipboard facade; native-device clipboard verification remains in progress.
 

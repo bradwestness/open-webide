@@ -113,6 +113,18 @@ async fn ws_prompt_renders_reply_and_done_clears_streaming() {
     no_runs(&fake);
     let run_id = send(&mounted, &fake).await;
     assert_eq!(sse_calls(&mounted), 0);
+    let preferences = fake.sent().into_iter().find_map(|message| match message {
+        BridgeClientMessage::RunStart {
+            browser_preferences,
+            ..
+        } => browser_preferences,
+        _ => None,
+    });
+    assert_eq!(
+        preferences,
+        openwebide_frontend::browser_preferences::capture()
+    );
+    assert!(preferences.is_some());
     event(
         &fake,
         &run_id,

@@ -1,14 +1,12 @@
-//! Incremental syntax analysis. Browser/native adapters supply cancellation or a
-//! clock deadline; parser policy and fold extraction stay above those adapters.
-use std::ops::ControlFlow;
-
-use tree_sitter::{InputEdit, ParseOptions, Parser, Point, Tree};
-
+//! Incremental syntax analysis shared by browser and native editor adapters.
 use super::{FoldRange, MAX_STRUCTURE_BYTES, SyntaxProvider, normalize_folds, syntax_provider};
 use crate::highlight::Language;
+use std::ops::ControlFlow;
+use tree_sitter::{InputEdit, Node, ParseOptions, Parser, Point, Range, Tree};
 
 const MAX_PROGRESS_CHECKS: usize = 4_096;
 const MAX_FOLD_NODES: usize = 100_000;
+const MAX_INJECTIONS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyntaxStatus {
@@ -17,18 +15,25 @@ pub enum SyntaxStatus {
     Cancelled,
 }
 
-/// One parser and previous tree per document. Never publish an old tree for new text.
+struct EmbeddedSyntax {
+    provider: SyntaxProvider,
+    parser: Parser,
+    tree: Option<Tree>,
+    range: Range,
+}
+
+/// One outer parser plus independent embedded bodies. All positions are source coordinates.
 pub struct SyntaxDocument {
     parser: Option<Parser>,
     provider: Option<SyntaxProvider>,
     language: Language,
     ready: bool,
     tree: Option<Tree>,
+    embedded: Vec<EmbeddedSyntax>,
     text: String,
 }
 
 impl SyntaxDocument {
-    /// Languages without a grammar use shared lexical/indentation providers.
     pub fn new(language: Language) -> Option<Self> {
         Self::with_provider(language, syntax_provider(language))
     }
@@ -37,19 +42,14 @@ impl SyntaxDocument {
         if provider.is_some_and(|provider| provider.language != language) {
             return None;
         }
-        let parser = if let Some(provider) = provider {
-            let mut parser = Parser::new();
-            parser.set_language(&(provider.grammar)()).ok()?;
-            Some(parser)
-        } else {
-            None
-        };
+        let parser = provider.map(new_parser).transpose().ok()?;
         Some(Self {
             parser,
             provider,
             language,
             ready: false,
             tree: None,
+            embedded: Vec::new(),
             text: String::new(),
         })
     }
@@ -76,35 +76,97 @@ impl SyntaxDocument {
             self.ready = true;
             return SyntaxStatus::Ready { incremental: false };
         };
+        let edit = input_edit(&self.text, text);
         let mut previous = self.tree.clone();
         if let Some(tree) = previous.as_mut() {
-            tree.edit(&input_edit(&self.text, text));
+            tree.edit(&edit);
         }
         let incremental = previous.is_some();
         let mut checks = 0;
-        let mut progress = |_: &tree_sitter::ParseState| {
-            checks += 1;
-            if checks > MAX_PROGRESS_CHECKS || !should_continue() {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
-        let tree = parser.parse_with_options(
-            &mut |offset, _| &text.as_bytes()[offset..],
+        let result = parse_tree(
+            parser,
+            text,
             previous.as_ref(),
-            Some(ParseOptions::new().progress_callback(&mut progress)),
-        );
-        if let Some(tree) = tree {
-            self.ready = true;
-            self.tree = Some(tree);
-            self.text.clear();
-            self.text.push_str(text);
-            SyntaxStatus::Ready { incremental }
-        } else {
-            self.clear();
-            SyntaxStatus::Cancelled
+            &mut checks,
+            &mut should_continue,
+        )
+        .and_then(|tree| {
+            let selected = select_injections(&tree, self.provider, text, &mut should_continue)?;
+            self.update_embedded(text, selected, &edit, &mut checks, &mut should_continue)?;
+            Ok(tree)
+        });
+        match result {
+            Ok(tree) => {
+                self.ready = true;
+                self.tree = Some(tree);
+                self.text.clear();
+                self.text.push_str(text);
+                SyntaxStatus::Ready { incremental }
+            }
+            Err(status) => {
+                self.clear();
+                status
+            }
         }
+    }
+
+    fn update_embedded(
+        &mut self,
+        text: &str,
+        selected: Vec<(Language, Range)>,
+        edit: &InputEdit,
+        checks: &mut usize,
+        should_continue: &mut impl FnMut() -> bool,
+    ) -> Result<(), SyntaxStatus> {
+        let mut old = std::mem::take(&mut self.embedded).into_iter();
+        let mut next = Vec::with_capacity(selected.len());
+        for (language, range) in selected {
+            let provider = syntax_provider(language).ok_or(SyntaxStatus::Cancelled)?;
+            let mut embedded = if let Some(previous) = old
+                .next()
+                .filter(|previous| previous.provider.language == language)
+            {
+                previous
+            } else {
+                EmbeddedSyntax {
+                    provider,
+                    parser: new_parser(provider)?,
+                    tree: None,
+                    range,
+                }
+            };
+            let mut previous = embedded.tree.clone();
+            if let Some(tree) = previous.as_mut() {
+                tree.edit(edit);
+            }
+            embedded
+                .parser
+                .set_included_ranges(&[range])
+                .map_err(|_| SyntaxStatus::Cancelled)?;
+            embedded.tree = Some(parse_tree(
+                &mut embedded.parser,
+                text,
+                previous.as_ref(),
+                checks,
+                should_continue,
+            )?);
+            embedded.range = range;
+            next.push(embedded);
+        }
+        self.embedded = next;
+        Ok(())
+    }
+
+    /// Insertions at the end of an embedded body still belong to that body.
+    pub fn language_at(&self, position: usize) -> Language {
+        if self.ready && self.text.is_char_boundary(position) {
+            for embedded in &self.embedded {
+                if embedded.range.start_byte <= position && position <= embedded.range.end_byte {
+                    return embedded.provider.language;
+                }
+            }
+        }
+        self.language
     }
 
     fn clear(&mut self) {
@@ -113,13 +175,13 @@ impl SyntaxDocument {
         }
         self.ready = false;
         self.tree = None;
+        self.embedded.clear();
         self.text.clear();
     }
 
     pub fn folds(&self) -> Vec<FoldRange> {
         self.folds_with_tab_width(4)
     }
-
     pub fn folds_with_tab_width(&self, tab_width: usize) -> Vec<FoldRange> {
         if !self.ready {
             return Vec::new();
@@ -132,57 +194,180 @@ impl SyntaxDocument {
         let Some(tree) = &self.tree else {
             return Vec::new();
         };
-        let mut cursor = tree.walk();
-        let mut ranges = Vec::new();
+        let Some(provider) = self.provider else {
+            return Vec::new();
+        };
         let lines: Vec<_> = self.text.split('\n').collect();
+        let mut ranges = Vec::new();
         let mut visited = 0;
-        loop {
-            visited += 1;
-            if visited > MAX_FOLD_NODES {
+        if collect_folds(tree, provider, &lines, &mut ranges, &mut visited).is_err() {
+            return Vec::new();
+        }
+        for embedded in &self.embedded {
+            if let Some(tree) = &embedded.tree
+                && collect_folds(tree, embedded.provider, &lines, &mut ranges, &mut visited)
+                    .is_err()
+            {
                 return Vec::new();
             }
-            let node = cursor.node();
-            if self
-                .provider
-                .is_some_and(|provider| provider.fold_nodes.contains(&node.kind()))
-                && !node.is_missing()
-            {
-                let start = if self
-                    .provider
-                    .is_some_and(|provider| provider.parent_headers.contains(&node.kind()))
-                {
-                    node.parent()
-                        .map_or(node.start_position(), |parent| parent.start_position())
-                } else {
-                    node.start_position()
-                };
-                let end = node.end_position();
-                // Preserve a closing row when another construct begins there,
-                // e.g. `} else {`: its header needs its own fold control.
-                let trailing_code = lines
-                    .get(end.row)
-                    .and_then(|line| line.get(end.column..))
-                    .is_some_and(|rest| !rest.trim().is_empty());
-                ranges.push(FoldRange {
-                    start_line: start.row,
-                    end_line: end
-                        .row
-                        .saturating_sub(usize::from(end.column == 0 || trailing_code)),
-                });
+        }
+        normalize_folds(ranges, lines.len())
+    }
+}
+
+fn new_parser(provider: SyntaxProvider) -> Result<Parser, SyntaxStatus> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&(provider.grammar)())
+        .map_err(|_| SyntaxStatus::Cancelled)?;
+    Ok(parser)
+}
+
+fn parse_tree(
+    parser: &mut Parser,
+    text: &str,
+    previous: Option<&Tree>,
+    checks: &mut usize,
+    should_continue: &mut impl FnMut() -> bool,
+) -> Result<Tree, SyntaxStatus> {
+    if !should_continue() {
+        return Err(SyntaxStatus::Cancelled);
+    }
+    let mut progress = |_: &tree_sitter::ParseState| {
+        *checks += 1;
+        if *checks > MAX_PROGRESS_CHECKS || !should_continue() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    parser
+        .parse_with_options(
+            &mut |offset, _| &text.as_bytes()[offset..],
+            previous,
+            Some(ParseOptions::new().progress_callback(&mut progress)),
+        )
+        .ok_or(SyntaxStatus::Cancelled)
+}
+
+fn visit_tree<'tree>(
+    tree: &'tree Tree,
+    visited: &mut usize,
+    mut visitor: impl FnMut(Node<'tree>) -> Result<(), SyntaxStatus>,
+) -> Result<(), SyntaxStatus> {
+    let mut cursor = tree.walk();
+    loop {
+        *visited += 1;
+        if *visited > MAX_FOLD_NODES {
+            return Err(SyntaxStatus::TooLarge);
+        }
+        visitor(cursor.node())?;
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
             }
-            if cursor.goto_first_child() {
-                continue;
-            }
-            loop {
-                if cursor.goto_next_sibling() {
-                    break;
-                }
-                if !cursor.goto_parent() {
-                    return normalize_folds(ranges, self.text.split('\n').count());
-                }
+            if !cursor.goto_parent() {
+                return Ok(());
             }
         }
     }
+}
+
+fn select_injections(
+    tree: &Tree,
+    provider: Option<SyntaxProvider>,
+    text: &str,
+    should_continue: &mut impl FnMut() -> bool,
+) -> Result<Vec<(Language, Range)>, SyntaxStatus> {
+    if !should_continue() {
+        return Err(SyntaxStatus::Cancelled);
+    }
+    let Some(select) = provider.and_then(|provider| provider.injection) else {
+        return Ok(Vec::new());
+    };
+    let starts: Vec<_> = std::iter::once(0)
+        .chain(
+            text.bytes()
+                .enumerate()
+                .filter_map(|(i, b)| (b == b'\n').then_some(i + 1)),
+        )
+        .collect();
+    let source_point = |offset: usize| {
+        let row = starts
+            .partition_point(|start| *start <= offset)
+            .saturating_sub(1);
+        Point {
+            row,
+            column: offset - starts[row],
+        }
+    };
+    let mut selected = Vec::new();
+    let mut visited = 0;
+    let mut until_check = 0;
+    visit_tree(tree, &mut visited, |node| {
+        if until_check == 0 {
+            if !should_continue() {
+                return Err(SyntaxStatus::Cancelled);
+            }
+            until_check = 256;
+        }
+        until_check -= 1;
+        if let Some((language, range)) = select(node, text) {
+            if selected.len() == MAX_INJECTIONS {
+                return Err(SyntaxStatus::TooLarge);
+            }
+            if range.start_byte > range.end_byte
+                || !text.is_char_boundary(range.start_byte)
+                || !text.is_char_boundary(range.end_byte)
+                || range.start_point != source_point(range.start_byte)
+                || range.end_point != source_point(range.end_byte)
+                || selected
+                    .last()
+                    .is_some_and(|(_, previous): &(Language, Range)| {
+                        previous.end_byte > range.start_byte
+                    })
+            {
+                return Err(SyntaxStatus::Cancelled);
+            }
+            selected.push((language, range));
+        }
+        Ok(())
+    })?;
+    Ok(selected)
+}
+
+fn collect_folds(
+    tree: &Tree,
+    provider: SyntaxProvider,
+    lines: &[&str],
+    ranges: &mut Vec<FoldRange>,
+    visited: &mut usize,
+) -> Result<(), SyntaxStatus> {
+    visit_tree(tree, visited, |node| {
+        if provider.fold_nodes.contains(&node.kind()) && !node.is_missing() {
+            let start = if provider.parent_headers.contains(&node.kind()) {
+                node.parent()
+                    .map_or(node.start_position(), |parent| parent.start_position())
+            } else {
+                node.start_position()
+            };
+            let end = node.end_position();
+            let trailing = lines
+                .get(end.row)
+                .and_then(|line| line.get(end.column..))
+                .is_some_and(|rest| !rest.trim().is_empty());
+            ranges.push(FoldRange {
+                start_line: start.row,
+                end_line: end
+                    .row
+                    .saturating_sub(usize::from(end.column == 0 || trailing)),
+            });
+        }
+        Ok(())
+    })
 }
 
 fn point(text: &str, offset: usize) -> Point {
@@ -216,6 +401,214 @@ fn input_edit(old: &str, new: &str) -> InputEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_embedded_bodies_keep_global_coordinates_incremental_trees_and_languages() {
+        let original = "<header>文😀</header>\n<script type=module>\nfunction first() {\n  return { label: \"{\" };\n}\n</script>\n<style>\n.main {\n  content: \"}\";\n}\n</style>\n<script type=application/json>\n{\n  \"not\": \"code\"\n}\n</script>\n<script TYPE=\"text&sol;javascript\">\nfunction second() {\n  if (true) {\n    console.log(\"文😀\");\n  }\n}\n</script>\n";
+        let mut syntax = SyntaxDocument::new(Language::Html).unwrap();
+        let revised = original
+            .replace(
+                "<header>文😀</header>",
+                "<header>😀文 changed</header>\n<p>prefix</p>",
+            )
+            .replace("return { label", "return { renamed")
+            .replace('\n', "\r\n");
+        let reordered = revised
+            .replace("type=module", "type=application/json")
+            .replace("TYPE=\"text&sol;javascript\"", "type=module");
+        for (index, source) in [original.to_string(), revised, reordered]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                syntax.update(&source, || true),
+                SyntaxStatus::Ready {
+                    incremental: index != 0
+                }
+            );
+            let mut fresh = SyntaxDocument::new(Language::Html).unwrap();
+            fresh.update(&source, || true);
+            assert_eq!(syntax.folds(), fresh.folds());
+            assert_eq!(
+                positions(syntax.tree.as_ref().unwrap()),
+                positions(fresh.tree.as_ref().unwrap())
+            );
+            assert_eq!(syntax.embedded.len(), fresh.embedded.len());
+            for (embedded, fresh) in syntax.embedded.iter().zip(&fresh.embedded) {
+                assert_eq!(embedded.range, fresh.range);
+                assert_eq!(
+                    positions(embedded.tree.as_ref().unwrap()),
+                    positions(fresh.tree.as_ref().unwrap())
+                );
+                assert!(!embedded.tree.as_ref().unwrap().root_node().has_error());
+                assert_eq!(
+                    embedded.range.start_point,
+                    point(&source, embedded.range.start_byte)
+                );
+            }
+            assert_eq!(
+                syntax.language_at(source.find("content:").unwrap()),
+                Language::Css
+            );
+            assert_eq!(
+                syntax.language_at(source.find("not").unwrap()),
+                Language::Html
+            );
+            assert_eq!(
+                syntax.language_at(source.find("console.log").unwrap()),
+                Language::JavaScript
+            );
+        }
+        syntax.update(original, || true);
+        assert_eq!(syntax.embedded.len(), 3);
+        for expected in [
+            FoldRange {
+                start_line: 2,
+                end_line: 4,
+            },
+            FoldRange {
+                start_line: 7,
+                end_line: 9,
+            },
+            FoldRange {
+                start_line: 17,
+                end_line: 21,
+            },
+        ] {
+            assert!(syntax.folds().contains(&expected), "{:?}", syntax.folds());
+        }
+        assert_eq!(syntax.update(original, || false), SyntaxStatus::Cancelled);
+        assert!(syntax.embedded.is_empty());
+        assert_eq!(
+            syntax.language_at(original.find("content:").unwrap()),
+            Language::Html
+        );
+    }
+
+    #[test]
+    fn html_mime_defaults_empty_bodies_and_independent_broken_scripts() {
+        for (opening, expected) in [
+            ("<script>", Some(Language::JavaScript)),
+            (
+                "<script type=\"TEXT/JAVASCRIPT1.5\">",
+                Some(Language::JavaScript),
+            ),
+            (
+                "<script TYPE=\"text&#47;javascript\">",
+                Some(Language::JavaScript),
+            ),
+            (
+                "<script type=module type=application/json>",
+                Some(Language::JavaScript),
+            ),
+            ("<script type=application/json type=module>", None),
+            ("<script type=\"text/javascript; charset=utf-8\">", None),
+            ("<script type=importmap>", None),
+            (
+                "<script type=' text/javascript &#10;'>",
+                Some(Language::JavaScript),
+            ),
+            ("<script type='&#160;text/javascript'>", None),
+            ("<script type=' module '>", None),
+            (
+                "<script language=JavaScript1.5>",
+                Some(Language::JavaScript),
+            ),
+            ("<script language=python>", None),
+            ("<script language=' javascript '>", None),
+            (
+                "<script type='' language=python>",
+                Some(Language::JavaScript),
+            ),
+            ("<style type='text/css'>", Some(Language::Css)),
+            ("<style type=text/less>", None),
+        ] {
+            let closing = if opening.starts_with("<style") {
+                "</style>"
+            } else {
+                "</script>"
+            };
+            let source = format!("{opening}{closing}");
+            let mut syntax = SyntaxDocument::new(Language::Html).unwrap();
+            assert_eq!(
+                syntax.update(&source, || true),
+                SyntaxStatus::Ready { incremental: false }
+            );
+            assert_eq!(
+                syntax.embedded.first().map(|body| body.provider.language),
+                expected,
+                "{opening}"
+            );
+            assert_eq!(
+                syntax.language_at(opening.len()),
+                expected.unwrap_or(Language::Html)
+            );
+        }
+        let source = "<script>\nfunction broken() {\n</script>\n<script>\nfunction valid() {\n  return 1;\n}\n</script>";
+        let mut syntax = SyntaxDocument::new(Language::Html).unwrap();
+        syntax.update(source, || true);
+        assert_eq!(syntax.embedded.len(), 2);
+        assert!(
+            syntax.embedded[0]
+                .tree
+                .as_ref()
+                .unwrap()
+                .root_node()
+                .has_error()
+        );
+        assert!(
+            !syntax.embedded[1]
+                .tree
+                .as_ref()
+                .unwrap()
+                .root_node()
+                .has_error()
+        );
+        assert!(syntax.folds().contains(&FoldRange {
+            start_line: 4,
+            end_line: 6
+        }));
+    }
+
+    #[test]
+    fn injection_limits_invalid_ranges_and_mid_parse_cancellation_discard_all_trees() {
+        let small = "<script>let value = 1;</script>";
+        let mut syntax = SyntaxDocument::new(Language::Html).unwrap();
+        syntax.update(small, || true);
+        let oversized = small.repeat(MAX_INJECTIONS + 1);
+        assert_eq!(syntax.update(&oversized, || true), SyntaxStatus::TooLarge);
+        assert!(syntax.tree.is_none());
+        assert!(syntax.embedded.is_empty());
+        let mut checks = 0;
+        assert_eq!(
+            syntax.update(small, || {
+                checks += 1;
+                checks < 5
+            }),
+            SyntaxStatus::Cancelled
+        );
+        assert!(syntax.tree.is_none());
+        assert!(syntax.embedded.is_empty());
+        assert_eq!(
+            syntax.update(small, || true),
+            SyntaxStatus::Ready { incremental: false }
+        );
+        let mut invalid = syntax_provider(Language::Html).unwrap();
+        invalid.injection = Some(|_, _| {
+            Some((
+                Language::JavaScript,
+                Range {
+                    start_byte: 0,
+                    end_byte: usize::MAX,
+                    start_point: Point::new(0, 0),
+                    end_point: Point::new(0, 0),
+                },
+            ))
+        });
+        let mut syntax = SyntaxDocument::with_provider(Language::Html, Some(invalid)).unwrap();
+        assert_eq!(syntax.update(small, || true), SyntaxStatus::Cancelled);
+        assert!(syntax.tree.is_none());
+    }
 
     #[test]
     fn provider_fold_nodes_exist_in_the_released_grammars() {
@@ -317,6 +710,7 @@ mod tests {
     fn custom_provider_uses_shared_parse_and_fold_policy() {
         let provider = SyntaxProvider {
             language: Language::Rust,
+            injection: None,
             grammar: || tree_sitter_rust::LANGUAGE.into(),
             fold_nodes: &["arguments"],
             parent_headers: &[],

@@ -116,6 +116,50 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# Keep grammar lexers compact and responsive in native/browser test builds.
+# cc-rs uses each package profile's optimization level for its C sources too.
+[profile.dev.package."tree-sitter"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-rust"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-typescript"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-javascript"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-python"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-java"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-c-sharp"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-cpp"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-php"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-bash"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-c"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-go"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-html"]
+opt-level = 2
+
+[profile.dev.package."tree-sitter-css"]
+opt-level = 2
+
 [workspace.lints.clippy]
 # Leave off documentation/attribute churn: missing_errors_doc, missing_panics_doc,
 # must_use_candidate, return_self_not_must_use, doc_markdown.

@@ -253,6 +253,7 @@ impl ProjectRuns {
         if let Some(resume) = input.resume {
             self.chat.current_run_anchor.set(Some(resume.anchor_id));
         }
+        let browser_preferences = crate::browser_preferences::capture();
         match host {
             RunHost::Browser { project, handle } => {
                 crate::local_agent::run_local_agent(
@@ -261,6 +262,7 @@ impl ProjectRuns {
                     input.content,
                     input.model,
                     input.editor,
+                    browser_preferences,
                     connection,
                     system_prompt,
                     handle,
@@ -292,6 +294,7 @@ impl ProjectRuns {
                         content: input.content.clone(),
                         model: input.model.clone(),
                         editor_context: input.editor.clone(),
+                        browser_preferences: browser_preferences.clone(),
                         queued_prompt: input.queued_prompt,
                     })
                     .await;
@@ -305,6 +308,7 @@ impl ProjectRuns {
                         &input.content,
                         input.model.as_deref(),
                         input.editor.as_ref(),
+                        browser_preferences.as_ref(),
                         input.queued_prompt,
                         Some(&input.controller.signal()),
                         Box::new(on_event),

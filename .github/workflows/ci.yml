@@ -107,6 +107,7 @@ jobs:
       - uses: browser-actions/setup-chrome@v1
         id: chrome
         with:
+          chrome-version: stable
           install-chromedriver: true
 
       # ChromeDriver otherwise launches the runner's preinstalled Chrome, whose

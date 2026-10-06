@@ -99,6 +99,7 @@ fn run_plan_rebuilds_tool_history_and_falls_back_across_gaps() {
                     content: "next".into(),
                     model: None,
                     editor_context: None,
+                    browser_preferences: None,
                     queued_prompt: None,
                 },
             )
@@ -263,6 +264,12 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                 content: "go".into(),
                 model: Some("chosen".into()),
                 editor_context: Some(context.clone()),
+                browser_preferences: Some(openwebide_core::BrowserPreferences {
+                    timezone: Some("America/Chicago".into()),
+                    locale: Some("en-US".into()),
+                    hour_cycle: Some("h12".into()),
+                    utc_offset_minutes: Some(-300),
+                }),
                 queued_prompt: None,
             };
             let plan = build_run_plan(&state, user.id, session.id, make_body())
@@ -275,6 +282,14 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                 } else {
                     "go".into()
                 }
+            );
+            assert_eq!(
+                plan.environment.browser_preferences,
+                make_body().browser_preferences
+            );
+            assert!(
+                openwebide_agent::context::chat_context(&plan.environment)
+                    .contains("America/Chicago")
             );
             let mut resolved_connection = connection.clone();
             resolved_connection.model = Some("chosen".into());
@@ -558,6 +573,7 @@ fn project_database_error_does_not_downgrade_to_chat() {
                 content: "hello".into(),
                 model: None,
                 editor_context: None,
+                browser_preferences: None,
                 queued_prompt: None,
             },
         )

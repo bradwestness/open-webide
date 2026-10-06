@@ -2231,6 +2231,7 @@ impl Backend for FakeBackend {
         content: &'a str,
         model: Option<&'a str>,
         _editor_context: Option<&'a EditorContext>,
+        _browser_preferences: Option<&'a openwebide_core::BrowserPreferences>,
         queued_prompt: Option<openwebide_core::QueuedPromptKey>,
         signal: Option<&'a AbortSignal>,
         mut on_event: Box<dyn FnMut(RunEvent) + 'a>,

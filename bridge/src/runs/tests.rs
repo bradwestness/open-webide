@@ -310,6 +310,7 @@ fn start(id: &str) -> StartRun {
         content: "go".into(),
         model: None,
         editor_context: None,
+        browser_preferences: None,
         queued_prompt: None,
     }
 }
@@ -359,6 +360,7 @@ async fn buffered_start_cancel_survives_delayed_start_task() {
                 content,
                 model,
                 editor_context,
+                browser_preferences,
                 queued_prompt,
             } => {
                 let start = StartRun {
@@ -367,6 +369,7 @@ async fn buffered_start_cancel_survives_delayed_start_task() {
                     content,
                     model,
                     editor_context,
+                    browser_preferences,
                     queued_prompt,
                 };
                 let run = registry.reserve(&user(1), &start).unwrap();
@@ -1752,5 +1755,54 @@ async fn native_and_projectless_runs_persist_checklists_before_success_and_keep_
             }
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
         }
+    }
+}
+
+#[tokio::test]
+async fn browser_preferences_reach_bridge_run_context() {
+    for kind in [
+        RunKind::Chat,
+        RunKind::WebChat,
+        RunKind::Agent {
+            project_path: ".".into(),
+        },
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = RunRegistry::default();
+        let backend = Arc::new(FakeBackend::default());
+        *backend.kind.lock().unwrap() = Some(kind);
+        let mut input = start("browser-defaults");
+        input.browser_preferences = Some(openwebide_core::BrowserPreferences {
+            timezone: Some("Asia/Kathmandu".into()),
+            locale: Some("en-GB".into()),
+            hour_cycle: Some("h23".into()),
+            utc_offset_minutes: Some(345),
+        });
+        let run = registry
+            .start(&user(1), input, dir.path(), backend.clone(), |_| {
+                FakeProvider {
+                    chat: Mutex::new(vec![Ok(StreamChunk::Delta("done".into()))]),
+                    tools: Mutex::new(vec![vec![Ok(ToolStreamChunk::Response(
+                        ChatResponse::Text("done".into()),
+                    ))]]),
+                    ..Default::default()
+                }
+            })
+            .await
+            .unwrap();
+        finished(&run).await;
+        let messages = backend.messages.lock().unwrap();
+        let context = messages
+            .iter()
+            .find(|message| {
+                message
+                    .content
+                    .starts_with(openwebide_core::RUN_CONTEXT_PREFIX)
+            })
+            .unwrap();
+        assert!(context.content.contains("Asia/Kathmandu"));
+        assert!(context.content.contains("en-GB"));
+        assert!(context.content.contains("24-hour"));
+        assert!(context.content.contains("UTC+05:45"));
     }
 }

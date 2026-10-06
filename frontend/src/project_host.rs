@@ -126,6 +126,7 @@ impl ProjectHost {
         let host = self.resolve_guarded(Some(id), true, || true).await.ok();
         let cwd = host.as_ref().and_then(ProjectExecution::cwd);
         let environment = openwebide_core::RunEnvironment {
+            browser_preferences: crate::browser_preferences::capture(),
             project_name: Some(project.name),
             project_root: Some(
                 cwd.clone()

@@ -185,10 +185,24 @@ pub const RUN_CONTEXT_PREFIX: &str = "[Open WebIDE run context]\n";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunEnvironment {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_preferences: Option<BrowserPreferences>,
     pub project_name: Option<String>,
     pub project_root: Option<String>,
     pub mode: Option<WorkspaceMode>,
     pub timestamp: i64,
+}
+
+/// Browser-reported defaults for interpreting dates and formatting replies.
+/// A per-run snapshot, separate from the command execution host.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowserPreferences {
+    pub timezone: Option<String>,
+    pub locale: Option<String>,
+    pub hour_cycle: Option<String>,
+    /// Minutes east of UTC at capture time (the opposite sign of getTimezoneOffset).
+    pub utc_offset_minutes: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

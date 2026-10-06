@@ -371,7 +371,11 @@ impl BackendApi {
     pub async fn startup_context(&self, project_id: i64, tools: bool) -> Result<String, String> {
         let response: serde_json::Value = self
             .get(&format!(
-                "/projects/{project_id}/files/context?tools={tools}"
+                "/projects/{project_id}/files/context?tools={tools}&browser_preferences={}",
+                js_sys::encode_uri_component(
+                    &serde_json::to_string(&crate::browser_preferences::capture())
+                        .map_err(|error| error.to_string())?
+                )
             ))
             .await?;
         Ok(response["content"].as_str().unwrap_or_default().to_owned())
@@ -1136,6 +1140,7 @@ impl BackendApi {
         content: &str,
         model: Option<&str>,
         editor_context: Option<&EditorContext>,
+        browser_preferences: Option<&openwebide_core::BrowserPreferences>,
         queued_prompt: Option<openwebide_core::QueuedPromptKey>,
         signal: Option<&AbortSignal>,
         mut on_event: impl FnMut(RunEvent),
@@ -1148,6 +1153,7 @@ impl BackendApi {
                 "content": content,
                 "model": model,
                 "editor_context": editor_context,
+                "browser_preferences": browser_preferences,
                 "queued_prompt": queued_prompt,
             }))
             .map_err(|e| e.to_string())?;
@@ -1395,7 +1401,7 @@ mod streaming_tests {
             let restore = stream_fetch(&wire);
             let mut events = Vec::new();
             let result = api
-                .send_message(1, "hello", None, None, None, None, |event| {
+                .send_message(1, "hello", None, None, None, None, None, |event| {
                     events.push(event);
                 })
                 .await;

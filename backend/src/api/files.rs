@@ -134,6 +134,10 @@ pub(crate) async fn files_get(
                 crate::agent::workspace_tools()
             };
             let environment = openwebide_core::RunEnvironment {
+                browser_preferences: params
+                    .get("browser_preferences")
+                    .and_then(|value| serde_json::from_str(value).ok())
+                    .flatten(),
                 project_name: Some(project.name.clone()),
                 project_root: openwebide_core::run::execution_root(&project),
                 mode: Some(project.mode),

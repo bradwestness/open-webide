@@ -64,9 +64,18 @@ async fn sent_prompts_and_delta_replies_survive_history_reload() {
             content: "world".into(),
         },
     ]);
-    fake.send_message(1, "question", None, None, None, None, Box::new(|_| {}))
-        .await
-        .unwrap();
+    fake.send_message(
+        1,
+        "question",
+        None,
+        None,
+        None,
+        None,
+        None,
+        Box::new(|_| {}),
+    )
+    .await
+    .unwrap();
     let history = fake.list_messages(1).await.unwrap();
     assert_eq!(history.len(), 2);
     let ConversationEntry::Message(user) = &history[0] else {
@@ -122,6 +131,7 @@ async fn scripted_messages_are_persisted_once_with_final_metadata() {
     fake.send_message(
         1,
         "question",
+        None,
         None,
         None,
         None,

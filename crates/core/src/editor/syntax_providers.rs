@@ -1,10 +1,14 @@
 //! Grammar descriptors extend the shared parser without another editor workflow.
 use crate::highlight::Language;
 
+pub type InjectionSelector =
+    for<'tree> fn(tree_sitter::Node<'tree>, &str) -> Option<(Language, tree_sitter::Range)>;
+
 /// Custom providers use the same incremental update, limits, cancellation and fold policy.
 #[derive(Clone, Copy)]
 pub struct SyntaxProvider {
     pub language: Language,
+    pub injection: Option<InjectionSelector>,
     pub grammar: fn() -> tree_sitter::Language,
     pub fold_nodes: &'static [&'static str],
     /// Nodes whose parent supplies the visible fold header (Python suites).
@@ -14,6 +18,7 @@ pub struct SyntaxProvider {
 pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     SyntaxProvider {
         language: Language::Rust,
+        injection: None,
         grammar: || tree_sitter_rust::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -34,6 +39,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::JavaScript,
+        injection: None,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -50,6 +56,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Jsx,
+        injection: None,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -66,6 +73,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::TypeScript,
+        injection: None,
         grammar: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -84,6 +92,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Tsx,
+        injection: None,
         grammar: || tree_sitter_typescript::LANGUAGE_TSX.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -103,6 +112,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Python,
+        injection: None,
         grammar: || tree_sitter_python::LANGUAGE.into(),
         parent_headers: &["block"],
         fold_nodes: &[
@@ -119,6 +129,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Java,
+        injection: None,
         grammar: || tree_sitter_java::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -135,6 +146,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::CSharp,
+        injection: None,
         grammar: || tree_sitter_c_sharp::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -152,6 +164,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Cpp,
+        injection: None,
         grammar: || tree_sitter_cpp::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -167,6 +180,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::C,
+        injection: None,
         grammar: || tree_sitter_c::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -181,6 +195,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Php,
+        injection: None,
         grammar: || tree_sitter_php::LANGUAGE_PHP.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -197,6 +212,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Shell,
+        injection: None,
         grammar: || tree_sitter_bash::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -214,6 +230,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Go,
+        injection: None,
         grammar: || tree_sitter_go::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &[
@@ -228,12 +245,14 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Html,
+        injection: Some(super::syntax_injections::html_injection),
         grammar: || tree_sitter_html::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &["element", "script_element", "style_element", "comment"],
     },
     SyntaxProvider {
         language: Language::Css,
+        injection: None,
         grammar: || tree_sitter_css::LANGUAGE.into(),
         parent_headers: &[],
         fold_nodes: &["block", "comment"],

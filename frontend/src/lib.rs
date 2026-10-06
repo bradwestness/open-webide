@@ -7,6 +7,8 @@ pub mod backend;
 #[cfg(target_arch = "wasm32")]
 pub mod bridge;
 pub mod bridge_address;
+#[cfg(target_arch = "wasm32")]
+pub mod browser_preferences;
 pub mod commands;
 #[cfg(target_arch = "wasm32")]
 pub mod components;
