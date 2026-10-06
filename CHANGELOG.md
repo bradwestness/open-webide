@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Preserve validated editor glyph anchors when equivalent syntax paint precedes row-height reconciliation in both workspace modes. Track actual font invalidation independently so layout bookkeeping retains proven geometry while font loading and stale source/read/account callbacks remain rejected. Add opt-in bounded production probe, worker and font timing traces.
+
 - Slice long editor rows from validated styled anchors before generating and parsing HTML in both workspace modes. Preserve token styles, Unicode offsets, tab origins and complete logical extents; reject partial measurement failures and restore complete source before reprobe. Retain equivalent styled syntax geometry for unwrapped rows within the same font/layout epoch.
 
 - Stabilize editor file tabs in both workspace modes: allow room for horizontal scrollbars without vertical overflow, retain tab nodes through unrelated updates, and reserve dirty-indicator space to prevent width jumps.

@@ -263,15 +263,16 @@ cluster slices, bidi paragraphs or reshaping differences. Cold height measuremen
 supplies wrapped paint with these anchors while they
 remain in the bounded cache, avoiding a second complete-row shaping pass.
 Equivalent syntax results preserve proven geometry for identical styled rows;
-font loading clears that measurement provenance even if computed font text is
+font loading advances independent font provenance even if computed font text is
 unchanged. Geometry publication checks the
-original source/view and font-layout epochs as well as read, account, syntax and
+original source/view, font and layout epochs as well as read, account, syntax and
 style ownership. Retained anchors select bounded token source before HTML
 generation and parsing. Partial measurement failure discards those anchors and
 restores complete source before a fresh probe; Unicode offsets, token styles and
 logical extents remain intact. Unwrapped rows retain equivalent styled geometry
-within the same font/layout epoch without requiring a wrapped height table.
-Changed epochs require height provenance, and font loading clears it.
+within the same font generation without requiring a wrapped height table.
+Ordinary layout reconciliation can follow equivalent syntax paint without
+discarding its validated anchors; actual font invalidation always discards them.
 First measurement still shapes the complete row. Initial layout,
 uncached full-row HTML construction and native
 input costs remain performance follow-ups.

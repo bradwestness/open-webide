@@ -133,7 +133,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   now reuses anchors sampled during cold height measurement with the same
   source/read/account/syntax/font provenance checks. Retained anchors now bound
   source before HTML generation and parsing, with full-source fallback on invalid
-  partial measurements. Finish uncached initial/cold
+  partial measurements. Independent font provenance now preserves validated
+  anchors when equivalent syntax paint precedes row-height reconciliation.
+  Finish uncached initial/cold
   shaping and bidirectional visual-run windows, then further incremental access:
   edits still materialize
   full Strings and shift
@@ -151,9 +153,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   incremental measurement and input, then repeat the boundary workloads (including Linux PSS)
   and the unresponsive wrapped cases before validating these limits. The corrected
   destination-verified 1 MiB single-row workload now covers horizontal and wrapped
-  scrolling in both modes; startup scroll latency remains inconsistent after
-  readiness despite bounded steady-state HTML and layout checks. Trace late
-  syntax/font/layout changes and uncached probes; wrapped input/layout and
+  scrolling in both modes; broader startup scroll latency remains unverified
+  despite bounded steady-state HTML and layout checks. The reproduced
+  syntax-paint/height-reconciliation anchor loss is fixed with independent font
+  provenance; verify broader startup samples and duplicate initial height shaping.
+  Trace remaining uncached probes; wrapped input/layout and
   process-memory stalls remain.
   Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,
   preserving multiline state and discarding partial rows on cancellation.

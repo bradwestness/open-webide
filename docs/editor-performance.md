@@ -370,3 +370,46 @@ not prove stable startup scroll latency. Trace late syntax/font/layout changes a
 uncached probes before claiming that gate complete. Full initial shaping, input
 costs, process memory, Linux PSS, percentiles and admission/device gates remain
 outstanding; summed RSS can double-count shared pages.
+
+### Font provenance across syntax and layout reconciliation
+
+The [before trace](editor-performance/production-layout-provenance-before.jsonl)
+records full 748,980-native-unit paint probes after worker replies, alongside
+bounded paint. Complete-row bounding-box reads took roughly 330–425 ms. No font
+loading events occurred. These traces instrument browser primitives and perturb
+timing; they establish probe type and ordering, not uninstrumented latency.
+
+The shared facade regression reproduced a specific ordering bug: equivalent syntax
+paint carried anchors into a new scope, then height reconciliation rejected them
+against the older height-cache scope. Independent font provenance now retains
+exact styled rows through ordinary layout reconciliation. Actual font changes,
+source/read/account changes and stale callback publication remain protected.
+The same contract failed before this fix and passes in both modes afterward.
+
+The [after trace](editor-performance/production-layout-provenance-after.jsonl)
+retains only bounded paint after the initial height probes, including after
+worker replies. Wrapped cold shaping still runs twice in these observations;
+new input still needs full height measurement. No font events or trace truncation
+occurred. `--trace` caps each diagnostic array at 256 records and marks truncation;
+normal benchmark runs do not replace browser measurement or worker primitives.
+No source text or worker payload is stored in diagnostic records.
+
+Uninstrumented [horizontal](editor-performance/production-font-provenance-horizontal.jsonl)
+and [wrapped](editor-performance/production-font-provenance-wrapped.jsonl)
+observations use the same destination-verified 1 MiB workload in both modes.
+The built worktree includes concurrent branding/welcome changes; the raw module
+identifier describes the build, while `checkoutHead` identifies its parent commit.
+All owned browser tests were terminal before these sequential runs started.
+
+| Layout | Mode | Cold ready (ms) | Input to paint (ms) | Destination scroll to paint (ms) | Peak summed Chrome RSS (GiB) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Horizontal | Local | 1655.1 | 466.8 | 23.5 | 1.55 |
+| Horizontal | Remote | 1660.4 | 452.2 | 23.3 | 1.56 |
+| Wrapped | Local | 2745.0 | 515.8 | 36.5 | 4.63 |
+| Wrapped | Remote | 2714.0 | 442.4 | 36.3 | 4.66 |
+
+This removes the reproduced cache-ordering failure and extra full paint probes
+in these runs. It does not prove percentiles or complete admission gates. Duplicate
+initial height shaping, cold native input layout, full String/input costs,
+bidirectional windows, Linux PSS, boundary and device verification remain open.
+Summed Chrome RSS can double-count shared pages.

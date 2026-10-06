@@ -8962,7 +8962,7 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
     use std::sync::Arc;
     let source = "a".repeat(70_000);
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for change in 0..9 {
+        for change in 0..11 {
             let action_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let mounted = mount_test({
                 let source = source.clone();
@@ -9029,6 +9029,46 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
             );
             actions.retain_preparation_geometry(&mut cache, &paint, 0, geometry.clone());
             assert!(actions.measured_row_geometry(&mut cache, 0).is_some());
+            if change == 9 {
+                let ticket = actions
+                    .begin_row_preparation(paint.view_revision, 1)
+                    .unwrap();
+                assert!(
+                    actions
+                        .finish_row_preparation(
+                            ticket,
+                            paint.clone(),
+                            Ok(Some(
+                                openwebide_core::editor::MeasuredRows::new([1000.0]).unwrap()
+                            ))
+                        )
+                        .is_none()
+                );
+                let equivalent = Arc::new((*tokens).clone());
+                assert!(actions.fragment_scope(
+                    &mut cache,
+                    metrics.clone(),
+                    (true, equivalent.clone()),
+                    guides.clone(),
+                    Indentation::default(),
+                    false
+                ));
+                assert!(actions.measured_row_geometry(&mut cache, 0).is_some());
+                actions.invalidate_measured_rows();
+                assert!(actions.fragment_scope(
+                    &mut cache,
+                    metrics.clone(),
+                    (true, equivalent),
+                    guides.clone(),
+                    Indentation::default(),
+                    false
+                ));
+                assert!(
+                    actions.measured_row_geometry(&mut cache, 0).is_some(),
+                    "equivalent syntax paint followed by height reconciliation retains anchors"
+                );
+                continue;
+            }
             if change == 8 {
                 assert!(actions.fragment_scope(
                     &mut cache,
@@ -9174,6 +9214,11 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                     .open_file
                     .set(Some("other.txt".into())),
                 7 => metrics = "new font".into(),
+                10 => mounted
+                    .state
+                    .workspace
+                    .editor_font_epoch
+                    .update(|epoch| *epoch += 1),
                 _ => unreachable!(),
             }
             // A stale primitive must not populate a valid new scope, even when
@@ -9188,6 +9233,7 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                 Indentation::default(),
                 false
             ));
+            actions.forget_measured_row_geometry(&mut cache, 0);
             actions.retain_preparation_geometry(&mut cache, &paint, 0, geometry);
             assert!(
                 actions.measured_row_geometry(&mut cache, 0).is_none(),

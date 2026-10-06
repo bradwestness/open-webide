@@ -32,6 +32,7 @@ pub struct EditorRowMeasurements {
 pub struct EditorRowPaint {
     pub view_revision: u64,
     pub layout_epoch: u64,
+    pub font_epoch: u64,
     pub key: (i64, String),
     pub epoch: u64,
     pub read_revision: u64,
@@ -258,6 +259,7 @@ pub struct WorkspaceState {
     pub editor_indentation: RwSignal<HashMap<(i64, String), openwebide_core::editor::Indentation>>,
     pub editor_fold_revision: RwSignal<u64>,
     pub editor_layout_epoch: RwSignal<u64>,
+    pub editor_font_epoch: RwSignal<u64>,
     pub editor_projection_revision: Memo<u64>,
     pub editor_view_revision: Memo<u64>,
     pub editor_rows: RwSignal<Option<EditorRowMeasurements>>,
@@ -287,6 +289,7 @@ impl WorkspaceState {
         let editor_read_revision = RwSignal::new(0);
         let editor_fold_revision = RwSignal::new(0);
         let editor_layout_epoch = RwSignal::new(0);
+        let editor_font_epoch = RwSignal::new(0);
         let view_counter = StoredValue::new(0_u64);
         let editor_projection_revision = Memo::new(move |_| {
             content.track();
@@ -302,6 +305,7 @@ impl WorkspaceState {
         let editor_view_revision = Memo::new(move |_| {
             let _ = editor_projection_revision.get();
             editor_layout_epoch.track();
+            editor_font_epoch.track();
             layout_counter.update_value(|value| *value = value.wrapping_add(1));
             layout_counter.get_value()
         });
@@ -342,6 +346,7 @@ impl WorkspaceState {
             editor_indentation: RwSignal::new(HashMap::new()),
             editor_fold_revision,
             editor_layout_epoch,
+            editor_font_epoch,
             editor_projection_revision,
             editor_view_revision,
             editor_rows: RwSignal::new(None),
@@ -743,6 +748,8 @@ impl WorkspaceState {
     }
 
     pub fn reset(&self) {
+        self.editor_font_epoch
+            .update(|epoch| *epoch = epoch.wrapping_add(1));
         self.editor_rows.set(None);
         self.editor_row_cache.set(None);
         self.editor_row_preparation.set(None);

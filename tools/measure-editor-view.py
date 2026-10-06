@@ -115,7 +115,7 @@ READY = """
 """
 
 
-def measure(case, mode, wrapped):
+def measure(case, mode, wrapped, trace=False):
     source = source_for(case)
     native = source.replace("\r\n", "\n")
     # JS lengths are UTF-16, not Python's Unicode scalar count.
@@ -160,7 +160,57 @@ def measure(case, mode, wrapped):
             browser.call("POST", "/goog/cdp/execute", {"cmd": "Page.addScriptToEvaluateOnNewDocument", "params": {
                 "source": """
                     window.editorViewMeasurement = {maxFrameMs: 0, inputAt: 0,
-                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0};
+                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, phase: "cold", probes: [], workers: [], fonts: [], traceTruncated: false};
+                    if (__TRACE__) {
+                        const rows = new WeakMap();
+                        function recordFor(element) {
+                            const row = element?.closest(".editor-row-measure .editor-source-line");
+                            let record = row && rows.get(row);
+                            if (row && !record && editorViewMeasurement.probes.length < 256) {
+                                record = {at: performance.now(), phase: editorViewMeasurement.phase,
+                                    cold: !!row.closest(".editor-height-measure"),
+                                    sliced: row.hasAttribute("data-source-start"),
+                                    sourceNative: row.textContent.length, calls: 0, layoutMs: 0,
+                                    boundsCalls: 0, boundsMs: 0};
+                                rows.set(row, record); editorViewMeasurement.probes.push(record);
+                            }
+                            if (row && !record) editorViewMeasurement.traceTruncated = true;
+                            return record;
+                        }
+                        const original = Range.prototype.getClientRects;
+                        Range.prototype.getClientRects = function(...args) {
+                            const node = this.startContainer;
+                            const record = recordFor(node.nodeType === 1 ? node : node.parentElement);
+                            const started = performance.now();
+                            try { return original.apply(this, args); }
+                            finally { if (record) { record.calls++; record.layoutMs += performance.now()-started; } }
+                        };
+                        const originalBounds = Element.prototype.getBoundingClientRect;
+                        Element.prototype.getBoundingClientRect = function(...args) {
+                            const record = recordFor(this);
+                            const started = performance.now();
+                            try { return originalBounds.apply(this, args); }
+                            finally { if (record) { record.boundsCalls++; record.boundsMs += performance.now()-started; } }
+                        };
+                        function recordEvent(events, kind) {
+                            if (events.length < 256)
+                                events.push({at: performance.now(), phase: editorViewMeasurement.phase, kind});
+                            else editorViewMeasurement.traceTruncated = true;
+                        }
+                        for (const kind of ["loading", "loadingdone", "loadingerror"])
+                            document.fonts.addEventListener(kind, () => recordEvent(editorViewMeasurement.fonts, kind));
+                        const OriginalWorker = Worker;
+                        Worker = class extends OriginalWorker {
+                            constructor(...args) {
+                                super(...args);
+                                this.addEventListener("message", () => recordEvent(editorViewMeasurement.workers, "reply"));
+                            }
+                            postMessage(...args) {
+                                recordEvent(editorViewMeasurement.workers, "request");
+                                return super.postMessage(...args);
+                            }
+                        };
+                    }
                     new PerformanceObserver(list => {
                         for (const entry of list.getEntries()) {
                             editorViewMeasurement.longTasks++;
@@ -177,7 +227,7 @@ def measure(case, mode, wrapped):
                     document.addEventListener('input', event => {
                         if (event.target.matches('textarea[data-editor-path]')) editorViewMeasurement.inputAt = performance.now();
                     }, true);
-                """}})
+                """.replace("__TRACE__", json.dumps(trace))}})
             started = time.monotonic()
             phase = "cold paint"
             browser.call("POST", "/url", {"url": runtime.url + "/"})
@@ -210,6 +260,7 @@ def measure(case, mode, wrapped):
                 const done = arguments[0], input = document.querySelector('textarea[data-editor-path]');
                 const singleRow = !input.value.includes('\\n');
                 const horizontal = singleRow && getComputedStyle(input).whiteSpace !== 'pre-wrap';
+                editorViewMeasurement.phase = "scroll";
                 const started = performance.now(); const old = document.querySelector('.editor-source-line')?.dataset.line;
                 if (horizontal) input.scrollLeft = (input.scrollWidth - input.clientWidth) * .7;
                 else input.scrollTop = input.scrollHeight * .7;
@@ -233,6 +284,7 @@ def measure(case, mode, wrapped):
             assert "error" not in scroll, scroll
             browser.script("const input=document.querySelector('textarea[data-editor-path]'); input.focus(); input.setSelectionRange(0,0);")
             phase = "input paint"
+            browser.script("editorViewMeasurement.phase = 'input';")
             browser.call("POST", "/goog/cdp/execute", {"cmd": "Input.insertText", "params": {"text": "z"}})
             edited = browser.call("POST", "/execute/async", {"script": """
                 const done=arguments[0], deadline=performance.now()+10000;
@@ -249,6 +301,7 @@ def measure(case, mode, wrapped):
                 requestAnimationFrame(check);
             """, "args": []})
             assert "error" not in edited, edited
+            browser.script("editorViewMeasurement.phase = 'deferred';")
             # Include deferred syntax preparation and queued recovery saves.
             browser.call("POST", "/execute/async", {"script": "setTimeout(arguments[0], 1200);", "args": []})
             sampled = samples.finish()
@@ -259,7 +312,8 @@ def measure(case, mode, wrapped):
                     "afterInputMemory": process_memory(browser.process.pid), **sampled,
                     "afterInputWasmCommittedBytes": tasks["wasmBytes"],
                     "longTasks": tasks["longTasks"], "longTaskMs": tasks["longTaskMs"],
-                    "maxLongTaskMs": tasks["maxLongTaskMs"], "maxFrameIncludingInputMs": tasks["maxFrameMs"]}
+                    "maxLongTaskMs": tasks["maxLongTaskMs"], "maxFrameIncludingInputMs": tasks["maxFrameMs"],
+                    **({"layoutProbes": tasks["probes"], "workerEvents": tasks["workers"], "fontEvents": tasks["fonts"], "traceTruncated": tasks["traceTruncated"]} if trace else {})}
         except (AssertionError, TimeoutError, RuntimeError) as error:
             observed = samples.finish() if samples else {}
             samples = None
@@ -283,6 +337,7 @@ if __name__ == "__main__":
     parser.add_argument("--cases", nargs="+", choices=["small", "medium", "byte-limit", "line-limit", "long-line"], default=["small"])
     parser.add_argument("--modes", nargs="+", choices=["local", "remote"], default=["local", "remote"])
     parser.add_argument("--wrap", action="store_true")
+    parser.add_argument("--trace", action="store_true", help="Record bounded probe/worker diagnostics; timings include instrumentation overhead")
     args = parser.parse_args()
     assert os.environ.get("CHROMEDRIVER"), "Set CHROMEDRIVER to a compatible driver"
     print(json.dumps({"host": platform.platform(), "measurement": "production editor; process-tree memory",
@@ -290,4 +345,4 @@ if __name__ == "__main__":
                       "browser": subprocess.check_output([os.environ["CHROME"], "--version"], text=True).strip() if os.environ.get("CHROME") else "WebDriver default"}), flush=True)
     for case in args.cases:
         for mode in args.modes:
-            print(json.dumps(measure(case, mode, args.wrap)), flush=True)
+            print(json.dumps(measure(case, mode, args.wrap, args.trace)), flush=True)

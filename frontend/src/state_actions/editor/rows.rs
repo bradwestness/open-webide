@@ -75,7 +75,8 @@ fn paint_rows(paint: &EditorRowPaint) -> Option<Vec<PaintRow<'_>>> {
         .collect()
 }
 fn same_measurement_environment(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
-    old.key == paint.key
+    old.font_epoch == paint.font_epoch
+        && old.key == paint.key
         && old.epoch == paint.epoch
         && old.read_revision == paint.read_revision
         && old.account_generation == paint.account_generation
@@ -152,7 +153,8 @@ impl EditorActions {
         )
     }
     pub(super) fn row_paint_current(self, paint: &EditorRowPaint) -> bool {
-        self.view_revision() == paint.view_revision
+        self.workspace.editor_font_epoch.get_untracked() == paint.font_epoch
+            && self.view_revision() == paint.view_revision
             && self.workspace.editor_layout_epoch.get_untracked() == paint.layout_epoch
             && self.key().as_ref() == Some(&paint.key)
             && self.workspace.pending_epoch.get_untracked() == paint.epoch
@@ -172,6 +174,7 @@ impl EditorActions {
         Some(EditorRowPaint {
             view_revision: self.view_revision(),
             layout_epoch: self.workspace.editor_layout_epoch.get_untracked(),
+            font_epoch: self.workspace.editor_font_epoch.get_untracked(),
             key: self.key()?,
             epoch: self.workspace.pending_epoch.get_untracked(),
             read_revision: self.workspace.editor_read_revision.get_untracked(),
@@ -208,6 +211,9 @@ impl EditorActions {
         Some((paint, plan))
     }
     pub fn invalidate_measured_font(self) {
+        self.workspace
+            .editor_font_epoch
+            .update(|epoch| *epoch = epoch.wrapping_add(1));
         self.workspace.editor_row_cache.set(None);
         self.invalidate_measured_rows();
     }
@@ -262,32 +268,24 @@ impl EditorActions {
             });
         if !same {
             let reusable = cache.scope.as_ref().and_then(|(old, _, _)| {
-                self.workspace
-                    .editor_row_cache
-                    .with_untracked(|height_cache| {
-                        // Unwrapped rows do not need a height table. Their geometry
-                        // may transfer within the same font/layout epoch. A changed
-                        // epoch needs exact height provenance; font loading clears it.
-                        let proven = old.layout_epoch == paint.layout_epoch
-                            || height_cache.as_ref().is_some_and(|height_cache| {
-                                same_paint_scope(&height_cache.paint, old)
-                            });
-                        if !proven || !same_measurement_environment(old, &paint) {
-                            return None;
-                        }
-                        Some(
-                            cache
-                                .geometry
-                                .iter()
-                                .filter(|(row, _)| {
-                                    paint_row(old, *row)
-                                        .zip(paint_row(&paint, *row))
-                                        .is_some_and(|(old, new)| old == new)
-                                })
-                                .cloned()
-                                .collect(),
-                        )
-                    })
+                // Geometry follows actual fonts and exact styled rows. Height
+                // reconciliation can advance the layout scope after an equivalent
+                // syntax result without changing either; no height cache is needed.
+                if !same_measurement_environment(old, &paint) {
+                    return None;
+                }
+                Some(
+                    cache
+                        .geometry
+                        .iter()
+                        .filter(|(row, _)| {
+                            paint_row(old, *row)
+                                .zip(paint_row(&paint, *row))
+                                .is_some_and(|(old, new)| old == new)
+                        })
+                        .cloned()
+                        .collect(),
+                )
             });
             cache.paint.clear();
             cache.geometry = reusable.unwrap_or_default();
