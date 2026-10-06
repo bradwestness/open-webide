@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 mod render;
 pub use render::*;
+mod paint;
+pub use paint::{DiffChange, DiffPaint, DiffPaintLine, DiffPaintToken, paint_inline_diff};
 
 /// How a line ends: `\n`, `\r\n`, or nothing (the file's last line, if it
 /// has no trailing newline).

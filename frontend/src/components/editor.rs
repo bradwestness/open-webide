@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use openwebide_core::{
-    DiffChunk, FileDiff, FileKind, diff_inline_full, diff_side_by_side_detailed,
+    FileDiff, FileKind, diff_side_by_side_detailed,
     highlight::{Language, TokenKind, highlight_lines, language_from_path},
 };
 use web_sys::wasm_bindgen::JsCast;
@@ -848,25 +848,23 @@ fn HighlightOverlay(
     view! { <div class="editor-highlight" node_ref=node_ref><div class="editor-highlight-content" inner_html=move || rendered.get() /></div> }
 }
 
-/// Render a list of intra-line diff chunks with word-level highlights.
-pub(crate) fn render_diff_chunks(chunks: Vec<DiffChunk>) -> impl IntoView {
-    chunks
+/// Syntax paint and word changes share spans without injecting source HTML.
+pub(super) fn render_painted_diff(
+    tokens: Vec<openwebide_core::diff::DiffPaintToken>,
+) -> impl IntoView {
+    use openwebide_core::diff::DiffChange;
+    tokens
         .into_iter()
-        .map(|chunk| match chunk {
-            DiffChunk::Unchanged(text) => view! {
-                <span>{text}</span>
-            }
-            .into_any(),
-            DiffChunk::Deleted(text) => view! {
-                <span class="diff-word-del">{text}</span>
-            }
-            .into_any(),
-            DiffChunk::Inserted(text) => view! {
-                <span class="diff-word-add">{text}</span>
-            }
-            .into_any(),
+        .map(|part| {
+            let change = match part.change {
+                DiffChange::Unchanged => "",
+                DiffChange::Deleted => " diff-word-del",
+                DiffChange::Inserted => " diff-word-add",
+            };
+            let class = format!("{}{change}", token_class(part.token.kind));
+            view! { <span class=class>{part.token.text}</span> }
         })
-        .collect::<Vec<_>>()
+        .collect_view()
 }
 
 /// Render a full file edit as inline removed/added lines with intra-line word diffs.
@@ -881,24 +879,12 @@ pub(super) fn render_inline_diff(diff: FileDiff) -> impl IntoView {
         .max(1)
         .to_string()
         .len();
-    let mut old_line = 0;
-    let mut new_line = 0;
-    let body = diff_inline_full(&diff)
+    let body = openwebide_core::diff::paint_inline_diff(&diff)
         .into_iter()
         .map(|dl| {
             let mark = dl.marker;
-            let old_number = if mark != '+' {
-                old_line += 1;
-                Some(old_line)
-            } else {
-                None
-            };
-            let new_number = if mark != '-' {
-                new_line += 1;
-                Some(new_line)
-            } else {
-                None
-            };
+            let old_number = dl.old_number;
+            let new_number = dl.new_number;
             let line_class = match mark {
                 '+' => "diff-line add",
                 '-' => "diff-line del",
@@ -911,7 +897,7 @@ pub(super) fn render_inline_diff(diff: FileDiff) -> impl IntoView {
                         <span class="editor-line-number">{new_number}</span>
                         <span class="diff-line-marker">{mark}</span>
                     </span>
-                    <span class="editor-line-text">{render_diff_chunks(dl.chunks)}
+                    <span class="editor-line-text">{render_painted_diff(dl.tokens)}
                         {dl.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
                     </span>
                 </div>
@@ -939,6 +925,7 @@ fn sync_split_scroll(source: NodeRef<leptos::html::Div>, target: NodeRef<leptos:
 
 /// Full aligned rows with a shared scroll extent and compact, pinned gutters.
 fn render_side_by_side(diff: FileDiff) -> impl IntoView {
+    let paint = openwebide_core::diff::DiffPaint::new(&diff);
     let digits = diff
         .old
         .as_deref()
@@ -994,16 +981,16 @@ fn render_side_by_side(diff: FileDiff) -> impl IntoView {
         let new_number = right.as_ref().map(|_| { new_line += 1; new_line });
         let left_class = if left.is_none() { "sbs-cell sbs-empty" } else if changed { "sbs-cell sbs-del" } else { "sbs-cell" };
         let right_class = if right.is_none() { "sbs-cell sbs-empty" } else if changed { "sbs-cell sbs-add" } else { "sbs-cell" };
-        let cell = |class, number, line: Option<openwebide_core::DiffLine>| view! {
+        let cell = |class, number: Option<usize>, line: Option<openwebide_core::DiffLine>, old| view! {
             <div class=class data-line=number>
                 <span class="editor-line-gutter"><span class="editor-line-number">{number}</span></span>
                 <span class="editor-line-text">{line.map(|line| view! {
-                    {render_diff_chunks(line.chunks)}
+                    {render_painted_diff(paint.line(old, number.unwrap(), line.chunks))}
                     {line.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
                 })}</span>
             </div>
         };
-        (cell(left_class, old_number, left), cell(right_class, new_number, right))
+        (cell(left_class, old_number, left, true), cell(right_class, new_number, right, false))
     }).unzip();
     view! {
         <div class="editor-diff editor-diff-side" style=format!("--editor-number-width: {digits}ch")>

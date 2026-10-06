@@ -5846,3 +5846,102 @@ async fn recovered_file_review_recreates_a_missing_clean_empty_file_in_both_mode
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn diff_syntax_paint_keeps_word_changes_and_embedded_context_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state::git::HeadContent;
+    let old = "<script>\r\n/*\r\nold café\r\n*/\r\nconst value = call(41);\r\n</script>\r\n<style>p { color: red; }</style>\r\n";
+    let new = "<script>\r\n/*\r\nnew 😀\r\n*/\r\nconst value = call(42);\r\n</script>\r\n<style>p { color: blue; }</style>\r\n";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fixture.html".into()));
+            state.workspace.content.set(new.into());
+            state.git.head_content.set(Some(HeadContent {
+                project_id: Some(1),
+                path: "fixture.html".into(),
+                content: Ok(old.into()),
+            }));
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:600px;height:400px">{editor_view(state)}</div> }
+        });
+        settle().await;
+        mounted.click_text("Diff HEAD");
+        settle().await;
+        assert_eq!(
+            mounted
+                .element(".diff-line.add[data-line='3'] .editor-line-text")
+                .text_content()
+                .unwrap(),
+            "new 😀"
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".diff-line.add[data-line='3'] .tok-comment.diff-word-add")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            mounted
+                .element(".diff-line.add[data-line='5'] .tok-function")
+                .text_content()
+                .unwrap(),
+            "call"
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".diff-line.add[data-line='5'] .tok-number.diff-word-add")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            mounted
+                .element(".diff-line.add[data-line='7'] .tok-attribute")
+                .text_content()
+                .unwrap(),
+            "color"
+        );
+        // Source tags remain text, rather than becoming executable preview DOM.
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-diff script")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click_text("Split");
+        settle().await;
+        let panes = mounted.root.query_selector_all(".sbs-pane").unwrap();
+        for (index, word) in [(0, "old café"), (1, "new 😀")] {
+            let pane: web_sys::Element = panes.item(index).unwrap().unchecked_into();
+            assert_eq!(
+                pane.query_selector(".sbs-cell[data-line='3'] .editor-line-text")
+                    .unwrap()
+                    .unwrap()
+                    .text_content()
+                    .unwrap(),
+                word
+            );
+            assert!(
+                pane.query_selector(".sbs-cell[data-line='3'] .tok-comment")
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                pane.query_selector(".sbs-cell[data-line='5'] .tok-function")
+                    .unwrap()
+                    .unwrap()
+                    .text_content()
+                    .unwrap(),
+                "call"
+            );
+        }
+        assert_eq!(mounted.state.workspace.content.get_untracked(), new);
+    }
+}

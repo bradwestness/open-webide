@@ -783,7 +783,17 @@ async fn compact_chat_centers_prompt_actions_and_keeps_composer_actions_inline_i
         settle().await;
         let popup = mounted.element(".tui-prompt-actions .ui-dropdown-menu");
         let popup_rect = popup.get_bounding_client_rect();
-        assert!((popup_rect.top() - menu.bottom() - 4.0).abs() < 1.0);
+        // The shared dropdown flips upward when the viewport has less room
+        // below. Either placement must stay anchored to the same trigger.
+        assert!(
+            (popup_rect.top() - menu.bottom() - 4.0).abs() < 1.0
+                || (menu.top() - popup_rect.bottom() - 4.0).abs() < 1.0,
+            "popup={}..{}, trigger={}..{}",
+            popup_rect.top(),
+            popup_rect.bottom(),
+            menu.top(),
+            menu.bottom(),
+        );
         let backdrop = mounted.element(".tui-prompt-actions .ui-dropdown-backdrop");
         let backdrop_rect = backdrop.get_bounding_client_rect();
         assert!(backdrop_rect.left().abs() < 1.0);

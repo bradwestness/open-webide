@@ -123,7 +123,11 @@ fallbacks when a parser is unavailable. Edit highlighting uses the same cached
 providers, with extensible highlight selectors and parser-protected literal/comment
 spans, including interpolation code and HTML script/style bodies. Tokens preserve
 source bytes; the DOM adapter only normalizes CRLF for textarea alignment.
-Read-only diff paint and richer literal/provider classifications remain pending.
+Inline/Split diffs, recovery reviews, Git previews and chat diff previews parse
+each complete source version with the shared providers, then intersect syntax
+colors with word-change boundaries. Source line numbers remain independent of
+alignment gaps; CRLF terminators are excluded while a final bare CR is preserved.
+Richer literal/provider classifications remain pending.
 Files over 2 MiB or 65,536 bracket tokens fall back to ordinary indentation and
 typing. Richer highlighting and large-file benchmarks stay on the roadmap.
 
@@ -160,7 +164,7 @@ interpolation also works during incomplete typing. Contexts verify their exact
 source before a command can mutate history. Custom provider classifiers use the
 same traversal, limits and fallback policy.
 
-Richer literal/provider classifications, read-only diff highlighting and
+Richer literal/provider classifications and
 worker/viewport rendering remain roadmap work. Edit paint retains the same
 10,000-byte plain-line fallback as the lexical renderer and falls back after
 cancelled, oversized or unavailable analysis.
@@ -342,3 +346,8 @@ its debounced database save, restarts Spin, reloads and opens a fresh window, an
 checks the selected tab and draft in both modes. Local recovery is tested without
 a native folder handle; it does not establish real-device permission restoration.
 Set `CHROME` if ChromeDriver needs an explicit Chrome binary.
+
+When running the full WASM UI test suite locally, match CI’s Chrome capabilities:
+include `--window-size=1280,900` in `goog:chromeOptions.args` in `webdriver.json`.
+Desktop panel contracts require that viewport; individual narrow-layout tests
+set their own container sizes.

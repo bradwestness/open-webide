@@ -9,7 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Add grammar-aware Edit highlighting through the cached shared editor facade and extensible provider selectors. Paint functions/types, HTML tags and CSS properties, preserve multiline literals/comments, and color interpolation and embedded script/style code independently. Preserve source text and CRLF overlay alignment in both modes; read-only diff paint and richer classifications remain follow-ups.
+- Share full-document grammar and lexical paint across Inline/Split diffs, Git and recovery reviews, and chat diff previews. Combine syntax colors with word-change highlights, preserve Unicode and line-ending notes, and keep original line coordinates through alignment gaps in both modes.
+- Add grammar-aware Edit highlighting through the cached shared editor facade and extensible provider selectors. Paint functions/types, HTML tags and CSS properties, preserve multiline literals/comments, and color interpolation and embedded script/style code independently. Preserve source text and CRLF overlay alignment in both modes; richer classifications remain follow-ups.
 
 - Use parser contexts for structural selection expansion and bracket navigation. Expand through named syntax nodes, expressions, blocks and functions while preserving selection direction and shrink history. Match interpolation code and embedded-language brackets, reject stale source data, and share the editor facade and bounded fallbacks in both modes.
 

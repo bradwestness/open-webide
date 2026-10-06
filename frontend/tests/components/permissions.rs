@@ -394,3 +394,53 @@ async fn approval_picker_and_shift_tab_share_database_state_in_both_modes() {
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn approval_diff_paint_uses_complete_source_context_in_both_modes() {
+    use openwebide_core::{FileDiff, RunEvent, WorkspaceMode};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            chat_view(state)
+        });
+        settle().await;
+        let chat = mounted.state.chat;
+        chat.streaming.set(true);
+        chat.streaming_session.set(Some(1));
+        chat.current_run_anchor.set(Some(7));
+        chat.apply_event(RunEvent::PermissionRequest {
+            id: "a7t1c0".into(),
+            name: "write_file".into(),
+            summary: "update comment".into(),
+            diff: Some(FileDiff {
+                path: "fixture.rs".into(),
+                old: Some("/*\r\nold café\r\n*/\r\n".into()),
+                new: "/*\r\nnew 😀\r\n*/\r\n".into(),
+                old_unavailable: false,
+                backup_path: None,
+            }),
+            note: None,
+        });
+        settle().await;
+        let lines = mounted.element(".tui-diff-lines");
+        assert_eq!(lines.child_element_count(), 2);
+        assert!(
+            lines
+                .query_selector(".add .tok-comment.diff-word-add")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            lines
+                .query_selector(".del .tok-comment.diff-word-del")
+                .unwrap()
+                .is_some()
+        );
+        assert!(lines.text_content().unwrap().contains("new 😀"));
+    }
+}

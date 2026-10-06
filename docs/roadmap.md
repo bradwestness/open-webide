@@ -80,8 +80,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Selection expansion uses validated named syntax-node ranges and retains shrink
   history and direction. Edit highlighting now uses cached providers for grammar
   classifications, literals/comments, template interpolation and embedded bodies.
-  Finish richer literal/provider classifications and shared highlighting for
-  read-only diff renderers. Reindent preserves
+  Inline/Split diffs, recovery reviews, Git previews and chat diff previews now
+  share full-document syntax paint while retaining word-change highlights.
+  Finish richer literal/provider classifications. Reindent preserves
   existing Python block depth; language formatting remains in Code intelligence.
 
 - **Selections and files:** the shared document now normalizes overlapping selections,

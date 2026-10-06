@@ -7,7 +7,7 @@ use crate::state::{
 };
 use leptos::prelude::*;
 use openwebide_core::{
-    Connection, FileDiff, ModelInfo, Role, diff_inline_detailed, diff_inline_lines,
+    Connection, FileDiff, ModelInfo, Role, paint_inline_diff,
     tui::{SessionTelemetry, SlashCommand, extract_editor_context_prelude, parse_thinking},
 };
 use web_sys::wasm_bindgen::JsCast;
@@ -18,21 +18,24 @@ pub(crate) use crate::markdown::render as render_markdown;
 
 /// Render the diff for a file edit: the changed path and the removed/added lines.
 fn render_diff_view(diff: FileDiff) -> impl IntoView {
-    let lines = diff_inline_lines(&diff);
+    let lines = paint_inline_diff(&diff)
+        .into_iter()
+        .filter(|line| line.marker != ' ')
+        .collect::<Vec<_>>();
     let path = diff.path.clone();
     view! {
         <div class="tui-diff-box">
             <div class="tui-diff-path">"diff: " {path}</div>
             <div class="tui-diff-lines">
-                {lines.into_iter().map(|(mark, line)| {
-                    let text = format!("{mark} {line}");
+                {lines.into_iter().map(|line| {
+                    let mark = line.marker;
                     let line_class = if mark == '+' {
                         "tui-diff-line add"
                     } else {
                         "tui-diff-line del"
                     };
                     view! {
-                        <div class=line_class>{text}</div>
+                        <div class=line_class><span>{mark} " "</span>{super::editor::render_painted_diff(line.tokens)}{line.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}</div>
                     }
                 }).collect::<Vec<_>>()}
             </div>
@@ -43,7 +46,14 @@ fn render_diff_view(diff: FileDiff) -> impl IntoView {
 fn render_approval_diff(diff: Memo<Option<FileDiff>>) -> impl IntoView {
     let expanded = RwSignal::new(false);
     let lines = Memo::new(move |_| {
-        diff.with(|diff| diff.as_ref().map(diff_inline_detailed).unwrap_or_default())
+        diff.with(|diff| {
+            diff.as_ref()
+                .map(paint_inline_diff)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|line| line.marker != ' ')
+                .collect::<Vec<_>>()
+        })
     });
     let has_more = move || lines.with(|lines| lines.len() > 40);
     view! {
@@ -56,7 +66,7 @@ fn render_approval_diff(diff: Memo<Option<FileDiff>>) -> impl IntoView {
                         view! {
                             <div class=class>
                                 <span>{line.marker} " "</span>
-                                {super::editor::render_diff_chunks(line.chunks)}
+                                {super::editor::render_painted_diff(line.tokens)}
                                 {line.ending_note.map(|note| view! { <span class="form-hint">{note}</span> })}
                             </div>
                         }
