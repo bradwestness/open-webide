@@ -24,7 +24,7 @@ pub use selections::{
 mod recovery;
 pub use recovery::{
     DocumentRecovery, EditorRecovery, EditorRecoveryFile, EditorRecoveryRecord, EditorRecoveryRoot,
-    RecoveryScroll, recovery_body_limit,
+    MAX_RECOVERY_BYTES, MAX_RECOVERY_FILES, RecoveryScroll, recovery_body_limit,
 };
 mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};

@@ -4189,3 +4189,105 @@ async fn recovery_document_format_restores_committed_browser_edits_in_both_modes
         assert_eq!(restored.text(), snapshot.text);
     }
 }
+
+#[wasm_bindgen_test]
+async fn workspace_recovery_collects_active_and_hidden_drafts_without_composition_previews() {
+    use openwebide_core::editor::{EditorRecoveryRecord, Selection};
+    use openwebide_frontend::{backend::RecoveryError, state_actions::editor::EditorActions};
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let capture = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("one.rs".into()));
+            state.workspace.content.set("one".into());
+            capture.set(Some(EditorActions::new(state.workspace)));
+            editor_view(state)
+        });
+        settle().await;
+        let editor = slot.get().unwrap();
+        editor
+            .native_input("one!".into(), Selection::caret(4), "insertText", 1.0)
+            .unwrap();
+        mounted.state.workspace.retain_editor_buffer(false);
+        mounted
+            .state
+            .workspace
+            .register_editor_tab(1, "one.rs".into());
+        batch(|| {
+            mounted.state.workspace.open_file.set(Some("two.rs".into()));
+            mounted.state.workspace.content.set("two".into());
+            mounted.state.workspace.dirty.set(false);
+        });
+        settle().await;
+        editor
+            .native_input("two!".into(), Selection::caret(4), "insertText", 2.0)
+            .unwrap();
+        editor.begin_composition();
+        editor
+            .native_input(
+                "two!文".into(),
+                Selection::caret(7),
+                "insertCompositionText",
+                3.0,
+            )
+            .unwrap();
+        let project = mounted.state.projects.project(1).unwrap();
+        let candidate = mounted
+            .state
+            .workspace
+            .editor_recovery(&project, false)
+            .unwrap();
+        assert_eq!(candidate.selected.as_deref(), Some("two.rs"));
+        assert_eq!(
+            candidate
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["one.rs", "two.rs"]
+        );
+        assert_eq!(candidate.files[0].document.as_ref().unwrap().text, "one!");
+        assert_eq!(candidate.files[0].document.as_ref().unwrap().saved, "one");
+        assert_eq!(candidate.files[1].document.as_ref().unwrap().text, "two!");
+        assert_eq!(candidate.files[1].document.as_ref().unwrap().saved, "two");
+        let backend = mounted.state.api.with_value(Clone::clone);
+        let record = EditorRecoveryRecord {
+            revision: 0,
+            state: candidate,
+        };
+        assert_eq!(backend.save_editor_recovery(1, &record).await.unwrap(), 1);
+        assert_eq!(
+            backend.editor_recovery(1).await.unwrap().state,
+            record.state
+        );
+        assert!(matches!(
+            backend.save_editor_recovery(1, &record).await,
+            Err(RecoveryError::Conflict(_))
+        ));
+        let loaded = backend.editor_recovery(1).await.unwrap();
+        assert_eq!(loaded.revision, 1);
+        editor.cancel_composition();
+        // Unsupported direct dirty assignments must never fabricate a clean baseline.
+        mounted
+            .state
+            .workspace
+            .content
+            .set("foreign direct assignment".into());
+        mounted.state.workspace.dirty.set(true);
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_recovery(&project, false)
+                .is_err()
+        );
+    }
+}

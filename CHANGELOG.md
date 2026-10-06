@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add shared recovery client transport and coherent active/hidden buffer snapshots. Classify revision conflicts by HTTP status, validate recovery replies and save acknowledgements, keep transient IME text out of snapshots, and refuse dirty snapshots without a saved baseline. Guard shared REST session-expiry handling against old-session responses. Automatic autosave and reload/new-window restoration remain in progress.
+
 - Add validated editor recovery snapshots and versioned user-scoped database/API storage. Preserve committed UTF-8/CRLF text, saved baselines, selections and collapsed folds; restore drafts as an undoable change. Guard project ownership/root identity and stale window revisions, retain close-all revisions, and keep draft bodies out of general settings reads. Frontend autosave and reload/new-window restoration remain in progress.
 
 - Add editor file tabs with shared selected-tab styling, unsaved indicators, keyboard navigation and inline close icons. Keep independent buffers when selecting tabs; confirm unsaved closes, reject stale confirmations, and select an adjacent file after closing the active tab. Both workspace modes share the same facade. Database draft/reload recovery remains in progress.

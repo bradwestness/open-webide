@@ -13,6 +13,19 @@ use web_sys::AbortSignal;
 
 pub type Api = StoredValue<Rc<dyn Backend>, LocalStorage>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryError {
+    Conflict(String),
+    Unavailable(String),
+}
+impl std::fmt::Display for RecoveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict(message) | Self::Unavailable(message) => f.write_str(message),
+        }
+    }
+}
+
 pub trait Backend {
     fn session_expired(&self) -> RwSignal<bool>;
     fn register<'a>(
@@ -132,6 +145,15 @@ pub trait Backend {
         content: &'a str,
     ) -> LocalBoxFuture<'a, Result<SystemPrompt, String>>;
     fn delete_system_prompt<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>>;
+    fn editor_recovery(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::editor::EditorRecoveryRecord, RecoveryError>>;
+    fn save_editor_recovery<'a>(
+        &'a self,
+        project: i64,
+        record: &'a openwebide_core::editor::EditorRecoveryRecord,
+    ) -> LocalBoxFuture<'a, Result<i64, RecoveryError>>;
     fn get_settings<'a>(
         &'a self,
     ) -> LocalBoxFuture<'a, Result<std::collections::BTreeMap<String, String>, String>>;
@@ -689,6 +711,20 @@ impl Backend for BackendApi {
     }
     fn delete_system_prompt<'a>(&'a self, id: i64) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(BackendApi::delete_system_prompt(self, id))
+    }
+    fn editor_recovery(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::editor::EditorRecoveryRecord, RecoveryError>>
+    {
+        Box::pin(BackendApi::editor_recovery(self, project))
+    }
+    fn save_editor_recovery<'a>(
+        &'a self,
+        project: i64,
+        record: &'a openwebide_core::editor::EditorRecoveryRecord,
+    ) -> LocalBoxFuture<'a, Result<i64, RecoveryError>> {
+        Box::pin(BackendApi::save_editor_recovery(self, project, record))
     }
     fn get_settings<'a>(
         &'a self,

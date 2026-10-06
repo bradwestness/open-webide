@@ -2,7 +2,7 @@
 
 use gloo_net::http::{Method, RequestBuilder};
 
-use leptos::prelude::{GetUntracked, Set, WithValue};
+use leptos::prelude::{GetUntracked, Set, Update, WithValue};
 use openwebide_core::{
     ChatCompletion, ChatMessage, ChatRequest, ChatSession, Connection, ConversationEntry,
     EditorContext, FileDiff, FileEntry, GitBranchInfo, GitCheckoutRequest, GitCheckoutResult,
@@ -33,6 +33,7 @@ pub struct BackendApi {
     pub signed_in: leptos::prelude::RwSignal<bool>,
     pub session_expired: leptos::prelude::RwSignal<bool>,
     cross_origin: bool,
+    session_revision: leptos::prelude::RwSignal<u64>,
 }
 
 /// The `{user, token}` payload returned by register and login.
@@ -45,6 +46,26 @@ struct AuthResponse {
 pub enum HealthState {
     Online { version: String },
     Offline,
+}
+
+struct RequestError {
+    status: Option<u16>,
+    message: String,
+}
+impl RequestError {
+    fn transport(message: String) -> Self {
+        Self {
+            status: None,
+            message,
+        }
+    }
+    fn into_recovery(self) -> crate::backend::RecoveryError {
+        if self.status == Some(409) {
+            crate::backend::RecoveryError::Conflict(self.message)
+        } else {
+            crate::backend::RecoveryError::Unavailable(self.message)
+        }
+    }
 }
 
 impl BackendApi {
@@ -84,6 +105,7 @@ impl BackendApi {
             signed_in: leptos::prelude::RwSignal::new(false),
             session_expired: leptos::prelude::RwSignal::new(false),
             cross_origin,
+            session_revision: leptos::prelude::RwSignal::new(0),
         }
     }
 
@@ -98,6 +120,8 @@ impl BackendApi {
                 &json!({ "username": username, "password": password }),
             )
             .await?;
+        self.session_revision
+            .update(|revision| *revision = revision.wrapping_add(1));
         self.signed_in.set(true);
         Ok(resp.user)
     }
@@ -110,6 +134,8 @@ impl BackendApi {
                 &json!({ "username": username, "password": password }),
             )
             .await?;
+        self.session_revision
+            .update(|revision| *revision = revision.wrapping_add(1));
         self.signed_in.set(true);
         Ok(resp.user)
     }
@@ -118,11 +144,15 @@ impl BackendApi {
     pub async fn me(&self) -> Result<User, String> {
         let resp: serde_json::Value = self.get("/auth/me").await?;
         let user: User = serde_json::from_value(resp["user"].clone()).map_err(|e| e.to_string())?;
+        self.session_revision
+            .update(|revision| *revision = revision.wrapping_add(1));
         self.signed_in.set(true);
         Ok(user)
     }
 
     pub async fn logout(&self) -> Result<(), String> {
+        self.session_revision
+            .update(|revision| *revision = revision.wrapping_add(1));
         let _ = self
             .post::<_, serde_json::Value>("/auth/logout", &json!({}))
             .await;
@@ -249,6 +279,70 @@ impl BackendApi {
     }
 
     // -- settings ----------------------------------------------------------
+
+    pub async fn editor_recovery(
+        &self,
+        project: i64,
+    ) -> Result<openwebide_core::editor::EditorRecoveryRecord, crate::backend::RecoveryError> {
+        let record: openwebide_core::editor::EditorRecoveryRecord = self
+            .request_typed::<(), _>(
+                Method::GET,
+                &format!("/projects/{project}/editor-recovery"),
+                None,
+                false,
+            )
+            .await
+            .map_err(RequestError::into_recovery)?;
+        record
+            .state
+            .validate()
+            .map_err(crate::backend::RecoveryError::Unavailable)?;
+        if record.revision < 0 {
+            return Err(crate::backend::RecoveryError::Unavailable(
+                "Invalid editor recovery revision returned by server".into(),
+            ));
+        }
+        Ok(record)
+    }
+
+    pub async fn save_editor_recovery(
+        &self,
+        project: i64,
+        record: &openwebide_core::editor::EditorRecoveryRecord,
+    ) -> Result<i64, crate::backend::RecoveryError> {
+        #[derive(Deserialize)]
+        struct Saved {
+            revision: i64,
+        }
+        record
+            .state
+            .validate()
+            .map_err(crate::backend::RecoveryError::Unavailable)?;
+        let expected = record
+            .revision
+            .checked_add(1)
+            .filter(|_| record.revision >= 0)
+            .ok_or_else(|| {
+                crate::backend::RecoveryError::Unavailable(
+                    "Invalid editor recovery revision".into(),
+                )
+            })?;
+        let response: Saved = self
+            .request_typed(
+                Method::PUT,
+                &format!("/projects/{project}/editor-recovery"),
+                Some(record),
+                false,
+            )
+            .await
+            .map_err(RequestError::into_recovery)?;
+        if response.revision != expected {
+            return Err(crate::backend::RecoveryError::Unavailable(
+                "Invalid editor recovery revision returned by server".into(),
+            ));
+        }
+        Ok(response.revision)
+    }
 
     pub async fn get_settings(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
         self.get("/settings").await
@@ -1238,13 +1332,25 @@ impl BackendApi {
         builder
     }
 
-    async fn request<T, R>(
+    async fn request<T: Serialize, R: DeserializeOwned>(
         &self,
         method: Method,
         path: &str,
         body: Option<&T>,
         abort_on_drop: bool,
-    ) -> Result<R, String>
+    ) -> Result<R, String> {
+        self.request_typed(method, path, body, abort_on_drop)
+            .await
+            .map_err(|error| error.message)
+    }
+
+    async fn request_typed<T, R>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&T>,
+        abort_on_drop: bool,
+    ) -> Result<R, RequestError>
     where
         T: Serialize,
         R: DeserializeOwned,
@@ -1252,10 +1358,9 @@ impl BackendApi {
         let url = format!("{}{path}", self.base());
         let is_delete = method == Method::DELETE;
         let guard = if abort_on_drop {
-            Some(CommandFetchGuard(
-                web_sys::AbortController::new()
-                    .map_err(|e| format!("request cancellation error: {e:?}"))?,
-            ))
+            Some(CommandFetchGuard(web_sys::AbortController::new().map_err(
+                |e| RequestError::transport(format!("request cancellation error: {e:?}")),
+            )?))
         } else {
             None
         };
@@ -1265,22 +1370,37 @@ impl BackendApi {
             Some(body) => builder.json(body),
             None => builder.build(),
         }
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| RequestError::transport(e.to_string()))?;
 
         let is_signed_in = self.signed_in.get_untracked();
-        let resp = req.send().await.map_err(|e| e.to_string())?;
+        let session_revision = self.session_revision.get_untracked();
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| RequestError::transport(e.to_string()))?;
         if !resp.ok() {
-            if resp.status() == 401 && is_signed_in && !path.starts_with("/auth/") {
+            if resp.status() == 401
+                && is_signed_in
+                && self.session_revision.get_untracked() == session_revision
+                && !path.starts_with("/auth/")
+            {
                 self.signed_in.set(false);
                 self.session_expired.set(true);
             }
-            return Err(self.error_from(resp).await);
+            let status = resp.status();
+            return Err(RequestError {
+                status: Some(status),
+                message: self.error_from(resp).await,
+            });
         }
         if is_delete {
             // Delete responses need no decoded body.
-            return serde_json::from_value(serde_json::Value::Null).map_err(|e| e.to_string());
+            return serde_json::from_value(serde_json::Value::Null)
+                .map_err(|e| RequestError::transport(e.to_string()));
         }
-        resp.json().await.map_err(|e| e.to_string())
+        resp.json()
+            .await
+            .map_err(|e| RequestError::transport(e.to_string()))
     }
 
     async fn error_from(&self, resp: gloo_net::http::Response) -> String {
@@ -1433,6 +1553,108 @@ mod streaming_tests {
                 .collect();
             assert_eq!(events, ws_events);
         }
+        owner.cleanup();
+    }
+}
+
+#[cfg(test)]
+mod recovery_transport_tests {
+    use super::*;
+    use crate::backend::RecoveryError;
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen(inline_js = r#"
+        export function recoveryFetch(status, body) {
+            const original = window.fetch;
+            const requests = [];
+            window.fetch = async request => {
+                requests.push({method: request.method, url: request.url, header: request.headers.get('x-openwebide')});
+                return new Response(body, {status, headers: {'Content-Type': 'application/json'}});
+            };
+            return {requests, restore: () => {window.fetch = original;}};
+        }
+        export function recoveryPending() {
+            const original = window.fetch;
+            let resolve;
+            window.fetch = () => new Promise(done => {resolve = done;});
+            return {restore: () => {window.fetch = original;}, finish: () => resolve(new Response('{"error":"expired"}', {status:401}))};
+        }
+        export function recoveryPendingFinish(state) {state.finish();}
+        export function recoveryFetchRestore(state) {state.restore();}
+        export function recoveryRequestHeader(state) {return state.requests[0].header;}
+    "#)]
+    extern "C" {
+        #[wasm_bindgen(js_name = recoveryFetch)]
+        fn recovery_fetch(status: u16, body: &str) -> JsValue;
+        #[wasm_bindgen(js_name = recoveryFetchRestore)]
+        fn restore(state: &JsValue);
+        #[wasm_bindgen(js_name = recoveryPending)]
+        fn pending() -> JsValue;
+        #[wasm_bindgen(js_name = recoveryPendingFinish)]
+        fn finish(state: &JsValue);
+        #[wasm_bindgen(js_name = recoveryRequestHeader)]
+        fn header(state: &JsValue) -> String;
+    }
+
+    #[wasm_bindgen_test]
+    async fn recovery_uses_http_status_authentication_and_shared_request_policy() {
+        let owner = leptos::prelude::Owner::new();
+        let api = owner.with(BackendApi::from_location);
+        let record = openwebide_core::editor::EditorRecoveryRecord::default();
+        let state = recovery_fetch(409, r#"{"error":"different window"}"#);
+        assert!(
+            matches!(api.save_editor_recovery(1, &record).await, Err(RecoveryError::Conflict(message)) if message == "different window")
+        );
+        assert_eq!(header(&state), "1");
+        restore(&state);
+        let state = recovery_fetch(500, r#"{"error":"409 conflict is just text"}"#);
+        assert!(matches!(
+            api.editor_recovery(1).await,
+            Err(RecoveryError::Unavailable(_))
+        ));
+        restore(&state);
+        api.signed_in.set(true);
+        let state = recovery_fetch(401, r#"{"error":"expired"}"#);
+        assert!(matches!(
+            api.editor_recovery(1).await,
+            Err(RecoveryError::Unavailable(_))
+        ));
+        assert!(api.session_expired.get_untracked());
+        assert!(!api.signed_in.get_untracked());
+        restore(&state);
+        let state = recovery_fetch(200, r#"{"revision":2}"#);
+        let advanced = openwebide_core::editor::EditorRecoveryRecord {
+            revision: 1,
+            state: record.state.clone(),
+        };
+        assert_eq!(api.save_editor_recovery(1, &advanced).await.unwrap(), 2);
+        restore(&state);
+        let state = recovery_fetch(200, r#"{"revision":0}"#);
+        assert!(matches!(
+            api.save_editor_recovery(1, &record).await,
+            Err(RecoveryError::Unavailable(_))
+        ));
+        restore(&state);
+        let mut invalid = record.clone();
+        invalid.state.format = 99;
+        let state = recovery_fetch(200, &serde_json::to_string(&invalid).unwrap());
+        assert!(matches!(
+            api.editor_recovery(1).await,
+            Err(RecoveryError::Unavailable(_))
+        ));
+        restore(&state);
+        api.signed_in.set(true);
+        api.session_expired.set(false);
+        let state = pending();
+        let mut request = Box::pin(api.editor_recovery(1));
+        assert!(futures::poll!(&mut request).is_pending());
+        api.session_revision.update(|revision| *revision += 1);
+        finish(&state);
+        assert!(matches!(request.await, Err(RecoveryError::Unavailable(_))));
+        assert!(!api.session_expired.get_untracked());
+        assert!(api.signed_in.get_untracked());
+        restore(&state);
         owner.cleanup();
     }
 }

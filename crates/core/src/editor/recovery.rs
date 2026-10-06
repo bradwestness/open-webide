@@ -107,6 +107,20 @@ pub struct EditorRecoveryFile {
     pub read_only: bool,
 }
 
+impl EditorRecoveryFile {
+    /// Conservative metadata costs keep encoded payloads within the wire budget.
+    pub fn recovery_bytes(&self) -> usize {
+        self.document.as_ref().map_or(self.path.len(), |document| {
+            self.path
+                .len()
+                .saturating_add(document.text.len())
+                .saturating_add(document.saved.len())
+                .saturating_add(document.collapsed.len().saturating_mul(96))
+                .saturating_add(document.selections.len().saturating_mul(64))
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditorRecoveryRoot {
@@ -180,15 +194,10 @@ impl EditorRecovery {
             {
                 return Err("Recovered scroll position is invalid".into());
             }
-            bytes = bytes.saturating_add(file.path.len());
             if let Some(document) = &file.document {
                 document.validate()?;
-                bytes = bytes
-                    .saturating_add(document.text.len())
-                    .saturating_add(document.saved.len())
-                    .saturating_add(document.collapsed.len().saturating_mul(96))
-                    .saturating_add(document.selections.len().saturating_mul(64));
             }
+            bytes = bytes.saturating_add(file.recovery_bytes());
             if bytes > MAX_RECOVERY_BYTES {
                 return Err(
                     "Editor recovery exceeds 128 MiB; keep these files open while saving them"

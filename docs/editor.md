@@ -275,6 +275,10 @@ control-heavy files within the same wire bounds as ordinary files. Limits are
 64 tabs and 128 MiB of text/metadata, with each document using the editor's existing
 32 MiB text limit. Failed writes preserve the preceding stored recovery.
 
+The frontend backend facade now exposes typed recovery requests and collects
+coherent active/hidden snapshots with the original saved baselines. HTTP 409 is
+kept distinct from transport errors; recovery replies and save acknowledgements
+are validated. Old-session REST responses cannot expire a newly active session.
 Client autosave, hydration, workspace permissions, disk-change/conflict feedback
 and retry behavior still need integration. The app currently keeps buffers in
 memory; refreshing still loses them.

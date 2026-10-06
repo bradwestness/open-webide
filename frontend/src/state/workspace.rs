@@ -172,6 +172,122 @@ impl WorkspaceState {
         self.apply_snapshot(WorkspaceSnapshot::default());
     }
 
+    /// Collect a coherent recovery candidate without publishing parser allocations
+    /// or transient IME previews. Dirty text must have its real saved baseline.
+    pub fn editor_recovery(
+        &self,
+        project: &openwebide_core::Project,
+        active_read_only: bool,
+    ) -> Result<openwebide_core::editor::EditorRecovery, String> {
+        use openwebide_core::editor::{
+            Document, EditorRecovery, EditorRecoveryFile, EditorRecoveryRoot, RecoveryScroll,
+        };
+        let active = self.active_project.get_untracked() == Some(project.id);
+        let snapshot = (!active)
+            .then(|| {
+                self.snapshots.with_untracked(|snapshots| {
+                    snapshots.get(&project.id).map(|snapshot| {
+                        (
+                            snapshot.open_file.clone(),
+                            snapshot.content.clone(),
+                            snapshot.dirty,
+                        )
+                    })
+                })
+            })
+            .flatten();
+        let selected = if active {
+            self.open_file.get_untracked()
+        } else {
+            snapshot.as_ref().and_then(|(path, _, _)| path.clone())
+        };
+        let mut paths = self
+            .editor_tabs
+            .with_untracked(|tabs| tabs.get(&project.id).cloned())
+            .unwrap_or_default();
+        if let Some(path) = &selected
+            && !paths.contains(path)
+        {
+            paths.push(path.clone());
+        }
+        if paths.len() > openwebide_core::editor::MAX_RECOVERY_FILES {
+            return Err("Too many open files for editor recovery".into());
+        }
+        let mut bytes = 0_usize;
+        let mut files = Vec::with_capacity(paths.len());
+        for path in paths {
+            let key = (project.id, path.clone());
+            let buffer_read_only = self
+                .editor_buffers
+                .with_untracked(|buffers| buffers.get(&key).is_some_and(|buffer| buffer.read_only));
+            let current = active && selected.as_deref() == Some(&path);
+            let loading = current && self.editor_loading.get_untracked();
+            let source = if current && !loading {
+                Some((self.content.get_untracked(), self.dirty.get_untracked()))
+            } else if let Some((open, content, dirty)) = &snapshot
+                && open.as_deref() == Some(&path)
+            {
+                Some((content.clone(), *dirty))
+            } else {
+                self.editor_buffers.with_untracked(|buffers| {
+                    buffers
+                        .get(&key)
+                        .map(|buffer| (buffer.content.clone(), buffer.dirty))
+                })
+            };
+            let document = self.editor_documents.with_untracked(|documents| {
+                if let Some((text, dirty)) = &source {
+                    if let Some(document) = documents
+                        .get(&key)
+                        .filter(|document| document.text() == text)
+                    {
+                        return Ok(Some(document.recovery()));
+                    }
+                    if *dirty {
+                        return Err(format!(
+                            "The saved baseline for `{path}` is not ready for recovery"
+                        ));
+                    }
+                    return Ok(Some(Document::new(text.clone()).recovery()));
+                }
+                Ok(documents.get(&key).map(Document::recovery))
+            })?;
+            let scroll = self
+                .editor_scroll
+                .with_untracked(|positions| positions.get(&key).copied())
+                .unwrap_or_default();
+            let file = EditorRecoveryFile {
+                path,
+                document,
+                scroll: RecoveryScroll {
+                    top: scroll.top,
+                    left: scroll.left,
+                },
+                read_only: if current {
+                    active_read_only
+                } else {
+                    buffer_read_only
+                },
+            };
+            bytes = bytes.saturating_add(file.recovery_bytes());
+            if bytes > openwebide_core::editor::MAX_RECOVERY_BYTES {
+                return Err(
+                    "Editor recovery exceeds 128 MiB; keep these files open while saving them"
+                        .into(),
+                );
+            }
+            files.push(file);
+        }
+        let state = EditorRecovery {
+            format: 1,
+            root: Some(EditorRecoveryRoot::for_project(project)),
+            selected,
+            files,
+        };
+        state.validate()?;
+        Ok(state)
+    }
+
     pub fn register_editor_tab(&self, project: i64, path: String) {
         self.editor_tabs.update(|tabs| {
             let paths = tabs.entry(project).or_default();
@@ -500,6 +616,49 @@ mod tests {
             assert!(workspace.remove_editor_tab(1, "one.rs").is_none());
             workspace.reset();
             assert!(workspace.editor_tabs.get_untracked().is_empty());
+        });
+    }
+
+    #[test]
+    fn recovery_collects_inactive_project_with_its_actual_saved_baseline() {
+        Owner::new().with(|| {
+            let workspace = WorkspaceState::with_active_project(RwSignal::new(Some(1)));
+            let project = openwebide_core::Project {
+                id: 1,
+                name: "one".into(),
+                mode: openwebide_core::WorkspaceMode::Local,
+                path: None,
+                user_id: None,
+                created_at: 1,
+            };
+            let mut document = openwebide_core::editor::Document::new("base");
+            document.replace_selections("draft ", None).unwrap();
+            workspace.register_editor_tab(1, "one.rs".into());
+            workspace.open_file.set(Some("one.rs".into()));
+            workspace.content.set(document.text().into());
+            workspace.dirty.set(true);
+            workspace.editor_documents.update(|documents| {
+                documents.insert((1, "one.rs".into()), document);
+            });
+            let active = workspace.editor_recovery(&project, false).unwrap();
+            workspace.switch_project(Some(1), 2);
+            workspace.register_editor_tab(2, "other.rs".into());
+            workspace.open_file.set(Some("other.rs".into()));
+            workspace.content.set("another project".into());
+            let inactive = workspace.editor_recovery(&project, false).unwrap();
+            assert_eq!(inactive, active);
+            assert_eq!(inactive.files[0].document.as_ref().unwrap().saved, "base");
+            assert_eq!(
+                inactive.files[0].document.as_ref().unwrap().text,
+                "draft base"
+            );
+            for index in 0..openwebide_core::editor::MAX_RECOVERY_FILES {
+                workspace.register_editor_tab(1, format!("extra_{index}.rs"));
+            }
+            assert_eq!(
+                workspace.editor_recovery(&project, false).unwrap_err(),
+                "Too many open files for editor recovery"
+            );
         });
     }
 

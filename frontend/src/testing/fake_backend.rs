@@ -1,4 +1,4 @@
-use crate::backend::Backend;
+use crate::backend::{Backend, RecoveryError};
 use futures::future::LocalBoxFuture;
 use leptos::prelude::RwSignal;
 use openwebide_core::{
@@ -56,6 +56,18 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub editor_recovery_records:
+        RefCell<BTreeMap<i64, openwebide_core::editor::EditorRecoveryRecord>>,
+    pub recovery_load_results: RefCell<
+        VecDeque<
+            futures::channel::oneshot::Receiver<
+                Result<openwebide_core::editor::EditorRecoveryRecord, RecoveryError>,
+            >,
+        >,
+    >,
+    pub recovery_save_results:
+        RefCell<VecDeque<futures::channel::oneshot::Receiver<Result<(), RecoveryError>>>>,
+
     pub session_search_results: RefCell<VecDeque<Deferred<Vec<ChatSession>>>>,
     pub session_export_results: RefCell<VecDeque<Deferred<openwebide_core::SessionExport>>>,
     pub title_results: RefCell<VecDeque<Deferred<Option<ChatSession>>>>,
@@ -749,6 +761,68 @@ impl Backend for FakeBackend {
                 .borrow_mut()
                 .retain(|item| item.id != id);
             Ok(())
+        })
+    }
+    fn editor_recovery(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::editor::EditorRecoveryRecord, RecoveryError>>
+    {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "editor_recovery",
+            });
+            let pending = self.recovery_load_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+            }
+            Ok(self
+                .editor_recovery_records
+                .borrow()
+                .get(&project)
+                .cloned()
+                .unwrap_or_default())
+        })
+    }
+    fn save_editor_recovery<'a>(
+        &'a self,
+        project: i64,
+        record: &'a openwebide_core::editor::EditorRecoveryRecord,
+    ) -> LocalBoxFuture<'a, Result<i64, RecoveryError>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "save_editor_recovery",
+            });
+            let pending = self.recovery_save_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                pending
+                    .await
+                    .map_err(|error| RecoveryError::Unavailable(error.to_string()))??;
+            }
+            record
+                .state
+                .validate()
+                .map_err(RecoveryError::Unavailable)?;
+            let mut records = self.editor_recovery_records.borrow_mut();
+            let revision = records.get(&project).map_or(0, |record| record.revision);
+            if revision != record.revision {
+                return Err(RecoveryError::Conflict(
+                    "Editor recovery changed in another window".into(),
+                ));
+            }
+            let revision = revision
+                .checked_add(1)
+                .ok_or_else(|| RecoveryError::Conflict("Revision limit reached".into()))?;
+            records.insert(
+                project,
+                openwebide_core::editor::EditorRecoveryRecord {
+                    revision,
+                    state: record.state.clone(),
+                },
+            );
+            Ok(revision)
         })
     }
     fn get_settings<'a>(
