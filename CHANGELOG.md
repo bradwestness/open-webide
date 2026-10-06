@@ -11,7 +11,7 @@ for what's still ahead.
 
 - Add a disposable production-editor benchmark for native browser input, scrolling, frame stalls, WASM allocation and Chrome process-tree memory in both workspace modes. Record byte, row-count and long-line boundary baselines; bounded cold paint and incremental input remain in progress.
 
-- Update project links and Pages configuration guidance for the repository transfer to `openwebide/app`.
+- Update project links and Pages configuration guidance for the repository transfer to `openwebide/openwebide`.
 
 - Synchronize native editor viewport dimensions before paint and wrapped cursor measurements, keeping immediate and queued movement aligned when resize or scrollbar geometry settles between frames in both workspace modes.
 

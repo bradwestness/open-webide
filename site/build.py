@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlsplit
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-REPO_URL = "https://github.com/openwebide/app"
+REPO_URL = "https://github.com/openwebide/openwebide"
 
 
 class PageLinks(HTMLParser):
