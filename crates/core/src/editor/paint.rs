@@ -165,7 +165,7 @@ mod tests {
         assert!(coverage.selection(12..20).unwrap().is_empty());
         assert!(coverage.selection(12..12).unwrap().is_empty());
         assert!(coverage.selection(0..31).is_err());
-        let empty = PaintCoverage::new(0, vec![0..0]).unwrap();
+        let empty = PaintCoverage::new(0, std::iter::once(0..0).collect()).unwrap();
         assert_eq!(
             empty.caret(0),
             Some(PaintPosition {
@@ -177,8 +177,8 @@ mod tests {
         for fragments in [
             vec![8..12, 4..8],
             vec![4..10, 8..12],
-            vec![0..31],
-            vec![3..3],
+            std::iter::once(0..31).collect(),
+            std::iter::once(3..3).collect(),
         ] {
             assert!(PaintCoverage::new(30, fragments).is_err());
         }
