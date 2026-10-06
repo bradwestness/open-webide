@@ -198,6 +198,9 @@ UTF-8 ranges, folds, token coverage and bracket links are validated without pars
 the document again on the UI thread. Transport/startup failures use the same
 preparation engine synchronously with a 12 ms parser budget; unavailable contexts
 retain ordinary lexical editing. Worker parsing has a 100 ms budget.
+Languages with lexical highlighting, including JSON, TOML, YAML, SQL and Markdown,
+use the same preparation cache and worker. Multiline lexical state stays intact;
+cancellation returns no partial rows. Plain text retains plain rendering.
 
 Both adapters retain at most eight syntax documents and 8 MiB of source, using LRU
 eviction. Preparation falls back beyond 2 MiB, 50,000 lines or 100,000

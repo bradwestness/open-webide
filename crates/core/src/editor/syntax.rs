@@ -171,7 +171,8 @@ impl SyntaxDocument {
             self.clear();
             return (SyntaxStatus::TooLarge, None);
         }
-        let status = self.update(text, should_continue);
+        let mut should_continue = should_continue;
+        let status = self.update(text, &mut should_continue);
         if !matches!(status, SyntaxStatus::Ready { .. }) {
             return (status, None);
         }
@@ -181,10 +182,20 @@ impl SyntaxDocument {
             return (status, Some(analysis.clone()));
         }
         let structure = self.structure().map(Arc::new);
-        let highlights = structure
-            .as_ref()
-            .and_then(|structure| self.highlight_with_structure(structure))
-            .map(Arc::new);
+        let highlights = if self.provider.is_none() && self.language != Language::Plain {
+            let Some(lines) =
+                crate::highlight::highlight_lines_while(text, self.language, &mut should_continue)
+            else {
+                self.clear();
+                return (SyntaxStatus::Cancelled, None);
+            };
+            Some(Arc::new(lines))
+        } else {
+            structure
+                .as_ref()
+                .and_then(|structure| self.highlight_with_structure(structure))
+                .map(Arc::new)
+        };
         let analysis = Arc::new(SyntaxAnalysis {
             source: self.text.clone(),
             folds: self.folds_with_tab_width(tab_width),
@@ -698,6 +709,61 @@ fn input_edit(old: &str, new: &str) -> InputEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lexical_languages_prepare_cache_and_transfer_the_same_lossless_paint() {
+        for (language, source) in [
+            (
+                Language::Json,
+                "{\r\n \"name\": \"文😀\", \"value\": 42\r\n}",
+            ),
+            (Language::Toml, "[section]\r\nname = \"文😀\"\r\n"),
+            (Language::Yaml, "section:\r\n  name: 文😀\r\n"),
+            (
+                Language::Sql,
+                "/* first\r\n still comment */\r\nSELECT '文😀';\r\n",
+            ),
+            (Language::Markdown, "# Header\r\nText 文😀\r\n"),
+        ] {
+            let mut document = SyntaxDocument::new(language).unwrap();
+            let (_, first) = document.prepare(source, 4, || true);
+            let first = first.unwrap();
+            assert!(first.structure().is_none());
+            let expected = crate::highlight::highlight_lines(source, language);
+            assert_eq!(first.highlights().unwrap().as_ref(), &expected);
+            let (_, cached) = document.prepare(source, 4, || true);
+            assert!(Arc::ptr_eq(&first, &cached.unwrap()));
+            let transferred = first.transfer_data().unwrap().validate(source).unwrap();
+            assert_eq!(transferred.highlights().unwrap().as_ref(), &expected);
+            assert!(transferred.structure().is_none());
+            let revised = source.replace("文😀", "😀 changed");
+            let (_, next) = document.prepare(&revised, 4, || true);
+            assert_eq!(
+                next.unwrap().highlights().unwrap().as_ref(),
+                &crate::highlight::highlight_lines(&revised, language)
+            );
+            assert!(first.matches_source(source));
+        }
+    }
+
+    #[test]
+    fn lexical_preparation_cancellation_never_publishes_partial_rows() {
+        let mut document = SyntaxDocument::new(Language::Sql).unwrap();
+        let source = "/* first\r\nstill comment */\r\nSELECT '文😀';";
+        let mut checks = 0;
+        let (status, result) = document.prepare(source, 4, || {
+            checks += 1;
+            checks < 3
+        });
+        assert_eq!(status, SyntaxStatus::Cancelled);
+        assert!(result.is_none() && document.prepared.is_none());
+        let (status, recovered) = document.prepare(source, 4, || true);
+        assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+        assert_eq!(
+            recovered.unwrap().highlights().unwrap().as_ref(),
+            &crate::highlight::highlight_lines(source, Language::Sql)
+        );
+    }
 
     #[test]
     fn preparation_reuses_one_snapshot_and_retains_immutable_old_sources() {

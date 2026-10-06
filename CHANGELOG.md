@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare lexical JSON, TOML, YAML, SQL and Markdown paint through the same immutable syntax cache and Rust/WASM worker as grammar-backed languages. Preserve multiline comments, Unicode and CRLF; discard partial results on cancellation and reject stale source replies in both modes.
+
 - Match wasm-bindgen's headless Linux Chrome flags in production-worker and recovery checks when running in CI, and include WebDriver failure details in test output.
 
 - Prepare editor folds, structural contexts and syntax tokens in a dedicated Rust/WASM worker. Share the preparation engine and bounded LRU cache with the synchronous fallback, coalesce pending edits, reject stale or malformed replies, and wait for worker readiness before sending requests. Cache the matching hashed worker/WASM assets for PWA use; CI exercises the built worker in Chrome. Full viewport rendering and device verification remain in progress.

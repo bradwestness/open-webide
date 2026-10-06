@@ -100,9 +100,22 @@ pub const MAX_HIGHLIGHT_LINE_BYTES: usize = 10_000;
 /// The returned lines line up with `source.split('\n')`, and concatenating a
 /// line's token texts reproduces that line exactly.
 pub fn highlight_lines(source: &str, language: Language) -> Vec<Vec<Token>> {
+    highlight_lines_while(source, language, || true)
+        .expect("unconditional highlighting cannot cancel")
+}
+
+/// Preserve multiline lexical state, publishing no partial paint after cancellation.
+pub fn highlight_lines_while(
+    source: &str,
+    language: Language,
+    mut should_continue: impl FnMut() -> bool,
+) -> Option<Vec<Vec<Token>>> {
     let mut lines = Vec::new();
     let mut state = State::Normal;
     for line in source.split('\n') {
+        if !should_continue() {
+            return None;
+        }
         if line.len() > MAX_HIGHLIGHT_LINE_BYTES {
             lines.push(vec![Token {
                 kind: TokenKind::Plain,
@@ -117,7 +130,7 @@ pub fn highlight_lines(source: &str, language: Language) -> Vec<Vec<Token>> {
         state = next_state;
         lines.push(tokens);
     }
-    lines
+    Some(lines)
 }
 
 /// Tokenizer state carried across lines (a block comment may span lines).

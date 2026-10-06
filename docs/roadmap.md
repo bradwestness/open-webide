@@ -93,6 +93,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   built-worker Chrome check cover providers, incremental Unicode/CRLF, stale
   scopes, transport failure, size limits and PWA asset inclusion. Finish viewport
   paint and end-to-end latency/memory measurements below.
+  Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,
+  preserving multiline state and discarding partial rows on cancellation.
   Reindent preserves
   existing Python block depth; language formatting remains in Code intelligence.
 

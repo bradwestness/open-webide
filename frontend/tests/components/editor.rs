@@ -6839,3 +6839,104 @@ async fn worker_preparation_coalesces_edits_rejects_stale_scopes_and_falls_back_
         assert!(transport.stopped.get());
     }
 }
+
+#[wasm_bindgen_test]
+async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "{\r\n  \"name\": \"文😀\", \"value\": 42\r\n}\r\n";
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let captured = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+        let capture = captured.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("worker.json".into()));
+            state.workspace.content.set(source.into());
+            let actions = EditorActions::new(state.workspace);
+            actions.install_syntax_transport(installed);
+            capture.set(Some(actions));
+            editor_view(state)
+        });
+        let actions = captured.get().unwrap();
+        wait_until("lexical worker request", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        assert!(actions.syntax_highlights().is_none());
+        transport.respond(true);
+        // Configuration can resolve before or after the first worker reply. Drive
+        // the bounded replacement request, still checking exact source coverage.
+        for _ in 0..2 {
+            wait_until("lexical paint or replacement scope", || {
+                actions.syntax_highlights().is_some() || !transport.pending.borrow().is_empty()
+            })
+            .await;
+            if actions.syntax_highlights().is_some() {
+                break;
+            }
+            assert_eq!(transport.source(), source);
+            transport.respond(true);
+        }
+        wait_until("lexical worker paint published", || {
+            actions.syntax_highlights().is_some()
+        })
+        .await;
+        let first = actions.syntax_highlights().unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &first,
+            &actions.syntax_highlights().unwrap()
+        ));
+        assert_eq!(
+            first.as_ref(),
+            &openwebide_core::highlight::highlight_lines(
+                source,
+                openwebide_core::highlight::Language::Json
+            )
+        );
+        assert!(actions.syntax_structure(|| true).is_none());
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_syntax
+                .with_untracked(|cache| cache.is_empty())
+        );
+        let revised = source.replace("42", "7");
+        mounted.state.workspace.content.set(revised.clone());
+        assert!(actions.syntax_highlights().is_none());
+        wait_until("revised lexical request", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        transport.respond(true);
+        wait_until("revised lexical paint", || {
+            actions.syntax_highlights().is_some()
+        })
+        .await;
+        assert!(!std::sync::Arc::ptr_eq(
+            &first,
+            &actions.syntax_highlights().unwrap()
+        ));
+        wait_until("revised number painted", || {
+            mounted
+                .root
+                .query_selector(".tok-number")
+                .unwrap()
+                .is_some_and(|number| number.text_content().as_deref() == Some("7"))
+        })
+        .await;
+        assert_eq!(
+            mounted
+                .element(".editor-highlight-content")
+                .text_content()
+                .unwrap(),
+            revised.replace("\r\n", "\n")
+        );
+    }
+}

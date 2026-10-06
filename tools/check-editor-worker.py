@@ -72,13 +72,25 @@ def check():
                                 structure: !!reply.analysis?.structure, paint: !!reply.analysis?.highlights,
                                 sourceMatches: reply.analysis?.source === text});
                         }
+                        const lexical = [];
+                        for (const [language, text] of Object.entries({
+                            Json: '{\r\n "name": "文😀", "value": 42\r\n}',
+                            Toml: '[section]\r\nname = "文😀"\r\n',
+                            Yaml: 'section:\r\n  name: 文😀\r\n',
+                            Sql: '/* first\r\nstill comment */\r\nSELECT \'文😀\';',
+                            Markdown: '# Header\r\nText 文😀\r\n'
+                        })) {
+                            const reply = await request(language, language, text);
+                            lexical.push({language, status: reply.status, structure: reply.analysis?.structure,
+                                paint: !!reply.analysis?.highlights, sourceMatches: reply.analysis?.source === text});
+                        }
                         const heavy = 'fn call() {\n if true { println!("文😀"); }\n}\n'.repeat(1000);
                         let uiEvent = false;
                         setTimeout(() => {uiEvent = true;}, 0);
                         const prepared = await request('large', 'Rust', heavy);
                         const oversized = await request('large', 'Rust', 'x'.repeat(2*1024*1024+1));
                         worker.terminate();
-                        done({first, next, providers, heavyStatus: prepared.status,
+                        done({first, next, providers, lexical, heavyStatus: prepared.status,
                             heavySource: prepared.analysis?.source === heavy, uiEvent,
                             oversizedStatus: oversized.status, oversizedAnalysis: oversized.analysis});
                     })().catch(error => {worker.terminate(); done({error:String(error)});});
@@ -90,9 +102,11 @@ def check():
                 assert result['first']['analysis']['folds']
                 for provider in result['providers']:
                     assert 'Ready' in provider['status'] and provider['structure'] and provider['paint'] and provider['sourceMatches'], provider
+                for lexical in result['lexical']:
+                    assert 'Ready' in lexical['status'] and lexical['structure'] is None and lexical['paint'] and lexical['sourceMatches'], lexical
                 assert 'Ready' in result['heavyStatus'] and result['heavySource'] and result['uiEvent'], result
                 assert result['oversizedStatus'] == 'TooLarge' and result['oversizedAnalysis'] is None, result
-                print(json.dumps({'providers': len(result['providers'])+1, 'incremental': True,
+                print(json.dumps({'providers': len(result['providers'])+1, 'lexical_languages': len(result['lexical']), 'incremental': True,
                                   'ui_event_during_worker': result['uiEvent'], 'oversize_fallback': True}))
             finally:
                 browser.stop()
