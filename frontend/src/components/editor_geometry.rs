@@ -1,9 +1,10 @@
 //! Browser text measurements for shared visual-row cursor movement.
-use super::editor::current_editor_target;
+use super::editor::{current_editor_target, sync_highlight_scroll};
 use crate::state_actions::editor::EditorActions;
 use leptos::prelude::*;
 use openwebide_core::editor::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_line_offsets};
 use std::collections::{BTreeMap, BTreeSet};
+use wasm_bindgen::JsCast;
 
 /// DOM values are rounded first and bounded well inside exact integer precision.
 #[allow(
@@ -199,6 +200,11 @@ pub(super) fn visual_layout(
     let projection = actions.projection()?;
     let parent = input.parent_element()?;
     let paint = parent.query_selector(".editor-highlight-content").ok()??;
+    let overlay = paint
+        .parent_element()?
+        .dyn_into::<web_sys::HtmlElement>()
+        .ok()?;
+    sync_highlight_scroll(input, &overlay);
     let painted = paint.text_content()?;
     let start: usize = paint.get_attribute("data-textarea-start")?.parse().ok()?;
     let end = start.checked_add(painted.encode_utf16().count())?;

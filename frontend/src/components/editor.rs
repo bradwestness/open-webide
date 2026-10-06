@@ -762,7 +762,20 @@ fn highlight_html(
 }
 
 /// The textarea owns scrolling; translate paint instead of copying clamped offsets.
-fn sync_highlight_scroll(textarea: &web_sys::HtmlTextAreaElement, overlay: &web_sys::HtmlElement) {
+pub(super) fn sync_highlight_scroll(
+    textarea: &web_sys::HtmlTextAreaElement,
+    overlay: &web_sys::HtmlElement,
+) {
+    // Native scrollbars can change the usable width between the resize observer
+    // and a source paint. Publish geometry from the same input as the paint.
+    let _ = overlay.style().set_property(
+        "--editor-text-width",
+        &format!("{}px", textarea.client_width()),
+    );
+    let _ = overlay.style().set_property(
+        "--editor-viewport-height",
+        &format!("{}px", textarea.client_height()),
+    );
     let _ = overlay.style().set_property(
         "--editor-scroll-x",
         &format!("{}px", -textarea.scroll_left()),

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Synchronize native editor viewport dimensions before paint and wrapped cursor measurements, keeping immediate and queued movement aligned when resize or scrollbar geometry settles between frames in both workspace modes.
+
 - Add a dedicated project landing page and GitHub Pages build workflow for openwebide.com. Generate documentation directly from repository Markdown with automatic navigation, validated links, shared app colors and buttons, GitHub Issues links for feedback and support, and Bluesky, Mastodon, and YouTube profile links with Mastodon website verification support.
 
 - Window wrapped editor paint using exact browser row heights in both workspace modes. Preserve global Unicode/CRLF caret mapping, offscreen multi-cursor motion and resize remeasurement; reject stale layout tables. Initial full paint and bounded cold measurement remain in progress.

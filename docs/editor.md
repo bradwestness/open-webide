@@ -205,7 +205,9 @@ cancellation returns no partial rows. Plain text retains plain rendering.
 Unwrapped edit views render an overscanned row window for syntax, line-number
 gutters and fold controls. The shared row-window policy receives browser geometry;
 projected rows retain global native UTF-16 offsets for Unicode/CRLF pointer mapping.
-Syntax tokens and indentation guides are reused across scrolling. Find and navigation
+Syntax tokens and indentation guides are reused across scrolling. Paint and cursor
+measurements synchronize native viewport dimensions as well as scroll offsets,
+so a delayed resize/scrollbar observer cannot move a cursor using stale wrap width. Find and navigation
 can reveal rows outside the current paint window. Wrapped views and rows containing
 standalone CR also use exact measured row-height windows after their initial full
 paint. Measurement publication checks source, folds, project, account and font/width

@@ -6165,6 +6165,25 @@ async fn pending_paint_motion_preserves_key_order_and_flushes_before_edits_in_bo
         }
         let ordered = actions.selections(&expected);
         seed_wrapped_carets(&mounted, &expected, second);
+        // A native scrollbar/resize may settle after the observer's last width.
+        // Immediate and queued motion must use the same current input geometry.
+        mounted
+            .element(".editor-highlight:not(.editor-caret-measure)")
+            .style()
+            .set_property(
+                "--editor-text-width",
+                &format!("{}px", input.client_width() + 24),
+            )
+            .unwrap();
+        for (key, shift) in [
+            ("ArrowDown", false),
+            ("ArrowDown", false),
+            ("ArrowUp", true),
+        ] {
+            editor_key(&input, key, false, shift);
+        }
+        assert_eq!(actions.selections(&expected), ordered);
+        seed_wrapped_carets(&mounted, &expected, second);
         let before = actions.selections(&expected);
         let code = mounted.element(".editor-code");
         code.class_list().remove_1("highlight-ready").unwrap();
