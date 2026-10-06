@@ -451,6 +451,7 @@ fn navigate_editor_with_retry(
                             - f64::from(textarea.client_height()) / 2.0)
                             .max(0.0),
                     );
+                    reveal_caret_column(&rect, &textarea, gutter);
                 }
                 reveal_match_column(&target.unchecked_into(), &textarea, column, gutter);
                 if let Ok(Some(overlay)) = parent.query_selector(".editor-highlight") {
@@ -626,6 +627,11 @@ fn reveal_match_column(
     {
         body.set_scroll_top((body.scroll_top() + caret.top() - viewport.top() - 12.0).max(0.0));
     }
+    reveal_caret_column(&caret, body, gutter);
+}
+
+fn reveal_caret_column(caret: &web_sys::DomRect, body: &web_sys::HtmlElement, gutter: f64) {
+    let viewport = body.get_bounding_client_rect();
     let left = viewport.left() + gutter;
     if caret.left() < left || caret.left() > viewport.right() - 16.0 {
         body.set_scroll_left((body.scroll_left() + caret.left() - left).max(0.0));
@@ -1093,11 +1099,14 @@ fn HighlightOverlay(
                     .lines()
                     .binary_search_by_key(source_line, |line| line.source_line)
                     .ok()?;
-                let window = actions.wrapped_paint_window(
+                let window = actions.paint_window(
                     index,
                     editor_row_height(&input),
-                    input.scroll_top() - 12.0,
-                    f64::from(input.client_height()),
+                    (input.scroll_left(), input.scroll_top() - 12.0),
+                    (
+                        f64::from(input.client_width()),
+                        f64::from(input.client_height()),
+                    ),
                 )?;
                 Some((index, window))
             })
@@ -1187,25 +1196,28 @@ fn HighlightOverlay(
     let callback = StoredValue::new_local(Closure::<dyn FnMut()>::new(move || paint.run(false)));
     paint_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
     let paint_ticket = paint_epoch.get_untracked();
+    let render_probe = Callback::new(move |(rows, suffix): (Vec<usize>, bool)| {
+        tokens.with_untracked(|(prepared, tokens)| {
+            guides.with_untracked(|guides| {
+                highlight_html(
+                    tokens,
+                    *prepared,
+                    guides,
+                    PaintRows::measured(&rows),
+                    indentation.get_untracked(),
+                    show_whitespace.get_untracked(),
+                    suffix,
+                )
+            })
+        })
+    });
     let neighborhood = Callback::new(move |()| {
         if generation.is_disposed() {
             return None;
         }
         let input = textarea_ref.get_untracked()?;
         super::editor_geometry::neighborhood_layout(actions, &input, |rows, suffix| {
-            tokens.with_untracked(|(prepared, tokens)| {
-                guides.with_untracked(|guides| {
-                    highlight_html(
-                        tokens,
-                        *prepared,
-                        guides,
-                        PaintRows::measured(rows),
-                        indentation.get_untracked(),
-                        show_whitespace.get_untracked(),
-                        suffix,
-                    )
-                })
-            })
+            render_probe.run((rows.to_vec(), suffix))
         })
     });
     paint_request.set(Some(EditorPaint {
@@ -1213,8 +1225,19 @@ fn HighlightOverlay(
         neighborhood,
         caret: Callback::new(move |offset| {
             let input = textarea_ref.get_untracked()?;
-            let layout = neighborhood.run(())?;
-            super::editor_geometry::layout_caret_rect(actions, &input, &layout, offset)
+            neighborhood
+                .run(())
+                .and_then(|layout| {
+                    super::editor_geometry::layout_caret_rect(actions, &input, &layout, offset)
+                })
+                .or_else(|| {
+                    super::editor_geometry::probe_caret_rect(
+                        actions,
+                        &input,
+                        offset,
+                        |rows, suffix| render_probe.run((rows.to_vec(), suffix)),
+                    )
+                })
         }),
         flush: Callback::new(move |()| {
             if generation.is_disposed() {
@@ -2141,18 +2164,19 @@ pub fn Editor(
                     root.query_selector(&format!(".editor-highlight .editor-source-line[data-line='{line}']"))
                 {
                     let row: web_sys::HtmlElement = row.unchecked_into();
+                    let gutter = window().get_computed_style(&textarea).ok().flatten().and_then(|style| style.get_property_value("padding-left").ok()).and_then(|padding| padding.trim_end_matches("px").parse::<f64>().ok()).unwrap_or(40.0);
                     let source_offset = openwebide_core::editor::utf16_to_byte(&source, start as usize);
                     let caret = caret_rect(&row, column)
                         .or_else(|| paint_request.get_untracked()?.caret.run(source_offset));
                     if let Some(caret) = caret {
                         textarea.set_scroll_top((textarea.scroll_top() + caret.top()
                             - textarea.get_bounding_client_rect().top() - 12.0).max(0.0));
+                        reveal_caret_column(&caret, &textarea, gutter);
                     } else {
                         textarea.set_scroll_top(f64::from(row.offset_top().saturating_sub(12)));
                     }
                     if let Some(Some(overlay)) = hl.try_get_untracked() {
                         sync_highlight_scroll(&textarea, &overlay);
-                        let gutter = window().get_computed_style(&textarea).ok().flatten().and_then(|style| style.get_property_value("padding-left").ok()).and_then(|padding| padding.trim_end_matches("px").parse::<f64>().ok()).unwrap_or(40.0);
                         reveal_match_column(&row, &textarea, column, gutter);
                         sync_highlight_scroll(&textarea, &overlay);
                     }

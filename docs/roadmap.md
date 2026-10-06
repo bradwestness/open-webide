@@ -116,10 +116,14 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   overscanned visual fragments. Temporary probes preserve styled source spans and
   validate every retained glyph after reshaping, falling back to complete rows if
   geometry changes. Both-mode contracts cover scrolling, native pointer offsets,
-  queued cursor movement and Find into omitted text. Unwrapped long rows still
-  paint complete source. Finish horizontal fragments and cache visual boundaries
-  so scrolling avoids repeated full-row temporary shaping, then further incremental
-  access: edits still materialize full Strings and shift
+  queued cursor movement and Find into omitted text. Long unwrapped LTR rows now
+  use horizontal source fragments with viewport-sized overscan, original tab
+  origins and scroll extents; source-point probes reveal omitted matches even
+  when a row exceeds movement limits. Bidirectional paragraphs and display breaks
+  retain complete paint. Finish bidirectional visual-run windows and cache source
+  eligibility/visual boundaries so scrolling avoids repeated scans and full-row
+  temporary shaping, then further incremental access: edits still materialize
+  full Strings and shift
   suffix coordinates. Native offset and line/column queries now use shared sparse
   Unicode checkpoints in long rows, including folded views; native/WASM benchmarks
   cover lookup and construction costs. Glyph preparation still scans within a long

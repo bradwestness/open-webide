@@ -8449,3 +8449,164 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = format!(
+            "{}needle-end\r\n{}\r\n",
+            "文😀e\u{301}\t words ".repeat(10_000),
+            "文😀e\u{301}\t words ".repeat(5000)
+        );
+        let original = source.clone();
+        let normalized: Vec<_> = source.replace("\r\n", "\n").encode_utf16().collect();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("horizontal.txt".into()));
+            state.workspace.content.set(source.clone());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        wait_until("horizontal fragment ready", || {
+            mounted
+                .root
+                .query_selector(".editor-source-line[data-paint-left]")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let width = input.scroll_width();
+        assert!(width > 100_000);
+        for x in [
+            10_000.0,
+            f64::from(width) / 2.0,
+            f64::from(width - input.client_width()) - 20.0,
+            0.0,
+        ] {
+            input.set_scroll_left(x);
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until(
+                "horizontal fragment follows viewport-sized intervals",
+                || {
+                    mounted
+                        .element(".editor-source-line")
+                        .get_attribute("data-paint-left")
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .is_some_and(|left| {
+                            left <= input.scroll_left() + 30.0
+                                && input.scroll_left() - left
+                                    < f64::from(input.client_width()) * 2.0 + 30.0
+                        })
+                },
+            )
+            .await;
+            let row = mounted.element(".editor-source-line");
+            let fragment = row
+                .query_selector(":scope > .editor-source-fragment")
+                .unwrap()
+                .unwrap();
+            let start: usize = fragment
+                .get_attribute("data-paint-start")
+                .unwrap()
+                .parse()
+                .unwrap();
+            let end: usize = fragment
+                .get_attribute("data-paint-end")
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(
+                fragment.text_content().unwrap(),
+                String::from_utf16(&normalized[start..end]).unwrap()
+            );
+            assert!(fragment.text_content().unwrap().len() < 16_384);
+            assert_eq!(input.scroll_width(), width);
+            assert_eq!(input.value(), original.replace("\r\n", "\n"));
+            let bounds = input.get_bounding_client_rect();
+            let hit = openwebide_frontend::viewport::editor_caret_from_point(
+                &input,
+                bounds.left() + 8.0,
+                bounds.top() + 20.0,
+            )
+            .unwrap() as usize;
+            assert!((start..end).contains(&hit));
+            if x > f64::from(width) * 0.75 {
+                assert_eq!(
+                    mounted
+                        .element(".editor-source-line[data-line='2']")
+                        .text_content()
+                        .as_deref(),
+                    Some("")
+                );
+            }
+            assert_eq!(
+                web_sys::window()
+                    .unwrap()
+                    .document()
+                    .unwrap()
+                    .query_selector_all(".editor-row-measure")
+                    .unwrap()
+                    .length(),
+                0
+            );
+        }
+        mounted.click("button[aria-label^='Find in file']");
+        settle().await;
+        let search: web_sys::HtmlInputElement =
+            mounted.element(".editor-find input").unchecked_into();
+        search.set_value("needle-end");
+        search
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        wait_until("find reveals omitted horizontal text", || {
+            input.scroll_left() > f64::from(width) - 1000.0
+                && mounted
+                    .element(".editor-source-fragment")
+                    .text_content()
+                    .is_some_and(|text| text.contains("needle-end"))
+        })
+        .await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        assert!(
+            mounted
+                .root
+                .query_selector("[role='alert']")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click("button[aria-label='Close find']");
+        let bidi = format!("{}א", "LTR words ".repeat(10_000));
+        mounted.state.workspace.content.set(bidi.clone());
+        wait_until(
+            "bidirectional paragraph keeps complete source paint",
+            || {
+                let row = mounted.element(".editor-source-line");
+                !row.has_attribute("data-paint-left")
+                    && row.text_content().as_deref() == Some(bidi.as_str())
+            },
+        )
+        .await;
+        mounted.state.workspace.content.set("short 🦀\r\n".into());
+        wait_until(
+            "short replacement discards the old horizontal interval",
+            || {
+                mounted
+                    .element(".editor-highlight-content")
+                    .text_content()
+                    .as_deref()
+                    == Some("short 🦀\n")
+            },
+        )
+        .await;
+        assert!(input.scroll_left().abs() < 0.5);
+    }
+}

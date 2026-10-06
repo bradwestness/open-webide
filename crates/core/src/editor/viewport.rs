@@ -6,6 +6,49 @@ pub const MAX_MEASURE_BYTES: usize = 64 * 1024;
 /// Give native input and visible paint a turn during cold preparation.
 pub const MAX_MEASURE_BATCHES_PER_FRAME: usize = 8;
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum RowPaintWindow {
+    Wrapped(EditorViewport),
+    Horizontal(Range<f64>),
+}
+
+/// Source-monotonic horizontal paint keeps complete paragraph rendering for
+/// bidirectional text and embedded display breaks. Geometry adapters validate
+/// retained glyphs, but must not binary-search a source order that can reverse.
+pub fn horizontal_paint_bounds(source: &str, scroll: f64, width: f64) -> Option<Range<f64>> {
+    use unicode_bidi::BidiClass;
+    if source.len() <= MAX_MEASURE_BYTES
+        || source.len() > super::MAX_EDITOR_BYTES
+        || !scroll.is_finite()
+        || !width.is_finite()
+        || !(1.0..=1_000_000.0).contains(&width)
+        || source.chars().any(|ch| {
+            matches!(
+                unicode_bidi::bidi_class(ch),
+                BidiClass::R
+                    | BidiClass::AL
+                    | BidiClass::AN
+                    | BidiClass::B
+                    | BidiClass::LRE
+                    | BidiClass::RLE
+                    | BidiClass::LRO
+                    | BidiClass::RLO
+                    | BidiClass::PDF
+                    | BidiClass::LRI
+                    | BidiClass::RLI
+                    | BidiClass::FSI
+                    | BidiClass::PDI
+            ) || matches!(ch, '\r' | '\n' | '\u{2028}')
+        })
+    {
+        return None;
+    }
+    // Repaint at viewport-sized boundaries, with a viewport of overscan on
+    // either side; pixel scrolling within the interval only translates paint.
+    let tile = (scroll.clamp(0.0, 1_000_000_000.0) / width).floor();
+    Some(((tile - 1.0) * width).max(0.0)..(tile + 2.0) * width)
+}
+
 /// A window inside an exactly measured wrapped logical line. Reject irregular
 /// heights rather than estimating where the browser placed its wrap boundaries.
 #[expect(
@@ -309,6 +352,31 @@ impl EditorViewport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn horizontal_windows_keep_unicode_and_tabs_and_reject_nonmonotonic_paragraphs() {
+        let body = "文😀e\u{301}\t abc ".repeat(10_000);
+        assert_eq!(
+            horizontal_paint_bounds(&body, 1000.0, 400.0),
+            Some(400.0..1600.0)
+        );
+        assert_eq!(
+            horizontal_paint_bounds(&body, 1100.0, 400.0),
+            Some(400.0..1600.0)
+        );
+        assert_eq!(
+            horizontal_paint_bounds(&body, -1.0, 400.0),
+            Some(0.0..800.0)
+        );
+        for suffix in [
+            "א", "ع", "\u{202e}", "\u{2066}", "\r", "\n", "\u{2028}", "\u{2029}",
+        ] {
+            assert!(horizontal_paint_bounds(&format!("{body}{suffix}"), 1000.0, 400.0).is_none());
+        }
+        for (scroll, width) in [(f64::NAN, 400.0), (0.0, 0.0), (0.0, f64::INFINITY)] {
+            assert!(horizontal_paint_bounds(&body, scroll, width).is_none());
+        }
+        assert!(horizontal_paint_bounds("short", 1000.0, 400.0).is_none());
+    }
     use super::*;
 
     #[test]

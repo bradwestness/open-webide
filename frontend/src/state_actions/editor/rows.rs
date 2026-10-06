@@ -78,6 +78,38 @@ fn paint_rows(paint: &EditorRowPaint) -> Option<Vec<PaintRow<'_>>> {
         .collect()
 }
 impl EditorActions {
+    pub fn paint_window(
+        self,
+        row: usize,
+        line_height: f64,
+        scroll: (f64, f64),
+        size: (f64, f64),
+    ) -> Option<openwebide_core::editor::RowPaintWindow> {
+        self.wrapped_paint_window(row, line_height, scroll.1, size.1)
+            .map(openwebide_core::editor::RowPaintWindow::Wrapped)
+            .or_else(|| {
+                self.horizontal_paint_bounds(row, scroll.0, size.0)
+                    .map(openwebide_core::editor::RowPaintWindow::Horizontal)
+            })
+    }
+    pub fn horizontal_paint_bounds(
+        self,
+        row: usize,
+        scroll: f64,
+        width: f64,
+    ) -> Option<std::ops::Range<f64>> {
+        if self.preferences().word_wrap {
+            return None;
+        }
+        let projection = self.projection()?;
+        let line = projection.lines().get(row)?;
+        let raw = &projection.text()[line.visible_start..line.visible_start + line.source.len()];
+        let body = raw
+            .strip_suffix("\r\n")
+            .or_else(|| raw.strip_suffix('\n'))
+            .unwrap_or(raw);
+        openwebide_core::editor::horizontal_paint_bounds(body, scroll, width)
+    }
     /// Shared selection of visual paint windows; DOM adapters supply exact row
     /// geometry and source boundaries, independent of the workspace transport.
     pub fn wrapped_paint_window(

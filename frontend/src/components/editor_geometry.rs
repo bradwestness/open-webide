@@ -98,6 +98,21 @@ impl Glyphs {
     fn row(&mut self, index: usize, metrics: &VisualMetrics) -> Option<usize> {
         measured_row(((self.rect(index)?.top() - metrics.top) / metrics.line_height).floor())
     }
+    fn first_at_column(&mut self, minimum: f64, trailing: bool) -> Option<usize> {
+        let mut first = 0;
+        let mut last = self.offsets.len().checked_sub(1)?;
+        while first < last {
+            let middle = first + (last - first) / 2;
+            let rect = self.rect(middle)?;
+            let column = if trailing { rect.right() } else { rect.left() };
+            if column < minimum {
+                first = middle + 1;
+            } else {
+                last = middle;
+            }
+        }
+        Some(first)
+    }
     // Visual rows increase in source order even when a row contains bidi text.
     fn first_on_row(&mut self, minimum: usize, metrics: &VisualMetrics) -> Option<usize> {
         let mut start = 0;
@@ -121,36 +136,72 @@ impl Glyphs {
 fn window_paint_row(
     row: &web_sys::Element,
     body: &str,
-    window: &openwebide_core::editor::EditorViewport,
+    window: &openwebide_core::editor::RowPaintWindow,
     line_height: f64,
 ) -> Option<()> {
     let text = row.text_content()?;
     if text.strip_suffix('\n').unwrap_or(&text) != body.replace('\r', "\n") {
         return None;
     }
+    use openwebide_core::editor::RowPaintWindow;
     let bounds = row.get_bounding_client_rect();
-    if (bounds.height() - window.height).abs() > 0.5 {
-        return None;
-    }
-    let metrics = VisualMetrics {
-        identity: String::new(),
-        left: bounds.left(),
-        top: bounds.top(),
-        line_height,
-        caret_height: line_height,
-        caret_inset: 0.0,
-        rows: measured_row((window.height / line_height).round())?,
-    };
     let mut glyphs = Glyphs::new(row, body)?;
-    let first = glyphs.first_on_row(window.rows.start, &metrics)?;
-    let last = glyphs.first_on_row(window.rows.end, &metrics)?;
+    let (first, last, top, height, horizontal) = match window {
+        RowPaintWindow::Wrapped(window) => {
+            if (bounds.height() - window.height).abs() > 0.5 {
+                return None;
+            }
+            let metrics = VisualMetrics {
+                identity: String::new(),
+                left: bounds.left(),
+                top: bounds.top(),
+                line_height,
+                caret_height: line_height,
+                caret_inset: 0.0,
+                rows: measured_row((window.height / line_height).round())?,
+            };
+            (
+                glyphs.first_on_row(window.rows.start, &metrics)?,
+                glyphs.first_on_row(window.rows.end, &metrics)?,
+                window.top,
+                window.height,
+                false,
+            )
+        }
+        RowPaintWindow::Horizontal(columns) => {
+            if (bounds.height() - line_height).abs() > 0.5 {
+                return None;
+            }
+            (
+                glyphs.first_at_column(bounds.left() + columns.start, true)?,
+                glyphs.first_at_column(bounds.left() + columns.end, false)?,
+                0.0,
+                bounds.height(),
+                true,
+            )
+        }
+    };
+    if horizontal && first == last {
+        let original_style = row.get_attribute("style").unwrap_or_default();
+        row.set_attribute(
+            "style",
+            &format!(
+                "{original_style};height:{height}px;width:{}px",
+                bounds.width()
+            ),
+        )
+        .ok()?;
+        row.set_inner_html("");
+        row.set_attribute("data-paint-top", "0").ok()?;
+        return Some(());
+    }
     if first == last || last - first > MAX_VISUAL_CARETS {
         return None;
     }
     let byte_start = glyphs.offsets[first].0;
     let byte_end = glyphs.offsets[last].0;
     let native_start = glyphs.offsets[first].1;
-    let native_end = if window.rows.end == metrics.rows {
+    let native_end = if last + 1 == glyphs.offsets.len() {
         row.get_attribute("data-paint-length")?.parse().ok()?
     } else {
         glyphs.offsets[last].1
@@ -174,12 +225,22 @@ fn window_paint_row(
     fragment
         .set_attribute(
             "style",
+            &format!("position:absolute;left:0;right:0;top:{top}px;display:block"),
+        )
+        .ok()?;
+    if horizontal {
+        let gap = document().create_element("span").ok()?;
+        gap.set_attribute("aria-hidden", "true").ok()?;
+        gap.set_attribute(
+            "style",
             &format!(
-                "position:absolute;left:0;right:0;top:{}px;display:block",
-                window.top
+                "display:inline-block;width:{}px",
+                expected.first()?.left() - bounds.left()
             ),
         )
         .ok()?;
+        fragment.append_child(&gap).ok()?;
+    }
     fragment
         .append_child(&range.clone_contents().ok()?.into())
         .ok()?;
@@ -187,7 +248,10 @@ fn window_paint_row(
     let original_style = row.get_attribute("style").unwrap_or_default();
     row.set_attribute(
         "style",
-        &format!("{original_style};height:{}px", window.height),
+        &format!(
+            "{original_style};height:{height}px;width:{}px",
+            bounds.width()
+        ),
     )
     .ok()?;
     row.set_inner_html("");
@@ -210,7 +274,13 @@ fn window_paint_row(
         row.set_inner_html(&original);
         let _ = row.set_attribute("style", &original_style);
     } else {
-        let _ = row.set_attribute("data-paint-top", &window.top.to_string());
+        let _ = row.set_attribute("data-paint-top", &top.to_string());
+        if horizontal {
+            let _ = row.set_attribute(
+                "data-paint-left",
+                &(expected.first()?.left() - bounds.left()).to_string(),
+            );
+        }
     }
     valid
 }
@@ -221,7 +291,7 @@ pub(super) fn window_paint(
     actions: EditorActions,
     input: &web_sys::HtmlTextAreaElement,
     html: &str,
-    windows: &[(usize, openwebide_core::editor::EditorViewport)],
+    windows: &[(usize, openwebide_core::editor::RowPaintWindow)],
 ) -> Option<String> {
     if windows.is_empty() {
         return None;
@@ -230,8 +300,10 @@ pub(super) fn window_paint(
         return None;
     }
     let identity = super::editor_rows::metrics_identity(input)?;
-    let measured = actions.measured_rows()?;
-    if measured.metrics != identity {
+    if actions
+        .measured_rows()
+        .is_some_and(|measured| measured.metrics != identity)
+    {
         return None;
     }
     let projection = actions.projection()?;
@@ -245,6 +317,21 @@ pub(super) fn window_paint(
         .ok()?;
     let source = actions.source();
     let (_probe, paint) = super::editor_rows::styled_row_probe(input).ok()?;
+    if windows.iter().any(|(_, window)| {
+        matches!(
+            window,
+            openwebide_core::editor::RowPaintWindow::Horizontal(_)
+        )
+    }) {
+        paint
+            .dyn_ref::<web_sys::HtmlElement>()?
+            .style()
+            .set_property(
+                "width",
+                &format!("{}px", input.scroll_width() + input.offset_left()),
+            )
+            .ok()?;
+    }
     paint.set_inner_html(html);
     let mut changed = false;
     for (index, window) in windows {
@@ -683,6 +770,61 @@ pub(super) fn layout_caret_rect(
         caret_top(actions, input, &metrics, caret.row)?,
         0.0,
         metrics.caret_height,
+    )
+    .ok()
+}
+
+/// A single source-point measurement also works when an unwrapped visual row
+/// contains more glyphs than a movement neighborhood can admit.
+pub(super) fn probe_caret_rect(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+    offset: usize,
+    render: impl Fn(&[usize], bool) -> String,
+) -> Option<web_sys::DomRect> {
+    if !current_editor_target(actions, input) {
+        return None;
+    }
+    let identity = super::editor_rows::metrics_identity(input)?;
+    let revision = actions.view_revision();
+    let projection = actions.projection()?;
+    let visible = projection.visible_offset(offset).ok()?;
+    let index = projection
+        .lines()
+        .partition_point(|line| line.visible_start <= visible)
+        .checked_sub(1)?;
+    let line = &projection.lines()[index];
+    let actual = input
+        .parent_element()?
+        .query_selector(&format!(
+            ".editor-source-line[data-line='{}']",
+            line.source_line + 1
+        ))
+        .ok()??
+        .get_bounding_client_rect();
+    let (_probe, paint) = super::editor_rows::styled_row_probe(input).ok()?;
+    paint.set_inner_html(&render(
+        &[line.source_line],
+        index + 1 < projection.lines().len(),
+    ));
+    let row = paint.query_selector(".editor-source-line").ok()??;
+    let column = projection
+        .byte_to_textarea(visible)
+        .ok()?
+        .checked_sub(line.textarea_start)?;
+    let caret = super::editor::caret_rect(&row, u32::try_from(column).ok()?)?;
+    let bounds = row.get_bounding_client_rect();
+    if actions.view_revision() != revision
+        || !current_editor_target(actions, input)
+        || super::editor_rows::metrics_identity(input).as_ref() != Some(&identity)
+    {
+        return None;
+    }
+    web_sys::DomRect::new_with_x_and_y_and_width_and_height(
+        actual.left() + caret.left() - bounds.left(),
+        actual.top() + caret.top() - bounds.top(),
+        caret.width(),
+        caret.height(),
     )
     .ok()
 }

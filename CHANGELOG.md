@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Window long unwrapped editor rows horizontally in both workspace modes, retaining full scroll extents, Unicode coordinates and original tab stops. Share fragment cloning and glyph validation with wrapped paint; use a single-caret probe to reveal omitted Find/navigation targets beyond movement limits, and retain complete bidirectional paragraph rendering. Repeated shaping and bidirectional windows remain in progress.
+
 - Paint long wrapped editor lines as bounded visual fragments while retaining exact logical heights and complete input source in both workspace modes. Validate glyph positions after reshaping, preserve native pointer/selection mapping, and reveal omitted text through measured Find/navigation geometry. Full-row temporary shaping and horizontal long-line windows remain in progress.
 
 - Map editor pointer hits through validated per-row paint coverage and projected native offsets in both workspace modes. Reject stale paint before pointer selection, preserve Unicode/CRLF and folded coordinates, and validate DOM text lengths without copying entire painted strings.
