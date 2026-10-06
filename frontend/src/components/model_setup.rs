@@ -446,7 +446,7 @@ pub(crate) fn ModelSettingsEditor(
 
             <FormSection title="Context and output" class="ui-form-grid">
             <TextSetting label="Context tokens" value=context input_type="number" placeholder="Detect from server" />
-            <TextSetting label="Max output tokens" value=output input_type="number" placeholder="Model default" />
+            <TextSetting label="Max output tokens" value=output input_type="number" placeholder="Remaining context" />
             </FormSection>
             <FormSection title="Sampling" description="Blank values use the server default." class="ui-form-grid">
             {sampling.into_iter().map(|(name, value)| view! { <TextSetting label=name value=value placeholder="Model default" /> }).collect::<Vec<_>>()}

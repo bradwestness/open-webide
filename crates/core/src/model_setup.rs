@@ -21,6 +21,7 @@ pub struct ModelDefaults {
 #[serde(default)]
 pub struct ModelSettings {
     pub context_limit: Option<usize>,
+    /// None allows the remaining context capacity for each chat/agent completion.
     pub max_output_tokens: Option<usize>,
     pub sampling: BTreeMap<String, serde_json::Value>,
     pub vision: Option<bool>,

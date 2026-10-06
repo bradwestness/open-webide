@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Default chat and agent replies to the remaining model context capacity, recalculated after tool results and compaction in both workspace modes. Honor explicit output limits, retain bounded summary generation and use the provider default when context capacity is unknown.
+
 - Window long unwrapped editor rows horizontally in both workspace modes, retaining full scroll extents, Unicode coordinates and original tab stops. Share fragment cloning and glyph validation with wrapped paint; use a single-caret probe to reveal omitted Find/navigation targets beyond movement limits, and retain complete bidirectional paragraph rendering. Repeated shaping and bidirectional windows remain in progress.
 
 - Paint long wrapped editor lines as bounded visual fragments while retaining exact logical heights and complete input source in both workspace modes. Validate glyph positions after reshaping, preserve native pointer/selection mapping, and reveal omitted text through measured Find/navigation geometry. Full-row temporary shaping and horizontal long-line windows remain in progress.

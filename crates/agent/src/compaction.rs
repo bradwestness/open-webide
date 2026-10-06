@@ -26,9 +26,6 @@ pub async fn prepare<P: LlmProvider, S: CompactionSource>(
     request: &mut ChatRequest,
 ) -> Result<Option<Compaction>, String> {
     let threshold = request.model_settings.auto_compact_threshold.unwrap_or(85);
-    if threshold == 0 {
-        return Ok(None);
-    }
     let limit = match request.model_settings.context_limit {
         Some(limit) => limit,
         None => {
@@ -52,9 +49,11 @@ pub async fn prepare<P: LlmProvider, S: CompactionSource>(
     if reserve >= limit {
         return Err("The response budget leaves no room for conversation context. Reduce the model output limit.".into());
     }
-    // Enforce the reserve on the actual reply as well as the input calculation.
-    request.model_settings.max_output_tokens = Some(reserve);
     let tokens = request_tokens(provider, source, request).await;
+    if threshold == 0 {
+        budget_reply(request, limit, tokens)?;
+        return Ok(None);
+    }
     let summary_reserve = (limit / 8).clamp(1, 1024);
     let ceiling = (limit.saturating_mul(usize::from(threshold)) / 100)
         .min(limit.saturating_sub(reserve))
@@ -64,6 +63,7 @@ pub async fn prepare<P: LlmProvider, S: CompactionSource>(
                 .saturating_sub(INSTRUCTIONS.len().div_ceil(3) + 64),
         );
     if tokens < ceiling {
+        budget_reply(request, limit, tokens)?;
         return Ok(None);
     }
     if !tool_pairs_complete(&request.messages) {
@@ -147,7 +147,8 @@ pub async fn prepare<P: LlmProvider, S: CompactionSource>(
                     failure = "The summary still exceeds the context budget".into();
                     continue;
                 }
-                request.messages = compacted.messages;
+                budget_reply(&mut compacted, limit, after)?;
+                *request = compacted;
                 return Ok(Some(compaction));
             }
             Err(error) => failure = error,
@@ -156,6 +157,21 @@ pub async fn prepare<P: LlmProvider, S: CompactionSource>(
     Err(format!(
         "Could not compact conversation: {failure}. Original history has been retained."
     ))
+}
+
+/// Limit only this completion; callers with a continuing request restore the profile limit.
+fn budget_reply(request: &mut ChatRequest, limit: usize, tokens: usize) -> Result<(), String> {
+    let available = limit.saturating_sub(tokens);
+    if available == 0 {
+        return Err("Conversation input fills the model context. Compact the conversation or increase the context limit.".into());
+    }
+    request.model_settings.max_output_tokens = Some(
+        request
+            .model_settings
+            .max_output_tokens
+            .map_or(available, |explicit| explicit.min(available)),
+    );
+    Ok(())
 }
 
 fn tool_pairs_complete(messages: &[ChatMessage]) -> bool {

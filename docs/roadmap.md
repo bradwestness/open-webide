@@ -32,7 +32,9 @@ SSH config. Make it work there without private keys ever entering the container:
 ### Remaining manual verification
 
 The model setup and code hardening follow-ups are implemented. Native and browser
-contracts cover both modes, failures, stale results and fallbacks. Docker checks
+contracts cover both modes, failures, stale results and fallbacks. Chat and agent
+reply budgets now use remaining context capacity per request unless explicitly
+limited; compaction keeps a separate planning reserve. Docker checks
 cover authenticated WebSocket PTYs, real-model streaming, remote file writes,
 host-owned Git workspaces, supervisor shutdown and bridge-disabled SSE fallback.
 [Reload recovery](reload-recovery.md) covers mid-run and multi-window checks, plus

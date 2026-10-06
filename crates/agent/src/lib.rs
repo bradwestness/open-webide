@@ -389,6 +389,7 @@ where
             executor: std::sync::Arc::new(executor),
             cancel,
             gate,
+            output_limit: request.model_settings.max_output_tokens,
             request,
             config,
             anchor_id,
@@ -454,6 +455,8 @@ where
                                 state,
                             ));
                         }
+                        // Restore the profile setting before budgeting this new completion.
+                        state.request.model_settings.max_output_tokens = state.output_limit;
                         let compacted = {
                             let prepare = Box::pin(compaction::prepare(
                                 &state.provider,
@@ -1137,6 +1140,7 @@ struct LoopState<P, T, C, G, S> {
     cancel: C,
     gate: G,
     request: ChatRequest,
+    output_limit: Option<usize>,
     config: AgentConfig,
     /// Namespaces this run's step ids; see [`run`].
     anchor_id: i64,
@@ -3297,6 +3301,12 @@ mod tests {
                 .iter()
                 .all(|message| message.tool_calls.is_none() && message.tool_call_id.is_none())
         );
+        let mut compacted_input = requests[1].clone();
+        compacted_input.model_settings.max_output_tokens = None;
+        assert_eq!(
+            requests[1].model_settings.max_output_tokens,
+            Some(2048 - compaction::conservative_tokens(&compacted_input))
+        );
         assert!(summaries.lock().unwrap().len() > 1);
     }
 
@@ -3324,7 +3334,7 @@ mod tests {
                 let calls = source.requests.lock().unwrap();
                 match scenario {
                     "disabled" => {
-                        assert!(result.unwrap().is_none());
+                        assert!(result.unwrap_err().contains("fills the model context"));
                         assert!(calls.is_empty());
                         assert_eq!(request.messages, originals);
                     }
@@ -3343,6 +3353,100 @@ mod tests {
             }
         });
     }
+    #[test]
+    fn reply_capacity_tracks_each_tool_turn_and_respects_profile_limits() {
+        for explicit in [None, Some(128)] {
+            let (provider, requests) = FakeProvider::new(vec![
+                Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                    "read",
+                    "read_file",
+                    "{}",
+                )]))),
+                Ok(no_usage(ChatResponse::Text("done".into()))),
+            ]);
+            let mut input = request();
+            input.model_settings.context_limit = Some(81920);
+            input.model_settings.max_output_tokens = explicit;
+            input.model_settings.auto_compact_threshold = Some(0);
+            let events = collect(run(
+                provider,
+                FakeExecutor::new(vec![outcome(&"file contents ".repeat(100), "read")]),
+                input,
+                AgentConfig::default(),
+                NoopCancel,
+                NoopGate,
+                7,
+            ));
+            assert!(matches!(events.last(), Some(AgentEvent::FinalText(text)) if text == "done"));
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            for sent in requests.iter() {
+                let mut input = sent.clone();
+                input.model_settings.max_output_tokens = explicit;
+                let available = 81920 - compaction::conservative_tokens(&input);
+                assert_eq!(
+                    sent.model_settings.max_output_tokens,
+                    Some(explicit.map_or(available, |cap| cap.min(available)))
+                );
+            }
+            if explicit.is_none() {
+                assert!(requests[0].model_settings.max_output_tokens.unwrap() > 2048);
+                assert!(
+                    requests[1].model_settings.max_output_tokens
+                        < requests[0].model_settings.max_output_tokens
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reply_capacity_uses_host_tokens_or_shared_estimate_and_handles_unknown_context() {
+        struct CountedSource;
+        impl compaction::CompactionSource for CountedSource {
+            fn available(&self) -> bool {
+                true
+            }
+            async fn context_limit(&self, _: &ChatRequest) -> Option<usize> {
+                Some(81920)
+            }
+            async fn tokens(&self, _: &ChatRequest) -> Option<usize> {
+                Some(1234)
+            }
+        }
+        futures::executor::block_on(async {
+            let (provider, _) = FakeProvider::new(vec![]);
+            for disabled in [false, true] {
+                let mut input = request();
+                if disabled {
+                    input.model_settings.auto_compact_threshold = Some(0);
+                }
+                assert!(
+                    compaction::prepare(&provider, &CountedSource, &mut input)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(input.model_settings.max_output_tokens, Some(81920 - 1234));
+            }
+            let mut unknown = request();
+            assert!(
+                compaction::prepare(&provider, &compaction::NoopCompactionSource, &mut unknown)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(unknown.model_settings.max_output_tokens, None);
+            let mut bounded = request();
+            bounded.model_settings.context_limit = Some(81920);
+            bounded.model_settings.max_output_tokens = Some(81000);
+            bounded.model_settings.auto_compact_threshold = Some(0);
+            compaction::prepare(&provider, &CountedSource, &mut bounded)
+                .await
+                .unwrap();
+            assert_eq!(bounded.model_settings.max_output_tokens, Some(81920 - 1234));
+        });
+    }
+
     #[test]
     fn response_reserve_compacts_before_threshold_and_incomplete_pairs_fail_safely() {
         futures::executor::block_on(async {

@@ -27,7 +27,7 @@ UI actions, slash commands, and background refresh use the same feature entry po
 | Chat and agent runs | `ProjectRuns`, agent `session::plan`, `chat_events`, `events`, agent loop and approval policy | Browser, Spin and bridge persistence, cancellation, permission and HTTP adapters |
 | Model setup | Frontend `model_setup` connect/discover/apply facade, core detection default merging and shared provider probes | Backend server/model/configuration primitives, execution-host discovery adapters |
 | Model requests | `ModelRuntime::apply_to`, provider wire messages and stream state machines | Protocol parsers and browser/Spin/native HTTP clients |
-| Context compaction | Agent `compaction::prepare`, bounded rolling summaries, output reserves and persisted history reconstruction | `CompactionSource` model runtime/completion/token primitives for browser, Spin and bridge |
+| Context compaction | Agent `compaction::prepare`, bounded rolling summaries, separate compaction reserves, per-request remaining-context reply budgets and persisted history reconstruction | `CompactionSource` model runtime/completion/token primitives for browser, Spin and bridge |
 | History recovery | Core interrupted-run validation and tool-history reconstruction | Persisted messages and tool results, UI presentation mapping |
 
 Mode checks belong to selecting these adapters and browser folder permissions. New
