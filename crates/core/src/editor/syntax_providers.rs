@@ -33,7 +33,10 @@ fn built_in_context(node: tree_sitter::Node<'_>) -> Option<SyntaxContextKind> {
         | "verbatim_string_literal"
         | "raw_string"
         | "ansi_c_string"
-        | "translated_string" => Some(SyntaxContextKind::String),
+        | "translated_string"
+        | "heredoc"
+        | "heredoc_body"
+        | "nowdoc" => Some(SyntaxContextKind::String),
         "template_string" => Some(SyntaxContextKind::Template),
         "jsx_text" | "text" | "html_character_reference" | "entity" => {
             Some(SyntaxContextKind::Text)
@@ -46,9 +49,26 @@ fn built_in_context(node: tree_sitter::Node<'_>) -> Option<SyntaxContextKind> {
         | "interpolation"
         | "string_interpolation"
         | "command_substitution"
-        | "process_substitution" => Some(SyntaxContextKind::Interpolation),
+        | "process_substitution"
+        | "arithmetic_expansion"
+        | "simple_expansion"
+        | "expansion" => Some(SyntaxContextKind::Interpolation),
         _ => None,
     }
+}
+
+// PHP represents interpolated expressions as direct string/body children rather
+// than a dedicated interpolation node. Keep delimiters and plain text opaque.
+fn php_context(node: tree_sitter::Node<'_>) -> Option<SyntaxContextKind> {
+    if (node.is_named() || matches!(node.kind(), "{" | "}"))
+        && node
+            .parent()
+            .is_some_and(|parent| matches!(parent.kind(), "encapsed_string" | "heredoc_body"))
+        && !matches!(node.kind(), "string_content" | "escape_sequence")
+    {
+        return Some(SyntaxContextKind::Interpolation);
+    }
+    built_in_context(node)
 }
 
 /// Custom providers use the same incremental update, limits, cancellation and fold policy.
@@ -264,7 +284,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
     },
     SyntaxProvider {
         language: Language::Php,
-        context: Some(built_in_context),
+        context: Some(php_context),
         highlight: Some(built_in_highlight),
         injection: None,
         grammar: || tree_sitter_php::LANGUAGE_PHP.into(),

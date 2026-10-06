@@ -139,9 +139,12 @@ Inline/Split diffs, recovery reviews, Git previews and chat diff previews parse
 each complete source version with the shared providers, then intersect syntax
 colors with word-change boundaries. Source line numbers remain independent of
 alignment gaps; CRLF terminators are excluded while a final bare CR is preserved.
-Richer literal/provider classifications remain pending.
+PHP heredocs/nowdocs and shell heredocs preserve literal contents. PHP interpolated
+expressions (including their braces), shell command/parameter/arithmetic substitutions,
+Python f-strings and C# interpolation expose code while keeping nested literals
+protected, including through enclosing string wrappers.
 Files over 2 MiB or 65,536 bracket tokens fall back to ordinary indentation and
-typing. Richer highlighting and large-file benchmarks stay on the roadmap.
+typing. Large-file benchmarks stay on the roadmap.
 
 The edit view retains each file’s caret, selection direction and horizontal/vertical
 scroll position within its project while the app is open, including when switching
@@ -176,8 +179,7 @@ interpolation also works during incomplete typing. Contexts verify their exact
 source before a command can mutate history. Custom provider classifiers use the
 same traversal, limits and fallback policy.
 
-Richer literal/provider classifications and
-worker/viewport rendering remain roadmap work. Edit paint retains the same
+Worker/viewport rendering remains roadmap work. Edit paint retains the same
 10,000-byte plain-line fallback as the lexical renderer and falls back after
 cancelled, oversized or unavailable analysis.
 

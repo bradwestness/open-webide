@@ -9,12 +9,14 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Protect PHP heredoc/nowdoc and shell heredoc text in shared editing and syntax paint. Expose PHP interpolated expressions and their braces, shell substitutions and arithmetic expansions as code; retain nested literal protection through enclosing string wrappers, Unicode/CRLF and incremental updates in both modes.
+
 - Queue wrapped cursor movement while syntax paint is pending, preserving arrow order and Shift selections. Flush through the shared paint primitive before typing, editing, IME and clipboard actions; cancel stale file/account/projection requests and bound retries in both modes.
 
 - Move multiple cursors by measured visual rows when word wrap is enabled, retaining horizontal position across short rows and soft-wrap affinity in the shared selection overlay. Skip hidden folds, preserve Unicode/CRLF and selection direction, and reject stale measurements atomically in both modes. Larger-file viewport preparation remains a follow-up.
 - Fix parser-disabled diff highlighting lint failures in backend and bridge builds by using the lexical fallback directly.
 - Share full-document grammar and lexical paint across Inline/Split diffs, Git and recovery reviews, and chat diff previews. Combine syntax colors with word-change highlights, preserve Unicode and line-ending notes, and keep original line coordinates through alignment gaps in both modes.
-- Add grammar-aware Edit highlighting through the cached shared editor facade and extensible provider selectors. Paint functions/types, HTML tags and CSS properties, preserve multiline literals/comments, and color interpolation and embedded script/style code independently. Preserve source text and CRLF overlay alignment in both modes; richer classifications remain follow-ups.
+- Add grammar-aware Edit highlighting through the cached shared editor facade and extensible provider selectors. Paint functions/types, HTML tags and CSS properties, preserve multiline literals/comments, and color interpolation and embedded script/style code independently. Preserve source text and CRLF overlay alignment in both modes.
 
 - Use parser contexts for structural selection expansion and bracket navigation. Expand through named syntax nodes, expressions, blocks and functions while preserving selection direction and shrink history. Match interpolation code and embedded-language brackets, reject stale source data, and share the editor facade and bounded fallbacks in both modes.
 

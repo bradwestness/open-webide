@@ -82,7 +82,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   classifications, literals/comments, template interpolation and embedded bodies.
   Inline/Split diffs, recovery reviews, Git previews and chat diff previews now
   share full-document syntax paint while retaining word-change highlights.
-  Finish richer literal/provider classifications. Reindent preserves
+  PHP heredoc/nowdoc and shell heredoc contexts now protect text while exposing
+  executable interpolation, including PHP braces and nested shell string wrappers.
+  Shared contracts also cover Python and C# interpolation and nested literals.
+  Reindent preserves
   existing Python block depth; language formatting remains in Code intelligence.
 
 - **Selections and files:** the shared document now normalizes overlapping selections,
@@ -101,7 +104,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   pixel goals and soft-wrap caret affinity, skipping folds and rejecting stale
   source/projection measurements. Pending-paint motion now queues in order and
   flushes before edits, IME and clipboard actions, with bounded retries and stale
-  account/file/projection guards. Finish viewport preparation for large wrapped lines and real-device input/clipboard verification
+  account/file/projection guards. Finish viewport preparation for large wrapped
+  lines and real-device input/clipboard verification
   for multiple cursors. File navigation now
   retains independent dirty buffers, history, caret and scroll state in memory,
   with protected reads and filesystem mutation guards. File tabs share selected-tab

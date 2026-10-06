@@ -392,8 +392,10 @@ fn collect_contexts(
                 ) {
                     contexts
                         .holes
-                        .push((owner.start_byte()..owner.end_byte(), range));
-                    break;
+                        .push((owner.start_byte()..owner.end_byte(), range.clone()));
+                    // Wrappers such as translated shell strings and PHP heredocs
+                    // may protect the same interpolation through multiple owners.
+                    // Remove it from every enclosing literal, retaining inner literals.
                 }
                 parent = owner.parent();
             }
@@ -1221,6 +1223,71 @@ mod tests {
                         && source.is_char_boundary(range.end)
                 }),
                 "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_contexts_protect_text_and_expose_executable_interpolation() {
+        for &(path, source, literal, code) in super::super::syntax_contracts::LITERAL_CASES {
+            let mut syntax =
+                SyntaxDocument::new(crate::highlight::language_from_path(path)).unwrap();
+            syntax.update(source, || true);
+            let structure = syntax.structure().unwrap();
+            assert!(
+                !structure.is_code(source.find(literal).unwrap()),
+                "{path} {source}: {}",
+                syntax.tree.as_ref().unwrap().root_node().to_sexp()
+            );
+            if let Some(code) = code {
+                assert!(
+                    structure.is_code(source.find(code).unwrap()),
+                    "{path} {source}: {}",
+                    syntax.tree.as_ref().unwrap().root_node().to_sexp()
+                );
+            }
+            if let Some(inner) = source.find("inner") {
+                assert!(!structure.is_code(inner), "nested literal: {path} {source}");
+            }
+            if path.ends_with("php") && code.is_some() {
+                let open = source.find("{$").unwrap();
+                let close = source[open..].find('}').unwrap() + open;
+                assert_eq!(
+                    super::super::matching_bracket_with_context(source, &structure, open),
+                    Some((open, close)),
+                    "PHP interpolation delimiters: {source}"
+                );
+            }
+            let revised = source.replace("文😀", "😀文 changed").replace('\n', "\r\n");
+            assert_eq!(
+                syntax.update(&revised, || true),
+                SyntaxStatus::Ready { incremental: true }
+            );
+            let mut fresh =
+                SyntaxDocument::new(crate::highlight::language_from_path(path)).unwrap();
+            fresh.update(&revised, || true);
+            assert_eq!(
+                syntax.structure().unwrap().protected,
+                fresh.structure().unwrap().protected
+            );
+            let painted = syntax.highlight_lines().unwrap();
+            assert_eq!(
+                painted
+                    .iter()
+                    .map(|line| line
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect::<String>())
+                    .collect::<Vec<_>>(),
+                revised.split('\n').collect::<Vec<_>>()
+            );
+            assert!(
+                painted
+                    .iter()
+                    .flatten()
+                    .any(|token| token.kind == crate::highlight::TokenKind::String
+                        && token.text.contains(literal)),
+                "literal paint: {path} {revised}"
             );
         }
     }

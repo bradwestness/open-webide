@@ -6322,3 +6322,58 @@ async fn queued_motion_cannot_cross_accounts_files_or_newer_tickets_in_both_mode
         assert!(!mounted.state.workspace.dirty.get_untracked());
     }
 }
+
+#[wasm_bindgen_test]
+async fn literal_contexts_and_paint_preserve_heredocs_and_nested_interpolation_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::syntax_contracts::LITERAL_CASES};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        for &(path, source, literal, code) in LITERAL_CASES {
+            let source = source.replace('\n', "\r\n");
+            mounted.state.workspace.open_file.set(Some(path.into()));
+            mounted.state.workspace.content.set(source.clone());
+            let structure = actions.syntax_structure(|| true).unwrap();
+            assert!(
+                !structure.is_code(source.find(literal).unwrap()),
+                "{mode:?} {path}"
+            );
+            if let Some(code) = code {
+                assert!(
+                    structure.is_code(source.find(code).unwrap()),
+                    "{mode:?} {path}"
+                );
+            }
+            if let Some(inner) = source.find("inner") {
+                assert!(!structure.is_code(inner), "{mode:?} {path}");
+            }
+            wait_until("literal paint", || {
+                let Ok(Some(paint)) = mounted.root.query_selector(".editor-highlight-content")
+                else {
+                    return false;
+                };
+                paint
+                    .text_content()
+                    .is_some_and(|text| text == source.replace("\r\n", "\n"))
+            })
+            .await;
+            let tokens = mounted.root.query_selector_all(".tok-string").unwrap();
+            assert!(
+                (0..tokens.length()).any(|index| tokens
+                    .item(index)
+                    .unwrap()
+                    .text_content()
+                    .is_some_and(|text| text.contains(literal))),
+                "literal paint: {mode:?} {path} {source}"
+            );
+        }
+    }
+}

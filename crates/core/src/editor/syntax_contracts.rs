@@ -123,3 +123,61 @@ pub const LANGUAGE_CASES: &[(&str, &str, FoldRange)] = &[
         },
     ),
 ];
+
+/// Literal text and executable interpolation markers for shared native/browser contracts.
+pub const LITERAL_CASES: &[(&str, &str, &str, Option<&str>)] = &[
+    (
+        "literal.php",
+        "<?php $s = <<<TEXT\n文😀 literal {\n{$user->name}\nTEXT;\n",
+        "literal",
+        Some("user"),
+    ),
+    (
+        "literal.php",
+        "<?php $s = <<<'TEXT'\n文😀 literal {$user->name}\nTEXT;\n",
+        "user",
+        None,
+    ),
+    (
+        "literal.php",
+        "<?php $s = \"文😀 literal {$items[call()]} tail\";",
+        "literal",
+        Some("call"),
+    ),
+    (
+        "literal.sh",
+        "cat <<TEXT\n文😀 literal { $(printf 'inner') }\nTEXT\n",
+        "literal",
+        Some("printf"),
+    ),
+    (
+        "literal.sh",
+        "cat <<'TEXT'\n文😀 literal { $(printf 'inner') }\nTEXT\n",
+        "printf",
+        None,
+    ),
+    (
+        "literal.sh",
+        "echo $\"文😀 literal $(printf 'inner') ${value} tail\"",
+        "literal",
+        Some("printf"),
+    ),
+    (
+        "literal.sh",
+        "echo \"文😀 literal $((1 + value)) tail\"",
+        "literal",
+        Some("value"),
+    ),
+    (
+        "literal.py",
+        "s = f\"文😀 literal {call('inner')} tail\"",
+        "literal",
+        Some("call"),
+    ),
+    (
+        "literal.cs",
+        "class C { string s = $\"文😀 literal {Call(\"inner\")} tail\"; }",
+        "literal",
+        Some("Call"),
+    ),
+];
