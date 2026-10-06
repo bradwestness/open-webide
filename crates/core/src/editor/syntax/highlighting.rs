@@ -8,6 +8,13 @@ impl SyntaxDocument {
     /// None requests the ordinary bounded lexical fallback after failed analysis.
     pub fn highlight_lines(&self) -> Option<Vec<Vec<Token>>> {
         let context = self.structure()?;
+        self.highlight_with_structure(&context)
+    }
+
+    pub(super) fn highlight_with_structure(
+        &self,
+        context: &crate::editor::Structure,
+    ) -> Option<Vec<Vec<Token>>> {
         let mut semantic = Vec::new();
         let mut visited = 0;
         for (tree, provider) in self.tree.iter().zip(self.provider).chain(

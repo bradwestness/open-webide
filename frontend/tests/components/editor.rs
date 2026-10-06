@@ -6480,3 +6480,126 @@ extern "C" {
         key: &str,
     ) -> wasm_bindgen::JsValue;
 }
+
+#[wasm_bindgen_test]
+async fn syntax_consumers_share_immutable_preparation_and_invalidate_it_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::SyntaxStatus};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "fn main() {\r\n    call(\"文😀\");\r\n}\r\n";
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("prepared.rs".into()));
+            state.workspace.content.set(source.into());
+            editor_view(state)
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let first = actions.syntax_structure(|| true).unwrap();
+        let first_paint = actions.syntax_highlights().unwrap();
+        actions.syntax_folds(|| true).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &first,
+            &actions.syntax_structure(|| true).unwrap()
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &first_paint,
+            &actions.syntax_highlights().unwrap()
+        ));
+        let revised = source.replace("文😀", "😀 changed");
+        mounted.state.workspace.content.set(revised.clone());
+        let next = actions.syntax_structure(|| true).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first, &next));
+        assert!(first.matches_source(source));
+        assert!(!first.matches_source(&revised));
+        assert!(next.matches_source(&revised));
+        assert_eq!(
+            actions.syntax_folds(|| false).unwrap(),
+            (SyntaxStatus::Cancelled, vec![])
+        );
+        assert!(!std::sync::Arc::ptr_eq(
+            &next,
+            &actions.syntax_structure(|| true).unwrap()
+        ));
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("other.txt".into()));
+        mounted.state.workspace.content.set("unrelated".into());
+        assert!(actions.syntax_structure(|| true).is_none());
+        assert!(first.matches_source(source));
+        mounted.state.workspace.reset();
+        assert!(actions.syntax_highlights().is_none());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn syntax_preparation_cannot_publish_after_scope_changes_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Indentation};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let facade = std::rc::Rc::new(std::cell::RefCell::new(None::<EditorActions>));
+        let captured = facade.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("scope.rs".into()));
+            state
+                .workspace
+                .content
+                .set("fn main() {\n    call();\n}".into());
+            *captured.borrow_mut() = Some(EditorActions::new(state.workspace));
+            editor_view(state)
+        });
+        let actions = facade.borrow().unwrap();
+        for mutation in 0..4 {
+            mounted.state.workspace.editor_indentation.update(|values| {
+                values.remove(&(1, "scope.rs".into()));
+            });
+            actions.refresh_fold_ranges(|| true).unwrap();
+            let before = actions.fold_state();
+            let mut mutated = false;
+            let result = actions.refresh_fold_ranges(|| {
+                if !mutated {
+                    mutated = true;
+                    match mutation {
+                        0 => mounted
+                            .state
+                            .workspace
+                            .editor_read_revision
+                            .update(|revision| *revision += 1),
+                        1 => mounted
+                            .state
+                            .auth
+                            .generation
+                            .update(|generation| *generation += 1),
+                        2 => mounted
+                            .state
+                            .workspace
+                            .pending_epoch
+                            .update(|epoch| *epoch += 1),
+                        _ => mounted.state.workspace.editor_indentation.update(|values| {
+                            values.insert(
+                                (1, "scope.rs".into()),
+                                Indentation {
+                                    tab_width: 8,
+                                    ..Indentation::default()
+                                },
+                            );
+                        }),
+                    }
+                }
+                true
+            });
+            assert!(result.is_none(), "{mode:?} mutation {mutation}");
+            assert_eq!(actions.fold_state(), before);
+        }
+    }
+}

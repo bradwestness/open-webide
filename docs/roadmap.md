@@ -85,6 +85,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   PHP heredoc/nowdoc and shell heredoc contexts now protect text while exposing
   executable interpolation, including PHP braces and nested shell string wrappers.
   Shared contracts also cover Python and C# interpolation and nested literals.
+  Fold, structural-command and highlight consumers now share one immutable,
+  source-bound preparation per document/tab width, with cancellation and stale
+  account/read/source/indentation guards. Move this shared preparation into the
+  Rust/WASM worker and retain explicit bounded fallbacks.
   Reindent preserves
   existing Python block depth; language formatting remains in Code intelligence.
 

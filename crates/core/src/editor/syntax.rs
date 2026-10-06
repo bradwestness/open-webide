@@ -6,6 +6,7 @@ use crate::highlight::Language;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::ops::Range as ByteRange;
+use std::sync::Arc;
 use tree_sitter::{InputEdit, Node, ParseOptions, Parser, Point, Range, Tree};
 
 const MAX_PROGRESS_CHECKS: usize = 4_096;
@@ -17,6 +18,32 @@ pub enum SyntaxStatus {
     Ready { incremental: bool },
     TooLarge,
     Cancelled,
+}
+
+/// Immutable source-bound preparation shared by rendering and editing callers.
+#[derive(Clone, Debug)]
+pub struct SyntaxAnalysis {
+    source: Arc<str>,
+    folds: Vec<FoldRange>,
+    structure: Option<Arc<Structure>>,
+    highlights: Option<Arc<Vec<Vec<crate::highlight::Token>>>>,
+}
+impl SyntaxAnalysis {
+    pub fn matches_source(&self, source: &str) -> bool {
+        self.source.as_ref() == source
+    }
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+    pub fn folds(&self) -> &[FoldRange] {
+        &self.folds
+    }
+    pub fn structure(&self) -> Option<&Arc<Structure>> {
+        self.structure.as_ref()
+    }
+    pub fn highlights(&self) -> Option<&Arc<Vec<Vec<crate::highlight::Token>>>> {
+        self.highlights.as_ref()
+    }
 }
 
 struct EmbeddedSyntax {
@@ -34,7 +61,8 @@ pub struct SyntaxDocument {
     ready: bool,
     tree: Option<Tree>,
     embedded: Vec<EmbeddedSyntax>,
-    text: String,
+    text: Arc<str>,
+    prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
 }
 
 impl SyntaxDocument {
@@ -54,7 +82,8 @@ impl SyntaxDocument {
             ready: false,
             tree: None,
             embedded: Vec::new(),
-            text: String::new(),
+            text: Arc::from(""),
+            prepared: None,
         })
     }
 
@@ -71,12 +100,12 @@ impl SyntaxDocument {
             self.clear();
             return SyntaxStatus::Cancelled;
         }
-        if self.ready && self.text == text {
+        if self.ready && self.text.as_ref() == text {
             return SyntaxStatus::Ready { incremental: true };
         }
+        self.prepared = None;
         let Some(parser) = self.parser.as_mut() else {
-            self.text.clear();
-            self.text.push_str(text);
+            self.text = Arc::from(text);
             self.ready = true;
             return SyntaxStatus::Ready { incremental: false };
         };
@@ -103,8 +132,7 @@ impl SyntaxDocument {
             Ok(tree) => {
                 self.ready = true;
                 self.tree = Some(tree);
-                self.text.clear();
-                self.text.push_str(text);
+                self.text = Arc::from(text);
                 SyntaxStatus::Ready { incremental }
             }
             Err(status) => {
@@ -112,6 +140,38 @@ impl SyntaxDocument {
                 status
             }
         }
+    }
+
+    /// Prepare all consumers once per source/tab width. Cancellation clears the
+    /// cache; previously published snapshots remain immutable and source-bound.
+    pub fn prepare(
+        &mut self,
+        text: &str,
+        tab_width: usize,
+        should_continue: impl FnMut() -> bool,
+    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
+        let status = self.update(text, should_continue);
+        if !matches!(status, SyntaxStatus::Ready { .. }) {
+            return (status, None);
+        }
+        if let Some((width, analysis)) = &self.prepared
+            && *width == tab_width
+        {
+            return (status, Some(analysis.clone()));
+        }
+        let structure = self.structure().map(Arc::new);
+        let highlights = structure
+            .as_ref()
+            .and_then(|structure| self.highlight_with_structure(structure))
+            .map(Arc::new);
+        let analysis = Arc::new(SyntaxAnalysis {
+            source: self.text.clone(),
+            folds: self.folds_with_tab_width(tab_width),
+            structure,
+            highlights,
+        });
+        self.prepared = Some((tab_width, analysis.clone()));
+        (status, Some(analysis))
     }
 
     fn update_embedded(
@@ -284,7 +344,7 @@ impl SyntaxDocument {
             }
         }
         Structure::parsed(
-            &self.text,
+            self.text.clone(),
             self.language,
             protected,
             scopes,
@@ -300,7 +360,8 @@ impl SyntaxDocument {
         self.ready = false;
         self.tree = None;
         self.embedded.clear();
-        self.text.clear();
+        self.text = Arc::from("");
+        self.prepared = None;
     }
 
     pub fn folds(&self) -> Vec<FoldRange> {
@@ -612,6 +673,79 @@ fn input_edit(old: &str, new: &str) -> InputEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_reuses_one_snapshot_and_retains_immutable_old_sources() {
+        let source = "fn main() {\r\n    call(\"文😀\");\r\n}\r\n";
+        let mut syntax = SyntaxDocument::new(Language::Rust).unwrap();
+        let (status, first) = syntax.prepare(source, 4, || true);
+        assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+        let first = first.unwrap();
+        let (_, again) = syntax.prepare(source, 4, || true);
+        assert!(Arc::ptr_eq(&first, &again.unwrap()));
+        let (_, width) = syntax.prepare(source, 8, || true);
+        assert!(!Arc::ptr_eq(&first, &width.unwrap()));
+        let revised = source.replace("文😀", "😀 changed");
+        let (status, next) = syntax.prepare(&revised, 4, || true);
+        assert_eq!(status, SyntaxStatus::Ready { incremental: true });
+        let next = next.unwrap();
+        assert!(!Arc::ptr_eq(&first, &next));
+        assert!(first.matches_source(source));
+        assert!(!first.matches_source(&revised));
+        assert!(first.structure().unwrap().matches_source(source));
+        assert!(next.structure().unwrap().matches_source(&revised));
+        assert_eq!(first.source(), source);
+        assert_eq!(next.source(), revised);
+    }
+
+    #[test]
+    fn prepared_consumers_match_independent_analysis_for_all_providers() {
+        for &(path, source, _) in super::super::syntax_contracts::LANGUAGE_CASES {
+            let language = crate::highlight::language_from_path(path);
+            let mut syntax = SyntaxDocument::new(language).unwrap();
+            let (_, analysis) = syntax.prepare(source, 3, || true);
+            let analysis = analysis.unwrap();
+            assert_eq!(analysis.folds(), syntax.folds_with_tab_width(3));
+            assert_eq!(
+                analysis.highlights().unwrap().as_ref(),
+                &syntax.highlight_lines().unwrap()
+            );
+            let context = syntax.structure().unwrap();
+            assert_eq!(analysis.structure().unwrap().protected, context.protected);
+            assert_eq!(analysis.structure().unwrap().brackets, context.brackets);
+            assert!(
+                analysis
+                    .structure()
+                    .unwrap()
+                    .matches_source(analysis.source())
+            );
+        }
+    }
+
+    #[test]
+    fn cancellation_direct_updates_and_size_limits_invalidate_preparation() {
+        let source = "fn main() {}";
+        let mut syntax = SyntaxDocument::new(Language::Rust).unwrap();
+        let (_, first) = syntax.prepare(source, 4, || true);
+        let first = first.unwrap();
+        let (status, analysis) = syntax.prepare(source, 4, || false);
+        assert_eq!(status, SyntaxStatus::Cancelled);
+        assert!(analysis.is_none());
+        let (status, recovered) = syntax.prepare(source, 4, || true);
+        assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+        assert!(!Arc::ptr_eq(&first, &recovered.unwrap()));
+        syntax.update("fn changed() {}", || true);
+        assert!(syntax.prepared.is_none());
+        let (status, oversized) = syntax.prepare(&"x".repeat(MAX_STRUCTURE_BYTES + 1), 4, || true);
+        assert_eq!(status, SyntaxStatus::TooLarge);
+        assert!(oversized.is_none());
+        assert!(first.matches_source(source));
+        let mut plain = SyntaxDocument::new(Language::Plain).unwrap();
+        let (_, plain) = plain.prepare("hello", 4, || true);
+        let plain = plain.unwrap();
+        assert_eq!(plain.source(), "hello");
+        assert!(plain.structure().is_none() && plain.highlights().is_none());
+    }
 
     #[test]
     fn html_embedded_bodies_keep_global_coordinates_incremental_trees_and_languages() {

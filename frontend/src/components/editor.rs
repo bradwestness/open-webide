@@ -684,24 +684,14 @@ fn highlight_html(
     visible: &[usize],
     indentation: openwebide_core::editor::Indentation,
     show_whitespace: bool,
-    prepared: Option<Vec<Vec<openwebide_core::highlight::Token>>>,
+    prepared: Option<std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>>,
 ) -> String {
     #[cfg(feature = "test-support")]
     HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
     let normalized = source.replace("\r\n", "\n");
-    let lines = prepared
-        .map(|mut lines| {
-            let count = lines.len();
-            for line in lines.iter_mut().take(count.saturating_sub(1)) {
-                if let Some(token) = line.last_mut()
-                    && token.text.ends_with('\r')
-                {
-                    token.text.pop();
-                }
-            }
-            lines
-        })
-        .unwrap_or_else(|| highlight_lines(&normalized, language));
+    let prepared_source = prepared.is_some();
+    let lines =
+        prepared.unwrap_or_else(|| std::sync::Arc::new(highlight_lines(&normalized, language)));
     let guides = openwebide_core::editor::indent_guide_columns(source, indentation);
     let mut html = String::new();
     for &idx in visible {
@@ -712,14 +702,19 @@ fn highlight_html(
             "<span class=\"editor-source-line\" data-line=\"{}\" style=\"--editor-indent-columns:{};--editor-indent-step:{}\">",
             idx + 1, guides.get(idx).copied().unwrap_or(0), indentation.width()
         ));
-        for tok in line {
+        for (position, tok) in line.iter().enumerate() {
+            let text = if prepared_source && idx + 1 < lines.len() && position + 1 == line.len() {
+                tok.text.strip_suffix('\r').unwrap_or(&tok.text)
+            } else {
+                &tok.text
+            };
             match tok.kind {
-                TokenKind::Plain => html.push_str(&paint_text(&tok.text, show_whitespace)),
+                TokenKind::Plain => html.push_str(&paint_text(text, show_whitespace)),
                 kind => {
                     html.push_str("<span class=\"");
                     html.push_str(token_class(kind));
                     html.push_str("\">");
-                    html.push_str(&paint_text(&tok.text, show_whitespace));
+                    html.push_str(&paint_text(text, show_whitespace));
                     html.push_str("</span>");
                 }
             }

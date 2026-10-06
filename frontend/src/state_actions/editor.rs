@@ -498,37 +498,49 @@ impl EditorActions {
         openwebide_core::editor::SyntaxStatus,
         Vec<openwebide_core::editor::FoldRange>,
     )> {
-        let tab_width = self.rules_untracked().indentation.tab_width();
         self.analyze_syntax(should_continue, |document, status| {
-            (status, document.folds_with_tab_width(tab_width))
+            (
+                status,
+                document.map_or_else(Vec::new, |document| document.folds().to_vec()),
+            )
         })
     }
 
     pub fn syntax_structure(
         self,
         should_continue: impl FnMut() -> bool,
-    ) -> Option<openwebide_core::editor::Structure> {
-        self.analyze_syntax(should_continue, |document, _| document.structure())
-            .flatten()
+    ) -> Option<std::sync::Arc<openwebide_core::editor::Structure>> {
+        self.analyze_syntax(should_continue, |document, _| {
+            document.and_then(|document| document.structure().cloned())
+        })
+        .flatten()
     }
 
-    pub fn syntax_highlights(self) -> Option<Vec<Vec<openwebide_core::highlight::Token>>> {
-        self.analyze_syntax(|| true, |document, _| document.highlight_lines())
-            .flatten()
+    pub fn syntax_highlights(
+        self,
+    ) -> Option<std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>> {
+        self.analyze_syntax(
+            || true,
+            |document, _| document.and_then(|document| document.highlights().cloned()),
+        )
+        .flatten()
     }
 
     fn analyze_syntax<T>(
         self,
         should_continue: impl FnMut() -> bool,
         result_for: impl FnOnce(
-            &openwebide_core::editor::SyntaxDocument,
+            Option<&openwebide_core::editor::SyntaxAnalysis>,
             openwebide_core::editor::SyntaxStatus,
         ) -> T,
     ) -> Option<T> {
         let key = self.key()?;
         let epoch = self.workspace.pending_epoch.get_untracked();
+        let read_revision = self.workspace.editor_read_revision.get_untracked();
+        let account_generation = self.auth.map_or(0, |auth| auth.generation.get_untracked());
         let language = openwebide_core::highlight::language_from_path(&key.1);
         let text = self.workspace.content.get_untracked();
+        let tab_width = self.rules_untracked().indentation.tab_width();
         let result = self
             .workspace
             .editor_syntax
@@ -539,12 +551,15 @@ impl EditorActions {
                         entry.insert(openwebide_core::editor::SyntaxDocument::new(language)?)
                     }
                 };
-                let status = document.update(&text, should_continue);
-                Some(result_for(document, status))
+                let (status, prepared) = document.prepare(&text, tab_width, should_continue);
+                Some(result_for(prepared.as_deref(), status))
             })
             .flatten();
         (self.key() == Some(key)
             && self.workspace.pending_epoch.get_untracked() == epoch
+            && self.workspace.editor_read_revision.get_untracked() == read_revision
+            && self.auth.map_or(0, |auth| auth.generation.get_untracked()) == account_generation
+            && self.rules_untracked().indentation.tab_width() == tab_width
             && self
                 .workspace
                 .content
@@ -560,7 +575,7 @@ impl EditorActions {
         let key = self.key()?;
         let epoch = self.workspace.pending_epoch.get_untracked();
         let text = self.workspace.content.get_untracked();
-        let result = self.syntax_folds(should_continue);
+        let result = self.syntax_folds(should_continue)?;
         if self.key() != Some(key.clone())
             || self.workspace.pending_epoch.get_untracked() != epoch
             || self
@@ -570,10 +585,7 @@ impl EditorActions {
         {
             return None;
         }
-        let ranges = result
-            .as_ref()
-            .map(|(_, ranges)| ranges.clone())
-            .unwrap_or_default();
+        let ranges = result.1;
         self.workspace.editor_documents.update(|documents| {
             let document = self.document(documents, key);
             let count = document.text().split('\n').count();
@@ -582,7 +594,7 @@ impl EditorActions {
         self.workspace
             .editor_fold_revision
             .update(|value| *value = value.wrapping_add(1));
-        result.map(|(status, _)| status)
+        Some(result.0)
     }
 
     pub fn cursor_status(self) -> (usize, usize, usize) {

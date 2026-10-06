@@ -176,7 +176,12 @@ The shared engine limits a document to 64 embedded bodies and discards every tre
 on cancellation or an exceeded limit.
 
 Editing commands, structural selection expansion and bracket navigation use
-immutable parser contexts from the shared per-document cache. Each cursor uses its own language, including JavaScript/CSS
+immutable parser contexts from the shared per-document cache. `SyntaxDocument::prepare`
+publishes one source-bound snapshot of folds, structure and tokens per source/tab
+width. Consumers share immutable allocations; updates and cancellation invalidate
+the cache while previously published snapshots retain their original source.
+The frontend facade also rejects changed account, file-read, source and tab-width
+scopes before publishing results. Each cursor uses its own language, including JavaScript/CSS
 in HTML, and template interpolation code remains editable while literal text is
 protected. Incomplete input uses bounded lexical fallback; JavaScript template
 interpolation also works during incomplete typing. Contexts verify their exact

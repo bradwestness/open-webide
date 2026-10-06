@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share one immutable syntax preparation per source and tab width across editor folds, structural commands and highlighting. Reuse source/context/token snapshots, preserve old snapshots across edits, and reject results after account, file-read, source or indentation changes in both modes. Worker execution remains in progress.
+
 - Split oversized Edit paint into escaped, Unicode-safe text runs so browser range measurement avoids scanning one enormous text node. Preserve grapheme clusters, syntax classes, source coordinates and wrap behavior in both modes.
 - Add reproducible native/browser-WASM editor storage workloads with optional Crop/Ropey comparisons, CRLF-aware offset checks and recorded results. CI checks workload correctness without timing thresholds; production storage remains unchanged while viewport/worker work continues.
 

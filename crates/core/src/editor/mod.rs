@@ -47,7 +47,7 @@ mod syntax_injections;
 #[cfg(feature = "editor-parser")]
 mod syntax_providers;
 #[cfg(feature = "editor-parser")]
-pub use syntax::{SyntaxDocument, SyntaxStatus};
+pub use syntax::{SyntaxAnalysis, SyntaxDocument, SyntaxStatus};
 #[cfg(feature = "editor-parser")]
 pub use syntax_providers::{
     ContextSelector, HighlightSelector, InjectionSelector, SYNTAX_PROVIDERS, SyntaxContextKind,

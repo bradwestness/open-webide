@@ -338,7 +338,7 @@ impl Structure {
 
     #[cfg(feature = "editor-parser")]
     pub(super) fn parsed(
-        text: &str,
+        text: Arc<str>,
         language: Language,
         mut protected: Vec<(Range<usize>, bool, RegionKind)>,
         scopes: Vec<(Range<usize>, Language)>,
@@ -369,7 +369,7 @@ impl Structure {
         opaque_starts.sort_unstable();
         opaque_starts.dedup();
         let mut result = Self {
-            source: text.into(),
+            source: text.clone(),
             language,
             scopes,
             selection_ranges,
