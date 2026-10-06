@@ -1,0 +1,19 @@
+{
+  "subject": "acct:openwebide@mastodon.social",
+  "aliases": [
+    "https://mastodon.social/@openwebide",
+    "https://mastodon.social/ap/users/117394291620720375"
+  ],
+  "links": [
+    {
+      "rel": "http://webfinger.net/rel/profile-page",
+      "type": "text/html",
+      "href": "https://mastodon.social/@openwebide"
+    },
+    {
+      "rel": "self",
+      "type": "application/activity+json",
+      "href": "https://mastodon.social/ap/users/117394291620720375"
+    }
+  ]
+}

@@ -74,6 +74,13 @@ Issue templates, screenshots/a demo, and launch announcements remain part of the
   once the site is deployed. Save the Mastodon profile again after deployment if
   verification has not appeared.
 
+  The discovery alias `@openwebide@openwebide.com` is served by
+  `site/static/.well-known/webfinger`. Its subject stays
+  `acct:openwebide@mastodon.social`, so clients resolve to the existing account;
+  the displayed handle stays `@openwebide@mastodon.social`. GitHub Pages serves
+  one static response regardless of query parameters; this is a single-account
+  alias rather than a general WebFinger service. Mastodon parses its JSON body,
+  but clients requiring a specific response content type may not support it.
 - [YouTube](https://www.youtube.com/@OpenWebIDE): `@OpenWebIDE`, channel ID
   `UCRRWQeyGWL1kkG0vjNIFtzA`. Demos, setup walkthroughs, and feature updates.
   The editable [banner source](assets/youtube-banner.svg) and

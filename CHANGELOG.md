@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add a WebFinger discovery alias for `@openwebide@openwebide.com` that resolves to the existing Mastodon account.
+
 - Show a screenshot of the running PWA on the project landing page, with a full-resolution image for sharing.
 
 - Add a disposable production-editor benchmark for native browser input, scrolling, frame stalls, WASM allocation and Chrome process-tree memory in both workspace modes. Record byte, row-count and long-line boundary baselines; bounded cold paint and incremental input remain in progress.

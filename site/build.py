@@ -115,6 +115,8 @@ def build(output, site_url):
         finally:
             if output.is_dir():
                 marker.touch()
+        # Copy discovery files explicitly: dot directories must survive the build.
+        shutil.copytree(ROOT / "site/static", output, dirs_exist_ok=True)
         validate_links(output)
 
 
