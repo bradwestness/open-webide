@@ -1,7 +1,7 @@
 //! Exact styled glyph anchors used to prepare source slices before browser layout.
 use std::ops::Range;
 
-pub const MAX_HORIZONTAL_ANCHORS: usize = 4096;
+pub const MAX_ROW_GEOMETRY_ANCHORS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlyphRectangle {
@@ -42,8 +42,8 @@ impl HorizontalGeometry {
     ) -> Option<Self> {
         if glyphs == 0
             || anchors.is_empty()
-            || anchors.len() > MAX_HORIZONTAL_ANCHORS
-            || anchors.capacity() > MAX_HORIZONTAL_ANCHORS
+            || anchors.len() > MAX_ROW_GEOMETRY_ANCHORS
+            || anchors.capacity() > MAX_ROW_GEOMETRY_ANCHORS
             || !width.is_finite()
             || !(0.0..=1_000_000_000.0).contains(&width)
             || !height.is_finite()
@@ -106,6 +106,122 @@ impl HorizontalGeometry {
     }
 }
 
+/// Styled anchors for wrapped rows. Source order follows vertical layout;
+/// horizontal positions may reverse within a bidirectional visual row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrappedGeometry {
+    anchors: Vec<GlyphRectangle>,
+    glyphs: usize,
+    pub width: f64,
+    pub height: f64,
+}
+impl WrappedGeometry {
+    pub fn new(
+        glyphs: usize,
+        width: f64,
+        height: f64,
+        anchors: Vec<GlyphRectangle>,
+    ) -> Option<Self> {
+        if glyphs == 0
+            || anchors.is_empty()
+            || anchors.len() > MAX_ROW_GEOMETRY_ANCHORS
+            || anchors.capacity() > MAX_ROW_GEOMETRY_ANCHORS
+            || !width.is_finite()
+            || !(0.0..=1_000_000_000.0).contains(&width)
+            || !height.is_finite()
+            || !(0.0..=1_000_000.0).contains(&height)
+            || height == 0.0
+            || anchors.first()?.glyph != 0
+            || anchors.last()?.glyph != glyphs - 1
+            || anchors.iter().any(|a| !a.valid() || a.glyph >= glyphs)
+            || anchors.windows(2).any(|pair| {
+                pair[0].glyph >= pair[1].glyph
+                    || pair[0].top > pair[1].top
+                    || pair[0].top + pair[0].height > pair[1].top + pair[1].height
+            })
+        {
+            return None;
+        }
+        Some(Self {
+            anchors,
+            glyphs,
+            width,
+            height,
+        })
+    }
+    pub fn source_interval(&self, rows: Range<f64>) -> Option<Range<usize>> {
+        if !rows.start.is_finite()
+            || !rows.end.is_finite()
+            || rows.start < 0.0
+            || rows.end <= rows.start
+        {
+            return None;
+        }
+        let start = self
+            .anchors
+            .partition_point(|a| a.top + a.height < rows.start)
+            .saturating_sub(1);
+        let end = self
+            .anchors
+            .partition_point(|a| a.top < rows.end)
+            .min(self.anchors.len() - 1);
+        Some(self.anchors[start].glyph..self.anchors[end].glyph + 1)
+    }
+    pub fn anchors(&self, source: Range<usize>) -> Option<&[GlyphRectangle]> {
+        if source.start > source.end || source.end > self.glyphs {
+            return None;
+        }
+        let first = self.anchors.partition_point(|a| a.glyph < source.start);
+        let last = self.anchors.partition_point(|a| a.glyph < source.end);
+        Some(&self.anchors[first..last])
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MeasuredRowGeometry {
+    Horizontal(HorizontalGeometry),
+    Wrapped(WrappedGeometry),
+}
+impl MeasuredRowGeometry {
+    pub fn source_interval(
+        &self,
+        window: &super::RowPaintWindow,
+        line_height: f64,
+    ) -> Option<Range<usize>> {
+        match (self, window) {
+            (Self::Horizontal(geometry), super::RowPaintWindow::Horizontal(columns)) => {
+                geometry.source_interval(columns.clone())
+            }
+            (Self::Wrapped(geometry), super::RowPaintWindow::Wrapped(window))
+                if line_height.is_finite() && line_height > 0.0 =>
+            {
+                geometry.source_interval(
+                    window.rows.start as f64 * line_height..window.rows.end as f64 * line_height,
+                )
+            }
+            _ => None,
+        }
+    }
+    pub fn anchors(&self, source: Range<usize>) -> Option<&[GlyphRectangle]> {
+        match self {
+            Self::Horizontal(g) => g.anchors(source),
+            Self::Wrapped(g) => g.anchors(source),
+        }
+    }
+    pub fn width(&self) -> f64 {
+        match self {
+            Self::Horizontal(g) => g.width,
+            Self::Wrapped(g) => g.width,
+        }
+    }
+    pub fn height(&self) -> f64 {
+        match self {
+            Self::Horizontal(g) => g.height,
+            Self::Wrapped(g) => g.height,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +263,48 @@ mod tests {
         assert!(geometry.source_interval(100.0..10.0).is_none());
     }
     #[test]
+    fn wrapped_windows_follow_vertical_source_order_and_reject_stale_orientation() {
+        let points = vec![
+            anchor(0, 30.0),
+            GlyphRectangle {
+                glyph: 250,
+                top: 202.0,
+                left: 50.0,
+                ..anchor(0, 0.0)
+            },
+            GlyphRectangle {
+                glyph: 500,
+                top: 402.0,
+                left: 0.0,
+                ..anchor(0, 0.0)
+            },
+        ];
+        let geometry = WrappedGeometry::new(501, 100.0, 420.0, points.clone()).unwrap();
+        assert_eq!(geometry.source_interval(210.0..390.0), Some(0..501));
+        assert_eq!(geometry.source_interval(220.0..390.0), Some(250..501));
+        assert_eq!(geometry.anchors(250..501).unwrap(), &points[1..]);
+        let measured = MeasuredRowGeometry::Wrapped(geometry);
+        let window = super::super::RowPaintWindow::Wrapped(super::super::EditorViewport {
+            rows: 11..20,
+            top: 220.0,
+            height: 420.0,
+        });
+        assert_eq!(measured.source_interval(&window, 20.0), Some(250..501));
+        assert!(measured.source_interval(&window, f64::NAN).is_none());
+        assert!(
+            measured
+                .source_interval(&super::super::RowPaintWindow::Horizontal(0.0..100.0), 20.0)
+                .is_none()
+        );
+        let mut reversed = points.clone();
+        reversed[2].top = 100.0;
+        assert!(WrappedGeometry::new(501, 100.0, 420.0, reversed).is_none());
+        assert!(WrappedGeometry::new(502, 100.0, 420.0, points).is_none());
+        let mut oversized = Vec::with_capacity(MAX_ROW_GEOMETRY_ANCHORS + 1);
+        oversized.push(anchor(0, 0.0));
+        assert!(WrappedGeometry::new(1, 100.0, 20.0, oversized).is_none());
+    }
+    #[test]
     fn incomplete_nonmonotonic_oversized_or_invalid_measurements_require_fallback() {
         for points in [
             vec![],
@@ -160,11 +318,11 @@ mod tests {
             assert!(HorizontalGeometry::new(2, 20.0, 20.0, points).is_none());
         }
         assert!(HorizontalGeometry::new(1, 10.0, f64::INFINITY, vec![anchor(0, 0.0)]).is_none());
-        let points: Vec<_> = (0..MAX_HORIZONTAL_ANCHORS + 1)
+        let points: Vec<_> = (0..MAX_ROW_GEOMETRY_ANCHORS + 1)
             .map(|i| anchor(i, 0.0))
             .collect();
         assert!(HorizontalGeometry::new(points.len(), 10.0, 20.0, points).is_none());
-        let mut reserved = Vec::with_capacity(MAX_HORIZONTAL_ANCHORS + 1);
+        let mut reserved = Vec::with_capacity(MAX_ROW_GEOMETRY_ANCHORS + 1);
         reserved.push(anchor(0, 0.0));
         assert!(HorizontalGeometry::new(1, 10.0, 20.0, reserved).is_none());
         // Styled glyph rectangles may overflow the logical CSS row box.

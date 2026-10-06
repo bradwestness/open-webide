@@ -290,3 +290,21 @@ Native input, cold shaping and wrapped scrolling still have substantial stalls;
 these observations do not validate the admission limits or complete the editor
 performance goal. Linux PSS and actual local folder permissions remain unmeasured
 here. Repeat with `--cases long-line` and additionally `--wrap` for the wrapped case.
+
+### Wrapped source anchors
+
+A subsequent [wrapped-anchor observation](editor-performance/production-wrapped-anchors.jsonl)
+uses the same destination-verified 1 MiB source and both modes, with the new
+wrapped source-slicing implementation in the worktree. It ran before the explicit
+bidi eligibility guard was added; this workload contains source-monotonic text.
+The built app includes the concurrent branding/welcome changes described above.
+
+| Mode | Cold ready (ms) | Input to paint (ms) | Destination scroll to paint (ms) | Peak summed Chrome RSS (GiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Local | 4302.3 | 1651.9 | 51.5 | 4.03 |
+| Remote | 4682.7 | 1711.8 | 60.8 | 4.51 |
+
+Scroll readiness improved in these individual observations, but initial/input
+work and process memory remain costly. These are single observations, not
+percentiles or admission validation; Linux PSS and full boundary/device gates
+remain outstanding. The final guard retains full-paragraph probes for bidi text.

@@ -864,5 +864,8 @@ mod tests {
 mod paint_cache;
 pub use paint_cache::PaintCache;
 
-mod horizontal_geometry;
-pub use horizontal_geometry::{GlyphRectangle, HorizontalGeometry, MAX_HORIZONTAL_ANCHORS};
+mod row_geometry;
+pub use row_geometry::{
+    GlyphRectangle, HorizontalGeometry, MAX_ROW_GEOMETRY_ANCHORS, MeasuredRowGeometry,
+    WrappedGeometry,
+};

@@ -144,7 +144,7 @@ fn window_paint_row(
     window: &openwebide_core::editor::RowPaintWindow,
     line_height: f64,
     index: Option<VisualLineIndex>,
-    geometry: &mut Option<openwebide_core::editor::HorizontalGeometry>,
+    geometry: &mut Option<openwebide_core::editor::MeasuredRowGeometry>,
 ) -> Option<()> {
     let text = row.text_content()?;
     if text.strip_suffix('\n').unwrap_or(&text) != body.replace('\r', "\n") {
@@ -188,11 +188,14 @@ fn window_paint_row(
             )
         }
     };
-    let sampled = if horizontal {
-        use openwebide_core::editor::{GlyphRectangle, HorizontalGeometry, MAX_HORIZONTAL_ANCHORS};
+    let sampled = {
+        use openwebide_core::editor::{
+            GlyphRectangle, HorizontalGeometry, MAX_ROW_GEOMETRY_ANCHORS, MeasuredRowGeometry,
+            WrappedGeometry,
+        };
         let mut indices = glyphs.index.anchor_glyphs().collect::<Vec<_>>();
         indices.dedup();
-        if indices.len() <= MAX_HORIZONTAL_ANCHORS {
+        if indices.len() <= MAX_ROW_GEOMETRY_ANCHORS {
             let anchors = indices
                 .into_iter()
                 .map(|glyph| {
@@ -207,18 +210,27 @@ fn window_paint_row(
                 })
                 .collect::<Option<Vec<_>>>();
             anchors.and_then(|anchors| {
-                HorizontalGeometry::new(
-                    glyphs.index.len() - 1,
-                    bounds.width(),
-                    bounds.height(),
-                    anchors,
-                )
+                if horizontal {
+                    HorizontalGeometry::new(
+                        glyphs.index.len() - 1,
+                        bounds.width(),
+                        bounds.height(),
+                        anchors,
+                    )
+                    .map(MeasuredRowGeometry::Horizontal)
+                } else {
+                    WrappedGeometry::new(
+                        glyphs.index.len() - 1,
+                        bounds.width(),
+                        bounds.height(),
+                        anchors,
+                    )
+                    .map(MeasuredRowGeometry::Wrapped)
+                }
             })
         } else {
             None
         }
-    } else {
-        None
     };
     if horizontal && first == last {
         let original_style = row.get_attribute("style").unwrap_or_default();
@@ -331,14 +343,15 @@ fn window_paint_row(
 /// Crop source before asking the browser for layout, using exact anchors from
 /// this immutable styled row. Validate retained anchors and restore complete
 /// source on any reshaping discrepancy.
-fn anchored_horizontal_row(
+fn anchored_row(
     row: &web_sys::Element,
     body: &str,
     index: &VisualLineIndex,
-    columns: std::ops::Range<f64>,
-    geometry: &openwebide_core::editor::HorizontalGeometry,
+    window: &openwebide_core::editor::RowPaintWindow,
+    line_height: f64,
+    geometry: &openwebide_core::editor::MeasuredRowGeometry,
 ) -> Option<()> {
-    let interval = geometry.source_interval(columns.clone())?;
+    let interval = geometry.source_interval(window, line_height)?;
     let original = row.inner_html();
     let original_style = row.get_attribute("style").unwrap_or_default();
     if interval.is_empty() {
@@ -346,7 +359,8 @@ fn anchored_horizontal_row(
             "style",
             &format!(
                 "{original_style};height:{}px;width:{}px",
-                geometry.height, geometry.width
+                geometry.height(),
+                geometry.width()
             ),
         )
         .ok()?;
@@ -369,6 +383,11 @@ fn anchored_horizontal_row(
     };
     let anchors = geometry.anchors(interval.clone())?;
     let left = anchors.first()?.left;
+    let top = if matches!(window, openwebide_core::editor::RowPaintWindow::Wrapped(_)) {
+        (anchors.first()?.top / line_height).floor() * line_height
+    } else {
+        0.0
+    };
     let nodes = TextNodes::new(row)?;
     let (start, at) = nodes.position(u32::try_from(start_native).ok()?)?;
     let (end, to) = nodes.position(u32::try_from(end_native).ok()?)?;
@@ -386,7 +405,7 @@ fn anchored_horizontal_row(
     fragment
         .set_attribute(
             "style",
-            "position:absolute;left:0;right:0;top:0;display:block",
+            &format!("position:absolute;left:0;right:0;top:{top}px;display:block"),
         )
         .ok()?;
     let gap = document().create_element("span").ok()?;
@@ -401,7 +420,8 @@ fn anchored_horizontal_row(
         "style",
         &format!(
             "{original_style};height:{}px;width:{}px",
-            geometry.height, geometry.width
+            geometry.height(),
+            geometry.width()
         ),
     )
     .ok()?;
@@ -427,14 +447,7 @@ fn anchored_horizontal_row(
         )
         .ok()?;
         let mut ignored = None;
-        let cropped = window_paint_row(
-            row,
-            source,
-            &openwebide_core::editor::RowPaintWindow::Horizontal(columns.clone()),
-            geometry.height,
-            None,
-            &mut ignored,
-        );
+        let cropped = window_paint_row(row, source, window, line_height, None, &mut ignored);
         row.set_attribute("data-paint-length", &full_length).ok()?;
         cropped?;
         let fragments = row
@@ -521,11 +534,9 @@ pub(super) fn window_paint(
                 line.source_line + 1
             ))
             .ok()??;
-        if let openwebide_core::editor::RowPaintWindow::Horizontal(columns) = window
-            && let Some(geometry) = actions.horizontal_geometry(cache, *index)
+        if let Some(geometry) = actions.measured_row_geometry(cache, *index)
             && let Some(source_index) = projection.visual_line_index(*index)
-            && anchored_horizontal_row(&row, body, &source_index, columns.clone(), &geometry)
-                .is_some()
+            && anchored_row(&row, body, &source_index, window, line_height, &geometry).is_some()
         {
             changed = true;
             continue;
@@ -541,7 +552,7 @@ pub(super) fn window_paint(
         )
         .is_some();
         if let Some(geometry) = geometry {
-            actions.retain_horizontal_geometry(cache, *index, geometry);
+            actions.retain_measured_row_geometry(cache, *index, geometry);
         }
     }
     if !changed

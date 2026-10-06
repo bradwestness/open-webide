@@ -252,14 +252,16 @@ unchanged rows retain their allocation. Lookups scan from exact cluster boundari
 instead of preparing a complete glyph array on each probe. Validated fragment paint is retained for revisited intervals (at most 16 entries
 and 2 MiB of HTML), scoped by document, account, read/pending ownership, projection,
 syntax/guide allocation, indentation, whitespace and browser shaping/layout. Font
-events invalidate even when computed font text stays the same. Horizontal rows additionally retain at most eight geometry tables with 4,096
-allocated glyph anchors each. They preserve rectangles relative to the original
-logical row, including glyph overflow beyond its CSS box. Newly visited horizontal
-intervals clone a bounded source slice before reading layout, validate measured
-anchors and then apply the existing complete fragment glyph check. Full source
-measurement remains the fallback for invalid geometry, oversized cluster slices
-or reshaping differences. Initial layout, wrapped/bidirectional rows and complete
-source HTML construction still need performance work.
+events invalidate even when computed font text stays the same. Horizontal and
+wrapped rows additionally retain at most eight geometry tables with 4,096
+allocated glyph anchors each, including glyph overflow beyond the logical CSS box.
+Newly visited intervals clone bounded source before layout, validate measured
+anchors, then apply the complete fragment glyph check. Wrapped slices preserve
+original visual-row/tab origins, logical heights and global native offsets.
+Full-paragraph measurement remains the fallback for invalid geometry, oversized
+cluster slices, bidi paragraphs or reshaping differences. First measurement still
+shapes the complete row. Initial layout, full source HTML construction and native
+input costs remain performance follow-ups.
 CRLF inverse mapping still selects the original CR, and surrogate offsets retain
 the existing boundary behavior. Projected text, normalized textarea text and
 visible-row coordinates share immutable allocations until source or folds change.

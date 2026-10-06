@@ -205,7 +205,8 @@ pub struct EditorFragmentWindow {
 #[derive(Default)]
 pub struct EditorFragmentCache {
     scope: Option<(EditorRowPaint, u64, u64)>,
-    geometry: std::collections::VecDeque<(usize, Arc<openwebide_core::editor::HorizontalGeometry>)>,
+    geometry:
+        std::collections::VecDeque<(usize, Arc<openwebide_core::editor::MeasuredRowGeometry>)>,
     paint: openwebide_core::editor::PaintCache<EditorFragmentWindow>,
 }
 impl EditorActions {
@@ -258,11 +259,11 @@ impl EditorActions {
         }
         true
     }
-    pub fn horizontal_geometry(
+    pub fn measured_row_geometry(
         self,
         cache: &mut EditorFragmentCache,
         row: usize,
-    ) -> Option<Arc<openwebide_core::editor::HorizontalGeometry>> {
+    ) -> Option<Arc<openwebide_core::editor::MeasuredRowGeometry>> {
         let (paint, revision, layout) = cache.scope.as_ref()?;
         if !self.row_paint_current(paint)
             || *revision != self.view_revision()
@@ -276,11 +277,11 @@ impl EditorActions {
         cache.geometry.push_back(entry);
         Some(result)
     }
-    pub fn retain_horizontal_geometry(
+    pub fn retain_measured_row_geometry(
         self,
         cache: &mut EditorFragmentCache,
         row: usize,
-        geometry: openwebide_core::editor::HorizontalGeometry,
+        geometry: openwebide_core::editor::MeasuredRowGeometry,
     ) {
         let Some((paint, revision, layout)) = cache.scope.as_ref() else {
             return;
@@ -288,6 +289,16 @@ impl EditorActions {
         if !self.row_paint_current(paint)
             || *revision != self.view_revision()
             || *layout != self.workspace.editor_layout_epoch.get_untracked()
+        {
+            return;
+        }
+        if matches!(
+            geometry,
+            openwebide_core::editor::MeasuredRowGeometry::Wrapped(_)
+        ) && !paint
+            .projection
+            .visual_line_index(row)
+            .is_some_and(|index| index.source_paint_eligible())
         {
             return;
         }

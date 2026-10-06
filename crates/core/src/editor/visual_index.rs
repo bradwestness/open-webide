@@ -75,6 +75,11 @@ impl VisualLineIndex {
         std::mem::size_of::<Coordinates>()
             + self.0.points.capacity() * std::mem::size_of::<Position>()
     }
+    /// Long source-monotonic paragraphs can be sliced before shaping. Bidi
+    /// controls, reversed scripts and display breaks retain full-paragraph probes.
+    pub fn source_paint_eligible(&self) -> bool {
+        self.0.horizontal
+    }
     pub fn horizontal_paint_bounds(&self, scroll: f64, width: f64) -> Option<std::ops::Range<f64>> {
         super::viewport::horizontal_paint_geometry(self.0.horizontal, scroll, width)
     }

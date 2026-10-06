@@ -8342,7 +8342,39 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
             .get_bounding_client_rect()
             .height();
         assert!(height > 10_000.0);
-        for top in [10_000.0, height - 1000.0, 0.0] {
+        // Settle initial font/syntax scope before measuring unseen intervals.
+        for top in [10_000.0, 0.0] {
+            input.set_scroll_top(top);
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("wrapped anchor scope settled", || {
+                mounted
+                    .element(".editor-source-line")
+                    .get_attribute("data-paint-top")
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .is_some_and(|paint_top| (paint_top - input.scroll_top()).abs() < 200.0)
+            })
+            .await;
+            settle().await;
+        }
+        let audit_source = js_sys::Function::new_no_args(
+            r#"
+            const state = {max: 0};
+            const old = Range.prototype.getClientRects;
+            Range.prototype.getClientRects = function(...args) {
+                const node = this.startContainer;
+                const element = node.nodeType === 1 ? node : node.parentElement;
+                const row = element?.closest('.editor-row-measure .editor-source-line');
+                if (row) state.max = Math.max(state.max, row.textContent.length);
+                return old.apply(this, args);
+            };
+            state.restore = () => { Range.prototype.getClientRects = old; };
+            return state;
+        "#,
+        );
+        let measured_source = audit_source.call0(&wasm_bindgen::JsValue::NULL).unwrap();
+        for top in [height / 2.0, height - 1000.0, 0.0] {
             input.set_scroll_top(top);
             input
                 .dispatch_event(&web_sys::Event::new("scroll").unwrap())
@@ -8396,6 +8428,20 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
                 0
             );
         }
+        let largest = js_sys::Reflect::get(&measured_source, &"max".into())
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        js_sys::Reflect::get(&measured_source, &"restore".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap()
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap();
+        assert!(
+            largest > 0.0 && largest <= 65_536.0,
+            "new wrapped intervals must measure bounded source: {largest}"
+        );
         mounted.click("button[aria-label^='Find in file']");
         settle().await;
         let search: web_sys::HtmlInputElement =
@@ -8447,6 +8493,54 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
                 .unwrap()
                 .is_none()
         );
+        mounted.click("button[aria-label='Close find']");
+        let bidi = format!("{}א", "LTR words ".repeat(10_000));
+        let audit = audit_source.call0(&wasm_bindgen::JsValue::NULL).unwrap();
+        mounted.state.workspace.content.set(bidi.clone());
+        wait_until(
+            "wrapped bidi source uses complete paragraph geometry",
+            || {
+                input.value() == bidi
+                    && mounted
+                        .element(".editor-source-line")
+                        .get_attribute("data-paint-length")
+                        .and_then(|length| length.parse::<usize>().ok())
+                        == Some(bidi.encode_utf16().count())
+                    && mounted
+                        .root
+                        .query_selector(".editor-code.highlight-ready")
+                        .unwrap()
+                        .is_some()
+            },
+        )
+        .await;
+        input.set_scroll_top(f64::from(input.scroll_height()) / 2.0);
+        input
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        wait_until("wrapped bidi fallback follows the destination", || {
+            mounted
+                .element(".editor-source-line")
+                .get_attribute("data-paint-top")
+                .and_then(|top| top.parse::<f64>().ok())
+                .is_some_and(|top| (top - input.scroll_top()).abs() < 200.0)
+        })
+        .await;
+        let largest = js_sys::Reflect::get(&audit, &"max".into())
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        js_sys::Reflect::get(&audit, &"restore".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap()
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap();
+        assert!(
+            largest > 65_536.0,
+            "bidi paragraphs retain full-source validation"
+        );
+        assert_eq!(input.value(), bidi);
     }
 }
 
