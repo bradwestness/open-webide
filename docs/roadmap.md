@@ -94,9 +94,14 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   scopes, transport failure, size limits and PWA asset inclusion. Finish viewport
   paint and end-to-end latency/memory measurements below. Unwrapped paint,
   gutters and fold controls now use a bounded overscanned row window, with cached
-  tokens/guides and global projected UTF-16 caret offsets. Finish wrapped viewport
-  rendering and incremental document access; native textarea input still retains
-  the full projected source.
+  tokens/guides and global projected UTF-16 caret offsets. The document now updates
+  logical-line/UTF-16 prefixes from transaction envelopes and shares immutable
+  projections across view consumers; commands, cursor status and native selections
+  use the index. Native/WASM measurements cover indexed queries and cold/warm
+  projection access. Finish wrapped viewport rendering and further incremental
+  access: edits still materialize full Strings and shift suffix coordinates, and
+  long-line queries still scan within the line. Native textarea input retains the
+  full projected source.
   Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,
   preserving multiline state and discarding partial rows on cancellation.
   Reindent preserves

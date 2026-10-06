@@ -120,9 +120,11 @@ impl DocumentRecovery {
                 .set_selections(self.selections.clone())
                 .map_err(|error| error.to_string())?;
         }
-        let lines = self.text.bytes().filter(|byte| *byte == b'\n').count() + 1;
-        document.folds.set_ranges(self.collapsed.clone(), lines);
-        document.folds.collapse_all();
+        let lines = document.line_count();
+        document
+            .fold_state_mut()
+            .set_ranges(self.collapsed.clone(), lines);
+        document.fold_state_mut().collapse_all();
         Ok(document)
     }
 }

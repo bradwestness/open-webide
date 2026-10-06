@@ -1,7 +1,7 @@
 //! Comment commands use language syntax and logical-line selections.
 use super::{
     Document, Edit, EditError, Selection, Structure,
-    lines::{lines, row_at, selected_rows},
+    lines::{row_at, selected_rows},
 };
 use crate::highlight::Language;
 
@@ -84,7 +84,7 @@ impl Document {
         &mut self,
         context: impl Fn(usize) -> (Language, std::ops::Range<usize>),
     ) -> Result<bool, EditError> {
-        let rows = lines(&self.text);
+        let rows = &self.line_index.rows;
         let mut changes = CommentChanges::default();
         let mut selected = std::collections::BTreeMap::new();
         let blank = self
@@ -96,7 +96,7 @@ impl Document {
             let (language, body) = context(range.start);
             let Some(marker) = line_comment(language) else {
                 let Some((edit, after)) =
-                    block_comment_change(&self.text, &rows, *selection, language, body)
+                    block_comment_change(&self.text, rows, *selection, language, body)
                 else {
                     return Ok(false);
                 };
@@ -106,7 +106,7 @@ impl Document {
             if range.start < body.start || range.end > body.end {
                 return Ok(false);
             }
-            for row in selected_rows(&rows, &[*selection]).into_iter().flatten() {
+            for row in selected_rows(rows, &[*selection]).into_iter().flatten() {
                 let line = &rows[row];
                 let start = line.start.max(body.start);
                 let end = line.body_end.min(body.end);
@@ -157,12 +157,12 @@ impl Document {
         &mut self,
         context: impl Fn(usize) -> (Language, std::ops::Range<usize>),
     ) -> Result<bool, EditError> {
-        let rows = lines(&self.text);
+        let rows = &self.line_index.rows;
         let mut changes = CommentChanges::default();
         for (index, selection) in self.selections.iter().enumerate() {
             let (language, body) = context(selection.range().start);
             let Some((edit, after)) =
-                block_comment_change(&self.text, &rows, *selection, language, body)
+                block_comment_change(&self.text, rows, *selection, language, body)
             else {
                 return Ok(false);
             };

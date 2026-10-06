@@ -1,7 +1,7 @@
 //! A folded edit view is a projection of the source, never a second document.
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
-use super::{FoldState, Selection, lines::lines};
+use super::{FoldState, Selection};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VisibleLine {
@@ -29,16 +29,25 @@ pub enum ProjectionError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldProjection {
-    text: String,
+    text: Arc<str>,
+    textarea_text: Arc<str>,
     source_len: usize,
-    lines: Vec<VisibleLine>,
-    hidden: Vec<HiddenText>,
+    lines: Arc<[VisibleLine]>,
+    hidden: Arc<[HiddenText]>,
     uniform_rows: bool,
 }
 
 impl FoldProjection {
     pub fn new(source: &str, folds: &FoldState) -> Self {
-        let logical = lines(source);
+        Self::indexed(source, folds, &super::index::LineIndex::new(source))
+    }
+
+    pub(super) fn indexed(
+        source: &str,
+        folds: &FoldState,
+        index: &super::index::LineIndex,
+    ) -> Self {
+        let logical = &index.rows;
         let mut text = String::new();
         let mut visible = Vec::new();
         let mut hidden: Vec<HiddenText> = Vec::new();
@@ -53,8 +62,7 @@ impl FoldProjection {
                 textarea_start,
             });
             text.push_str(&source[line.start..line.end]);
-            textarea_start += source[line.start..line.end].encode_utf16().count()
-                - usize::from(source[line.start..line.end].ends_with("\r\n"));
+            textarea_start += index.native_line_len(row);
             if let Some(range) = folds.collapsed_at(row) {
                 let end = range.end_line.min(logical.len() - 1);
                 if end > row {
@@ -90,17 +98,71 @@ impl FoldProjection {
         let uniform_rows = !text.as_bytes().iter().enumerate().any(|(offset, byte)| {
             *byte == b'\r' && text.as_bytes().get(offset + 1) != Some(&b'\n')
         });
+        let text: Arc<str> = text.into();
+        let textarea_text = if text.contains('\r') {
+            Arc::from(text.replace("\r\n", "\n").replace('\r', "\n"))
+        } else {
+            text.clone()
+        };
         Self {
             text,
+            textarea_text,
             uniform_rows,
             source_len: source.len(),
-            lines: visible,
-            hidden,
+            lines: visible.into(),
+            hidden: hidden.into(),
         }
     }
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+    pub fn textarea_text(&self) -> &str {
+        &self.textarea_text
+    }
+    pub fn textarea_to_byte(&self, offset: usize) -> usize {
+        let row = self
+            .lines
+            .partition_point(|line| line.textarea_start <= offset)
+            .saturating_sub(1);
+        let line = &self.lines[row];
+        let end = self
+            .lines
+            .get(row + 1)
+            .map_or(self.text.len(), |next| next.visible_start);
+        line.visible_start
+            + super::textarea_to_byte(
+                &self.text[line.visible_start..end],
+                offset.saturating_sub(line.textarea_start),
+            )
+    }
+    pub fn byte_to_textarea(&self, offset: usize) -> Result<usize, super::EditError> {
+        if offset > self.text.len() || !self.text.is_char_boundary(offset) {
+            return Err(super::EditError::InvalidSelection);
+        }
+        let row = self
+            .lines
+            .partition_point(|line| line.visible_start <= offset)
+            .saturating_sub(1);
+        let line = &self.lines[row];
+        let end = self
+            .lines
+            .get(row + 1)
+            .map_or(self.text.len(), |next| next.visible_start);
+        Ok(line.textarea_start
+            + super::byte_to_textarea(
+                &self.text[line.visible_start..end],
+                offset - line.visible_start,
+            )?)
+    }
+    pub fn source_native_selection(
+        &self,
+        selection: Selection,
+    ) -> Result<Selection, ProjectionError> {
+        self.source_selection(Selection {
+            anchor: self.textarea_to_byte(selection.anchor),
+            head: self.textarea_to_byte(selection.head),
+        })
     }
     pub fn lines(&self) -> &[VisibleLine] {
         &self.lines
@@ -322,6 +384,65 @@ fn word_delete_len(chars: impl Iterator<Item = char>) -> usize {
 mod tests {
     use super::*;
     use crate::editor::FoldRange;
+
+    #[test]
+    fn document_projection_reuses_immutable_storage_and_invalidates_on_edits_and_folds() {
+        use crate::editor::{Document, Edit, FoldCommand};
+        let mut document = Document::new("head 😀\r\nbody 文\r\nend\r\nnext");
+        let before = document.clone();
+        let first = document.projection();
+        assert_eq!(
+            document, before,
+            "preparing a derived view does not mutate document identity"
+        );
+        let again = document.projection();
+        assert!(Arc::ptr_eq(&first.text, &again.text));
+        assert!(Arc::ptr_eq(&first.lines, &again.lines));
+        assert!(Arc::ptr_eq(&first.textarea_text, &again.textarea_text));
+        for offset in 0..=first.textarea_text.encode_utf16().count() + 2 {
+            assert_eq!(
+                first.textarea_to_byte(offset),
+                crate::editor::textarea_to_byte(first.text(), offset)
+            );
+        }
+        document
+            .apply(
+                vec![Edit::replace(0..4, "header")],
+                vec![Selection::caret(0)],
+                None,
+            )
+            .unwrap();
+        let changed = document.projection();
+        assert!(!Arc::ptr_eq(&first.text, &changed.text));
+        assert!(first.text().starts_with("head 😀"));
+        document.fold_state_mut().set_ranges(
+            vec![FoldRange {
+                start_line: 0,
+                end_line: 2,
+            }],
+            4,
+        );
+        document.fold_command(FoldCommand::CollapseAll);
+        let folded = document.projection();
+        assert_eq!(folded.text(), "header 😀\r\nnext");
+        assert_eq!(folded.textarea_text(), "header 😀\nnext");
+        for offset in 0..=folded.textarea_text.encode_utf16().count() + 2 {
+            assert_eq!(
+                folded.textarea_to_byte(offset),
+                crate::editor::textarea_to_byte(folded.text(), offset)
+            );
+        }
+        assert_eq!(
+            folded
+                .source_native_selection(Selection::caret(folded.lines()[1].textarea_start))
+                .unwrap()
+                .head,
+            document.text().find("next").unwrap()
+        );
+        assert_eq!(document.projection(), folded);
+        document.fold_command(FoldCommand::ExpandAll);
+        assert_eq!(document.projection().text(), changed.text());
+    }
 
     proptest::proptest! {
         #[test]

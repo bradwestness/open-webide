@@ -422,8 +422,8 @@ impl Document {
                 }
             }
             SelectionCommand::AddAbove | SelectionCommand::AddBelow => {
-                let rows = lines(&self.text);
-                let row = row_at(&rows, primary.head);
+                let rows = &self.line_index.rows;
+                let row = row_at(rows, primary.head);
                 let next = if command == SelectionCommand::AddAbove {
                     row.checked_sub(1)
                 } else {
@@ -459,7 +459,7 @@ impl Document {
                     fallback = Structure::new(&self.text, language);
                     &fallback
                 };
-                let rows = lines(&self.text);
+                let rows = &self.line_index.rows;
                 let mut structure_ranges: Vec<_> = structure
                     .literals()
                     .chain(structure.selection_ranges())
@@ -484,8 +484,8 @@ impl Document {
                             .get(index)
                             .filter(|word| word.start <= range.start && range.start <= word.end)
                             .cloned();
-                        let first = row_at(&rows, range.start);
-                        let last = row_at(&rows, range.end);
+                        let first = row_at(rows, range.start);
+                        let last = row_at(rows, range.end);
                         let contains = |candidate: &Range<usize>| {
                             candidate.start <= range.start
                                 && range.end <= candidate.end

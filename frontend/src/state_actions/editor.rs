@@ -250,13 +250,16 @@ impl EditorActions {
         documents: &mut std::collections::HashMap<(i64, String), Document>,
         key: (i64, String),
     ) -> &mut Document {
-        let text = self.workspace.content.get_untracked();
-        let document = documents
-            .entry(key)
-            .or_insert_with(|| Document::new(text.clone()));
-        if document.text() != text {
-            *document = Document::new(text);
-        }
+        let document = documents.entry(key).or_insert_with(|| {
+            self.workspace
+                .content
+                .with_untracked(|text| Document::new(text.clone()))
+        });
+        self.workspace.content.with_untracked(|text| {
+            if document.text() != text {
+                *document = Document::new(text.clone());
+            }
+        });
         if !self.workspace.dirty.get_untracked() {
             document.mark_saved();
         }
@@ -325,6 +328,22 @@ impl EditorActions {
                     .with_untracked(|positions| positions.get(&key).copied())
             })
             .unwrap_or_default()
+    }
+
+    /// Map native UTF-16 positions through the active document's shared index.
+    pub fn native_selection(self, source: &str, selection: Selection) -> Selection {
+        let indexed = self.key().and_then(|key| {
+            self.workspace.editor_documents.with_untracked(|documents| {
+                documents
+                    .get(&key)
+                    .filter(|document| document.text() == source)
+                    .map(|document| document.native_selection(selection))
+            })
+        });
+        indexed.unwrap_or_else(|| Selection {
+            anchor: openwebide_core::editor::textarea_to_byte(source, selection.anchor),
+            head: openwebide_core::editor::textarea_to_byte(source, selection.head),
+        })
     }
 
     pub fn selection(self, text: &str) -> Option<Selection> {
@@ -611,7 +630,7 @@ impl EditorActions {
         let ranges = result.1;
         self.workspace.editor_documents.update(|documents| {
             let document = self.document(documents, key);
-            let count = document.text().split('\n').count();
+            let count = document.line_count();
             document.fold_state_mut().set_ranges(ranges, count);
         });
         self.workspace
@@ -621,10 +640,25 @@ impl EditorActions {
     }
 
     pub fn cursor_status(self) -> (usize, usize, usize) {
-        let source = self.source();
-        let selection = self.selection(&source).unwrap_or_default();
-        let (line, column) = openwebide_core::editor::line_column(&source, selection.head);
-        (line, column, source[selection.range()].chars().count())
+        self.workspace.content.with_untracked(|source| {
+            let selection = self.selection(source).unwrap_or_default();
+            let position = self
+                .key()
+                .and_then(|key| {
+                    self.workspace.editor_documents.with_untracked(|documents| {
+                        documents
+                            .get(&key)
+                            .filter(|document| document.text() == source)
+                            .map(|document| document.line_column(selection.head))
+                    })
+                })
+                .unwrap_or_else(|| openwebide_core::editor::line_column(source, selection.head));
+            (
+                position.0,
+                position.1,
+                source[selection.range()].chars().count(),
+            )
+        })
     }
 
     pub fn search(
@@ -756,23 +790,25 @@ impl EditorActions {
 
     pub fn projection(self) -> Option<openwebide_core::editor::FoldProjection> {
         let key = self.key()?;
-        let text = self.workspace.content.get_untracked();
-        self.workspace.editor_documents.with_untracked(|documents| {
-            documents
-                .get(&key)
-                .filter(|document| document.text() == text)
-                .map(Document::projection)
+        self.workspace.content.with_untracked(|text| {
+            self.workspace.editor_documents.with_untracked(|documents| {
+                documents
+                    .get(&key)
+                    .filter(|document| document.text() == text)
+                    .map(Document::projection)
+            })
         })
     }
 
     pub fn fold_state(self) -> Option<openwebide_core::editor::FoldState> {
         let key = self.key()?;
-        let text = self.workspace.content.get_untracked();
-        self.workspace.editor_documents.with_untracked(|documents| {
-            documents
-                .get(&key)
-                .filter(|document| document.text() == text)
-                .map(|document| document.fold_state().clone())
+        self.workspace.content.with_untracked(|text| {
+            self.workspace.editor_documents.with_untracked(|documents| {
+                documents
+                    .get(&key)
+                    .filter(|document| document.text() == text)
+                    .map(|document| document.fold_state().clone())
+            })
         })
     }
 

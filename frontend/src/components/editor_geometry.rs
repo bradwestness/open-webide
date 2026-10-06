@@ -174,7 +174,7 @@ pub(super) fn visual_layout(
     let parent = input.parent_element()?;
     let paint = parent.query_selector(".editor-highlight-content").ok()??;
     if !parent.class_list().contains("highlight-ready")
-        || paint.text_content()? != projection.text().replace("\r\n", "\n")
+        || paint.text_content()? != projection.textarea_text()
     {
         return None;
     }

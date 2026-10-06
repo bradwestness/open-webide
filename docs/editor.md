@@ -210,6 +210,14 @@ can reveal rows outside the current paint window. Wrapped views and rows contain
 full projection while wrapped viewport rendering is in progress. Native textarea
 input still owns the complete projected source; this does not yet bound input memory.
 
+The shared document maintains logical-line and UTF-16 prefixes across transactions,
+grouped undo/redo and composition. Commands reuse indexed rows; native caret mapping
+binary-searches the appropriate row. Projected text, normalized textarea text and
+visible-row coordinates share immutable allocations until source or folds change.
+Preparing a view does not change document identity. Short-line queries and warm
+projection access are measured in [editor performance](editor-performance.md);
+full String materialization and long-line query costs remain.
+
 Both adapters retain at most eight syntax documents and 8 MiB of source, using LRU
 eviction. Preparation falls back beyond 2 MiB, 50,000 lines or 100,000
 metadata records; bracket and embedded-body limits still apply. Wire envelopes

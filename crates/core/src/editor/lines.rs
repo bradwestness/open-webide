@@ -13,7 +13,7 @@ pub enum LineCommand {
     InsertBelow,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Line {
     pub start: usize,
     pub body_end: usize,
@@ -81,8 +81,8 @@ impl Document {
         command: LineCommand,
         ending: Option<LineEnding>,
     ) -> Result<bool, EditError> {
-        let rows = lines(&self.text);
-        let blocks = selected_rows(&rows, &self.selections);
+        let rows = &self.line_index.rows;
+        let blocks = selected_rows(rows, &self.selections);
         let ending = ending
             .unwrap_or_else(|| LineEnding::detect(&self.text))
             .text();
@@ -119,7 +119,7 @@ impl Document {
                     };
                 }
                 let map = |position, previous| {
-                    let mut row = row_at(&rows, position);
+                    let mut row = row_at(rows, position);
                     if previous && row > 0 && position == rows[row].start {
                         row -= 1;
                         return destinations[row].end;
@@ -230,7 +230,7 @@ impl Document {
                 let heads: BTreeSet<_> = self
                     .selections
                     .iter()
-                    .map(|selection| row_at(&rows, selection.head))
+                    .map(|selection| row_at(rows, selection.head))
                     .collect();
                 let changes = heads
                     .into_iter()

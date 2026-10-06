@@ -34,7 +34,44 @@ One local observation on 2026-10-06, Rust 1.98.1, macOS arm64, Chrome 154.0.8037
 
 Full records: [native CSV](editor-performance/native-storage.csv), [browser CSV](editor-performance/browser-storage.csv).
 
-Both ropes make isolated edits and indexed queries much cheaper. In this workload, recreating the full display string makes candidate edits slower than the current document. Retain current production storage while implementing worker/viewport rendering; choose storage against the resulting access pattern rather than adding a mirrored rope alongside a full string. Current whole-source offset conversions remain a measured cost.
+Both ropes make isolated edits and indexed queries much cheaper. In this workload, recreating the full display string makes candidate edits slower than the current document. Retain current production storage while implementing worker/viewport rendering; choose storage against the resulting access pattern rather than adding a mirrored rope alongside a full string. Whole-source reference conversions remain in the comparison; production document queries use the incremental index described below.
+
+## Incremental coordinates and shared projections
+
+The document now maintains logical-line and raw/native UTF-16 prefixes across edit
+transactions, grouped Undo/Redo and IME previews. Updates re-scan the changed rows
+and shift suffix coordinates; queries binary-search a row and scan only within it.
+Line/comment/reindent/selection commands reuse those rows. Folded projections share
+immutable text, normalized textarea text and visible-row coordinates until source
+or folds change. Read-only view preparation does not change document identity.
+
+One observation on the same native host and Chrome version on 2026-10-06:
+
+| Workload | Bytes | Native ms | Browser WASM ms |
+| --- | ---: | ---: | ---: |
+| `document_100_edits` | 2,097,144 | 5.850 | 5.270 |
+| `document_100_textarea_queries` | 2,097,144 | 98.997 | 124.210 |
+| `document_indexed_100_textarea_queries` | 2,097,144 | 0.004 | 0.010 |
+| `document_cold_projection` | 2,097,144 | 3.209 | 3.035 |
+| `document_1000_warm_projections` | 2,097,144 | 0.007 | 0.015 |
+| `document_100_edits` | 16,777,194 | 69.710 | 42.660 |
+| `document_100_textarea_queries` | 16,777,194 | 767.601 | 1025.380 |
+| `document_indexed_100_textarea_queries` | 16,777,194 | 0.013 | 0.025 |
+| `document_cold_projection` | 16,777,194 | 29.591 | 24.435 |
+| `document_1000_warm_projections` | 16,777,194 | 0.008 | 0.015 |
+
+Full records: [native CSV](editor-performance/native-index.csv),
+[browser CSV](editor-performance/browser-index.csv). The indexed query workload
+performs 100 paired byte-to-native/native-to-byte queries; the legacy reference
+performs 100 byte-to-native queries. Cold projection includes its first allocation;
+warm access clones shared handles 1,000 times. Setup is outside the timed section,
+and browser clock resolution limits precision for the shortest workloads.
+
+This removes whole-prefix coordinate scans on ordinary short-line files and repeated
+projection allocations. It does not bound long-line scans, avoid full String copies
+on edits, or eliminate suffix-coordinate shifts. Native textarea input still owns
+full projected text. These microbenchmarks do not establish input/scroll latency,
+total memory use or full-editor large-file limits.
 
 ## Long wrapped lines
 

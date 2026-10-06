@@ -260,21 +260,39 @@ fn editor_selection(textarea: &web_sys::HtmlTextAreaElement) -> openwebide_core:
     }
 }
 
+fn native_selection_units(
+    textarea: &web_sys::HtmlTextAreaElement,
+) -> openwebide_core::editor::Selection {
+    let start = textarea.selection_start().ok().flatten().unwrap_or(0) as usize;
+    let end = textarea.selection_end().ok().flatten().unwrap_or(0) as usize;
+    if textarea.selection_direction().ok().flatten().as_deref() == Some("backward") {
+        openwebide_core::editor::Selection {
+            anchor: end,
+            head: start,
+        }
+    } else {
+        openwebide_core::editor::Selection {
+            anchor: start,
+            head: end,
+        }
+    }
+}
+
 fn projected_selection(
     actions: EditorActions,
     textarea: &web_sys::HtmlTextAreaElement,
     source: &str,
 ) -> openwebide_core::editor::Selection {
+    let native = native_selection_units(textarea);
     if let Some(projection) = actions
         .projection()
         .filter(openwebide_core::editor::FoldProjection::is_folded)
-        && textarea.value() == projection.text().replace("\r\n", "\n").replace('\r', "\n")
-        && let Ok(selection) =
-            projection.source_selection(document_selection(textarea, projection.text()))
+        && textarea.value() == projection.textarea_text()
+        && let Ok(selection) = projection.source_native_selection(native)
     {
         return selection;
     }
-    document_selection(textarea, source)
+    actions.native_selection(source, native)
 }
 
 fn prepare_editor_edit(
@@ -304,14 +322,13 @@ pub(super) fn render_editor_selection(
     if let Some(projection) = actions.projection()
         && let Ok(visible) = projection.visible_selection(selection)
     {
-        let changed =
-            textarea.value() != projection.text().replace("\r\n", "\n").replace('\r', "\n");
+        let changed = textarea.value() != projection.textarea_text();
         let scroll = (textarea.scroll_top(), textarea.scroll_left());
         if changed {
             textarea.set_value(projection.text());
         }
         if changed || !native {
-            restore_editor_selection(textarea, projection.text(), visible);
+            restore_editor_selection(textarea, &projection, visible);
         }
         textarea.set_scroll_top(scroll.0);
         textarea.set_scroll_left(scroll.1);
@@ -443,7 +460,7 @@ fn apply_fold_command(
         && let Ok(visible) = projection.visible_selection(selection)
     {
         textarea.set_value(projection.text());
-        restore_editor_selection(textarea, projection.text(), visible);
+        restore_editor_selection(textarea, &projection, visible);
         let focus = web_sys::FocusOptions::new();
         focus.set_prevent_scroll(true);
         let _ = textarea.focus_with_options(&focus);
@@ -457,42 +474,15 @@ fn apply_fold_command(
     }
 }
 
-fn document_selection(
-    textarea: &web_sys::HtmlTextAreaElement,
-    text: &str,
-) -> openwebide_core::editor::Selection {
-    use openwebide_core::editor::{Selection, textarea_to_byte};
-    let start = textarea_to_byte(
-        text,
-        textarea.selection_start().ok().flatten().unwrap_or(0) as usize,
-    );
-    let end = textarea_to_byte(
-        text,
-        textarea.selection_end().ok().flatten().unwrap_or(0) as usize,
-    );
-    if textarea.selection_direction().ok().flatten().as_deref() == Some("backward") {
-        Selection {
-            anchor: end,
-            head: start,
-        }
-    } else {
-        Selection {
-            anchor: start,
-            head: end,
-        }
-    }
-}
-
 fn restore_editor_selection(
     textarea: &web_sys::HtmlTextAreaElement,
-    text: &str,
+    projection: &openwebide_core::editor::FoldProjection,
     selection: openwebide_core::editor::Selection,
 ) {
-    use openwebide_core::editor::byte_to_textarea;
     let range = selection.range();
     if let (Ok(start), Ok(end)) = (
-        byte_to_textarea(text, range.start),
-        byte_to_textarea(text, range.end),
+        projection.byte_to_textarea(range.start),
+        projection.byte_to_textarea(range.end),
     ) && let (Ok(start), Ok(end)) = (u32::try_from(start), u32::try_from(end))
     {
         let _ = textarea.set_selection_range_with_direction(
@@ -1808,7 +1798,7 @@ pub fn Editor(
                 if let Some(projection) = editor_actions.projection() {
                     textarea.set_value(projection.text());
                     let source_selection = openwebide_core::editor::Selection { anchor: openwebide_core::editor::utf16_to_byte(&source, start as usize), head: openwebide_core::editor::utf16_to_byte(&source, end as usize) };
-                    if let Ok(visible) = projection.visible_selection(source_selection) { restore_editor_selection(&textarea, projection.text(), visible); }
+                    if let Ok(visible) = projection.visible_selection(source_selection) { restore_editor_selection(&textarea, &projection, visible); }
                     let _ = editor_actions.record_selection(source_selection);
                 } else { let _ = textarea.set_selection_range(start, end); }
                 if let Ok(Some(row)) =
@@ -1875,7 +1865,7 @@ pub fn Editor(
         StoredValue::new_local(None::<(web_sys::HtmlTextAreaElement, Option<(i64, String)>)>);
     Effect::new(move || {
         let current_projection = projection.get();
-        let value = current_projection.text().to_string();
+        let value = current_projection.textarea_text();
         let key = workspace.active_project.get().zip(open_file.get());
         let Some(el) = ta.get() else {
             return;
@@ -1896,14 +1886,14 @@ pub fn Editor(
                 }
             };
             if changed {
-                el.set_value(&value);
+                el.set_value(value);
             }
             if let Some(selection) = editor_actions
                 .selection(&content.get_untracked())
                 .and_then(|selection| current_projection.visible_selection(selection).ok())
                 .or_else(|| mounted.then_some(openwebide_core::editor::Selection::caret(0)))
             {
-                restore_editor_selection(&el, &value, selection);
+                restore_editor_selection(&el, &current_projection, selection);
             }
             el.set_scroll_top(scroll.top);
             el.set_scroll_left(scroll.left);
@@ -2307,7 +2297,7 @@ pub fn Editor(
                                                 if !highlight_ready.get_untracked() { return; }
                                                 let Some(offset) = crate::viewport::editor_caret_from_point(&textarea, event.client_x(), event.client_y()) else { return; };
                                                 let Some(projection) = editor_actions.projection() else { return; };
-                                                let Ok(offset) = projection.source_offset(openwebide_core::editor::textarea_to_byte(projection.text(), offset as usize)) else { return; };
+                                                let Ok(offset) = projection.source_offset(projection.textarea_to_byte(offset as usize)) else { return; };
                                                 let source = content.get_untracked();
                                                 let selection = projected_selection(editor_actions, &textarea, &source);
                                                 if let Err(error) = editor_actions.record_native_selection(selection) { action_error.set(Some(error.to_string())); return; }
@@ -2330,7 +2320,7 @@ pub fn Editor(
                                                     if workspace.pending_epoch.get_untracked() != *epoch || !editor_actions.is_current(*project, path) || editor_actions.source() != *source { return; }
                                                     let Some(offset) = crate::viewport::editor_caret_from_point(&textarea, event.client_x(), event.client_y()) else { return; };
                                                     let Some(projection) = editor_actions.projection() else { return; };
-                                                    let Ok(offset) = projection.source_offset(openwebide_core::editor::textarea_to_byte(projection.text(), offset as usize)) else { return; };
+                                                    let Ok(offset) = projection.source_offset(projection.textarea_to_byte(offset as usize)) else { return; };
                                                     event.prevent_default();
                                                     match editor_actions.select_columns(*project, path, source, *anchor, offset) {
                                                         Ok(Some(selections)) => { action_error.set(None); if let Some(selection) = selections.first() { render_editor_selection(editor_actions, &textarea, *selection, false); } }
@@ -2453,7 +2443,9 @@ pub fn Editor(
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
                                                     && current_editor_target(editor_actions, &textarea)
                                                 {
-                                                    let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked()));
+                                                    workspace.content.with_untracked(|source| {
+                                                        let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, source));
+                                                    });
                                                     editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), textarea.scroll_top(), textarea.scroll_left());
                                                     if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
                                                     layout_revision.update(|revision| *revision = revision.wrapping_add(1));

@@ -22,7 +22,7 @@ fn time(
     });
 }
 /// Run identical storage workloads with a platform clock supplied by the caller.
-/// Ropes are comparison dependencies only; the production document stays unchanged.
+/// Ropes are comparison dependencies only; production text storage remains String.
 pub fn measure(clock: impl Fn() -> f64) -> Vec<Measurement> {
     let mut records = Vec::new();
     for size in [64 * 1024, 2 * 1024 * 1024, 16 * 1024 * 1024] {
@@ -81,6 +81,40 @@ pub fn measure(clock: impl Fn() -> f64) -> Vec<Measurement> {
                     black_box(
                         openwebide_core::editor::byte_to_textarea(&source, black_box(at)).unwrap(),
                     );
+                }
+            },
+        );
+        assert_eq!(doc.byte_to_textarea(at).unwrap(), expected);
+        assert_eq!(doc.textarea_to_byte(expected), at);
+        time(
+            &mut records,
+            &clock,
+            "document_indexed_100_textarea_queries",
+            source.len(),
+            || {
+                for _ in 0..100 {
+                    black_box(doc.byte_to_textarea(black_box(at)).unwrap());
+                    black_box(doc.textarea_to_byte(black_box(expected)));
+                }
+            },
+        );
+        time(
+            &mut records,
+            &clock,
+            "document_cold_projection",
+            source.len(),
+            || {
+                black_box(doc.projection());
+            },
+        );
+        time(
+            &mut records,
+            &clock,
+            "document_1000_warm_projections",
+            source.len(),
+            || {
+                for _ in 0..1000 {
+                    black_box(doc.projection());
                 }
             },
         );
@@ -206,7 +240,7 @@ mod native {
     fn shared_storage_workloads() {
         let start = std::time::Instant::now();
         let records = super::measure(|| start.elapsed().as_secs_f64() * 1000.0);
-        let expected = if cfg!(feature = "candidates") { 30 } else { 12 };
+        let expected = if cfg!(feature = "candidates") { 39 } else { 21 };
         assert_eq!(records.len(), expected);
         assert!(
             records

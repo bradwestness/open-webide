@@ -62,6 +62,7 @@ pub use syntax_providers::{
 };
 mod comments;
 pub use comments::{block_comment, line_comment};
+mod index;
 mod lines;
 mod paste;
 mod reindent;
@@ -197,6 +198,8 @@ struct HistoryStep {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {
     text: String,
+    line_index: index::LineIndex,
+    projection: ProjectionCache,
     saved: String,
     selections: Vec<Selection>,
     history: Vec<HistoryStep>,
@@ -209,6 +212,22 @@ pub struct Document {
     motion_columns: Option<visual_motion::MotionColumns>,
 }
 
+// Derived presentation allocations are outside document identity/history. Clones
+// rebuild lazily, while previously returned projections stay immutable.
+#[derive(Debug, Default)]
+struct ProjectionCache(std::sync::OnceLock<FoldProjection>);
+impl Clone for ProjectionCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+impl PartialEq for ProjectionCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+impl Eq for ProjectionCache {}
+
 const HISTORY_BYTES: usize = 16 * 1024 * 1024;
 const HISTORY_STEPS: usize = 1_000;
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
@@ -218,6 +237,8 @@ impl Document {
         let text = text.into();
         Self {
             saved: text.clone(),
+            line_index: index::LineIndex::new(&text),
+            projection: ProjectionCache::default(),
             text,
             selections: vec![Selection::caret(0)],
             history: Vec::new(),
@@ -236,19 +257,26 @@ impl Document {
     }
     pub fn fold_state_mut(&mut self) -> &mut FoldState {
         self.motion_columns = None;
+        self.projection.0.take();
         &mut self.folds
     }
     pub fn projection(&self) -> FoldProjection {
-        FoldProjection::new(&self.text, &self.folds)
+        self.projection
+            .0
+            .get_or_init(|| FoldProjection::indexed(&self.text, &self.folds, &self.line_index))
+            .clone()
     }
 
     pub fn reveal_selection(&mut self) -> bool {
-        let rows = lines::lines(&self.text);
+        let rows = &self.line_index.rows;
         let mut changed = false;
-        for selected in lines::selected_rows(&rows, &self.selections) {
+        for selected in lines::selected_rows(rows, &self.selections) {
             changed |= self
                 .folds
                 .reveal_lines(selected.start, selected.end.saturating_sub(1));
+        }
+        if changed {
+            self.projection.0.take();
         }
         changed
     }
@@ -259,10 +287,8 @@ impl Document {
         }
         self.motion_columns = None;
         let before = self.selections.clone();
-        let line = self.text[..self.selections[0].head]
-            .bytes()
-            .filter(|byte| *byte == b'\n')
-            .count();
+        let previous_folds = self.folds.clone();
+        let line = lines::row_at(&self.line_index.rows, self.selections[0].head);
         match command {
             FoldCommand::Toggle(header) => {
                 self.folds.toggle(header);
@@ -279,6 +305,9 @@ impl Document {
                 self.folds.reveal(line);
             }
         }
+        if previous_folds != self.folds {
+            self.projection.0.take();
+        }
         let projection = self.projection();
         for selection in &mut self.selections {
             if let Ok(visible) = projection.visible_selection(*selection)
@@ -293,6 +322,22 @@ impl Document {
             self.selection_history.clear();
             self.motion_columns = None;
         }
+    }
+
+    pub fn byte_to_textarea(&self, offset: usize) -> Result<usize, EditError> {
+        self.line_index.byte_to_textarea(&self.text, offset)
+    }
+    pub fn textarea_to_byte(&self, offset: usize) -> usize {
+        self.line_index.textarea_to_byte(&self.text, offset)
+    }
+    pub fn native_selection(&self, selection: Selection) -> Selection {
+        self.line_index.native_selection(&self.text, selection)
+    }
+    pub fn line_column(&self, offset: usize) -> (usize, usize) {
+        self.line_index.line_column(&self.text, offset)
+    }
+    pub fn line_count(&self) -> usize {
+        self.line_index.rows.len()
     }
 
     pub fn text(&self) -> &str {
@@ -366,6 +411,9 @@ impl Document {
         if output > MAX_DOCUMENT_BYTES {
             return Err(EditError::OutputTooLarge);
         }
+        let changed = edits
+            .first()
+            .map(|first| first.range.start..edits.last().unwrap().range.end);
         let (text, inverse) = replace_edits(&self.text, &edits);
         let after = normalize_selections(&text, after)?;
         if text == self.text {
@@ -413,6 +461,11 @@ impl Document {
             self.history_bytes -= self.history.remove(0).bytes;
             self.history_cursor -= 1;
         }
+        if let Some(changed) = changed {
+            let new_end = text.len() - (self.text.len() - changed.end);
+            self.line_index.update(&self.text, &text, changed, new_end);
+        }
+        self.projection.0.take();
         self.folds.rebase(&self.text, &text);
         self.text = text;
         self.selections = after;
@@ -429,10 +482,17 @@ impl Document {
         let step = &self.history[self.history_cursor - 1];
         let mut text = std::borrow::Cow::Borrowed(self.text.as_str());
         for transaction in step.transactions.iter().rev() {
-            text = std::borrow::Cow::Owned(replace_edits(&text, &transaction.inverse).0);
+            let next = replace_edits(&text, &transaction.inverse).0;
+            if let Some(first) = transaction.inverse.first() {
+                let changed = first.range.start..transaction.inverse.last().unwrap().range.end;
+                let new_end = next.len() - (text.len() - changed.end);
+                self.line_index.update(&text, &next, changed, new_end);
+            }
+            text = std::borrow::Cow::Owned(next);
             self.selections.clone_from(&transaction.before);
         }
         let text = text.into_owned();
+        self.projection.0.take();
         self.folds.rebase(&self.text, &text);
         self.text = text;
         self.history_cursor -= 1;
@@ -449,10 +509,17 @@ impl Document {
         let step = &self.history[self.history_cursor];
         let mut text = std::borrow::Cow::Borrowed(self.text.as_str());
         for transaction in &step.transactions {
-            text = std::borrow::Cow::Owned(replace_edits(&text, &transaction.forward).0);
+            let next = replace_edits(&text, &transaction.forward).0;
+            if let Some(first) = transaction.forward.first() {
+                let changed = first.range.start..transaction.forward.last().unwrap().range.end;
+                let new_end = next.len() - (text.len() - changed.end);
+                self.line_index.update(&text, &next, changed, new_end);
+            }
+            text = std::borrow::Cow::Owned(next);
             self.selections.clone_from(&transaction.after);
         }
         let text = text.into_owned();
+        self.projection.0.take();
         self.folds.rebase(&self.text, &text);
         self.text = text;
         self.history_cursor += 1;

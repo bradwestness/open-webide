@@ -37,7 +37,7 @@ export function fit_composer(input) {
     const pane = input.closest('.chat-pane');
     if (!pane || !pane.clientHeight || !input.clientWidth) return;
     const composer = input.closest('.composer');
-    const chrome = [...pane.children].filter(el => el !== composer && !el.classList.contains('messages') && !el.classList.contains('tui-empty-state')).reduce((sum, el) => sum + el.getBoundingClientRect().height, 0);
+    const chrome = [...pane.children].filter(el => el !== composer && !el.matches('.messages, .tui-empty-state, .chat-welcome')).reduce((sum, el) => sum + el.getBoundingClientRect().height, 0);
     const maximum = Math.max(44, Math.min(pane.clientHeight * .8, pane.clientHeight - chrome - 100));
     input.style.overflowY = input.value ? 'auto' : 'hidden';
     if (!input.value) { input.style.height = '44px'; return; }

@@ -1,8 +1,6 @@
 //! Reindent selected lines from shared block contexts; not a formatter.
 use super::{
-    Document, Edit, EditError, Indentation, Structure,
-    lines::{lines, selected_rows},
-    structure::closing,
+    Document, Edit, EditError, Indentation, Structure, lines::selected_rows, structure::closing,
 };
 use crate::highlight::Language;
 impl Document {
@@ -34,8 +32,8 @@ impl Document {
         if !syntax.available() {
             return Ok(false);
         }
-        let rows = lines(&self.text);
-        let selected = selected_rows(&rows, &self.selections);
+        let rows = &self.line_index.rows;
+        let selected = selected_rows(rows, &self.selections);
         let mut stack: Vec<(usize, usize)> = Vec::new();
         let mut cursor = 0;
         let mut edits = Vec::new();
