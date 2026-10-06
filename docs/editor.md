@@ -246,7 +246,11 @@ binary-searches the appropriate row. Long rows retain sparse, Unicode-safe
 byte/native-UTF-16/character checkpoints every approximately 512 bytes. Document
 and folded-view offset queries and cursor line/column status scan only the tail
 after a checkpoint. Rows outside the rebuilt edit region retain their indexes;
-folded views share the same immutable checkpoints.
+folded views share the same immutable checkpoints. Long-row paint and cursor probes
+also share sparse grapheme/UTF-16 coordinates and cached horizontal eligibility;
+unchanged rows retain their allocation. Lookups scan from exact cluster boundaries
+instead of preparing a complete glyph array on each probe. Styled visual-boundary
+measurement and temporary row shaping remain uncached.
 CRLF inverse mapping still selects the original CR, and surrogate offsets retain
 the existing boundary behavior. Projected text, normalized textarea text and
 visible-row coordinates share immutable allocations until source or folds change.

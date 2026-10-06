@@ -102,13 +102,9 @@ impl EditorActions {
             return None;
         }
         let projection = self.projection()?;
-        let line = projection.lines().get(row)?;
-        let raw = &projection.text()[line.visible_start..line.visible_start + line.source.len()];
-        let body = raw
-            .strip_suffix("\r\n")
-            .or_else(|| raw.strip_suffix('\n'))
-            .unwrap_or(raw);
-        openwebide_core::editor::horizontal_paint_bounds(body, scroll, width)
+        projection
+            .visual_line_index(row)?
+            .horizontal_paint_bounds(scroll, width)
     }
     /// Shared selection of visual paint windows; DOM adapters supply exact row
     /// geometry and source boundaries, independent of the workspace transport.

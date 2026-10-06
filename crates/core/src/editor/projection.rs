@@ -125,6 +125,9 @@ impl FoldProjection {
     pub fn textarea_text(&self) -> &str {
         &self.textarea_text
     }
+    pub fn visual_line_index(&self, row: usize) -> Option<super::VisualLineIndex> {
+        self.coordinates.get(row)?.visual()
+    }
     pub fn textarea_to_byte(&self, offset: usize) -> usize {
         let row = self
             .lines

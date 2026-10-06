@@ -16,30 +16,44 @@ pub enum RowPaintWindow {
 /// bidirectional text and embedded display breaks. Geometry adapters validate
 /// retained glyphs, but must not binary-search a source order that can reverse.
 pub fn horizontal_paint_bounds(source: &str, scroll: f64, width: f64) -> Option<Range<f64>> {
+    horizontal_paint_geometry(
+        source.len() > MAX_MEASURE_BYTES
+            && source.len() <= super::MAX_EDITOR_BYTES
+            && source.chars().all(horizontal_paint_character),
+        scroll,
+        width,
+    )
+}
+
+pub(super) fn horizontal_paint_character(ch: char) -> bool {
     use unicode_bidi::BidiClass;
-    if source.len() <= MAX_MEASURE_BYTES
-        || source.len() > super::MAX_EDITOR_BYTES
+    !matches!(
+        unicode_bidi::bidi_class(ch),
+        BidiClass::R
+            | BidiClass::AL
+            | BidiClass::AN
+            | BidiClass::B
+            | BidiClass::LRE
+            | BidiClass::RLE
+            | BidiClass::LRO
+            | BidiClass::RLO
+            | BidiClass::PDF
+            | BidiClass::LRI
+            | BidiClass::RLI
+            | BidiClass::FSI
+            | BidiClass::PDI
+    ) && !matches!(ch, '\r' | '\n' | '\u{2028}')
+}
+
+pub(super) fn horizontal_paint_geometry(
+    eligible: bool,
+    scroll: f64,
+    width: f64,
+) -> Option<Range<f64>> {
+    if !eligible
         || !scroll.is_finite()
         || !width.is_finite()
         || !(1.0..=1_000_000.0).contains(&width)
-        || source.chars().any(|ch| {
-            matches!(
-                unicode_bidi::bidi_class(ch),
-                BidiClass::R
-                    | BidiClass::AL
-                    | BidiClass::AN
-                    | BidiClass::B
-                    | BidiClass::LRE
-                    | BidiClass::RLE
-                    | BidiClass::LRO
-                    | BidiClass::RLO
-                    | BidiClass::PDF
-                    | BidiClass::LRI
-                    | BidiClass::RLI
-                    | BidiClass::FSI
-                    | BidiClass::PDI
-            ) || matches!(ch, '\r' | '\n' | '\u{2028}')
-        })
     {
         return None;
     }

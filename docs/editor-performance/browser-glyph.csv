@@ -1,0 +1,13 @@
+operation,bytes,total_ms
+glyph_dense_construction,66042,0.870
+glyph_sparse_construction,66042,1.560
+glyph_dense_1000_queries,66042,0.000
+glyph_sparse_1000_queries,66042,2.440
+horizontal_source_100_eligibility,66042,65.060
+horizontal_cached_100_eligibility,66042,0.005
+glyph_dense_construction,1048572,14.315
+glyph_sparse_construction,1048572,20.770
+glyph_dense_1000_queries,1048572,0.005
+glyph_sparse_1000_queries,1048572,2.380
+horizontal_source_100_eligibility,1048572,1047.545
+horizontal_cached_100_eligibility,1048572,0.005

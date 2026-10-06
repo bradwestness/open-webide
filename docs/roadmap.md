@@ -122,14 +122,17 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   use horizontal source fragments with viewport-sized overscan, original tab
   origins and scroll extents; source-point probes reveal omitted matches even
   when a row exceeds movement limits. Bidirectional paragraphs and display breaks
-  retain complete paint. Finish bidirectional visual-run windows and cache source
-  eligibility/visual boundaries so scrolling avoids repeated scans and full-row
-  temporary shaping, then further incremental access: edits still materialize
+  retain complete paint. Source eligibility and sparse grapheme/UTF-16 coordinates
+  now share unchanged-row allocations across document and folded views; native/WASM
+  measurements cover construction, distributed queries and metadata retention.
+  Finish bidirectional visual-run windows and cache styled visual boundaries so
+  scrolling avoids full-row temporary shaping, then further incremental access:
+  edits still materialize
   full Strings and shift
   suffix coordinates. Native offset and line/column queries now use shared sparse
   Unicode checkpoints in long rows, including folded views; native/WASM benchmarks
-  cover lookup and construction costs. Glyph preparation still scans within a long
-  line. Native textarea input retains the
+  cover lookup and construction costs. Glyph queries scan from sparse cluster
+  checkpoints; indivisible clusters remain bounded by source limits. Native textarea input retains the
   full projected source.
   Shared admission now bounds full-editor bytes, display breaks and long lines
   before allocating document metadata. Oversized files use bounded read-only

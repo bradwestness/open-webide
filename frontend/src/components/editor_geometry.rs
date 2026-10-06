@@ -2,7 +2,7 @@
 use super::editor::{current_editor_target, sync_highlight_scroll};
 use crate::state_actions::editor::EditorActions;
 use leptos::prelude::*;
-use openwebide_core::editor::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_line_offsets};
+use openwebide_core::editor::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, VisualLineIndex};
 use std::collections::BTreeMap;
 use wasm_bindgen::JsCast;
 
@@ -58,20 +58,25 @@ impl TextNodes {
     }
 }
 
-struct Glyphs {
-    offsets: Vec<(usize, usize)>,
+struct Glyphs<'a> {
+    body: &'a str,
+    index: VisualLineIndex,
     nodes: TextNodes,
     range: web_sys::Range,
     measured: BTreeMap<usize, web_sys::DomRect>,
 }
-impl Glyphs {
-    fn new(row: &web_sys::Element, body: &str) -> Option<Self> {
+impl<'a> Glyphs<'a> {
+    fn new(row: &web_sys::Element, body: &'a str, index: Option<VisualLineIndex>) -> Option<Self> {
         Some(Self {
-            offsets: visual_line_offsets(body).ok()?,
+            body,
+            index: index.or_else(|| VisualLineIndex::new(body))?,
             nodes: TextNodes::new(row)?,
             range: document().create_range().ok()?,
             measured: BTreeMap::new(),
         })
+    }
+    fn at(&self, glyph: usize) -> Option<(usize, usize)> {
+        self.index.at(self.body, glyph)
     }
     fn rect(&mut self, index: usize) -> Option<web_sys::DomRect> {
         if let Some(rect) = self.measured.get(&index) {
@@ -82,10 +87,10 @@ impl Glyphs {
         }
         let (start_node, start_at) = self
             .nodes
-            .position(u32::try_from(self.offsets.get(index)?.1).ok()?)?;
+            .position(u32::try_from(self.at(index)?.1).ok()?)?;
         let (end_node, end_at) = self
             .nodes
-            .position(u32::try_from(self.offsets.get(index + 1)?.1).ok()?)?;
+            .position(u32::try_from(self.at(index + 1)?.1).ok()?)?;
         self.range.set_start(start_node, start_at).ok()?;
         self.range.set_end(end_node, end_at).ok()?;
         let rects = self.range.get_client_rects()?;
@@ -100,7 +105,7 @@ impl Glyphs {
     }
     fn first_at_column(&mut self, minimum: f64, trailing: bool) -> Option<usize> {
         let mut first = 0;
-        let mut last = self.offsets.len().checked_sub(1)?;
+        let mut last = self.index.len().checked_sub(1)?;
         while first < last {
             let middle = first + (last - first) / 2;
             let rect = self.rect(middle)?;
@@ -116,7 +121,7 @@ impl Glyphs {
     // Visual rows increase in source order even when a row contains bidi text.
     fn first_on_row(&mut self, minimum: usize, metrics: &VisualMetrics) -> Option<usize> {
         let mut start = 0;
-        let mut end = self.offsets.len().checked_sub(1)?;
+        let mut end = self.index.len().checked_sub(1)?;
         while start < end {
             let middle = start + (end - start) / 2;
             if self.row(middle, metrics)? < minimum {
@@ -138,6 +143,7 @@ fn window_paint_row(
     body: &str,
     window: &openwebide_core::editor::RowPaintWindow,
     line_height: f64,
+    index: Option<VisualLineIndex>,
 ) -> Option<()> {
     let text = row.text_content()?;
     if text.strip_suffix('\n').unwrap_or(&text) != body.replace('\r', "\n") {
@@ -145,7 +151,7 @@ fn window_paint_row(
     }
     use openwebide_core::editor::RowPaintWindow;
     let bounds = row.get_bounding_client_rect();
-    let mut glyphs = Glyphs::new(row, body)?;
+    let mut glyphs = Glyphs::new(row, body, index)?;
     let (first, last, top, height, horizontal) = match window {
         RowPaintWindow::Wrapped(window) => {
             if (bounds.height() - window.height).abs() > 0.5 {
@@ -198,13 +204,13 @@ fn window_paint_row(
     if first == last || last - first > MAX_VISUAL_CARETS {
         return None;
     }
-    let byte_start = glyphs.offsets[first].0;
-    let byte_end = glyphs.offsets[last].0;
-    let native_start = glyphs.offsets[first].1;
-    let native_end = if last + 1 == glyphs.offsets.len() {
+    let byte_start = glyphs.at(first)?.0;
+    let byte_end = glyphs.at(last)?.0;
+    let native_start = glyphs.at(first)?.1;
+    let native_end = if last + 1 == glyphs.index.len() {
         row.get_attribute("data-paint-length")?.parse().ok()?
     } else {
-        glyphs.offsets[last].1
+        glyphs.at(last)?.1
     };
     let expected = (first..last)
         .map(|index| glyphs.rect(index))
@@ -257,7 +263,7 @@ fn window_paint_row(
     row.set_inner_html("");
     let valid = (|| {
         row.append_child(&fragment).ok()?;
-        let mut painted = Glyphs::new(&fragment, &body[byte_start..byte_end])?;
+        let mut painted = Glyphs::new(&fragment, &body[byte_start..byte_end], None)?;
         for (index, old) in expected.iter().enumerate() {
             let new = painted.rect(index)?;
             if (new.left() - old.left()).abs() > 0.5
@@ -347,7 +353,14 @@ pub(super) fn window_paint(
                 line.source_line + 1
             ))
             .ok()??;
-        changed |= window_paint_row(&row, body, window, line_height).is_some();
+        changed |= window_paint_row(
+            &row,
+            body,
+            window,
+            line_height,
+            projection.visual_line_index(*index),
+        )
+        .is_some();
     }
     if !changed
         || actions.view_revision() != revision
@@ -559,7 +572,11 @@ impl RowMeasurement<'_> {
         let mut glyphs = if body.is_empty() {
             None
         } else {
-            Some(Glyphs::new(&row, body)?)
+            Some(Glyphs::new(
+                &row,
+                body,
+                self.projection.visual_line_index(index),
+            )?)
         };
         let mut current = Vec::new();
         for &(caret, head) in cursors {
@@ -572,14 +589,11 @@ impl RowMeasurement<'_> {
                     rows - 1
                 } else {
                     let glyphs = glyphs.as_mut()?;
-                    let byte = head
-                        .saturating_sub(line.visible_start)
-                        .min(glyphs.offsets.last()?.0);
+                    let byte = head.saturating_sub(line.visible_start).min(body.len());
                     let glyph = glyphs
-                        .offsets
-                        .partition_point(|(at, _)| *at <= byte)
-                        .saturating_sub(1)
-                        .min(glyphs.offsets.len() - 2);
+                        .index
+                        .index_at_byte(body, byte)?
+                        .min(glyphs.index.len() - 2);
                     glyphs.row(glyph, &metrics)?
                 };
             current.push(within);
@@ -604,8 +618,8 @@ impl RowMeasurement<'_> {
             for glyph in start..end {
                 let rect = glyphs.rect(glyph)?;
                 for (offset, x) in [
-                    (glyphs.offsets[glyph].0, rect.left()),
-                    (glyphs.offsets[glyph + 1].0, rect.right()),
+                    (glyphs.at(glyph)?.0, rect.left()),
+                    (glyphs.at(glyph + 1)?.0, rect.right()),
                 ] {
                     carets.push(VisualCaret {
                         offset: line.visible_start + offset,

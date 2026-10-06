@@ -73,6 +73,38 @@ on edits, or eliminate suffix-coordinate shifts. Native textarea input still own
 full projected text. These microbenchmarks do not establish input/scroll latency,
 total memory use or full-editor large-file limits.
 
+## Sparse glyph coordinates and cached eligibility
+
+Long logical rows share immutable grapheme/UTF-16 checkpoints across the document
+and folded views, approximately every 512 source bytes. Paint and cursor probes
+scan from a known cluster boundary instead of retaining a coordinate per glyph.
+Unchanged rows retain the same allocation; edited rows rebuild it. The initial
+scan also caches whether horizontal fragments are safe for the source. DOM visual
+boundaries and styled row shaping are still measured again; this does not finish
+long-line rendering or total-memory work.
+
+The shared native/browser workload compares complete glyph arrays with sparse
+coordinates for Unicode, combining marks and tabs. It checks 1,000 distributed
+lookups and byte-to-glyph inverses, including EOF, and requires estimated sparse
+metadata retention below one eighth of the complete array allocation. One macOS
+arm64 / Chrome 148 observation on 2026-10-06:
+
+| Workload | Source bytes | Native ms | Browser WASM ms |
+| --- | ---: | ---: | ---: |
+| Complete glyph construction | 1,048,572 | 9.701 | 14.315 |
+| Sparse glyph construction and eligibility | 1,048,572 | 17.889 | 20.770 |
+| Sparse glyph queries ×1,000 | 1,048,572 | 2.277 | 2.380 |
+| Source eligibility scans ×100 | 1,048,572 | 981.864 | 1047.545 |
+| Cached eligibility queries ×100 | 1,048,572 | <0.001 | 0.005 |
+
+Construction is slower than the complete coordinate array because it also checks
+horizontal eligibility. Sparse queries trade direct array access for bounded
+Unicode scanning; repeated eligibility queries avoid reclassifying the source.
+An indivisible grapheme can exceed checkpoint spacing, so the admitted source-line
+limit still bounds that exceptional scan. Timings are observations, not latency
+gates. Raw records: [native CSV](editor-performance/native-glyph.csv) and
+[browser CSV](editor-performance/browser-glyph.csv).
+
 ## Long wrapped lines
 
 The existing both-mode Unicode/CRLF regression keeps two cursors deep inside the same large wrapped line. It checks exact Down/Up restoration, unchanged source/history and fewer than 2,000 DOM range measurements. Paint now splits oversized tokens into Unicode-safe text runs, retaining complete grapheme clusters and escaped source. In the local debug browser fixture, splitting runs reduced elapsed fixture time from 9.05 seconds to 1.27 seconds; a Down press used 225 ranges in approximately 130 ms. This is a regression observation, not a claim of final large-file responsiveness.

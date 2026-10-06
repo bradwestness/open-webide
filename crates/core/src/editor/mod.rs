@@ -16,7 +16,9 @@ mod clipboard;
 mod motion;
 mod motion_queue;
 pub use motion_queue::{MotionQueue, MotionRequest};
+mod visual_index;
 mod visual_motion;
+pub use visual_index::VisualLineIndex;
 mod visual_neighbors;
 pub use visual_motion::{
     MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_caret_offsets, visual_line_offsets,

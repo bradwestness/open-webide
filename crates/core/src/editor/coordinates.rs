@@ -14,7 +14,10 @@ struct Coordinate {
 /// Checkpoints are relative to a logical source row, so unchanged rows retain
 /// their index through insertions/deletions above them and folded projections.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct LineCoordinates(Option<Arc<[Coordinate]>>);
+pub(super) struct LineCoordinates {
+    native: Option<Arc<[Coordinate]>>,
+    visual: Option<super::VisualLineIndex>,
+}
 impl LineCoordinates {
     pub fn new(text: &str) -> Self {
         if text.len() <= STEP_BYTES {
@@ -39,10 +42,22 @@ impl LineCoordinates {
             }
             previous_cr = ch == '\r';
         }
-        Self(Some(checkpoints.into()))
+        let body = text
+            .strip_suffix("\r\n")
+            .or_else(|| text.strip_suffix('\n'))
+            .unwrap_or(text);
+        Self {
+            native: Some(checkpoints.into()),
+            visual: (body.len() > super::MAX_MEASURE_BYTES)
+                .then(|| super::VisualLineIndex::new(body))
+                .flatten(),
+        }
+    }
+    pub fn visual(&self) -> Option<super::VisualLineIndex> {
+        self.visual.clone()
     }
     fn checkpoints(&self) -> &[Coordinate] {
-        self.0.as_deref().unwrap_or_default()
+        self.native.as_deref().unwrap_or_default()
     }
     fn byte_start(&self, offset: usize) -> Coordinate {
         self.checkpoints()

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share sparse long-row grapheme coordinates and horizontal-fragment eligibility across unchanged editor rows and folded views in both workspace modes. Paint and cursor probes reuse them; native/WASM measurements compare construction, distributed Unicode queries and metadata retention. Styled visual boundaries and row shaping remain in progress.
+
 - Default chat and agent replies to the remaining model context capacity, recalculated after tool results and compaction in both workspace modes. Honor explicit output limits, retain bounded summary generation and use the provider default when context capacity is unknown.
 
 - Window long unwrapped editor rows horizontally in both workspace modes, retaining full scroll extents, Unicode coordinates and original tab stops. Share fragment cloning and glyph validation with wrapped paint; use a single-caret probe to reveal omitted Find/navigation targets beyond movement limits, and retain complete bidirectional paragraph rendering. Repeated shaping and bidirectional windows remain in progress.

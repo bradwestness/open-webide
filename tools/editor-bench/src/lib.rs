@@ -294,7 +294,92 @@ pub fn measure(clock: impl Fn() -> f64) -> Vec<Measurement> {
             },
         );
     }
+    measure_visual_lines(&mut records, &clock);
     records
+}
+
+fn measure_visual_lines(records: &mut Vec<Measurement>, clock: &impl Fn() -> f64) {
+    use openwebide_core::editor::{VisualLineIndex, horizontal_paint_bounds, visual_line_offsets};
+    for size in [64 * 1024 + 512, 1024 * 1024] {
+        let pattern = "文😀e\u{301}\t words ";
+        let body = pattern.repeat(size / pattern.len());
+        let mut dense = None;
+        time(
+            records,
+            clock,
+            "glyph_dense_construction",
+            body.len(),
+            || {
+                dense = visual_line_offsets(&body).ok();
+            },
+        );
+        let dense = dense.unwrap();
+        let mut sparse = None;
+        time(
+            records,
+            clock,
+            "glyph_sparse_construction",
+            body.len(),
+            || {
+                sparse = VisualLineIndex::new(&body);
+            },
+        );
+        let sparse = sparse.unwrap();
+        assert_eq!(sparse.len(), dense.len());
+        assert!(
+            sparse.retained_bytes() < dense.capacity() * std::mem::size_of::<(usize, usize)>() / 8
+        );
+        let queries: Vec<_> = (0..1000).map(|i| i * (dense.len() - 1) / 999).collect();
+        for &glyph in &queries {
+            let (byte, _) = dense[glyph];
+            assert_eq!(sparse.at(&body, glyph), Some(dense[glyph]));
+            assert_eq!(sparse.index_at_byte(&body, byte), Some(glyph));
+        }
+        time(
+            records,
+            clock,
+            "glyph_dense_1000_queries",
+            body.len(),
+            || {
+                for &glyph in &queries {
+                    black_box(dense[black_box(glyph)]);
+                }
+            },
+        );
+        time(
+            records,
+            clock,
+            "glyph_sparse_1000_queries",
+            body.len(),
+            || {
+                for &glyph in &queries {
+                    black_box(sparse.at(&body, black_box(glyph)).unwrap());
+                }
+            },
+        );
+        time(
+            records,
+            clock,
+            "horizontal_source_100_eligibility",
+            body.len(),
+            || {
+                for i in 0..100 {
+                    black_box(horizontal_paint_bounds(&body, f64::from(i * 100), 400.0));
+                }
+            },
+        );
+        time(
+            records,
+            clock,
+            "horizontal_cached_100_eligibility",
+            body.len(),
+            || {
+                for i in 0..100 {
+                    black_box(sparse.horizontal_paint_bounds(f64::from(i * 100), 400.0));
+                }
+            },
+        );
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]
@@ -322,7 +407,7 @@ mod native {
     fn shared_storage_workloads() {
         let start = std::time::Instant::now();
         let records = super::measure(|| start.elapsed().as_secs_f64() * 1000.0);
-        let expected = if cfg!(feature = "candidates") { 51 } else { 33 };
+        let expected = if cfg!(feature = "candidates") { 63 } else { 45 };
         assert_eq!(records.len(), expected);
         assert!(
             records

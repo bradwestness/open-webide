@@ -149,6 +149,35 @@ impl LineIndex {
 mod tests {
     use super::*;
     #[test]
+    fn visual_source_metadata_is_shared_and_rebuilt_only_for_changed_rows() {
+        let body = "文😀e\u{301}\t words ".repeat(7000);
+        let old = format!("head\r\n{body}\r\n{body}א\r\n");
+        let mut index = LineIndex::new(&old);
+        let ltr = index.coordinates[1].visual().unwrap();
+        let rtl = index.coordinates[2].visual().unwrap();
+        assert!(ltr.horizontal_paint_bounds(0.0, 400.0).is_some());
+        assert!(rtl.horizontal_paint_bounds(0.0, 400.0).is_none());
+        let next = old.replacen("head", "header changed", 1);
+        index.update(&old, &next, 0..4, "header changed".len());
+        assert!(index.coordinates[1].visual().unwrap().shared_with(&ltr));
+        assert!(index.coordinates[2].visual().unwrap().shared_with(&rtl));
+        let projection = super::super::FoldProjection::indexed(
+            &next,
+            &super::super::FoldState::default(),
+            &index,
+        );
+        assert!(projection.visual_line_index(1).unwrap().shared_with(&ltr));
+        let at = next.find(&body).unwrap();
+        let mut changed = next.clone();
+        changed.insert(at, 'א');
+        index.update(&next, &changed, at..at, at + 'א'.len_utf8());
+        let updated = index.coordinates[1].visual().unwrap();
+        assert!(!updated.shared_with(&ltr));
+        assert!(updated.horizontal_paint_bounds(0.0, 400.0).is_none());
+        assert!(index.coordinates[2].visual().unwrap().shared_with(&rtl));
+        assert_eq!(index, LineIndex::new(&changed));
+    }
+    #[test]
     fn long_row_coordinates_survive_edits_history_composition_and_folds() {
         use super::super::{Document, Edit, FoldCommand, FoldRange, NativeInputKind};
         fn verify(document: &Document) {
