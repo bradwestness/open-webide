@@ -21,6 +21,14 @@ for help, review its changes, and work with Git and a terminal—all in one plac
 
 </div>
 
+<figure class="app-screenshot" markdown="1">
+
+[![Open WebIDE running as an installed PWA, with a project file tree, split code diff, and model chat](docs/assets/openwebide-pwa.png)](docs/assets/openwebide-pwa.png)
+
+<figcaption>Open WebIDE running as an installed PWA. Review code changes alongside your model conversation.</figcaption>
+
+</figure>
+
 <div class="features" markdown="1">
 
 <section markdown="1">
