@@ -254,8 +254,9 @@ The file tab strip keeps opening order, shows unsaved indicators, and supports
 Left/Right/Home/End navigation. Closing an unsaved file asks before discarding it;
 Cancel leaves it open. Closing the selected file chooses an adjacent tab. A close
 confirmation cannot discard newer edits or files from another account/project.
-Database draft/reload recovery is still on the roadmap; refreshing currently loses
-these in-memory buffers.
+The recovery facade loads saved tabs and drafts when a project opens and saves
+committed changes after a short debounce. A fresh window restores the selected
+file and independent drafts from user-scoped database recovery.
 
 ## Recovery contract (integration in progress)
 
@@ -279,9 +280,13 @@ The frontend backend facade now exposes typed recovery requests and collects
 coherent active/hidden snapshots with the original saved baselines. HTTP 409 is
 kept distinct from transport errors; recovery replies and save acknowledgements
 are validated. Old-session REST responses cannot expire a newly active session.
-Client autosave, hydration, workspace permissions, disk-change/conflict feedback
-and retry behavior still need integration. The app currently keeps buffers in
-memory; refreshing still loses them.
+Automatic loading and debounced saves are installed in the app. Saves are serialized
+per project; edits arriving during a write are saved after its acknowledgement.
+Failures keep the last acknowledged revision and current drafts; Retry recovery
+resumes writes. A revision conflict pauses writes until Restore saved files or Keep
+this window is confirmed. Late loads cannot discard files opened or edited in flight.
+Real-server reload/permission verification and richer host-file conflict resolution
+remain in progress.
 
 Recovery hydration primitives prepare all documents before publishing any state,
 restore ordered tabs and active or hidden buffers, and preserve unrelated workspace
@@ -290,5 +295,8 @@ selection, draft, or composition. Old media URLs are returned to the caller for
 revocation. Shared disk reconciliation preserves conflicting/missing drafts, detects
 an already completed write, and refreshes clean files. Optional disk reads distinguish
 missing ancestors from permission/transport errors through the same Workspace
-primitive used by rewind. The automatic scheduler, hydration wiring and conflict UI
-remain pending; these primitives alone do not restore files on refresh.
+primitive used by rewind. Recovered files are checked before host Save is enabled,
+and their baseline is checked again before a write. Missing/changed/unavailable host
+files preserve drafts and show feedback with Check disk again. Existing folder access
+controls restore local permissions. Explicit host conflict review/reload/overwrite
+controls and end-to-end server/device reload verification remain pending.

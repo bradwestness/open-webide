@@ -315,6 +315,12 @@ impl FileTreeActions {
                 paths.retain(|file| !contains_path(path, file));
             }
         });
+        self.workspace.editor_recovery_checks.update(|checks| {
+            checks.retain(|(id, file), _| Some(*id) != project || !contains_path(path, file));
+        });
+        self.workspace.editor_recovered.update(|files| {
+            files.retain(|(id, file)| Some(*id) != project || !contains_path(path, file));
+        });
         self.workspace.editor_buffers.update(|buffers| {
             buffers.retain(|(id, file), _| Some(*id) != project || !contains_path(path, file));
         });

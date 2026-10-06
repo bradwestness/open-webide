@@ -100,9 +100,12 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   snapshots, revision-guarded user-scoped SQLite/API storage, typed frontend
   transport and active/hidden buffer collection are in place. Transactional
   hydration and shared disk reconciliation preserve baselines and reject stale
-  editor activity. Wire autosave, tab/selected-file hydration and draft restoration into the shared frontend
-  facade after refresh or in a new window, with workspace permissions, disk-change
-  handling, retry/conflict feedback and stale-result guards.
+  editor activity. The shared frontend facade now loads tabs/selected files and
+  drafts and serializes debounced database saves. Failed writes retain drafts;
+  explicit restore/keep choices resolve database revision conflicts. Disk checks
+  block unsafe host saves and use the existing folder-access flow. Finish host
+  conflict review/reload/overwrite controls, permission/error regression coverage
+  and real-server reload/new-window verification.
   Coordinate draft/reload recovery with the existing Offline & error-state recovery
   item instead of implementing separate persistence.
 

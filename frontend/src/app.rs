@@ -184,6 +184,19 @@ pub fn App() -> impl IntoView {
         ..
     } = workspace_actions;
 
+    let editor_recovery = crate::state::editor_recovery::EditorRecoveryState::new();
+    provide_context(editor_recovery);
+    let recovery_actions = crate::state_actions::editor_recovery::RecoveryActions::new(
+        api,
+        auth,
+        projects_state,
+        workspace_state,
+        editor_recovery,
+        ws_read_only,
+        request_open,
+    );
+    provide_context(recovery_actions);
+
     let git_actions = GitActions::new(GitActionContext {
         project_git,
         projects: projects_state,

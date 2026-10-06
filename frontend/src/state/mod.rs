@@ -12,3 +12,5 @@ pub mod workspace;
 pub mod reviews;
 
 pub mod responsive;
+
+pub mod editor_recovery;

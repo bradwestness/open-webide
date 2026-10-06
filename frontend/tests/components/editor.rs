@@ -4426,3 +4426,687 @@ async fn recovery_hydration_and_disk_reconciliation_use_both_real_workspace_adap
         }
     }
 }
+
+fn sign_in_recovery(state: &super::support::TestState) {
+    state.auth.set_user(openwebide_core::User {
+        id: openwebide_core::UserId::new(1),
+        username: "alice".into(),
+        role: openwebide_core::UserRole::User,
+        created_at: 0,
+    });
+    state.projects.projects_loaded.set(true);
+}
+
+#[wasm_bindgen_test]
+async fn automatic_editor_recovery_restores_and_saves_drafts_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{
+            Document, EditorRecovery, EditorRecoveryFile, EditorRecoveryRecord, EditorRecoveryRoot,
+            RecoveryScroll, Selection,
+        },
+    };
+    use openwebide_frontend::{
+        state::editor_recovery::{EditorRecoveryState, RecoveryPhase},
+        state_actions::{editor::EditorActions, workspace::WorkspaceActions},
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let folder = if mode == WorkspaceMode::Local {
+            Some(editorConfigFolder().await.unwrap())
+        } else {
+            None
+        };
+        let handle = folder.as_ref().map(editorConfigHandle);
+        let slots = std::rc::Rc::new(std::cell::Cell::new(None));
+        let capture = slots.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            sign_in_recovery(&state);
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            if let Some(handle) = handle {
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+            }
+            state
+                .fake
+                .files
+                .borrow_mut()
+                .insert((1, "src/a.rs".into()), "😀\r\n  tail  ".into());
+            let mut doc = Document::new("😀\r\n  tail  ");
+            doc.replace_selections("draft ", None).unwrap();
+            state.fake.editor_recovery_records.borrow_mut().insert(
+                1,
+                EditorRecoveryRecord {
+                    revision: 7,
+                    state: EditorRecovery {
+                        format: 1,
+                        root: Some(EditorRecoveryRoot::for_project(
+                            &state.projects.project(1).unwrap(),
+                        )),
+                        selected: Some("src/a.rs".into()),
+                        files: vec![EditorRecoveryFile {
+                            path: "src/a.rs".into(),
+                            document: Some(doc.recovery()),
+                            scroll: RecoveryScroll::default(),
+                            read_only: false,
+                        }],
+                    },
+                },
+            );
+            let view = super::support::recovery_editor_view(state);
+            capture.set(Some((
+                expect_context::<EditorRecoveryState>(),
+                expect_context::<WorkspaceActions>(),
+            )));
+            view
+        });
+        let (recovery, actions) = slots.get().unwrap();
+        wait_until("automatic draft hydration and disk check", || {
+            recovery.projects.with_untracked(|projects| {
+                projects
+                    .get(&1)
+                    .is_some_and(|entry| entry.phase == RecoveryPhase::Ready)
+            }) && mounted.state.workspace.open_file.get_untracked().as_deref() == Some("src/a.rs")
+                && mounted
+                    .state
+                    .workspace
+                    .editor_recovery_checks
+                    .with_untracked(std::collections::HashMap::is_empty)
+        })
+        .await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "draft 😀\r\n  tail  "
+        );
+        assert!(mounted.state.workspace.dirty.get_untracked());
+        let editor = EditorActions::new(mounted.state.workspace);
+        let projected = "latest draft 😀\n  tail  ";
+        editor
+            .native_input(
+                projected.into(),
+                Selection::caret(projected.len()),
+                "insertText",
+                1.0,
+            )
+            .unwrap();
+        wait_until("automatic recovery save", || {
+            mounted
+                .state
+                .fake
+                .editor_recovery_records
+                .borrow()
+                .get(&1)
+                .is_some_and(|record| {
+                    record.revision > 7
+                        && record.state.files[0].document.as_ref().unwrap().text
+                            == "latest draft 😀\r\n  tail  "
+                })
+        })
+        .await;
+        assert_eq!(
+            mounted.state.fake.files.borrow()[&(1, "src/a.rs".into())],
+            "😀\r\n  tail  "
+        );
+        let saved = mounted.state.fake.editor_recovery_records.borrow()[&1].clone();
+        let handle = folder.as_ref().map(editorConfigHandle);
+        let second =
+            super::support::mount_test_with_backend(mounted.state.fake.clone(), move |state| {
+                state.seed_project();
+                sign_in_recovery(&state);
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                if let Some(handle) = handle {
+                    state.projects.local_handles.update(|handles| {
+                        handles.insert(1, handle.unchecked_into());
+                    });
+                }
+                super::support::recovery_editor_view(state)
+            });
+        wait_until("fresh window restores selected file and draft", || {
+            second.state.workspace.open_file.get_untracked().as_deref() == Some("src/a.rs")
+                && second.state.workspace.content.get_untracked() == "latest draft 😀\r\n  tail  "
+                && second
+                    .state
+                    .workspace
+                    .editor_recovery_checks
+                    .with_untracked(std::collections::HashMap::is_empty)
+        })
+        .await;
+        assert!(second.state.workspace.dirty.get_untracked());
+        assert_eq!(
+            second
+                .state
+                .workspace
+                .editor_documents
+                .with_untracked(|documents| documents[&(1, "src/a.rs".into())].recovery().saved),
+            "😀\r\n  tail  "
+        );
+        drop(second);
+        actions.close_file.run("src/a.rs".into());
+        mounted
+            .state
+            .ui
+            .confirm
+            .get_untracked()
+            .unwrap()
+            .action
+            .run(());
+        wait_until("close-all recovery tombstone", || {
+            mounted.state.fake.editor_recovery_records.borrow()[&1]
+                .state
+                .files
+                .is_empty()
+        })
+        .await;
+        assert!(mounted.state.fake.editor_recovery_records.borrow()[&1].revision > saved.revision);
+        if let Some(folder) = folder {
+            editorConfigCleanup(&folder).await.unwrap();
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn editor_recovery_coalesces_slow_writes_and_preserves_errors_and_revision_conflicts() {
+    use openwebide_core::editor::Selection;
+    use openwebide_frontend::{
+        backend::RecoveryError,
+        state::editor_recovery::{EditorRecoveryState, RecoveryPhase},
+        state_actions::editor::EditorActions,
+    };
+    let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let capture = slot.clone();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        sign_in_recovery(&state);
+        state.workspace.open_file.set(Some("a.rs".into()));
+        state.workspace.content.set("base".into());
+        let view = super::support::recovery_editor_view(state);
+        capture.set(Some(expect_context::<EditorRecoveryState>()));
+        view
+    });
+    let recovery = slot.get().unwrap();
+    wait_until("recovery ready", || {
+        recovery.projects.with_untracked(|projects| {
+            projects
+                .get(&1)
+                .is_some_and(|entry| entry.phase == RecoveryPhase::Ready)
+        })
+    })
+    .await;
+    let editor = EditorActions::new(mounted.state.workspace);
+    let (send, receive) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .recovery_save_results
+        .borrow_mut()
+        .push_back(receive);
+    editor
+        .native_input("first".into(), Selection::caret(5), "insertText", 1.0)
+        .unwrap();
+    wait_until("slow recovery write", || {
+        recovery
+            .projects
+            .with_untracked(|projects| projects[&1].writing)
+    })
+    .await;
+    editor
+        .native_input("newest".into(), Selection::caret(6), "insertText", 2.0)
+        .unwrap();
+    send.send(Ok(())).unwrap();
+    wait_until("coalesced newest draft", || {
+        mounted
+            .state
+            .fake
+            .editor_recovery_records
+            .borrow()
+            .get(&1)
+            .is_some_and(|record| record.state.files[0].document.as_ref().unwrap().text == "newest")
+    })
+    .await;
+    let (send, receive) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .recovery_save_results
+        .borrow_mut()
+        .push_back(receive);
+    send.send(Err(RecoveryError::Unavailable("offline".into())))
+        .unwrap();
+    editor
+        .native_input(
+            "offline draft".into(),
+            Selection::caret(13),
+            "insertText",
+            3.0,
+        )
+        .unwrap();
+    wait_until("visible recovery failure", || {
+        recovery
+            .projects
+            .with_untracked(|projects| matches!(projects[&1].phase, RecoveryPhase::SaveFailed(_)))
+    })
+    .await;
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        "offline draft"
+    );
+    mounted.click_text("Retry recovery");
+    wait_until("retry saves retained draft", || {
+        mounted.state.fake.editor_recovery_records.borrow()[&1]
+            .state
+            .files[0]
+            .document
+            .as_ref()
+            .unwrap()
+            .text
+            == "offline draft"
+    })
+    .await;
+    mounted
+        .state
+        .fake
+        .editor_recovery_records
+        .borrow_mut()
+        .get_mut(&1)
+        .unwrap()
+        .revision += 1;
+    editor
+        .native_input(
+            "window draft".into(),
+            Selection::caret(12),
+            "insertText",
+            4.0,
+        )
+        .unwrap();
+    wait_until("revision conflict stops recovery writes", || {
+        recovery
+            .projects
+            .with_untracked(|projects| matches!(projects[&1].phase, RecoveryPhase::Conflict(_)))
+    })
+    .await;
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        "window draft"
+    );
+    assert_eq!(
+        mounted.state.fake.editor_recovery_records.borrow()[&1]
+            .state
+            .files[0]
+            .document
+            .as_ref()
+            .unwrap()
+            .text,
+        "offline draft"
+    );
+    mounted.click_text("Keep this window");
+    mounted
+        .state
+        .ui
+        .confirm
+        .get_untracked()
+        .unwrap()
+        .action
+        .run(());
+    wait_until("explicit conflict choice saves this window", || {
+        mounted.state.fake.editor_recovery_records.borrow()[&1]
+            .state
+            .files[0]
+            .document
+            .as_ref()
+            .unwrap()
+            .text
+            == "window draft"
+    })
+    .await;
+}
+
+fn draft_record(
+    project: &openwebide_core::Project,
+) -> openwebide_core::editor::EditorRecoveryRecord {
+    use openwebide_core::editor::*;
+    let mut document = Document::new("base");
+    document.replace_selections("draft ", None).unwrap();
+    EditorRecoveryRecord {
+        revision: 1,
+        state: EditorRecovery {
+            format: 1,
+            root: Some(EditorRecoveryRoot::for_project(project)),
+            selected: Some("a.rs".into()),
+            files: vec![EditorRecoveryFile {
+                path: "a.rs".into(),
+                document: Some(document.recovery()),
+                scroll: RecoveryScroll::default(),
+                read_only: false,
+            }],
+        },
+    }
+}
+
+#[wasm_bindgen_test]
+async fn editor_recovery_late_load_preserves_new_files_and_does_not_cross_accounts() {
+    use openwebide_frontend::{
+        state::editor_recovery::{EditorRecoveryState, RecoveryPhase},
+        state_actions::workspace::WorkspaceActions,
+    };
+    let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let capture = slot.clone();
+    let (send, receive) = futures::channel::oneshot::channel();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        sign_in_recovery(&state);
+        state
+            .fake
+            .files
+            .borrow_mut()
+            .insert((1, "new.rs".into()), "new file".into());
+        state
+            .fake
+            .recovery_load_results
+            .borrow_mut()
+            .push_back(receive);
+        let view = super::support::recovery_editor_view(state);
+        capture.set(Some((
+            expect_context::<EditorRecoveryState>(),
+            expect_context::<WorkspaceActions>(),
+        )));
+        view
+    });
+    let (recovery, actions) = slot.get().unwrap();
+    wait_until("deferred recovery load", || {
+        mounted.state.fake.calls.borrow().iter().any(|call| {
+            matches!(
+                call,
+                openwebide_frontend::testing::fake_backend::Call::Request {
+                    method: "editor_recovery"
+                }
+            )
+        })
+    })
+    .await;
+    actions.request_open.run("new.rs".into());
+    wait_until("new file opened before recovery response", || {
+        mounted.state.workspace.content.get_untracked() == "new file"
+    })
+    .await;
+    send.send(Ok(draft_record(
+        &mounted.state.projects.project(1).unwrap(),
+    )))
+    .unwrap();
+    wait_until("late load offers explicit choice", || {
+        recovery
+            .projects
+            .with_untracked(|projects| matches!(projects[&1].phase, RecoveryPhase::Conflict(_)))
+    })
+    .await;
+    assert_eq!(
+        mounted.state.workspace.open_file.get_untracked().as_deref(),
+        Some("new.rs")
+    );
+    assert_eq!(mounted.state.workspace.content.get_untracked(), "new file");
+    let (send, receive) = futures::channel::oneshot::channel();
+    mounted
+        .state
+        .fake
+        .recovery_load_results
+        .borrow_mut()
+        .push_back(receive);
+    mounted.click_text("Restore saved files");
+    mounted
+        .state
+        .ui
+        .confirm
+        .get_untracked()
+        .unwrap()
+        .action
+        .run(());
+    wait_until("replacement load", || {
+        recovery
+            .projects
+            .with_untracked(|projects| projects[&1].phase == RecoveryPhase::Loading)
+    })
+    .await;
+    mounted.state.auth.logout();
+    mounted.state.workspace.reset();
+    mounted.state.projects.projects_loaded.set(false);
+    settle().await;
+    send.send(Ok(draft_record(
+        &mounted.state.projects.project(1).unwrap(),
+    )))
+    .unwrap();
+    settle().await;
+    assert!(mounted.state.workspace.open_file.get_untracked().is_none());
+    assert!(
+        recovery
+            .projects
+            .with_untracked(std::collections::HashMap::is_empty)
+    );
+}
+
+#[wasm_bindgen_test]
+async fn editor_recovery_disk_conflict_blocks_host_save_and_retry_keeps_the_draft() {
+    use openwebide_frontend::{
+        state::workspace::RecoveredFileIssue, state_actions::workspace::WorkspaceActions,
+    };
+    let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let capture = slot.clone();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        sign_in_recovery(&state);
+        state
+            .fake
+            .files
+            .borrow_mut()
+            .insert((1, "a.rs".into()), "external".into());
+        state
+            .fake
+            .editor_recovery_records
+            .borrow_mut()
+            .insert(1, draft_record(&state.projects.project(1).unwrap()));
+        let view = super::support::recovery_editor_view(state);
+        capture.set(Some(expect_context::<WorkspaceActions>()));
+        view
+    });
+    wait_until("disk conflict", || {
+        mounted
+            .state
+            .workspace
+            .editor_recovery_checks
+            .with_untracked(|checks| {
+                checks.get(&(1, "a.rs".into())) == Some(&RecoveredFileIssue::Conflict)
+            })
+    })
+    .await;
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        "draft base"
+    );
+    slot.get().unwrap().on_save.run(());
+    settle().await;
+    assert_eq!(
+        mounted.state.fake.files.borrow()[&(1, "a.rs".into())],
+        "external"
+    );
+    mounted
+        .state
+        .fake
+        .files
+        .borrow_mut()
+        .insert((1, "a.rs".into()), "base".into());
+    mounted.click_text("Check disk again");
+    wait_until("verified original baseline", || {
+        mounted
+            .state
+            .workspace
+            .editor_recovery_checks
+            .with_untracked(std::collections::HashMap::is_empty)
+    })
+    .await;
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        "draft base"
+    );
+    slot.get().unwrap().on_save.run(());
+    wait_until("save after baseline verification", || {
+        mounted.state.fake.files.borrow()[&(1, "a.rs".into())] == "draft base"
+    })
+    .await;
+}
+
+#[wasm_bindgen_test]
+async fn editor_recovery_changed_root_blocks_saves_without_discarding_the_draft() {
+    use openwebide_frontend::{
+        state::editor_recovery::{EditorRecoveryState, RecoveryPhase},
+        state_actions::workspace::WorkspaceActions,
+    };
+    let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let capture = slot.clone();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        sign_in_recovery(&state);
+        state
+            .fake
+            .files
+            .borrow_mut()
+            .insert((1, "a.rs".into()), "base".into());
+        state
+            .fake
+            .editor_recovery_records
+            .borrow_mut()
+            .insert(1, draft_record(&state.projects.project(1).unwrap()));
+        let view = super::support::recovery_editor_view(state);
+        capture.set(Some((
+            expect_context::<WorkspaceActions>(),
+            expect_context::<EditorRecoveryState>(),
+        )));
+        view
+    });
+    let (actions, recovery) = slot.get().unwrap();
+    wait_until("verified recovered draft", || {
+        mounted.state.workspace.content.get_untracked() == "draft base"
+            && mounted
+                .state
+                .workspace
+                .editor_recovery_checks
+                .with_untracked(std::collections::HashMap::is_empty)
+    })
+    .await;
+    mounted
+        .state
+        .projects
+        .projects
+        .update(|projects| projects[0].path = Some("different-root".into()));
+    actions.on_save.run(());
+    wait_until("changed root pauses database saves", || {
+        recovery
+            .projects
+            .with_untracked(|projects| matches!(projects[&1].phase, RecoveryPhase::Conflict(_)))
+    })
+    .await;
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        "draft base"
+    );
+    assert_eq!(
+        mounted.state.fake.files.borrow()[&(1, "a.rs".into())],
+        "base"
+    );
+    assert_eq!(
+        mounted.state.fake.editor_recovery_records.borrow()[&1]
+            .state
+            .root
+            .as_ref()
+            .unwrap()
+            .path
+            .as_deref(),
+        Some("test")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn editor_recovery_retains_local_draft_until_folder_access_returns() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::workspace::WorkspaceActions;
+    let folder = editorConfigFolder().await.unwrap();
+    let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let capture = slot.clone();
+    let mounted = mount_test(move |state| {
+        state.seed_project();
+        sign_in_recovery(&state);
+        state
+            .projects
+            .projects
+            .update(|projects| projects[0].mode = WorkspaceMode::Local);
+        let project = state.projects.project(1).unwrap();
+        let mut record = draft_record(&project);
+        let mut document = openwebide_core::editor::Document::new("😀\r\n  tail  ");
+        document.replace_selections("draft ", None).unwrap();
+        record.state.selected = Some("src/a.rs".into());
+        record.state.files[0].path = "src/a.rs".into();
+        record.state.files[0].document = Some(document.recovery());
+        state
+            .fake
+            .editor_recovery_records
+            .borrow_mut()
+            .insert(1, record);
+        let view = super::support::recovery_editor_view(state);
+        capture.set(Some(expect_context::<WorkspaceActions>()));
+        view
+    });
+    wait_until("draft retained without a directory handle", || {
+        mounted.state.workspace.content.get_untracked() == "draft 😀\r\n  tail  "
+            && mounted
+                .state
+                .projects
+                .needs_grant
+                .with_untracked(|ids| ids.contains(&1))
+    })
+    .await;
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Grant folder access")
+    );
+    let actions = slot.get().unwrap();
+    actions.on_save.run(());
+    mounted.state.projects.local_handles.update(|handles| {
+        handles.insert(1, editorConfigHandle(&folder).unchecked_into());
+    });
+    mounted.state.projects.needs_grant.update(|ids| {
+        ids.remove(&1);
+    });
+    wait_until("restored handle verifies the original baseline", || {
+        mounted
+            .state
+            .workspace
+            .editor_recovery_checks
+            .with_untracked(std::collections::HashMap::is_empty)
+    })
+    .await;
+    assert_eq!(
+        mounted.state.workspace.content.get_untracked(),
+        "draft 😀\r\n  tail  "
+    );
+    actions.on_save.run(());
+    let ws = openwebide_frontend::workspace::Workspace::for_project(
+        mounted.state.api,
+        mounted.state.projects,
+        1,
+    )
+    .unwrap();
+    // Save applies the file's actual nested EditorConfig policies.
+    wait_until("saving recovered file after access returns", || {
+        !mounted.state.workspace.dirty.get_untracked()
+    })
+    .await;
+    assert_eq!(ws.read("src/a.rs").await.unwrap(), "draft 😀\n  tail\n");
+    editorConfigCleanup(&folder).await.unwrap();
+}

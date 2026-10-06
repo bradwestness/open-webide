@@ -1210,6 +1210,17 @@ pub fn Editor(
             || workspace.is_resolving()
             || file_tree_actions.is_some_and(|actions| actions.busy.get())
     });
+    let recovery_blocks_save = Memo::new(move |_| {
+        workspace
+            .active_project
+            .get()
+            .zip(workspace.open_file.get())
+            .is_some_and(|key| {
+                workspace
+                    .editor_recovery_checks
+                    .with(|checks| checks.contains_key(&key))
+            })
+    });
     let projects = expect_context::<ProjectsState>();
     let git = expect_context::<GitState>();
 
@@ -1874,7 +1885,7 @@ pub fn Editor(
                                                 <Button
                                                     variant=if dirty.get() { ButtonVariant::Primary } else { ButtonVariant::Default }
                                                     size=ButtonSize::Sm
-                                                    disabled=Signal::derive(move || read_only.get() || !dirty.get())
+                                                    disabled=Signal::derive(move || read_only.get() || !dirty.get() || recovery_blocks_save.get())
                                                     on_click=Callback::new(move |_| on_save.run(()))
                                                 >
                                                     "Save"
@@ -1915,7 +1926,7 @@ pub fn Editor(
                                     <Button
                                         variant=if dirty.get() { ButtonVariant::Primary } else { ButtonVariant::Default }
                                         size=ButtonSize::Sm
-                                        disabled=Signal::derive(move || !dirty.get())
+                                        disabled=Signal::derive(move || read_only.get() || !dirty.get() || recovery_blocks_save.get())
                                         on_click=Callback::new(move |_| on_save.run(()))
                                     >
                                         "Save"
@@ -2008,6 +2019,7 @@ pub fn Editor(
                     <p class="form-error" role="alert">{move || search_result.with(|result| result.as_ref().err().map(ToString::to_string)).or_else(|| replacement_error.get()).unwrap_or_default()}</p>
                 </Show>
             </Show>
+            <super::editor_recovery::RecoveryStatus />
             <Show when=move || action_error.get().is_some()>
                 <p class="editor-error" role="alert">{move || action_error.get().unwrap_or_default()}</p>
             </Show>

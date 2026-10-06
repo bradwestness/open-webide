@@ -24,6 +24,29 @@ pub struct EditorBuffer {
     pub read_only: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveredFileIssue {
+    Pending,
+    Conflict,
+    Missing,
+    Unavailable(String),
+}
+
+impl RecoveredFileIssue {
+    pub fn message(&self) -> String {
+        match self {
+            Self::Pending => "Checking recovered file against disk…".into(),
+            Self::Conflict => {
+                "The disk file changed since this draft was saved. Your draft is preserved.".into()
+            }
+            Self::Missing => {
+                "The recovered file is missing from disk. Your draft is preserved.".into()
+            }
+            Self::Unavailable(error) => format!("Could not verify recovered file: {error}"),
+        }
+    }
+}
+
 /// Captured before an asynchronous recovery load. A hydration must not replace
 /// editor activity, pending reads, or a reset that occurred while loading.
 #[derive(Clone, Debug)]
@@ -154,6 +177,9 @@ pub struct WorkspaceState {
     pub editor_tabs: RwSignal<HashMap<i64, Vec<String>>>,
     pub editor_buffers: RwSignal<HashMap<(i64, String), EditorBuffer>>,
     pub editor_loading: RwSignal<bool>,
+    /// Recovered files cannot overwrite host text before their baseline is checked.
+    pub editor_recovery_checks: RwSignal<HashMap<(i64, String), RecoveredFileIssue>>,
+    pub editor_recovered: RwSignal<HashSet<(i64, String)>>,
     pub editor_read_revision: RwSignal<u64>,
     pub editor_documents: RwSignal<HashMap<(i64, String), openwebide_core::editor::Document>>,
     // Browser parser allocation is thread-local; the wrapper enforces owner-thread access.
@@ -203,6 +229,8 @@ impl WorkspaceState {
             editor_tabs: RwSignal::new(HashMap::new()),
             editor_buffers: RwSignal::new(HashMap::new()),
             editor_loading: RwSignal::new(false),
+            editor_recovery_checks: RwSignal::new(HashMap::new()),
+            editor_recovered: RwSignal::new(HashSet::new()),
             editor_read_revision: RwSignal::new(0),
             editor_documents: RwSignal::new(HashMap::new()),
             editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(HashMap::new())),
@@ -399,6 +427,29 @@ impl WorkspaceState {
         })
     }
 
+    pub fn editor_recovery_guard_matches(
+        &self,
+        project: &openwebide_core::Project,
+        guard: &EditorRecoveryGuard,
+        active_read_only: bool,
+    ) -> bool {
+        if self.editor_composition.with_untracked(|composition| {
+            composition
+                .as_ref()
+                .is_some_and(|composition| composition.key.0 == project.id)
+        }) {
+            return false;
+        }
+        self.editor_recovery_guard(project, active_read_only)
+            .is_ok_and(|current| {
+                current.project == guard.project
+                    && current.epoch == guard.epoch
+                    && current.read_revision == guard.read_revision
+                    && current.documents == guard.documents
+                    && current.state == guard.state
+            })
+    }
+
     /// Install a validated project recovery atomically. The caller guards account
     /// and root/handle identity around I/O, then verifies disk baselines before save.
     /// None means newer editor activity won; no partial state is published.
@@ -415,20 +466,7 @@ impl WorkspaceState {
         }) {
             return Err("The recovered files belong to a different project folder".into());
         }
-        if self.editor_composition.with_untracked(|composition| {
-            composition
-                .as_ref()
-                .is_some_and(|composition| composition.key.0 == project.id)
-        }) {
-            return Ok(None);
-        }
-        let current = self.editor_recovery_guard(project, active_read_only)?;
-        if current.project != guard.project
-            || current.epoch != guard.epoch
-            || current.read_revision != guard.read_revision
-            || current.documents != guard.documents
-            || current.state != guard.state
-        {
+        if !self.editor_recovery_guard_matches(project, guard, active_read_only) {
             return Ok(None);
         }
         let PreparedEditorRecovery {
@@ -523,6 +561,12 @@ impl WorkspaceState {
             }
         });
         let key = (project, path.to_string());
+        self.editor_recovery_checks.update(|checks| {
+            checks.remove(&key);
+        });
+        self.editor_recovered.update(|files| {
+            files.remove(&key);
+        });
         self.editor_buffers.update(|buffers| {
             buffers.remove(&key);
         });
@@ -585,6 +629,8 @@ impl WorkspaceState {
         self.editor_tabs.set(HashMap::new());
         self.editor_buffers.set(HashMap::new());
         self.editor_loading.set(false);
+        self.editor_recovery_checks.set(HashMap::new());
+        self.editor_recovered.set(HashSet::new());
         self.begin_editor_read();
         self.editor_documents.set(HashMap::new());
         self.editor_composition.set(None);

@@ -19,6 +19,31 @@ struct EditorRoot {
     bridge: Option<String>,
 }
 
+impl EditorRoot {
+    fn changed(&self, next: &Self) -> bool {
+        self.identity != next.identity
+            || self.bridge != next.bridge
+            || self
+                .handle
+                .as_ref()
+                .is_some_and(|handle| next.handle.as_ref() != Some(handle))
+    }
+
+    fn for_project(
+        project: &openwebide_core::Project,
+        projects: ProjectsState,
+        settings: Option<crate::state::settings::SettingsState>,
+    ) -> Self {
+        Self {
+            identity: Workspace::root_identity(project),
+            handle: projects
+                .local_handles
+                .with_untracked(|handles| handles.get(&project.id).cloned()),
+            bridge: settings.map(|settings| settings.bridge_url.get_untracked()),
+        }
+    }
+}
+
 /// Invalidates in-flight work when the account, project, folder or bridge changes.
 pub(crate) fn project_epoch(projects: ProjectsState, auth: AuthState) -> Memo<u64> {
     let settings = use_context::<crate::state::settings::SettingsState>();
@@ -418,17 +443,11 @@ impl WorkspaceActions {
             let Some(project) = projects.project(project_id) else {
                 return;
             };
-            let root = EditorRoot {
-                identity: Workspace::root_identity(&project),
-                handle: projects
-                    .local_handles
-                    .with_untracked(|handles| handles.get(&project_id).cloned()),
-                bridge: settings.map(|settings| settings.bridge_url.get_untracked()),
-            };
+            let root = EditorRoot::for_project(&project, projects, settings);
             let changed = editor_roots.with_value(|roots| {
                 roots
                     .get(&project_id)
-                    .is_some_and(|previous| previous != &root)
+                    .is_some_and(|previous| previous.changed(&root))
             });
             if changed
                 && (workspace.dirty.get_untracked()
@@ -446,6 +465,12 @@ impl WorkspaceActions {
             });
             save_editor.cancel_composition();
             if changed {
+                workspace.editor_recovery_checks.update(|checks| {
+                    checks.retain(|(id, _), _| *id != project_id);
+                });
+                workspace.editor_recovered.update(|files| {
+                    files.retain(|(id, _)| *id != project_id);
+                });
                 workspace.editor_tabs.update(|tabs| {
                     tabs.remove(&project_id);
                 });
@@ -472,7 +497,10 @@ impl WorkspaceActions {
             let kind = FileKind::from_path(&path);
             let retained = cached
                 .as_ref()
-                .is_some_and(|buffer| buffer.dirty || buffer.read_only);
+                .is_some_and(|buffer| buffer.dirty || buffer.read_only)
+                || workspace
+                    .editor_recovery_checks
+                    .with_untracked(|checks| checks.contains_key(&(project_id, path.clone())));
             let baseline = cached
                 .as_ref()
                 .map(|buffer| buffer.content.clone())
@@ -663,6 +691,23 @@ impl WorkspaceActions {
             {
                 return;
             }
+            if let Some(issue) = workspace
+                .editor_recovery_checks
+                .with_untracked(|checks| checks.get(&(project_id, path.clone())).cloned())
+            {
+                ui.notify(issue.message());
+                return;
+            }
+            if let Some(project) = projects.project(project_id)
+                && editor_roots.with_value(|roots| {
+                    roots.get(&project_id).is_some_and(|origin| {
+                        origin.changed(&EditorRoot::for_project(&project, projects, settings))
+                    })
+                })
+            {
+                ui.notify("The project folder changed while this file was open. Restore the original folder before saving its draft.");
+                return;
+            }
             let content_before = workspace.content.get_untracked();
             let account = auth.generation.get_untracked();
             let epoch = directory_epoch.get_untracked();
@@ -695,6 +740,19 @@ impl WorkspaceActions {
                 }
                 if workspace.content.get_untracked() != content_before {
                     ui.notify("The file changed while preparing to save. Save again to include your latest edits.");
+                    return;
+                }
+                if let Err(error) = super::editor_recovery::verify_recovered_save(
+                    workspace, projects, &ws, project_id, &path, current,
+                )
+                .await
+                {
+                    if current() {
+                        ui.notify(error);
+                    }
+                    return;
+                }
+                if !current() || workspace.content.get_untracked() != content_before {
                     return;
                 }
                 let content = match save_editor.prepare_save(&rules) {

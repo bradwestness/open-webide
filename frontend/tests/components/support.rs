@@ -387,3 +387,33 @@ pub async fn click_action(mounted: &Mounted, selector: &str) {
     }
     panic!("Missing menu action: {selector}");
 }
+
+pub fn recovery_editor_view(state: TestState) -> impl IntoView {
+    let read_only = RwSignal::new(false);
+    let actions = WorkspaceActions::new(
+        state.api,
+        state.projects,
+        state.workspace,
+        state.ui,
+        read_only,
+        Callback::new(|()| ()),
+    );
+    provide_context(actions);
+    let recovery = openwebide_frontend::state::editor_recovery::EditorRecoveryState::new();
+    provide_context(recovery);
+    provide_context(
+        openwebide_frontend::state_actions::editor_recovery::RecoveryActions::new(
+            state.api,
+            state.auth,
+            state.projects,
+            state.workspace,
+            recovery,
+            read_only,
+            actions.request_open,
+        ),
+    );
+    view! {
+        <Editor read_only=read_only.into() on_open_lossy=actions.on_open_lossy on_save=actions.on_save on_accept=actions.on_accept on_reject=actions.on_reject />
+        <ConfirmDialog />
+    }
+}

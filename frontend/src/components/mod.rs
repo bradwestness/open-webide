@@ -77,3 +77,5 @@ pub mod dropdown;
 pub use modal::Modal;
 
 pub mod context_menu;
+
+mod editor_recovery;
