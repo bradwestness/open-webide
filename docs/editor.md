@@ -378,7 +378,11 @@ above the transaction's peak size, rather than doubling a large buffer. Affected
 cursors rebuild a shared row once, while distant edits retain interior coordinates.
 
 Fold rebasing uses precise edited boundaries and retains unaffected collapsed ranges
-until providers refresh. Admission still scans the proposed source; publishing buffers,
+until providers refresh. Admission reuses indexed break counts for unchanged complete
+rows in already admitted sources, scanning inserted text and joining boundary rows.
+Non-admitted source retains the full scan and its error order. The index adds a break
+prefix and oversized-row flag per logical row; suffix updates still shift those
+prefixes. Publishing buffers,
 projections and IME paths still materialize full Strings. The native textarea still owns
 the complete projected source during initial cold preparation and on touch devices;
 prepared fine-pointer editors retain surrounding text instead. Full source

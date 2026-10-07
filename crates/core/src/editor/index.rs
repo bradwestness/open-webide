@@ -9,7 +9,10 @@ use std::ops::Range;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct LineIndex {
     pub rows: Vec<Line>,
-    offsets: Vec<(usize, usize)>,
+    offsets: Vec<(usize, usize, usize)>,
+    oversized_rows: Vec<bool>,
+    oversized_count: usize,
+    breaks: usize,
     pub coordinates: Vec<LineCoordinates>,
     utf16_len: usize,
     textarea_len: usize,
@@ -20,13 +23,22 @@ impl LineIndex {
         let mut index = Self {
             rows,
             offsets: Vec::new(),
+            oversized_rows: Vec::new(),
+            oversized_count: 0,
+            breaks: 0,
             coordinates: Vec::new(),
             utf16_len: 0,
             textarea_len: 0,
         };
         for row in &index.rows {
-            index.offsets.push((index.utf16_len, index.textarea_len));
+            index
+                .offsets
+                .push((index.utf16_len, index.textarea_len, index.breaks));
             let text = &source[row.start..row.end];
+            let (breaks, oversized) = super::capacity::row_admission(text);
+            index.breaks += breaks;
+            index.oversized_count += usize::from(oversized);
+            index.oversized_rows.push(oversized);
             index.coordinates.push(LineCoordinates::new(text));
             let units = text.encode_utf16().count();
             index.utf16_len += units;
@@ -61,22 +73,25 @@ impl LineIndex {
         {
             replacement.rows.pop();
             replacement.offsets.pop();
+            replacement.oversized_rows.pop();
             replacement.coordinates.pop();
         }
-        let (raw_start, native_start) = self.offsets[start_row];
-        let (raw_end, native_end) = self
-            .offsets
-            .get(end_row)
-            .copied()
-            .unwrap_or((self.utf16_len, self.textarea_len));
+        let (raw_start, native_start, breaks_start) = self.offsets[start_row];
+        let (raw_end, native_end, breaks_end) = self.offsets.get(end_row).copied().unwrap_or((
+            self.utf16_len,
+            self.textarea_len,
+            self.breaks,
+        ));
         let next_raw = raw_start + replacement.utf16_len;
         let next_native = native_start + replacement.textarea_len;
+        let next_breaks = breaks_start + replacement.breaks;
         for row in &mut self.rows[end_row..] {
             row.start = end + (row.start - old_end);
             row.body_end = end + (row.body_end - old_end);
             row.end = end + (row.end - old_end);
         }
-        for (raw, native) in &mut self.offsets[end_row..] {
+        for (raw, native, breaks) in &mut self.offsets[end_row..] {
+            *breaks = next_breaks + (*breaks - breaks_end);
             *raw = next_raw + (*raw - raw_end);
             *native = next_native + (*native - native_end);
         }
@@ -85,10 +100,20 @@ impl LineIndex {
             row.body_end += start;
             row.end += start;
         }
-        for (raw, native) in &mut replacement.offsets {
+        for (raw, native, breaks) in &mut replacement.offsets {
+            *breaks += breaks_start;
             *raw += raw_start;
             *native += native_start;
         }
+        self.breaks = next_breaks + (self.breaks - breaks_end);
+        self.oversized_count = self.oversized_count
+            - self.oversized_rows[start_row..end_row]
+                .iter()
+                .filter(|invalid| **invalid)
+                .count()
+            + replacement.oversized_count;
+        self.oversized_rows
+            .splice(start_row..end_row, replacement.oversized_rows);
         self.utf16_len = next_raw + (self.utf16_len - raw_end);
         self.textarea_len = next_native + (self.textarea_len - native_end);
         self.rows.splice(start_row..end_row, replacement.rows);
@@ -96,6 +121,16 @@ impl LineIndex {
         self.coordinates
             .splice(start_row..end_row, replacement.coordinates);
     }
+    pub fn admitted(&self, bytes: usize) -> bool {
+        bytes <= super::MAX_EDITOR_BYTES
+            && self.breaks < super::MAX_EDITOR_LINES
+            && self.oversized_count == 0
+    }
+
+    pub fn row_breaks(&self, start: usize, end: usize) -> usize {
+        self.offsets.get(end).map_or(self.breaks, |offset| offset.2) - self.offsets[start].2
+    }
+
     pub fn native_line_len(&self, row: usize) -> usize {
         self.offsets
             .get(row + 1)

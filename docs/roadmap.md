@@ -81,8 +81,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   scrolling. Finish initial/cold and touch pointer selection, caret ownership and
   source extents, then verify physical Chrome/Edge PWA input methods. Reduce
   full-source access in remaining input paths,
-  composition snapshots and buffer/projection publication; admission still scans
-  proposed text and storage still shifts suffix bytes and coordinates.
+  composition snapshots and buffer/projection publication. Admission now skips
+  untouched complete rows; long boundary rows still scan, and storage still shifts
+  suffix bytes and coordinates.
   See [viewport preparation](editor.md#preparation-and-viewport-rendering).
 - **Editor performance verification:** input, cold paint, wrapped layout and
   process-memory stalls remain. Trace uncached probes, then repeat admitted byte,

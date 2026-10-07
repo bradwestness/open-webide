@@ -158,15 +158,11 @@ fn changes(
     }
     // A primary-only IME preview must not admit a replica which cannot commit.
     // Share full-editor admission with ordinary transactions, without joining it.
-    let mut parts = Vec::with_capacity(sorted.len() * 2 + 1);
-    let mut start = 0;
-    for range in &sorted {
-        parts.push(&before.text[start..range.start]);
-        parts.push(text);
-        start = range.end;
-    }
-    parts.push(&before.text[start..]);
-    before.validate_editor_parts(&parts)?;
+    let edits: Vec<_> = sorted
+        .into_iter()
+        .map(|range| Edit { range, text })
+        .collect();
+    before.validate_editor_edits(&edits)?;
     Ok(ranges
         .into_iter()
         .enumerate()

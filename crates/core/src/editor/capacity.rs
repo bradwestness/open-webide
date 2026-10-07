@@ -38,30 +38,147 @@ pub(super) fn editor_limit_parts(parts: &[&str]) -> Option<EditorLimit> {
     {
         return Some(EditorLimit::Bytes);
     }
-    let mut lines = 1;
+    let mut scan = AdmissionScan::default();
+    for part in parts {
+        if let Some(limit) = scan.text(part) {
+            return Some(limit);
+        }
+    }
+    None
+}
+
+/// Logical rows end at LF, so their admission summaries start with no carried CR.
+/// Standalone CR still counts as a break for the shared admission contract.
+pub(super) fn row_admission(text: &str) -> (usize, bool) {
+    let mut breaks = 0;
     let mut width = 0;
+    let mut oversized = false;
     let mut carriage_return = false;
-    for byte in parts.iter().flat_map(|part| part.bytes()) {
-        match byte {
-            b'\r' | b'\n' => {
-                if byte != b'\n' || !carriage_return {
-                    lines += 1;
-                    if lines > MAX_EDITOR_LINES {
-                        return Some(EditorLimit::Lines);
-                    }
-                }
-                width = 0;
-            }
-            _ => {
-                width += 1;
-                if width > MAX_EDITOR_LINE_BYTES {
-                    return Some(EditorLimit::LineBytes);
-                }
-            }
+    for byte in text.bytes() {
+        if matches!(byte, b'\r' | b'\n') {
+            breaks += usize::from(byte != b'\n' || !carriage_return);
+            width = 0;
+        } else {
+            width += 1;
+            oversized |= width > MAX_EDITOR_LINE_BYTES;
         }
         carriage_return = byte == b'\r';
     }
-    None
+    (breaks, oversized)
+}
+
+struct AdmissionScan {
+    lines: usize,
+    width: usize,
+    carriage_return: bool,
+    #[cfg(test)]
+    scanned: usize,
+}
+impl Default for AdmissionScan {
+    fn default() -> Self {
+        Self {
+            lines: 1,
+            width: 0,
+            carriage_return: false,
+            #[cfg(test)]
+            scanned: 0,
+        }
+    }
+}
+impl AdmissionScan {
+    fn text(&mut self, text: &str) -> Option<EditorLimit> {
+        for byte in text.bytes() {
+            #[cfg(test)]
+            {
+                self.scanned += 1;
+            }
+            match byte {
+                b'\r' | b'\n' => {
+                    if byte != b'\n' || !self.carriage_return {
+                        self.lines += 1;
+                        if self.lines > MAX_EDITOR_LINES {
+                            return Some(EditorLimit::Lines);
+                        }
+                    }
+                    self.width = 0;
+                }
+                _ => {
+                    self.width += 1;
+                    if self.width > MAX_EDITOR_LINE_BYTES {
+                        return Some(EditorLimit::LineBytes);
+                    }
+                }
+            }
+            self.carriage_return = byte == b'\r';
+        }
+        None
+    }
+
+    fn source(
+        &mut self,
+        source: &str,
+        index: &super::index::LineIndex,
+        range: Range<usize>,
+    ) -> Option<EditorLimit> {
+        if range.is_empty() {
+            return None;
+        }
+        let first = super::lines::row_at(&index.rows, range.start);
+        let prefix_end = index.rows[first].end.min(range.end);
+        if let Some(limit) = self.text(&source[range.start..prefix_end]) {
+            return Some(limit);
+        }
+        if prefix_end == range.end {
+            return None;
+        }
+        let last = super::lines::row_at(&index.rows, range.end);
+        // The prefix ended at LF; untouched whole rows cannot introduce an
+        // oversized line in an admitted source. Preserve error order by checking
+        // their break count before scanning the joining tail.
+        self.lines += index.row_breaks(first + 1, last);
+        if self.lines > MAX_EDITOR_LINES {
+            return Some(EditorLimit::Lines);
+        }
+        self.text(&source[index.rows[last].start..range.end])
+    }
+}
+
+/// Scan changed text and source boundary rows; reuse unchanged complete rows.
+/// Non-admitted documents retain the full scan, including earliest-error order.
+pub(super) fn editor_limit_edits<T: AsRef<str>>(
+    source: &str,
+    index: &super::index::LineIndex,
+    edits: &[super::Edit<T>],
+) -> Option<EditorLimit> {
+    scan_edits(source, index, edits, &mut AdmissionScan::default())
+}
+fn scan_edits<T: AsRef<str>>(
+    source: &str,
+    index: &super::index::LineIndex,
+    edits: &[super::Edit<T>],
+    scan: &mut AdmissionScan,
+) -> Option<EditorLimit> {
+    if !index.admitted(source.len()) {
+        return editor_limit_parts(&super::edit_parts(source, edits));
+    }
+    let size = edits.iter().try_fold(source.len(), |size, edit| {
+        size.checked_sub(edit.range.len())?
+            .checked_add(edit.text.as_ref().len())
+    });
+    if size.is_none_or(|size| size > MAX_EDITOR_BYTES) {
+        return Some(EditorLimit::Bytes);
+    }
+    let mut start = 0;
+    for edit in edits {
+        if let Some(limit) = scan
+            .source(source, index, start..edit.range.start)
+            .or_else(|| scan.text(edit.text.as_ref()))
+        {
+            return Some(limit);
+        }
+        start = edit.range.end;
+    }
+    scan.source(source, index, start..source.len())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +211,195 @@ impl TextPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn indexed_admission_matches_full_scan_at_unicode_and_newline_joins() {
+        use super::super::{Edit, index::LineIndex};
+        let mut seed = 17_u64;
+        for _ in 0..80 {
+            let mut source = String::new();
+            for _ in 0..40 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                source.push_str(["a", "文", "😀", "\r", "\n", "\r\n", "\t"][(seed % 7) as usize]);
+            }
+            let index = LineIndex::new(&source);
+            let positions: Vec<_> = source
+                .char_indices()
+                .map(|(at, _)| at)
+                .chain([source.len()])
+                .collect();
+            for at in positions.iter().step_by(3).copied() {
+                for end in positions
+                    .iter()
+                    .copied()
+                    .filter(|end| *end >= at)
+                    .step_by(4)
+                {
+                    for text in ["", "x", "\r", "\n", "文\r\n😀"] {
+                        let edits = [Edit {
+                            range: at..end,
+                            text,
+                        }];
+                        assert_eq!(
+                            editor_limit_edits(&source, &index, &edits),
+                            editor_limit_parts(&super::super::edit_parts(&source, &edits)),
+                            "source={source:?} edit={edits:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_admission_preserves_limits_and_failure_priority() {
+        use super::super::{Edit, index::LineIndex};
+        let long = "x".repeat(MAX_EDITOR_LINE_BYTES);
+        let rows = "x\r\ny\r".repeat((MAX_EDITOR_LINES - 2) / 2);
+        for source in [
+            format!("{long}\r\n{long}\n"),
+            rows,
+            "x".repeat(MAX_EDITOR_LINE_BYTES + 1),
+            "\r\n".repeat(MAX_EDITOR_LINES),
+        ] {
+            let index = LineIndex::new(&source);
+            for at in [0, 1, source.len() / 2, source.len() - 1, source.len()] {
+                for text in ["", "x", "\r", "\n", long.as_str()] {
+                    let edits = [Edit {
+                        range: at..at,
+                        text,
+                    }];
+                    assert_eq!(
+                        editor_limit_edits(&source, &index, &edits),
+                        editor_limit_parts(&super::super::edit_parts(&source, &edits))
+                    );
+                }
+            }
+            let edits = [
+                Edit {
+                    range: 0..1,
+                    text: "\n\n",
+                },
+                Edit {
+                    range: source.len() - 1..source.len(),
+                    text: long.as_str(),
+                },
+            ];
+            assert_eq!(
+                editor_limit_edits(&source, &index, &edits),
+                editor_limit_parts(&super::super::edit_parts(&source, &edits))
+            );
+        }
+        let source = "x\n".repeat(MAX_EDITOR_LINES - 2);
+        let index = LineIndex::new(&source);
+        let edits = [
+            Edit {
+                range: 0..0,
+                text: "\n\n",
+            },
+            Edit {
+                range: source.len()..source.len(),
+                text: long.as_str(),
+            },
+        ];
+        assert_eq!(
+            editor_limit_edits(&source, &index, &edits),
+            Some(EditorLimit::Lines)
+        );
+        let too_long = "x".repeat(MAX_EDITOR_LINE_BYTES + 1);
+        let edits = [
+            Edit {
+                range: 0..0,
+                text: too_long.as_str(),
+            },
+            Edit {
+                range: source.len()..source.len(),
+                text: "\n\n",
+            },
+        ];
+        assert_eq!(
+            editor_limit_edits(&source, &index, &edits),
+            Some(EditorLimit::LineBytes)
+        );
+    }
+
+    #[test]
+    fn indexed_admission_rechecks_merged_rows_and_invalid_history() {
+        use super::super::{Document, Edit, EditError, Selection, index::LineIndex};
+        let long = "x".repeat(MAX_EDITOR_LINE_BYTES);
+        let source = format!("{long}\r\n{long}");
+        let index = LineIndex::new(&source);
+        for range in [
+            long.len()..long.len() + 2,
+            long.len()..long.len() + 1,
+            long.len() + 1..long.len() + 2,
+        ] {
+            let edits = [Edit::replace(range, "")];
+            assert_eq!(
+                editor_limit_edits(&source, &index, &edits),
+                editor_limit_parts(&super::super::edit_parts(&source, &edits))
+            );
+        }
+        let mut document = Document::new(format!("{long}x"));
+        document.enforce_editor_limits();
+        assert!(!document.line_index.admitted(document.text().len()));
+        document
+            .apply(
+                vec![Edit::replace(long.len()..long.len() + 1, "")],
+                vec![Selection::caret(0)],
+                None,
+            )
+            .unwrap();
+        assert!(document.line_index.admitted(document.text().len()));
+        assert!(document.undo());
+        assert!(!document.line_index.admitted(document.text().len()));
+        assert_eq!(
+            document.apply(
+                vec![Edit::replace(0..0, "x")],
+                vec![Selection::caret(0)],
+                None
+            ),
+            Err(EditError::Capacity(EditorLimit::LineBytes))
+        );
+        assert!(document.can_redo());
+        assert!(document.redo());
+        assert!(document.line_index.admitted(document.text().len()));
+    }
+
+    #[test]
+    fn admitted_unchanged_rows_do_not_scan_full_source_on_edit() {
+        use super::super::{Edit, index::LineIndex};
+        let source = "abc\r\n".repeat(90_000);
+        let index = LineIndex::new(&source);
+        for at in [0, source.len() / 2, source.len()] {
+            let edits = [Edit {
+                range: at..at,
+                text: "文",
+            }];
+            let mut scan = AdmissionScan::default();
+            assert_eq!(scan_edits(&source, &index, &edits, &mut scan), None);
+            assert!(
+                scan.scanned <= 21,
+                "scanned {} bytes for a {} byte source",
+                scan.scanned,
+                source.len()
+            );
+        }
+        let mut changed = source.clone();
+        let at = source.len() / 2;
+        changed.replace_range(at..at + 3, "\r\nnew\r");
+        let mut updated = index;
+        updated.update(source.len(), &changed, at..at + 3, at + 7);
+        assert_eq!(updated, LineIndex::new(&changed));
+        let edits = [Edit {
+            range: at..at,
+            text: "\n",
+        }];
+        assert_eq!(
+            editor_limit_edits(&changed, &updated, &edits),
+            editor_limit_parts(&super::super::edit_parts(&changed, &edits))
+        );
+    }
+
     #[test]
     fn proposed_parts_preserve_admission_priority_and_cross_piece_line_endings() {
         for source in [

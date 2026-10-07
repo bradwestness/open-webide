@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse indexed admission counts for unchanged editor rows during typing, commands, multi-cursor edits and IME previews. Scan inserted text and joining rows while preserving byte/line limits, CRLF joins, failure ordering and history; non-admitted source retains full validation.
+
 - Bind prepared desktop editors to scoped native surrounding text in both workspace modes, preserving full-source selections, clipboard actions, page navigation, chat capture and grouped history. Keep source scrolling independent of the input window, reject stale window/read/account events, and retain composition ownership across fold metadata updates. Reserve a consistent 2 MiB frontend WASM stack and reduce editor view return-value copying. Initial cold/touch input and physical PWA verification remain in progress.
 
 - Consolidate repeated workspace, bridge fallback and reconnect guidance into linked references. Divide long documentation paragraphs and organize editor and design-system references into topic sections. Replace the roadmap's repeated editor implementation history with remaining tasks and links to detailed guides.

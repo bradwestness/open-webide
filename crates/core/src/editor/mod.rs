@@ -464,9 +464,9 @@ impl Document {
         Ok(())
     }
 
-    fn validate_editor_parts(&self, parts: &[&str]) -> Result<(), EditError> {
+    fn validate_editor_edits<T: AsRef<str>>(&self, edits: &[Edit<T>]) -> Result<(), EditError> {
         if self.editor_limits
-            && let Some(limit) = capacity::editor_limit_parts(parts)
+            && let Some(limit) = capacity::editor_limit_edits(&self.text, &self.line_index, edits)
         {
             return Err(EditError::Capacity(limit));
         }
@@ -498,7 +498,7 @@ impl Document {
             return Err(EditError::OutputTooLarge);
         }
         let parts = edit_parts(&self.text, &edits);
-        self.validate_editor_parts(&parts)?;
+        self.validate_editor_edits(&edits)?;
         let after = selections::normalize_selection_positions(after, |offset| {
             let mut start = 0;
             for part in &parts {
@@ -651,12 +651,12 @@ fn validate_edits(text: &str, edits: &[Edit]) -> Result<(), EditError> {
     Ok(())
 }
 
-fn edit_parts<'a>(text: &'a str, edits: &'a [Edit]) -> Vec<&'a str> {
+fn edit_parts<'a, T: AsRef<str>>(text: &'a str, edits: &'a [Edit<T>]) -> Vec<&'a str> {
     let mut parts = Vec::with_capacity(edits.len() * 2 + 1);
     let mut source = 0;
     for edit in edits {
         parts.push(&text[source..edit.range.start]);
-        parts.push(&edit.text);
+        parts.push(edit.text.as_ref());
         source = edit.range.end;
     }
     parts.push(&text[source..]);
