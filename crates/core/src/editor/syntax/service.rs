@@ -2,7 +2,7 @@
 use super::{MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData, SyntaxPreparations, SyntaxStatus};
 use crate::{editor::MAX_STRUCTURE_BYTES, highlight::Language};
 
-pub const SYNTAX_PROTOCOL_VERSION: u32 = 1;
+pub const SYNTAX_PROTOCOL_VERSION: u32 = 2;
 pub const MAX_SYNTAX_REQUEST_BYTES: usize = MAX_STRUCTURE_BYTES * 6 + 8192;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -14,6 +14,8 @@ pub struct SyntaxRequest {
     pub language: Language,
     pub source: String,
     pub tab_width: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ticket: Option<u32>,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,25 +45,51 @@ impl SyntaxPreparations<String> {
         {
             return None;
         }
-        let (mut status, analysis) = self.prepare(
-            request.document,
+        let previous = self
+            .previous_publication(&request.document)
+            .filter(|(ticket, _)| request.base_ticket == Some(*ticket));
+        let (mut status, prepared) = self.prepare(
+            request.document.clone(),
             request.language,
             &request.source,
             request.tab_width,
             should_continue,
         );
-        let analysis = analysis.and_then(|value| value.transfer_data());
+        let analysis = prepared.as_ref().and_then(|value| {
+            value
+                .transfer_data_reusing(
+                    previous
+                        .as_ref()
+                        .map(|(ticket, analysis)| (*ticket, analysis.as_ref())),
+                )
+                .or_else(|| value.transfer_data())
+        });
         if matches!(status, SyntaxStatus::Ready { .. }) && analysis.is_none() {
             status = SyntaxStatus::TooLarge;
         }
-        let reply = SyntaxReply {
+        let mut reply = SyntaxReply {
             version: SYNTAX_PROTOCOL_VERSION,
             ticket: request.ticket,
             status,
             analysis,
         };
-        let message = serde_json::to_string(&reply).ok()?;
-        (message.len() <= MAX_ANALYSIS_MESSAGE_BYTES).then_some(message)
+        let mut message = serde_json::to_string(&reply).ok()?;
+        if message.len() > MAX_ANALYSIS_MESSAGE_BYTES {
+            reply.analysis = prepared.as_ref()?.transfer_data();
+            if reply.analysis.is_none() {
+                reply.status = SyntaxStatus::TooLarge;
+            }
+            message = serde_json::to_string(&reply).ok()?;
+            if message.len() > MAX_ANALYSIS_MESSAGE_BYTES {
+                return None;
+            }
+        }
+        if reply.analysis.is_some()
+            && let Some(prepared) = prepared
+        {
+            self.remember_publication(&request.document, request.ticket, prepared);
+        }
+        Some(message)
     }
 }
 
@@ -71,6 +99,14 @@ impl SyntaxReply {
         ticket: u32,
         source: &str,
     ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
+        Self::receive_reusing(message, ticket, source, None)
+    }
+    pub fn receive_reusing(
+        message: &str,
+        ticket: u32,
+        source: &str,
+        previous: Option<(u32, &super::SyntaxAnalysis)>,
+    ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
         if message.len() > MAX_ANALYSIS_MESSAGE_BYTES {
             return None;
         }
@@ -79,7 +115,9 @@ impl SyntaxReply {
             return None;
         }
         let analysis = match (reply.status, reply.analysis) {
-            (SyntaxStatus::Ready { .. }, Some(data)) => Some(data.validate(source)?),
+            (SyntaxStatus::Ready { .. }, Some(data)) => {
+                Some(data.validate_reusing(source, previous)?)
+            }
             (SyntaxStatus::Cancelled | SyntaxStatus::TooLarge, None) => None,
             _ => return None,
         };
@@ -98,8 +136,160 @@ mod tests {
             language: Language::Rust,
             source: source.into(),
             tab_width: 4,
+            base_ticket: None,
         }
     }
+    #[test]
+    fn large_worker_updates_transfer_changed_spans_and_share_unchanged_rows() {
+        let source = "SELECT name, value FROM items;\r\n".repeat(1000);
+        let mut service = SyntaxPreparations::default();
+        let mut input = request(&source);
+        input.language = Language::Sql;
+        let first = service
+            .handle_message(&serde_json::to_string(&input).unwrap(), || true)
+            .unwrap();
+        let old = SyntaxReply::receive(&first, 42, &source)
+            .unwrap()
+            .1
+            .unwrap();
+        let revised = source.replacen("value", "revised_value", 1);
+        input.source.clone_from(&revised);
+        input.ticket = 43;
+        input.base_ticket = Some(42);
+        let delta = service
+            .handle_message(&serde_json::to_string(&input).unwrap(), || true)
+            .unwrap();
+        let updated = SyntaxReply::receive_reusing(&delta, 43, &revised, Some((42, &old)))
+            .unwrap()
+            .1
+            .unwrap();
+        input.ticket = 44;
+        input.base_ticket = None;
+        let full = service
+            .handle_message(&serde_json::to_string(&input).unwrap(), || true)
+            .unwrap();
+        assert!(
+            delta.len() * 2 < full.len(),
+            "changed-span publication must materially reduce this workload"
+        );
+        assert_eq!(
+            updated.highlights(),
+            SyntaxReply::receive(&full, 44, &revised)
+                .unwrap()
+                .1
+                .unwrap()
+                .highlights()
+        );
+        assert!(
+            old.highlights()
+                .unwrap()
+                .iter()
+                .skip(1)
+                .zip(updated.highlights().unwrap().iter().skip(1))
+                .all(|(old, new)| std::sync::Arc::ptr_eq(old, new))
+        );
+    }
+
+    #[test]
+    fn row_references_preserve_paint_and_reject_missing_stale_or_mismatching_bases() {
+        for (language, source) in [
+            (
+                Language::Rust,
+                "fn main() {\r\n let text = \"文😀\";\r\n}\r\n",
+            ),
+            (Language::Json, "{\r\n \"name\": \"文😀\"\r\n}\r\n"),
+            (
+                Language::Sql,
+                "/* first\r\nstill comment */\r\nSELECT '文😀';\r\n",
+            ),
+        ] {
+            let mut service = SyntaxPreparations::default();
+            let mut input = request(source);
+            input.language = language;
+            let first = service
+                .handle_message(&serde_json::to_string(&input).unwrap(), || true)
+                .unwrap();
+            let old = SyntaxReply::receive(&first, 42, source).unwrap().1.unwrap();
+            let revised = source.replace("文😀", "😀 changed");
+            input.source.clone_from(&revised);
+            input.ticket = 43;
+            input.base_ticket = Some(42);
+            let next = service
+                .handle_message(&serde_json::to_string(&input).unwrap(), || true)
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_str(&next).unwrap();
+            assert_eq!(value["analysis"]["base_ticket"], 42);
+            assert!(
+                value["analysis"]["highlights"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.get("reuse").is_some())
+            );
+            let new = SyntaxReply::receive_reusing(&next, 43, &revised, Some((42, &old)))
+                .unwrap()
+                .1
+                .unwrap();
+            assert!(std::sync::Arc::ptr_eq(
+                &old.highlights().unwrap()[0],
+                &new.highlights().unwrap()[0]
+            ));
+            let mut direct = SyntaxPreparations::default();
+            let expected = direct
+                .prepare("direct".to_string(), language, &revised, 4, || true)
+                .1
+                .unwrap();
+            assert_eq!(new.highlights(), expected.highlights());
+            assert!(old.matches_source(source));
+            assert!(SyntaxReply::receive(&next, 43, &revised).is_none());
+            assert!(SyntaxReply::receive_reusing(&next, 43, source, Some((42, &old))).is_none());
+            assert!(SyntaxReply::receive_reusing(&next, 43, &revised, Some((41, &old))).is_none());
+            assert!(SyntaxReply::receive_reusing(&next, 44, &revised, Some((42, &old))).is_none());
+            for replacement in [
+                serde_json::json!({"reuse":usize::MAX}),
+                serde_json::json!({"reuse":1}),
+                serde_json::json!({"reuse":0,"extra":true}),
+            ] {
+                let mut invalid = value.clone();
+                invalid["analysis"]["highlights"][0] = replacement;
+                assert!(
+                    SyntaxReply::receive_reusing(
+                        &invalid.to_string(),
+                        43,
+                        &revised,
+                        Some((42, &old))
+                    )
+                    .is_none()
+                );
+            }
+            let mut invalid = value;
+            invalid["analysis"]
+                .as_object_mut()
+                .unwrap()
+                .remove("base_ticket");
+            assert!(
+                SyntaxReply::receive_reusing(&invalid.to_string(), 43, &revised, Some((42, &old)))
+                    .is_none()
+            );
+            // A stale/discarded base or LRU eviction returns a complete standalone result.
+            for evicted in [false, true] {
+                if evicted {
+                    service.remove(&input.document);
+                }
+                input.ticket += 1;
+                let full = service
+                    .handle_message(&serde_json::to_string(&input).unwrap(), || true)
+                    .unwrap();
+                assert!(
+                    SyntaxReply::receive(&full, input.ticket, &revised)
+                        .unwrap()
+                        .1
+                        .is_some()
+                );
+            }
+        }
+    }
+
     #[test]
     fn message_contract_matches_direct_preparation_and_rejects_wrong_tickets_and_sources() {
         let source = "fn main() {\r\n call(\"文😀\");\r\n}";

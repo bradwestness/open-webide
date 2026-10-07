@@ -36,6 +36,25 @@ impl<K: Eq> SyntaxPreparations<K> {
         self.entries.retain(|entry| keep(&entry.0));
     }
 
+    pub(super) fn previous_publication(&self, key: &K) -> Option<(u32, Arc<SyntaxAnalysis>)> {
+        self.entries
+            .iter()
+            .find(|entry| &entry.0 == key)?
+            .2
+            .publication
+            .clone()
+    }
+    pub(super) fn remember_publication(
+        &mut self,
+        key: &K,
+        ticket: u32,
+        analysis: Arc<SyntaxAnalysis>,
+    ) {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.0 == key) {
+            entry.2.publication = Some((ticket, analysis));
+        }
+    }
+
     pub fn prepare(
         &mut self,
         key: K,

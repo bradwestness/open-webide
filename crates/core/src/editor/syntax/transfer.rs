@@ -16,7 +16,24 @@ pub struct SyntaxAnalysisData {
     folds: Vec<FoldRange>,
     structure: Option<StructureData>,
     // Per-line UTF-8 end offsets, avoiding another copy of every token's text.
-    highlights: Option<Vec<Vec<(usize, TokenKind)>>>,
+    highlights: Option<Vec<TokenRowData>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_ticket: Option<u32>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum TokenRowData {
+    Spans(Vec<(usize, TokenKind)>),
+    Previous { reuse: usize },
+}
+impl TokenRowData {
+    fn records(&self) -> usize {
+        match self {
+            Self::Spans(spans) => spans.len(),
+            Self::Previous { .. } => 1,
+        }
+    }
 }
 
 impl SyntaxAnalysis {
@@ -35,21 +52,48 @@ impl SyntaxAnalysis {
             }))
     }
     pub fn transfer_data(&self) -> Option<SyntaxAnalysisData> {
+        self.transfer_data_reusing(None)
+    }
+    pub(super) fn transfer_data_reusing(
+        &self,
+        previous: Option<(u32, &SyntaxAnalysis)>,
+    ) -> Option<SyntaxAnalysisData> {
         if self.record_count() > MAX_ANALYSIS_RECORDS {
             return None;
         }
         let structure = self.structure.as_ref().map(|value| value.transfer_data());
+        let mut reused = false;
         let highlights = self.highlights.as_ref().map(|lines| {
             lines
                 .iter()
-                .map(|line| {
+                .enumerate()
+                .map(|(index, line)| {
+                    if let Some(old) =
+                        previous.and_then(|(_, analysis)| analysis.highlights.as_ref())
+                    {
+                        let shifted = if lines.len() >= old.len() {
+                            index.checked_sub(lines.len() - old.len())
+                        } else {
+                            index.checked_add(old.len() - lines.len())
+                        };
+                        if let Some(reuse) = [Some(index), shifted]
+                            .into_iter()
+                            .flatten()
+                            .find(|&candidate| old.get(candidate).is_some_and(|row| row == line))
+                        {
+                            reused = true;
+                            return TokenRowData::Previous { reuse };
+                        }
+                    }
                     let mut end = 0;
-                    line.iter()
-                        .map(|token| {
-                            end += token.text.len();
-                            (end, token.kind)
-                        })
-                        .collect()
+                    TokenRowData::Spans(
+                        line.iter()
+                            .map(|token| {
+                                end += token.text.len();
+                                (end, token.kind)
+                            })
+                            .collect(),
+                    )
                 })
                 .collect()
         });
@@ -58,6 +102,7 @@ impl SyntaxAnalysis {
             folds: self.folds.clone(),
             structure,
             highlights,
+            base_ticket: reused.then(|| previous.expect("reused previous rows").0),
         };
         (data.record_count() <= MAX_ANALYSIS_RECORDS).then_some(data)
     }
@@ -73,15 +118,28 @@ impl SyntaxAnalysisData {
                     .map_or(0, StructureData::record_count),
             )
             .saturating_add(self.highlights.as_ref().map_or(0, |lines| {
-                lines
-                    .iter()
-                    .fold(lines.len(), |count, line| count.saturating_add(line.len()))
+                lines.iter().fold(lines.len(), |count, line| {
+                    count.saturating_add(line.records())
+                })
             }))
     }
 
     /// Reject wrong sources, invalid coordinates, escaping ranges and excessive data.
     /// This validates a worker result without parsing the document on the UI thread.
     pub fn validate(self, expected_source: &str) -> Option<Arc<SyntaxAnalysis>> {
+        self.validate_reusing(expected_source, None)
+    }
+    pub(super) fn validate_reusing(
+        self,
+        expected_source: &str,
+        previous: Option<(u32, &SyntaxAnalysis)>,
+    ) -> Option<Arc<SyntaxAnalysis>> {
+        if self
+            .base_ticket
+            .is_some_and(|ticket| previous.is_none_or(|(base, _)| base != ticket))
+        {
+            return None;
+        }
         if self.source != expected_source
             || self.source.len() > MAX_STRUCTURE_BYTES
             || self.record_count() > MAX_ANALYSIS_RECORDS
@@ -102,7 +160,27 @@ impl SyntaxAnalysisData {
                 return None;
             }
             let mut tokens = Vec::with_capacity(lines.len());
-            for (line, spans) in source.split('\n').zip(lines) {
+            for (line, data) in source.split('\n').zip(lines) {
+                let spans = match data {
+                    TokenRowData::Spans(spans) => spans,
+                    TokenRowData::Previous { reuse } => {
+                        self.base_ticket?;
+                        let row = previous?.1.highlights.as_ref()?.get(reuse)?;
+                        let mut start = 0_usize;
+                        for token in row.iter() {
+                            let end = start.checked_add(token.text.len())?;
+                            if line.get(start..end) != Some(token.text.as_str()) {
+                                return None;
+                            }
+                            start = end;
+                        }
+                        if start != line.len() {
+                            return None;
+                        }
+                        tokens.push(row.clone());
+                        continue;
+                    }
+                };
                 let mut start = 0;
                 let mut row = Vec::with_capacity(spans.len());
                 for (end, kind) in spans {
@@ -127,12 +205,13 @@ impl SyntaxAnalysisData {
         } else {
             None
         };
-        Some(Arc::new(SyntaxAnalysis {
+        let analysis = Arc::new(SyntaxAnalysis {
             source,
             folds: self.folds,
             structure,
             highlights,
-        }))
+        });
+        (analysis.record_count() <= MAX_ANALYSIS_RECORDS).then_some(analysis)
     }
 }
 
@@ -190,7 +269,10 @@ mod tests {
                 .is_none()
         );
         let mut token = wire.clone();
-        token.highlights.as_mut().unwrap()[0][0].0 = 1;
+        let TokenRowData::Spans(spans) = &mut token.highlights.as_mut().unwrap()[0] else {
+            unreachable!()
+        };
+        spans[0].0 = 1;
         assert!(token.validate(source).is_none());
         let mut folds = wire.clone();
         folds.folds.push(FoldRange {

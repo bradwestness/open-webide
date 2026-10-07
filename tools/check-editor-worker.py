@@ -30,19 +30,24 @@ def check():
                 result = browser.call('POST', '/execute/async', {'script': r'''
                     const done = arguments[0];
                     const worker = new Worker('/editor-worker.js', {type: 'module'});
-                    const waiting = new Map(); let ticket = 0;
+                    const waiting = new Map(), bases = new Map(); let ticket = 0;
                     let wake; const ready = new Promise(resolve => {wake = resolve;});
                     worker.onerror = e => { worker.terminate(); done({error: e.message}); };
                     worker.onmessage = event => {
-                        if (event.data === 'openwebide-editor-ready:1') {wake(); return;}
+                        if (event.data === 'openwebide-editor-ready:2') {wake(); return;}
                         const reply = JSON.parse(event.data);
                         waiting.get(reply.ticket)?.(reply); waiting.delete(reply.ticket);
                     };
                     async function request(document, language, source) {
                         await ready;
                         return new Promise(resolve => {
-                            const id = ++ticket; waiting.set(id, resolve);
-                            worker.postMessage(JSON.stringify({version:1,ticket:id,document,language,source,tab_width:4}));
+                            const id = ++ticket;
+                            waiting.set(id, reply => {
+                                if (reply.analysis) bases.set(document, reply.ticket);
+                                else bases.delete(document);
+                                resolve(reply);
+                            });
+                            worker.postMessage(JSON.stringify({version:2,ticket:id,document,language,source,tab_width:4,base_ticket:bases.get(document)}));
                         });
                     }
                     (async () => {
@@ -86,7 +91,8 @@ def check():
                             lexical.push({language, status: reply.status, structure: reply.analysis?.structure,
                                 paint: !!reply.analysis?.highlights, sourceMatches: reply.analysis?.source === text,
                                 updateStatus: update.status, updatePaint: !!update.analysis?.highlights,
-                                updateSourceMatches: update.analysis?.source === revised});
+                                updateSourceMatches: update.analysis?.source === revised,
+                                reusedRows: update.analysis?.highlights?.filter(row => !Array.isArray(row) && Number.isInteger(row.reuse)).length});
                         }
                         const heavy = 'fn call() {\n if true { println!("文😀"); }\n}\n'.repeat(1000);
                         let uiEvent = false;
@@ -108,7 +114,7 @@ def check():
                     assert 'Ready' in provider['status'] and provider['structure'] and provider['paint'] and provider['sourceMatches'], provider
                 for lexical in result['lexical']:
                     assert 'Ready' in lexical['status'] and lexical['structure'] is None and lexical['paint'] and lexical['sourceMatches'], lexical
-                    assert 'Ready' in lexical['updateStatus'] and lexical['updatePaint'] and lexical['updateSourceMatches'], lexical
+                    assert 'Ready' in lexical['updateStatus'] and lexical['updatePaint'] and lexical['updateSourceMatches'] and lexical['reusedRows'] > 0, lexical
                 assert 'Ready' in result['heavyStatus'] and result['heavySource'] and result['uiEvent'], result
                 assert result['oversizedStatus'] == 'TooLarge' and result['oversizedAnalysis'] is None, result
                 print(json.dumps({'providers': len(result['providers'])+1, 'lexical_languages': len(result['lexical']), 'incremental': True,

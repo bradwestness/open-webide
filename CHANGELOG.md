@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Publish unchanged worker token rows by validated base-ticket references instead of sending and reconstructing their token spans. Preserve shared row allocations in both workspace modes, reject stale or mismatching bases, and send complete results when a base is unavailable.
+
 - Share compact immutable token rows during lexical updates and editor paint preparation. Reused rows retain their token strings instead of copying them across source revisions, while worker transfer validation and rendering keep the same content and scope guards. Defer full-row probes until cooperative fallback tokens resolve, avoiding discarded neutral cold-layout batches while preserving pending-worker source previews.
 
 - Reuse unchanged lexical rows with matching incoming context in the shared Rust worker and cooperative editor fallback. Propagate changed comment state until convergence, preserve Unicode/CRLF across row shifts, and reset fallback reuse across file reads, documents and accounts in both workspace modes.

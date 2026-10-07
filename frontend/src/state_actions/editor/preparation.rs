@@ -5,6 +5,13 @@ use leptos::prelude::*;
 use openwebide_core::editor::{SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxRequest};
 use std::{cell::Cell, rc::Rc};
 
+#[derive(Clone)]
+struct PublishedSyntax {
+    scope: EditorSyntaxScope,
+    ticket: u32,
+    analysis: std::sync::Arc<openwebide_core::editor::SyntaxAnalysis>,
+}
+
 impl EditorActions {
     pub(super) fn syntax_scope(self) -> Option<EditorSyntaxScope> {
         Some(EditorSyntaxScope {
@@ -269,6 +276,7 @@ impl EditorActions {
         self.workspace.editor_worker_active.set(true);
         let pending = StoredValue::new(None::<(u32, EditorSyntaxScope)>);
         let ticket = StoredValue::new(0_u32);
+        let published = StoredValue::new(None::<PublishedSyntax>);
         let running = Rc::new(Cell::new(false));
         let cleanup = send_wrapper::SendWrapper::new(client.clone());
         on_cleanup(move || {
@@ -323,13 +331,26 @@ impl EditorActions {
                         }
                         continue;
                     }
+                    let previous = published.get_value().filter(|previous| {
+                        previous.scope.key == scope.key
+                            && previous.scope.account_generation == scope.account_generation
+                            && previous.scope.read_revision == scope.read_revision
+                            && previous.scope.tab_width == scope.tab_width
+                    });
+                    if previous.is_none() {
+                        published.set_value(None);
+                    }
                     let request = SyntaxRequest {
                         version: SYNTAX_PROTOCOL_VERSION,
                         ticket: request_ticket,
-                        document: format!("{}:{}", scope.key.0, scope.key.1),
+                        document: format!(
+                            "{}:{}:{}:{}",
+                            scope.account_generation, scope.read_revision, scope.key.0, scope.key.1
+                        ),
                         language: openwebide_core::highlight::language_from_path(&scope.key.1),
                         source: scope.source.to_string(),
                         tab_width: scope.tab_width,
+                        base_ticket: previous.as_ref().map(|previous| previous.ticket),
                     };
                     let message = serde_json::to_string(&request)
                         .expect("syntax request contains only serializable primitives");
@@ -341,9 +362,21 @@ impl EditorActions {
                         continue;
                     }
                     let result = reply.ok().and_then(|message| {
-                        SyntaxReply::receive(&message, request_ticket, &scope.source)
+                        SyntaxReply::receive_reusing(
+                            &message,
+                            request_ticket,
+                            &scope.source,
+                            previous
+                                .as_ref()
+                                .map(|previous| (previous.ticket, previous.analysis.as_ref())),
+                        )
                     });
                     if let Some((status, analysis)) = result {
+                        published.set_value(analysis.as_ref().map(|analysis| PublishedSyntax {
+                            scope: scope.clone(),
+                            ticket: request_ticket,
+                            analysis: analysis.clone(),
+                        }));
                         self.workspace
                             .editor_preparation
                             .set(Some(PreparedEditorSyntax {

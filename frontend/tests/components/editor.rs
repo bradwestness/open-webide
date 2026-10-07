@@ -8521,6 +8521,12 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
             !transport.pending.borrow().is_empty()
         })
         .await;
+        let request: serde_json::Value =
+            serde_json::from_str(&transport.pending.borrow().front().unwrap().message).unwrap();
+        assert!(
+            request["base_ticket"].is_u64(),
+            "updates advertise a scoped published base"
+        );
         transport.respond(true);
         wait_until("revised lexical paint", || {
             actions.syntax_highlights().is_some()
@@ -8530,6 +8536,35 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
             &first,
             &actions.syntax_highlights().unwrap()
         ));
+        let updated = actions.syntax_highlights().unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(&first[0], &updated[0]),
+            "worker replies share unchanged row allocations in the receiver"
+        );
+        assert!(!std::sync::Arc::ptr_eq(&first[1], &updated[1]));
+        mounted
+            .state
+            .auth
+            .generation
+            .update(|generation| *generation += 1);
+        wait_until("new account requests a standalone result", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        let request: serde_json::Value =
+            serde_json::from_str(&transport.pending.borrow().front().unwrap().message).unwrap();
+        assert!(
+            request.get("base_ticket").is_none(),
+            "publication bases must not cross accounts"
+        );
+        transport.respond(true);
+        wait_until("new account publishes standalone paint", || {
+            if !transport.pending.borrow().is_empty() {
+                transport.respond(true);
+            }
+            actions.syntax_highlights().is_some()
+        })
+        .await;
         wait_until("revised number painted", || {
             mounted
                 .root

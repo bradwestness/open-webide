@@ -81,6 +81,7 @@ pub struct SyntaxDocument {
     text: Arc<str>,
     prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
     lexical: Option<Arc<crate::highlight::LexicalSnapshot>>,
+    publication: Option<(u32, Arc<SyntaxAnalysis>)>,
 }
 
 impl SyntaxDocument {
@@ -103,6 +104,7 @@ impl SyntaxDocument {
             text: Arc::from(""),
             prepared: None,
             lexical: None,
+            publication: None,
         })
     }
 
@@ -411,6 +413,7 @@ impl SyntaxDocument {
         self.text = Arc::from("");
         self.prepared = None;
         self.lexical = None;
+        self.publication = None;
     }
 
     pub fn folds(&self) -> Vec<FoldRange> {
