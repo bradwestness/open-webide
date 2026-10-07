@@ -7871,6 +7871,7 @@ struct DeferredSyntax {
     calls: std::cell::Cell<usize>,
     stopped: std::cell::Cell<bool>,
     source_delta: std::cell::Cell<bool>,
+    sources: std::cell::RefCell<std::collections::HashMap<String, String>>,
 }
 impl openwebide_frontend::editor_worker::SyntaxTransport for DeferredSyntax {
     fn request(
@@ -7914,6 +7915,23 @@ impl DeferredSyntax {
         } else {
             Err(openwebide_frontend::editor_worker::WorkerError::Transport)
         };
+        if output.as_ref().is_ok_and(|message| {
+            let value: serde_json::Value = serde_json::from_str(message).unwrap();
+            !value["analysis"].is_null()
+        }) {
+            let request: openwebide_core::editor::SyntaxRequest =
+                serde_json::from_str(&message).unwrap();
+            let source = request
+                .source
+                .resolve(
+                    self.sources
+                        .borrow()
+                        .get(&request.document)
+                        .map(String::as_str),
+                )
+                .unwrap();
+            self.sources.borrow_mut().insert(request.document, source);
+        }
         self.source_delta.set(output.as_ref().is_ok_and(|message| {
             let value: serde_json::Value = serde_json::from_str(message).unwrap();
             value["analysis"]["source"].is_object()
@@ -7921,11 +7939,19 @@ impl DeferredSyntax {
         sender.send(output).unwrap();
     }
     fn source(&self) -> String {
-        serde_json::from_str::<openwebide_core::editor::SyntaxRequest>(
+        let request = serde_json::from_str::<openwebide_core::editor::SyntaxRequest>(
             &self.pending.borrow()[0].message,
         )
-        .unwrap()
-        .source
+        .unwrap();
+        request
+            .source
+            .resolve(
+                self.sources
+                    .borrow()
+                    .get(&request.document)
+                    .map(String::as_str),
+            )
+            .unwrap()
     }
 }
 
@@ -8532,6 +8558,10 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
             request["base_ticket"].is_u64(),
             "updates advertise a scoped published base"
         );
+        assert!(
+            request["source"].is_object(),
+            "updates send only the changed source span"
+        );
         transport.respond(true);
         assert!(
             transport.source_delta.get(),
@@ -8589,6 +8619,173 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
                 .unwrap(),
             revised.replace("\r\n", "\n")
         );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn worker_source_resync_is_bounded_and_rejects_superseded_ownership_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxStatus},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for (mode, changed_scope) in [
+        (WorkspaceMode::Local, 0),
+        (WorkspaceMode::Remote, 0),
+        (WorkspaceMode::Local, 1),
+        (WorkspaceMode::Remote, 1),
+        (WorkspaceMode::Local, 2),
+        (WorkspaceMode::Remote, 2),
+    ] {
+        let source = "{\r\n  \"name\": \"文😀 unchanged source text keeps the publication large enough to test replacement spans and full-source retries without changing the raw CRLF document\", \"value\": 42\r\n}\r\n";
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let captured = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+        let capture = captured.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("resync.json".into()));
+            state.workspace.content.set(source.into());
+            let actions = EditorActions::new(state.workspace);
+            actions.install_syntax_transport(installed);
+            capture.set(Some(actions));
+            editor_view(state)
+        });
+        let actions = captured.get().unwrap();
+        wait_until("initial resync document published", || {
+            if !transport.pending.borrow().is_empty() {
+                transport.respond(true);
+            }
+            actions.syntax_highlights().is_some()
+        })
+        .await;
+        let revised = source.replace("42", "7");
+        mounted.state.workspace.content.set(revised.clone());
+        wait_until("delta after worker eviction", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        transport.service.borrow_mut().clear();
+        transport.respond(true);
+        wait_until("one full-source retry", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        let retry: serde_json::Value =
+            serde_json::from_str(&transport.pending.borrow().front().unwrap().message).unwrap();
+        assert_eq!(retry["source"], revised);
+        assert!(retry.get("base_ticket").is_none());
+        assert!(
+            actions.syntax_highlights().is_none(),
+            "resync is never published as preparation"
+        );
+        transport.respond(true);
+        wait_until("resync preparation accepted", || {
+            actions.syntax_highlights().is_some()
+        })
+        .await;
+        assert!(mounted.state.workspace.editor_worker_active.get_untracked());
+        let second = revised.replace("7", "8");
+        mounted.state.workspace.content.set(second.clone());
+        wait_until("second delta", || !transport.pending.borrow().is_empty()).await;
+        transport.service.borrow_mut().clear();
+        transport.respond(true);
+        wait_until("retry awaiting changed ownership", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        let newest = second.replace("8", "9");
+        mounted.state.workspace.content.set(newest.clone());
+        match changed_scope {
+            0 => mounted
+                .state
+                .auth
+                .generation
+                .update(|generation| *generation += 1),
+            1 => mounted.state.workspace.active_project.set(Some(2)),
+            _ => mounted
+                .state
+                .workspace
+                .editor_read_revision
+                .update(|revision| *revision += 1),
+        }
+        let generation = mounted.state.auth.generation.get_untracked();
+        let project = mounted
+            .state
+            .workspace
+            .active_project
+            .get_untracked()
+            .unwrap();
+        let read_revision = mounted.state.workspace.editor_read_revision.get_untracked();
+        transport.respond(true);
+        wait_until(
+            "superseded retry ignored and latest source published",
+            || {
+                if !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                mounted
+                    .state
+                    .workspace
+                    .editor_preparation
+                    .with_untracked(|prepared| {
+                        prepared.as_ref().is_some_and(|prepared| {
+                            prepared.scope.account_generation == generation
+                                && prepared.scope.key.0 == project
+                                && prepared.scope.read_revision == read_revision
+                                && prepared.scope.source.as_ref() == newest
+                                && prepared
+                                    .analysis
+                                    .as_ref()
+                                    .is_some_and(|analysis| analysis.matches_source(&newest))
+                        })
+                    })
+            },
+        )
+        .await;
+        // A broken worker that asks for a base even after a full retry must stop;
+        // it cannot turn a cache miss into an unbounded request loop.
+        mounted
+            .state
+            .workspace
+            .content
+            .set(newest.replace("9", "10"));
+        wait_until("last delta", || !transport.pending.borrow().is_empty()).await;
+        transport.service.borrow_mut().clear();
+        transport.respond(true);
+        wait_until("last full retry", || !transport.pending.borrow().is_empty()).await;
+        let DeferredSyntaxReply { message, sender } =
+            transport.pending.borrow_mut().pop_front().unwrap();
+        let request: openwebide_core::editor::SyntaxRequest =
+            serde_json::from_str(&message).unwrap();
+        let reply = SyntaxReply {
+            version: SYNTAX_PROTOCOL_VERSION,
+            ticket: request.ticket,
+            status: SyntaxStatus::NeedsSource,
+            analysis: None,
+        };
+        sender
+            .send(Ok(serde_json::to_string(&reply).unwrap()))
+            .unwrap();
+        wait_until("repeated resync stops transport", || {
+            transport.stopped.get()
+        })
+        .await;
+        assert!(!mounted.state.workspace.editor_worker_active.get_untracked());
+        assert!(transport.pending.borrow().is_empty());
+        wait_until("shared fallback prepares current text", || {
+            actions
+                .syntax_paint()
+                .1
+                .iter()
+                .flat_map(|row| row.iter())
+                .any(|token| token.text == "10")
+        })
+        .await;
     }
 }
 

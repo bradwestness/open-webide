@@ -7,7 +7,7 @@ use std::{
 };
 use wasm_bindgen::{JsCast, closure::Closure};
 
-const READY_MESSAGE: &str = "openwebide-editor-ready:3";
+const READY_MESSAGE: &str = "openwebide-editor-ready:4";
 
 thread_local! { static ENABLED: Cell<bool> = const { Cell::new(false) }; }
 pub fn enable() {

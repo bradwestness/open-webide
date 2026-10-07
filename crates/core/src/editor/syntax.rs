@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::ops::Range as ByteRange;
 use std::sync::Arc;
-pub use transfer::{MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData};
+pub use transfer::{MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData, SyntaxSource};
 use tree_sitter::{InputEdit, Node, ParseOptions, Parser, Point, Range, Tree};
 
 const MAX_PROGRESS_CHECKS: usize = 4_096;
@@ -21,9 +21,13 @@ const MAX_INJECTIONS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SyntaxStatus {
-    Ready { incremental: bool },
+    Ready {
+        incremental: bool,
+    },
     TooLarge,
     Cancelled,
+    /// Worker control response: retry once with a complete source snapshot.
+    NeedsSource,
 }
 
 /// Immutable source-bound preparation shared by rendering and editing callers.

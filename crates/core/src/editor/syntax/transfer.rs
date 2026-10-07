@@ -12,7 +12,7 @@ pub(super) const MAX_ANALYSIS_RECORDS: usize = 100_000;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SyntaxAnalysisData {
-    source: SourceData,
+    source: SyntaxSource,
     folds: Vec<FoldRange>,
     structure: Option<StructureData>,
     // Per-line UTF-8 end offsets, avoiding another copy of every token's text.
@@ -24,7 +24,7 @@ pub struct SyntaxAnalysisData {
 /// Source coordinates are UTF-8 bytes, never browser UTF-16 positions.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
-enum SourceData {
+pub enum SyntaxSource {
     Full(String),
     Replace {
         start: usize,
@@ -33,10 +33,10 @@ enum SourceData {
     },
 }
 
-impl SourceData {
-    fn publication(source: &str, previous: Option<&SyntaxAnalysis>) -> Self {
+impl SyntaxSource {
+    pub fn publication(source: &str, previous: Option<&str>) -> Self {
         if let Some(previous) = previous {
-            let change = text_change(previous.source(), source);
+            let change = text_change(previous, source);
             let (start, end, text) = change.map_or((0, 0, ""), |change| {
                 (
                     change.range.start,
@@ -54,6 +54,41 @@ impl SourceData {
             }
         }
         Self::Full(source.into())
+    }
+
+    pub(super) fn result_length(&self, previous: Option<&str>) -> Option<usize> {
+        match self {
+            Self::Full(source) => Some(source.len()),
+            Self::Replace { start, end, text } => {
+                let old = previous?;
+                if start > end {
+                    return None;
+                }
+                old.get(..*start)?
+                    .len()
+                    .checked_add(text.len())?
+                    .checked_add(old.get(*end..)?.len())
+            }
+        }
+    }
+
+    /// Resolve a validated worker request; publication policy bounds size first.
+    pub fn resolve(self, previous: Option<&str>) -> Option<String> {
+        let length = self.result_length(previous)?;
+        if length > MAX_STRUCTURE_BYTES {
+            return None;
+        }
+        match self {
+            Self::Full(source) => Some(source),
+            Self::Replace { start, end, text } => {
+                let old = previous?;
+                let mut source = String::with_capacity(length);
+                source.push_str(old.get(..start)?);
+                source.push_str(&text);
+                source.push_str(old.get(end..)?);
+                Some(source)
+            }
+        }
     }
 
     fn validate(self, expected: &str, previous: Option<&SyntaxAnalysis>) -> Option<Arc<str>> {
@@ -160,8 +195,11 @@ impl SyntaxAnalysis {
                 })
                 .collect()
         });
-        let source = SourceData::publication(&self.source, previous.map(|(_, analysis)| analysis));
-        reused |= matches!(source, SourceData::Replace { .. });
+        let source = SyntaxSource::publication(
+            &self.source,
+            previous.map(|(_, analysis)| analysis.source()),
+        );
+        reused |= matches!(source, SyntaxSource::Replace { .. });
         let data = SyntaxAnalysisData {
             source,
             folds: self.folds.clone(),
@@ -208,7 +246,7 @@ impl SyntaxAnalysisData {
         if self.record_count() > MAX_ANALYSIS_RECORDS {
             return None;
         }
-        if matches!(self.source, SourceData::Replace { .. }) && self.base_ticket.is_none() {
+        if matches!(self.source, SyntaxSource::Replace { .. }) && self.base_ticket.is_none() {
             return None;
         }
         let source = self
@@ -310,7 +348,7 @@ mod tests {
                 .unwrap();
             assert_eq!(restored.source(), revised);
             assert_eq!(restored.highlights(), next.highlights());
-            if matches!(wire.source, SourceData::Replace { .. }) {
+            if matches!(wire.source, SyntaxSource::Replace { .. }) {
                 assert!(wire.clone().validate(&revised).is_none());
                 assert!(
                     wire.clone()
@@ -331,7 +369,7 @@ mod tests {
             (0, 0, "wrong"),
         ] {
             assert!(
-                SourceData::Replace {
+                SyntaxSource::Replace {
                     start,
                     end,
                     text: text.into()
@@ -341,11 +379,11 @@ mod tests {
             );
         }
         let mut wire = old.transfer_data_reusing(Some((42, &old))).unwrap();
-        assert!(matches!(wire.source, SourceData::Replace { .. }));
+        assert!(matches!(wire.source, SyntaxSource::Replace { .. }));
         wire.base_ticket = None;
         assert!(wire.validate_reusing(&source, Some((42, &old))).is_none());
         let malformed = serde_json::json!({"start":0,"end":0,"text":"","extra":true});
-        assert!(serde_json::from_value::<SourceData>(malformed).is_err());
+        assert!(serde_json::from_value::<SyntaxSource>(malformed).is_err());
     }
 
     #[test]

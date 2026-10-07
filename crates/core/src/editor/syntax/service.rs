@@ -1,8 +1,10 @@
 //! One preparation service used behind synchronous and worker transport adapters.
-use super::{MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData, SyntaxPreparations, SyntaxStatus};
+use super::{
+    MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData, SyntaxPreparations, SyntaxSource, SyntaxStatus,
+};
 use crate::{editor::MAX_STRUCTURE_BYTES, highlight::Language};
 
-pub const SYNTAX_PROTOCOL_VERSION: u32 = 3;
+pub const SYNTAX_PROTOCOL_VERSION: u32 = 4;
 pub const MAX_SYNTAX_REQUEST_BYTES: usize = MAX_STRUCTURE_BYTES * 6 + 8192;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -12,7 +14,7 @@ pub struct SyntaxRequest {
     pub ticket: u32,
     pub document: String,
     pub language: Language,
-    pub source: String,
+    pub source: SyntaxSource,
     pub tab_width: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_ticket: Option<u32>,
@@ -26,13 +28,34 @@ pub struct SyntaxReply {
     pub analysis: Option<SyntaxAnalysisData>,
 }
 
+impl SyntaxRequest {
+    pub fn new(
+        ticket: u32,
+        document: String,
+        language: Language,
+        source: &str,
+        tab_width: usize,
+        previous: Option<(u32, &super::SyntaxAnalysis)>,
+    ) -> Self {
+        Self {
+            version: SYNTAX_PROTOCOL_VERSION,
+            ticket,
+            document,
+            language,
+            tab_width,
+            source: SyntaxSource::publication(source, previous.map(|(_, value)| value.source())),
+            base_ticket: previous.map(|(ticket, _)| ticket),
+        }
+    }
+}
+
 impl SyntaxPreparations<String> {
     /// Malformed envelopes are transport failures; valid oversized sources receive
     /// an explicit fallback status. Limits and shaping are shared above adapters.
     pub fn handle_message(
         &mut self,
         message: &str,
-        should_continue: impl FnMut() -> bool,
+        mut should_continue: impl FnMut() -> bool,
     ) -> Option<String> {
         if message.len() > MAX_SYNTAX_REQUEST_BYTES {
             return None;
@@ -48,10 +71,37 @@ impl SyntaxPreparations<String> {
         let previous = self
             .previous_publication(&request.document)
             .filter(|(ticket, _)| request.base_ticket == Some(*ticket));
+        let control_reply = |status| {
+            serde_json::to_string(&SyntaxReply {
+                version: SYNTAX_PROTOCOL_VERSION,
+                ticket: request.ticket,
+                status,
+                analysis: None,
+            })
+            .ok()
+        };
+        if matches!(request.source, SyntaxSource::Replace { .. }) {
+            // A delta without an advertised base is malformed, rather than a resync.
+            request.base_ticket?;
+            if previous.is_none() {
+                return control_reply(SyntaxStatus::NeedsSource);
+            }
+        }
+        let base_source = previous.as_ref().map(|(_, analysis)| analysis.source());
+        let length = request.source.result_length(base_source)?;
+        if length > MAX_STRUCTURE_BYTES {
+            self.remove(&request.document);
+            return control_reply(SyntaxStatus::TooLarge);
+        }
+        if !should_continue() {
+            self.remove(&request.document);
+            return control_reply(SyntaxStatus::Cancelled);
+        }
+        let source = request.source.resolve(base_source)?;
         let (mut status, prepared) = self.prepare(
             request.document.clone(),
             request.language,
-            &request.source,
+            &source,
             request.tab_width,
             should_continue,
         );
@@ -118,7 +168,10 @@ impl SyntaxReply {
             (SyntaxStatus::Ready { .. }, Some(data)) => {
                 Some(data.validate_reusing(source, previous)?)
             }
-            (SyntaxStatus::Cancelled | SyntaxStatus::TooLarge, None) => None,
+            (
+                SyntaxStatus::Cancelled | SyntaxStatus::TooLarge | SyntaxStatus::NeedsSource,
+                None,
+            ) => None,
             _ => return None,
         };
         Some((reply.status, analysis))
@@ -134,11 +187,147 @@ mod tests {
             ticket: 42,
             document: "1:main.rs".into(),
             language: Language::Rust,
-            source: source.into(),
+            source: SyntaxSource::Full(source.into()),
             tab_width: 4,
             base_ticket: None,
         }
     }
+    #[test]
+    fn source_request_spans_match_all_languages_and_resync_stale_or_evicted_bases() {
+        for &(path, body, _) in crate::editor::syntax_contracts::LANGUAGE_CASES {
+            let source = format!("{body}{}", "\n".repeat(1000));
+            let language = crate::highlight::language_from_path(path);
+            let mut service = SyntaxPreparations::default();
+            let first = SyntaxRequest::new(42, path.into(), language, &source, 4, None);
+            let response = service
+                .handle_message(&serde_json::to_string(&first).unwrap(), || true)
+                .unwrap();
+            let old = SyntaxReply::receive(&response, 42, &source)
+                .unwrap()
+                .1
+                .unwrap();
+            let revised = source.replace("文😀", "🦀 changed");
+            let update =
+                SyntaxRequest::new(43, path.into(), language, &revised, 4, Some((42, &old)));
+            assert!(
+                matches!(update.source, SyntaxSource::Replace { .. }),
+                "{path}"
+            );
+            let delta = serde_json::to_string(&update).unwrap();
+            let full = SyntaxRequest::new(43, path.into(), language, &revised, 4, None);
+            assert!(
+                delta.len() * 2 < serde_json::to_string(&full).unwrap().len(),
+                "{path}"
+            );
+            let response = service.handle_message(&delta, || true).unwrap();
+            let prepared = SyntaxReply::receive_reusing(&response, 43, &revised, Some((42, &old)))
+                .unwrap()
+                .1
+                .unwrap();
+            let mut direct = SyntaxPreparations::default();
+            let expected = direct
+                .prepare(path.to_string(), language, &revised, 4, || true)
+                .1
+                .unwrap();
+            assert_eq!(prepared.folds(), expected.folds(), "{path}");
+            assert_eq!(prepared.highlights(), expected.highlights(), "{path}");
+            assert_eq!(
+                prepared
+                    .structure()
+                    .map(|value| serde_json::to_value(value.transfer_data()).unwrap()),
+                expected
+                    .structure()
+                    .map(|value| serde_json::to_value(value.transfer_data()).unwrap()),
+                "{path}"
+            );
+            // The worker advanced to ticket 43; a discarded UI reply must resync.
+            for evicted in [false, true] {
+                if evicted {
+                    service.remove(&path.to_string());
+                }
+                let response = service.handle_message(&delta, || true).unwrap();
+                assert_eq!(
+                    SyntaxReply::receive_reusing(&response, 43, &revised, Some((42, &old)))
+                        .unwrap()
+                        .0,
+                    SyntaxStatus::NeedsSource
+                );
+                let response = service
+                    .handle_message(&serde_json::to_string(&full).unwrap(), || true)
+                    .unwrap();
+                assert!(
+                    SyntaxReply::receive(&response, 43, &revised)
+                        .unwrap()
+                        .1
+                        .is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_source_requests_and_reconstructed_limits_do_not_publish() {
+        let source = format!("{}文😀\r\n", "prefix ".repeat(30));
+        let mut service = SyntaxPreparations::default();
+        let first = request(&source);
+        let response = service
+            .handle_message(&serde_json::to_string(&first).unwrap(), || true)
+            .unwrap();
+        let old = SyntaxReply::receive(&response, 42, &source)
+            .unwrap()
+            .1
+            .unwrap();
+        let mut update = SyntaxRequest::new(
+            43,
+            first.document.clone(),
+            first.language,
+            &source,
+            4,
+            Some((42, &old)),
+        );
+        for (start, end) in [
+            (source.find('文').unwrap() + 1, source.len()),
+            (2, 1),
+            (0, usize::MAX),
+        ] {
+            update.source = SyntaxSource::Replace {
+                start,
+                end,
+                text: "".into(),
+            };
+            assert!(
+                service
+                    .handle_message(&serde_json::to_string(&update).unwrap(), || true)
+                    .is_none()
+            );
+        }
+        update.source = SyntaxSource::Replace {
+            start: 0,
+            end: 0,
+            text: "".into(),
+        };
+        update.base_ticket = None;
+        assert!(
+            service
+                .handle_message(&serde_json::to_string(&update).unwrap(), || true)
+                .is_none()
+        );
+        update.base_ticket = Some(42);
+        update.source = SyntaxSource::Replace {
+            start: 0,
+            end: 0,
+            text: "x".repeat(MAX_STRUCTURE_BYTES),
+        };
+        let response = service
+            .handle_message(&serde_json::to_string(&update).unwrap(), || true)
+            .unwrap();
+        assert_eq!(
+            SyntaxReply::receive(&response, 43, &source).unwrap().0,
+            SyntaxStatus::TooLarge
+        );
+        assert!(service.is_empty());
+    }
+
     #[test]
     fn large_worker_updates_transfer_changed_spans_and_share_unchanged_rows() {
         let source = "SELECT name, value FROM items;\r\n".repeat(1000);
@@ -153,7 +342,7 @@ mod tests {
             .1
             .unwrap();
         let revised = source.replacen("value", "revised_value", 1);
-        input.source.clone_from(&revised);
+        input.source = SyntaxSource::Full(revised.clone());
         input.ticket = 43;
         input.base_ticket = Some(42);
         let delta = service
@@ -217,7 +406,7 @@ mod tests {
                 .unwrap();
             let old = SyntaxReply::receive(&first, 42, source).unwrap().1.unwrap();
             let revised = source.replace("文😀", "😀 changed");
-            input.source.clone_from(&revised);
+            input.source = SyntaxSource::Full(revised.clone());
             input.ticket = 43;
             input.base_ticket = Some(42);
             let next = service

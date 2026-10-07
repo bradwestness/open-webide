@@ -754,7 +754,7 @@ cancellation. Published rows use immutable shared token slices, so lexical reuse
 retains existing token strings without copying their text or token arrays. Parser
 paint and validated worker replies use the same row representation; the painter
 reads those rows without materializing a second token table. Row metadata and
-handle tables still visit the complete source. Worker protocol v3 replies reference
+handle tables still visit the complete source. Worker protocol v4 replies reference
 unchanged token rows from the last published base ticket. The receiver checks the ticket and exact row text before sharing the
 existing allocation. Account, document, read and tab-width changes clear the
 frontend base; unavailable, stale or evicted worker bases produce complete results.
@@ -763,8 +763,13 @@ Replies also publish a UTF-8 replacement span when it is smaller than the full
 source. The receiver validates its range, unchanged prefix and suffix, inserted
 text and resulting length against the exact requested source before accepting it.
 No base, a stale ticket or worker cache eviction produces a standalone reply;
-malformed spans are rejected. Requests and structural data still transfer in full,
-and row tables still visit all rows. Initial preparation and changed rows still
+malformed spans are rejected. Requests use the same span contract. If the worker
+no longer has the advertised base, it asks for a full snapshot; the shared
+publication facade retries once after rechecking source, account, read and ticket
+ownership. A second resync response stops the transport and uses the shared
+fallback. Invalid ranges remain transport failures; reconstructed byte and row
+limits apply before analysis. Structural data still transfers in full, and row
+tables still visit all rows. Initial preparation and changed rows still
 allocate token text.
 
 Parser fallback keeps its existing 12 ms budget and
@@ -772,5 +777,5 @@ can supply ready paint before lexical preparation is needed. Core callers that
 have not installed browser preparation retain their synchronous API.
 
 This makes terminal lexical work cooperative; it does not make full-source
-publication, parsing, geometry or long-row initial shaping incremental. Those
+snapshot ownership, parsing, geometry or long-row initial shaping incremental. Those
 remaining limits are tracked in the roadmap and performance guide.

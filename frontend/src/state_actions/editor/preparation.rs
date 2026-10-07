@@ -2,7 +2,7 @@
 use super::EditorActions;
 use crate::state::workspace::{EditorFallbackPaint, EditorSyntaxScope, PreparedEditorSyntax};
 use leptos::prelude::*;
-use openwebide_core::editor::{SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxRequest};
+use openwebide_core::editor::{SyntaxReply, SyntaxRequest};
 use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone)]
@@ -340,18 +340,21 @@ impl EditorActions {
                     if previous.is_none() {
                         published.set_value(None);
                     }
-                    let request = SyntaxRequest {
-                        version: SYNTAX_PROTOCOL_VERSION,
-                        ticket: request_ticket,
-                        document: format!(
-                            "{}:{}:{}:{}",
-                            scope.account_generation, scope.read_revision, scope.key.0, scope.key.1
-                        ),
-                        language: openwebide_core::highlight::language_from_path(&scope.key.1),
-                        source: scope.source.to_string(),
-                        tab_width: scope.tab_width,
-                        base_ticket: previous.as_ref().map(|previous| previous.ticket),
-                    };
+                    let previous_analysis = previous
+                        .as_ref()
+                        .map(|previous| (previous.ticket, previous.analysis.as_ref()));
+                    let document = format!(
+                        "{}:{}:{}:{}",
+                        scope.account_generation, scope.read_revision, scope.key.0, scope.key.1
+                    );
+                    let request = SyntaxRequest::new(
+                        request_ticket,
+                        document.clone(),
+                        openwebide_core::highlight::language_from_path(&scope.key.1),
+                        &scope.source,
+                        scope.tab_width,
+                        previous_analysis,
+                    );
                     let message = serde_json::to_string(&request)
                         .expect("syntax request contains only serializable primitives");
                     let reply = client.request(request_ticket, message).await;
@@ -361,7 +364,7 @@ impl EditorActions {
                     if ticket.get_value() != request_ticket || !self.syntax_scope_current(&scope) {
                         continue;
                     }
-                    let result = reply.ok().and_then(|message| {
+                    let mut result = reply.ok().and_then(|message| {
                         SyntaxReply::receive_reusing(
                             &message,
                             request_ticket,
@@ -371,6 +374,41 @@ impl EditorActions {
                                 .map(|previous| (previous.ticket, previous.analysis.as_ref())),
                         )
                     });
+                    if matches!(
+                        result,
+                        Some((openwebide_core::editor::SyntaxStatus::NeedsSource, None))
+                    ) {
+                        // Only one resync per scoped request. Recheck ownership after
+                        // each await so a missing worker base cannot revive stale text.
+                        published.set_value(None);
+                        let full = SyntaxRequest::new(
+                            request_ticket,
+                            document,
+                            request.language,
+                            &scope.source,
+                            scope.tab_width,
+                            None,
+                        );
+                        let message = serde_json::to_string(&full)
+                            .expect("syntax request contains only serializable primitives");
+                        let reply = client.request(request_ticket, message).await;
+                        if pending.is_disposed() {
+                            break;
+                        }
+                        if ticket.get_value() != request_ticket
+                            || !self.syntax_scope_current(&scope)
+                        {
+                            continue;
+                        }
+                        result = reply
+                            .ok()
+                            .and_then(|message| {
+                                SyntaxReply::receive(&message, request_ticket, &scope.source)
+                            })
+                            .filter(|(status, _)| {
+                                *status != openwebide_core::editor::SyntaxStatus::NeedsSource
+                            });
+                    }
                     if let Some((status, analysis)) = result {
                         published.set_value(analysis.as_ref().map(|analysis| PublishedSyntax {
                             scope: scope.clone(),

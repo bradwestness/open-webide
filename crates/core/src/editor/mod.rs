@@ -72,7 +72,7 @@ mod syntax_providers;
 pub use syntax::{
     MAX_ANALYSIS_MESSAGE_BYTES, MAX_SYNTAX_DOCUMENTS, MAX_SYNTAX_REQUEST_BYTES,
     MAX_SYNTAX_SOURCE_BYTES, SYNTAX_PROTOCOL_VERSION, SyntaxAnalysis, SyntaxAnalysisData,
-    SyntaxDocument, SyntaxPreparations, SyntaxReply, SyntaxRequest, SyntaxStatus,
+    SyntaxDocument, SyntaxPreparations, SyntaxReply, SyntaxRequest, SyntaxSource, SyntaxStatus,
     preparation_exceeds_limits,
 };
 #[cfg(feature = "editor-parser")]

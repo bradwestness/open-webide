@@ -34,11 +34,11 @@ def check():
                     let wake; const ready = new Promise(resolve => {wake = resolve;});
                     worker.onerror = e => { worker.terminate(); done({error: e.message}); };
                     worker.onmessage = event => {
-                        if (event.data === 'openwebide-editor-ready:3') {wake(); return;}
+                        if (event.data === 'openwebide-editor-ready:4') {wake(); return;}
                         const reply = JSON.parse(event.data);
                         waiting.get(reply.ticket)?.(reply); waiting.delete(reply.ticket);
                     };
-                    async function request(document, language, source) {
+                    async function request(document, language, source, span = null) {
                         await ready;
                         return new Promise(resolve => {
                             const id = ++ticket;
@@ -62,7 +62,7 @@ def check():
                                 } else { bases.delete(document); sources.delete(document); }
                                 resolve(reply);
                             });
-                            worker.postMessage(JSON.stringify({version:3,ticket:id,document,language,source,tab_width:4,base_ticket:bases.get(document)}));
+                            worker.postMessage(JSON.stringify({version:4,ticket:id,document,language,source:span || source,tab_width:4,base_ticket:bases.get(document)}));
                         });
                     }
                     (async () => {
@@ -113,18 +113,28 @@ def check():
                         let uiEvent = false;
                         setTimeout(() => {uiEvent = true;}, 0);
                         const prepared = await request('large', 'Rust', heavy);
-                        const heavyUpdate = await request('large', 'Rust', heavy.replace('文😀', '🦀 changed'));
+                        const byteStart = new TextEncoder().encode(heavy.slice(0, heavy.indexOf('文😀'))).length;
+                        const heavyUpdate = await request('large', 'Rust', heavy.replace('文😀', '🦀 changed'),
+                            {start:byteStart,end:byteStart+new TextEncoder().encode('文😀').length,text:'🦀 changed'});
+                        // TypeScript's acknowledged base was evicted by the subsequent documents.
+                        const resyncText = fixtures.TypeScript + '\n';
+                        const resync = await request('TypeScript', 'TypeScript', resyncText,
+                            {start:new TextEncoder().encode(fixtures.TypeScript).length,
+                             end:new TextEncoder().encode(fixtures.TypeScript).length,text:'\n'});
+                        const resynced = await request('TypeScript', 'TypeScript', resyncText);
                         const oversized = await request('large', 'Rust', 'x'.repeat(2*1024*1024+1));
                         worker.terminate();
                         done({first, next, providers, lexical, heavyStatus: prepared.status,
                             heavySource: prepared.analysis?.source === heavy, uiEvent,
                             heavyDelta: heavyUpdate.analysis?.sourceDelta === true,
                             heavyUpdateSource: heavyUpdate.analysis?.source === heavy.replace('文😀', '🦀 changed'),
+                            resyncStatus: resync.status, resyncedSource: resynced.analysis?.source === resyncText,
                             oversizedStatus: oversized.status, oversizedAnalysis: oversized.analysis});
                     })().catch(error => {worker.terminate(); done({error:String(error)});});
                 ''', 'args': []})
                 assert 'error' not in result, result
                 assert result['heavyDelta'] and result['heavyUpdateSource'], result
+                assert result['resyncStatus'] == 'NeedsSource' and result['resyncedSource'], result
                 assert result['first']['status'] == {'Ready': {'incremental': False}}, result['first']['status']
                 assert result['next']['status'] == {'Ready': {'incremental': True}}, result['next']['status']
                 assert result['first']['analysis']['source'] != result['next']['analysis']['source']

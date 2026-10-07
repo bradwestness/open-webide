@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Send small editor worker requests as source replacement spans using shared Rust policy. Resync once with a full snapshot after cache eviction or a discarded base, reject invalid UTF-8 ranges and reconstructed limits, and prevent superseded retries from publishing across projects or accounts in either workspace mode.
+
 - Publish small worker source updates as validated UTF-8 replacement spans against the acknowledged snapshot in both workspace modes. Preserve Unicode and CRLF, reject malformed ranges or mismatching sources, and retain standalone replies for stale or evicted bases.
 
 - Publish unchanged worker token rows by validated base-ticket references instead of sending and reconstructing their token spans. Preserve shared row allocations in both workspace modes, reject stale or mismatching bases, and send complete results when a base is unavailable.

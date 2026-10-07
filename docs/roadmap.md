@@ -82,10 +82,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Terminal lexical paint prepares in cooperative, source-owned batches; worker and
   fallback updates reuse exact source/context rows and share their immutable token
   allocations. Worker replies reference validated unchanged token rows and publish
-  source replacement spans. Requests, structure and row-table publication remain
-  whole-file. Finish those incremental paths, uncached initial/cold shaping, bidirectional
-  visual-run windows, fine long-row paint and incremental measurement. Language formatting remains in
-  Code intelligence.
+  source replacement spans in both directions, with a bounded full-snapshot resync
+  when a worker base is unavailable. Structure and row-table publication remain
+  whole-file. Finish those incremental paths and remaining source snapshot ownership,
+  uncached initial/cold shaping, bidirectional visual-run windows, fine long-row paint
+  and incremental measurement. Language formatting remains in Code intelligence.
 - **Bounded native input:** prepared larger fine-pointer editors bind scoped
   surrounding text to the textarea, with full-source selections and source-owned
   scrolling. Finish initial/cold and touch pointer selection, caret ownership and
