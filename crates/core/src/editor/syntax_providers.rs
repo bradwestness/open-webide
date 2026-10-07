@@ -28,6 +28,17 @@ pub enum SyntaxContextScope {
     Document,
 }
 
+/// Dependencies allowed when classifying retained syntax colors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyntaxHighlightScope {
+    /// Node kind, flags and descendants; no absolute or external tree positions.
+    Node,
+    /// Node dependencies plus immediate-parent kind and field membership.
+    Parent,
+    /// Arbitrary tree dependencies; classify again after every source change.
+    Document,
+}
+
 fn built_in_context(node: tree_sitter::Node<'_>) -> Option<SyntaxContextKind> {
     match node.kind() {
         "string"
@@ -89,6 +100,7 @@ pub struct SyntaxProvider {
     pub context: Option<ContextSelector>,
     pub context_scope: SyntaxContextScope,
     pub highlight: Option<HighlightSelector>,
+    pub highlight_scope: SyntaxHighlightScope,
     pub injection: Option<InjectionSelector>,
     pub grammar: fn() -> tree_sitter::Language,
     pub fold_nodes: &'static [&'static str],
@@ -102,6 +114,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_rust::LANGUAGE.into(),
         parent_headers: &[],
@@ -126,6 +139,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         parent_headers: &[],
@@ -146,6 +160,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         parent_headers: &[],
@@ -166,6 +181,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         parent_headers: &[],
@@ -188,6 +204,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_typescript::LANGUAGE_TSX.into(),
         parent_headers: &[],
@@ -211,6 +228,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_python::LANGUAGE.into(),
         parent_headers: &["block"],
@@ -231,6 +249,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_java::LANGUAGE.into(),
         parent_headers: &[],
@@ -251,6 +270,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_c_sharp::LANGUAGE.into(),
         parent_headers: &[],
@@ -272,6 +292,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_cpp::LANGUAGE.into(),
         parent_headers: &[],
@@ -291,6 +312,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_c::LANGUAGE.into(),
         parent_headers: &[],
@@ -309,6 +331,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(php_context),
         context_scope: SyntaxContextScope::Parent,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_php::LANGUAGE_PHP.into(),
         parent_headers: &[],
@@ -329,6 +352,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_bash::LANGUAGE.into(),
         parent_headers: &[],
@@ -350,6 +374,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_go::LANGUAGE.into(),
         parent_headers: &[],
@@ -368,6 +393,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: Some(super::syntax_injections::html_injection),
         grammar: || tree_sitter_html::LANGUAGE.into(),
         parent_headers: &[],
@@ -378,6 +404,7 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         context: Some(built_in_context),
         context_scope: SyntaxContextScope::Node,
         highlight: Some(built_in_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
         injection: None,
         grammar: || tree_sitter_css::LANGUAGE.into(),
         parent_headers: &[],

@@ -4,6 +4,7 @@ pub use cache::{MAX_SYNTAX_DOCUMENTS, MAX_SYNTAX_SOURCE_BYTES, SyntaxPreparation
 mod contexts;
 mod folds;
 mod highlighting;
+mod highlights;
 mod service;
 mod subtrees;
 pub use service::{MAX_SYNTAX_REQUEST_BYTES, SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxRequest};
@@ -80,6 +81,7 @@ struct EmbeddedSyntax {
     range: Range,
     folds: std::cell::RefCell<folds::ParsedFolds>,
     contexts: std::cell::RefCell<contexts::ParsedContexts>,
+    highlights: std::cell::RefCell<highlights::ParsedHighlights>,
 }
 
 /// One outer parser plus independent embedded bodies. All positions are source coordinates.
@@ -96,6 +98,7 @@ pub struct SyntaxDocument {
     publication: Option<(u32, Arc<SyntaxAnalysis>)>,
     folds: std::cell::RefCell<folds::ParsedFolds>,
     contexts: std::cell::RefCell<contexts::ParsedContexts>,
+    highlights: std::cell::RefCell<highlights::ParsedHighlights>,
     paint: std::cell::RefCell<highlighting::SyntaxPaint>,
 }
 
@@ -122,6 +125,7 @@ impl SyntaxDocument {
             publication: None,
             folds: std::cell::RefCell::default(),
             contexts: std::cell::RefCell::default(),
+            highlights: std::cell::RefCell::default(),
             paint: std::cell::RefCell::default(),
         })
     }
@@ -273,6 +277,7 @@ impl SyntaxDocument {
                     tree: None,
                     folds: std::cell::RefCell::default(),
                     contexts: std::cell::RefCell::default(),
+                    highlights: std::cell::RefCell::default(),
                     range,
                 }
             };
@@ -448,6 +453,7 @@ impl SyntaxDocument {
         self.publication = None;
         self.folds.borrow_mut().clear();
         self.contexts.borrow_mut().clear();
+        self.highlights.borrow_mut().clear();
         *self.paint.borrow_mut() = highlighting::SyntaxPaint::default();
     }
 
@@ -2221,6 +2227,7 @@ mod tests {
             context: None,
             context_scope: super::super::syntax_providers::SyntaxContextScope::Document,
             highlight: None,
+            highlight_scope: super::super::SyntaxHighlightScope::Document,
             injection: None,
             grammar: || tree_sitter_rust::LANGUAGE.into(),
             fold_nodes: &["arguments"],

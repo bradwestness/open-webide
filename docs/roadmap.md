@@ -71,8 +71,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   use fresh extraction; interpolation contexts revalidate ancestor classifications,
   and folds recheck closing-line text.
   Grammar paint reuses exact source/classification pieces and unchanged token-row
-  allocations; semantic extraction, boundary construction and row indexing still
-  visit the file.
+  allocations. Color classifiers reuse retained descendants while refreshing roots
+  with external parent roles; document-dependent custom selectors remain fresh.
+  Semantic list assembly, boundary construction and row indexing still visit the file.
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list
   reconstruction/validation and row-table construction still visit the whole file.

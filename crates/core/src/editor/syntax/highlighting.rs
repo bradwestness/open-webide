@@ -1,5 +1,5 @@
 //! Shared grammar-aware paint; source bytes and line boundaries are preserved.
-use super::{SyntaxDocument, visit_tree};
+use super::SyntaxDocument;
 use crate::editor::structure::RegionKind;
 use crate::highlight::{
     Language, Token, TokenKind, TokenRow, TokenRows, highlight_lines, share_token_rows,
@@ -69,27 +69,21 @@ impl SyntaxDocument {
     ) -> Option<TokenRows> {
         let mut semantic = Vec::new();
         let mut visited = 0;
-        for (tree, provider) in self.tree.iter().zip(self.provider).chain(
-            self.embedded
-                .iter()
-                .filter_map(|body| body.tree.as_ref().map(|tree| (tree, body.provider))),
-        ) {
-            let Some(select) = provider.highlight else {
-                continue;
-            };
-            visit_tree(tree, &mut visited, |node| {
-                if let Some(kind) = select(node) {
-                    let range = node.start_byte()..node.end_byte();
-                    if range.start < range.end
-                        && self.text.is_char_boundary(range.start)
-                        && self.text.is_char_boundary(range.end)
-                    {
-                        semantic.push((range, kind));
-                    }
-                }
-                Ok(())
-            })
-            .ok()?;
+        for (tree, provider, cache) in self
+            .tree
+            .iter()
+            .zip(self.provider)
+            .map(|(tree, provider)| (tree, provider, &self.highlights))
+            .chain(self.embedded.iter().filter_map(|body| {
+                body.tree
+                    .as_ref()
+                    .map(|tree| (tree, body.provider, &body.highlights))
+            }))
+        {
+            cache
+                .borrow_mut()
+                .collect(tree, provider, &self.text, &mut visited, &mut semantic)
+                .ok()?;
         }
         semantic.sort_by_key(|(range, _)| (range.start, range.end));
         // A selector must classify leaves or disjoint spans. Overlap is a typed
@@ -285,6 +279,85 @@ impl SyntaxDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn color_classification_reuses_descendants_without_losing_work_limits() {
+        let source = (0..200)
+            .map(|index| format!("fn f{index}() {{ call(\"文😀\"); }}\r\n"))
+            .collect::<String>();
+        let mut document = SyntaxDocument::new(Language::Rust).unwrap();
+        document.prepare(&source, 4, || true).1.unwrap();
+        let changed = source.replacen("文😀", "😀 changed", 1);
+        let next = document.prepare(&changed, 4, || true).1.unwrap();
+        let mut nodes = 0;
+        super::super::visit_tree(document.tree.as_ref().unwrap(), &mut nodes, |_| Ok(())).unwrap();
+        assert!(document.highlights.borrow().reused_nodes > nodes / 2);
+        let mut fresh = SyntaxDocument::new(Language::Rust).unwrap();
+        assert_eq!(
+            next.highlights,
+            fresh.prepare(&changed, 4, || true).1.unwrap().highlights
+        );
+        let mut visited = super::super::MAX_FOLD_NODES - nodes;
+        let mut spans = Vec::new();
+        document
+            .highlights
+            .borrow_mut()
+            .collect(
+                document.tree.as_ref().unwrap(),
+                document.provider.unwrap(),
+                &changed,
+                &mut visited,
+                &mut spans,
+            )
+            .unwrap();
+        assert_eq!(visited, super::super::MAX_FOLD_NODES);
+        assert_eq!(
+            document.highlights.borrow_mut().collect(
+                document.tree.as_ref().unwrap(),
+                document.provider.unwrap(),
+                &changed,
+                &mut visited,
+                &mut spans
+            ),
+            Err(super::super::SyntaxStatus::TooLarge)
+        );
+        document.update(&changed, || false);
+        assert_eq!(document.highlights.borrow().reused_nodes, 0);
+    }
+
+    #[test]
+    fn document_dependent_color_classification_remains_fresh() {
+        fn classify(node: super::super::Node<'_>) -> Option<TokenKind> {
+            if node.kind() != "identifier" {
+                return None;
+            }
+            let mut root = node;
+            while let Some(parent) = root.parent() {
+                root = parent;
+            }
+            root.has_error().then_some(TokenKind::Type)
+        }
+        let provider = crate::editor::SyntaxProvider {
+            highlight: Some(classify),
+            highlight_scope: crate::editor::SyntaxHighlightScope::Document,
+            ..crate::editor::syntax_provider(Language::Rust).unwrap()
+        };
+        let source = "fn first() { call(); }\r\nfn second() { call(); }\r\n";
+        let mut document = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        let before = document.prepare(source, 4, || true).1.unwrap();
+        let changed = format!("{source}fn broken(");
+        let next = document.prepare(&changed, 4, || true).1.unwrap();
+        assert_ne!(
+            before.highlights.as_ref().unwrap()[0],
+            next.highlights.as_ref().unwrap()[0]
+        );
+        let mut fresh = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        assert_eq!(
+            next.highlights,
+            fresh.prepare(&changed, 4, || true).1.unwrap().highlights
+        );
+        assert_eq!(document.highlights.borrow().reused_nodes, 0);
+    }
+
     #[test]
     fn grammar_paint_retains_unchanged_piece_and_row_allocations() {
         let source = (0..200)

@@ -78,7 +78,7 @@ pub use syntax::{
 #[cfg(feature = "editor-parser")]
 pub use syntax_providers::{
     ContextSelector, HighlightSelector, InjectionSelector, SYNTAX_PROVIDERS, SyntaxContextKind,
-    SyntaxContextScope, SyntaxProvider, syntax_provider,
+    SyntaxContextScope, SyntaxHighlightScope, SyntaxProvider, syntax_provider,
 };
 mod comments;
 pub use comments::{block_comment, line_comment};
