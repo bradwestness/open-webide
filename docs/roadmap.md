@@ -91,7 +91,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   suffix bytes and coordinates.
   See [viewport preparation](editor.md#preparation-and-viewport-rendering).
 - **Editor performance verification:** input, cold paint, wrapped layout and
-  process-memory stalls remain. Trace uncached probes, then repeat admitted byte,
+  process-memory stalls remain. Cold-probe traces separate rendering, DOM installation,
+  row layout and source geometry; use those measurements, then repeat admitted byte,
   row-count and long-line boundary workloads in both modes, including Linux Chrome
   PSS and the unresponsive wrapped cases. Broader startup scroll latency and
   initial-shaping samples remain unverified despite bounded steady-state paint.

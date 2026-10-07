@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Separate opt-in editor cold-preparation traces into Rust rendering, DOM installation, row layout and source-geometry phases, retaining immutable ownership scopes and bounded diagnostic records in both workspace modes.
+
 - Skip duplicate full-file lexical highlighting while editor worker results are pending. Borrow projected row bodies for cold paint, retain existing styled frames and defer their replacement measurements until syntax is ready in both workspace modes. Completed or failed analysis keeps the contextual lexical fallback.
 
 - Avoid copying complete editor files for source-ownership checks, cursor counts, Select All and navigation queries. Map native window/fold/source selections through the shared facade without cloning source in selection, typing, paste or composition handlers. Ordinary typing keys skip the selection dispatcher’s file snapshot; edit and stale-context behavior stays shared across workspace modes.

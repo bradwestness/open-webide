@@ -93,6 +93,35 @@ fn extent_supported(input: &web_sys::HtmlTextAreaElement, rows: &MeasuredRows) -
         .is_some_and(|extent| crate::viewport::check_editor_extent(extent.width, extent.height))
 }
 
+/// Opt-in diagnostics supplied by the production measurement harness. Keep
+/// clocks and callbacks out of ordinary editor preparation.
+struct ProbeTiming {
+    sink: js_sys::Function,
+    clock: web_sys::Performance,
+}
+impl ProbeTiming {
+    fn installed() -> Option<Self> {
+        let sink = js_sys::Reflect::get(&js_sys::global(), &"__openwebideEditorProbeTiming".into())
+            .ok()?
+            .dyn_into::<js_sys::Function>()
+            .ok()?;
+        Some(Self {
+            sink,
+            clock: window().performance()?,
+        })
+    }
+    fn report(&self, paint: &web_sys::Element, phase: &str, elapsed: f64, units: usize) {
+        // Diagnostics must never interfere with source ownership or publication.
+        let _ = self.sink.call4(
+            &wasm_bindgen::JsValue::NULL,
+            paint.as_ref(),
+            &phase.into(),
+            &elapsed.into(),
+            &units.into(),
+        );
+    }
+}
+
 /// Browser primitives only: styled HTML, exact rectangles and yielding. The
 /// shared core chooses batch sizes and validates the completed height table;
 /// the editor facade rechecks document/layout ownership before publication.
@@ -148,6 +177,7 @@ pub(super) async fn measure_batches(
         .map(|line| line.source.len())
         .collect::<Vec<_>>();
     progress(plan.completed());
+    let timing = ProbeTiming::installed();
     let mut batches = 0_usize;
     while let Some(range) = plan.pending_batch(&lengths) {
         if !current() || !input.is_connected() || metrics_identity(&input).as_ref() != Some(metrics)
@@ -161,7 +191,22 @@ pub(super) async fn measure_batches(
             .iter()
             .map(|line| line.source_line)
             .collect::<Vec<_>>();
-        paint.set_inner_html(&render(&rows, end < projection.lines().len()));
+        let started = timing.as_ref().map(|trace| trace.clock.now());
+        let html = render(&rows, end < projection.lines().len());
+        if let (Some(trace), Some(started)) = (&timing, started) {
+            trace.report(
+                &paint,
+                "render",
+                trace.clock.now() - started,
+                lengths[start..end].iter().sum(),
+            );
+        }
+        let started = timing.as_ref().map(|trace| trace.clock.now());
+        paint.set_inner_html(&html);
+        if let (Some(trace), Some(started)) = (&timing, started) {
+            trace.report(&paint, "install", trace.clock.now() - started, html.len());
+        }
+        drop(html);
         let measured = paint
             .query_selector_all(".editor-source-line")
             .map_err(|_| ())?;
@@ -171,8 +216,11 @@ pub(super) async fn measure_batches(
         let mut previous_bottom = None;
         let mut batch = Vec::with_capacity(count);
         let mut widths = Vec::with_capacity(count);
+        let mut layout_ms = 0.0;
+        let mut geometry_ms = 0.0;
         for index in 0..measured.length() {
             let row: web_sys::Element = measured.item(index).ok_or(())?.unchecked_into();
+            let started = timing.as_ref().map(|trace| trace.clock.now());
             let bounds = row.get_bounding_client_rect();
             if previous_bottom.is_some_and(|bottom: f64| (bounds.top() - bottom).abs() > 0.25) {
                 return Err(());
@@ -180,6 +228,10 @@ pub(super) async fn measure_batches(
             previous_bottom = Some(bounds.bottom());
             batch.push(bounds.height());
             widths.push(f64::from(row.scroll_width()));
+            if let (Some(trace), Some(started)) = (&timing, started) {
+                layout_ms += trace.clock.now() - started;
+            }
+            let started = timing.as_ref().map(|trace| trace.clock.now());
             let logical = start + usize::try_from(index).map_err(|_| ())?;
             let line = &projection.lines()[logical];
             let end = projection
@@ -202,6 +254,13 @@ pub(super) async fn measure_batches(
             {
                 geometry(logical, measured);
             }
+            if let (Some(trace), Some(started)) = (&timing, started) {
+                geometry_ms += trace.clock.now() - started;
+            }
+        }
+        if let Some(trace) = &timing {
+            trace.report(&paint, "layout", layout_ms, count);
+            trace.report(&paint, "geometry", geometry_ms, count);
         }
         if !plan.record_layout(range, &batch, &widths) {
             return Err(());

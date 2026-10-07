@@ -119,7 +119,10 @@ class MemorySamples:
 READY = """
     const input = document.querySelector('textarea[data-editor-path]');
     const paint = document.querySelector('.editor-highlight:not(.editor-caret-measure) .editor-highlight-content');
-    return input && paint && input.value.length === arguments[0] &&
+    const extent = input?.parentElement.querySelector('.editor-scroll-extent');
+    const bound = input?.dataset.editorNativeBound === 'true' &&
+        input.dataset.editorNativeGeneration && extent?.dataset.editorScope === input.dataset.editorScope;
+    return input && paint && (input.value.length === arguments[0] || bound) &&
         paint.dataset.editorScope === input.dataset.editorScope &&
         (getComputedStyle(input).whiteSpace !== 'pre-wrap' || Number(paint.dataset.documentHeight) > 0) &&
         input.parentElement.classList.contains('highlight-ready');
@@ -170,9 +173,29 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
             samples = MemorySamples(browser.process.pid)
             browser.call("POST", "/goog/cdp/execute", {"cmd": "Page.addScriptToEvaluateOnNewDocument", "params": {
                 "source": """
+                    window.editorViewScroll = input => {
+                        const scroll = input.parentElement?.querySelector('.editor-scroll-surface');
+                        return scroll && getComputedStyle(scroll).position === 'absolute' ? scroll : input;
+                    };
                     window.editorViewMeasurement = {maxFrameMs: 0, inputAt: 0,
-                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, phase: "cold", probes: [], workers: [], fonts: [], traceTruncated: false};
+                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, phase: "cold", probes: [], batches: [], workers: [], fonts: [], traceTruncated: false};
                     if (__TRACE__) {
+                        const batches = new WeakMap();
+                        window.__openwebideEditorProbeTiming = (paint, phase, elapsedMs, units) => {
+                            let record = batches.get(paint);
+                            if (phase === "render") {
+                                record = null;
+                                if (editorViewMeasurement.batches.length < 256) {
+                                    record = {at: performance.now(), phase: editorViewMeasurement.phase,
+                                        scope: Object.fromEntries(Array.from(paint.closest(".editor-row-measure").attributes)
+                                            .filter(attribute => attribute.name.startsWith("data-measure-"))
+                                            .map(attribute => [attribute.name, attribute.value]))};
+                                    editorViewMeasurement.batches.push(record);
+                                } else editorViewMeasurement.traceTruncated = true;
+                                batches.set(paint, record);
+                            }
+                            if (record) record[phase] = {elapsedMs, units};
+                        };
                         const rows = new WeakMap();
                         function recordFor(element) {
                             const row = element?.closest(".editor-row-measure .editor-source-line");
@@ -261,10 +284,11 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                     const module = await import(link.href); const wasm = await module.default();
                     window.editorViewWasmMemory = wasm.memory;
                     const input = document.querySelector('textarea[data-editor-path]');
-                    done({appModule: new URL(link.href).pathname, wasmCommittedBytes: wasm.memory.buffer.byteLength,
+                    const scroll = editorViewScroll(input);
+                    done({nativeInputLength: input.value.length, nativeBound: input.dataset.editorNativeBound === 'true', appModule: new URL(link.href).pathname, wasmCommittedBytes: wasm.memory.buffer.byteLength,
                         domNodes: document.getElementsByTagName('*').length,
                         paintRows: document.querySelectorAll('.editor-source-line').length,
-                        scrollHeight: input.scrollHeight, scrollWidth: input.scrollWidth, clientWidth: input.clientWidth,
+                        scrollHeight: scroll.scrollHeight, scrollWidth: scroll.scrollWidth, clientWidth: scroll.clientWidth,
                         maxFrameMs: editorViewMeasurement.maxFrameMs,
                         wrapped: getComputedStyle(input).whiteSpace === 'pre-wrap'});
                 })().catch(error => done({error: String(error)}));
@@ -274,14 +298,15 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
             memory = process_memory(browser.process.pid)
             phase = "scroll paint"
             scroll = browser.call("POST", "/execute/async", {"script": """
-                const done = arguments[0], input = document.querySelector('textarea[data-editor-path]');
-                const singleRow = !input.value.includes('\\n');
+                const done = arguments[arguments.length - 1], input = document.querySelector('textarea[data-editor-path]');
+                const singleRow = arguments[0];
+                const scroll = editorViewScroll(input);
                 const horizontal = singleRow && getComputedStyle(input).whiteSpace !== 'pre-wrap';
                 editorViewMeasurement.phase = "scroll";
                 const started = performance.now(); const old = document.querySelector('.editor-source-line')?.dataset.line;
-                if (horizontal) input.scrollLeft = (input.scrollWidth - input.clientWidth) * .7;
-                else input.scrollTop = input.scrollHeight * .7;
-                input.dispatchEvent(new Event('scroll'));
+                if (horizontal) scroll.scrollLeft = (scroll.scrollWidth - scroll.clientWidth) * .7;
+                else scroll.scrollTop = scroll.scrollHeight * .7;
+                scroll.dispatchEvent(new Event('scroll'));
                 const deadline = started + 10000;
                 function check() {
                     const row = document.querySelector('.editor-source-line');
@@ -289,15 +314,15 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                     const paint = document.querySelector('.editor-highlight-content');
                     if (performance.now() > deadline) return done({error: 'Scroll paint timed out'});
                     const offset = Number(horizontal ? row?.dataset.paintLeft : row?.dataset.paintTop);
-                    const target = horizontal ? input.scrollLeft : input.scrollTop;
-                    const margin = horizontal ? input.clientWidth * 2 + 30 : input.clientHeight + 8 * parseFloat(getComputedStyle(input).lineHeight) + 32;
+                    const target = horizontal ? scroll.scrollLeft : scroll.scrollTop;
+                    const margin = horizontal ? scroll.clientWidth * 2 + 30 : scroll.clientHeight + 8 * parseFloat(getComputedStyle(input).lineHeight) + 32;
                     const moved = singleRow ? Number.isFinite(offset) && offset <= target + 30 && target - offset <= margin : first !== old;
                     if (moved && paint?.dataset.editorScope === input.dataset.editorScope && input.parentElement.classList.contains('highlight-ready'))
                         return done({scrollToPaintMs: performance.now()-started, scrollAxis: horizontal ? 'horizontal' : 'vertical', scrollOffset: target});
                     requestAnimationFrame(check);
                 }
                 requestAnimationFrame(check);
-            """, "args": []})
+            """, "args": ["\n" not in native]})
             assert "error" not in scroll, scroll
             browser.script("const input=document.querySelector('textarea[data-editor-path]'); input.focus(); input.setSelectionRange(0,0);")
             phase = "input paint"
@@ -330,7 +355,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                     "afterInputWasmCommittedBytes": tasks["wasmBytes"],
                     "longTasks": tasks["longTasks"], "longTaskMs": tasks["longTaskMs"],
                     "maxLongTaskMs": tasks["maxLongTaskMs"], "maxFrameIncludingInputMs": tasks["maxFrameMs"],
-                    **({"layoutProbes": tasks["probes"], "workerEvents": tasks["workers"], "fontEvents": tasks["fonts"], "traceTruncated": tasks["traceTruncated"]} if trace else {})}
+                    **({"layoutProbes": tasks["probes"], "preparationBatches": tasks["batches"], "workerEvents": tasks["workers"], "fontEvents": tasks["fonts"], "traceTruncated": tasks["traceTruncated"]} if trace else {})}
         except (AssertionError, TimeoutError, RuntimeError) as error:
             observed = samples.finish() if samples else {}
             samples = None

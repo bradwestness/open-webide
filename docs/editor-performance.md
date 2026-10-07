@@ -434,6 +434,16 @@ startup height probe per mode, retains font generation zero and has no font
 events or trace truncation. Measurement probes record their original immutable
 scope so diagnostic timing cannot mislabel jobs with newer state.
 
+`--trace` also records `preparationBatches`: Rust HTML rendering (source bytes),
+DOM installation (HTML bytes), row layout/width reads, and source-geometry
+sampling/publication (row counts). Each phase includes elapsed milliseconds;
+the layout and geometry totals sum per-row work. The optional adapter callback
+is installed only by the measurement harness; ordinary preparation does not
+read a timing clock or invoke diagnostics. Records retain the probe's immutable
+account/read/source/view/font/layout scope and stop at 256 batches, marking
+truncation. Querying nodes, plan bookkeeping and yielding are outside these
+phase totals, so they are not an end-to-end preparation duration.
+
 Traces record
 style and revision attributes, never source text. These instrumented observations
 perturb timings and establish probe counts rather than latency thresholds.
@@ -650,3 +660,36 @@ CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=/path/to/wasm-bindgen-test-runner \
 python3 tools/measure-editor-layout.py \
   --font /path/to/MonaspaceNeon.ttf --output /tmp/editor-layout.jsonl --lint
 ```
+
+
+### Production cold-preparation phases
+
+[Phase records](editor-performance/production-cold-phases.jsonl) cover the small
+and 1 MiB Unicode long-line fixtures, wrapped and unwrapped, in both modes on
+macOS Chrome 154. The recorded module identifies the release bundle built from
+the working changes on parent `a9c4397`; these are instrumented single runs,
+not percentiles or Linux PSS evidence. The checked-in records omit the existing
+per-row `layoutProbes` array; batch phases and all other result fields remain.
+
+For the long line, cold row layout/width reads took 2,687–3,668 ms per batch.
+HTML generation took roughly 12–13 ms and DOM installation roughly 2 ms in the
+unwrapped runs. Source geometry sampling took roughly 27–45 ms. Font/layout
+scope changes caused repeated cold full-row measurements; input subsequently
+repeated full-row layout despite using a bounded native input window. Load to
+paint ranged from 11.6–17.8 seconds, and input to paint from 2.9–3.1 seconds.
+These phase timings include the opt-in primitive hooks and do not account for
+all startup/native-input work. Small-fixture row diagnostics hit their existing
+256-record cap; batch phase records did not hit their separate cap.
+
+**Next action:** target full-paragraph browser shaping and repeated layout scopes,
+then repeat the same workloads without tracing. Merely speeding HTML assembly
+or making its allocation cooperative cannot address the measured multi-second
+layout calls. Exact source/glyph/caret geometry and wrapped extents remain
+required; this evidence does not complete the cold-shaping gate.
+
+The measurement harness now recognizes source-scoped bounded native bindings
+and scrolls the active source scroll surface, following the production adapter's
+selection rule. It records native binding/length separately instead of requiring
+the textarea to hold the full file. Full-source editing correctness remains
+covered by the shared component contracts, rather than inferred from this
+performance probe.
