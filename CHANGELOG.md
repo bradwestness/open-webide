@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add release-app Chromium composition and history checks to CI for local and remote drafts with LF and CRLF. Exercise pending syntax and bounded native windows, verify candidate updates/commit/cancel and one-step undo/redo against full recovered source, and retain physical PWA input/clipboard verification on the roadmap.
+
 - Compress unchanged worker token rows into validated runs, retaining shared token allocations and the facade's immutable source snapshot in both workspace modes. Reject invalid run counts/ranges and reconstructed token-budget overflow. Warm syntax queries reuse that snapshot instead of cloning the whole buffer while preserving source-change cancellation guards.
 
 - Send small editor worker requests as source replacement spans using shared Rust policy. Resync once with a full snapshot after cache eviction or a discarded base, reject invalid UTF-8 ranges and reconstructed limits, and prevent superseded retries from publishing across projects or accounts in either workspace mode.

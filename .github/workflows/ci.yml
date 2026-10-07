@@ -86,7 +86,7 @@ jobs:
         with:
           toolchain: 1.98.1
           components: llvm-tools
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown, wasm32-wasip2
 
       - name: Install browser parser C compiler
         run: sudo apt-get update && sudo apt-get install -y clang
@@ -115,6 +115,22 @@ jobs:
           CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
           CHROME: ${{ steps.chrome.outputs.chrome-path }}
         run: python3 tools/check-editor-worker.py
+
+      - name: Install Spin runtime for editor input verification
+        run: |
+          curl -fsSL https://github.com/spinframework/spin/releases/download/v4.1.0/spin-v4.1.0-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin spin
+
+      - name: Build backend for editor input verification
+        run: cargo build -p openwebide-backend --target wasm32-wasip2 --release
+
+      - name: Check production editor IME and history
+        env:
+          CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          python3 tools/check-editor-input.py
+          python3 tools/check-editor-input.py --windowed
 
   frontend-ui-tests:
     runs-on: ubuntu-latest

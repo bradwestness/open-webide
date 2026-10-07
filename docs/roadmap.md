@@ -68,9 +68,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
 - **Reliable edits and history:** build on grouped transactions and per-document history
   with caret/selection/scroll restoration now retained across file, project and view
   switches. Explicit EditorConfig newline,
-  line-ending and trailing-whitespace save policies are undoable; finish real
-  input-method/clipboard verification, preserving Unicode and LF/CRLF without
-  rewriting unrelated text.
+  line-ending and trailing-whitespace save policies are undoable. Release-app
+  Chromium composition commit/cancel and undo/redo now verify Unicode and LF/CRLF
+  in both modes, with pending syntax and bounded native windows. Finish physical
+  input-method/clipboard verification without rewriting unrelated text.
 - **Syntax-aware editing:** shared parsers, source-bound preparation and the
   Rust/WASM worker are in place; see [syntax behavior](editor.md#syntax-and-language-behavior).
   Pending worker paint now borrows source rows and retains scoped styled frames.

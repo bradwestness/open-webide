@@ -698,6 +698,26 @@ the PWA shell; it does not establish offline editing or real-device behavior.
 See [editor performance measurements](editor-performance.md) for native/WASM
 text-storage comparisons and the remaining viewport/performance verification.
 
+### Browser-engine composition verification
+
+After building both release components, run:
+
+```bash
+CHROMEDRIVER=<compatible-driver> python3 tools/check-editor-input.py
+CHROMEDRIVER=<compatible-driver> python3 tools/check-editor-input.py --windowed
+```
+
+The disposable release-app checks exercise Chromium's candidate updates, commit,
+cancel, and keyboard undo/redo through the actual Rust/WASM event handlers. The
+first command holds production-worker results until the first composition commits,
+so syntax is pending during input. The second requires bounded native surrounding
+text. Both run local and remote drafts with LF and CRLF, compare the full recovered
+source with the expected bytes, and verify cancellation adds no undo step.
+Composition starts/updates, beforeinput/input and keyboard events are trusted;
+Chromium's CDP-generated composition-end events are untrusted. These engine checks
+run in CI but do not prove physical input devices, installed Chrome/Edge PWAs,
+clipboard permissions, touch selection or native local folder handles.
+
 ### Full-editor admission and large text
 
 The shared `editor_limit` policy checks 8 MiB of source, 100,000 display lines
