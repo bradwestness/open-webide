@@ -1,6 +1,6 @@
 //! Source-relative editing contexts from retained parser subtrees.
 use super::super::SyntaxContextScope;
-use super::subtrees::{ParsedSubtrees, Part, charge_visits};
+use super::subtrees::{ParsedSubtrees, Part, charge_visits, visit_parts};
 use super::{
     MAX_FOLD_NODES, Node, RegionKind, SyntaxContextKind, SyntaxProvider, SyntaxStatus, Tree,
     visit_node,
@@ -95,8 +95,23 @@ impl ParsedContexts {
         )?;
         charge_visits(visited, ancestry)?;
         let mut next = HashMap::new();
-        let mut cursor = root.walk();
-        for node in root.children(&mut cursor) {
+        visit_parts(root, |node, complete| {
+            if !complete {
+                charge_visits(visited, 1)?;
+                let mut ancestry = 0;
+                let mut local = true;
+                extract_node(
+                    node,
+                    node,
+                    provider,
+                    text,
+                    &mut ancestry,
+                    &mut local,
+                    contexts,
+                )?;
+                charge_visits(visited, ancestry)?;
+                return Ok(());
+            }
             let retained = self.subtrees.candidate(root, node).and_then(|part| {
                 if let Some(previous) = &part.value.ancestors
                     && previous != &ancestors(node, provider)?
@@ -158,7 +173,8 @@ impl ParsedContexts {
                 metadata
             };
             contexts.append(metadata);
-        }
+            Ok(())
+        })?;
         self.subtrees.replace(tree, next);
         Ok(())
     }

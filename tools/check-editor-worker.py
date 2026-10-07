@@ -144,9 +144,30 @@ def check():
                             {start:new TextEncoder().encode(fixtures.TypeScript).length,
                              end:new TextEncoder().encode(fixtures.TypeScript).length,text:'\n'});
                         const resynced = await request('TypeScript', 'TypeScript', resyncText);
+                        const nested = [];
+                        for (const [language, open, member, close] of [
+                            ['Rust', 'impl Example {\r\n', 'fn fINDEX() {\r\n call("文😀");\r\n}\r\n', '}\r\n'],
+                            ['Java', 'class Example {\r\n', 'void fINDEX() {\r\n call("文😀");\r\n}\r\n', '}\r\n'],
+                            ['CSharp', 'class Example {\r\n', 'void F_INDEX() {\r\n Call("文😀");\r\n}\r\n', '}\r\n'],
+                            ['JavaScript', 'class Example {\r\n', 'fINDEX() {\r\n call(`文😀 ${inner("value")}`);\r\n}\r\n', '}\r\n'],
+                            ['Python', 'class Example:\r\n', '    def fINDEX(self):\r\n        call("文😀")\r\n', ''],
+                            ['Html', '<div>\r\n', '<section id="INDEX">\r\n<p>文😀</p>\r\n</section>\r\n', '</div>\r\n']
+                        ]) {
+                            const text = open + Array.from({length:200}, (_, i) => member.replace('INDEX', i)).join('') + close;
+                            await request('nested-' + language, language, text);
+                            const changed = text.replace('文😀', '😀 changed文');
+                            const warm = await request('nested-' + language, language, changed);
+                            const cold = await request('fresh-' + language, language, changed);
+                            nested.push({language, incremental: warm.status?.Ready?.incremental === true,
+                                fresh: cold.status?.Ready?.incremental === false,
+                                source: warm.analysis?.source === changed && cold.analysis?.source === changed,
+                                folds: JSON.stringify(warm.analysis?.folds) === JSON.stringify(cold.analysis?.folds),
+                                structure: !!warm.analysis?.structure && ['language','scopes','selections','opaque_starts','protected','brackets'].every(key =>
+                                    JSON.stringify(warm.analysis.structure[key]) === JSON.stringify(cold.analysis?.structure?.[key]))});
+                        }
                         const oversized = await request('large', 'Rust', 'x'.repeat(2*1024*1024+1));
                         worker.terminate();
-                        done({first, next, providers, lexical, structuralDelta, heavyStatus: prepared.status,
+                        done({first, next, providers, lexical, nested, structuralDelta, heavyStatus: prepared.status,
                             heavySource: prepared.analysis?.source === heavy, uiEvent,
                             heavyDelta: heavyUpdate.analysis?.sourceDelta === true,
                             heavyRowRuns: heavyUpdate.analysis?.highlights?.length,
@@ -170,8 +191,10 @@ def check():
                     assert 'Ready' in lexical['status'] and lexical['structure'] is None and lexical['paint'] and lexical['sourceMatches'], lexical
                     assert 'Ready' in lexical['updateStatus'] and lexical['updatePaint'] and lexical['updateSourceMatches'] and lexical['reusedRows'] > 0, lexical
                 assert 'Ready' in result['heavyStatus'] and result['heavySource'] and result['uiEvent'], result
+                for nested in result['nested']:
+                    assert all(nested[key] for key in ['incremental', 'fresh', 'source', 'folds', 'structure']), nested
                 assert result['oversizedStatus'] == 'TooLarge' and result['oversizedAnalysis'] is None, result
-                print(json.dumps({'providers': len(result['providers'])+1, 'lexical_languages': len(result['lexical']), 'incremental': True, 'structural_delta': result['structuralDelta'],
+                print(json.dumps({'providers': len(result['providers'])+1, 'lexical_languages': len(result['lexical']), 'nested_languages': len(result['nested']), 'incremental': True, 'structural_delta': result['structuralDelta'],
                                   'ui_event_during_worker': result['uiEvent'], 'oversize_fallback': True, 'changed_row_records': result['heavyRowRuns']}))
             finally:
                 browser.stop()

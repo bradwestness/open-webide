@@ -980,6 +980,113 @@ mod tests {
     }
 
     #[test]
+    fn nested_container_edits_reuse_sibling_folds_and_contexts() {
+        for (language, open, member, close) in [
+            (
+                Language::Rust,
+                "impl Example {\r\n",
+                "fn fINDEX() {\r\n call(\"文😀\");\r\n}\r\n",
+                "}\r\n",
+            ),
+            (
+                Language::CSharp,
+                "class Example {\r\n",
+                "void F_INDEX() {\r\n Call(\"文😀\");\r\n}\r\n",
+                "}\r\n",
+            ),
+            (
+                Language::Java,
+                "class Example {\r\n",
+                "void fINDEX() {\r\n call(\"文😀\");\r\n}\r\n",
+                "}\r\n",
+            ),
+            (
+                Language::JavaScript,
+                "class Example {\r\n",
+                "fINDEX() {\r\n call(`文😀 ${inner(\"value\")}`);\r\n}\r\n",
+                "}\r\n",
+            ),
+            (
+                Language::Python,
+                "class Example:\r\n",
+                "    def fINDEX(self):\r\n        call(\"文😀\")\r\n",
+                "",
+            ),
+            (
+                Language::Html,
+                "<div>\r\n",
+                "<section id=\"INDEX\">\r\n<p>文😀</p>\r\n</section>\r\n",
+                "</div>\r\n",
+            ),
+        ] {
+            let body = (0..200)
+                .map(|index| member.replace("INDEX", &index.to_string()))
+                .collect::<String>();
+            let source = format!("{open}{body}{close}");
+            let mut syntax = SyntaxDocument::new(language).unwrap();
+            syntax.update(&source, || true);
+            syntax.structure().unwrap();
+            syntax.parser_folds();
+            let changed = source.replacen("文😀", "😀 changed文", 1);
+            syntax.update(&changed, || true);
+            let context = syntax.structure().unwrap();
+            let folds = syntax.parser_folds();
+            let mut nodes = 0;
+            visit_tree(syntax.tree.as_ref().unwrap(), &mut nodes, |_| Ok(())).unwrap();
+            assert!(
+                syntax.contexts.borrow().reused_nodes > nodes / 3,
+                "{language:?}: contexts reused {} of {nodes}",
+                syntax.contexts.borrow().reused_nodes
+            );
+            assert!(
+                syntax.folds.borrow().reused_nodes > nodes / 3,
+                "{language:?}: folds"
+            );
+            let mut visited = MAX_FOLD_NODES - nodes;
+            let mut ranges = Vec::new();
+            syntax
+                .folds
+                .borrow_mut()
+                .collect(
+                    syntax.tree.as_ref().unwrap(),
+                    syntax.provider.unwrap(),
+                    &changed.split('\n').collect::<Vec<_>>(),
+                    &mut ranges,
+                    &mut visited,
+                )
+                .unwrap();
+            assert_eq!(
+                visited, MAX_FOLD_NODES,
+                "{language:?}: disjoint visit credits"
+            );
+            let mut fresh = SyntaxDocument::new(language).unwrap();
+            fresh.update(&changed, || true);
+            assert_eq!(folds, fresh.parser_folds(), "{language:?}");
+            assert_eq!(
+                serde_json::to_value(context.transfer_data()).unwrap(),
+                serde_json::to_value(fresh.structure().unwrap().transfer_data()).unwrap(),
+                "{language:?}"
+            );
+            // Shift, error recovery and undo cross the changed outer container.
+            for text in [format!("\r\n{changed}"), changed.replace('}', ""), source] {
+                syntax.update(&text, || true);
+                let mut fresh = SyntaxDocument::new(language).unwrap();
+                fresh.update(&text, || true);
+                assert_eq!(
+                    syntax.parser_folds(),
+                    fresh.parser_folds(),
+                    "{language:?}: {text}"
+                );
+                assert_eq!(
+                    serde_json::to_value(syntax.structure().unwrap().transfer_data()).unwrap(),
+                    serde_json::to_value(fresh.structure().unwrap().transfer_data()).unwrap(),
+                    "{language:?}: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn parser_folds_skip_unchanged_subtrees_without_bypassing_limits() {
         let source = (0..200)
             .map(|index| format!("fn f{index}() {{\r\n call(\"文😀\");\r\n}}\r\n"))
@@ -1031,7 +1138,8 @@ mod tests {
         let folds = syntax.parser_folds();
         assert_eq!(folds, fresh.parser_folds());
         assert_eq!(folds[0].start_line, 0);
-        assert_eq!(syntax.folds.borrow().reused_nodes, 0);
+        // The external header is fresh while its unchanged descendants reuse data.
+        assert!(syntax.folds.borrow().reused_nodes > 0);
     }
 
     #[test]

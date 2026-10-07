@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse unchanged syntax subtrees inside classes, implementation blocks and other nested containers. Extract multiline containers and rebuilt wrappers separately, validate retained parent kinds, and keep external fold headers and interpolation owners fresh.
+
 - Revalidate enclosing syntax classifications before reusing interpolation contexts, preventing edits elsewhere in a file from incorrectly protecting unchanged code while preserving reuse for stable ancestors.
 - Extend highlighted editor pointer verification to ordinary clicks just past the last character and farther into blank space, checking insertion and undo in Rust, C# and JSON in both project modes.
 

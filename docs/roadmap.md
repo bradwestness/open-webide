@@ -87,14 +87,15 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   when a worker base is unavailable. Consecutive unchanged token rows transfer as
   validated runs; replies and warm queries retain the facade's source snapshot.
   Tab-width changes share unchanged structure and token rows while recomputing folds.
-  Parser folds and editing contexts share retained top-level subtrees, shifted
-  positions and visit limits. Document-dependent classifiers and external owners
+  Parser folds and editing contexts share disjoint retained subtrees inside nested
+  containers, shifted positions and visit limits. Multiline containers and transparent
+  wrappers use fresh extraction. Document-dependent classifiers and external owners
   use fresh extraction; interpolation contexts revalidate ancestor classifications,
   and folds recheck closing-line text.
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list
   reconstruction/validation and row-table construction still visit the whole file.
-  Finish those incremental paths, finer subtree reuse and remaining source snapshot
+  Finish those incremental paths, larger retained-container reuse and remaining source snapshot
   ownership,
   uncached initial/cold shaping, bidirectional visual-run windows, fine long-row paint
   and incremental measurement. Language formatting remains in Code intelligence.
