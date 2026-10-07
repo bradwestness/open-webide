@@ -10483,7 +10483,7 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
     use std::sync::Arc;
     let source = "a".repeat(70_000);
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for change in 0..11 {
+        for change in 0..12 {
             let action_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
             let mounted = mount_test({
                 let source = source.clone();
@@ -10502,7 +10502,11 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
             });
             let actions = action_slot.borrow_mut().take().unwrap();
             actions.prepare_edit(Selection::caret(0)).unwrap();
-            let tokens = Arc::new(highlight_lines(&source, Language::Plain));
+            let tokens = Arc::new(if change == 11 {
+                Vec::new()
+            } else {
+                highlight_lines(&source, Language::Plain)
+            });
             let guides: Arc<[usize]> = Arc::from([0]);
             let mut metrics = "styled width/font".to_string();
             let mut cache = EditorFragmentCache::default();
@@ -10550,7 +10554,7 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
             );
             actions.retain_preparation_geometry(&mut cache, &paint, 0, geometry.clone());
             assert!(actions.measured_row_geometry(&mut cache, 0).is_some());
-            if change == 9 {
+            if change == 9 || change == 11 {
                 let ticket = actions
                     .begin_row_preparation(paint.view_revision, 1)
                     .unwrap();
@@ -10560,12 +10564,13 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                             ticket,
                             paint.clone(),
                             Ok(Some(
-                                openwebide_core::editor::MeasuredRows::new([1000.0]).unwrap()
+                                openwebide_core::editor::MeasuredRows::layout([1000.0], [100.0])
+                                    .unwrap()
                             ))
                         )
                         .is_none()
                 );
-                let equivalent = Arc::new((*tokens).clone());
+                let equivalent = Arc::new(highlight_lines(&source, Language::Plain));
                 assert!(actions.fragment_scope(
                     &mut cache,
                     metrics.clone(),
@@ -10576,6 +10581,21 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                 ));
                 assert!(actions.measured_row_geometry(&mut cache, 0).is_some());
                 actions.invalidate_measured_rows();
+                let (_, plan) = actions
+                    .prepare_row_measurements(
+                        metrics.clone(),
+                        actions.projection().unwrap(),
+                        (true, equivalent.clone()),
+                        guides.clone(),
+                        Indentation::default(),
+                        false,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    plan.completed(),
+                    1,
+                    "identical pending/plain paint reuses measured dimensions"
+                );
                 assert!(actions.fragment_scope(
                     &mut cache,
                     metrics.clone(),
@@ -10588,6 +10608,46 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                     actions.measured_row_geometry(&mut cache, 0).is_some(),
                     "equivalent syntax paint followed by height reconciliation retains anchors"
                 );
+                if change == 11 {
+                    use openwebide_core::highlight::{Token, TokenKind};
+                    let split = Arc::new(vec![vec![
+                        Token {
+                            kind: TokenKind::Plain,
+                            text: source[..100].into(),
+                        },
+                        Token {
+                            kind: TokenKind::Plain,
+                            text: source[100..].into(),
+                        },
+                    ]]);
+                    let (_, plan) = actions
+                        .prepare_row_measurements(
+                            metrics.clone(),
+                            actions.projection().unwrap(),
+                            (true, split.clone()),
+                            guides.clone(),
+                            Indentation::default(),
+                            false,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        plan.completed(),
+                        0,
+                        "changed shaping boundaries need new dimensions"
+                    );
+                    assert!(actions.fragment_scope(
+                        &mut cache,
+                        metrics.clone(),
+                        (true, split),
+                        guides.clone(),
+                        Indentation::default(),
+                        false,
+                    ));
+                    assert!(
+                        actions.measured_row_geometry(&mut cache, 0).is_none(),
+                        "same text with different token spans cannot reuse anchors"
+                    );
+                }
                 continue;
             }
             if change == 8 {

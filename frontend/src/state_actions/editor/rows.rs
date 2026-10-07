@@ -65,20 +65,34 @@ impl Hash for PaintRow<'_> {
 }
 fn paint_row(paint: &EditorRowPaint, index: usize) -> Option<PaintRow<'_>> {
     let source = paint.projection.lines().get(index)?.source_line;
-    let tokens = match paint.tokens.get(source) {
+    let mut tokens = match paint.tokens.get(source) {
         Some(tokens) => tokens.as_slice(),
         None if !paint.prepared_source => &[],
         None => return None,
     };
+    let normalize_cr = paint.prepared_source && source + 1 < paint.tokens.len();
+    let plain = if let [token] = tokens
+        && token.kind == openwebide_core::highlight::TokenKind::Plain
+    {
+        // Both render paths call paint_text once with the same row body. Keep
+        // multiple token runs distinct: their span boundaries can affect shaping.
+        let body = if normalize_cr {
+            token.text.strip_suffix('\r').unwrap_or(&token.text)
+        } else {
+            &token.text
+        };
+        tokens = &[];
+        Some(body)
+    } else if !paint.prepared_source && paint.tokens.get(source).is_none() {
+        Some(paint.projection.line_body(index)?)
+    } else {
+        None
+    };
     Some(PaintRow {
         tokens,
-        plain: if !paint.prepared_source && paint.tokens.get(source).is_none() {
-            Some(paint.projection.line_body(index)?)
-        } else {
-            None
-        },
+        plain,
         guide: paint.guides.get(source).copied().unwrap_or(0),
-        normalize_cr: paint.prepared_source && source + 1 < paint.tokens.len(),
+        normalize_cr,
         ending: index + 1 < paint.projection.lines().len(),
     })
 }

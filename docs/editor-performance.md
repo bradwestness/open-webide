@@ -693,3 +693,32 @@ selection rule. It records native binding/length separately instead of requiring
 the textarea to hold the full file. Full-source editing correctness remains
 covered by the shared component contracts, rather than inferred from this
 performance probe.
+
+
+### Pending/plain row reuse
+
+The shared row comparator now represents a single `Plain` token and a borrowed
+pending row by their exact rendered body. Both HTML paths call `paint_text` once;
+CRLF normalization follows the renderer. Multiple token runs stay distinct,
+because changing text/span boundaries can change glyph shaping. Row guides,
+endings, whitespace, font/layout metrics, file/read/source/account ownership
+still participate in the existing cache and publication checks. No transport or
+DOM-measurement implementation was added.
+
+[After records](editor-performance/production-plain-row-reuse.jsonl) repeat the
+1 MiB Unicode paragraph in both modes, wrapped and unwrapped, against the
+previous [phase baseline](editor-performance/production-cold-phases.jsonl).
+All four cases record three full-row batches instead of four across load,
+scroll and input: identical plain syntax no longer adds a redundant measurement.
+The recorded module identifies the bundle from working changes on parent
+`2431484`; per-row `layoutProbes` are omitted as in the baseline. These are
+instrumented single observations, not latency percentiles. Each remaining full
+layout still takes seconds, and font transitions and actual edits still require
+new geometry; this does not complete initial shaping or incremental long-row
+measurement.
+
+The both-mode browser contract checks retained glyph anchors and completed
+measurement plans after pending/plain resolution, while rejecting different
+plain token boundaries. Existing stale source/read/account/font checks remain.
+All 366 browser component tests pass with the change. Next, address first cold
+paragraph shaping, font-transition duplication and actual long-row edits.

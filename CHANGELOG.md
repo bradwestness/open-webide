@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse exact row dimensions and glyph anchors when pending editor syntax resolves to an identical single plain-text run in both workspace modes. Preserve remeasurement for changed token spans, styles, fonts and source ownership.
+
 - Separate opt-in editor cold-preparation traces into Rust rendering, DOM installation, row layout and source-geometry phases, retaining immutable ownership scopes and bounded diagnostic records in both workspace modes.
 
 - Skip duplicate full-file lexical highlighting while editor worker results are pending. Borrow projected row bodies for cold paint, retain existing styled frames and defer their replacement measurements until syntax is ready in both workspace modes. Completed or failed analysis keeps the contextual lexical fallback.
