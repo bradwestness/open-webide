@@ -6608,6 +6608,22 @@ async fn long_wrapped_lines_move_cursors_without_measuring_the_entire_line_in_bo
                 .is_some()
         })
         .await;
+        frame().await;
+        wait_until("bounded long-row paint after font loading", || {
+            let runs = mounted.root.query_selector_all(".editor-text-run").unwrap();
+            runs.length() > 0
+                && runs.length() < 100
+                && mounted
+                    .element(".editor-highlight-content")
+                    .text_content()
+                    .unwrap()
+                    .len()
+                    < 16_384
+                && mounted
+                    .element(".editor-source-line")
+                    .has_attribute("data-paint-top")
+        })
+        .await;
         let runs = mounted.root.query_selector_all(".editor-text-run").unwrap();
         assert!(runs.length() > 0 && runs.length() < 100);
         let painted = mounted.element(".editor-highlight-content");
