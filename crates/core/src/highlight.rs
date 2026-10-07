@@ -143,6 +143,33 @@ pub const LEXICAL_BATCH_ROWS: usize = 128;
 pub const LEXICAL_BATCH_BYTES: usize = 64 * 1024;
 pub const LEXICAL_BATCHES_PER_FRAME: usize = 8;
 
+/// Complete contextual lexical paint and the row states needed for exact reuse.
+#[derive(Debug)]
+pub struct LexicalSnapshot {
+    source: std::sync::Arc<str>,
+    language: Language,
+    normalize_crlf: bool,
+    rows: Vec<LexicalRow>,
+    tokens: std::sync::Arc<Vec<Vec<Token>>>,
+    retokenized_rows: usize,
+}
+impl LexicalSnapshot {
+    pub fn tokens(&self) -> &std::sync::Arc<Vec<Vec<Token>>> {
+        &self.tokens
+    }
+    pub const fn retokenized_rows(&self) -> usize {
+        self.retokenized_rows
+    }
+}
+
+#[derive(Debug)]
+struct LexicalRow {
+    start: usize,
+    end: usize,
+    before: State,
+    after: State,
+}
+
 /// A source-owned lexical job that preserves multiline state across cooperative
 /// batches. Callers can discard it on cancellation; unfinished paint is never
 /// returned by finish. Budgets count whole rows, allowing one oversized row.
@@ -153,6 +180,9 @@ pub struct LexicalPreparation {
     next: usize,
     state: State,
     rows: Vec<Vec<Token>>,
+    contexts: Vec<LexicalRow>,
+    previous: Option<std::sync::Arc<LexicalSnapshot>>,
+    retokenized_rows: usize,
     complete: bool,
 }
 impl LexicalPreparation {
@@ -164,6 +194,9 @@ impl LexicalPreparation {
             next: 0,
             state: State::Normal,
             rows: Vec::new(),
+            contexts: Vec::new(),
+            previous: None,
+            retokenized_rows: 0,
             complete: false,
         }
     }
@@ -174,8 +207,40 @@ impl LexicalPreparation {
             ..Self::new(source, language)
         }
     }
+    /// Reuse only exact raw rows with the same incoming lexical state. Check both
+    /// unchanged offsets and the total byte shift, validating every candidate;
+    /// insertions, deletions and disjoint edits cannot reuse mismatching context.
+    pub fn reuse(mut self, previous: std::sync::Arc<LexicalSnapshot>) -> Self {
+        if previous.language == self.language && previous.normalize_crlf == self.normalize_crlf {
+            self.previous = Some(previous);
+        }
+        self
+    }
     pub const fn is_complete(&self) -> bool {
         self.complete
+    }
+    fn reusable_row(&self, end: usize) -> Option<usize> {
+        let previous = self.previous.as_ref()?;
+        let shifted = if self.source.len() >= previous.source.len() {
+            self.next
+                .checked_sub(self.source.len() - previous.source.len())
+        } else {
+            self.next
+                .checked_add(previous.source.len() - self.source.len())
+        };
+        [Some(self.next), shifted]
+            .into_iter()
+            .flatten()
+            .find_map(|start| {
+                let index = previous
+                    .rows
+                    .binary_search_by_key(&start, |row| row.start)
+                    .ok()?;
+                let row = &previous.rows[index];
+                (row.before == self.state
+                    && previous.source[row.start..row.end] == self.source[self.next..end])
+                    .then_some(index)
+            })
     }
     pub fn advance(&mut self, max_rows: usize, max_bytes: usize) -> usize {
         let mut count = 0;
@@ -188,7 +253,8 @@ impl LexicalPreparation {
             let newline = tail.find('\n');
             let end = self.next + newline.unwrap_or(tail.len());
             let raw = &self.source[self.next..end];
-            let cost = raw.len() + usize::from(newline.is_some());
+            let next = end + usize::from(newline.is_some());
+            let cost = next - self.next;
             if count > 0 && cost > max_bytes.saturating_sub(bytes) {
                 break;
             }
@@ -197,11 +263,23 @@ impl LexicalPreparation {
             } else {
                 raw
             };
-            let (tokens, state) = highlight_line(line, self.language, self.state);
+            let (tokens, state) = if let Some(index) = self.reusable_row(next) {
+                let previous = self.previous.as_ref().expect("matched previous row");
+                (previous.tokens[index].clone(), previous.rows[index].after)
+            } else {
+                self.retokenized_rows += 1;
+                highlight_line(line, self.language, self.state)
+            };
+            self.contexts.push(LexicalRow {
+                start: self.next,
+                end: next,
+                before: self.state,
+                after: state,
+            });
             self.rows.push(tokens);
             self.state = state;
             self.complete = newline.is_none();
-            self.next = if self.complete { end } else { end + 1 };
+            self.next = next;
             count += 1;
             bytes += cost;
         }
@@ -209,6 +287,16 @@ impl LexicalPreparation {
     }
     pub fn finish(self) -> Option<Vec<Vec<Token>>> {
         self.complete.then_some(self.rows)
+    }
+    pub fn finish_snapshot(self) -> Option<LexicalSnapshot> {
+        self.complete.then_some(LexicalSnapshot {
+            source: self.source,
+            language: self.language,
+            normalize_crlf: self.normalize_crlf,
+            rows: self.contexts,
+            tokens: std::sync::Arc::new(self.rows),
+            retokenized_rows: self.retokenized_rows,
+        })
     }
 }
 
@@ -1408,6 +1496,87 @@ mod tests {
         assert!(
             cancelled.finish().is_none(),
             "partial lexical jobs cannot publish"
+        );
+    }
+
+    #[test]
+    fn incremental_lexical_rows_reuse_only_matching_source_and_context() {
+        fn prepare(
+            source: &str,
+            previous: Option<std::sync::Arc<LexicalSnapshot>>,
+            language: Language,
+        ) -> LexicalSnapshot {
+            let mut job = LexicalPreparation::for_textarea(source.into(), language);
+            if let Some(previous) = previous {
+                job = job.reuse(previous);
+            }
+            while !job.is_complete() {
+                job.advance(3, 40);
+            }
+            let result = job.finish_snapshot().unwrap();
+            assert_eq!(
+                result.tokens().as_ref(),
+                &highlight_lines(&source.replace("\r\n", "\n"), language)
+            );
+            result
+        }
+        let source = "head\r\n/*\r\ninside 文😀\r\n*/\r\ntail\r\n";
+        for language in [
+            Language::Rust,
+            Language::TypeScript,
+            Language::Tsx,
+            Language::Python,
+            Language::JavaScript,
+            Language::Jsx,
+            Language::Java,
+            Language::CSharp,
+            Language::Cpp,
+            Language::Php,
+            Language::Shell,
+            Language::C,
+            Language::Go,
+            Language::Html,
+            Language::Css,
+            Language::Plain,
+            Language::Sql,
+            Language::Json,
+            Language::Markdown,
+            Language::Toml,
+            Language::Yaml,
+        ] {
+            let old = std::sync::Arc::new(prepare(source, None, language));
+            let changed = source.replace("inside 文😀", "inside revised 文😀");
+            let next = prepare(&changed, Some(old.clone()), language);
+            assert_eq!(next.retokenized_rows(), 1, "{language:?}");
+            for changed in [
+                format!("new\r\n{source}"),
+                source.replace("head\r\n", ""),
+                source.replace("/*", "  "),
+                source.replace("*/", "  "),
+                source.replace("head", "longer head").replace("tail", "x"),
+                source.replace("\r\n", "\n"),
+                "".into(),
+                "\n".into(),
+            ] {
+                prepare(&changed, Some(old.clone()), language);
+            }
+            let unchanged = prepare(source, Some(old), language);
+            assert_eq!(unchanged.retokenized_rows(), 0);
+        }
+        let old = std::sync::Arc::new(prepare(source, None, Language::Rust));
+        let changed_context = prepare(
+            &source.replace("/*", "  "),
+            Some(old.clone()),
+            Language::Rust,
+        );
+        assert!(
+            changed_context.retokenized_rows() >= 3,
+            "comment state propagates until convergence"
+        );
+        let different_language = prepare(source, Some(old), Language::Plain);
+        assert_eq!(
+            different_language.retokenized_rows(),
+            source.split('\n').count()
         );
     }
 

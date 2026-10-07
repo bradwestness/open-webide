@@ -80,6 +80,7 @@ pub struct SyntaxDocument {
     embedded: Vec<EmbeddedSyntax>,
     text: Arc<str>,
     prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
+    lexical: Option<Arc<crate::highlight::LexicalSnapshot>>,
 }
 
 impl SyntaxDocument {
@@ -101,6 +102,7 @@ impl SyntaxDocument {
             embedded: Vec::new(),
             text: Arc::from(""),
             prepared: None,
+            lexical: None,
         })
     }
 
@@ -183,13 +185,23 @@ impl SyntaxDocument {
         }
         let structure = self.structure().map(Arc::new);
         let highlights = if self.provider.is_none() && self.language != Language::Plain {
-            let Some(lines) =
-                crate::highlight::highlight_lines_while(text, self.language, &mut should_continue)
-            else {
-                self.clear();
-                return (SyntaxStatus::Cancelled, None);
-            };
-            Some(Arc::new(lines))
+            let mut lexical =
+                crate::highlight::LexicalPreparation::new(self.text.clone(), self.language);
+            if let Some(previous) = &self.lexical {
+                lexical = lexical.reuse(previous.clone());
+            }
+            while !lexical.is_complete() {
+                if !should_continue() {
+                    self.clear();
+                    return (SyntaxStatus::Cancelled, None);
+                }
+                // Keep the synchronous adapter's per-row cancellation contract.
+                lexical.advance(1, crate::highlight::LEXICAL_BATCH_BYTES);
+            }
+            let lexical = Arc::new(lexical.finish_snapshot().expect("completed lexical job"));
+            let tokens = lexical.tokens().clone();
+            self.lexical = Some(lexical);
+            Some(tokens)
         } else {
             structure
                 .as_ref()
@@ -398,6 +410,7 @@ impl SyntaxDocument {
         self.embedded.clear();
         self.text = Arc::from("");
         self.prepared = None;
+        self.lexical = None;
     }
 
     pub fn folds(&self) -> Vec<FoldRange> {
@@ -743,6 +756,7 @@ mod tests {
                 &crate::highlight::highlight_lines(&revised, language)
             );
             assert!(first.matches_source(source));
+            assert_eq!(document.lexical.as_ref().unwrap().retokenized_rows(), 1);
         }
     }
 
@@ -756,7 +770,7 @@ mod tests {
             checks < 3
         });
         assert_eq!(status, SyntaxStatus::Cancelled);
-        assert!(result.is_none() && document.prepared.is_none());
+        assert!(result.is_none() && document.prepared.is_none() && document.lexical.is_none());
         let (status, recovered) = document.prepare(source, 4, || true);
         assert_eq!(status, SyntaxStatus::Ready { incremental: false });
         assert_eq!(

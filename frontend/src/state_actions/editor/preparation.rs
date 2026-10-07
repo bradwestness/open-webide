@@ -167,6 +167,7 @@ impl EditorActions {
                             scope,
                             prepared_source: true,
                             tokens,
+                            lexical: None,
                         }));
                 }
                 return;
@@ -175,6 +176,23 @@ impl EditorActions {
                 scope.source.clone(),
                 openwebide_core::highlight::language_from_path(&scope.key.1),
             );
+            if let Some(previous) = self
+                .workspace
+                .editor_fallback_paint
+                .with_untracked(|paint| {
+                    paint
+                        .as_ref()
+                        .filter(|paint| {
+                            paint.scope.key == scope.key
+                                && paint.scope.account_generation == scope.account_generation
+                                && paint.scope.read_revision == scope.read_revision
+                                && paint.scope.tab_width == scope.tab_width
+                        })
+                        .and_then(|paint| paint.lexical.clone())
+                })
+            {
+                lexical = lexical.reuse(previous);
+            }
             // Resolve small files in one bounded batch without a transient pending
             // frame. Larger jobs retain their context and yield before continuing.
             lexical.advance(
@@ -182,14 +200,15 @@ impl EditorActions {
                 openwebide_core::highlight::LEXICAL_BATCH_BYTES,
             );
             if lexical.is_complete() {
+                let lexical =
+                    std::sync::Arc::new(lexical.finish_snapshot().expect("completed lexical job"));
                 self.workspace
                     .editor_fallback_paint
                     .set(Some(EditorFallbackPaint {
                         scope,
                         prepared_source: false,
-                        tokens: std::sync::Arc::new(
-                            lexical.finish().expect("completed lexical job"),
-                        ),
+                        tokens: lexical.tokens().clone(),
+                        lexical: Some(lexical),
                     }));
                 return;
             }
@@ -228,14 +247,15 @@ impl EditorActions {
                 if !current() {
                     return;
                 }
+                let lexical =
+                    std::sync::Arc::new(lexical.finish_snapshot().expect("completed lexical job"));
                 self.workspace
                     .editor_fallback_paint
                     .set(Some(EditorFallbackPaint {
                         scope,
                         prepared_source: false,
-                        tokens: std::sync::Arc::new(
-                            lexical.finish().expect("completed lexical job"),
-                        ),
+                        tokens: lexical.tokens().clone(),
+                        lexical: Some(lexical),
                     }));
             });
         });

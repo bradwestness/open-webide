@@ -341,8 +341,9 @@ replacement batch measurements wait for syntax, and source pointer controls rema
 disabled while its paint is stale. Forced caret probes can still reconcile current
 source. Terminal and unavailable-worker lexical paint preserves context in
 cooperative whole-row batches, publishing only complete current-source tokens.
-Each source change still needs a full lexical pass. Fallback preparation reuses a
-current published worker scope. Syntax queries still copy source in some paths.
+Lexical updates reuse rows with matching source and incoming context in both the
+worker and fallback paths. Fallback preparation reuses a current published worker
+scope. Syntax queries still copy source in some paths.
 Cold source geometry, long-row shaping and touch input remain unfinished.
 
 Frontend app and browser-test links reserve a 2 MiB WASM stack for nested Leptos
@@ -739,7 +740,17 @@ The job owns immutable source and reuses a terminal worker's source Arc when
 available. CRLF normalization happens per row, preserving standalone CR and
 avoiding a normalized full-file copy. Source, read, pending-edit, account, path
 and tab-width changes cancel obsolete work; completed tokens are shared by
-subsequent paint consumers. Parser fallback keeps its existing 12 ms budget and
+subsequent paint consumers. Completed lexical snapshots retain raw row boundaries
+and incoming/outgoing lexer states. An update checks the original offset and the
+total byte shift for each row, verifying its complete raw text and incoming state
+before reusing tokens. Changing a comment delimiter re-tokenizes following rows
+until their state converges; row insertions/deletions and disjoint edits cannot
+reuse mismatching text or context. Language and newline-normalization changes
+invalidate reuse. The shared worker preparation uses the same job with per-row
+cancellation. Token copies and row-table publication still visit the complete
+source, and wire replies still transfer a complete result.
+
+Parser fallback keeps its existing 12 ms budget and
 can supply ready paint before lexical preparation is needed. Core callers that
 have not installed browser preparation retain their synchronous API.
 

@@ -7597,6 +7597,62 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
                 );
                 mounted.state.workspace.editor_worker_active.set(false);
             }
+            let revised = source.replacen("inside words", "inside revised words", 1);
+            mounted.state.workspace.content.set(revised.clone());
+            wait_until("one-row edit reuses converged lexical context", || {
+                mounted
+                    .state
+                    .workspace
+                    .editor_fallback_paint
+                    .with_untracked(|paint| {
+                        paint
+                            .as_ref()
+                            .is_some_and(|paint| paint.scope.source.as_ref() == revised)
+                    })
+            })
+            .await;
+            assert_eq!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_fallback_paint
+                    .get_untracked()
+                    .unwrap()
+                    .lexical
+                    .unwrap()
+                    .retokenized_rows(),
+                1
+            );
+            mounted
+                .state
+                .workspace
+                .editor_read_revision
+                .update(|read| *read += 1);
+            wait_until("new read cannot reuse prior lexical snapshot", || {
+                mounted
+                    .state
+                    .workspace
+                    .editor_fallback_paint
+                    .with_untracked(|paint| {
+                        paint.as_ref().is_some_and(|paint| {
+                            paint.scope.read_revision
+                                == mounted.state.workspace.editor_read_revision.get_untracked()
+                        })
+                    })
+            })
+            .await;
+            assert_eq!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_fallback_paint
+                    .get_untracked()
+                    .unwrap()
+                    .lexical
+                    .unwrap()
+                    .retokenized_rows(),
+                revised.split('\n').count()
+            );
             mounted
                 .state
                 .workspace

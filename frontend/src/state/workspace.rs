@@ -56,6 +56,7 @@ pub struct EditorFallbackPaint {
     pub scope: EditorSyntaxScope,
     pub prepared_source: bool,
     pub tokens: std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+    pub lexical: Option<std::sync::Arc<openwebide_core::highlight::LexicalSnapshot>>,
 }
 
 /// Browser measurements are bound to one exact source/projection/layout revision.

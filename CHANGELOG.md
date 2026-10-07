@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse unchanged lexical rows with matching incoming context in the shared Rust worker and cooperative editor fallback. Propagate changed comment state until convergence, preserve Unicode/CRLF across row shifts, and reset fallback reuse across file reads, documents and accounts in both workspace modes.
+
 - Prepare terminal and unavailable-worker editor lexical paint cooperatively in Rust in both workspace modes. Preserve multiline state and Unicode/CRLF, share complete tokens and immutable worker source, coalesce edits, and discard cancelled or stale source/read/account jobs before publication.
 
 - Reconcile late editor font notifications against current source-owned measurements using actual registered-face identity and load state in both workspace modes. Briefly await pending faces with a 250 ms budget, retain editing during slow or failed loads, and reject superseded jobs before measurement.

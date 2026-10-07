@@ -81,8 +81,12 @@ def check():
                             Markdown: '# Header\r\nText 文😀\r\n'
                         })) {
                             const reply = await request(language, language, text);
+                            const revised = text.replace('文😀', '😀 changed');
+                            const update = await request(language, language, revised);
                             lexical.push({language, status: reply.status, structure: reply.analysis?.structure,
-                                paint: !!reply.analysis?.highlights, sourceMatches: reply.analysis?.source === text});
+                                paint: !!reply.analysis?.highlights, sourceMatches: reply.analysis?.source === text,
+                                updateStatus: update.status, updatePaint: !!update.analysis?.highlights,
+                                updateSourceMatches: update.analysis?.source === revised});
                         }
                         const heavy = 'fn call() {\n if true { println!("文😀"); }\n}\n'.repeat(1000);
                         let uiEvent = false;
@@ -104,6 +108,7 @@ def check():
                     assert 'Ready' in provider['status'] and provider['structure'] and provider['paint'] and provider['sourceMatches'], provider
                 for lexical in result['lexical']:
                     assert 'Ready' in lexical['status'] and lexical['structure'] is None and lexical['paint'] and lexical['sourceMatches'], lexical
+                    assert 'Ready' in lexical['updateStatus'] and lexical['updatePaint'] and lexical['updateSourceMatches'], lexical
                 assert 'Ready' in result['heavyStatus'] and result['heavySource'] and result['uiEvent'], result
                 assert result['oversizedStatus'] == 'TooLarge' and result['oversizedAnalysis'] is None, result
                 print(json.dumps({'providers': len(result['providers'])+1, 'lexical_languages': len(result['lexical']), 'incremental': True,
