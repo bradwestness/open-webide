@@ -148,14 +148,67 @@ pub fn install_action_tooltips() {
 }
 
 #[wasm_bindgen(inline_js = r#"
+export function editor_scroll_element(input) {
+    const scroll = input.parentElement?.querySelector('.editor-scroll-surface');
+    return scroll && getComputedStyle(scroll).position === 'absolute' ? scroll : input;
+}
+export function refresh_editor_scroll(input) {
+    const scroll = editor_scroll_element(input);
+    if (scroll === input) return;
+    const extent = scroll.firstElementChild;
+    if (!extent) return;
+    const set = (element, name, value) => {
+        if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name, value);
+    };
+    // The source is still native layout until bounded input supplies document
+    // extents. Size native input to the scroll viewport, excluding its bars.
+    set(input.parentElement, '--editor-input-width', `${scroll.clientWidth}px`);
+    set(input.parentElement, '--editor-input-height', `${scroll.clientHeight}px`);
+    set(extent, 'width', `${Math.max(scroll.clientWidth, input.scrollWidth)}px`);
+    set(extent, 'height', `${Math.max(scroll.clientHeight, input.scrollHeight)}px`);
+}
+export function set_editor_scroll_position(input, value, horizontal) {
+    refresh_editor_scroll(input);
+    const scroll = editor_scroll_element(input);
+    const property = horizontal ? 'scrollLeft' : 'scrollTop';
+    scroll[property] = value;
+    input[property] = scroll[property];
+}
+export function sync_editor_scroll(input, fromNative) {
+    const scroll = editor_scroll_element(input);
+    if (scroll === input) return false;
+    refresh_editor_scroll(input);
+    const source = fromNative ? input : scroll;
+    const target = fromNative ? scroll : input;
+    const changed = Math.abs(source.scrollTop - target.scrollTop) > .25 || Math.abs(source.scrollLeft - target.scrollLeft) > .25;
+    if (changed) { target.scrollTop = source.scrollTop; target.scrollLeft = source.scrollLeft; }
+    return changed;
+}
+export function forward_editor_wheel(input, event) {
+    const scroll = editor_scroll_element(input);
+    if (scroll === input || event.ctrlKey || event.metaKey) return;
+    let x = event.deltaX, y = event.deltaY;
+    if (event.shiftKey && !x) { x = y; y = 0; }
+    if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+        const line = parseFloat(getComputedStyle(input).lineHeight) || 19.5;
+        x *= line; y *= line;
+    } else if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        x *= scroll.clientWidth; y *= scroll.clientHeight;
+    }
+    event.preventDefault();
+    scroll.scrollLeft += x; scroll.scrollTop += y;
+    sync_editor_scroll(input, false);
+}
 export function observe_editor_viewport(input, overlay, onLayout) {
     const pane = input.parentElement;
+    const scroll = editor_scroll_element(input);
     let frame = 0, fontChanged = false, active = true;
     const update = () => {
         frame = 0;
         if (!active || !input.isConnected || !overlay.isConnected) return;
-        overlay.style.setProperty('--editor-viewport-height', `${input.clientHeight}px`);
-        overlay.style.setProperty('--editor-text-width', `${input.clientWidth}px`);
+        refresh_editor_scroll(input);
+        overlay.style.setProperty('--editor-viewport-height', `${scroll.clientHeight}px`);
+        overlay.style.setProperty('--editor-text-width', `${scroll.clientWidth}px`);
         const rows = overlay.querySelectorAll('.editor-source-line');
         const grips = pane.querySelectorAll('.editor-fold-row');
         rows.forEach((row, index) => grips[index]?.style.setProperty('--editor-row-height', `${row.getBoundingClientRect().height}px`));
@@ -165,11 +218,21 @@ export function observe_editor_viewport(input, overlay, onLayout) {
     const schedule = (changed = false) => { fontChanged ||= changed; if (active && !frame) frame = requestAnimationFrame(update); };
     const observer = new ResizeObserver(() => schedule());
     observer.observe(input);
+    if (scroll !== input) observer.observe(scroll);
     const mutation = new MutationObserver(() => schedule());
     mutation.observe(overlay, {childList: true, subtree: true});
-    const preferences = new MutationObserver(() => schedule());
+    const fontIdentity = () => {
+        const style = getComputedStyle(input);
+        return [style.font, style.fontFeatureSettings, style.fontVariantLigatures].join('|');
+    };
+    let preferenceFont = fontIdentity();
+    const preferences = new MutationObserver(() => {
+        const next = fontIdentity(); schedule(next !== preferenceFont); preferenceFont = next;
+    });
     preferences.observe(pane, {attributes: true, attributeFilter: ['class', 'style']});
     preferences.observe(document.documentElement, {attributes: true});
+    const editor = input.closest('.editor');
+    if (editor) preferences.observe(editor, {attributes: true, attributeFilter: ['style']});
     const fontsChanged = () => schedule(true);
     document.fonts?.addEventListener('loadingdone', fontsChanged);
     // Readiness alone does not change glyphs. Observe actual loading transitions,
@@ -180,11 +243,34 @@ export function observe_editor_viewport(input, overlay, onLayout) {
 }
 "#)]
 extern "C" {
+    fn set_editor_scroll_position(
+        input: &web_sys::HtmlTextAreaElement,
+        value: f64,
+        horizontal: bool,
+    );
+    fn editor_scroll_element(input: &web_sys::HtmlTextAreaElement) -> web_sys::HtmlElement;
+    pub fn refresh_editor_scroll(input: &web_sys::HtmlTextAreaElement);
+    pub fn sync_editor_scroll(input: &web_sys::HtmlTextAreaElement, from_native: bool) -> bool;
+    pub fn forward_editor_wheel(input: &web_sys::HtmlTextAreaElement, event: &web_sys::WheelEvent);
     pub fn observe_editor_viewport(
         input: &web_sys::HtmlTextAreaElement,
         overlay: &web_sys::HtmlElement,
         on_layout: &js_sys::Function,
     ) -> JsValue;
+}
+
+/// One document scroll viewport, independent of the native input's value.
+/// Standalone measurement inputs retain their native scroll primitive.
+pub fn editor_scroll(input: &web_sys::HtmlTextAreaElement) -> web_sys::HtmlElement {
+    editor_scroll_element(input)
+}
+
+pub fn set_editor_scroll_top(input: &web_sys::HtmlTextAreaElement, top: f64) {
+    set_editor_scroll_position(input, top, false);
+}
+
+pub fn set_editor_scroll_left(input: &web_sys::HtmlTextAreaElement, left: f64) {
+    set_editor_scroll_position(input, left, true);
 }
 
 #[cfg(target_arch = "wasm32")]

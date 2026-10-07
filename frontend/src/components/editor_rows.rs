@@ -27,7 +27,7 @@ pub(super) fn styled_row_probe(
         .map_err(|_| ())?;
     probe.set_class_name("editor-highlight editor-row-measure");
     let gutter = input.offset_left();
-    let width = input.client_width() + gutter;
+    let width = crate::viewport::editor_scroll(input).client_width() + gutter;
     probe
         .set_attribute("style", &format!("position:fixed;left:-10000px;top:0;width:{width}px;height:auto;visibility:hidden;pointer-events:none;contain:layout style paint;--editor-gutter-width:{gutter}px"))
         .map_err(|_| ())?;
@@ -79,8 +79,8 @@ pub(super) async fn measure_batches(
 ) -> Result<Option<MeasuredRows>, ()> {
     if !current()
         || !input.is_connected()
-        || input.client_width() <= 0
-        || input.client_height() <= 0
+        || crate::viewport::editor_scroll(&input).client_width() <= 0
+        || crate::viewport::editor_scroll(&input).client_height() <= 0
     {
         return Ok(None);
     }
@@ -183,8 +183,10 @@ pub(super) async fn measure_batches(
         return Ok(None);
     }
     let rows = plan.finish().ok_or(())?;
-    let expected = (rows.height() + 24.0).max(f64::from(input.client_height()));
-    if (f64::from(input.scroll_height()) - expected).abs() > 2.0 {
+    let expected = (rows.height() + 24.0).max(f64::from(
+        crate::viewport::editor_scroll(&input).client_height(),
+    ));
+    if (f64::from(crate::viewport::editor_scroll(&input).scroll_height()) - expected).abs() > 2.0 {
         return Err(());
     }
     Ok(Some(rows))
@@ -194,7 +196,7 @@ pub(super) fn metrics_identity(input: &web_sys::HtmlTextAreaElement) -> Option<S
     let style = window().get_computed_style(input).ok()??;
     Some(format!(
         "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-        input.client_width(),
+        crate::viewport::editor_scroll(input).client_width(),
         style.get_property_value("font").ok()?,
         style.get_property_value("line-height").ok()?,
         style.get_property_value("tab-size").ok()?,
@@ -221,7 +223,9 @@ pub(super) fn update_measurements(
     if font_changed {
         actions.invalidate_measured_font();
     }
-    if input.client_width() <= 0 || input.client_height() <= 0 {
+    if crate::viewport::editor_scroll(input).client_width() <= 0
+        || crate::viewport::editor_scroll(input).client_height() <= 0
+    {
         return;
     }
     let Some(projection) = actions.projection() else {
@@ -276,10 +280,14 @@ pub(super) fn update_measurements(
     let Some(rows) = MeasuredRows::new(heights) else {
         return;
     };
-    let expected_height = (rows.height() + 24.0).max(f64::from(input.client_height()));
+    let expected_height = (rows.height() + 24.0).max(f64::from(
+        crate::viewport::editor_scroll(input).client_height(),
+    ));
     // Refuse to virtualize a paint surface that disagrees with native layout,
     // including a browser's physical scroll-height limit.
-    if (f64::from(input.scroll_height()) - expected_height).abs() > 2.0 {
+    if (f64::from(crate::viewport::editor_scroll(input).scroll_height()) - expected_height).abs()
+        > 2.0
+    {
         return;
     }
     actions.publish_measured_rows(revision, metrics, rows);

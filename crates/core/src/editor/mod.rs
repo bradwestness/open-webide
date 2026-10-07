@@ -92,7 +92,7 @@ mod indent;
 pub use indent::{IndentStyle, Indentation};
 mod configuration;
 pub use configuration::{
-    ConfigSource, EditorPreferences, EditorRules, LineEnding, load_rules, resolve_rules,
+    ConfigSource, EditorFont, EditorPreferences, EditorRules, LineEnding, load_rules, resolve_rules,
 };
 
 /// Minimal changed span with UTF-8 character boundaries in both versions.

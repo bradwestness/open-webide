@@ -38,15 +38,75 @@ impl LineEnding {
     }
 }
 
-/// User defaults are stored once in user-scoped database settings.
+/// The five bundled Monaspace families share coding features and metrics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditorFont {
+    #[default]
+    Neon,
+    Argon,
+    Xenon,
+    Radon,
+    Krypton,
+}
+impl EditorFont {
+    pub const ALL: [Self; 5] = [
+        Self::Neon,
+        Self::Argon,
+        Self::Xenon,
+        Self::Radon,
+        Self::Krypton,
+    ];
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Neon => "Neon",
+            Self::Argon => "Argon",
+            Self::Xenon => "Xenon",
+            Self::Radon => "Radon",
+            Self::Krypton => "Krypton",
+        }
+    }
+}
+
+/// User defaults are stored once in user-scoped database settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorPreferences {
     pub indentation: Indentation,
     pub word_wrap: bool,
     pub show_whitespace: bool,
+    pub font: EditorFont,
+    pub texture_healing: bool,
+    pub ligatures: bool,
+}
+impl Default for EditorPreferences {
+    fn default() -> Self {
+        Self {
+            indentation: Indentation::default(),
+            word_wrap: false,
+            show_whitespace: false,
+            font: EditorFont::default(),
+            texture_healing: true,
+            ligatures: true,
+        }
+    }
 }
 impl EditorPreferences {
+    /// One feature set for native input, syntax paint, diffs, and geometry probes.
+    pub fn font_style(self) -> String {
+        let healing = u8::from(self.texture_healing);
+        let ligatures = u8::from(self.ligatures);
+        let coding = (1..=10)
+            .map(|set| format!("'ss{set:02}' {ligatures}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "--editor-font: 'Monaspace {}', var(--mono); --editor-font-features: 'calt' {healing}, 'liga' {ligatures}, {coding}; --editor-font-ligatures: {}",
+            self.font.name(),
+            if self.ligatures { "normal" } else { "none" }
+        )
+    }
+
     pub fn normalized(mut self) -> Self {
         self.indentation.width = self.indentation.width();
         self.indentation.tab_width = self.indentation.tab_width();
@@ -408,6 +468,37 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn font_preferences_migrate_and_round_trip_independent_features() {
+        use super::{EditorFont, EditorPreferences};
+        let legacy: EditorPreferences = serde_json::from_str(r#"{"word_wrap":true}"#).unwrap();
+        assert!(legacy.word_wrap && legacy.texture_healing && legacy.ligatures);
+        assert_eq!(legacy.font, EditorFont::Neon);
+        for font in EditorFont::ALL {
+            for texture_healing in [false, true] {
+                for ligatures in [false, true] {
+                    let preferences = EditorPreferences {
+                        font,
+                        texture_healing,
+                        ligatures,
+                        ..legacy
+                    };
+                    let json = serde_json::to_string(&preferences).unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<EditorPreferences>(&json).unwrap(),
+                        preferences
+                    );
+                    let style = preferences.font_style();
+                    assert!(style.contains(&format!("'Monaspace {}'", font.name())));
+                    assert!(style.contains(&format!("'calt' {}", u8::from(texture_healing))));
+                    for set in 1..=10 {
+                        assert!(style.contains(&format!("'ss{set:02}' {}", u8::from(ligatures))));
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
     use crate::editor::Selection;
     use std::cell::{Cell, RefCell};

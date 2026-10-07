@@ -116,3 +116,23 @@ test('phone viewport tracks an overlay keyboard and removes its listeners on dis
   window.dispatchEvent(new Event('resize'));
   assert.equal(values.has('--visible-height'), false);
 });
+
+test('bundled editor fonts are cached offline and font updates change the PWA build identity', () => {
+  const os = require('node:os');
+  const {execFileSync} = require('node:child_process');
+  const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'openwebide-font-cache-'));
+  try {
+    for (const file of ['index.html', 'openwebide-frontend-test.js', 'openwebide-frontend-test_bg.wasm']) fs.writeFileSync(path.join(dist, file), 'fixture');
+    fs.cpSync(path.join(__dirname, '../fonts'), path.join(dist, 'fonts'), {recursive:true});
+    const build = () => {
+      execFileSync('sh', ['pwa/build.sh'], {cwd:path.join(__dirname, '..'), env:{...process.env, TRUNK_STAGING_DIR:dist}});
+      const context = {self:{addEventListener(){}}, Set};
+      vm.runInNewContext(fs.readFileSync(path.join(dist, 'service-worker.js'), 'utf8') + ';globalThis.build = BUILD_ID; globalThis.files = SHELL_FILES;', context);
+      return context;
+    };
+    const before = build();
+    for (const family of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) assert.ok(before.files.includes(`/fonts/Monaspace${family}-v1.400.woff2`));
+    fs.appendFileSync(path.join(dist, 'fonts/MonaspaceNeon-v1.400.woff2'), 'changed');
+    assert.notEqual(build().build, before.build);
+  } finally { fs.rmSync(dist, {recursive:true, force:true}); }
+});

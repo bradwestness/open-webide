@@ -325,15 +325,18 @@ pub(super) fn render_editor_selection(
         && let Ok(visible) = projection.visible_selection(selection)
     {
         let changed = textarea.value() != projection.textarea_text();
-        let scroll = (textarea.scroll_top(), textarea.scroll_left());
+        let scroll = (
+            crate::viewport::editor_scroll(textarea).scroll_top(),
+            crate::viewport::editor_scroll(textarea).scroll_left(),
+        );
         if changed {
             textarea.set_value(projection.text());
         }
         if changed || !native {
             restore_editor_selection(textarea, &projection, visible);
         }
-        textarea.set_scroll_top(scroll.0);
-        textarea.set_scroll_left(scroll.1);
+        crate::viewport::set_editor_scroll_top(textarea, scroll.0);
+        crate::viewport::set_editor_scroll_left(textarea, scroll.1);
     }
 }
 
@@ -366,10 +369,12 @@ fn navigate_editor(
                 .top(index + 1)
                 .unwrap_or(measured.rows.height())
                 - top;
-            if top < textarea.scroll_top()
-                || top + height > textarea.scroll_top() + f64::from(textarea.client_height())
+            if top < crate::viewport::editor_scroll(textarea).scroll_top()
+                || top + height
+                    > crate::viewport::editor_scroll(textarea).scroll_top()
+                        + f64::from(crate::viewport::editor_scroll(textarea).client_height())
             {
-                textarea.set_scroll_top(top);
+                crate::viewport::set_editor_scroll_top(textarea, top);
             }
         }
     }
@@ -445,10 +450,12 @@ fn navigate_editor_with_retry(
                     let rect = caret_rect(&target, column)
                         .or_else(|| paint.get_untracked()?.caret.run(offset))
                         .unwrap_or_else(|| target.get_bounding_client_rect());
-                    textarea.set_scroll_top(
-                        (textarea.scroll_top() + rect.top()
+                    crate::viewport::set_editor_scroll_top(
+                        &textarea,
+                        (crate::viewport::editor_scroll(&textarea).scroll_top() + rect.top()
                             - textarea.get_bounding_client_rect().top()
-                            - f64::from(textarea.client_height()) / 2.0)
+                            - f64::from(crate::viewport::editor_scroll(&textarea).client_height())
+                                / 2.0)
                             .max(0.0),
                     );
                     reveal_caret_column(&rect, &textarea, gutter);
@@ -458,9 +465,11 @@ fn navigate_editor_with_retry(
                     sync_highlight_scroll(&textarea, &overlay.unchecked_into());
                 }
             } else {
-                textarea.set_scroll_top(
+                crate::viewport::set_editor_scroll_top(
+                    &textarea,
                     (f64::from(u32::try_from(row).unwrap_or(u32::MAX)) * height
-                        - f64::from(textarea.client_height()) / 2.0)
+                        - f64::from(crate::viewport::editor_scroll(&textarea).client_height())
+                            / 2.0)
                         .max(0.0),
                 );
                 if retry {
@@ -485,7 +494,10 @@ fn apply_fold_command(
     command: openwebide_core::editor::FoldCommand,
     source: &str,
 ) {
-    let scroll = (textarea.scroll_top(), textarea.scroll_left());
+    let scroll = (
+        crate::viewport::editor_scroll(textarea).scroll_top(),
+        crate::viewport::editor_scroll(textarea).scroll_left(),
+    );
     let _ = actions.record_native_selection(projected_selection(actions, textarea, source));
     if let Some((projection, selection)) = actions.fold_command(command)
         && let Ok(visible) = projection.visible_selection(selection)
@@ -495,8 +507,8 @@ fn apply_fold_command(
         let focus = web_sys::FocusOptions::new();
         focus.set_prevent_scroll(true);
         let _ = textarea.focus_with_options(&focus);
-        textarea.set_scroll_top(scroll.0);
-        textarea.set_scroll_left(scroll.1);
+        crate::viewport::set_editor_scroll_top(textarea, scroll.0);
+        crate::viewport::set_editor_scroll_left(textarea, scroll.1);
         if let Some(parent) = textarea.parent_element()
             && let Ok(Some(overlay)) = parent.query_selector(".editor-highlight")
         {
@@ -624,8 +636,15 @@ fn reveal_match_column(
     let viewport = body.get_bounding_client_rect();
     if body.class_list().contains("editor-textarea")
         && (caret.top() < viewport.top() || caret.bottom() > viewport.bottom())
+        && let Some(input) = body.dyn_ref::<web_sys::HtmlTextAreaElement>()
     {
-        body.set_scroll_top((body.scroll_top() + caret.top() - viewport.top() - 12.0).max(0.0));
+        crate::viewport::set_editor_scroll_top(
+            input,
+            (crate::viewport::editor_scroll(input).scroll_top() + caret.top()
+                - viewport.top()
+                - 12.0)
+                .max(0.0),
+        );
     }
     reveal_caret_column(&caret, body, gutter);
 }
@@ -634,7 +653,15 @@ fn reveal_caret_column(caret: &web_sys::DomRect, body: &web_sys::HtmlElement, gu
     let viewport = body.get_bounding_client_rect();
     let left = viewport.left() + gutter;
     if caret.left() < left || caret.left() > viewport.right() - 16.0 {
-        body.set_scroll_left((body.scroll_left() + caret.left() - left).max(0.0));
+        if let Some(input) = body.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+            crate::viewport::set_editor_scroll_left(
+                input,
+                (crate::viewport::editor_scroll(input).scroll_left() + caret.left() - left)
+                    .max(0.0),
+            );
+        } else {
+            body.set_scroll_left((body.scroll_left() + caret.left() - left).max(0.0));
+        }
     }
 }
 
@@ -864,28 +891,40 @@ fn highlight_html(
     html
 }
 
-/// The textarea owns scrolling; translate paint instead of copying clamped offsets.
+/// Translate paint from the document viewport, independently of native input.
 pub(super) fn sync_highlight_scroll(
     textarea: &web_sys::HtmlTextAreaElement,
     overlay: &web_sys::HtmlElement,
 ) {
-    // Native scrollbars can change the usable width between the resize observer
-    // and a source paint. Publish geometry from the same input as the paint.
+    crate::viewport::refresh_editor_scroll(textarea);
+    // Scrollbars can settle between the observer and source paint.
     let _ = overlay.style().set_property(
         "--editor-text-width",
-        &format!("{}px", textarea.client_width()),
+        &format!(
+            "{}px",
+            crate::viewport::editor_scroll(textarea).client_width()
+        ),
     );
     let _ = overlay.style().set_property(
         "--editor-viewport-height",
-        &format!("{}px", textarea.client_height()),
+        &format!(
+            "{}px",
+            crate::viewport::editor_scroll(textarea).client_height()
+        ),
     );
     let _ = overlay.style().set_property(
         "--editor-scroll-x",
-        &format!("{}px", -textarea.scroll_left()),
+        &format!(
+            "{}px",
+            -crate::viewport::editor_scroll(textarea).scroll_left()
+        ),
     );
     let _ = overlay.style().set_property(
         "--editor-scroll-y",
-        &format!("{}px", -textarea.scroll_top()),
+        &format!(
+            "{}px",
+            -crate::viewport::editor_scroll(textarea).scroll_top()
+        ),
     );
     if let Some(parent) = textarea
         .parent_element()
@@ -893,11 +932,17 @@ pub(super) fn sync_highlight_scroll(
     {
         let _ = parent.style().set_property(
             "--editor-scroll-x",
-            &format!("{}px", -textarea.scroll_left()),
+            &format!(
+                "{}px",
+                -crate::viewport::editor_scroll(textarea).scroll_left()
+            ),
         );
         let _ = parent.style().set_property(
             "--editor-scroll-y",
-            &format!("{}px", -textarea.scroll_top()),
+            &format!(
+                "{}px",
+                -crate::viewport::editor_scroll(textarea).scroll_top()
+            ),
         );
     }
     overlay.set_scroll_top(0.0);
@@ -1036,7 +1081,9 @@ fn HighlightOverlay(
         let Some(input) = textarea_ref.get() else {
             return;
         };
-        if input.client_width() <= 0 || input.client_height() <= 0 {
+        if crate::viewport::editor_scroll(&input).client_width() <= 0
+            || crate::viewport::editor_scroll(&input).client_height() <= 0
+        {
             batch_key.set_value(None);
             if let Some(ticket) = batch_ticket.get_value() {
                 actions.end_row_preparation(ticket);
@@ -1170,10 +1217,13 @@ fn HighlightOverlay(
                 let window = actions.paint_window(
                     index,
                     editor_row_height(&input),
-                    (input.scroll_left(), input.scroll_top() - 12.0),
                     (
-                        f64::from(input.client_width()),
-                        f64::from(input.client_height()),
+                        crate::viewport::editor_scroll(&input).scroll_left(),
+                        crate::viewport::editor_scroll(&input).scroll_top() - 12.0,
+                    ),
+                    (
+                        f64::from(crate::viewport::editor_scroll(&input).client_width()),
+                        f64::from(crate::viewport::editor_scroll(&input).client_height()),
                     ),
                 )?;
                 Some((index, window))
@@ -1227,8 +1277,8 @@ fn HighlightOverlay(
             let key = crate::state_actions::editor::EditorFragmentWindow {
                 rows: visible.get_untracked(),
                 windows: windows.clone(),
-                width: input.scroll_width(),
-                height: input.client_height(),
+                width: crate::viewport::editor_scroll(input).scroll_width(),
+                height: crate::viewport::editor_scroll(input).client_height(),
                 trailing: actions.projection().is_some_and(|projection| {
                     viewport.get_untracked().rows.end < projection.lines().len()
                 }),
@@ -1891,10 +1941,12 @@ pub fn Editor(
             if let Some(measured) = editor_actions.measured_rows() {
                 let input = ta.get();
                 return measured.rows.window(
-                    input.as_ref().map_or(0.0, |input| input.scroll_top()),
-                    input
-                        .as_ref()
-                        .map_or(390.0, |input| f64::from(input.client_height())),
+                    input.as_ref().map_or(0.0, |input| {
+                        crate::viewport::editor_scroll(input).scroll_top()
+                    }),
+                    input.as_ref().map_or(390.0, |input| {
+                        f64::from(crate::viewport::editor_scroll(input).client_height())
+                    }),
                     12.0,
                 );
             }
@@ -1911,10 +1963,12 @@ pub fn Editor(
         let row_height = input.as_ref().map_or(19.5, editor_row_height);
         openwebide_core::editor::EditorViewport::unwrapped(
             rows,
-            input.as_ref().map_or(0.0, |input| input.scroll_top()),
-            input
-                .as_ref()
-                .map_or(390.0, |input| f64::from(input.client_height())),
+            input.as_ref().map_or(0.0, |input| {
+                crate::viewport::editor_scroll(input).scroll_top()
+            }),
+            input.as_ref().map_or(390.0, |input| {
+                f64::from(crate::viewport::editor_scroll(input).client_height())
+            }),
             row_height,
             12.0,
         )
@@ -2035,8 +2089,10 @@ pub fn Editor(
                             let rect = glyph_rect(&range);
                             let bounds = parent.get_bounding_client_rect();
                             marks.push((
-                                rect.left() - bounds.left() + textarea.scroll_left(),
-                                rect.top() - bounds.top() + textarea.scroll_top(),
+                                rect.left() - bounds.left()
+                                    + crate::viewport::editor_scroll(&textarea).scroll_left(),
+                                rect.top() - bounds.top()
+                                    + crate::viewport::editor_scroll(&textarea).scroll_top(),
                                 rect.width(),
                                 rect.height(),
                             ));
@@ -2283,11 +2339,11 @@ pub fn Editor(
                     let caret = caret_rect(&row, column)
                         .or_else(|| paint_request.get_untracked()?.caret.run(source_offset));
                     if let Some(caret) = caret {
-                        textarea.set_scroll_top((textarea.scroll_top() + caret.top()
+                        crate::viewport::set_editor_scroll_top(&textarea, (crate::viewport::editor_scroll(&textarea).scroll_top() + caret.top()
                             - textarea.get_bounding_client_rect().top() - 12.0).max(0.0));
                         reveal_caret_column(&caret, &textarea, gutter);
                     } else {
-                        textarea.set_scroll_top(f64::from(row.offset_top().saturating_sub(12)));
+                        crate::viewport::set_editor_scroll_top(&textarea, f64::from(row.offset_top().saturating_sub(12)));
                     }
                     if let Some(Some(overlay)) = hl.try_get_untracked() {
                         sync_highlight_scroll(&textarea, &overlay);
@@ -2296,14 +2352,14 @@ pub fn Editor(
                     }
                 } else if let (Some(measured), Some(projection)) = (editor_actions.measured_rows(), editor_actions.projection()) {
                     let row = projection.lines().partition_point(|row| row.source_line < line.saturating_sub(1));
-                    if let Some(top) = measured.rows.top(row) { textarea.set_scroll_top(top); }
+                    if let Some(top) = measured.rows.top(row) { crate::viewport::set_editor_scroll_top(&textarea, top); }
                 } else if !editor_actions.preferences().word_wrap
                     && let Some(projection) = editor_actions.projection()
                 {
                     // The selected row may be outside the paint window. Scroll
                     // by its projected row; the next paint handles column reveal.
                     let row = projection.lines().partition_point(|row| row.source_line < line.saturating_sub(1));
-                    textarea.set_scroll_top(f64::from(u32::try_from(row).unwrap_or(u32::MAX)) * editor_row_height(&textarea));
+                    crate::viewport::set_editor_scroll_top(&textarea, f64::from(u32::try_from(row).unwrap_or(u32::MAX)) * editor_row_height(&textarea));
                 }
             } else if let Ok(Some(row)) =
                 root.query_selector(&format!(".editor-diff-inline [data-line='{line}'], .sbs-pane:last-child [data-line='{line}']"))
@@ -2366,8 +2422,8 @@ pub fn Editor(
                 editor_actions.scroll()
             } else {
                 crate::state::workspace::EditorScroll {
-                    top: el.scroll_top(),
-                    left: el.scroll_left(),
+                    top: crate::viewport::editor_scroll(&el).scroll_top(),
+                    left: crate::viewport::editor_scroll(&el).scroll_left(),
                 }
             };
             if changed {
@@ -2380,8 +2436,8 @@ pub fn Editor(
             {
                 restore_editor_selection(&el, &current_projection, selection);
             }
-            el.set_scroll_top(scroll.top);
-            el.set_scroll_left(scroll.left);
+            crate::viewport::set_editor_scroll_top(&el, scroll.top);
+            crate::viewport::set_editor_scroll_left(&el, scroll.left);
             restored_textarea.set_value(Some((el.clone(), key)));
             if let Some(overlay) = hl.get_untracked() {
                 sync_highlight_scroll(&el, &overlay);
@@ -2390,7 +2446,7 @@ pub fn Editor(
     });
 
     view! {
-        <div class="editor" node_ref=root style=move || format!("--editor-tab-width: {}", editor_actions.rules().indentation.tab_width()) on:keydown=move |event: web_sys::KeyboardEvent| {
+        <div class="editor" node_ref=root style=move || format!("{}; --editor-tab-width: {}", editor_actions.preferences().font_style(), editor_actions.rules().indentation.tab_width()) on:keydown=move |event: web_sys::KeyboardEvent| {
             if event.is_composing() { return; }
             if (event.ctrl_key() || event.meta_key()) && !event.alt_key() && view_mode.get_untracked() == ViewMode::Code && ta.get_untracked().is_some() && event.key().eq_ignore_ascii_case("g") {
                 event.prevent_default(); event.stop_propagation(); open_go.run(());
@@ -2673,6 +2729,7 @@ pub fn Editor(
             >
                 {move || {
                     let editor_project = workspace.active_project.get();
+                    let editor_account_generation = editor_actions.account_generation();
                     let mode = view_mode.get();
                     if let Some(limit) = editor_actions.limit() {
                         let old = pending_diff.with(|diff| diff.as_ref().and_then(|diff| diff.old.clone())).or_else(|| {
@@ -2752,6 +2809,21 @@ pub fn Editor(
                             _ => {
                                 view! {
                                     <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
+                                        <div class="editor-scroll-surface" aria-hidden="true" on:scroll=move |event: web_sys::Event| {
+                                            let Some(textarea) = ta.get_untracked() else { return; };
+                                            let Some(target) = event.current_target().and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok()) else { return; };
+                                            if !target.is_connected() || target != crate::viewport::editor_scroll(&textarea)
+                                                || editor_actions.account_generation() != editor_account_generation
+                                                || !current_editor_target(editor_actions, &textarea) { return; }
+                                            crate::viewport::sync_editor_scroll(&textarea, false);
+                                            workspace.content.with_untracked(|source| {
+                                                let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, source));
+                                            });
+                                            let scroll = crate::viewport::editor_scroll(&textarea);
+                                            editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), scroll.scroll_top(), scroll.scroll_left());
+                                            if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
+                                            layout_revision.update(|revision| *revision = revision.wrapping_add(1));
+                                        }><div class="editor-scroll-extent" /></div>
                                         <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready error=action_error visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
                                         <super::editor_selections::SelectionOverlay textarea=ta ready=highlight_ready layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>
@@ -2963,15 +3035,25 @@ pub fn Editor(
                                             }
                                             on:scroll=move |event: web_sys::Event| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+                                                    && editor_actions.account_generation() == editor_account_generation
                                                     && current_editor_target(editor_actions, &textarea)
                                                 {
+                                                    // Native selection/IME can scroll its input. Keep paint
+                                                    // aligned immediately, before the surface's queued event.
+                                                    let moved = crate::viewport::sync_editor_scroll(&textarea, true);
+                                                    if !moved && event.is_trusted() && crate::viewport::editor_scroll(&textarea).class_list().contains("editor-scroll-surface") { return; }
                                                     workspace.content.with_untracked(|source| {
                                                         let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, source));
                                                     });
-                                                    editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), textarea.scroll_top(), textarea.scroll_left());
+                                                    editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), crate::viewport::editor_scroll(&textarea).scroll_top(), crate::viewport::editor_scroll(&textarea).scroll_left());
                                                     if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
                                                     layout_revision.update(|revision| *revision = revision.wrapping_add(1));
                                                 }
+                                            }
+                                            on:wheel=move |event: web_sys::WheelEvent| {
+                                                if let Some(textarea) = event.current_target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+                                                    && editor_actions.account_generation() == editor_account_generation
+                                                    && current_editor_target(editor_actions, &textarea) { crate::viewport::forward_editor_wheel(&textarea, &event); }
                                             }
                                         />
                                     </div>

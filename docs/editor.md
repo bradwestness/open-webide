@@ -3,6 +3,11 @@
 Edit runs in Rust/WebAssembly and uses the same commands and file policies for
 local and remote projects. The full editor roadmap is still in progress.
 
+Settings → Editor defaults offers all five bundled Monaspace families: Neon (the
+default), Argon, Xenon, Radon, and Krypton. Texture healing and coding ligatures
+are independent toggles, both enabled by default. These preferences sync through
+your account and apply to Edit and diff views; fonts are available offline in the PWA.
+
 - Tab advances to the next indentation stop; Shift+Tab outdents selected lines.
 - Enter retains indentation and uses the configured line ending, or the file's
   first line ending when no rule is set. Supported code languages indent after an

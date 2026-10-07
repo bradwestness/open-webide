@@ -155,8 +155,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   full projected source. Native typing declarations now retain at most 16 KiB of
   surrounding projected text, with local/native/document coordinate contracts,
   partial logical rows and full selection edits. Move native layout/value to this
-  context next, separating global scrolling, pointer selections and caret paint
-  from the textarea before validating IME and clipboard on devices.
+  context next. Document scrolling now has an independent viewport with shared
+  wheel/navigation/restoration behavior in both modes; full native layout still
+  supplies extents. Separate pointer selections and caret paint from the textarea
+  before validating IME and clipboard on devices. Bundled Monaspace families and
+  independent healing/ligature preferences now share editor font metrics.
   Shared admission now bounds full-editor bytes, display breaks and long lines
   before allocating document metadata. Oversized files use bounded read-only
   pages, including before/after review sources; interactive transactions enforce

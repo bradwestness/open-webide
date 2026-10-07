@@ -61,6 +61,10 @@ pub struct EditorActions {
 }
 
 impl EditorActions {
+    pub fn account_generation(self) -> u64 {
+        self.auth.map_or(0, |auth| auth.generation.get_untracked())
+    }
+
     pub fn new(workspace: WorkspaceState) -> Self {
         Self {
             workspace,

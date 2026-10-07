@@ -10,7 +10,7 @@ module=$(find "$dist" -maxdepth 1 -name 'openwebide-frontend-*.js' -type f)
 wasm="${module%.js}_bg.wasm"
 [ -f "$wasm" ]
 printf 'import init from "./%s";\nawait init({module_or_path: new URL("./%s", import.meta.url)});\n' "${module##*/}" "${wasm##*/}" > "$dist/editor-worker.js"
-version=$(cksum "$dist/index.html" "$dist/pwa.js" "$dist/manifest.webmanifest" "$dist/offline.html" "$dist/icon-192.png" "$dist/icon-512.png" pwa/service-worker.js pwa/build.sh | cksum | cut -d ' ' -f 1)
+version=$({ cksum "$dist/index.html" "$dist/pwa.js" "$dist/manifest.webmanifest" "$dist/offline.html" "$dist/icon-192.png" "$dist/icon-512.png" pwa/service-worker.js pwa/build.sh; find "$dist/fonts" -type f -name '*.woff2' -exec cksum {} \; | sort; } | cksum | cut -d ' ' -f 1)
 {
   printf 'const BUILD_ID = "%s";\nconst SHELL_FILES = ["/", "/offline.html", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/pwa.js"' "$version"
   for file in "$dist"/*.wasm "$dist"/*.js "$dist"/*.css; do
@@ -19,6 +19,9 @@ version=$(cksum "$dist/index.html" "$dist/pwa.js" "$dist/manifest.webmanifest" "
     [ "$name" = pwa.js ] && continue
     [ "$name" = service-worker.js ] && continue
     printf ',"/%s"' "$name"
+  done
+  find "$dist/fonts" -type f -name '*.woff2' | sort | while IFS= read -r file; do
+    printf ',"/%s"' "${file#"$dist"/}"
   done
   if [ -d "$dist/snippets" ]; then
     find "$dist/snippets" -type f -name '*.js' | sort | while IFS= read -r file; do

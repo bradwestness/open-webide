@@ -49,6 +49,24 @@ pub fn Settings(
 
                 </FormSection>
                 <FormSection title="Editor defaults" description="Indentation uses EditorConfig first, then detected file style, then these defaults. Reading options apply to Edit. Tab indents; Ctrl+M lets Tab move focus.">
+                    <FormField label="Font family">
+                        <super::dropdown::DropdownSelect label="Editor font" value=Signal::derive(move || settings.editor_preferences.get().font.name().to_string()) options=Signal::derive(|| openwebide_core::editor::EditorFont::ALL.into_iter().map(|font| super::dropdown::SelectOption::new(font.name(), format!("Monaspace {}", font.name()))).collect()) disabled=Signal::derive(move || on_set_editor_preferences.is_none()) on_change=Callback::new(move |name: String| {
+                            if let Some(save) = on_set_editor_preferences
+                                && let Some(font) = openwebide_core::editor::EditorFont::ALL.into_iter().find(|font| font.name() == name) {
+                                let mut preferences = settings.editor_preferences.get_untracked(); preferences.font = font; save.run(preferences);
+                            }
+                        }) />
+                    </FormField>
+                    <super::ui::CheckboxField label="Texture healing" checked=Signal::derive(move || settings.editor_preferences.get().texture_healing) disabled=Signal::derive(move || on_set_editor_preferences.is_none()) on_change=Callback::new(move |checked| {
+                        if let Some(save) = on_set_editor_preferences {
+                            let mut preferences = settings.editor_preferences.get_untracked(); preferences.texture_healing = checked; save.run(preferences);
+                        }
+                    }) />
+                    <super::ui::CheckboxField label="Coding ligatures" checked=Signal::derive(move || settings.editor_preferences.get().ligatures) disabled=Signal::derive(move || on_set_editor_preferences.is_none()) on_change=Callback::new(move |checked| {
+                        if let Some(save) = on_set_editor_preferences {
+                            let mut preferences = settings.editor_preferences.get_untracked(); preferences.ligatures = checked; save.run(preferences);
+                        }
+                    }) />
                     <FormField label="Indentation" group=true>
                         <super::editor_options::IndentationControls value=Signal::derive(move || settings.editor_preferences.get().indentation) disabled=Signal::derive(move || on_set_editor_preferences.is_none()) on_change=Callback::new(move |indentation| {
                             if let Some(save) = on_set_editor_preferences {

@@ -669,6 +669,7 @@ async fn editor_defaults_serialize_writes_rollback_failures_and_ignore_previous_
     use openwebide_core::editor::{EditorPreferences, IndentStyle};
     use openwebide_frontend::components::Settings;
     use openwebide_frontend::testing::fake_backend::Call;
+    use wasm_bindgen::JsCast;
     let slot = std::rc::Rc::new(std::cell::Cell::new(None));
     let captured = slot.clone();
     let mounted = mount_test(move |state| {
@@ -697,13 +698,17 @@ async fn editor_defaults_serialize_writes_rollback_failures_and_ignore_previous_
     save.run(preferences);
     settle().await;
     // Reading controls share this database writer and preserve indentation.
-    for label in ["Word wrap", "Show whitespace"] {
+    for label in [
+        "Word wrap",
+        "Show whitespace",
+        "Texture healing",
+        "Coding ligatures",
+    ] {
         let labels = mounted.root.query_selector_all("label.ui-check").unwrap();
         let mut clicked = false;
         for index in 0..labels.length() {
             let node = labels.item(index).unwrap();
             if node.text_content().as_deref() == Some(label) {
-                use wasm_bindgen::JsCast;
                 node.unchecked_into::<web_sys::HtmlElement>().click();
                 clicked = true;
                 break;
@@ -714,6 +719,25 @@ async fn editor_defaults_serialize_writes_rollback_failures_and_ignore_previous_
     }
     preferences.word_wrap = true;
     preferences.show_whitespace = true;
+    preferences.texture_healing = false;
+    preferences.ligatures = false;
+    mounted
+        .root
+        .query_selector("button[aria-label='Editor font']")
+        .unwrap()
+        .unwrap()
+        .unchecked_into::<web_sys::HtmlElement>()
+        .click();
+    settle().await;
+    mounted
+        .root
+        .query_selector("[data-value='Radon']")
+        .unwrap()
+        .unwrap()
+        .unchecked_into::<web_sys::HtmlElement>()
+        .click();
+    settle().await;
+    preferences.font = openwebide_core::editor::EditorFont::Radon;
     assert_eq!(
         mounted.state.settings.editor_preferences.get_untracked(),
         preferences
@@ -845,8 +869,13 @@ async fn editor_defaults_restore_from_database_without_overwriting_a_newer_choic
         saved.indentation.width = 6;
         saved.word_wrap = true;
         saved.show_whitespace = true;
+        saved.font = openwebide_core::editor::EditorFont::Krypton;
+        saved.texture_healing = false;
+        saved.ligatures = false;
         let mut chosen = saved;
         chosen.indentation.width = 2;
+        chosen.font = openwebide_core::editor::EditorFont::Xenon;
+        chosen.ligatures = true;
         if changed_during_load {
             slot.get().unwrap().run(chosen);
             settle().await;

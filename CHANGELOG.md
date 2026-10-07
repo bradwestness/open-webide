@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Bundle all five Monaspace editor font families with account-synced family, texture-healing and coding-ligature preferences. Enable both features by default and cache fonts for offline PWA use; share font metrics across input, syntax paint, gutters and diffs in both workspace modes.
+
+- Separate document scrolling from the native editor input in both modes, preserving wheel, caret navigation and restored viewport positions while rejecting detached or previous-account scroll events. Native input still retains full source pending bounded layout work.
+
 - Apply editor transactions and grouped undo/redo to the existing String buffer after validating proposed pieces, without building a full replacement candidate or doubling capacity for ordinary typing. Rebuild overlapping row contexts once, preserve distant interior indexes and unaffected collapsed folds, and keep failed edits atomic in both modes.
 
 - Avoid reading the full textarea value after a validated trusted single-cursor insertion without folds in both modes. Preserve reconciliation for synthetic events, folds, multiple cursors and input fallbacks.

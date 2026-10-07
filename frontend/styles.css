@@ -1,3 +1,44 @@
+@font-face {
+  font-family: "Monaspace Neon";
+  src: url("/fonts/MonaspaceNeon-v1.400.woff2") format("woff2");
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique -11deg 0deg;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Monaspace Argon";
+  src: url("/fonts/MonaspaceArgon-v1.400.woff2") format("woff2");
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique -11deg 0deg;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Monaspace Xenon";
+  src: url("/fonts/MonaspaceXenon-v1.400.woff2") format("woff2");
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique -11deg 0deg;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Monaspace Radon";
+  src: url("/fonts/MonaspaceRadon-v1.400.woff2") format("woff2");
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique -11deg 0deg;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Monaspace Krypton";
+  src: url("/fonts/MonaspaceKrypton-v1.400.woff2") format("woff2");
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
+  font-style: oblique -11deg 0deg;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   --bg: #1e1f24;
@@ -12,6 +53,9 @@
   --warn: #e0af68;
   --git-modified: #f59e0b;
   --on-accent: #1a1b1f;
+  --editor-font: "Monaspace Neon", var(--mono);
+  --editor-font-features: "calt" 1, "liga" 1, "ss01" 1, "ss02" 1, "ss03" 1, "ss04" 1, "ss05" 1, "ss06" 1, "ss07" 1, "ss08" 1, "ss09" 1, "ss10" 1;
+  --editor-font-ligatures: normal;
   --mono: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
   /* Shared UI foundations; palette tokens above change with the theme. */
   --space-1: 4px;
@@ -1142,6 +1186,18 @@ body {
   overflow: hidden;
 }
 
+.editor-scroll-surface {
+  position: absolute;
+  inset: 0;
+  left: var(--editor-gutter-width, 40px);
+  overflow: auto;
+  scrollbar-gutter: stable;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.editor-scroll-extent { pointer-events: none; }
+
 .editor-highlight {
   position: absolute;
   inset: 0;
@@ -1180,10 +1236,10 @@ body {
   inset: 0;
   left: var(--editor-gutter-width, 40px);
   z-index: 2;
-  width: calc(100% - var(--editor-gutter-width, 40px));
-  height: 100%;
+  width: var(--editor-input-width, calc(100% - var(--editor-gutter-width, 40px)));
+  height: var(--editor-input-height, 100%);
   resize: none;
-  scrollbar-gutter: stable;
+  overflow: hidden;
   border: none;
   outline: none;
   margin: 0;
@@ -3210,3 +3266,12 @@ button.browser-item {
   margin: 12px 0 0;
   padding: 12px;
 }
+
+/* Keep native caret layout, paint, gutters, and diffs on identical font features. */
+.editor-code, .editor-scroll-surface, .editor-textarea, .editor-highlight,
+.editor-diff, .editor-content-view, .editor-document-preview, .editor-large-file-page {
+  font-family: var(--editor-font);
+  font-feature-settings: var(--editor-font-features);
+  font-variant-ligatures: var(--editor-font-ligatures);
+}
+.editor-code { font-size: 13px; }

@@ -547,7 +547,10 @@ pub(super) fn window_paint(
             .style()
             .set_property(
                 "width",
-                &format!("{}px", input.scroll_width() + input.offset_left()),
+                &format!(
+                    "{}px",
+                    crate::viewport::editor_scroll(input).scroll_width() + input.offset_left()
+                ),
             )
             .ok()?;
     }
@@ -943,8 +946,8 @@ pub(super) fn neighborhood_layout(
     render: impl Fn(&[usize], bool) -> String,
 ) -> Option<VisualLayout> {
     if !current_editor_target(actions, input)
-        || input.client_width() <= 0
-        || input.client_height() <= 0
+        || crate::viewport::editor_scroll(input).client_width() <= 0
+        || crate::viewport::editor_scroll(input).client_height() <= 0
     {
         return None;
     }

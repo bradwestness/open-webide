@@ -2160,6 +2160,8 @@ fn input(mounted: &Mounted, value: &str) -> web_sys::HtmlTextAreaElement {
 }
 
 async fn frame() {
+    // Geometry assertions use the selected font, including its loading callbacks.
+    editorFontsReady().await.unwrap();
     let promise = js_sys::Promise::new(&mut |resolve, _| {
         leptos::leptos_dom::helpers::request_animation_frame(move || {
             resolve.call0(&wasm_bindgen::JsValue::NULL).unwrap();
@@ -2825,6 +2827,7 @@ async fn edit_scrollbars_stay_above_paint_and_outside_gutter_in_both_modes() {
         frame().await;
         let textarea: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
+        let scroll = mounted.element(".editor-scroll-surface");
         let overlay = mounted.element(".editor-highlight");
         let textarea_style = window().get_computed_style(&textarea).unwrap().unwrap();
         let overlay_style = window().get_computed_style(&overlay).unwrap().unwrap();
@@ -2854,8 +2857,13 @@ async fn edit_scrollbars_stay_above_paint_and_outside_gutter_in_both_modes() {
                 .get_bounding_client_rect()
                 .left();
         assert!(gutter_width > 30.0 && gutter_width < 60.0);
-        assert!(textarea.scroll_width() > textarea.client_width());
-        assert!(textarea.scroll_height() > textarea.client_height());
+        assert!(scroll.scroll_width() > scroll.client_width());
+        assert!(scroll.scroll_height() > scroll.client_height());
+        assert!(
+            (scroll.get_bounding_client_rect().left() - textarea.get_bounding_client_rect().left())
+                .abs()
+                < 0.01
+        );
         for (height, content) in [(250, None), (150, None), (150, Some("short"))] {
             mounted
                 .element(".editor-fixture")
@@ -2867,15 +2875,15 @@ async fn edit_scrollbars_stay_above_paint_and_outside_gutter_in_both_modes() {
             }
             frame().await;
             super::support::wait_until("paint clips above horizontal scrollbar", || {
-                (overlay.get_bounding_client_rect().height() - f64::from(textarea.client_height()))
+                (overlay.get_bounding_client_rect().height() - f64::from(scroll.client_height()))
                     .abs()
                     < 0.5
             })
             .await;
             assert!(
                 (overlay.get_bounding_client_rect().bottom()
-                    - (textarea.get_bounding_client_rect().top()
-                        + f64::from(textarea.client_height())))
+                    - (scroll.get_bounding_client_rect().top()
+                        + f64::from(scroll.client_height())))
                 .abs()
                     < 0.5
             );
@@ -2884,6 +2892,10 @@ async fn edit_scrollbars_stay_above_paint_and_outside_gutter_in_both_modes() {
 }
 
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function editorWheel(target, x, y, mode, shift, control) {
+    const event = new WheelEvent('wheel', {bubbles:true,cancelable:true,deltaX:x,deltaY:y,deltaMode:mode,shiftKey:shift,ctrlKey:control});
+    target.dispatchEvent(event); return event.defaultPrevented;
+}
 export async function editorConfigFolder() {
     const root = await navigator.storage.getDirectory();
     const name = 'editor-config-' + crypto.randomUUID();
@@ -2900,6 +2912,14 @@ export function editorConfigHandle(folder) { return folder.handle; }
 export async function editorConfigCleanup(folder) { await folder.root.removeEntry(folder.name, {recursive:true}); }
 "#)]
 extern "C" {
+    fn editorWheel(
+        target: &web_sys::HtmlTextAreaElement,
+        x: f64,
+        y: f64,
+        mode: u32,
+        shift: bool,
+        control: bool,
+    ) -> bool;
     #[wasm_bindgen(catch)]
     async fn editorConfigFolder() -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
     fn editorConfigHandle(folder: &wasm_bindgen::JsValue) -> wasm_bindgen::JsValue;
@@ -2907,6 +2927,140 @@ extern "C" {
     async fn editorConfigCleanup(
         folder: &wasm_bindgen::JsValue,
     ) -> Result<(), wasm_bindgen::JsValue>;
+}
+
+#[wasm_bindgen_test]
+async fn editor_scroll_surface_preserves_wheel_native_navigation_and_scope_in_both_modes() {
+    use openwebide_core::editor::EditorPreferences;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        for word_wrap in [false, true] {
+            let source = format!("{}\n", "x".repeat(800)).repeat(100);
+            let original = source.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.settings.editor_preferences.set(EditorPreferences {
+                    word_wrap,
+                    ..Default::default()
+                });
+                state.workspace.open_file.set(Some("scroll.txt".into()));
+                state.workspace.content.set(source);
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:400px">{editor_view(state)}</div> }
+            });
+            wait_until("document scroll surface", || {
+                mounted
+                    .root
+                    .query_selector(".editor-scroll-surface")
+                    .unwrap()
+                    .is_some_and(|scroll| {
+                        scroll.client_height() > 100
+                            && scroll.scroll_height() > scroll.client_height() * 3
+                    })
+            })
+            .await;
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            let scroll = mounted.element(".editor-scroll-surface");
+            let actions = EditorActions::new(mounted.state.workspace);
+            assert!(editorWheel(&input, 25.0, 40.0, 0, false, false));
+            frame().await;
+            assert!((scroll.scroll_top() - 40.0).abs() < 1.0);
+            assert!((scroll.scroll_left() - if word_wrap { 0.0 } else { 25.0 }).abs() < 1.0);
+            assert!(editorWheel(&input, 0.0, 2.0, 1, false, false));
+            frame().await;
+            let line: f64 = window()
+                .get_computed_style(&input)
+                .unwrap()
+                .unwrap()
+                .get_property_value("line-height")
+                .unwrap()
+                .trim_end_matches("px")
+                .parse()
+                .unwrap();
+            assert!((scroll.scroll_top() - 40.0 - 2.0 * line).abs() < 1.0);
+            let top = scroll.scroll_top();
+            let left = scroll.scroll_left();
+            assert!(editorWheel(&input, 0.0, 3.0, 1, true, false));
+            frame().await;
+            assert!((scroll.scroll_top() - top).abs() < 1.0);
+            assert!(
+                (scroll.scroll_left() - if word_wrap { 0.0 } else { left + 3.0 * line }).abs()
+                    < 1.0
+            );
+            assert!(editorWheel(&input, 0.0, 1.0, 2, false, false));
+            frame().await;
+            assert!((scroll.scroll_top() - top - f64::from(scroll.client_height())).abs() < 1.0);
+            let before_zoom = scroll.scroll_top();
+            assert!(!editorWheel(&input, 0.0, 40.0, 0, false, true));
+            frame().await;
+            assert!((scroll.scroll_top() - before_zoom).abs() < 0.01);
+            input.set_scroll_top(1111.0);
+            input.set_scroll_left(222.0);
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("native caret scroll reaches document surface", || {
+                (scroll.scroll_top() - 1111.0).abs() < 1.0
+            })
+            .await;
+            frame().await;
+            assert!((actions.scroll().top - 1111.0).abs() < 1.0);
+            scroll.set_scroll_top(333.0);
+            scroll.set_scroll_left(44.0);
+            scroll
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            frame().await;
+            assert!((input.scroll_top() - scroll.scroll_top()).abs() < 0.01);
+            assert!((input.scroll_left() - scroll.scroll_left()).abs() < 0.01);
+            let saved = actions.scroll();
+            assert!((saved.top - 333.0).abs() < 1.0);
+            assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+            assert!(!mounted.state.workspace.dirty.get_untracked());
+            mounted.click_text("Preview");
+            settle().await;
+            assert!(!scroll.is_connected());
+            mounted.click_text("Edit");
+            wait_until("remounted document scroll surface", || {
+                mounted
+                    .root
+                    .query_selector(".editor-scroll-surface")
+                    .unwrap()
+                    .is_some_and(|scroll| (scroll.scroll_top() - saved.top).abs() < 1.0)
+            })
+            .await;
+            scroll
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            assert_eq!(
+                actions.scroll(),
+                saved,
+                "detached scroll events cannot update the remounted view"
+            );
+            let current = mounted.element(".editor-scroll-surface");
+            mounted
+                .state
+                .auth
+                .generation
+                .update(|generation| *generation += 1);
+            current.set_scroll_top(555.0);
+            current
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            assert_eq!(
+                actions.scroll(),
+                saved,
+                "old account scroll events cannot persist into the new account"
+            );
+        }
+    }
 }
 
 #[wasm_bindgen_test]
@@ -5996,6 +6150,8 @@ async fn wrapped_multi_cursor_arrows_follow_measured_rows_in_both_modes() {
                 .is_some()
         })
         .await;
+        editorFontsReady().await.unwrap();
+        frame().await;
         let actions = EditorActions::new(mounted.state.workspace);
         let textarea: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
@@ -7922,6 +8078,7 @@ async fn localized_wrapped_edits_reuse_exact_row_heights_in_both_modes() {
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
             }
         });
+        frame().await;
         let actions = EditorActions::new(mounted.state.workspace);
         wait_until("initial reusable wrapped rows", || {
             actions.measured_rows().is_some()
@@ -10003,5 +10160,149 @@ async fn trusted_native_commits_skip_full_value_reads_and_other_inputs_reconcile
                 "synthetic events must reconcile the complete value"
             );
         }
+    }
+}
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export async function editorFontsReady() { document.body.getBoundingClientRect(); await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(resolve)); }
+export async function loadEditorFont(name, bytes) {
+    const font = new FontFace('Monaspace ' + name, bytes, {weight:'200 800', stretch:'100% 125%', style:'oblique -11deg 0deg'});
+    await font.load(); document.fonts.add(font); return font;
+}
+export function removeEditorFont(font) { document.fonts.delete(font); }
+"#)]
+extern "C" {
+    #[wasm_bindgen(catch)]
+    async fn editorFontsReady() -> Result<(), wasm_bindgen::JsValue>;
+    #[wasm_bindgen(catch)]
+    async fn loadEditorFont(
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
+    fn removeEditorFont(font: &wasm_bindgen::JsValue);
+}
+
+#[wasm_bindgen_test]
+async fn monaspace_families_and_independent_features_share_native_and_paint_metrics_in_both_modes()
+{
+    use openwebide_core::{WorkspaceMode, editor::EditorFont};
+    let mut loaded = Vec::new();
+    for (font, bytes) in [
+        (
+            EditorFont::Neon,
+            include_bytes!("../../fonts/MonaspaceNeon-v1.400.woff2").as_slice(),
+        ),
+        (
+            EditorFont::Argon,
+            include_bytes!("../../fonts/MonaspaceArgon-v1.400.woff2").as_slice(),
+        ),
+        (
+            EditorFont::Xenon,
+            include_bytes!("../../fonts/MonaspaceXenon-v1.400.woff2").as_slice(),
+        ),
+        (
+            EditorFont::Radon,
+            include_bytes!("../../fonts/MonaspaceRadon-v1.400.woff2").as_slice(),
+        ),
+        (
+            EditorFont::Krypton,
+            include_bytes!("../../fonts/MonaspaceKrypton-v1.400.woff2").as_slice(),
+        ),
+    ] {
+        loaded.push(loadEditorFont(font.name(), bytes).await.unwrap());
+    }
+    let source = "fn example() { let result = a != b && c <= d; }\n// 文😀 => -> ===\n";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("font.rs".into()));
+            state.workspace.content.set(source.into());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:700px;height:400px">{editor_view(state)}</div> }
+        });
+        for font in EditorFont::ALL {
+            for healing in [false, true] {
+                for ligatures in [false, true] {
+                    mounted
+                        .state
+                        .settings
+                        .editor_preferences
+                        .update(|preferences| {
+                            preferences.font = font;
+                            preferences.texture_healing = healing;
+                            preferences.ligatures = ligatures;
+                        });
+                    settle().await;
+                    let input = mounted
+                        .root
+                        .query_selector(".editor-textarea")
+                        .unwrap()
+                        .unwrap()
+                        .unchecked_into::<web_sys::HtmlTextAreaElement>();
+                    let native = web_sys::window()
+                        .unwrap()
+                        .get_computed_style(&input)
+                        .unwrap()
+                        .unwrap();
+                    assert!(
+                        native
+                            .get_property_value("font-family")
+                            .unwrap()
+                            .contains(font.name())
+                    );
+                    let features = native.get_property_value("font-feature-settings").unwrap();
+                    assert!(features.contains(if healing { "\"calt\"" } else { "\"calt\" 0" }));
+                    assert!(features.contains(if ligatures { "\"ss01\"" } else { "\"ss01\" 0" }));
+                    for selector in [".editor-highlight", ".editor-scroll-surface"] {
+                        let element = mounted.root.query_selector(selector).unwrap().unwrap();
+                        let painted = web_sys::window()
+                            .unwrap()
+                            .get_computed_style(&element)
+                            .unwrap()
+                            .unwrap();
+                        for property in [
+                            "font-family",
+                            "font-size",
+                            "font-feature-settings",
+                            "font-variant-ligatures",
+                        ] {
+                            assert_eq!(
+                                native.get_property_value(property).unwrap(),
+                                painted.get_property_value(property).unwrap(),
+                                "{font:?} {property}"
+                            );
+                        }
+                    }
+                    assert_eq!(input.value(), source);
+                    let end = u32::try_from(source.encode_utf16().count()).unwrap();
+                    input.set_selection_range(end, end).unwrap();
+                    input
+                        .dispatch_event(&web_sys::Event::new("select").unwrap())
+                        .unwrap();
+                    settle().await;
+                    assert_eq!(
+                        openwebide_frontend::state_actions::editor::EditorActions::new(
+                            mounted.state.workspace
+                        )
+                        .selection(source)
+                        .unwrap()
+                        .head,
+                        source.len()
+                    );
+                    assert_eq!(
+                        input.selection_start().unwrap(),
+                        Some(u32::try_from(source.encode_utf16().count()).unwrap())
+                    );
+                    assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+                    assert!(!mounted.state.workspace.dirty.get_untracked());
+                }
+            }
+        }
+    }
+    for font in loaded {
+        removeEditorFont(&font);
     }
 }
