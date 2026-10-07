@@ -33,7 +33,7 @@ impl Document {
             .as_ref()
             .map_or(self, |composition| composition.committed_document());
         DocumentRecovery {
-            text: document.text.clone(),
+            text: document.text().to_owned(),
             saved: document.saved.to_string(),
             selections: document.selections.clone(),
             collapsed: document

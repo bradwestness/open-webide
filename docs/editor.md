@@ -339,6 +339,12 @@ caret at the source paint point without changing the source viewport. Small file
 retain the trusted insertion shortcut. Initial cold layout and coarse/touch devices
 retain full native input until source caret, extents and touch selection are ready;
 physical Chrome/Edge PWA input-method verification remains pending.
+Document and composition snapshots share source text, logical-line indexes and
+prepared projections. A changed version detaches once with insertion headroom;
+ordinary subsequent edits reuse its buffer. Cancellation restores the committed
+version and its prepared projection. Recovery serialization still copies the
+committed source at the persistence boundary, and editing still shifts suffix
+bytes/indexes and rebuilds changed projections.
 Pointer selection adapters borrow current source while gestures retain the shared
 document version identity. Replacing a document invalidates its gestures even when
 text and revision match; unchanged document snapshots remain valid.

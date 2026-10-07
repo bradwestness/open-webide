@@ -110,7 +110,7 @@ impl Document {
         indentation: Indentation,
         layout: &VisualLayout,
     ) -> Result<bool, SelectionError> {
-        if layout.source != self.text || layout.projection != self.projection() {
+        if layout.source != *self.text || layout.projection != self.projection() {
             return Err(EditError::StaleContext.into());
         }
         self.move_selections_in(motion, extend, indentation, Some(layout))

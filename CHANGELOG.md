@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share source text, line indexes and prepared projections across document and composition snapshots. Detach edited versions with insertion headroom, retain unchanged snapshot coordinates/history, and restore original allocations and prepared projection when composition is cancelled.
+
 - Borrow current editor source during pointer selection and rendering instead of copying or retaining the whole file. Reject drags from replaced documents even with identical text/revision, and add trusted Chromium highlighted-click checks for small, bounded and scrolled drafts in both project modes.
 
 - Publish editor worker structural metadata as bounded list patches against the acknowledged analysis ticket. Retain standalone snapshots for small lists or language changes, reject stale/missing bases and invalid ranges, and check expanded record budgets before reconstructing and validating coordinates.

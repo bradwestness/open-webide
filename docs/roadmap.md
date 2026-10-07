@@ -102,8 +102,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   document identity instead of another source copy. Pointer gestures now borrow current
   source and retain document identity, rejecting replacement documents even at the
   same revision. Release-app Chromium checks cover highlighted token/line-end clicks
-  and scrolled bounded input in both modes. Reduce
-  full-source composition baselines and buffer/projection publication. History snapshots
+  and scrolled bounded input in both modes. Composition baselines share source text,
+  line indexes and prepared projections; edits detach the changed version and
+  cancellation restores the original allocations. Reduce remaining buffer/projection
+  publication. History snapshots
   share immutable steps and transaction payloads rather than copying retained edits,
   and document/composition snapshots share saved-text baselines. Cancellation now
   borrows preview/restored source and copies only matching UI destinations. Admission now skips

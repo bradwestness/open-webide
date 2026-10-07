@@ -225,9 +225,9 @@ struct HistoryStep {
 pub struct Document {
     // Clones share a text version; edits and replacements create a new identity.
     identity: std::sync::Arc<()>,
-    text: String,
+    text: std::sync::Arc<String>,
     editor_limits: bool,
-    line_index: index::LineIndex,
+    line_index: std::sync::Arc<index::LineIndex>,
     projection: ProjectionCache,
     saved: std::sync::Arc<str>,
     selections: Vec<Selection>,
@@ -242,12 +242,12 @@ pub struct Document {
 }
 
 // Derived presentation allocations are outside document identity/history. Clones
-// rebuild lazily, while previously returned projections stay immutable.
+// retain immutable prepared data; invalidation affects only the edited document.
 #[derive(Debug, Default)]
 struct ProjectionCache(std::sync::OnceLock<FoldProjection>);
 impl Clone for ProjectionCache {
     fn clone(&self) -> Self {
-        Self::default()
+        Self(self.0.clone())
     }
 }
 impl PartialEq for ProjectionCache {
@@ -269,9 +269,9 @@ impl Document {
             identity: std::sync::Arc::new(()),
             saved: std::sync::Arc::from(text.as_str()),
             editor_limits: false,
-            line_index: index::LineIndex::new(&text),
+            line_index: std::sync::Arc::new(index::LineIndex::new(&text)),
             projection: ProjectionCache::default(),
-            text,
+            text: std::sync::Arc::new(text),
             selections: vec![Selection::caret(0)],
             history: Vec::new(),
             history_cursor: 0,
@@ -430,7 +430,7 @@ impl Document {
         self.revision
     }
     pub fn is_dirty(&self) -> bool {
-        self.text != self.saved.as_ref()
+        self.text.as_str() != self.saved.as_ref()
     }
     pub fn mark_saved(&mut self) {
         let saved = self.saved_version(&self.text);
@@ -695,8 +695,8 @@ fn inverse_edits(text: &str, edits: &[Edit]) -> Vec<Edit> {
 }
 
 fn replace_indexed_text(
-    text: &mut String,
-    index: &mut index::LineIndex,
+    text: &mut std::sync::Arc<String>,
+    index: &mut std::sync::Arc<index::LineIndex>,
     folds: &mut FoldState,
     projection: &mut ProjectionCache,
     edits: &[Edit],
@@ -737,6 +737,15 @@ fn replace_indexed_text(
         size = size - edit.range.len() + edit.text.len();
         peak = peak.max(size);
     }
+    if std::sync::Arc::get_mut(text).is_none() {
+        // Detach once with insertion headroom; cloning then reserving would copy
+        // the complete composition baseline twice on its first growing preview.
+        let mut detached = String::with_capacity(peak.max(text.len()) + EDIT_RESERVE_BYTES);
+        detached.push_str(text);
+        *text = std::sync::Arc::new(detached);
+    }
+    let text = std::sync::Arc::get_mut(text).unwrap();
+    let index = std::sync::Arc::make_mut(index);
     if peak > text.capacity() {
         // Avoid doubling an admitted multi-megabyte buffer for one keystroke.
         text.reserve_exact(peak + EDIT_RESERVE_BYTES - text.len());
@@ -865,14 +874,14 @@ mod tests {
             let mut document = Document::new(source.as_str());
             document.apply(edits, vec![Selection::caret(expected.len()), Selection::caret(0)], None).unwrap();
             proptest::prop_assert_eq!(document.text(), expected.as_str());
-            proptest::prop_assert_eq!(&document.line_index, &index::LineIndex::new(&expected));
+            proptest::prop_assert_eq!(document.line_index.as_ref(), &index::LineIndex::new(&expected));
             if expected != source {
                 proptest::prop_assert!(document.undo());
                 proptest::prop_assert_eq!(document.text(), source.as_str());
-                proptest::prop_assert_eq!(&document.line_index, &index::LineIndex::new(&source));
+                proptest::prop_assert_eq!(document.line_index.as_ref(), &index::LineIndex::new(&source));
                 proptest::prop_assert!(document.redo());
                 proptest::prop_assert_eq!(document.text(), expected.as_str());
-                proptest::prop_assert_eq!(&document.line_index, &index::LineIndex::new(&expected));
+                proptest::prop_assert_eq!(document.line_index.as_ref(), &index::LineIndex::new(&expected));
             }
         }
     }
@@ -913,7 +922,7 @@ mod tests {
         let middle = "文😀e\u{301} words ".repeat(7000);
         let source = format!("head\nspacer\n{middle}\nspacer\nlast");
         let mut document = Document::new(source.as_str());
-        document.text.reserve(64);
+        std::sync::Arc::make_mut(&mut document.text).reserve(64);
         let allocation = document.text.as_ptr();
         let retained = document.line_index.coordinates[2].visual().unwrap();
         let last = source.rfind("last").unwrap();
@@ -934,7 +943,7 @@ mod tests {
                 .unwrap()
                 .shared_with(&retained)
         );
-        assert_eq!(document.line_index, index::LineIndex::new(document.text()));
+        assert_eq!(*document.line_index, index::LineIndex::new(document.text()));
         assert!(document.undo());
         assert_eq!(document.text(), source);
         assert_eq!(document.text.as_ptr(), allocation);
@@ -1073,7 +1082,7 @@ mod tests {
                             )
                             .unwrap();
                         assert_eq!(document.text(), expected);
-                        assert_eq!(document.line_index, index::LineIndex::new(&expected));
+                        assert_eq!(*document.line_index, index::LineIndex::new(&expected));
                         let before = document.clone();
                         assert!(
                             document
@@ -1088,10 +1097,10 @@ mod tests {
                         if expected != source {
                             assert!(document.undo());
                             assert_eq!(document.text(), source);
-                            assert_eq!(document.line_index, index::LineIndex::new(source));
+                            assert_eq!(*document.line_index, index::LineIndex::new(source));
                             assert!(document.redo());
                             assert_eq!(document.text(), expected);
-                            assert_eq!(document.line_index, index::LineIndex::new(&expected));
+                            assert_eq!(*document.line_index, index::LineIndex::new(&expected));
                         }
                     }
                 }
@@ -1133,6 +1142,117 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn document_snapshots_share_source_indexes_and_prepared_projection_until_edits() {
+        let source = "文😀\r\nsecond\r\n".repeat(500);
+        let mut document = Document::for_editor(source.clone()).unwrap();
+        let prepared = document.projection();
+        let mut snapshot = document.clone();
+        assert!(std::sync::Arc::ptr_eq(&document.text, &snapshot.text));
+        assert!(std::sync::Arc::ptr_eq(
+            &document.line_index,
+            &snapshot.line_index
+        ));
+        assert_eq!(
+            prepared.text().as_ptr(),
+            snapshot.projection().text().as_ptr()
+        );
+        assert!(
+            !document
+                .apply(
+                    vec![Edit::replace(0..3, "文")],
+                    vec![Selection::caret(3)],
+                    None
+                )
+                .unwrap()
+        );
+        assert!(std::sync::Arc::ptr_eq(&document.text, &snapshot.text));
+        assert!(std::sync::Arc::ptr_eq(
+            &document.line_index,
+            &snapshot.line_index
+        ));
+        assert_eq!(
+            document.apply(
+                vec![Edit::replace(1..3, "x")],
+                vec![Selection::caret(1)],
+                None
+            ),
+            Err(EditError::InvalidRange)
+        );
+        assert!(std::sync::Arc::ptr_eq(&document.text, &snapshot.text));
+        document.insert_native_text("new\n", None).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&document.text, &snapshot.text));
+        assert!(!std::sync::Arc::ptr_eq(
+            &document.line_index,
+            &snapshot.line_index
+        ));
+        assert!(document.text.capacity() >= document.text.len() + EDIT_RESERVE_BYTES);
+        assert_eq!(snapshot.text(), source);
+        assert_eq!(*document.line_index, index::LineIndex::new(document.text()));
+        assert_eq!(*snapshot.line_index, index::LineIndex::new(&source));
+        assert_eq!(
+            prepared.text().as_ptr(),
+            snapshot.projection().text().as_ptr()
+        );
+        assert_ne!(
+            prepared.text().as_ptr(),
+            document.projection().text().as_ptr()
+        );
+        snapshot.insert_native_text("other", None).unwrap();
+        let independent = snapshot.text().to_owned();
+        assert!(document.undo());
+        assert_eq!(document.text(), source);
+        assert!(document.redo());
+        assert_eq!(snapshot.text(), independent);
+    }
+
+    #[test]
+    fn composition_reuses_baseline_source_indexes_and_projection_when_cancelled() {
+        let source = "文😀\r\nsecond\r\n".repeat(500);
+        let mut document = Document::for_editor(source.clone()).unwrap();
+        let text = document.text.clone();
+        let index = document.line_index.clone();
+        let projection = document.projection();
+        assert!(document.begin_composition(Some(7)));
+        let committed = document.composition.as_ref().unwrap().committed_document();
+        assert!(std::sync::Arc::ptr_eq(&text, &committed.text));
+        assert!(std::sync::Arc::ptr_eq(&index, &committed.line_index));
+        assert_eq!(
+            projection.text().as_ptr(),
+            committed.projection().text().as_ptr()
+        );
+        document
+            .native_edit(
+                Some(Edit::replace(0..0, "候")),
+                Selection::caret(3),
+                NativeInputKind::Insert,
+                Some(7),
+            )
+            .unwrap();
+        let preview = document.text.as_ptr();
+        let preview_index = std::sync::Arc::as_ptr(&document.line_index);
+        document
+            .native_edit(
+                Some(Edit::replace(0..3, "候補")),
+                Selection::caret(6),
+                NativeInputKind::Insert,
+                Some(7),
+            )
+            .unwrap();
+        assert_eq!(preview, document.text.as_ptr());
+        assert_eq!(preview_index, std::sync::Arc::as_ptr(&document.line_index));
+        assert_eq!(document.recovery().text, source);
+        assert!(document.cancel_composition());
+        assert!(std::sync::Arc::ptr_eq(&text, &document.text));
+        assert!(std::sync::Arc::ptr_eq(&index, &document.line_index));
+        assert_eq!(
+            projection.text().as_ptr(),
+            document.projection().text().as_ptr()
+        );
+        assert!(!document.can_undo());
+        assert_eq!(document.text(), source);
+    }
 
     #[test]
     fn cloned_typing_groups_share_payloads_but_have_independent_history() {

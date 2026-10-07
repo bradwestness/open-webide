@@ -216,7 +216,7 @@ mod tests {
     fn long_row_coordinates_survive_edits_history_composition_and_folds() {
         use super::super::{Document, Edit, FoldCommand, FoldRange, NativeInputKind};
         fn verify(document: &Document) {
-            assert_eq!(document.line_index, LineIndex::new(document.text()));
+            assert_eq!(*document.line_index, LineIndex::new(document.text()));
             let projection = document.projection();
             for byte in document
                 .text()
@@ -295,7 +295,7 @@ mod tests {
     fn transactions_grouped_history_and_composition_keep_the_index_exact() {
         use super::super::{Document, Edit};
         fn verify(document: &Document) {
-            assert_eq!(document.line_index, LineIndex::new(document.text()));
+            assert_eq!(*document.line_index, LineIndex::new(document.text()));
             for offset in document
                 .text()
                 .char_indices()
