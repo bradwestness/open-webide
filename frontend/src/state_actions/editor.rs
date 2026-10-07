@@ -369,6 +369,14 @@ impl EditorActions {
                 })
             })
     }
+    /// Cold paint waits for the current source geometry instead of shaping the
+    /// same long row a second time while its height/width probe is still active.
+    pub fn row_geometry_is_pending(self) -> bool {
+        let revision = self.view_revision();
+        self.workspace.editor_row_preparation.with(|preparation| {
+            preparation.is_some_and(|preparation| preparation.revision == revision)
+        }) && self.measured_rows().is_none()
+    }
     pub fn report_row_preparation(self, ticket: u64, completed: usize) {
         if !self.row_preparation_current(ticket) {
             return;

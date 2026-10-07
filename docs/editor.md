@@ -430,8 +430,10 @@ original visual-row/tab origins, logical heights and global native offsets.
 
 Full-paragraph measurement remains the fallback for invalid geometry, oversized
 cluster slices, bidi paragraphs or reshaping differences. Cold height measurement
-supplies wrapped paint with these anchors while they
+supplies horizontal and wrapped paint with these anchors while they
 remain in the bounded cache, avoiding a second complete-row shaping pass.
+Ordinary cold horizontal paint waits for the active geometry probe while native
+input stays visible; explicit caret/movement probes can still reconcile source.
 Equivalent syntax results preserve proven geometry for identical styled rows;
 font loading advances independent font provenance even if computed font text is
 unchanged.

@@ -861,7 +861,14 @@ async fn primary_pointer_units_and_drag_use_source_in_both_modes() {
             assert_eq!(actions.source(), source);
             frame().await;
             assert!(
-                editorPrimaryGesture(&textarea, 1, 2, 1, false, "mousedown").default_prevented()
+                editorPrimaryGesture(&textarea, 1, 2, 1, false, "mousedown").default_prevented(),
+                "source pointer not ready in {mode:?}, wrap={wrap}; class={:?}, preparing={:?}",
+                mounted.element(".editor-code").class_name(),
+                mounted
+                    .state
+                    .workspace
+                    .editor_row_preparation
+                    .get_untracked(),
             );
             assert_eq!(actions.selection(source), Some(Selection::caret(2)));
             assert!(
@@ -3512,7 +3519,20 @@ export async function editorConfigFolder() {
     return {root, name, handle};
 }
 export function editorConfigHandle(folder) { return folder.handle; }
-export async function editorConfigCleanup(folder) { await folder.root.removeEntry(folder.name, {recursive:true}); }
+export async function editorConfigCleanup(folder) {
+    // Successful writes can precede a background reader releasing its OPFS lock.
+    // Yield browser tasks during cleanup; permission and other failures stay errors.
+    const deadline = performance.now() + 3000;
+    for (;;) {
+        try {
+            await folder.root.removeEntry(folder.name, {recursive:true});
+            return;
+        } catch (error) {
+            if (error.name !== 'NoModificationAllowedError' || performance.now() >= deadline) throw error;
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+    }
+}
 "#)]
 extern "C" {
     fn editorWheel(
@@ -10015,6 +10035,26 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
         );
         let original = source.clone();
         let normalized: Vec<_> = source.replace("\r\n", "\n").encode_utf16().collect();
+        let initial_source = js_sys::Function::new_no_args(
+            r#"
+            const state = {cold: 0, paint: 0};
+            const old = Range.prototype.getClientRects;
+            Range.prototype.getClientRects = function(...args) {
+                const node = this.startContainer;
+                const element = node.nodeType === 1 ? node : node.parentElement;
+                const row = element?.closest('.editor-row-measure .editor-source-line');
+                if (row) {
+                    const kind = row.closest('.editor-height-measure') ? 'cold' : 'paint';
+                    state[kind] = Math.max(state[kind], row.textContent.length);
+                }
+                return old.apply(this, args);
+            };
+            state.restore = () => { Range.prototype.getClientRects = old; };
+            return state;
+        "#,
+        )
+        .call0(&wasm_bindgen::JsValue::NULL)
+        .unwrap();
         let mounted = mount_test(move |state| {
             state.seed_project();
             state
@@ -10064,6 +10104,28 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
             .await;
             settle().await;
         }
+        let measured = |kind: &str| {
+            js_sys::Reflect::get(&initial_source, &kind.into())
+                .unwrap()
+                .as_f64()
+                .unwrap()
+        };
+        let cold = measured("cold");
+        let paint = measured("paint");
+        js_sys::Reflect::get(&initial_source, &"restore".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap()
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap();
+        assert!(
+            cold > 65_536.0,
+            "cold horizontal probes retain exact anchors"
+        );
+        assert!(
+            paint > 0.0 && paint <= 65_536.0,
+            "initial horizontal paint must reuse cold anchors: {paint}"
+        );
         // Audit the source extent after initial geometry and native-window
         // installation settle, rather than a transient cold native extent.
         let width = openwebide_frontend::viewport::editor_scroll(&input).scroll_width();

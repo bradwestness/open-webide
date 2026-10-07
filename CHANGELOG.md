@@ -195,6 +195,8 @@ for what's still ahead.
 
 ### Changed
 
+- Reuse cold measurement anchors for horizontal long-line paint as well as wrapped paint. Keep native input visible while the first geometry probe runs, and avoid a second complete-row shaping pass for the initial styled viewport.
+
 - Bound retained editor typing contexts to 16 KiB through the shared Rust projection and typing facade. Preserve document/native offsets, partial rows, Unicode/CRLF, distant fold ownership and edits across larger forward/backward selections in both workspace modes. The textarea still lays out the full projected source; bounded native layout remains roadmap work.
 
 - Preserve Edit viewport offsets while folding and unfolding. Refocus the native input without scrolling its distant caret into view, and keep syntax paint aligned in both modes.

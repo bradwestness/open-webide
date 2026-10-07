@@ -1358,6 +1358,9 @@ fn HighlightOverlay(
             })
             .collect::<Vec<_>>()
     });
+    let geometry_pending = Memo::new(move |_| {
+        !fragment_windows.with(Vec::is_empty) && actions.row_geometry_is_pending()
+    });
     let rendered = RwSignal::new(String::new());
     let rendered_scope = RwSignal::new(0_u64);
     let request = StoredValue::new(None::<i32>);
@@ -1399,6 +1402,11 @@ fn HighlightOverlay(
         };
         let input = textarea_ref.get_untracked();
         let windows = fragment_windows.get_untracked();
+        // Native cold input remains visible. Explicit motion/caret probes can
+        // still flush immediately; ordinary paint reuses the pending probe.
+        if !immediate && !windows.is_empty() && geometry_pending.get_untracked() {
+            return;
+        }
         let mut cached = None;
         let mut cache_window = None;
         if !windows.is_empty()
@@ -1566,7 +1574,9 @@ fn HighlightOverlay(
         // Resolve the projection before scheduling paint, so reading it in the
         // frame callback cannot invalidate and queue a second paint afterward.
         visible.with(|_| ());
-        fragment_windows.with(|_| ());
+        if !fragment_windows.with(Vec::is_empty) {
+            geometry_pending.get();
+        }
         ready.set(false);
         if presented_scope.get_value() != presentation_scope.get() {
             presentation.set(false);

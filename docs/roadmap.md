@@ -74,6 +74,7 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
 - **Syntax-aware editing:** shared parsers, source-bound preparation and the
   Rust/WASM worker are in place; see [syntax behavior](editor.md#syntax-and-language-behavior).
   Pending worker paint now borrows source rows and retains scoped styled frames.
+  Cold horizontal and wrapped paint reuse the height/width probe’s source anchors.
   Finish terminal lexical fallback, uncached initial/cold shaping, bidirectional
   visual-run windows, fine long-row paint and incremental measurement. Language formatting remains in
   Code intelligence.

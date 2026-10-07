@@ -187,11 +187,12 @@ fn sample_geometry(
 }
 
 /// Reuse the styled logical row already laid out by the cold height probe.
-pub(super) fn wrapped_geometry(
+pub(super) fn preparation_geometry(
     row: &web_sys::Element,
     body: &str,
     index: VisualLineIndex,
     bounds: &web_sys::DomRect,
+    wrapped: bool,
 ) -> Option<openwebide_core::editor::MeasuredRowGeometry> {
     if !index.source_paint_eligible() {
         return None;
@@ -201,7 +202,7 @@ pub(super) fn wrapped_geometry(
         return None;
     }
     let mut glyphs = Glyphs::new(row, body, Some(index))?;
-    sample_geometry(&mut glyphs, bounds, false)
+    sample_geometry(&mut glyphs, bounds, !wrapped)
 }
 
 /// Retain the logical row's exact height while copying only its measured visual

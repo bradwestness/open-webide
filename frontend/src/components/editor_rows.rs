@@ -191,12 +191,13 @@ pub(super) async fn measure_batches(
                 .strip_suffix("\r\n")
                 .or_else(|| raw.strip_suffix('\n'))
                 .unwrap_or(raw);
-            if input
+            let wrapped = input
                 .parent_element()
-                .is_some_and(|parent| parent.class_list().contains("editor-word-wrap"))
-                && let Some(index) = projection.visual_line_index(logical)
-                && let Some(measured) =
-                    super::editor_geometry::wrapped_geometry(&row, body, index, &bounds)
+                .is_some_and(|parent| parent.class_list().contains("editor-word-wrap"));
+            if let Some(index) = projection.visual_line_index(logical)
+                && let Some(measured) = super::editor_geometry::preparation_geometry(
+                    &row, body, index, &bounds, wrapped,
+                )
                 && current()
             {
                 geometry(logical, measured);
