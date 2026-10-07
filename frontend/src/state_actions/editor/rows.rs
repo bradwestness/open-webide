@@ -13,13 +13,15 @@ use std::{
 
 struct PaintRow<'a> {
     tokens: &'a [Token],
+    plain: Option<&'a str>,
     guide: usize,
     normalize_cr: bool,
     ending: bool,
 }
 impl PartialEq for PaintRow<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.guide == other.guide
+        self.plain == other.plain
+            && self.guide == other.guide
             && self.ending == other.ending
             && self.tokens.len() == other.tokens.len()
             && self
@@ -46,6 +48,7 @@ impl PartialEq for PaintRow<'_> {
 impl Eq for PaintRow<'_> {}
 impl Hash for PaintRow<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.plain.hash(state);
         self.guide.hash(state);
         self.ending.hash(state);
         self.tokens.len().hash(state);
@@ -62,8 +65,18 @@ impl Hash for PaintRow<'_> {
 }
 fn paint_row(paint: &EditorRowPaint, index: usize) -> Option<PaintRow<'_>> {
     let source = paint.projection.lines().get(index)?.source_line;
+    let tokens = match paint.tokens.get(source) {
+        Some(tokens) => tokens.as_slice(),
+        None if !paint.prepared_source => &[],
+        None => return None,
+    };
     Some(PaintRow {
-        tokens: paint.tokens.get(source)?,
+        tokens,
+        plain: if !paint.prepared_source && paint.tokens.get(source).is_none() {
+            Some(paint.projection.line_body(index)?)
+        } else {
+            None
+        },
         guide: paint.guides.get(source).copied().unwrap_or(0),
         normalize_cr: paint.prepared_source && source + 1 < paint.tokens.len(),
         ending: index + 1 < paint.projection.lines().len(),

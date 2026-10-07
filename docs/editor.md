@@ -333,6 +333,17 @@ retain the trusted insertion shortcut. Initial cold layout and coarse/touch devi
 retain full native input until source caret, extents and touch selection are ready;
 physical Chrome/Edge PWA input-method verification remains pending.
 
+While worker syntax is pending, cold views borrow plain row bodies from the existing
+projection instead of normalizing and tokenizing another complete file on the UI
+thread. Requested rows and source slices feed the same paint and measurement paths.
+An existing styled frame stays visible within its document/read/account scope;
+replacement batch measurements wait for syntax, and source pointer controls remain
+disabled while its paint is stale. Forced caret probes can still reconcile current
+source. Completed or failed analysis retains the contextual lexical fallback, which
+can still process the whole file. Syntax queries reuse the published worker scope
+without allocating another source snapshot for comparison. Cold source geometry,
+long-row shaping and touch input remain unfinished.
+
 Frontend app and browser-test links reserve a 2 MiB WASM stack for nested Leptos
 views. The editor erases its outer view type to reduce return-value copying;
 source buffers and admission limits remain independent of this stack allocation.

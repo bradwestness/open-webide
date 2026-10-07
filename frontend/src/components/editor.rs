@@ -1,8 +1,5 @@
 use leptos::prelude::*;
-use openwebide_core::{
-    FileDiff, FileKind, diff_side_by_side_detailed,
-    highlight::{Language, TokenKind, highlight_lines, language_from_path},
-};
+use openwebide_core::{FileDiff, FileKind, diff_side_by_side_detailed, highlight::TokenKind};
 use web_sys::wasm_bindgen::JsCast;
 
 use crate::components::chat_pane::render_markdown;
@@ -831,13 +828,15 @@ fn paint_text(text: &str, show_whitespace: bool) -> String {
 struct PaintRows<'a> {
     indices: &'a [usize],
     projection: Option<&'a openwebide_core::editor::FoldProjection>,
+    source: Option<&'a openwebide_core::editor::FoldProjection>,
     source_slices: &'a [crate::state_actions::editor::EditorRowSourceSlice],
 }
 impl<'a> PaintRows<'a> {
-    fn measured(indices: &'a [usize]) -> Self {
+    fn measured(indices: &'a [usize], source: &'a openwebide_core::editor::FoldProjection) -> Self {
         Self {
             indices,
             projection: None,
+            source: Some(source),
             source_slices: &[],
         }
     }
@@ -873,8 +872,21 @@ fn highlight_html(
     }
     let mut html = String::new();
     for &idx in rows.indices {
-        let Some(line) = lines.get(idx) else {
-            continue;
+        let plain = if !prepared_source && lines.get(idx).is_none() {
+            rows.source.and_then(|source| {
+                let row = source
+                    .lines()
+                    .binary_search_by_key(&idx, |line| line.source_line)
+                    .ok()?;
+                source.line_body(row)
+            })
+        } else {
+            None
+        };
+        let line = match lines.get(idx) {
+            Some(line) => line.as_slice(),
+            None if plain.is_some() => &[],
+            None => continue,
         };
         html.push_str(&format!(
             "<span class=\"editor-source-line\" data-line=\"{}\" style=\"--editor-indent-columns:{};--editor-indent-step:{}\">",
@@ -904,6 +916,19 @@ fn highlight_html(
         let mut source_offset = 0;
         #[cfg(feature = "test-support")]
         let mut painted_bytes = 0;
+        if let Some(text) = plain {
+            let text = if let Some(slice) = source_slice {
+                text.get(slice.bytes.start.min(text.len())..slice.bytes.end.min(text.len()))
+                    .unwrap_or("")
+            } else {
+                text
+            };
+            html.push_str(&paint_text(text, show_whitespace));
+            #[cfg(feature = "test-support")]
+            {
+                painted_bytes += text.len();
+            }
+        }
         for (position, tok) in line.iter().enumerate() {
             let text = if prepared_source && idx + 1 < lines.len() && position + 1 == line.len() {
                 tok.text.strip_suffix('\r').unwrap_or(&tok.text)
@@ -1132,24 +1157,21 @@ fn HighlightOverlay(
     let tokens = Memo::new(move |_| {
         content.track();
         actions.preparation_revision();
-        let language = open_file
-            .with(|path| path.as_deref().map(language_from_path))
-            .unwrap_or(Language::Plain);
-        if let Some(tokens) = actions.syntax_highlights() {
-            (true, tokens)
-        } else {
-            (
-                false,
-                std::sync::Arc::new(
-                    content.with(|source| highlight_lines(&source.replace("\r\n", "\n"), language)),
-                ),
-            )
-        }
+        actions.syntax_paint()
     });
     let guides = Memo::new(move |_| {
         std::sync::Arc::<[usize]>::from(content.with(|source| {
             openwebide_core::editor::indent_guide_columns(source, indentation.get())
         }))
+    });
+    let retain_style = Callback::new(move |()| {
+        actions.syntax_is_pending()
+            && painted_syntax.with_value(|syntax| {
+                syntax
+                    .as_ref()
+                    .is_some_and(|syntax| syntax.0 || !syntax.1.is_empty())
+            })
+            && presented_scope.get_value() == presentation_scope.get_untracked()
     });
     let fragment_cache =
         StoredValue::new(crate::state_actions::editor::EditorFragmentCache::default());
@@ -1160,6 +1182,13 @@ fn HighlightOverlay(
         actions.view_revision();
         actions.preferences();
         let prepared_tokens = tokens.get();
+        if retain_style.run(()) {
+            batch_key.set_value(None);
+            if let Some(ticket) = batch_ticket.get_value() {
+                actions.end_row_preparation(ticket);
+            }
+            return;
+        }
         let whitespace = show_whitespace.get();
         let tab = indentation.get();
         let Some(input) = textarea_ref.get() else {
@@ -1276,7 +1305,7 @@ fn HighlightOverlay(
                         &prepared_tokens.1,
                         prepared_tokens.0,
                         &guides,
-                        PaintRows::measured(rows),
+                        PaintRows::measured(rows, &projection),
                         tab,
                         whitespace,
                         suffix,
@@ -1343,6 +1372,9 @@ fn HighlightOverlay(
         {
             return;
         }
+        if !immediate && retain_style.run(()) {
+            return;
+        }
         let render = |source_slices: &[crate::state_actions::editor::EditorRowSourceSlice]| {
             tokens.with_untracked(|(prepared, tokens)| {
                 guides.with_untracked(|guides| {
@@ -1353,6 +1385,7 @@ fn HighlightOverlay(
                         PaintRows {
                             indices: &visible.get_untracked(),
                             projection: actions.projection().as_ref(),
+                            source: actions.projection().as_ref(),
                             source_slices,
                         },
                         indentation.get_untracked(),
@@ -1464,13 +1497,16 @@ fn HighlightOverlay(
     paint_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
     let paint_ticket = paint_epoch.get_untracked();
     let render_probe = Callback::new(move |(rows, suffix): (Vec<usize>, bool)| {
+        let Some(projection) = actions.projection() else {
+            return String::new();
+        };
         tokens.with_untracked(|(prepared, tokens)| {
             guides.with_untracked(|guides| {
                 highlight_html(
                     tokens,
                     *prepared,
                     guides,
-                    PaintRows::measured(&rows),
+                    PaintRows::measured(&rows, &projection),
                     indentation.get_untracked(),
                     show_whitespace.get_untracked(),
                     suffix,

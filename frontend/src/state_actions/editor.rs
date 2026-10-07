@@ -881,13 +881,12 @@ impl EditorActions {
                     openwebide_core::editor::SyntaxStatus::Cancelled,
                 ))
             } else {
-                let scope = self.syntax_scope()?;
                 self.workspace
                     .editor_preparation
                     .with_untracked(|prepared| {
                         prepared
                             .as_ref()
-                            .filter(|prepared| prepared.scope == scope)
+                            .filter(|prepared| self.syntax_scope_current(&prepared.scope))
                             .map(|prepared| {
                                 result_for(prepared.analysis.as_deref(), prepared.status)
                             })

@@ -349,6 +349,19 @@ impl FoldProjection {
     pub fn lines(&self) -> &[VisibleLine] {
         &self.lines
     }
+    /// Borrow a visible logical row body without allocating normalized source.
+    pub fn line_body(&self, row: usize) -> Option<&str> {
+        let line = self.lines.get(row)?;
+        let text = self
+            .text
+            .get(line.visible_start..line.visible_start + line.source.len())?;
+        Some(
+            text.strip_suffix("\r\n")
+                .or_else(|| text.strip_suffix('\n'))
+                .unwrap_or(text),
+        )
+    }
+
     pub fn has_uniform_rows(&self) -> bool {
         self.uniform_rows
     }
@@ -667,6 +680,37 @@ fn word_delete_len(chars: impl Iterator<Item = char>) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn visible_row_bodies_borrow_unicode_source_across_folds_and_line_endings() {
+        let source = "head\r\n文🦀\r\n\r\nlast\rstandalone\n";
+        let mut document = super::super::Document::new(source);
+        let projection = document.projection();
+        assert_eq!(
+            (0..projection.lines().len())
+                .map(|row| projection.line_body(row).unwrap())
+                .collect::<Vec<_>>(),
+            ["head", "文🦀", "", "last\rstandalone", ""]
+        );
+        assert_eq!(projection.line_body(usize::MAX), None);
+        document.set_fold_ranges(vec![super::super::FoldRange {
+            start_line: 0,
+            end_line: 2,
+        }]);
+        document.fold_command(super::super::FoldCommand::Toggle(0));
+        let folded = document.projection();
+        assert_eq!(
+            (0..folded.lines().len())
+                .map(|row| folded.line_body(row).unwrap())
+                .collect::<Vec<_>>(),
+            ["head", "last\rstandalone", ""]
+        );
+        let body = folded.line_body(1).unwrap();
+        assert_eq!(
+            body.as_ptr(),
+            folded.text()[folded.lines()[1].visible_start..].as_ptr()
+        );
+    }
 
     #[test]
     fn windowed_replacements_keep_complete_source_selections_and_line_endings() {

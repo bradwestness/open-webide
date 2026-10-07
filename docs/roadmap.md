@@ -73,8 +73,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   rewriting unrelated text.
 - **Syntax-aware editing:** shared parsers, source-bound preparation and the
   Rust/WASM worker are in place; see [syntax behavior](editor.md#syntax-and-language-behavior).
-  Finish uncached initial/cold shaping, bidirectional visual-run windows, fine
-  long-row paint and incremental measurement. Language formatting remains in
+  Pending worker paint now borrows source rows and retains scoped styled frames.
+  Finish terminal lexical fallback, uncached initial/cold shaping, bidirectional
+  visual-run windows, fine long-row paint and incremental measurement. Language formatting remains in
   Code intelligence.
 - **Bounded native input:** prepared larger fine-pointer editors bind scoped
   surrounding text to the textarea, with full-source selections and source-owned

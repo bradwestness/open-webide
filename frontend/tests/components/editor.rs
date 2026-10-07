@@ -7653,6 +7653,146 @@ impl DeferredSyntax {
 }
 
 #[wasm_bindgen_test]
+async fn pending_worker_paints_requested_source_rows_without_full_file_lexical_tokens_in_both_modes()
+ {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let source = "fn hello() { call(\"文🦀\"); }\r\n".repeat(3000);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("cold-paint.rs".into()));
+            state.workspace.content.set(source);
+            EditorActions::new(state.workspace).install_syntax_transport(installed);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:300px">{editor_view(state)}</div> }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        wait_until("pending source rows visible", || {
+            !transport.pending.borrow().is_empty()
+                && mounted
+                    .root
+                    .query_selector(".editor-source-line[data-line='1']")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
+        assert!(actions.syntax_is_pending());
+        let (prepared, tokens) = actions.syntax_paint();
+        assert!(!prepared);
+        assert!(
+            tokens.is_empty(),
+            "pending paint must not tokenize the whole file on the UI thread"
+        );
+        assert_eq!(
+            mounted
+                .element(".editor-source-line[data-line='1']")
+                .text_content()
+                .unwrap(),
+            "fn hello() { call(\"文🦀\"); }\n"
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector_all(".editor-source-line")
+                .unwrap()
+                .length()
+                < 100
+        );
+        transport.respond(true);
+        wait_until("prepared source styles", || {
+            // Startup configuration can supersede the first scoped request.
+            if !transport.pending.borrow().is_empty() {
+                transport.respond(true);
+            }
+            !actions.syntax_is_pending()
+                && mounted
+                    .root
+                    .query_selector(".editor-source-line .tok-keyword")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
+        // This large response can exceed the analysis-record transfer limit.
+        // Both prepared syntax and the terminal lexical fallback must restore styles.
+        assert!(!actions.syntax_paint().1.is_empty());
+        wait_until("styled source measurements ready", || {
+            if !transport.pending.borrow().is_empty() {
+                transport.respond(true);
+            }
+            !actions.syntax_is_pending()
+                && mounted
+                    .state
+                    .workspace
+                    .editor_rows
+                    .get_untracked()
+                    .is_some()
+                && mounted
+                    .state
+                    .workspace
+                    .editor_row_preparation
+                    .get_untracked()
+                    .is_none()
+        })
+        .await;
+        let styled = mounted
+            .root
+            .query_selector_all(".editor-source-line .tok-keyword")
+            .unwrap()
+            .length();
+        actions
+            .command(
+                openwebide_frontend::state_actions::editor::EditorCommand::Newline,
+                openwebide_core::editor::Selection::caret(0),
+                actions.rules().indentation,
+            )
+            .unwrap();
+        wait_until("changed source pending", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        for _ in 0..3 {
+            frame().await;
+        }
+        assert!(actions.syntax_is_pending());
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_row_preparation
+                .get_untracked()
+                .is_none(),
+            "retained styled source must not start a neutral replacement batch"
+        );
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all(".editor-source-line .tok-keyword")
+                .unwrap()
+                .length(),
+            styled
+        );
+        wait_until("changed styled source restored", || {
+            if !transport.pending.borrow().is_empty() {
+                transport.respond(true);
+            }
+            !actions.syntax_is_pending()
+                && mounted
+                    .root
+                    .query_selector(".editor-source-line[data-line='2'] .tok-keyword")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
+    }
+}
+
+#[wasm_bindgen_test]
 async fn entering_newlines_keeps_fold_gutter_fixed_while_syntax_is_pending_in_both_modes() {
     use openwebide_core::WorkspaceMode;
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -7714,6 +7854,12 @@ async fn entering_newlines_keeps_fold_gutter_fixed_while_syntax_is_pending_in_bo
         let left = input.get_bounding_client_rect().left();
         assert!(code.class_list().contains("highlight-ready"));
         let presentation = editorWatchPresentation(&code);
+        let styled_count = mounted
+            .root
+            .query_selector_all(".editor-source-line .tok-keyword")
+            .unwrap()
+            .length();
+        assert!(styled_count > 0);
         input.focus().unwrap();
         input.set_selection_range(12, 12).unwrap();
         assert!(editor_key(&input, "Enter", false, false).default_prevented());
@@ -7745,6 +7891,15 @@ async fn entering_newlines_keeps_fold_gutter_fixed_while_syntax_is_pending_in_bo
         );
         assert!(code.class_list().contains("highlight-ready"));
         assert_eq!(editorPresentationLosses(&presentation), 0);
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all(".editor-source-line .tok-keyword")
+                .unwrap()
+                .length(),
+            styled_count,
+            "pending source must retain its styled frame"
+        );
         transport.respond(true);
         wait_until("updated folding controls", || {
             actions.syntax_structure(|| true).is_some()

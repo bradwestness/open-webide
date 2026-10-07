@@ -16,7 +16,7 @@ impl EditorActions {
             tab_width: self.rules_untracked().indentation.tab_width(),
         })
     }
-    fn syntax_scope_current(self, scope: &EditorSyntaxScope) -> bool {
+    pub(super) fn syntax_scope_current(self, scope: &EditorSyntaxScope) -> bool {
         !self.workspace.content.is_disposed()
             && self.key().as_ref() == Some(&scope.key)
             && self.workspace.pending_epoch.get_untracked() == scope.epoch
@@ -28,6 +28,50 @@ impl EditorActions {
                 .workspace
                 .content
                 .with_untracked(|source| source.as_str() == scope.source.as_ref())
+    }
+
+    /// Pending worker results do not require a second full-file lexical pass.
+    pub fn syntax_is_pending(self) -> bool {
+        self.workspace.editor_worker_active.get_untracked()
+            && self.key().is_some()
+            && self
+                .workspace
+                .editor_preparation
+                .with_untracked(|prepared| {
+                    prepared
+                        .as_ref()
+                        .is_none_or(|prepared| !self.syntax_scope_current(&prepared.scope))
+                })
+    }
+
+    /// Empty pending tokens borrow row bodies from the immutable projection.
+    /// Terminal analysis fallback retains the existing contextual lexer.
+    pub fn syntax_paint(
+        self,
+    ) -> (
+        bool,
+        std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+    ) {
+        if let Some(tokens) = self.syntax_highlights() {
+            (true, tokens)
+        } else if self.syntax_is_pending() {
+            (false, std::sync::Arc::new(Vec::new()))
+        } else {
+            let language = self
+                .key()
+                .map_or(openwebide_core::highlight::Language::Plain, |key| {
+                    openwebide_core::highlight::language_from_path(&key.1)
+                });
+            (
+                false,
+                std::sync::Arc::new(self.workspace.content.with_untracked(|source| {
+                    openwebide_core::highlight::highlight_lines(
+                        &source.replace("\r\n", "\n"),
+                        language,
+                    )
+                })),
+            )
+        }
     }
 
     pub fn install_syntax_worker(self) {

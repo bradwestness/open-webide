@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Skip duplicate full-file lexical highlighting while editor worker results are pending. Borrow projected row bodies for cold paint, retain existing styled frames and defer their replacement measurements until syntax is ready in both workspace modes. Completed or failed analysis keeps the contextual lexical fallback.
+
 - Avoid copying complete editor files for source-ownership checks, cursor counts, Select All and navigation queries. Map native window/fold/source selections through the shared facade without cloning source in selection, typing, paste or composition handlers. Ordinary typing keys skip the selection dispatcher’s file snapshot; edit and stale-context behavior stays shared across workspace modes.
 
 - Reuse indexed admission counts for unchanged editor rows during typing, commands, multi-cursor edits and IME previews. Scan inserted text and joining rows while preserving byte/line limits, CRLF joins, failure ordering and history; non-admitted source retains full validation.
