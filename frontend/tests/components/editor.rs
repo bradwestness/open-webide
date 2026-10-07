@@ -3780,6 +3780,23 @@ async fn visible_folding_preserves_source_and_replays_input_in_both_modes() {
         })
         .await;
         textarea.set_selection_range(12, 12).unwrap();
+        // Input-only replay maps local Unicode/LF offsets directly to source
+        // edits without normalizing unrelated source or dropping the hidden body.
+        textarea.set_value("fn main() {\n🦀\n// after\n");
+        textarea.set_selection_range(15, 15).unwrap();
+        textarea
+            .dispatch_event(&web_sys::InputEvent::new_with_event_init_dict("input", &init).unwrap())
+            .unwrap();
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            source.replace("// after", "🦀\r\n// after")
+        );
+        assert_eq!(textarea.selection_start().unwrap(), Some(15));
+        editor_key(&textarea, "z", true, false);
+        settle().await;
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        textarea.set_selection_range(12, 12).unwrap();
         let before = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
         textarea.dispatch_event(&before).unwrap();
         assert!(!before.default_prevented());

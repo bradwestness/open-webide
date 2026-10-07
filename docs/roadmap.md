@@ -155,7 +155,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   full projected source. Native typing declarations now retain at most 16 KiB of
   surrounding projected text, with local/native/document coordinate contracts,
   partial logical rows and full selection edits. Move native layout/value to this
-  context next. Document scrolling now has an independent viewport with shared
+  context next. Native input fallback now maps projected deltas directly to raw
+  source edits without full-source normalization; shared native replay still
+  constructs a complete candidate for IME and multiple cursors. Document scrolling
+  now has an independent viewport with shared
   wheel/navigation/restoration behavior in both modes; full native layout still
   supplies extents. Separate pointer selections and caret paint from the textarea
   before validating IME and clipboard on devices. Bundled Monaspace families and

@@ -175,7 +175,7 @@ fn changes(
         })
         .collect())
 }
-fn native_inserted_text(source: &str, text: &str) -> String {
+pub(super) fn native_inserted_text(source: &str, text: &str) -> String {
     let mut inserted = text.replace("\r\n", "\n").replace('\r', "\n");
     if inserted.contains('\n')
         && source

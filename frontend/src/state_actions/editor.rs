@@ -1022,14 +1022,11 @@ impl EditorActions {
         timestamp: f64,
     ) -> Result<(), EditError> {
         let source = self.workspace.content.get_untracked();
-        let Some(projection) = self
-            .projection()
-            .filter(openwebide_core::editor::FoldProjection::is_folded)
-        else {
+        let Some(projection) = self.projection() else {
             return self.native_input(value, selection, input_type, timestamp);
         };
-        let (value, selection) = projection
-            .replay_input(
+        let (edit, selection) = projection
+            .replay_edit(
                 &source,
                 &value,
                 selection,
@@ -1037,7 +1034,19 @@ impl EditorActions {
                 self.selection(&source).unwrap_or_default(),
             )
             .map_err(|_| EditError::InvalidRange)?;
-        self.native_input(value, selection, input_type, timestamp)
+        if edit.is_none() && input_type == "insertFromComposition" && !self.is_composing() {
+            return Ok(());
+        }
+        self.native_input_prepared(input_type, timestamp, |document| {
+            if document.text() != source {
+                return Err(EditError::UnsupportedNativeInput);
+            }
+            let mut candidate = source;
+            if let Some(edit) = edit {
+                candidate.replace_range(edit.range, &edit.text);
+            }
+            Ok((candidate, selection))
+        })
     }
 
     fn native_history_group(
@@ -1199,16 +1208,42 @@ impl EditorActions {
         input_type: &str,
         timestamp: f64,
     ) -> Result<(), EditError> {
-        let Some(key) = self.key() else {
-            return Ok(());
-        };
-        let composing = self.is_composing();
         if input_type == "insertFromComposition"
-            && !composing
+            && !self.is_composing()
             && text == self.source().replace("\r\n", "\n").replace('\r', "\n")
         {
             return Ok(());
         }
+        self.native_input_prepared(input_type, timestamp, |document| {
+            let edit = document.native_replacement(&text);
+            let mut candidate = document.text().to_string();
+            if let Some(edit) = edit {
+                candidate.replace_range(edit.range, &edit.text);
+            }
+            let after = Selection {
+                anchor: openwebide_core::editor::textarea_to_byte(
+                    &candidate,
+                    openwebide_core::editor::byte_to_utf16(&text, selection.anchor)?,
+                ),
+                head: openwebide_core::editor::textarea_to_byte(
+                    &candidate,
+                    openwebide_core::editor::byte_to_utf16(&text, selection.head)?,
+                ),
+            };
+            Ok((candidate, after))
+        })
+    }
+
+    fn native_input_prepared(
+        self,
+        input_type: &str,
+        timestamp: f64,
+        prepare: impl FnOnce(&Document) -> Result<(String, Selection), EditError>,
+    ) -> Result<(), EditError> {
+        let Some(key) = self.key() else {
+            return Ok(());
+        };
+        let composing = self.is_composing();
         if matches!(
             input_type,
             "insertCompositionText" | "insertFromComposition"
@@ -1233,21 +1268,7 @@ impl EditorActions {
             .try_update(|documents| {
                 let document = self.document(documents, key.clone());
                 let outcome = (|| {
-                    let edit = document.native_replacement(&text);
-                    let mut candidate = document.text().to_string();
-                    if let Some(edit) = &edit {
-                        candidate.replace_range(edit.range.clone(), &edit.text);
-                    }
-                    let after = Selection {
-                        anchor: openwebide_core::editor::textarea_to_byte(
-                            &candidate,
-                            openwebide_core::editor::byte_to_utf16(&text, selection.anchor)?,
-                        ),
-                        head: openwebide_core::editor::textarea_to_byte(
-                            &candidate,
-                            openwebide_core::editor::byte_to_utf16(&text, selection.head)?,
-                        ),
-                    };
+                    let (candidate, after) = prepare(document)?;
                     document.native_input(
                         &candidate,
                         after,

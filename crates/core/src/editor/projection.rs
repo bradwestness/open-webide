@@ -430,75 +430,87 @@ impl FoldProjection {
         })
     }
 
-    /// Replay an input-only event against the full document when the browser did
-    /// not emit a usable beforeinput event. Return normalized textarea text/offsets.
-    pub fn replay_input(
+    /// Map a projected native value to one source replacement. Unchanged source
+    /// stays borrowed; only the inserted text is allocated. Selection offsets
+    /// address the resulting source, preserving its CRLF endings.
+    pub fn replay_edit(
         &self,
         source: &str,
         value: &str,
         selection: Selection,
         input_type: &str,
         before_selection: Selection,
-    ) -> Result<(String, Selection), ProjectionError> {
+    ) -> Result<(Option<super::Edit>, Selection), ProjectionError> {
         if source.len() != self.source_len {
             return Err(ProjectionError::InvalidOffset);
         }
-        let before = self.text.replace("\r\n", "\n").replace('\r', "\n");
-        let full = source.replace("\r\n", "\n").replace('\r', "\n");
+        let before = self.textarea_text();
         let map = |offset| {
-            let utf16 = super::byte_to_utf16(&before, offset)
-                .map_err(|_| ProjectionError::InvalidOffset)?;
-            let visible = super::textarea_to_byte(&self.text, utf16);
-            let original = self.source_offset(visible)?;
-            let utf16 = super::byte_to_textarea(source, original)
-                .map_err(|_| ProjectionError::InvalidOffset)?;
-            Ok::<_, ProjectionError>(super::utf16_to_byte(&full, utf16))
+            let utf16 =
+                super::byte_to_utf16(before, offset).map_err(|_| ProjectionError::InvalidOffset)?;
+            let source_offset = self.source_offset(self.textarea_to_byte(utf16))?;
+            if !source.is_char_boundary(source_offset) {
+                return Err(ProjectionError::InvalidOffset);
+            }
+            Ok(source_offset)
         };
-        let Some(change) = super::text_change(&before, value) else {
-            let selection = Selection {
-                anchor: map(selection.anchor)?,
-                head: map(selection.head)?,
-            };
-            return Ok((full, selection));
+        let Some(change) = super::text_change(before, value) else {
+            return Ok((
+                None,
+                Selection {
+                    anchor: map(selection.anchor)?,
+                    head: map(selection.head)?,
+                },
+            ));
         };
-        let raw_start = super::textarea_to_byte(
-            &self.text,
-            super::byte_to_utf16(&before, change.range.start)
+        let raw_start = self.textarea_to_byte(
+            super::byte_to_utf16(before, change.range.start)
                 .map_err(|_| ProjectionError::InvalidOffset)?,
         );
-        let raw_end = super::textarea_to_byte(
-            &self.text,
-            super::byte_to_utf16(&before, change.range.end)
+        let raw_end = self.textarea_to_byte(
+            super::byte_to_utf16(before, change.range.end)
                 .map_err(|_| ProjectionError::InvalidOffset)?,
         );
         let crosses =
             self.source_edit_range(raw_start..raw_end) == Err(ProjectionError::HiddenText);
         let mut range = map(change.range.start)?..map(change.range.end)?;
         let inserted = &value[change.range.start..change.new_end];
-        // Deleting the projected newline at a fold boundary means one native
-        // logical newline, never the hidden block between the visible rows.
+        // A caret deletion at a fold boundary consumes one logical newline,
+        // including both CRLF bytes, rather than the omitted block.
         if crosses && inserted.is_empty() && before_selection.range().is_empty() {
             if input_type == "deleteContentBackward" || input_type == "deleteWordBackward" {
                 let count = if input_type == "deleteWordBackward" {
-                    word_delete_len(full[..range.end].chars().rev())
+                    word_delete_len(source[..range.end].chars().rev())
+                } else if source[..range.end].ends_with("\r\n") {
+                    2
                 } else {
-                    full[..range.end]
+                    source[..range.end]
                         .chars()
                         .next_back()
                         .map_or(0, char::len_utf8)
                 };
                 range.start = range.end - count;
             } else if input_type == "deleteContentForward" || input_type == "deleteWordForward" {
-                let count = full[range.start..].chars().next().map_or(0, char::len_utf8);
+                let count = if source[range.start..].starts_with("\r\n") {
+                    2
+                } else {
+                    source[range.start..]
+                        .chars()
+                        .next()
+                        .map_or(0, char::len_utf8)
+                };
                 range.end = range.start + count;
             }
         }
+        let text = super::native::native_inserted_text(source, inserted);
         let endpoint = |position: usize| -> Result<usize, ProjectionError> {
             if position > value.len() || !value.is_char_boundary(position) {
                 return Err(ProjectionError::InvalidOffset);
             }
             if change.range.start <= position && position <= change.new_end {
-                return Ok(range.start + position - change.range.start);
+                let offset = super::byte_to_utf16(inserted, position - change.range.start)
+                    .map_err(|_| ProjectionError::InvalidOffset)?;
+                return Ok(range.start + super::textarea_to_byte(&text, offset));
             }
             let old = if position < change.range.start {
                 position
@@ -507,7 +519,7 @@ impl FoldProjection {
             };
             let original = map(old)?;
             Ok(if original >= range.end {
-                original - range.end + range.start + inserted.len()
+                original - range.end + range.start + text.len()
             } else {
                 original.min(range.start)
             })
@@ -516,9 +528,35 @@ impl FoldProjection {
             anchor: endpoint(selection.anchor)?,
             head: endpoint(selection.head)?,
         };
-        let mut result = full.clone();
-        result.replace_range(range, inserted);
-        Ok((result, mapped))
+        Ok((Some(super::Edit { range, text }), mapped))
+    }
+
+    /// Compatibility replay for callers requiring a complete normalized value.
+    pub fn replay_input(
+        &self,
+        source: &str,
+        value: &str,
+        selection: Selection,
+        input_type: &str,
+        before_selection: Selection,
+    ) -> Result<(String, Selection), ProjectionError> {
+        let (edit, selection) =
+            self.replay_edit(source, value, selection, input_type, before_selection)?;
+        let mut result = source.to_string();
+        if let Some(edit) = edit {
+            result.replace_range(edit.range, &edit.text);
+        }
+        let map = |offset| {
+            super::byte_to_textarea(&result, offset).map_err(|_| ProjectionError::InvalidOffset)
+        };
+        let anchor = map(selection.anchor)?;
+        let head = map(selection.head)?;
+        let normalized = result.replace("\r\n", "\n").replace('\r', "\n");
+        let selection = Selection {
+            anchor: super::utf16_to_byte(&normalized, anchor),
+            head: super::utf16_to_byte(&normalized, head),
+        };
+        Ok((normalized, selection))
     }
 
     /// A native replacement must not silently consume bytes omitted from the view.
@@ -727,6 +765,70 @@ mod tests {
         assert_eq!(result, expected);
         assert_eq!(selection, Selection::caret(at + '🦀'.len_utf8()));
         assert!(result.contains("hidden 文\nend\n"));
+    }
+
+    #[test]
+    fn bounded_replay_returns_only_inserted_source_and_preserves_native_selection() {
+        let source = format!(
+            "{}\r\nnext 😀\r\n{}",
+            "before".repeat(1000),
+            "after".repeat(1000)
+        );
+        let full = FoldProjection::new(&source, &FoldState::default());
+        let at = source.find("next").unwrap();
+        let context = full.input_context(Selection::caret(at), 24).unwrap();
+        let local = context
+            .byte_to_textarea(context.visible_offset(at).unwrap())
+            .unwrap();
+        let mut value = context.textarea_text().to_string();
+        let local = super::super::utf16_to_byte(&value, local);
+        value.insert_str(local, "🦀\n");
+        let (edit, selection) = context
+            .replay_edit(
+                &source,
+                &value,
+                Selection::caret(local + "🦀\n".len()),
+                "insertText",
+                Selection::caret(at),
+            )
+            .unwrap();
+        let edit = edit.unwrap();
+        assert_eq!(edit.range, at..at);
+        assert_eq!(edit.text, "🦀\r\n");
+        assert_eq!(selection, Selection::caret(at + "🦀\r\n".len()));
+        let mut result = source.clone();
+        result.replace_range(edit.range, &edit.text);
+        assert!(result.ends_with(&"after".repeat(1000)));
+        assert_eq!(
+            context
+                .replay_edit(
+                    &source,
+                    context.textarea_text(),
+                    Selection::caret(local),
+                    "insertText",
+                    Selection::caret(at)
+                )
+                .unwrap(),
+            (None, Selection::caret(at))
+        );
+    }
+
+    #[test]
+    fn projected_source_replay_rejects_invalid_native_selection() {
+        let source = "😀\r\nnext";
+        let projection = FoldProjection::new(source, &FoldState::default());
+        for selection in [Selection::caret(1), Selection::caret(100)] {
+            assert_eq!(
+                projection.replay_edit(
+                    source,
+                    "😀X\nnext",
+                    selection,
+                    "insertText",
+                    Selection::caret(4)
+                ),
+                Err(ProjectionError::InvalidOffset)
+            );
+        }
     }
 
     #[test]
