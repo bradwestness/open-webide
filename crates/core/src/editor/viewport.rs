@@ -5,6 +5,8 @@ pub const MAX_MEASURE_ROWS: usize = 128;
 pub const MAX_MEASURE_BYTES: usize = 64 * 1024;
 /// Give native input and visible paint a turn during cold preparation.
 pub const MAX_MEASURE_BATCHES_PER_FRAME: usize = 8;
+/// Prefer loaded editor glyphs without indefinitely delaying fallback measurements.
+pub const MAX_MEASURE_FONT_WAIT_MS: u32 = 250;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RowPaintWindow {

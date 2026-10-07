@@ -273,18 +273,51 @@ export function forward_editor_wheel(input, event) {
     scroll.scrollLeft += x; scroll.scrollTop += y;
     sync_editor_scroll(input, false);
 }
-export function editor_font_identity(input) {
-    const style = getComputedStyle(input);
-    // CSS font shorthand may be empty when OpenType features are enabled.
-    return JSON.stringify(['font-family', 'font-size', 'font-style', 'font-weight',
+function editor_font_style_identity(style) {
+    return ['font-family', 'font-size', 'font-style', 'font-weight',
         'font-stretch', 'line-height', 'letter-spacing', 'font-kerning',
         'font-feature-settings', 'font-variant-ligatures', 'font-variation-settings',
-        'font-variant-caps', 'font-variant-numeric'].map(name => style.getPropertyValue(name)));
+        'font-variant-caps', 'font-variant-numeric'].map(name => style.getPropertyValue(name));
+}
+function editor_primary_font_faces(style) {
+    const match = style.fontFamily.match(/^\s*(?:"([^"]+)"|'([^']+)'|([^,]+))/);
+    const family = match && (match[1] || match[2] || match[3]).trim();
+    return Array.from(document.fonts || []).filter(face =>
+        face.family.replace(/^['"]|['"]$/g, '').toLowerCase() === family?.toLowerCase());
+}
+const editor_font_face_ids = new WeakMap();
+let editor_font_face_id = 0;
+export function editor_font_identity(input) {
+    const style = getComputedStyle(input);
+    const faces = editor_primary_font_faces(style).map(face => {
+        if (!editor_font_face_ids.has(face)) editor_font_face_ids.set(face, ++editor_font_face_id);
+        return [editor_font_face_ids.get(face), face.status, face.style, face.weight, face.stretch];
+    });
+    return JSON.stringify([editor_font_style_identity(style), faces]);
+}
+export async function settle_editor_font(input, budgetMs) {
+    if (!input.isConnected || !document.fonts) return false;
+    const style = getComputedStyle(input);
+    // Availability checks may succeed through fallback without loading the
+    // primary registered face. Match its family and inspect the faces directly.
+    const faces = editor_primary_font_faces(style).filter(face =>
+        face.status !== 'loaded' && face.status !== 'error');
+    if (!faces.length) return false;
+    let timer;
+    try {
+        await Promise.race([
+            Promise.all(faces.map(face => face.load())),
+            new Promise(resolve => { timer = setTimeout(resolve, budgetMs); })
+        ]);
+    } catch (_) {
+        // Failed downloads retain browser fallback.
+    } finally { clearTimeout(timer); }
+    return true;
 }
 export function observe_editor_viewport(input, overlay, onLayout) {
     const pane = input.parentElement;
     const scroll = editor_scroll_element(input);
-    let frame = 0, fontChanged = false, active = true;
+    let frame = 0, fontChanged = false, fontLoaded = false, active = true;
     const update = () => {
         frame = 0;
         if (!active || !input.isConnected || !overlay.isConnected) return;
@@ -294,16 +327,16 @@ export function observe_editor_viewport(input, overlay, onLayout) {
         const rows = overlay.querySelectorAll('.editor-source-line');
         const grips = pane.querySelectorAll('.editor-fold-row');
         rows.forEach((row, index) => grips[index]?.style.setProperty('--editor-row-height', `${row.getBoundingClientRect().height}px`));
-        const changed = fontChanged; fontChanged = false;
-        onLayout(changed);
+        const changed = fontChanged, loaded = fontLoaded; fontChanged = false; fontLoaded = false;
+        onLayout(changed, loaded);
     };
-    const schedule = (changed = false) => { fontChanged ||= changed; if (active && !frame) frame = requestAnimationFrame(update); };
+    const schedule = (changed = false, loaded = false) => { fontChanged ||= changed; fontLoaded ||= loaded; if (active && !frame) frame = requestAnimationFrame(update); };
     const observer = new ResizeObserver(() => schedule());
     observer.observe(input);
     if (scroll !== input) observer.observe(scroll);
     const mutation = new MutationObserver(() => schedule());
     mutation.observe(overlay, {childList: true, subtree: true});
-    const fontIdentity = () => editor_font_identity(input);
+    const fontIdentity = () => JSON.stringify(editor_font_style_identity(getComputedStyle(input)));
     let preferenceFont = fontIdentity();
     const preferences = new MutationObserver(() => {
         const next = fontIdentity(); schedule(next !== preferenceFont); preferenceFont = next;
@@ -312,7 +345,7 @@ export function observe_editor_viewport(input, overlay, onLayout) {
     preferences.observe(document.documentElement, {attributes: true});
     const editor = input.closest('.editor');
     if (editor) preferences.observe(editor, {attributes: true, attributeFilter: ['style']});
-    const fontsChanged = () => schedule(true);
+    const fontsChanged = event => schedule(!event.isTrusted, event.isTrusted);
     document.fonts?.addEventListener('loadingdone', fontsChanged);
     // Readiness alone does not change glyphs. Observe actual loading transitions,
     // including loads already in progress when this observer is installed.
@@ -339,6 +372,11 @@ extern "C" {
     pub fn sync_editor_scroll(input: &web_sys::HtmlTextAreaElement, from_native: bool) -> bool;
     pub fn forward_editor_wheel(input: &web_sys::HtmlTextAreaElement, event: &web_sys::WheelEvent);
     pub fn editor_font_identity(input: &web_sys::HtmlTextAreaElement) -> String;
+    #[wasm_bindgen(catch)]
+    pub async fn settle_editor_font(
+        input: &web_sys::HtmlTextAreaElement,
+        budget_ms: u32,
+    ) -> Result<bool, JsValue>;
     pub fn observe_editor_viewport(
         input: &web_sys::HtmlTextAreaElement,
         overlay: &web_sys::HtmlElement,

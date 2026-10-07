@@ -237,6 +237,13 @@ impl EditorActions {
         let plan = reused.or_else(|| RowMeasurementPlan::new(paint.projection.lines().len()))?;
         Some((paint, plan))
     }
+    /// A native notification can arrive after geometry already used the loaded
+    /// face. Retain only current, source/account-owned measurements with identical
+    /// actual face availability and CSS metrics; unknown geometry still refreshes.
+    pub fn font_measurements_changed(self, metrics: Option<&str>) -> bool {
+        self.measured_rows()
+            .is_none_or(|rows| Some(rows.metrics.as_str()) != metrics)
+    }
     pub fn invalidate_measured_font(self) {
         self.workspace
             .editor_font_epoch

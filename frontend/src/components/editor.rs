@@ -1112,8 +1112,8 @@ fn HighlightOverlay(
             std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
         )>,
     );
-    let layout_callback =
-        StoredValue::new_local(Closure::<dyn FnMut(bool)>::new(move |font_changed| {
+    let layout_callback = StoredValue::new_local(Closure::<dyn FnMut(bool, bool)>::new(
+        move |font_changed, font_loaded| {
             if layout_revision.is_disposed() {
                 return;
             }
@@ -1125,12 +1125,14 @@ fn HighlightOverlay(
                     &input,
                     &overlay,
                     font_changed,
+                    font_loaded,
                     painted_syntax.get_value(),
                     painted_whitespace.get_value(),
                 );
             }
             layout_revision.update(|value| *value = value.wrapping_add(1));
-        }));
+        },
+    ));
     let viewport_observer = StoredValue::new_local(None::<wasm_bindgen::JsValue>);
     Effect::new(move || {
         if let (Some(input), Some(overlay)) = (textarea_ref.get(), node_ref.get())

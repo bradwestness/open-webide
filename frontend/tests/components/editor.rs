@@ -11032,6 +11032,161 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn cold_font_loading_waits_boundedly_and_rejects_old_jobs_in_both_modes() {
+    struct FontLoadGuard(wasm_bindgen::JsValue);
+    impl Drop for FontLoadGuard {
+        fn drop(&mut self) {
+            let _ = js_sys::Reflect::get(&self.0, &"restore".into())
+                .unwrap()
+                .unchecked_into::<js_sys::Function>()
+                .call0(&wasm_bindgen::JsValue::NULL);
+        }
+    }
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        for outcome in ["loaded", "failed", "timeout", "source-change"] {
+            let audit = FontLoadGuard(
+                js_sys::Function::new_no_args(
+                    r#"
+                const fonts = document.fonts, check = fonts.check;
+                fonts.check = () => true;
+                const sink = window.__openwebideEditorProbeTiming;
+                const state = {calls:0, ready:false, phases:[]};
+                let resolve, reject;
+                const pending = new Promise((yes, no) => { resolve = yes; reject = no; });
+                const face = new FontFace('Monaspace Neon', 'url(data:font/woff2;base64,AA==)');
+                Object.defineProperty(face, 'status', {get: () => state.ready ? (state.failed ? 'error' : 'loaded') : 'loading'});
+                face.load = () => { ++state.calls; return pending; };
+                fonts.add(face);
+                state.complete = failed => {
+                    state.ready = true; state.failed = failed;
+                    if (failed) reject(new Error('fixture font load failure')); else resolve([]);
+                    fonts.dispatchEvent(new Event(failed ? 'loadingerror' : 'loadingdone'));
+                };
+                window.__openwebideEditorProbeTiming = (paint, phase) => {
+                    if (phase === 'render') state.phases.push({
+                        font:paint.parentElement.dataset.measureFont,
+                        view:paint.parentElement.dataset.measureView
+                    });
+                };
+                state.restore = () => {
+                    fonts.delete(face); fonts.check = check;
+                    if (sink === undefined) delete window.__openwebideEditorProbeTiming;
+                    else window.__openwebideEditorProbeTiming = sink;
+                    state.ready = true; resolve([]);
+                };
+                return state;
+            "#,
+                )
+                .call0(&wasm_bindgen::JsValue::NULL)
+                .unwrap(),
+            );
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("loading-font.txt".into()));
+                state
+                    .workspace
+                    .content
+                    .set("initial words 文😀\r\n".repeat(400));
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:300px">{editor_view(state)}</div> }
+            });
+            let actions = openwebide_frontend::state_actions::editor::EditorActions::new(
+                mounted.state.workspace,
+            );
+            wait_until("font primitive started before allocating cold rows", || {
+                js_sys::Reflect::get(&audit.0, &"calls".into())
+                    .unwrap()
+                    .as_f64()
+                    .unwrap()
+                    > 0.0
+            })
+            .await;
+            let phases = js_sys::Reflect::get(&audit.0, &"phases".into())
+                .unwrap()
+                .unchecked_into::<js_sys::Array>();
+            assert_eq!(
+                phases.length(),
+                0,
+                "pending fonts must not allocate a fallback row probe immediately"
+            );
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            let old_font = openwebide_frontend::viewport::editor_font_identity(&input);
+            let old_revision = actions.view_revision();
+            if outcome == "source-change" {
+                mounted
+                    .state
+                    .workspace
+                    .content
+                    .set("replacement words 文😀\r\n".repeat(400));
+            }
+            if outcome != "timeout" {
+                js_sys::Reflect::get(&audit.0, &"complete".into())
+                    .unwrap()
+                    .unchecked_into::<js_sys::Function>()
+                    .call1(&wasm_bindgen::JsValue::NULL, &(outcome == "failed").into())
+                    .unwrap();
+            }
+            if outcome != "timeout" {
+                assert_ne!(
+                    openwebide_frontend::viewport::editor_font_identity(&input),
+                    old_font,
+                    "actual font availability must change measurement identity even with identical CSS"
+                );
+            }
+            wait_until(
+                "font completion, failure or deadline permits current source geometry",
+                || actions.measured_rows().is_some(),
+            )
+            .await;
+            assert!(phases.length() > 0);
+            if outcome == "loaded" || outcome == "failed" {
+                assert!(
+                    phases.iter().all(|phase| {
+                        js_sys::Reflect::get(&phase, &"font".into())
+                            .unwrap()
+                            .as_string()
+                            .as_deref()
+                            != Some("0")
+                    }),
+                    "font notifications must obsolete the original cold job"
+                );
+            }
+            if outcome == "source-change" {
+                assert!(
+                    phases.iter().all(|phase| {
+                        js_sys::Reflect::get(&phase, &"view".into())
+                            .unwrap()
+                            .as_string()
+                            != Some(old_revision.to_string())
+                    }),
+                    "source replaced during the wait cannot be measured by the old job"
+                );
+                assert!(actions.source().starts_with("replacement"));
+            }
+            if outcome == "timeout" {
+                assert!(
+                    !js_sys::Reflect::get(&audit.0, &"ready".into())
+                        .unwrap()
+                        .as_bool()
+                        .unwrap(),
+                    "fallback must work while the font request remains unresolved"
+                );
+            }
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn settled_fonts_do_not_invalidate_initial_editor_geometry_in_both_modes() {
     JsFuture::from(
         js_sys::Function::new_no_args("return document.fonts.ready")

@@ -148,6 +148,22 @@ pub(super) async fn measure_batches(
     }
     let projection = &scope.projection;
     let metrics = &scope.metrics;
+    if plan.completed() < projection.lines().len()
+        && crate::viewport::settle_editor_font(
+            &input,
+            openwebide_core::editor::MAX_MEASURE_FONT_WAIT_MS,
+        )
+        .await
+        .unwrap_or(false)
+    {
+        // Font completion notifications are task-based. Allow their layout
+        // observers to invalidate the old ticket before allocating a full probe.
+        crate::util::yield_frame().await;
+        crate::util::yield_task().await;
+    }
+    if !current() || !input.is_connected() || metrics_identity(&input).as_ref() != Some(metrics) {
+        return Ok(None);
+    }
     let (probe, paint) = styled_row_probe(&input)?;
     probe
         .0
@@ -311,6 +327,7 @@ pub(super) fn update_measurements(
     input: &web_sys::HtmlTextAreaElement,
     overlay: &web_sys::HtmlElement,
     font_changed: bool,
+    font_loaded: bool,
     syntax: Option<(
         bool,
         std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
@@ -326,7 +343,9 @@ pub(super) fn update_measurements(
     {
         return;
     }
-    if font_changed {
+    if font_changed
+        || (font_loaded && actions.font_measurements_changed(metrics_identity(input).as_deref()))
+    {
         actions.invalidate_measured_font();
     }
     if crate::viewport::editor_scroll(input).client_width() <= 0

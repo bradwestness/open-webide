@@ -722,3 +722,65 @@ measurement plans after pending/plain resolution, while rejecting different
 plain token boundaries. Existing stale source/read/account/font checks remain.
 All 366 browser component tests pass with the change. Next, address first cold
 paragraph shaping, font-transition duplication and actual long-row edits.
+
+
+### Font settling before cold row probes
+
+Cold measurement reads the primary computed CSS family and waits for its
+registered faces through the browser's
+[FontFace loading primitive](https://www.w3.org/TR/css-font-loading-3/#font-face-load).
+It checks registered face status directly: family availability checks can succeed
+through fallback and do not establish that the primary face has loaded. The
+configured Monaspace families each register one variable face. Glyph shaping
+still uses the full computed style of the existing DOM probe; font loading
+supplies no substitute metrics.
+Already available fonts proceed immediately. Pending loads race a 250 ms timer,
+with the budget defined in shared Rust core. Failed or stalled requests preserve
+browser fallback and the existing native editing surface.
+
+After an actual wait, a frame and task let font notifications invalidate old
+measurement tickets. Source/account/font/layout ownership and computed metrics
+are checked again before allocating the probe. Font changes after a timeout
+still invalidate fallback geometry through the existing observer. No
+measurements or glyph positions are guessed while a font is pending.
+
+The both-mode browser regression controls font completion, failure and an
+unresolved request, and replaces source while the load is pending. It checks
+that no probe is allocated immediately for pending fonts, old font/source jobs
+cannot run after completion, and a request that never resolves still permits
+fallback measurement. Initial paragraph shaping and native cold/touch input
+remain separate gates.
+
+
+Measurement identity now includes the registered primary faces, their lifetime
+IDs, statuses and style/weight/stretch descriptors, alongside the existing CSS
+metrics. A load can therefore obsolete a queued probe even when computed CSS is
+unchanged. Preference observation compares CSS separately, so availability
+changes are not misclassified as preference changes.
+
+Native loading notifications go through the shared editor facade. If current
+source/account-owned measurements already use identical actual font and layout
+metrics, their geometry is retained. Missing or different metrics invalidate it.
+Explicit/synthetic invalidation and preference changes retain forced refresh.
+This handles native notifications delivered after a loaded face was already
+used by a completed measurement, while preserving fallback invalidation after
+a delayed load. Opt-in traces now record up to 16 face names/statuses per batch
+and loading event, within the existing 256-record caps; no source text is added.
+
+
+[Final production records](editor-performance/production-font-notifications.jsonl)
+repeat the 1 MiB Unicode paragraph in both modes, wrapped and unwrapped, using
+the bundle identified by its module on parent `c549010`. All four cases now
+record one cold full-row batch plus one batch after typing, compared with two
+cold/scroll batches plus one input batch in the
+[pending/plain baseline](editor-performance/production-plain-row-reuse.jsonl).
+Registered-face states and loading events retain provenance; per-row diagnostics
+are omitted as in prior records. Unwrapped load to paint was about 8.9 seconds;
+wrapped was about 10.5–10.6 seconds. These instrumented single observations
+establish removal of redundant work, not latency percentiles or Linux PSS gates.
+Initial shaping and long-row input remain multi-second work and are unfinished.
+
+The final implementation passes all 367 browser component tests, including
+the eight controlled font-load outcomes across both modes, and all-target WASM
+Clippy. Production probes use disposable state; native folder permission,
+physical PWA input, Linux PSS and uninstrumented latency gates remain open.

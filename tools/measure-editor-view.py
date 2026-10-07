@@ -187,6 +187,8 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                                 record = null;
                                 if (editorViewMeasurement.batches.length < 256) {
                                     record = {at: performance.now(), phase: editorViewMeasurement.phase,
+                                        fontFaces: Array.from(document.fonts).slice(0, 16)
+                                            .map(face => ({family: face.family, status: face.status})),
                                         scope: Object.fromEntries(Array.from(paint.closest(".editor-row-measure").attributes)
                                             .filter(attribute => attribute.name.startsWith("data-measure-"))
                                             .map(attribute => [attribute.name, attribute.value]))};
@@ -233,12 +235,20 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                             finally { if (record) { record.boundsCalls++; record.boundsMs += performance.now()-started; } }
                         };
                         function recordEvent(events, kind) {
-                            if (events.length < 256)
-                                events.push({at: performance.now(), phase: editorViewMeasurement.phase, kind});
-                            else editorViewMeasurement.traceTruncated = true;
+                            if (events.length >= 256) {
+                                editorViewMeasurement.traceTruncated = true;
+                                return null;
+                            }
+                            const record = {at: performance.now(), phase: editorViewMeasurement.phase, kind};
+                            events.push(record);
+                            return record;
                         }
                         for (const kind of ["loading", "loadingdone", "loadingerror"])
-                            document.fonts.addEventListener(kind, () => recordEvent(editorViewMeasurement.fonts, kind));
+                            document.fonts.addEventListener(kind, event => {
+                                const record = recordEvent(editorViewMeasurement.fonts, kind);
+                                if (record) record.faces = Array.from(event.fontfaces || []).slice(0, 16)
+                                    .map(face => ({family: face.family, status: face.status}));
+                            });
                         const OriginalWorker = Worker;
                         Worker = class extends OriginalWorker {
                             constructor(...args) {

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reconcile late editor font notifications against current source-owned measurements using actual registered-face identity and load state in both workspace modes. Briefly await pending faces with a 250 ms budget, retain editing during slow or failed loads, and reject superseded jobs before measurement.
+
 - Reuse exact row dimensions and glyph anchors when pending editor syntax resolves to an identical single plain-text run in both workspace modes. Preserve remeasurement for changed token spans, styles, fonts and source ownership.
 
 - Separate opt-in editor cold-preparation traces into Rust rendering, DOM installation, row layout and source-geometry phases, retaining immutable ownership scopes and bounded diagnostic records in both workspace modes.
