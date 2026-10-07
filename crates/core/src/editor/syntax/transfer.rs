@@ -121,7 +121,7 @@ impl SyntaxAnalysisData {
                 if start != line.len() {
                     return None;
                 }
-                tokens.push(row);
+                tokens.push(Arc::from(row));
             }
             Some(Arc::new(tokens))
         } else {

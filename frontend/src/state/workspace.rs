@@ -55,7 +55,7 @@ pub struct PreparedEditorSyntax {
 pub struct EditorFallbackPaint {
     pub scope: EditorSyntaxScope,
     pub prepared_source: bool,
-    pub tokens: std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+    pub tokens: std::sync::Arc<openwebide_core::highlight::TokenRows>,
     pub lexical: Option<std::sync::Arc<openwebide_core::highlight::LexicalSnapshot>>,
 }
 
@@ -63,10 +63,7 @@ pub struct EditorFallbackPaint {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditorRowMeasurements {
     pub whitespace: bool,
-    pub syntax: Option<(
-        bool,
-        std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
-    )>,
+    pub syntax: Option<(bool, std::sync::Arc<openwebide_core::highlight::TokenRows>)>,
     pub revision: u64,
     pub account_generation: u64,
     pub metrics: String,
@@ -84,7 +81,7 @@ pub struct EditorRowPaint {
     pub account_generation: u64,
     pub metrics: String,
     pub projection: openwebide_core::editor::FoldProjection,
-    pub tokens: std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+    pub tokens: std::sync::Arc<openwebide_core::highlight::TokenRows>,
     pub prepared_source: bool,
     pub guides: std::sync::Arc<[usize]>,
     pub indentation: openwebide_core::editor::Indentation,

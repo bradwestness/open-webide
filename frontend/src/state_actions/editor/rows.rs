@@ -66,7 +66,7 @@ impl Hash for PaintRow<'_> {
 fn paint_row(paint: &EditorRowPaint, index: usize) -> Option<PaintRow<'_>> {
     let source = paint.projection.lines().get(index)?.source_line;
     let mut tokens = match paint.tokens.get(source) {
-        Some(tokens) => tokens.as_slice(),
+        Some(tokens) => tokens.as_ref(),
         None if !paint.prepared_source => &[],
         None => return None,
     };
@@ -193,7 +193,7 @@ impl EditorActions {
         self,
         metrics: String,
         projection: FoldProjection,
-        tokens: (bool, Arc<Vec<Vec<Token>>>),
+        tokens: (bool, Arc<openwebide_core::highlight::TokenRows>),
         guides: Arc<[usize]>,
         indentation: Indentation,
         whitespace: bool,
@@ -219,11 +219,14 @@ impl EditorActions {
         self,
         metrics: String,
         projection: FoldProjection,
-        tokens: (bool, Arc<Vec<Vec<Token>>>),
+        tokens: (bool, Arc<openwebide_core::highlight::TokenRows>),
         guides: Arc<[usize]>,
         indentation: Indentation,
         whitespace: bool,
     ) -> Option<(EditorRowPaint, RowMeasurementPlan)> {
+        if !self.full_row_paint_ready() {
+            return None;
+        }
         let paint =
             self.row_paint_snapshot(metrics, projection, tokens, guides, indentation, whitespace)?;
         let reused = self.workspace.editor_row_cache.with_untracked(|cache| {
@@ -278,7 +281,7 @@ impl EditorActions {
         self,
         cache: &mut EditorFragmentCache,
         metrics: String,
-        tokens: (bool, Arc<Vec<Vec<Token>>>),
+        tokens: (bool, Arc<openwebide_core::highlight::TokenRows>),
         guides: Arc<[usize]>,
         indentation: Indentation,
         whitespace: bool,

@@ -46,10 +46,7 @@ impl EditorActions {
 
     fn fallback_paint(
         self,
-    ) -> Option<(
-        bool,
-        std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
-    )> {
+    ) -> Option<(bool, std::sync::Arc<openwebide_core::highlight::TokenRows>)> {
         self.workspace
             .editor_fallback_paint
             .with_untracked(|paint| {
@@ -69,14 +66,18 @@ impl EditorActions {
                 || self.syntax_highlights().is_none())
     }
 
+    /// Keep full-row probes behind cooperative fallback paint. A pending external
+    /// worker may still supply borrowed neutral rows, preserving its visible-source
+    /// contract; terminal/on-thread fallback must not measure and discard that table.
+    pub fn full_row_paint_ready(self) -> bool {
+        !self.workspace.editor_fallback_active.get_untracked()
+            || self.worker_syntax_pending()
+            || !self.syntax_is_pending()
+    }
+
     /// Empty pending tokens borrow row bodies from the immutable projection.
     /// Terminal analysis fallback retains the existing contextual lexer.
-    pub fn syntax_paint(
-        self,
-    ) -> (
-        bool,
-        std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
-    ) {
+    pub fn syntax_paint(self) -> (bool, std::sync::Arc<openwebide_core::highlight::TokenRows>) {
         if !self.workspace.editor_worker_active.get_untracked()
             && self.workspace.editor_fallback_active.get_untracked()
         {
@@ -99,9 +100,11 @@ impl EditorActions {
             (
                 false,
                 std::sync::Arc::new(self.workspace.content.with_untracked(|source| {
-                    openwebide_core::highlight::highlight_lines(
-                        &source.replace("\r\n", "\n"),
-                        language,
+                    openwebide_core::highlight::share_token_rows(
+                        openwebide_core::highlight::highlight_lines(
+                            &source.replace("\r\n", "\n"),
+                            language,
+                        ),
                     )
                 })),
             )

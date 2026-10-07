@@ -734,7 +734,10 @@ plain-token rule bounds per-character lexing on that row. A first bounded batch
 can finish a small file without a pending frame. Larger jobs yield browser tasks
 between batches and a frame after eight batches. No partial token table is
 published, and pending paint borrows projected source bodies or retains an
-already scoped styled frame.
+already scoped styled frame. Full-row probes wait for cooperative fallback tokens
+instead of measuring a neutral table that will be discarded. Pending background
+workers retain their borrowed source preview. Both decisions use the same editor
+facade, and native input stays visible during cold preparation.
 
 The job owns immutable source and reuses a terminal worker's source Arc when
 available. CRLF normalization happens per row, preserving standalone CR and
@@ -747,8 +750,12 @@ before reusing tokens. Changing a comment delimiter re-tokenizes following rows
 until their state converges; row insertions/deletions and disjoint edits cannot
 reuse mismatching text or context. Language and newline-normalization changes
 invalidate reuse. The shared worker preparation uses the same job with per-row
-cancellation. Token copies and row-table publication still visit the complete
-source, and wire replies still transfer a complete result.
+cancellation. Published rows use immutable shared token slices, so lexical reuse
+retains existing token strings without copying their text or token arrays. Parser
+paint and validated worker replies use the same row representation; the painter
+reads those rows without materializing a second token table. Row metadata and
+handle tables still visit the complete source. Wire replies still transfer and
+reconstruct a complete result, and initial preparation still allocates token text.
 
 Parser fallback keeps its existing 12 ms budget and
 can supply ready paint before lexical preparation is needed. Core callers that

@@ -4877,6 +4877,15 @@ async fn editor_navigation_status_and_decorations_share_source_coordinates_in_bo
         let actions = EditorActions::new(mounted.state.workspace);
         let textarea: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
+        wait_until("navigation source paint ready", || {
+            !actions.syntax_is_pending()
+                && mounted
+                    .element(".editor-code")
+                    .class_list()
+                    .contains("highlight-ready")
+        })
+        .await;
+        frame().await;
         let before = highlight_count();
         let offset =
             u32::try_from(byte_to_textarea(source, source.find('文').unwrap()).unwrap()).unwrap();
@@ -7546,6 +7555,10 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
             })
             .await;
             assert!(
+                !actions.full_row_paint_ready(),
+                "fallback must resolve before full-row probes allocate neutral paint"
+            );
+            assert!(
                 actions.syntax_paint().1.is_empty(),
                 "pending fallback borrows source instead of lexing synchronously"
             );
@@ -7566,7 +7579,10 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
             assert!(!painted.0);
             assert_eq!(
                 *painted.1,
-                highlight_lines(&source.replace("\r\n", "\n"), Language::Rust)
+                openwebide_core::highlight::share_token_rows(highlight_lines(
+                    &source.replace("\r\n", "\n"),
+                    Language::Rust
+                ))
             );
             assert_eq!(painted.1[1][0].kind, TokenKind::Comment);
             assert!(
@@ -7623,6 +7639,12 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
                     .retokenized_rows(),
                 1
             );
+            let revised_paint = actions.syntax_paint().1;
+            assert!(
+                std::sync::Arc::ptr_eq(&painted.1[2], &revised_paint[2]),
+                "unchanged rows share token strings across published source revisions"
+            );
+            assert!(!std::sync::Arc::ptr_eq(&painted.1[1], &revised_paint[1]));
             mounted
                 .state
                 .workspace
@@ -7933,6 +7955,10 @@ async fn pending_worker_paints_requested_source_rows_without_full_file_lexical_t
         })
         .await;
         assert!(actions.syntax_is_pending());
+        assert!(
+            actions.full_row_paint_ready(),
+            "pending background workers retain borrowed source paint"
+        );
         let (prepared, tokens) = actions.syntax_paint();
         assert!(!prepared);
         assert!(
@@ -8473,9 +8499,11 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
         ));
         assert_eq!(
             first.as_ref(),
-            &openwebide_core::highlight::highlight_lines(
-                source,
-                openwebide_core::highlight::Language::Json
+            &openwebide_core::highlight::share_token_rows(
+                openwebide_core::highlight::highlight_lines(
+                    source,
+                    openwebide_core::highlight::Language::Json
+                )
             )
         );
         assert!(actions.syntax_structure(|| true).is_none());
@@ -9343,6 +9371,10 @@ async fn cold_wrapped_preparation_keeps_input_visible_and_rejects_superseded_bat
                 })
         })
         .await;
+        assert!(
+            !actions.syntax_is_pending(),
+            "cooperative fallback must finish before full cold measurements start"
+        );
         let previous = mounted
             .state
             .workspace
@@ -10741,7 +10773,10 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
             let tokens = Arc::new(if change == 11 {
                 Vec::new()
             } else {
-                highlight_lines(&source, Language::Plain)
+                openwebide_core::highlight::share_token_rows(highlight_lines(
+                    &source,
+                    Language::Plain,
+                ))
             });
             let guides: Arc<[usize]> = Arc::from([0]);
             let mut metrics = "styled width/font".to_string();
@@ -10806,7 +10841,9 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                         )
                         .is_none()
                 );
-                let equivalent = Arc::new(highlight_lines(&source, Language::Plain));
+                let equivalent = Arc::new(openwebide_core::highlight::share_token_rows(
+                    highlight_lines(&source, Language::Plain),
+                ));
                 assert!(actions.fragment_scope(
                     &mut cache,
                     metrics.clone(),
@@ -10846,7 +10883,7 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                 );
                 if change == 11 {
                     use openwebide_core::highlight::{Token, TokenKind};
-                    let split = Arc::new(vec![vec![
+                    let split = Arc::new(vec![Arc::from(vec![
                         Token {
                             kind: TokenKind::Plain,
                             text: source[..100].into(),
@@ -10855,7 +10892,7 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                             kind: TokenKind::Plain,
                             text: source[100..].into(),
                         },
-                    ]]);
+                    ])]);
                     let (_, plan) = actions
                         .prepare_row_measurements(
                             metrics.clone(),
@@ -10930,7 +10967,9 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                         .is_none()
                 );
                 actions.invalidate_measured_rows();
-                let equivalent = Arc::new(highlight_lines(&source, Language::Plain));
+                let equivalent = Arc::new(openwebide_core::highlight::share_token_rows(
+                    highlight_lines(&source, Language::Plain),
+                ));
                 assert!(actions.fragment_scope(
                     &mut cache,
                     metrics.clone(),

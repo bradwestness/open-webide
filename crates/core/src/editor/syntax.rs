@@ -32,7 +32,7 @@ pub struct SyntaxAnalysis {
     source: Arc<str>,
     folds: Vec<FoldRange>,
     structure: Option<Arc<Structure>>,
-    highlights: Option<Arc<Vec<Vec<crate::highlight::Token>>>>,
+    highlights: Option<Arc<crate::highlight::TokenRows>>,
 }
 impl SyntaxAnalysis {
     pub fn matches_source(&self, source: &str) -> bool {
@@ -47,7 +47,7 @@ impl SyntaxAnalysis {
     pub fn structure(&self) -> Option<&Arc<Structure>> {
         self.structure.as_ref()
     }
-    pub fn highlights(&self) -> Option<&Arc<Vec<Vec<crate::highlight::Token>>>> {
+    pub fn highlights(&self) -> Option<&Arc<crate::highlight::TokenRows>> {
         self.highlights.as_ref()
     }
 }
@@ -206,7 +206,7 @@ impl SyntaxDocument {
             structure
                 .as_ref()
                 .and_then(|structure| self.highlight_with_structure(structure))
-                .map(Arc::new)
+                .map(|rows| Arc::new(crate::highlight::share_token_rows(rows)))
         };
         let analysis = Arc::new(SyntaxAnalysis {
             source: self.text.clone(),
@@ -742,7 +742,9 @@ mod tests {
             let (_, first) = document.prepare(source, 4, || true);
             let first = first.unwrap();
             assert!(first.structure().is_none());
-            let expected = crate::highlight::highlight_lines(source, language);
+            let expected = crate::highlight::share_token_rows(crate::highlight::highlight_lines(
+                source, language,
+            ));
             assert_eq!(first.highlights().unwrap().as_ref(), &expected);
             let (_, cached) = document.prepare(source, 4, || true);
             assert!(Arc::ptr_eq(&first, &cached.unwrap()));
@@ -753,7 +755,9 @@ mod tests {
             let (_, next) = document.prepare(&revised, 4, || true);
             assert_eq!(
                 next.unwrap().highlights().unwrap().as_ref(),
-                &crate::highlight::highlight_lines(&revised, language)
+                &crate::highlight::share_token_rows(crate::highlight::highlight_lines(
+                    &revised, language
+                ))
             );
             assert!(first.matches_source(source));
             assert_eq!(document.lexical.as_ref().unwrap().retokenized_rows(), 1);
@@ -775,7 +779,10 @@ mod tests {
         assert_eq!(status, SyntaxStatus::Ready { incremental: false });
         assert_eq!(
             recovered.unwrap().highlights().unwrap().as_ref(),
-            &crate::highlight::highlight_lines(source, Language::Sql)
+            &crate::highlight::share_token_rows(crate::highlight::highlight_lines(
+                source,
+                Language::Sql
+            ))
         );
     }
 
@@ -813,7 +820,7 @@ mod tests {
             assert_eq!(analysis.folds(), syntax.folds_with_tab_width(3));
             assert_eq!(
                 analysis.highlights().unwrap().as_ref(),
-                &syntax.highlight_lines().unwrap()
+                &crate::highlight::share_token_rows(syntax.highlight_lines().unwrap())
             );
             let context = syntax.structure().unwrap();
             assert_eq!(analysis.structure().unwrap().protected, context.protected);

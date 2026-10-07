@@ -855,7 +855,7 @@ impl<'a> PaintRows<'a> {
 }
 
 fn highlight_html(
-    lines: &[Vec<openwebide_core::highlight::Token>],
+    lines: &[openwebide_core::highlight::TokenRow],
     prepared_source: bool,
     guides: &[usize],
     rows: PaintRows<'_>,
@@ -884,7 +884,7 @@ fn highlight_html(
             None
         };
         let line = match lines.get(idx) {
-            Some(line) => line.as_slice(),
+            Some(line) => line.as_ref(),
             None if plain.is_some() => &[],
             None => continue,
         };
@@ -1106,12 +1106,8 @@ fn HighlightOverlay(
     let presentation_scope = Memo::new(move |_| actions.presentation_scope());
     let presented_scope = StoredValue::new(None);
     let painted_whitespace = StoredValue::new(false);
-    let painted_syntax = StoredValue::new(
-        None::<(
-            bool,
-            std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
-        )>,
-    );
+    let painted_syntax =
+        StoredValue::new(None::<(bool, std::sync::Arc<openwebide_core::highlight::TokenRows>)>);
     let layout_callback = StoredValue::new_local(Closure::<dyn FnMut(bool, bool)>::new(
         move |font_changed, font_loaded| {
             if layout_revision.is_disposed() {
@@ -1184,7 +1180,7 @@ fn HighlightOverlay(
         actions.view_revision();
         actions.preferences();
         let prepared_tokens = tokens.get();
-        if retain_style.run(()) {
+        if retain_style.run(()) || !actions.full_row_paint_ready() {
             batch_key.set_value(None);
             if let Some(ticket) = batch_ticket.get_value() {
                 actions.end_row_preparation(ticket);
@@ -1377,7 +1373,7 @@ fn HighlightOverlay(
         {
             return;
         }
-        if !immediate && retain_style.run(()) {
+        if !immediate && (retain_style.run(()) || !actions.full_row_paint_ready()) {
             return;
         }
         let render = |source_slices: &[crate::state_actions::editor::EditorRowSourceSlice]| {

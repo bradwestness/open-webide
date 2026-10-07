@@ -421,10 +421,7 @@ impl EditorActions {
         revision: u64,
         metrics: String,
         rows: openwebide_core::editor::MeasuredRows,
-        syntax: Option<(
-            bool,
-            std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
-        )>,
+        syntax: Option<(bool, std::sync::Arc<openwebide_core::highlight::TokenRows>)>,
         whitespace: bool,
     ) -> bool {
         if self.workspace.editor_view_revision.get_untracked() != revision
@@ -860,7 +857,7 @@ impl EditorActions {
 
     pub fn syntax_highlights(
         self,
-    ) -> Option<std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>> {
+    ) -> Option<std::sync::Arc<openwebide_core::highlight::TokenRows>> {
         self.analyze_syntax(
             || true,
             |document, _| document.and_then(|document| document.highlights().cloned()),

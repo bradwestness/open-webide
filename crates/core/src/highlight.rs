@@ -36,6 +36,16 @@ pub struct Token {
     pub text: String,
 }
 
+/// Immutable tokens for one source row.
+pub type TokenRow = std::sync::Arc<[Token]>;
+/// Token rows shared by lexical updates and editor paint consumers.
+pub type TokenRows = Vec<TokenRow>;
+
+/// Transfer owned tokens into compact immutable rows without cloning their text.
+pub fn share_token_rows(rows: Vec<Vec<Token>>) -> TokenRows {
+    rows.into_iter().map(std::sync::Arc::from).collect()
+}
+
 /// The language a file is written in, chosen from its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Language {
@@ -150,11 +160,11 @@ pub struct LexicalSnapshot {
     language: Language,
     normalize_crlf: bool,
     rows: Vec<LexicalRow>,
-    tokens: std::sync::Arc<Vec<Vec<Token>>>,
+    tokens: std::sync::Arc<TokenRows>,
     retokenized_rows: usize,
 }
 impl LexicalSnapshot {
-    pub fn tokens(&self) -> &std::sync::Arc<Vec<Vec<Token>>> {
+    pub fn tokens(&self) -> &std::sync::Arc<TokenRows> {
         &self.tokens
     }
     pub const fn retokenized_rows(&self) -> usize {
@@ -179,7 +189,7 @@ pub struct LexicalPreparation {
     normalize_crlf: bool,
     next: usize,
     state: State,
-    rows: Vec<Vec<Token>>,
+    rows: TokenRows,
     contexts: Vec<LexicalRow>,
     previous: Option<std::sync::Arc<LexicalSnapshot>>,
     retokenized_rows: usize,
@@ -268,7 +278,8 @@ impl LexicalPreparation {
                 (previous.tokens[index].clone(), previous.rows[index].after)
             } else {
                 self.retokenized_rows += 1;
-                highlight_line(line, self.language, self.state)
+                let (tokens, state) = highlight_line(line, self.language, self.state);
+                (std::sync::Arc::from(tokens), state)
             };
             self.contexts.push(LexicalRow {
                 start: self.next,
@@ -285,7 +296,7 @@ impl LexicalPreparation {
         }
         count
     }
-    pub fn finish(self) -> Option<Vec<Vec<Token>>> {
+    pub fn finish(self) -> Option<TokenRows> {
         self.complete.then_some(self.rows)
     }
     pub fn finish_snapshot(self) -> Option<LexicalSnapshot> {
@@ -1478,7 +1489,10 @@ mod tests {
                 } else {
                     source.to_string()
                 };
-                assert_eq!(job.finish().unwrap(), highlight_lines(&expected, language));
+                assert_eq!(
+                    job.finish().unwrap(),
+                    share_token_rows(highlight_lines(&expected, language))
+                );
             }
         }
         for source in ["", "\n", "\r\n", "\r", "a\n\n"] {
@@ -1488,7 +1502,7 @@ mod tests {
             }
             assert_eq!(
                 job.finish().unwrap(),
-                highlight_lines(source, Language::Plain)
+                share_token_rows(highlight_lines(source, Language::Plain))
             );
         }
         let mut cancelled = LexicalPreparation::new("/*\nunfinished\n*/".into(), Language::Rust);
@@ -1516,7 +1530,7 @@ mod tests {
             let result = job.finish_snapshot().unwrap();
             assert_eq!(
                 result.tokens().as_ref(),
-                &highlight_lines(&source.replace("\r\n", "\n"), language)
+                &share_token_rows(highlight_lines(&source.replace("\r\n", "\n"), language))
             );
             result
         }
@@ -1548,6 +1562,13 @@ mod tests {
             let changed = source.replace("inside 文😀", "inside revised 文😀");
             let next = prepare(&changed, Some(old.clone()), language);
             assert_eq!(next.retokenized_rows(), 1, "{language:?}");
+            for row in [0, 1, 3, 4, 5] {
+                assert!(
+                    std::sync::Arc::ptr_eq(&old.tokens()[row], &next.tokens()[row]),
+                    "unchanged row must share its token allocation: {language:?} row={row}"
+                );
+            }
+            assert!(!std::sync::Arc::ptr_eq(&old.tokens()[2], &next.tokens()[2]));
             for changed in [
                 format!("new\r\n{source}"),
                 source.replace("head\r\n", ""),
@@ -1560,8 +1581,14 @@ mod tests {
             ] {
                 prepare(&changed, Some(old.clone()), language);
             }
-            let unchanged = prepare(source, Some(old), language);
+            let unchanged = prepare(source, Some(old.clone()), language);
             assert_eq!(unchanged.retokenized_rows(), 0);
+            assert!(
+                old.tokens()
+                    .iter()
+                    .zip(unchanged.tokens().iter())
+                    .all(|(old, new)| std::sync::Arc::ptr_eq(old, new))
+            );
         }
         let old = std::sync::Arc::new(prepare(source, None, Language::Rust));
         let changed_context = prepare(

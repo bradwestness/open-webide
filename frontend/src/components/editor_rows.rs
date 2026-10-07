@@ -328,10 +328,7 @@ pub(super) fn update_measurements(
     overlay: &web_sys::HtmlElement,
     font_changed: bool,
     font_loaded: bool,
-    syntax: Option<(
-        bool,
-        std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
-    )>,
+    syntax: Option<(bool, std::sync::Arc<openwebide_core::highlight::TokenRows>)>,
     whitespace: bool,
 ) {
     if !current_editor_target(actions, input)

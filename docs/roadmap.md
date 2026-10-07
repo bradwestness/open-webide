@@ -80,8 +80,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.
   Terminal lexical paint prepares in cooperative, source-owned batches; worker and
-  fallback updates reuse exact source/context rows. Finish incremental token
-  publication, uncached initial/cold shaping, bidirectional
+  fallback updates reuse exact source/context rows and share their immutable token
+  allocations. Finish incremental row-table/wire publication, uncached initial/cold
+  shaping, bidirectional
   visual-run windows, fine long-row paint and incremental measurement. Language formatting remains in
   Code intelligence.
 - **Bounded native input:** prepared larger fine-pointer editors bind scoped
