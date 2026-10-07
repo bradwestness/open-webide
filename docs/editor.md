@@ -860,6 +860,17 @@ Production input/scroll and process-memory baselines are recorded in
 file-size boundaries. Remaining work bounds cold and long-row wrapped rendering,
 reduces input/source costs, and repeats responsiveness and memory validation.
 
+### Indexed indentation guides
+
+Guide queries borrow logical rows from the shared document index and cache an
+immutable table for its source version and indentation settings. Blank runs use
+the minimum indentation of their neighboring nonblank rows, including Unicode
+whitespace and LF/CRLF. The standalone core helper uses the same policy. Files
+above the structural byte limit share zero-guide tables across same-row-count
+edits and setting changes; row-count or limit changes invalidate them. Ordinary
+source edits still reconstruct the smaller-file table. Cached tables remain
+immutable across document clones and undo.
+
 ### Cooperative lexical paint
 
 When a worker is unavailable or finishes without usable syntax paint, the editor

@@ -189,6 +189,24 @@ impl EditorActions {
             && self.auth.map_or(0, |auth| auth.generation.get_untracked())
                 == paint.account_generation
     }
+    /// Guide queries reuse the shared source document's indexed logical rows.
+    pub fn indent_guides(self, indentation: Indentation) -> Arc<[usize]> {
+        let Some(key) = self.key() else {
+            return Arc::from([]);
+        };
+        self.workspace.content.with_untracked(|source| {
+            self.workspace.editor_documents.with_untracked(|documents| {
+                documents
+                    .get(&key)
+                    .filter(|document| document.text() == source)
+                    .map_or_else(
+                        || Arc::from([]),
+                        |document| document.indent_guide_columns(indentation),
+                    )
+            })
+        })
+    }
+
     fn row_paint_snapshot(
         self,
         metrics: String,

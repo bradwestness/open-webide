@@ -264,6 +264,11 @@ const EDIT_RESERVE_BYTES: usize = 64 * 1024;
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 
 impl Document {
+    /// Source-indexed guide policy; immutable results are shared across queries.
+    pub fn indent_guide_columns(&self, indentation: Indentation) -> std::sync::Arc<[usize]> {
+        self.line_index.guide_columns(self.text(), indentation)
+    }
+
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
         Self {

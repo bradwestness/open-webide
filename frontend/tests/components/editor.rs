@@ -5160,6 +5160,103 @@ async fn deferred_decorations_reject_replaced_source_selection_and_scope_in_both
 }
 
 #[wasm_bindgen_test]
+async fn indexed_indent_guides_preserve_paint_config_and_source_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Indentation};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+        let slot = saved.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("guide.txt".into()));
+            state
+                .workspace
+                .content
+                .set("parent\r\n \tchild\r\n\r\n    sibling\r\nlast\r\n".into());
+            let actions = EditorActions::new(state.workspace);
+            actions.set_indentation(Indentation::default());
+            slot.set(Some(actions));
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:700px;height:400px">{editor_view(state)}</div> }
+        });
+        let actions = saved.get().unwrap();
+        wait_until("indexed guide paint", || {
+            mounted
+                .root
+                .query_selector(".editor-source-line[data-line='3']")
+                .unwrap()
+                .is_some_and(|row| {
+                    row.unchecked_into::<web_sys::HtmlElement>()
+                        .style()
+                        .get_property_value("--editor-indent-columns")
+                        .unwrap()
+                        == "4"
+                })
+        })
+        .await;
+        let initial = actions.indent_guides(Indentation::default());
+        assert_eq!(initial.as_ref(), [0, 4, 4, 4, 0, 0]);
+        assert!(std::sync::Arc::ptr_eq(
+            &initial,
+            &actions.indent_guides(Indentation::default())
+        ));
+        let changed = Indentation {
+            width: 2,
+            tab_width: 8,
+            ..Default::default()
+        };
+        actions.set_indentation(changed);
+        wait_until("tab width refreshes indexed guides", || {
+            mounted
+                .element(".editor-source-line[data-line='2']")
+                .style()
+                .get_property_value("--editor-indent-columns")
+                .unwrap()
+                == "8"
+        })
+        .await;
+        assert_eq!(actions.indent_guides(changed).as_ref(), [0, 8, 4, 4, 0, 0]);
+        assert_eq!(initial.as_ref(), [0, 4, 4, 4, 0, 0]);
+        mounted
+            .state
+            .workspace
+            .content
+            .set("  child\r\n\r\n\tpeer\r\n".into());
+        wait_until("replacement source owns guide paint", || {
+            mounted
+                .element(".editor-highlight-content")
+                .text_content()
+                .as_deref()
+                == Some("  child\n\n\tpeer\n")
+                && actions.indent_guides(changed).as_ref() == [2, 2, 8, 0]
+        })
+        .await;
+        assert_eq!(
+            mounted
+                .element(".editor-source-line[data-line='2']")
+                .style()
+                .get_property_value("--editor-indent-columns")
+                .unwrap(),
+            "2"
+        );
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .update(|documents| {
+                documents.remove(&(1, "guide.txt".into()));
+            });
+        assert!(
+            actions.indent_guides(changed).is_empty(),
+            "missing source cannot reuse another document's guides"
+        );
+    }
+}
+
+#[wasm_bindgen_test]
 async fn editor_navigation_status_and_decorations_share_source_coordinates_in_both_modes() {
     use openwebide_core::editor::{FoldCommand, byte_to_textarea};
     use openwebide_frontend::state_actions::editor::EditorActions;

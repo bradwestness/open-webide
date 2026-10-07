@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Query indentation guides from shared indexed document rows and cache immutable results across repeated queries. Reuse disabled-guide tables for same-row-count edits above the structural limit, and resolve blank-row continuation in one pass while preserving tabs, Unicode whitespace and LF/CRLF behavior.
+
 - Install shared editor document rows before syntax preparation and publish bounded neutral unwrapped frames before animation callbacks. Revalidate source-owned native input without reinstalling identical paint; preserve source/font/account guards and deferred styled, wrapped and oversized paint. Release old native window bindings when complete short text fits, restoring current source scroll extents.
 
 - Make editor browser checks wait for styled token paint and verify repeated-row measurement bounds per probe, including font/layout retries on Linux.

@@ -82,7 +82,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   and parser fold validation read the same row boundaries. Shared fold assembly
   borrows those indexed rows for grammar-backed files.
   Parser and document indexes share changed-row
-  reconstruction and suffix rebasing. Warm semantic list assembly, boundary construction,
+  reconstruction and suffix rebasing. Indentation guides query indexed source rows
+  and share cached immutable tables; above the structural byte limit, same-row-count
+  edits retain disabled-guide tables across indentation settings. Smaller-file guide
+  reconstruction still visits all rows after edits. Warm semantic list assembly, boundary construction,
   paint-table iteration and shifted suffix metadata still visit the file.
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list

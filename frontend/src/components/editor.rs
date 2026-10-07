@@ -1170,9 +1170,10 @@ fn HighlightOverlay(
         actions.syntax_paint()
     });
     let guides = Memo::new(move |_| {
-        std::sync::Arc::<[usize]>::from(content.with(|source| {
-            openwebide_core::editor::indent_guide_columns(source, indentation.get())
-        }))
+        content.track();
+        actions.presentation_scope();
+        actions.prepare_projection();
+        actions.indent_guides(indentation.get())
     });
     let retain_style = Callback::new(move |()| {
         actions.syntax_is_pending()

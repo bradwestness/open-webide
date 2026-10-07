@@ -98,37 +98,39 @@ fn matching_bracket_in(text: &str, structure: &Structure, offset: usize) -> Opti
 /// Visual widths for indentation guides, rounded to complete indentation steps.
 /// Blank rows continue the common indentation of the surrounding content.
 pub fn indent_guide_columns(text: &str, indentation: super::Indentation) -> Vec<usize> {
-    let rows: Vec<_> = text.split('\n').collect();
     if text.len() > super::MAX_STRUCTURE_BYTES {
-        return vec![0; rows.len()];
+        return text.split('\n').map(|_| 0).collect();
     }
-    let mut columns: Vec<_> = rows
-        .iter()
-        .map(|row| {
-            let end = row
-                .bytes()
-                .take_while(|ch| matches!(ch, b' ' | b'\t'))
-                .count();
-            let width = indentation.visual_width(&row[..end]);
-            width / indentation.width() * indentation.width()
-        })
-        .collect();
-    let mut next = 0;
-    let mut following = vec![0; rows.len()];
-    for index in (0..rows.len()).rev() {
-        following[index] = next;
-        if !rows[index].trim().is_empty() {
-            next = columns[index];
-        }
-    }
+    guide_columns(text.split('\n'), indentation)
+}
+
+/// Indexed documents and standalone callers share blank-row continuation policy.
+pub(super) fn guide_columns<'a>(
+    rows: impl IntoIterator<Item = &'a str>,
+    indentation: super::Indentation,
+) -> Vec<usize> {
+    let mut columns = Vec::new();
     let mut previous = 0;
-    for (index, row) in rows.iter().enumerate() {
-        if row.trim().is_empty() {
-            columns[index] = previous.min(following[index]);
-        } else {
-            previous = columns[index];
+    let mut blanks = None;
+    for row in rows {
+        if row.chars().all(char::is_whitespace) {
+            blanks.get_or_insert(columns.len());
+            columns.push(0);
+            continue;
         }
+        let end = row
+            .bytes()
+            .take_while(|ch| matches!(ch, b' ' | b'\t'))
+            .count();
+        let width = indentation.visual_width(&row[..end]);
+        let width = width / indentation.width() * indentation.width();
+        if let Some(start) = blanks.take() {
+            columns[start..].fill(previous.min(width));
+        }
+        columns.push(width);
+        previous = width;
     }
+    // A trailing blank run has no following indentation, so its guides stay zero.
     columns
 }
 
