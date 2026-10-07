@@ -265,7 +265,10 @@ impl EditorActions {
                     snapshot.dirty = dirty;
                 }
             });
-            if current_read && self.key().as_ref() == Some(&owner.key) && self.source() == preview {
+            if current_read
+                && self.key().as_ref() == Some(&owner.key)
+                && self.source_matches(&preview)
+            {
                 self.workspace.content.set(source);
                 self.workspace.dirty.set(dirty);
             }
@@ -287,7 +290,7 @@ impl EditorActions {
             .editor_documents
             .try_update(|documents| {
                 let document = documents.get_mut(&owner.key)?;
-                if document.text() != self.source() {
+                if !self.source_matches(document.text()) {
                     document.cancel_composition();
                     return None;
                 }
@@ -651,7 +654,7 @@ impl EditorActions {
     ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
         let rules = self.rules_untracked();
         let language = openwebide_core::highlight::language_from_path(path);
-        if !self.is_current(project, path) || self.source() != source {
+        if !self.is_current(project, path) || !self.source_matches(source) {
             return Ok(None);
         }
         let syntax = (command == openwebide_core::editor::SelectionCommand::Expand)
@@ -774,7 +777,7 @@ impl EditorActions {
         source: &str,
         operation: impl FnOnce(&mut Document) -> Result<bool, openwebide_core::editor::SelectionError>,
     ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
-        if !self.is_current(project, path) || self.source() != source {
+        if !self.is_current(project, path) || !self.source_matches(source) {
             return Ok(None);
         }
         self.cancel_queued_motion(None);
@@ -996,7 +999,7 @@ impl EditorActions {
         if self.workspace.is_resolving() || self.workspace.pending_diff.get_untracked().is_some() {
             return Err(SearchError::ReadOnly);
         }
-        if self.source() != source {
+        if !self.source_matches(source) {
             return Err(SearchError::ChangedDocument);
         }
         let Some(key) = self.key() else {
@@ -1026,7 +1029,9 @@ impl EditorActions {
     }
 
     pub fn navigation_target(self, query: &str) -> Option<usize> {
-        openwebide_core::editor::navigation_target(&self.source(), query)
+        self.workspace
+            .content
+            .with_untracked(|source| openwebide_core::editor::navigation_target(source, query))
     }
 
     pub fn matching_bracket(self, offset: usize) -> Option<(usize, usize)> {
@@ -1036,7 +1041,7 @@ impl EditorActions {
             return None;
         }
         let syntax = self.syntax_structure(|| true);
-        if self.key() != Some(key.clone()) || self.source() != source {
+        if self.key() != Some(key.clone()) || !self.source_matches(&source) {
             return None;
         }
         if let Some(context) = syntax {
@@ -1048,6 +1053,37 @@ impl EditorActions {
                 offset,
             )
         }
+    }
+
+    /// Inspect source ownership without allocating another complete file value.
+    pub fn source_matches(self, expected: &str) -> bool {
+        self.workspace
+            .content
+            .with_untracked(|source| source == expected)
+    }
+
+    pub fn current_selections(self) -> Vec<Selection> {
+        self.workspace
+            .content
+            .with_untracked(|source| self.selections(source))
+    }
+
+    pub fn source_len(self) -> usize {
+        self.workspace.content.with_untracked(String::len)
+    }
+
+    pub fn selection_count(self) -> usize {
+        let Some(key) = self.key() else {
+            return 0;
+        };
+        self.workspace.content.with_untracked(|source| {
+            self.workspace.editor_documents.with_untracked(|documents| {
+                documents
+                    .get(&key)
+                    .filter(|document| document.text() == source)
+                    .map_or(0, |document| document.selections().len())
+            })
+        })
     }
 
     pub fn source(self) -> String {
@@ -1389,7 +1425,7 @@ impl EditorActions {
         if composing
             && !self.workspace.editor_documents.with_untracked(|documents| {
                 documents.get(&key).is_some_and(|document| {
-                    document.is_composing() && document.text() == self.source()
+                    document.is_composing() && self.source_matches(document.text())
                 })
             })
         {
@@ -1589,7 +1625,7 @@ impl EditorActions {
         self.workspace.editor_documents.with_untracked(|documents| {
             documents
                 .get(&key)
-                .filter(|document| document.text() == self.source())
+                .filter(|document| self.source_matches(document.text()))
                 .map(Document::clipboard_content)
                 .transpose()
         })

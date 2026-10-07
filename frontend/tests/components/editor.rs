@@ -9890,8 +9890,6 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
         frame().await;
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
-        let width = openwebide_frontend::viewport::editor_scroll(&input).scroll_width();
-        assert!(width > 100_000);
         // Initial font/syntax readiness can replace the paint scope. Establish
         // its first measured anchors before auditing previously unseen intervals.
         for x in [10_000.0, 0.0] {
@@ -9911,6 +9909,10 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
             .await;
             settle().await;
         }
+        // Audit the source extent after initial geometry and native-window
+        // installation settle, rather than a transient cold native extent.
+        let width = openwebide_frontend::viewport::editor_scroll(&input).scroll_width();
+        assert!(width > 100_000);
         let measured_source = js_sys::Function::new_no_args(
             r#"
             const state = {max: 0};
@@ -12210,6 +12212,13 @@ async fn prepared_editor_binds_native_windows_and_edits_full_source_in_both_mode
                 Some(Selection::caret(original.len()))
             );
             assert!(input.value().ends_with("tail"));
+            assert_eq!(
+                actions.input_selection(
+                    Selection::caret(input.selection_end().unwrap().unwrap() as usize),
+                    || panic!("bound selection mapping must not read the native value"),
+                ),
+                Selection::caret(original.len()),
+            );
             mounted.click(".capture-window");
             let captured = mounted
                 .state

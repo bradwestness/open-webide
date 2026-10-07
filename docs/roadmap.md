@@ -80,7 +80,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   surrounding text to the textarea, with full-source selections and source-owned
   scrolling. Finish initial/cold and touch pointer selection, caret ownership and
   source extents, then verify physical Chrome/Edge PWA input methods. Reduce
-  full-source access in remaining input paths,
+  full-source access in remaining input paths (ownership checks and ordinary typing
+  selection dispatch now borrow source),
   composition snapshots and buffer/projection publication. Admission now skips
   untouched complete rows; long boundary rows still scan, and storage still shifts
   suffix bytes and coordinates.

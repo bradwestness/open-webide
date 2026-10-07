@@ -177,6 +177,23 @@ impl EditorActions {
         })
     }
 
+    /// Map browser offsets through the installed window, folded view or source.
+    /// Only folded unbound input needs its value read to prove its mapping.
+    pub fn input_selection(self, native: Selection, value: impl FnOnce() -> String) -> Selection {
+        if let Some(selection) = self.input_source_selection(native) {
+            return selection;
+        }
+        if let Some(projection) = self.projection().filter(FoldProjection::is_folded)
+            && value() == projection.textarea_text()
+            && let Ok(selection) = projection.source_native_selection(native)
+        {
+            return selection;
+        }
+        self.workspace
+            .content
+            .with_untracked(|source| self.native_selection(source, native))
+    }
+
     pub fn native_context(self) -> Option<EditorNativeContext> {
         let key = self.key()?;
         self.workspace.content.with_untracked(|source| {

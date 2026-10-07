@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Avoid copying complete editor files for source-ownership checks, cursor counts, Select All and navigation queries. Map native window/fold/source selections through the shared facade without cloning source in selection, typing, paste or composition handlers. Ordinary typing keys skip the selection dispatcher’s file snapshot; edit and stale-context behavior stays shared across workspace modes.
+
 - Reuse indexed admission counts for unchanged editor rows during typing, commands, multi-cursor edits and IME previews. Scan inserted text and joining rows while preserving byte/line limits, CRLF joins, failure ordering and history; non-admitted source retains full validation.
 
 - Bind prepared desktop editors to scoped native surrounding text in both workspace modes, preserving full-source selections, clipboard actions, page navigation, chat capture and grouped history. Keep source scrolling independent of the input window, reject stale window/read/account events, and retain composition ownership across fold metadata updates. Reserve a consistent 2 MiB frontend WASM stack and reduce editor view return-value copying. Initial cold/touch input and physical PWA verification remain in progress.

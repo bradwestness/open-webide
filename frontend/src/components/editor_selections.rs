@@ -57,7 +57,7 @@ pub(super) fn SelectionOverlay(
         workspace.content.track();
         workspace.open_file.track();
         workspace.active_project.track();
-        actions.selections(&actions.source()).len().max(1)
+        actions.selection_count().max(1)
     });
     Effect::new(move || {
         workspace.editor_documents.track();

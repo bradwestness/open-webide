@@ -25,11 +25,10 @@ fn editor_clipboard_copy(
     read_only: bool,
     error: RwSignal<Option<String>>,
 ) {
-    let source = actions.source();
-    let selection = projected_selection(actions, textarea, &source);
+    let selection = projected_selection(actions, textarea);
     if selection.range().is_empty()
         && actions
-            .selections(&source)
+            .current_selections()
             .iter()
             .skip(1)
             .all(|selection| selection.range().is_empty())
@@ -94,12 +93,11 @@ fn editor_selection_key(
 ) -> bool {
     use openwebide_core::editor::{SelectionCommand as Command, SelectionMotion as Motion};
     let modified = event.ctrl_key() || event.meta_key();
-    let source = actions.source();
-    let multiple = actions.selections(&source).len() > 1;
+    let multiple = actions.selection_count() > 1;
     if modified && !event.alt_key() && event.key().eq_ignore_ascii_case("a") {
         let selection = openwebide_core::editor::Selection {
             anchor: 0,
-            head: source.len(),
+            head: actions.source_len(),
         };
         match actions.record_selection(selection) {
             Ok(()) => {
@@ -111,7 +109,7 @@ fn editor_selection_key(
         return true;
     }
     if !modified && !event.alt_key() && matches!(event.key().as_str(), "PageUp" | "PageDown") {
-        let selection = projected_selection(actions, textarea, &source);
+        let selection = projected_selection(actions, textarea);
         if let Err(failure) = actions.record_native_selection(selection) {
             error.set(Some(failure.to_string()));
         } else {
@@ -181,8 +179,7 @@ fn editor_selection_key(
     if command.is_some() && !motion_adapter.flush(textarea) {
         return true;
     }
-    let source = actions.source();
-    let selection = projected_selection(actions, textarea, &source);
+    let selection = projected_selection(actions, textarea);
     if let Err(failure) = actions.record_native_selection(selection) {
         error.set(Some(failure.to_string()));
         return true;
@@ -193,6 +190,7 @@ fn editor_selection_key(
         motion_adapter.queue(textarea, motion, event.shift_key());
         return true;
     }
+    let source = actions.source();
     let result = if let Some(command) = command {
         actions.selection_command(project, &path, &source, command)
     } else if actions.preferences().word_wrap && matches!(motion, Some(Motion::Up | Motion::Down)) {
@@ -295,29 +293,12 @@ fn native_selection_units(
 fn projected_selection(
     actions: EditorActions,
     textarea: &web_sys::HtmlTextAreaElement,
-    source: &str,
 ) -> openwebide_core::editor::Selection {
-    let native = native_selection_units(textarea);
-    if let Some(selection) = actions.input_source_selection(native) {
-        return selection;
-    }
-    if let Some(projection) = actions
-        .projection()
-        .filter(openwebide_core::editor::FoldProjection::is_folded)
-        && textarea.value() == projection.textarea_text()
-        && let Ok(selection) = projection.source_native_selection(native)
-    {
-        return selection;
-    }
-    actions.native_selection(source, native)
+    actions.input_selection(native_selection_units(textarea), || textarea.value())
 }
 
-fn prepare_editor_edit(
-    actions: EditorActions,
-    textarea: &web_sys::HtmlTextAreaElement,
-    source: &str,
-) {
-    let selection = projected_selection(actions, textarea, source);
+fn prepare_editor_edit(actions: EditorActions, textarea: &web_sys::HtmlTextAreaElement) {
+    let selection = projected_selection(actions, textarea);
     if actions.prepare_edit(selection).is_ok() {
         render_editor_selection(actions, textarea, selection, true);
     }
@@ -564,13 +545,12 @@ fn apply_fold_command(
     actions: EditorActions,
     textarea: &web_sys::HtmlTextAreaElement,
     command: openwebide_core::editor::FoldCommand,
-    source: &str,
 ) {
     let scroll = (
         crate::viewport::editor_scroll(textarea).scroll_top(),
         crate::viewport::editor_scroll(textarea).scroll_left(),
     );
-    let _ = actions.record_native_selection(projected_selection(actions, textarea, source));
+    let _ = actions.record_native_selection(projected_selection(actions, textarea));
     if let Some((projection, selection)) = actions.fold_command(command)
         && let Ok(visible) = projection.visible_selection(selection)
     {
@@ -1898,11 +1878,10 @@ fn apply_editor_command(
     actions: EditorActions,
     command: EditorCommand,
     textarea: &web_sys::HtmlTextAreaElement,
-    text: &str,
 ) -> bool {
     if let Ok(Some((_text, selection))) = actions.command(
         command,
-        projected_selection(actions, textarea, text),
+        projected_selection(actions, textarea),
         actions.rules_untracked().indentation,
     ) {
         refresh_editor_folds(actions);
@@ -2324,8 +2303,7 @@ pub fn Editor(
         if let Some(textarea) = ta.get_untracked()
             && current_editor_target(editor_actions, &textarea)
         {
-            let source = content.get_untracked();
-            let selection = projected_selection(editor_actions, &textarea, &source);
+            let selection = projected_selection(editor_actions, &textarea);
             if let Some((_, target)) = editor_actions.matching_bracket(selection.head) {
                 navigate_editor(editor_actions, &textarea, target, paint_request);
             }
@@ -2392,7 +2370,7 @@ pub fn Editor(
             let selection = ta
                 .get_untracked()
                 .filter(|textarea| current_editor_target(editor_actions, textarea))
-                .map(|textarea| projected_selection(editor_actions, &textarea, &source));
+                .map(|textarea| projected_selection(editor_actions, &textarea));
             scope_candidate.set(
                 selection
                     .filter(|selection| !selection.range().is_empty())
@@ -2710,7 +2688,7 @@ pub fn Editor(
                                                 let Some(textarea) = ta.get_untracked().filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 let (Some(project), Some(path)) = (workspace.active_project.get_untracked(), open_file.get_untracked()) else { return; };
                                                 let source = content.get_untracked();
-                                                let selection = projected_selection(editor_actions, &textarea, &source);
+                                                let selection = projected_selection(editor_actions, &textarea);
                                                 if let Err(error) = editor_actions.record_native_selection(selection) { action_error.set(Some(error.to_string())); return; }
                                                 match editor_actions.selection_command(project, &path, &source, command) {
                                                     Ok(Some(selections)) => { action_error.set(None); if let Some(selection) = selections.first() { render_editor_selection(editor_actions, &textarea, *selection, false); focus_editor_after_menu(workspace, editor_actions, &textarea); } }
@@ -2742,7 +2720,7 @@ pub fn Editor(
                                                     _ => false,
                                                 }
                                             } on:click=move |_| {
-                                                if let Some(textarea) = ta.get() && !read_only.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_editor_command(editor_actions, command, &textarea, &workspace.content.get_untracked()); let _ = textarea.focus(); }
+                                                if let Some(textarea) = ta.get() && !read_only.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_editor_command(editor_actions, command, &textarea); let _ = textarea.focus(); }
                                             }>{label}</button>
                                         }).collect_view()}
                                         {[
@@ -2754,7 +2732,7 @@ pub fn Editor(
                                             ("Unfold all", openwebide_core::editor::FoldCommand::ExpandAll),
                                         ].into_iter().map(move |(label, command)| view! {
                                             <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move || fold_state.with(|state| state.ranges().is_empty()) on:click=move |_| {
-                                                if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_fold_command(editor_actions, &textarea, command, &content.get_untracked()); }
+                                                if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_fold_command(editor_actions, &textarea, command); }
                                             }>{label}</button>
                                         }).collect_view()}
                                     </super::dropdown::ActionMenu>
@@ -3023,9 +3001,7 @@ pub fn Editor(
                                                 || editor_actions.account_generation() != editor_account_generation
                                                 || !current_editor_target(editor_actions, &textarea) { return; }
                                             crate::viewport::sync_editor_scroll(&textarea, false);
-                                            workspace.content.with_untracked(|source| {
-                                                let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, source));
-                                            });
+                                            let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea));
                                             let scroll = crate::viewport::editor_scroll(&textarea);
                                             editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), scroll.scroll_top(), scroll.scroll_left());
                                             if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
@@ -3053,7 +3029,7 @@ pub fn Editor(
                                                         if event.current_target().and_then(|target| target.dyn_into::<web_sys::Element>().ok()).is_none_or(|node| !node.is_connected()) { return; }
                                                         if let (Some(project), Some(path), Some(textarea)) = (project, path.as_ref(), ta.get_untracked())
                                                             && editor_actions.is_current(project, path) && current_editor_target(editor_actions, &textarea)
-                                                        { apply_fold_command(editor_actions, &textarea, openwebide_core::editor::FoldCommand::Toggle(header), &content.get_untracked()); }
+                                                        { apply_fold_command(editor_actions, &textarea, openwebide_core::editor::FoldCommand::Toggle(header)); }
                                                     })><Icon name=if collapsed { IconName::ChevronRight } else { IconName::ChevronDown } /></IconButton>
                                                 })}</div> }
                                             }).collect_view()
@@ -3069,15 +3045,15 @@ pub fn Editor(
                                             title="Tab indents; Ctrl+M toggles Tab moving focus"
                                             node_ref=ta
                                             on:select=move |event: web_sys::Event| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea)); }
                                             }
                                             on:blur=move |event: web_sys::FocusEvent| {
                                                 paste_matches_indentation.set(false);
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea)); }
                                             }
                                             on:keyup=move |event: web_sys::KeyboardEvent| { if event.key().eq_ignore_ascii_case("v") { paste_matches_indentation.set(false); }
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &content.get_untracked())); } }
-                                            on:click=move |event: web_sys::MouseEvent| { if !event.alt_key() && let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &content.get_untracked())); } }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea)); } }
+                                            on:click=move |event: web_sys::MouseEvent| { if !event.alt_key() && let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea)); } }
                                             on:mousedown=move |event: web_sys::MouseEvent| {
                                                 column_anchor.set_value(None);
                                                 pointer_adapter.start(&event);
@@ -3090,7 +3066,7 @@ pub fn Editor(
                                                 let Some(projection) = editor_actions.projection() else { return; };
                                                 let Ok(offset) = projection.source_offset(projection.textarea_to_byte(offset as usize)) else { return; };
                                                 let source = content.get_untracked();
-                                                let selection = projected_selection(editor_actions, &textarea, &source);
+                                                let selection = projected_selection(editor_actions, &textarea);
                                                 if let Err(error) = editor_actions.record_native_selection(selection) { action_error.set(Some(error.to_string())); return; }
                                                 let (Some(project), Some(path)) = (workspace.active_project.get_untracked(), open_file.get_untracked()) else { return; };
                                                 let result = if event.shift_key() {
@@ -3122,7 +3098,7 @@ pub fn Editor(
                                             }
                                             on:mouseup=move |_| column_anchor.set_value(None)
                                             on:paste=move |event: web_sys::ClipboardEvent| {
-                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { if !motion_adapter.flush(&textarea) { event.prevent_default(); return; } prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
+                                                if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { if !motion_adapter.flush(&textarea) { event.prevent_default(); return; } prepare_editor_edit(editor_actions, &textarea); }
                                                 let matching = paste_matches_indentation.get_untracked(); paste_matches_indentation.set(false);
                                                 if read_only.get_untracked() { return; }
                                                 let multiple = editor_actions.selections(&content.get_untracked()).len() > 1;
@@ -3132,7 +3108,7 @@ pub fn Editor(
                                                 let Ok(pasted) = clipboard.get_data("text/plain") else { return; };
                                                 if pasted.is_empty() { return; }
                                                 event.prevent_default();
-                                                let selection = projected_selection(editor_actions, &textarea, &workspace.content.get_untracked());
+                                                let selection = projected_selection(editor_actions, &textarea);
                                                 let metadata = clipboard.get_data(openwebide_core::editor::CLIPBOARD_SELECTIONS_MIME).ok();
                                                 let result = if matching { editor_actions.paste_clipboard_with_indentation(&pasted, metadata.as_deref(), selection).map(|result| result.map(|(_, selection)| selection)) } else { editor_actions.paste_clipboard(&pasted, metadata.as_deref(), selection) };
                                                 match result {
@@ -3155,8 +3131,8 @@ pub fn Editor(
                                                     editor_actions.cancel_native_text();
                                                     if !motion_adapter.flush(&textarea) { if event.cancelable() { event.prevent_default(); } return; }
                                                     if event.is_composing() && !editor_actions.is_composing() { if event.cancelable() { event.prevent_default(); } return; }
-                                                    if !read_only.get_untracked() { prepare_editor_edit(editor_actions, &textarea, &content.get_untracked()); }
-                                                    let selection = projected_selection(editor_actions, &textarea, &workspace.content.get_untracked());
+                                                    if !read_only.get_untracked() { prepare_editor_edit(editor_actions, &textarea); }
+                                                    let selection = projected_selection(editor_actions, &textarea);
                                                     let _ = editor_actions.record_native_selection(selection);
                                                     if read_only.get_untracked() || event.is_composing() || !event.cancelable() { return; }
                                                     let command = match event.input_type().as_str() {
@@ -3165,7 +3141,7 @@ pub fn Editor(
                                                         "insertText" => event.data().and_then(|text| pair_character(&text)).map(EditorCommand::TypeCharacter),
                                                         _ => None,
                                                     };
-                                                    if let Some(command) = command && apply_editor_command(editor_actions, command, &textarea, &workspace.content.get_untracked()) { event.prevent_default(); return; }
+                                                    if let Some(command) = command && apply_editor_command(editor_actions, command, &textarea) { event.prevent_default(); return; }
                                                     if event.input_type() == "insertText" && !editor_actions.is_composing() && let Some(text) = event.data() {
                                                         editor_actions.begin_native_text(text);
                                                     }
@@ -3174,8 +3150,8 @@ pub fn Editor(
                                             on:compositionstart=move |event: web_sys::CompositionEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
                                                     if !motion_adapter.flush(&textarea) { editor_actions.cancel_queued_motion(None); }
-                                                    prepare_editor_edit(editor_actions, &textarea, &content.get_untracked());
-                                                    let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, &workspace.content.get_untracked())); editor_actions.begin_composition();
+                                                    prepare_editor_edit(editor_actions, &textarea);
+                                                    let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea)); editor_actions.begin_composition();
                                                 }
                                             }
                                             on:compositionend=move |event: web_sys::CompositionEvent| {
@@ -3200,7 +3176,7 @@ pub fn Editor(
                                                 if modified && event.alt_key() && (matches!(event.key().as_str(), "[" | "]") || matches!(event.code().as_str(), "BracketLeft" | "BracketRight")) {
                                                     event.prevent_default(); event.stop_propagation();
                                                     let command = if event.key() == "[" || event.code() == "BracketLeft" { openwebide_core::editor::FoldCommand::Collapse { recursive: event.shift_key() } } else { openwebide_core::editor::FoldCommand::Expand { recursive: event.shift_key() } };
-                                                    apply_fold_command(editor_actions, &textarea, command, &content.get_untracked()); return;
+                                                    apply_fold_command(editor_actions, &textarea, command); return;
                                                 }
                                                 if modified && event.shift_key() && !event.alt_key() && event.key().eq_ignore_ascii_case("v") && !read_only.get_untracked() { paste_matches_indentation.set(true); return; }
 
@@ -3223,7 +3199,7 @@ pub fn Editor(
                                                     key if !modified && !event.alt_key() => pair_character(key).map(EditorCommand::TypeCharacter),
                                                     _ => None,
                                                 };
-                                                if let Some(command) = command && apply_editor_command(editor_actions, command, &textarea, &workspace.content.get_untracked()) {
+                                                if let Some(command) = command && apply_editor_command(editor_actions, command, &textarea) {
                                                     event.prevent_default(); event.stop_propagation();
                                                 }
                                             }
@@ -3271,9 +3247,7 @@ pub fn Editor(
                                                     // aligned immediately, before the surface's queued event.
                                                     let moved = crate::viewport::sync_editor_scroll(&textarea, true);
                                                     if !moved && event.is_trusted() && crate::viewport::editor_scroll(&textarea).class_list().contains("editor-scroll-surface") { return; }
-                                                    workspace.content.with_untracked(|source| {
-                                                        let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea, source));
-                                                    });
+                                                    let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea));
                                                     editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), crate::viewport::editor_scroll(&textarea).scroll_top(), crate::viewport::editor_scroll(&textarea).scroll_left());
                                                     if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
                                                     layout_revision.update(|revision| *revision = revision.wrapping_add(1));
@@ -3299,7 +3273,7 @@ pub fn Editor(
                     <super::editor_options::IndentationControls above=true value=Signal::derive(move || editor_actions.rules().indentation) disabled=read_only on_change=Callback::new(move |indentation| editor_actions.set_indentation(indentation)) />
                     <Button size=ButtonSize::Sm variant=ButtonVariant::Ghost disabled=read_only on_click=Callback::new(move |_| {
                         if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) {
-                            apply_editor_command(editor_actions, EditorCommand::ConvertIndentation, &textarea, &workspace.content.get_untracked()); let _ = textarea.focus();
+                            apply_editor_command(editor_actions, EditorCommand::ConvertIndentation, &textarea); let _ = textarea.focus();
                         }
                     })>"Convert indentation"</Button>
                     <span class="editor-rules-source" title=move || editor_actions.rules().source.unwrap_or_else(|| "Detected from this file, with editor defaults as fallback".into())>{move || if editor_actions.rules().source.is_some() { "EditorConfig" } else { "Detected / defaults" }}</span>

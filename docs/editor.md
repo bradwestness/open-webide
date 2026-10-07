@@ -370,8 +370,12 @@ validate eventual secondary edits against the same byte, line and long-line limi
 before publishing the primary change, and failed
 frames restore the pre-composition source, selections and redo history.
 
-Composition
-snapshots and workspace publication still retain complete source Strings.
+Ownership checks, cursor counts, Select All and navigation queries borrow current
+source instead of cloning complete file values. Native selection mapping lives in
+the shared input facade; the DOM adapter supplies UTF-16 positions and reads its
+value only when an unbound folded view needs validation. Ordinary typing keys do not capture
+a source snapshot in selection dispatch. Command snapshots, composition snapshots
+and workspace publication still retain complete source Strings.
 Ordinary transactions validate borrowed proposed pieces before mutating the existing
 String, including grouped undo/redo. Growth reserves at most 64 KiB of headroom
 above the transaction's peak size, rather than doubling a large buffer. Affected row contexts are merged so multiple
