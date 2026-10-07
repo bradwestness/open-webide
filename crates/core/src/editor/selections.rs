@@ -10,6 +10,25 @@ use std::{ops::Range, sync::LazyLock};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+/// A rectangular gesture belongs to one source version and its tab geometry.
+/// Selection changes do not replace that version; edits and reloads do.
+#[derive(Clone, Debug)]
+pub struct ColumnSelection {
+    anchor: usize,
+    indentation: Indentation,
+    revision: u64,
+    identity: std::sync::Arc<()>,
+}
+impl ColumnSelection {
+    pub fn matches(&self, document: &Document) -> bool {
+        self.revision == document.revision
+            && std::sync::Arc::ptr_eq(&self.identity, &document.identity)
+    }
+    pub const fn indentation(&self) -> Indentation {
+        self.indentation
+    }
+}
+
 pub const MAX_SELECTIONS: usize = 512;
 const MAX_EXPANSIONS: usize = 64;
 static WORDS: LazyLock<Regex> =
@@ -161,13 +180,25 @@ pub fn column_selections(
     head: usize,
     indentation: Indentation,
 ) -> Result<Vec<Selection>, SelectionError> {
+    column_selections_with_rows(text, None, anchor, head, indentation)
+}
+fn column_selections_with_rows(
+    text: &str,
+    rows: Option<&[super::lines::Line]>,
+    anchor: usize,
+    head: usize,
+    indentation: Indentation,
+) -> Result<Vec<Selection>, SelectionError> {
     super::validate_selections(text, &[Selection { anchor, head }])?;
     if text.len() > super::MAX_STRUCTURE_BYTES {
         return Err(SelectionError::TooLarge);
     }
-    let rows = lines(text);
-    let anchor_row = row_at(&rows, anchor);
-    let head_row = row_at(&rows, head);
+    let owned = rows.is_none().then(|| lines(text));
+    let rows = rows
+        .or(owned.as_deref())
+        .expect("retained or constructed rows");
+    let anchor_row = row_at(rows, anchor);
+    let head_row = row_at(rows, head);
     let first = anchor_row.min(head_row);
     let last = anchor_row.max(head_row);
     if last - first + 1 > MAX_SELECTIONS {
@@ -307,11 +338,41 @@ impl Document {
         head: usize,
         indentation: Indentation,
     ) -> Result<bool, SelectionError> {
-        let selections = column_selections(&self.text, anchor, head, indentation)?;
+        let selections = column_selections_with_rows(
+            &self.text,
+            Some(&self.line_index.rows),
+            anchor,
+            head,
+            indentation,
+        )?;
         let changed = selections != self.selections;
         self.set_selections(selections)?;
         self.reveal_selection();
         Ok(changed)
+    }
+    pub fn begin_column_selection(
+        &mut self,
+        anchor: usize,
+        head: usize,
+        indentation: Indentation,
+    ) -> Result<ColumnSelection, SelectionError> {
+        self.select_columns(anchor, head, indentation)?;
+        Ok(ColumnSelection {
+            anchor,
+            indentation,
+            revision: self.revision,
+            identity: self.identity.clone(),
+        })
+    }
+    pub fn drag_column_selection(
+        &mut self,
+        gesture: &ColumnSelection,
+        head: usize,
+    ) -> Result<bool, SelectionError> {
+        if !gesture.matches(self) {
+            return Err(EditError::StaleContext.into());
+        }
+        self.select_columns(gesture.anchor, head, gesture.indentation)
     }
     pub fn selection_command(
         &mut self,
@@ -562,6 +623,75 @@ impl Document {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn column_gestures_reuse_source_rows_and_match_standalone_grapheme_policy() {
+        for ending in ["\n", "\r\n"] {
+            let prefix = format!("padding{ending}").repeat(6_000);
+            let source = format!("{prefix}\t文😀e\u{301} abc{ending}\tq{ending}wide 文😀{ending}");
+            let mut document = Document::new(source.clone());
+            let rows = document.line_index.rows.as_ptr();
+            let indentation = Indentation::default();
+            let anchor = prefix.len() + 1;
+            let heads = [
+                anchor,
+                source.find("abc").unwrap(),
+                source.find("wide").unwrap() + 5,
+                source.len(),
+            ];
+            let gesture = document
+                .begin_column_selection(anchor, heads[0], indentation)
+                .unwrap();
+            for head in heads {
+                document.drag_column_selection(&gesture, head).unwrap();
+                assert_eq!(
+                    document.selections(),
+                    column_selections(&source, anchor, head, indentation).unwrap()
+                );
+                assert_eq!(document.line_index.rows.as_ptr(), rows);
+                assert_eq!(document.text(), source);
+                assert_eq!(document.revision(), 0);
+                assert!(!document.is_dirty());
+            }
+            let before = document.selections().to_vec();
+            assert!(
+                document
+                    .drag_column_selection(&gesture, source.len() + 1)
+                    .is_err()
+            );
+            assert_eq!(document.selections(), before);
+        }
+    }
+
+    #[test]
+    fn column_gestures_reject_replacement_edits_and_undo_without_mutating_selections() {
+        let source = "abc\r\ndef\r\nghi";
+        let mut document = Document::new(source);
+        let gesture = document
+            .begin_column_selection(1, 6, Indentation::default())
+            .unwrap();
+        let mut replacement = Document::new(source);
+        let before = replacement.selections().to_vec();
+        assert_eq!(
+            replacement.drag_column_selection(&gesture, 8),
+            Err(EditError::StaleContext.into())
+        );
+        assert_eq!(replacement.selections(), before);
+        document.replace_selections("X", None).unwrap();
+        let before = document.selections().to_vec();
+        assert_eq!(
+            document.drag_column_selection(&gesture, 8),
+            Err(EditError::StaleContext.into())
+        );
+        assert_eq!(document.selections(), before);
+        assert!(document.undo());
+        assert_eq!(document.text(), source);
+        assert!(!gesture.matches(&document));
+        assert_eq!(
+            document.drag_column_selection(&gesture, 8),
+            Err(EditError::StaleContext.into())
+        );
+    }
+
     use super::*;
     #[test]
     fn clipboard_lines_follow_primary_order_and_undo_with_selections() {

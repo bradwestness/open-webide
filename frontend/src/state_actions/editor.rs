@@ -22,6 +22,8 @@ pub enum EditorCommand {
     Reindent,
 }
 
+mod columns;
+pub use columns::EditorColumnSelection;
 mod decorations;
 pub use decorations::EditorDecorations;
 mod input;
@@ -124,13 +126,9 @@ impl EditorActions {
             .editor_rules
             .with(|rules| key.as_ref().and_then(|key| rules.get(key).cloned()))
             .unwrap_or_else(|| {
-                openwebide_core::editor::resolve_rules(
-                    "",
-                    &self.workspace.content.get(),
-                    defaults,
-                    &[],
-                )
-                .0
+                self.workspace.content.with(|source| {
+                    openwebide_core::editor::resolve_rules("", source, defaults, &[]).0
+                })
             });
         if let Some(indentation) = self
             .workspace

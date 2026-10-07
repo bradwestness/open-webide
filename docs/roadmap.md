@@ -110,7 +110,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   coordinates instead of source snapshots; indexed native columns avoid scanning
   preceding rows, and non-bracket cursor movement skips bracket preparation. Pointer gestures now borrow current
   source and retain document identity, rejecting replacement documents even at the
-  same revision. Release-app Chromium checks cover highlighted token/line-end clicks,
+  same revision. Rectangular gestures retain source-version identity and tab geometry;
+  column queries reuse indexed logical rows instead of rebuilding the file's row table.
+  Native selection restoration, composition completion, clipboard cursor checks and
+  fallback rule detection borrow source. Release-app Chromium checks cover highlighted token/line-end clicks,
   far-right blank space and held pointer movement in Rust/C#/JSON and scrolled
   bounded input in both modes. Click/drag hits share measured-boundary validation
   and row-padding normalization. Expanded LF checks cover upper/lower row padding

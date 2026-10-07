@@ -568,6 +568,107 @@ async fn multiline_clipboard_fragments_round_trip_in_both_modes_and_reject_bad_m
 }
 
 #[wasm_bindgen_test]
+async fn column_gestures_reject_source_scope_and_document_replacements_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Document, Indentation, column_selections},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = "a\t文😀z\r\nxy\r\na\t文😀z";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for change in 0..9 {
+            let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+            let slot = saved.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("owned-columns.rs".into()));
+                state.workspace.content.set(source.into());
+                slot.set(Some(EditorActions::new(state.workspace)));
+                editor_view(state)
+            });
+            settle().await;
+            let actions = saved.get().unwrap();
+            let indentation = actions.rules_untracked().indentation;
+            let (gesture, selections) = actions
+                .begin_current_column_selection(1, "owned-columns.rs", 1, source.find('z').unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                selections,
+                column_selections(source, 1, source.find('z').unwrap(), indentation).unwrap()
+            );
+            let head = source.len() - 1;
+            assert_eq!(
+                actions
+                    .drag_current_column_selection(&gesture, head)
+                    .unwrap()
+                    .unwrap(),
+                column_selections(source, 1, head, indentation).unwrap()
+            );
+            match change {
+                0 => mounted
+                    .state
+                    .workspace
+                    .content
+                    .set(source.replace("xy", "AB")),
+                1 => mounted
+                    .state
+                    .workspace
+                    .pending_epoch
+                    .update(|value| *value += 1),
+                2 => mounted
+                    .state
+                    .workspace
+                    .editor_read_revision
+                    .update(|value| *value += 1),
+                3 => mounted.state.auth.generation.update(|value| *value += 1),
+                4 => mounted.state.workspace.active_project.set(Some(2)),
+                5 => mounted
+                    .state
+                    .workspace
+                    .open_file
+                    .set(Some("replacement.rs".into())),
+                6 => mounted
+                    .state
+                    .workspace
+                    .editor_documents
+                    .update(|documents| {
+                        documents.insert((1, "owned-columns.rs".into()), Document::new(source));
+                    }),
+                7 => actions.set_indentation(Indentation {
+                    tab_width: 8,
+                    ..indentation
+                }),
+                _ => {
+                    actions
+                        .paste("changed", openwebide_core::editor::Selection::caret(0))
+                        .unwrap();
+                }
+            }
+            let before = mounted.state.workspace.editor_documents.get_untracked();
+            assert!(
+                actions
+                    .drag_current_column_selection(&gesture, 0)
+                    .unwrap()
+                    .is_none(),
+                "{mode:?}, change {change}"
+            );
+            assert_eq!(
+                mounted.state.workspace.editor_documents.get_untracked(),
+                before
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn multi_cursor_pointer_and_column_gestures_share_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;

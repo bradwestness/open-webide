@@ -79,6 +79,12 @@ Use **Editing commands** or these shortcuts for multiple selections:
 | Expand/shrink selection | Alt+Shift+Right/Left |
 | Keep primary cursor | Escape |
 
+Column gestures retain their anchor, tab geometry and source-version identity,
+without retaining file text. The shared document engine reuses indexed logical
+rows for rectangles; edits, reloads, account/project changes and indentation
+changes reject stale drags. Standalone column queries use the same validation
+and grapheme policy with a fresh row index.
+
 Alt-click adds/removes a cursor. Alt+Shift click/drag selects a column from the
 primary anchor, honoring tab stops and complete Unicode graphemes. Secondary
 carets and selections use the same font metrics as the syntax paint, including

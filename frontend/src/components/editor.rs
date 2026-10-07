@@ -1972,7 +1972,8 @@ pub fn Editor(
     let paint_whitespace = Memo::new(move |_| editor_actions.preferences().show_whitespace);
     let tab_moves_focus = RwSignal::new(false);
     let paste_matches_indentation = RwSignal::new(false);
-    let column_anchor = StoredValue::new(None::<(i64, String, String, usize, u64)>);
+    let column_anchor =
+        StoredValue::new(None::<crate::state_actions::editor::EditorColumnSelection>);
     Effect::new(move |_| {
         workspace.active_project.track();
         workspace.open_file.track();
@@ -2691,7 +2692,7 @@ pub fn Editor(
                 el.set_value(value);
             }
             if let Some(selection) = editor_actions
-                .selection(&content.get_untracked())
+                .current_selection()
                 .and_then(|selection| current_projection.input_selection(selection).ok())
                 .or_else(|| mounted.then_some(openwebide_core::editor::Selection::caret(0)))
             {
@@ -3145,14 +3146,15 @@ pub fn Editor(
                                                 let Some(offset) = crate::viewport::editor_caret_from_point(&textarea, event.client_x(), event.client_y()) else { return; };
                                                 let Some(projection) = editor_actions.projection() else { return; };
                                                 let Ok(offset) = projection.source_offset(projection.textarea_to_byte(offset as usize)) else { return; };
-                                                let source = content.get_untracked();
                                                 let selection = projected_selection(editor_actions, &textarea);
                                                 if let Err(error) = editor_actions.record_native_selection(selection) { action_error.set(Some(error.to_string())); return; }
                                                 let (Some(project), Some(path)) = (workspace.active_project.get_untracked(), open_file.get_untracked()) else { return; };
                                                 let result = if event.shift_key() {
-                                                    column_anchor.set_value(Some((project, path.clone(), source.clone(), selection.anchor, workspace.pending_epoch.get_untracked())));
-                                                    editor_actions.select_columns(project, &path, &source, selection.anchor, offset)
-                                                } else { editor_actions.toggle_cursor(project, &path, &source, offset) };
+                                                    editor_actions.begin_current_column_selection(project, &path, selection.anchor, offset)
+                                                        .map(|result| result.map(|(gesture, selections)| {
+                                                            column_anchor.set_value(Some(gesture)); selections
+                                                        }))
+                                                } else { editor_actions.toggle_current_cursor(project, &path, offset) };
                                                 match result {
                                                     Ok(Some(selections)) => { action_error.set(None); if let Some(selection) = selections.first() { render_editor_selection(editor_actions, &textarea, *selection, false); let focus = web_sys::FocusOptions::new(); focus.set_prevent_scroll(true); let _ = textarea.focus_with_options(&focus); } }
                                                     Err(error) => action_error.set(Some(error.to_string())),
@@ -3163,13 +3165,12 @@ pub fn Editor(
                                                 if event.buttons() & 1 == 0 { column_anchor.set_value(None); return; }
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 column_anchor.with_value(|owner| {
-                                                    let Some((project, path, source, anchor, epoch)) = owner else { return; };
-                                                    if workspace.pending_epoch.get_untracked() != *epoch || !editor_actions.is_current(*project, path) || editor_actions.source() != *source { return; }
+                                                    let Some(gesture) = owner else { return; };
                                                     let Some(offset) = crate::viewport::editor_caret_from_point(&textarea, event.client_x(), event.client_y()) else { return; };
                                                     let Some(projection) = editor_actions.projection() else { return; };
                                                     let Ok(offset) = projection.source_offset(projection.textarea_to_byte(offset as usize)) else { return; };
                                                     event.prevent_default();
-                                                    match editor_actions.select_columns(*project, path, source, *anchor, offset) {
+                                                    match editor_actions.drag_current_column_selection(gesture, offset) {
                                                         Ok(Some(selections)) => { action_error.set(None); if let Some(selection) = selections.first() { render_editor_selection(editor_actions, &textarea, *selection, false); } }
                                                         Err(error) => action_error.set(Some(error.to_string())),
                                                         Ok(None) => {}
@@ -3181,7 +3182,7 @@ pub fn Editor(
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) { if !motion_adapter.flush(&textarea) { event.prevent_default(); return; } prepare_editor_edit(editor_actions, &textarea); }
                                                 let matching = paste_matches_indentation.get_untracked(); paste_matches_indentation.set(false);
                                                 if read_only.get_untracked() { return; }
-                                                let multiple = editor_actions.selections(&content.get_untracked()).len() > 1;
+                                                let multiple = editor_actions.selection_count() > 1;
                                                 if !matching && !multiple { return; }
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 let Some(clipboard) = event.clipboard_data() else { return; };
@@ -3242,7 +3243,7 @@ pub fn Editor(
                                                     );
                                                     if installed && editor_actions.is_composing() { let _ = editor_actions.projected_input(textarea.value(), editor_selection(&textarea), "insertCompositionText", event.time_stamp()); }
                                                     let _ = editor_actions.end_composition(); refresh_editor_folds(editor_actions);
-                                                    if let Some(selection) = editor_actions.selection(&workspace.content.get_untracked()) { render_editor_selection(editor_actions, &textarea, selection, false); }
+                                                    if let Some(selection) = editor_actions.current_selection() { render_editor_selection(editor_actions, &textarea, selection, false); }
                                                 }
                                             }
                                             on:keydown=move |event: web_sys::KeyboardEvent| {

@@ -36,7 +36,8 @@ pub use motion::SelectionMotion;
 mod selections;
 pub use native::NativeInputKind;
 pub use selections::{
-    MAX_SELECTIONS, SelectionCommand, SelectionError, column_selections, normalize_selections,
+    ColumnSelection, MAX_SELECTIONS, SelectionCommand, SelectionError, column_selections,
+    normalize_selections,
 };
 mod recovery;
 pub use recovery::{

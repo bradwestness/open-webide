@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep rectangular cursor gestures on their source version without retaining file copies. Reuse indexed logical rows for column selection, preserve tab/Unicode/CRLF behavior, and reject stale project, account, reload, source, document and indentation state. Borrow source for fallback indentation rules and native selection/clipboard checks.
+
 - Keep deferred active-line and bracket decorations source-free. Borrow current text, query indexed UTF-16 row coordinates and reject queued marks after source, selection, syntax, layout, project or account changes; skip bracket preparation away from brackets without copying the file.
 
 - Reuse cold editor row dimensions for identical paint after two matching layout samples. Check every measured batch for conflicts before sharing dimensions; retain fresh layout for distinct rows and preserve source, font and account ownership checks.
