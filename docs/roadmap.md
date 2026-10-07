@@ -79,12 +79,14 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   instead of recomputing it or comparing unchanged piece/row bytes again; skipped paint
   versions use the complete retained-source comparison.
   Parser edit positions now query incremental logical-line coordinates; grammar paint
-  reads the same row boundaries. Parser and document indexes share changed-row
+  and parser fold validation read the same row boundaries. Shared fold assembly
+  borrows those indexed rows for grammar-backed files.
+  Parser and document indexes share changed-row
   reconstruction and suffix rebasing. Warm semantic list assembly, boundary construction,
   paint-table iteration and shifted suffix metadata still visit the file.
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list
-  reconstruction/validation and row-table construction still visit the whole file.
+  reconstruction/validation and standalone lexical row-table construction still visit the whole file.
   Parser fallback metadata and lexical folding now scan borrowed source without
   creating temporary source snapshots; owned contexts share their scan/query policy.
   Finish those incremental paths, larger retained-container reuse and remaining source snapshot

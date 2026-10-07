@@ -477,6 +477,12 @@ than splitting the complete source again. Direct parser updates enforce the
 existing row limit; cancellation clears the retained coordinates. Shifted suffix
 records still require rebasing.
 
+Parser fold validation queries the same indexed rows without building a complete
+list of row slices. The shared fold policy borrows those rows for grammar-backed
+documents; standalone lexical callers index once. Syntax row slices retain CR
+before LF so Tree-sitter byte columns and closing-line sibling checks keep their
+existing meaning. Lexical scans and fold-result assembly still visit the file.
+
 Grammar paint assembles one row at a time, comparing incoming piece identities
 against that row's retained list. Matching rows keep their list and token
 allocations; changed classifications rebuild the row. This avoids temporary

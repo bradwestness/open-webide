@@ -1,6 +1,7 @@
 //! Reuse parser fold descriptors for unchanged disjoint subtrees.
 use super::subtrees::{ParsedSubtrees, Part, charge_visits, visit_parts};
 use super::{FoldRange, Node, Point, SyntaxProvider, SyntaxStatus, Tree, visit_node};
+use crate::editor::lines::SyntaxLines;
 use std::collections::HashMap;
 
 type Span = (Point, Point);
@@ -25,7 +26,7 @@ impl ParsedFolds {
         &mut self,
         tree: &Tree,
         provider: SyntaxProvider,
-        lines: &[&str],
+        lines: SyntaxLines<'_>,
         ranges: &mut Vec<FoldRange>,
         visited: &mut usize,
     ) -> Result<(), SyntaxStatus> {
@@ -130,7 +131,7 @@ fn fold(node: Node<'_>, provider: SyntaxProvider) -> Option<Span> {
     Some((start, node.end_position()))
 }
 
-fn publish((start, end): Span, lines: &[&str], ranges: &mut Vec<FoldRange>) {
+fn publish((start, end): Span, lines: SyntaxLines<'_>, ranges: &mut Vec<FoldRange>) {
     let trailing = lines
         .get(end.row)
         .and_then(|line| line.get(end.column..))
@@ -166,7 +167,7 @@ fn absolute(point: Point, base: Point) -> Option<Point> {
     })
 }
 
-fn valid(point: Point, lines: &[&str]) -> bool {
+fn valid(point: Point, lines: SyntaxLines<'_>) -> bool {
     lines
         .get(point.row)
         .is_some_and(|line| line.is_char_boundary(point.column))

@@ -2,10 +2,11 @@
 //! parser provider. All offsets are source bytes; workspace/browser details stay out.
 use super::{
     FoldRange, MAX_STRUCTURE_BYTES, Structure,
-    lines::{lines, row_at},
+    lines::{Line, lines, row_at},
     normalize_folds,
 };
 use crate::highlight::Language;
+use std::borrow::Cow;
 
 const MAX_FOLD_LINES: usize = 100_000;
 
@@ -17,10 +18,21 @@ pub fn fold_ranges(
     parsed: Option<&[FoldRange]>,
     tab_width: usize,
 ) -> Vec<FoldRange> {
+    fold_ranges_with_rows(text, language, parsed, tab_width, None)
+}
+
+/// Indexed callers borrow their proven source rows; standalone callers index once.
+pub(super) fn fold_ranges_with_rows(
+    text: &str,
+    language: Language,
+    parsed: Option<&[FoldRange]>,
+    tab_width: usize,
+    indexed: Option<&[Line]>,
+) -> Vec<FoldRange> {
     if text.len() > MAX_STRUCTURE_BYTES {
         return Vec::new();
     }
-    let rows = lines(text);
+    let rows = indexed.map_or_else(|| Cow::Owned(lines(text)), Cow::Borrowed);
     if rows.len() > MAX_FOLD_LINES {
         return Vec::new();
     }
@@ -239,6 +251,48 @@ mod tests {
             }]
         );
     }
+    #[test]
+    fn indexed_and_standalone_folding_share_line_endings_directives_and_limits() {
+        for language in [
+            Language::Rust,
+            Language::Python,
+            Language::Cpp,
+            Language::Html,
+            Language::Shell,
+            Language::Yaml,
+            Language::Plain,
+        ] {
+            for text in [
+                "// 文😀\r\n// comment\r\nfn f() {\r\n nested();\r\n} else {}\r\n",
+                "#region 文😀\nroot:\n  child\n#endregion\n",
+                "\r",
+                "",
+            ] {
+                let rows = lines(text);
+                for parsed in [
+                    None,
+                    Some(
+                        [FoldRange {
+                            start_line: 2,
+                            end_line: 4,
+                        }]
+                        .as_slice(),
+                    ),
+                ] {
+                    assert_eq!(
+                        fold_ranges_with_rows(text, language, parsed, 4, Some(&rows)),
+                        fold_ranges(text, language, parsed, 4)
+                    );
+                }
+            }
+        }
+        let oversized = "\n".repeat(MAX_FOLD_LINES);
+        let rows = lines(&oversized);
+        assert!(fold_ranges_with_rows(&oversized, Language::Rust, None, 4, Some(&rows)).is_empty());
+        let oversized = "x".repeat(MAX_STRUCTURE_BYTES + 1);
+        assert!(fold_ranges_with_rows(&oversized, Language::Rust, None, 4, Some(&[])).is_empty());
+    }
+
     #[test]
     fn consecutive_comment_rows_fold_without_swallowing_code_or_blank_rows() {
         for (language, prefix) in [

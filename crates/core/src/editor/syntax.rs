@@ -479,7 +479,13 @@ impl SyntaxDocument {
             return Vec::new();
         }
         let parsed = self.tree.as_ref().map(|_| self.parser_folds());
-        super::fold_ranges(&self.text, self.language, parsed.as_deref(), tab_width)
+        super::fold_providers::fold_ranges_with_rows(
+            &self.text,
+            self.language,
+            parsed.as_deref(),
+            tab_width,
+            self.tree.as_ref().map(|_| self.source_lines.as_slice()),
+        )
     }
 
     fn parser_folds(&self) -> Vec<FoldRange> {
@@ -489,13 +495,13 @@ impl SyntaxDocument {
         let Some(provider) = self.provider else {
             return Vec::new();
         };
-        let lines: Vec<_> = self.text.split('\n').collect();
+        let lines = super::lines::SyntaxLines::new(&self.text, &self.source_lines);
         let mut ranges = Vec::new();
         let mut visited = 0;
         if self
             .folds
             .borrow_mut()
-            .collect(tree, provider, &lines, &mut ranges, &mut visited)
+            .collect(tree, provider, lines, &mut ranges, &mut visited)
             .is_err()
         {
             return Vec::new();
@@ -505,7 +511,7 @@ impl SyntaxDocument {
                 && embedded
                     .folds
                     .borrow_mut()
-                    .collect(tree, embedded.provider, &lines, &mut ranges, &mut visited)
+                    .collect(tree, embedded.provider, lines, &mut ranges, &mut visited)
                     .is_err()
             {
                 return Vec::new();
@@ -748,6 +754,13 @@ mod tests {
                 )
             );
             assert_eq!(rows, super::super::lines::lines(&changed));
+            let indexed = super::super::lines::SyntaxLines::new(&changed, &rows);
+            let complete = changed.split('\n').collect::<Vec<_>>();
+            assert_eq!(indexed.len(), complete.len());
+            for (index, text) in complete.into_iter().enumerate() {
+                assert_eq!(indexed.get(index), Some(text));
+            }
+            assert!(indexed.get(indexed.len()).is_none());
             source = changed;
         }
         let changed = "";
@@ -1187,7 +1200,7 @@ mod tests {
                 .collect(
                     syntax.tree.as_ref().unwrap(),
                     syntax.provider.unwrap(),
-                    &changed.split('\n').collect::<Vec<_>>(),
+                    super::super::lines::SyntaxLines::new(&changed, &syntax.source_lines),
                     &mut ranges,
                     &mut visited,
                 )
@@ -1246,7 +1259,7 @@ mod tests {
             syntax.folds.borrow_mut().collect(
                 syntax.tree.as_ref().unwrap(),
                 syntax.provider.unwrap(),
-                &changed.split('\n').collect::<Vec<_>>(),
+                super::super::lines::SyntaxLines::new(&changed, &syntax.source_lines),
                 &mut ranges,
                 &mut visited,
             ),

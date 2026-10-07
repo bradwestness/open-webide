@@ -20,6 +20,28 @@ pub(super) struct Line {
     pub end: usize,
 }
 
+/// Tree-sitter columns count source bytes, retaining CR before an LF separator.
+#[cfg(feature = "editor-parser")]
+#[derive(Clone, Copy)]
+pub(super) struct SyntaxLines<'a> {
+    source: &'a str,
+    rows: &'a [Line],
+}
+#[cfg(feature = "editor-parser")]
+impl<'a> SyntaxLines<'a> {
+    pub fn new(source: &'a str, rows: &'a [Line]) -> Self {
+        Self { source, rows }
+    }
+    pub fn len(self) -> usize {
+        self.rows.len()
+    }
+    pub fn get(self, index: usize) -> Option<&'a str> {
+        let row = self.rows.get(index)?;
+        let text = self.source.get(row.start..row.end)?;
+        Some(text.strip_suffix('\n').unwrap_or(text))
+    }
+}
+
 fn line_iter(text: &str) -> impl Iterator<Item = Line> + '_ {
     let mut start = 0;
     text.split_inclusive('\n')
