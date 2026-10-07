@@ -27,6 +27,97 @@ struct PaintedRow {
     tokens: TokenRow,
 }
 
+/// Match retained row parts without allocating another list for unchanged rows.
+struct RowPaint {
+    previous: Option<PaintedRow>,
+    parts: Vec<(Arc<PaintedPiece>, usize)>,
+    matched: usize,
+    changed: bool,
+    plain: bool,
+}
+
+impl RowPaint {
+    fn new(
+        row: &crate::editor::lines::Line,
+        source: &str,
+        previous: &mut HashMap<usize, PaintedRow>,
+        edit: &super::InputEdit,
+    ) -> Self {
+        let end = row.end - usize::from(source[row.start..row.end].ends_with('\n'));
+        let retained = previous_range(row.start..end, edit).and_then(|range| {
+            previous
+                .remove(&range.start)
+                .filter(|row| row.end == range.end)
+        });
+        Self {
+            previous: retained,
+            parts: Vec::new(),
+            matched: 0,
+            changed: false,
+            plain: end - row.start > crate::highlight::MAX_HIGHLIGHT_LINE_BYTES,
+        }
+    }
+
+    fn append(&mut self, piece: &Arc<PaintedPiece>, index: usize) {
+        if self.plain {
+            return;
+        }
+        if !self.changed {
+            if self
+                .previous
+                .as_ref()
+                .and_then(|row| row.pieces.get(self.matched))
+                .is_some_and(|(old, old_row)| *old_row == index && Arc::ptr_eq(old, piece))
+            {
+                self.matched += 1;
+                return;
+            }
+            if let Some(row) = &mut self.previous {
+                row.pieces.truncate(self.matched);
+                self.parts = std::mem::take(&mut row.pieces);
+            }
+            self.changed = true;
+        }
+        self.parts.push((piece.clone(), index));
+    }
+
+    fn finish(mut self, row: &crate::editor::lines::Line, text: &str) -> PaintedRow {
+        let raw = &text[row.start..row.end];
+        let source = raw.strip_suffix('\n').unwrap_or(raw);
+        let end = row.start + source.len();
+        if !self.changed
+            && let Some(mut row) = self.previous.take()
+        {
+            if self.matched == row.pieces.len() {
+                row.end = end;
+                return row;
+            }
+            row.pieces.truncate(self.matched);
+            self.parts = row.pieces;
+        }
+        let tokens = if self.plain {
+            Arc::from(vec![Token {
+                kind: TokenKind::Plain,
+                text: source.into(),
+            }])
+        } else if let [(piece, row)] = self.parts.as_slice() {
+            piece.rows[*row].clone()
+        } else {
+            Arc::from(
+                self.parts
+                    .iter()
+                    .flat_map(|(piece, row)| piece.rows[*row].iter().cloned())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        PaintedRow {
+            end,
+            pieces: self.parts,
+            tokens,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SyntaxPaint {
     pub(super) source: Arc<str>,
@@ -125,7 +216,20 @@ impl SyntaxDocument {
         let mut pieces = HashMap::new();
         #[cfg(test)]
         let mut repainted_pieces = 0;
-        let mut lines = vec![Vec::new()];
+        let mut rows = HashMap::new();
+        let mut tokens = Vec::with_capacity(self.source_lines.len());
+        let mut current_row = 0;
+        let mut current = Some(RowPaint::new(
+            self.source_lines.first()?,
+            &self.text,
+            &mut previous.rows,
+            &edit,
+        ));
+        let mut finish_row = |paint: RowPaint, row: &crate::editor::lines::Line| {
+            let painted = paint.finish(row, &self.text);
+            tokens.push(painted.tokens.clone());
+            rows.insert(row.start, painted);
+        };
         let mut protected = 0;
         let mut selected = 0;
         for range in boundaries.windows(2) {
@@ -221,67 +325,25 @@ impl SyntaxDocument {
             });
             for index in 0..paint.rows.len() {
                 if index > 0 {
-                    lines.push(Vec::new());
+                    finish_row(current.take()?, self.source_lines.get(current_row)?);
+                    current_row += 1;
+                    current = Some(RowPaint::new(
+                        self.source_lines.get(current_row)?,
+                        &self.text,
+                        &mut previous.rows,
+                        &edit,
+                    ));
                 }
                 if !paint.rows[index].is_empty() {
-                    lines.last_mut()?.push((paint.clone(), index));
+                    current.as_mut()?.append(&paint, index);
                 }
             }
             pieces.insert(start, Piece { end, paint });
         }
-        let mut rows = HashMap::new();
-        let mut tokens = Vec::with_capacity(lines.len());
-        if lines.len() != self.source_lines.len() {
+        if current_row + 1 != self.source_lines.len() {
             return None;
         }
-        for (mut parts, row) in lines.into_iter().zip(&self.source_lines) {
-            let raw = &self.text[row.start..row.end];
-            let source = raw.strip_suffix('\n').unwrap_or(raw);
-            let start = row.start;
-            let end = start + source.len();
-            let plain = source.len() > crate::highlight::MAX_HIGHLIGHT_LINE_BYTES;
-            if plain {
-                parts.clear();
-            }
-            let retained =
-                previous_range(start..end, &edit).and_then(|range| {
-                    let row = previous.rows.get(&range.start)?;
-                    (row.end == range.end
-                        && row.pieces.len() == parts.len()
-                        && row.pieces.iter().zip(&parts).all(
-                            |((old, old_row), (next, next_row))| {
-                                old_row == next_row && Arc::ptr_eq(old, next)
-                            },
-                        ))
-                    .then(|| row.tokens.clone())
-                });
-            let line = retained.unwrap_or_else(|| {
-                if plain {
-                    Arc::from(vec![Token {
-                        kind: TokenKind::Plain,
-                        text: source.into(),
-                    }])
-                } else if let [(piece, row)] = parts.as_slice() {
-                    piece.rows[*row].clone()
-                } else {
-                    Arc::from(
-                        parts
-                            .iter()
-                            .flat_map(|(piece, row)| piece.rows[*row].iter().cloned())
-                            .collect::<Vec<_>>(),
-                    )
-                }
-            });
-            tokens.push(line.clone());
-            rows.insert(
-                start,
-                PaintedRow {
-                    end,
-                    pieces: parts,
-                    tokens: line,
-                },
-            );
-        }
+        finish_row(current.take()?, self.source_lines.get(current_row)?);
         *previous = SyntaxPaint {
             source: self.text.clone(),
             source_change: None,
@@ -299,6 +361,70 @@ impl SyntaxDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_row_matching_rebuilds_changed_truncated_and_extended_parts() {
+        let piece = |text: &str| {
+            Arc::new(PaintedPiece {
+                language: Language::Rust,
+                kind: Some(TokenKind::Keyword),
+                rows: share_token_rows(vec![vec![Token {
+                    kind: TokenKind::Keyword,
+                    text: text.into(),
+                }]]),
+            })
+        };
+        let pieces = [piece("a"), piece("b"), piece("c")];
+        for indices in [
+            vec![0, 1],
+            vec![0, 2],
+            vec![2, 1],
+            vec![0],
+            vec![0, 1, 2],
+            vec![],
+        ] {
+            let previous = PaintedRow {
+                end: 2,
+                pieces: vec![(pieces[0].clone(), 0), (pieces[1].clone(), 0)],
+                tokens: Arc::from(vec![
+                    pieces[0].rows[0][0].clone(),
+                    pieces[1].rows[0][0].clone(),
+                ]),
+            };
+            let original_parts = previous.pieces.as_ptr();
+            let original_tokens = previous.tokens.clone();
+            let mut paint = RowPaint {
+                previous: Some(previous),
+                parts: Vec::new(),
+                matched: 0,
+                changed: false,
+                plain: false,
+            };
+            let source = indices
+                .iter()
+                .map(|index| pieces[*index].rows[0][0].text.as_str())
+                .collect::<String>();
+            for index in &indices {
+                paint.append(&pieces[*index], 0);
+            }
+            let row = paint.finish(&crate::editor::lines::lines(&source)[0], &source);
+            assert_eq!(row.end, source.len());
+            assert_eq!(row.pieces.len(), indices.len());
+            assert_eq!(
+                row.tokens
+                    .iter()
+                    .map(|token| token.text.as_str())
+                    .collect::<String>(),
+                source
+            );
+            if indices == [0, 1] {
+                assert_eq!(row.pieces.as_ptr(), original_parts);
+                assert!(Arc::ptr_eq(&row.tokens, &original_tokens));
+            } else {
+                assert!(!Arc::ptr_eq(&row.tokens, &original_tokens));
+            }
+        }
+    }
+
     #[test]
     fn color_classification_reuses_descendants_without_losing_work_limits() {
         let source = (0..200)
@@ -386,8 +512,29 @@ mod tests {
         let mut document = SyntaxDocument::new(Language::Rust).unwrap();
         let original = document.prepare(&source, 4, || true).1.unwrap();
         let pieces = document.paint.borrow().pieces.len();
+        let row_allocations = |document: &SyntaxDocument| {
+            document
+                .source_lines
+                .iter()
+                .map(|row| {
+                    let paint = document.paint.borrow();
+                    let parts = &paint.rows[&row.start].pieces;
+                    (!parts.is_empty()).then_some(parts.as_ptr() as usize)
+                })
+                .collect::<Vec<_>>()
+        };
+        let original_parts = row_allocations(&document);
         let changed = source.replacen("文😀", "😀 changed", 1);
         let next = document.prepare(&changed, 4, || true).1.unwrap();
+        let next_parts = row_allocations(&document);
+        assert!(
+            original_parts
+                .iter()
+                .zip(&next_parts)
+                .filter(|(old, next)| old.is_some() && old == next)
+                .count()
+                > next_parts.len() / 2
+        );
         let old_rows = original.highlights.as_ref().unwrap();
         let rows = next.highlights.as_ref().unwrap();
         assert!(
@@ -405,6 +552,15 @@ mod tests {
             .prepare(&format!("\r\n{changed}"), 4, || true)
             .1
             .unwrap();
+        let shifted_parts = row_allocations(&document);
+        assert!(
+            next_parts
+                .iter()
+                .zip(shifted_parts.iter().skip(1))
+                .filter(|(old, next)| old.is_some() && old == next)
+                .count()
+                > next_parts.len() / 2
+        );
         let shifted_rows = shifted.highlights.as_ref().unwrap();
         assert!(
             rows.iter()

@@ -477,6 +477,12 @@ than splitting the complete source again. Direct parser updates enforce the
 existing row limit; cancellation clears the retained coordinates. Shifted suffix
 records still require rebasing.
 
+Grammar paint assembles one row at a time, comparing incoming piece identities
+against that row's retained list. Matching rows keep their list and token
+allocations; changed classifications rebuild the row. This avoids temporary
+piece lists for the complete source, while boundary construction and the final
+row table still visit the file.
+
 Long-row paint and cursor probes
 also share sparse grapheme/UTF-16 coordinates and cached horizontal eligibility;
 unchanged rows retain their allocation. Lookups scan from exact cluster boundaries
