@@ -4988,6 +4988,88 @@ async fn native_edits_clipboard_commands_and_composition_keep_disjoint_folds_in_
 }
 
 #[wasm_bindgen_test]
+async fn deferred_decorations_reject_replaced_source_selection_and_scope_in_both_modes() {
+    use openwebide_core::editor::Selection;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = "fn main() {\r\n let 文 = \"😀\"; if true { call(); }\r\n}\r\n";
+    let at = source.find("if true {").unwrap() + "if true ".len();
+    let column = source[source.find('\n').unwrap() + 1..at]
+        .encode_utf16()
+        .count();
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        for change in 0..9 {
+            let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+            let slot = saved.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("decorations.rs".into()));
+                state.workspace.content.set(source.into());
+                slot.set(Some(EditorActions::new(state.workspace)));
+                editor_view(state)
+            });
+            settle().await;
+            let actions = saved.get().unwrap();
+            actions.record_selection(Selection::caret(at)).unwrap();
+            let decorations = actions.decorations(true).unwrap();
+            assert_eq!(decorations.active_line, 2);
+            let brackets = decorations.brackets.unwrap();
+            assert_eq!(brackets[0], (2, u32::try_from(column).unwrap()));
+            assert!(brackets[1].1 > brackets[0].1);
+            assert!(actions.decorations_current(&decorations));
+            assert!(actions.decorations(false).unwrap().brackets.is_none());
+            match change {
+                0 => {
+                    actions.record_selection(Selection::caret(at + 1)).unwrap();
+                }
+                1 => mounted
+                    .state
+                    .workspace
+                    .content
+                    .set(source.replace("call", "work")),
+                2 => mounted
+                    .state
+                    .workspace
+                    .pending_epoch
+                    .update(|value| *value += 1),
+                3 => mounted
+                    .state
+                    .workspace
+                    .editor_read_revision
+                    .update(|value| *value += 1),
+                4 => mounted.state.auth.generation.update(|value| *value += 1),
+                5 => mounted.state.workspace.active_project.set(Some(2)),
+                6 => mounted
+                    .state
+                    .workspace
+                    .open_file
+                    .set(Some("replacement.rs".into())),
+                7 => mounted
+                    .state
+                    .workspace
+                    .editor_fold_revision
+                    .update(|value| *value += 1),
+                _ => mounted
+                    .state
+                    .workspace
+                    .editor_preparation_revision
+                    .update(|value| *value += 1),
+            }
+            assert!(
+                !actions.decorations_current(&decorations),
+                "{mode:?}, change {change}"
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn editor_navigation_status_and_decorations_share_source_coordinates_in_both_modes() {
     use openwebide_core::editor::{FoldCommand, byte_to_textarea};
     use openwebide_frontend::state_actions::editor::EditorActions;

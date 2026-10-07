@@ -416,6 +416,15 @@ impl Document {
     pub fn line_column(&self, offset: usize) -> (usize, usize) {
         self.line_index.line_column(&self.text, offset)
     }
+    /// One-based source row and zero-based native UTF-16 column for DOM paint.
+    /// Reuse sparse row coordinates instead of rescanning preceding source.
+    pub fn native_line_column(&self, offset: usize) -> Result<(usize, usize), EditError> {
+        let native = self.byte_to_textarea(offset)?;
+        let row = lines::row_at(&self.line_index.rows, offset);
+        let start = self.byte_to_textarea(self.line_index.rows[row].start)?;
+        Ok((row + 1, native - start))
+    }
+
     pub fn line_count(&self) -> usize {
         self.line_index.rows.len()
     }
@@ -849,6 +858,51 @@ pub fn byte_to_textarea(text: &str, offset: usize) -> Result<usize, EditError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_line_columns_match_unicode_crlf_coordinates_after_edits_and_history() {
+        let source = format!("start\r\n{}[x]\r\nend", "文😀e\u{301}\t".repeat(180));
+        let mut document = Document::new(source.clone());
+        let check = |document: &Document| {
+            let source = document.text();
+            for offset in source
+                .char_indices()
+                .map(|(at, _)| at)
+                .chain([source.len()])
+            {
+                let prefix = &source[..offset];
+                let start = prefix.rfind('\n').map_or(0, |at| at + 1);
+                let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+                let column = byte_to_textarea(source, offset).unwrap()
+                    - byte_to_textarea(source, start).unwrap();
+                assert_eq!(document.native_line_column(offset), Ok((line, column)));
+            }
+            assert_eq!(
+                document.native_line_column(source.len() + 1),
+                Err(EditError::InvalidSelection)
+            );
+            assert_eq!(
+                document.native_line_column(source.find('文').unwrap() + 1),
+                Err(EditError::InvalidSelection)
+            );
+        };
+        check(&document);
+        document
+            .apply(
+                vec![Edit {
+                    range: 0..0,
+                    text: "new 😀\r\n".into(),
+                }],
+                vec![Selection::caret(0)],
+                None,
+            )
+            .unwrap();
+        check(&document);
+        assert!(document.undo());
+        check(&document);
+        assert!(document.redo());
+        check(&document);
+    }
+
     proptest::proptest! {
         #[test]
         fn disjoint_unicode_transactions_match_full_replacement_and_history(

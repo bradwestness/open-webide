@@ -2297,20 +2297,20 @@ pub fn Editor(
     Effect::new(move || {
         highlight_ready.get();
         layout_revision.track();
+        editor_actions.preparation_revision();
         cursor_status.get();
         open_file.track();
         view_mode.track();
-        let source = content.get();
-        let path = open_file.get_untracked();
-        let selection = editor_actions.selection(&source).unwrap_or_default();
+        content.track();
+        let Some(decorations) = editor_actions.decorations(highlight_ready.get_untracked()) else {
+            return;
+        };
         leptos::leptos_dom::helpers::queue_microtask(move || {
             let Some(Some(textarea)) = ta.try_get_untracked() else {
                 return;
             };
             if !current_editor_target(editor_actions, &textarea)
-                || open_file.try_get_untracked() != Some(path.clone())
-                || editor_actions.source() != source
-                || editor_actions.selection(&source).unwrap_or_default() != selection
+                || !editor_actions.decorations_current(&decorations)
             {
                 return;
             }
@@ -2327,26 +2327,20 @@ pub fn Editor(
                     }
                 }
             }
-            let (line, _) = openwebide_core::editor::line_column(&source, selection.head);
-            if let Ok(Some(row)) =
-                parent.query_selector(&format!(".editor-source-line[data-line='{line}']"))
-            {
+            if let Ok(Some(row)) = parent.query_selector(&format!(
+                ".editor-source-line[data-line='{}']",
+                decorations.active_line,
+            )) {
                 let _ = row.class_list().add_1("editor-active-line");
             }
             let mut marks = Vec::new();
             if highlight_ready.get_untracked()
-                && let Some((first, second)) = editor_actions.matching_bracket(selection.head)
+                && let Some(brackets) = decorations.brackets
             {
-                for offset in [first, second] {
-                    let (line, _) = openwebide_core::editor::line_column(&source, offset);
-                    let start = source[..offset]
-                        .rfind('\n')
-                        .map_or(0, |newline| newline + 1);
+                for (line, column) in brackets {
                     if let Ok(Some(row)) =
                         parent.query_selector(&format!(".editor-source-line[data-line='{line}']"))
                     {
-                        let column = u32::try_from(source[start..offset].encode_utf16().count())
-                            .unwrap_or(u32::MAX);
                         for range in
                             super::editor_paint::ranges(&row, column..column.saturating_add(1))
                         {
@@ -2364,7 +2358,9 @@ pub fn Editor(
                     }
                 }
             }
-            bracket_marks.set(marks);
+            if editor_actions.decorations_current(&decorations) {
+                bracket_marks.set(marks);
+            }
         });
     });
     let open_go = Callback::new(move |()| {

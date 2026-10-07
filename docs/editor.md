@@ -528,6 +528,13 @@ Equivalent syntax results preserve proven geometry for identical styled rows;
 font loading advances independent font provenance even if computed font text is
 unchanged.
 
+Active-line and matching-bracket decoration tasks retain only guarded source-row
+and native UTF-16 coordinates. The shared facade borrows current source and uses
+the document's sparse line coordinates; queued marks are rejected after source,
+selection, syntax, view or presentation ownership changes. Moving away from a
+bracket skips structural preparation without copying the file. Bracket-adjacent
+queries retain the existing parser/lexical fallback contracts.
+
 Geometry publication checks the
 original source/view, font and layout epochs as well as read, account, syntax and
 style ownership. Retained anchors select bounded token source before HTML

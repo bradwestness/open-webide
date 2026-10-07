@@ -22,6 +22,8 @@ pub enum EditorCommand {
     Reindent,
 }
 
+mod decorations;
+pub use decorations::EditorDecorations;
 mod input;
 mod motion;
 pub use input::{EditorNativeCommit, EditorNativeContext};
@@ -1084,23 +1086,32 @@ impl EditorActions {
 
     pub fn matching_bracket(self, offset: usize) -> Option<(usize, usize)> {
         let key = self.key()?;
-        let source = self.source();
-        if !openwebide_core::editor::has_adjacent_bracket(&source, offset) {
+        if !self
+            .workspace
+            .content
+            .with_untracked(|source| openwebide_core::editor::has_adjacent_bracket(source, offset))
+        {
             return None;
         }
+        let scope = untrack(|| self.presentation_scope())?;
+        let revision = self.workspace.editor_source_revision.get_untracked();
         let syntax = self.syntax_structure(|| true);
-        if self.key() != Some(key.clone()) || !self.source_matches(&source) {
+        if untrack(|| self.presentation_scope()).as_ref() != Some(&scope)
+            || self.workspace.editor_source_revision.get_untracked() != revision
+        {
             return None;
         }
-        if let Some(context) = syntax {
-            openwebide_core::editor::matching_bracket_with_context(&source, &context, offset)
-        } else {
-            openwebide_core::editor::matching_bracket(
-                &source,
-                openwebide_core::highlight::language_from_path(&key.1),
-                offset,
-            )
-        }
+        self.workspace.content.with_untracked(|source| {
+            if let Some(context) = syntax {
+                openwebide_core::editor::matching_bracket_with_context(source, &context, offset)
+            } else {
+                openwebide_core::editor::matching_bracket(
+                    source,
+                    openwebide_core::highlight::language_from_path(&key.1),
+                    offset,
+                )
+            }
+        })
     }
 
     /// Inspect source ownership without allocating another complete file value.

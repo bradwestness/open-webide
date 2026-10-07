@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep deferred active-line and bracket decorations source-free. Borrow current text, query indexed UTF-16 row coordinates and reject queued marks after source, selection, syntax, layout, project or account changes; skip bracket preparation away from brackets without copying the file.
+
 - Reuse cold editor row dimensions for identical paint after two matching layout samples. Check every measured batch for conflicts before sharing dimensions; retain fresh layout for distinct rows and preserve source, font and account ownership checks.
 
 - Bind bounded native input for ready unwrapped editor frames before full-file row measurement completes. Validate the current frame, complete native source and dimensions, retain its scroll extents before the handoff, and stamp restored windows before scroll reconciliation. Wrapped input and active composition retain their existing ownership boundary.
