@@ -82,6 +82,49 @@ impl EditorActions {
             || !self.syntax_is_pending()
     }
 
+    /// Initial neutral viewport paint is independent of whole-file fallback tokens.
+    /// Wrapped/nonuniform rows and large paint still require complete preparation.
+    pub fn viewport_paint_ready(self, source_rows: &[usize]) -> bool {
+        if self.full_row_paint_ready() {
+            return true;
+        }
+        if self.is_composing()
+            || self.preferences().word_wrap
+            || source_rows.is_empty()
+            || source_rows.len() > openwebide_core::editor::MAX_MEASURE_ROWS
+        {
+            return false;
+        }
+        let Some(projection) = self
+            .projection()
+            .filter(openwebide_core::editor::FoldProjection::has_uniform_rows)
+        else {
+            return false;
+        };
+        source_rows
+            .iter()
+            .try_fold(0_usize, |bytes, source| {
+                let row = projection
+                    .lines()
+                    .binary_search_by_key(source, |line| line.source_line)
+                    .ok()?;
+                bytes
+                    .checked_add(projection.line_body(row)?.len())
+                    .filter(|bytes| *bytes <= openwebide_core::editor::MAX_MEASURE_BYTES)
+            })
+            .is_some()
+    }
+
+    /// Restore complete native text when a cold viewport cannot be painted yet.
+    /// Active composition retains its installed native mapping until commit/cancel.
+    pub fn defer_viewport_paint(self) -> bool {
+        if self.is_composing() {
+            return false;
+        }
+        self.release_native_context();
+        true
+    }
+
     /// Empty pending tokens borrow row bodies from the immutable projection.
     /// Terminal analysis fallback retains the existing contextual lexer.
     pub fn syntax_paint(self) -> (bool, std::sync::Arc<openwebide_core::highlight::TokenRows>) {

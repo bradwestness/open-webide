@@ -10167,6 +10167,161 @@ async fn cold_unwrapped_native_windows_preserve_extents_pointer_and_edits_in_bot
 }
 
 #[wasm_bindgen_test]
+async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes() {
+    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+    export function pause_initial_fallback_tasks() {
+        const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'scheduler');
+        const pending = [];
+        Object.defineProperty(globalThis, 'scheduler', {
+            value: {yield: () => new Promise(resolve => pending.push(resolve))}, configurable: true
+        });
+        return () => {
+            if (descriptor) Object.defineProperty(globalThis, 'scheduler', descriptor);
+            else delete globalThis.scheduler;
+            pending.splice(0).forEach(resolve => resolve());
+        };
+    }
+    "#)]
+    extern "C" {
+        fn pause_initial_fallback_tasks() -> js_sys::Function;
+    }
+    struct ResumeTasks(js_sys::Function);
+    impl Drop for ResumeTasks {
+        fn drop(&mut self) {
+            self.0.call0(&wasm_bindgen::JsValue::NULL).unwrap();
+        }
+    }
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = (0..12_000)
+        .map(|row| format!("let row_{row} = \"文😀\";\r\n"))
+        .collect::<String>();
+    let source = format!(
+        "{source}{}\r\n",
+        "w".repeat(openwebide_core::editor::MAX_MEASURE_BYTES + 1)
+    );
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let paused = ResumeTasks(pause_initial_fallback_tasks());
+        let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+        let slot = saved.clone();
+        let mounted = mount_test({
+            let source = source.clone();
+            move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("initial-fallback.rs".into()));
+                state.workspace.content.set(source);
+                slot.set(Some(EditorActions::new(state.workspace)));
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:320px">{editor_view(state)}</div> }
+            }
+        });
+        let actions = saved.get().unwrap();
+        wait_until("initial bounded frame before lexical completion", || {
+            actions.syntax_is_pending()
+                && !actions.full_row_paint_ready()
+                && actions.bound_native_context().is_some()
+                && mounted
+                    .root
+                    .query_selector(".editor-source-line[data-line='1']")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
+        assert!(!actions.full_row_paint_ready());
+        assert!(actions.measured_rows().is_none());
+        assert!(
+            mounted
+                .state
+                .workspace
+                .editor_row_preparation
+                .get_untracked()
+                .is_none()
+        );
+        assert!(actions.syntax_paint().1.is_empty());
+        assert!(actions.viewport_paint_ready(&[0, 1, 2]));
+        assert!(!actions.viewport_paint_ready(&[]));
+        assert!(!actions.viewport_paint_ready(&[100_001]));
+        assert!(!actions.viewport_paint_ready(&[0; 129]));
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert!(textarea.value().len() <= 16 * 1024);
+        let scroll = openwebide_frontend::viewport::editor_scroll(&textarea);
+        assert!(scroll.scroll_height() > 100_000);
+        assert!(!actions.viewport_paint_ready(&[12_000]));
+        mounted
+            .state
+            .settings
+            .editor_preferences
+            .update(|preferences| preferences.word_wrap = true);
+        assert!(!actions.viewport_paint_ready(&[0]));
+        mounted
+            .state
+            .settings
+            .editor_preferences
+            .update(|preferences| preferences.word_wrap = false);
+        scroll.set_scroll_top(12_000.0 * 21.0);
+        scroll
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        wait_until("oversized cold row restores complete native source", || {
+            actions.bound_native_context().is_none()
+                && textarea.value() == source.replace("\r\n", "\n")
+                && !mounted
+                    .element(".editor-code")
+                    .class_list()
+                    .contains("highlight-ready")
+        })
+        .await;
+        scroll.set_scroll_top(0.0);
+        scroll
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        wait_until("short cold rows bind native input again", || {
+            actions.bound_native_context().is_some()
+        })
+        .await;
+        actions.begin_composition();
+        assert!(actions.is_composing());
+        assert!(!actions.viewport_paint_ready(&[0]));
+        assert!(!actions.defer_viewport_paint());
+        assert!(actions.bound_native_context().is_some());
+        actions.cancel_composition();
+        frame().await;
+        actions.record_selection(Selection::caret(4)).unwrap();
+        frame().await;
+        textarea.set_selection_range(4, 4).unwrap();
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_input_type("insertText");
+        init.set_data(Some("changed "));
+        let before = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        textarea.dispatch_event(&before).unwrap();
+        assert!(!before.default_prevented());
+        editorNativeInput(&textarea, "changed ", "insertText", false);
+        let mut expected = source.clone();
+        expected.insert_str(4, "changed ");
+        assert!(
+            actions.source() == expected,
+            "{mode:?}: native input did not edit the source prefix"
+        );
+        drop(paused);
+        wait_until("fallback resumes on edited source", || {
+            !actions.syntax_is_pending()
+        })
+        .await;
+        assert!(actions.full_row_paint_ready());
+        assert_eq!(actions.source(), expected);
+    }
+}
+
+#[wasm_bindgen_test]
 async fn cold_wrapped_preparation_keeps_input_visible_and_rejects_superseded_batches_in_both_modes()
 {
     #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"

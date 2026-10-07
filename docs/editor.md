@@ -553,6 +553,14 @@ Ordinary layout reconciliation can follow equivalent syntax paint without
 discarding its validated anchors; actual font invalidation always discards them.
 Already-settled browser font readiness does not invalidate initial geometry;
 font loading completion and failure still invalidate it.
+Initial unwrapped fallback frames can paint short requested rows directly from
+the immutable projection before cooperative lexical preparation finishes. The
+shared facade bounds pending viewport paint to 128 rows and 64 KiB, with uniform
+row geometry; full-file measurement still waits for prepared fallback tokens.
+Unsupported cold viewports restore complete native text instead of moving an old
+plain frame onto a different source range. Active composition retains its installed
+mapping. Completed styled frames retain their existing pending-style policy.
+
 Cold row-height preparation groups exact current paint keys, including token
 boundaries, row endings and guides. After at least two measured members agree in
 both width and height, the shared plan fills their remaining identical rows. Every

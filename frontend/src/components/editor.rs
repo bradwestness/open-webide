@@ -1379,7 +1379,13 @@ fn HighlightOverlay(
         {
             return;
         }
-        if !immediate && (retain_style.run(()) || !actions.full_row_paint_ready()) {
+        if !immediate && retain_style.run(()) {
+            return;
+        }
+        if !immediate && !actions.viewport_paint_ready(&visible.get_untracked()) {
+            if actions.defer_viewport_paint() {
+                presentation.set(false);
+            }
             return;
         }
         let render = |source_slices: &[crate::state_actions::editor::EditorRowSourceSlice]| {
