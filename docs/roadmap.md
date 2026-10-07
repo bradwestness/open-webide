@@ -164,9 +164,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   wheel/navigation/restoration behavior in both modes; full native layout still
   supplies extents. Prepared primary caret/selection paint and single-cursor
   keyboard motion now use shared source geometry and Rust commands, including
-  offscreen caret reveal. Separate pointer selections, cold caret ownership and
-  document extents from native input before binding bounded values and validating
-  IME and clipboard on devices. Bundled Monaspace families and
+  offscreen caret reveal. Prepared mouse click/word/line selection and drags now
+  use source hits with shared Rust policy; single-selection copy/cut also use the
+  source clipboard facade. Finish cold/touch pointer selection, edge auto-scroll,
+  cold caret ownership and document extents before binding bounded values and
+  validating IME and clipboard on devices. Bundled Monaspace families and
   independent healing/ligature preferences now share editor font metrics.
   Shared admission now bounds full-editor bytes, display breaks and long lines
   before allocating document metadata. Oversized files use bounded read-only

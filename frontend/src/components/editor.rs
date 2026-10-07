@@ -37,18 +37,16 @@ fn editor_clipboard_copy(
 ) {
     let source = actions.source();
     let selection = projected_selection(actions, textarea, &source);
-    let multiple = actions.selections(&source).len() > 1;
-    if !multiple
-        && !actions
-            .projection()
-            .is_some_and(|projection| projection.is_folded())
+    if selection.range().is_empty()
+        && actions
+            .selections(&source)
+            .iter()
+            .skip(1)
+            .all(|selection| selection.range().is_empty())
     {
-        if cut {
-            prepare_editor_edit(actions, textarea, &source);
-        }
         return;
     }
-    // Never let a failed multi-selection copy delete only the native primary.
+    // Clipboard writes must succeed before a source cut can remove any text.
     if cut {
         event.prevent_default();
     }
@@ -2052,6 +2050,13 @@ pub fn Editor(
         paint: paint_request,
         error: action_error,
     };
+    let pointer_adapter = super::editor_pointer::PointerAdapter::new(
+        editor_actions,
+        workspace,
+        ta,
+        highlight_ready,
+        motion_adapter,
+    );
     Effect::new(move || {
         workspace.active_project.track();
         workspace.open_file.track();
@@ -2913,6 +2918,8 @@ pub fn Editor(
                                             on:click=move |event: web_sys::MouseEvent| { if !event.alt_key() && let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_selection(projected_selection(editor_actions, &textarea, &content.get_untracked())); } }
                                             on:mousedown=move |event: web_sys::MouseEvent| {
                                                 column_anchor.set_value(None);
+                                                pointer_adapter.start(&event);
+                                                if !event.alt_key() { return; }
                                                 if !event.alt_key() || event.button() != 0 || editor_actions.is_composing() { return; }
                                                 let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()).filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 event.prevent_default();

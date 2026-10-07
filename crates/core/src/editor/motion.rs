@@ -32,7 +32,7 @@ fn next(text: &str, at: usize) -> usize {
         .find(|(offset, _)| *offset > at)
         .map_or(text.len(), |(offset, _)| offset)
 }
-fn category(grapheme: &str) -> u8 {
+pub(super) fn category(grapheme: &str) -> u8 {
     if grapheme.chars().all(char::is_whitespace) {
         0
     } else if grapheme

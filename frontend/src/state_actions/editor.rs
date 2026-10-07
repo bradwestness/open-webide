@@ -633,6 +633,39 @@ impl EditorActions {
         })
     }
 
+    pub fn begin_pointer_selection(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        offset: usize,
+        clicks: u32,
+        extend: bool,
+    ) -> Result<
+        Option<openwebide_core::editor::PointerSelection>,
+        openwebide_core::editor::SelectionError,
+    > {
+        let mut pointer = None;
+        self.operate_selections(project, path, source, |document| {
+            pointer = Some(document.begin_pointer_selection(offset, clicks, extend)?);
+            Ok(true)
+        })?;
+        Ok(pointer)
+    }
+
+    pub fn drag_pointer_selection(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        pointer: &openwebide_core::editor::PointerSelection,
+        offset: usize,
+    ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
+        self.operate_selections(project, path, source, |document| {
+            Ok(document.drag_pointer_selection(pointer, offset)?)
+        })
+    }
+
     pub fn toggle_cursor(
         self,
         project: i64,

@@ -256,9 +256,13 @@ complete source range. Native origins and source/read/account/document/selection
 checks reject stale declarations. This bounds the retained declaration, not the
 textarea value or layout. Prepared primary caret/selection paint and single-cursor
 keyboard motion use shared source geometry and Rust commands. Caret reveal uses
-the common scroll viewport, including offscreen rows. Viewport extents, pointer
-selection and cold caret ownership still need to move out of native input before
-using a bounded textarea.
+the common scroll viewport, including offscreen rows. Prepared mouse clicks and
+in-viewport drags select source carets, words or logical lines through the same
+Rust policy; Shift-click preserves the existing anchor. Copy/cut use full source
+ranges for single selections too, preserving CRLF and shared undo behavior.
+Source/read/project/account changes discard active drags. Cold/touch selection,
+edge auto-scroll, viewport extents and cold caret ownership still need to move
+out of native input before using a bounded textarea.
 Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME map projected changes
 into source replacements and validate their resulting selections against borrowed

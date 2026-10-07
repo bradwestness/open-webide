@@ -646,6 +646,120 @@ async fn multi_cursor_pointer_and_column_gestures_share_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn primary_pointer_units_and_drag_use_source_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for wrap in [false, true] {
+            let source = "one 文_foo\r\nnext\r\nlast";
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = wrap);
+                state.workspace.open_file.set(Some("pointer.txt".into()));
+                state.workspace.content.set(source.into());
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:240px">{editor_view(state)}</div> }
+            });
+            frame().await;
+            let actions = EditorActions::new(mounted.state.workspace);
+            let textarea: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            textarea.set_selection_range(0, 3).unwrap();
+            assert_eq!(
+                editorClipboardCopy(&textarea),
+                "one",
+                "copy must reconcile native selection before testing whether it is empty"
+            );
+            assert!(editorClipboardCut(&textarea).default_prevented());
+            assert_eq!(actions.source(), &source[3..]);
+            editor_key(&textarea, "z", true, false);
+            assert_eq!(actions.source(), source);
+            frame().await;
+            assert!(
+                editorPrimaryGesture(&textarea, 1, 2, 1, false, "mousedown").default_prevented()
+            );
+            assert_eq!(actions.selection(source), Some(Selection::caret(2)));
+            assert!(
+                editorPrimaryGesture(&textarea, 2, 2, 1, false, "mousemove").default_prevented()
+            );
+            assert_eq!(
+                actions.selection(source),
+                Some(Selection {
+                    anchor: 2,
+                    head: 15
+                })
+            );
+            assert_eq!(editorClipboardCopy(&textarea), &source[2..15]);
+            editorPrimaryGesture(&textarea, 2, 2, 1, false, "mouseup");
+            editorPrimaryGesture(&textarea, 3, 2, 1, false, "mousemove");
+            assert_eq!(
+                actions.selection(source),
+                Some(Selection {
+                    anchor: 2,
+                    head: 15
+                })
+            );
+            editorPrimaryGesture(&textarea, 1, 5, 2, false, "mousedown");
+            assert_eq!(editorClipboardCopy(&textarea), "文_foo");
+            editorPrimaryGesture(&textarea, 1, 0, 2, false, "mousemove");
+            assert_eq!(
+                actions.selection(source),
+                Some(Selection {
+                    anchor: 11,
+                    head: 0
+                })
+            );
+            editorPrimaryGesture(&textarea, 2, 2, 3, false, "mousedown");
+            assert_eq!(editorClipboardCopy(&textarea), "next\r\n");
+            editorPrimaryGesture(&textarea, 3, 2, 1, true, "mousedown");
+            assert_eq!(
+                actions.selection(source),
+                Some(Selection {
+                    anchor: 13,
+                    head: 21
+                })
+            );
+            for changed in 0..3 {
+                frame().await;
+                editorPrimaryGesture(&textarea, 3, 2, 1, false, "mousedown");
+                let before = actions.selection(source);
+                match changed {
+                    0 => mounted
+                        .state
+                        .workspace
+                        .editor_read_revision
+                        .update(|revision| *revision += 1),
+                    1 => mounted
+                        .state
+                        .auth
+                        .generation
+                        .update(|generation| *generation += 1),
+                    _ => mounted
+                        .state
+                        .workspace
+                        .pending_epoch
+                        .update(|epoch| *epoch += 1),
+                }
+                editorPrimaryGesture(&textarea, 1, 1, 1, false, "mousemove");
+                assert_eq!(
+                    actions.selection(source),
+                    before,
+                    "stale read/account/project epoch must discard the drag"
+                );
+            }
+            assert_eq!(actions.source(), source);
+            assert!(!mounted.state.workspace.dirty.get_untracked());
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn primary_caret_and_selection_follow_source_motion_and_scroll_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -3453,14 +3567,22 @@ export function editorClipboardPasteData(target, copiedEvent) {
     const event = new ClipboardEvent('paste', {bubbles:true, cancelable:true, clipboardData:copiedEvent.clipboardData});
     target.dispatchEvent(event); return event;
 }
-export function editorGesture(target, line, column, shift, moving) {
+function editorGestureRect(target, line, column) {
     const row = target.parentElement.querySelector(`.editor-source-line[data-line='${line}']`);
     const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
     let node, offset = column;
     while ((node = walker.nextNode())) { if (offset <= node.length) break; offset -= node.length; }
     if (!node) throw new Error('Missing gesture text position');
     const range = document.createRange(); range.setStart(node, offset); range.collapse(true);
-    const rect = range.getBoundingClientRect();
+    return range.getBoundingClientRect();
+}
+export function editorPrimaryGesture(target, line, column, clicks, shift, type) {
+    const rect = editorGestureRect(target, line, column);
+    const event = new MouseEvent(type, {bubbles:true, cancelable:true, detail:clicks, shiftKey:shift, button:0, buttons:type === 'mouseup' ? 0 : 1, clientX:rect.left + .25, clientY:rect.top + rect.height / 2});
+    target.dispatchEvent(event); return event;
+}
+export function editorGesture(target, line, column, shift, moving) {
+    const rect = editorGestureRect(target, line, column);
     const event = new MouseEvent(moving ? 'mousemove' : 'mousedown', {bubbles:true, cancelable:true, altKey:true, shiftKey:shift, button:0, buttons:1, clientX:rect.left + .25, clientY:rect.top + rect.height / 2});
     target.dispatchEvent(event); return event;
 }
@@ -3478,6 +3600,14 @@ extern "C" {
     fn editorClipboardPasteData(
         target: &web_sys::HtmlTextAreaElement,
         copied_event: &web_sys::Event,
+    ) -> web_sys::Event;
+    fn editorPrimaryGesture(
+        target: &web_sys::HtmlTextAreaElement,
+        line: u32,
+        column: u32,
+        clicks: u32,
+        shift: bool,
+        kind: &str,
     ) -> web_sys::Event;
     fn editorGesture(
         target: &web_sys::HtmlTextAreaElement,
@@ -7335,6 +7465,7 @@ async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_bot
             include_str!("../../styles.css")
         )));
         mounted.root.append_child(&style).unwrap();
+        frame().await;
         wait_until("viewport paint mounted", || {
             mounted
                 .root
@@ -7360,7 +7491,9 @@ async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_bot
                 .dispatch_event(&web_sys::Event::new("scroll").unwrap())
                 .unwrap();
             wait_until("scrolled row window", || {
-                let row = mounted.element(".editor-source-line");
+                let Some(row) = mounted.root.query_selector(".editor-source-line").unwrap() else {
+                    return false;
+                };
                 let first = row
                     .get_attribute("data-line")
                     .unwrap()
@@ -7870,6 +8003,7 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
                 view! { <style>{include_str!("../../styles.css")}</style><div class="wrapped-window-fixture" style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
             }
         });
+        frame().await;
         let actions = EditorActions::new(mounted.state.workspace);
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
@@ -7892,8 +8026,10 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
                 .dispatch_event(&web_sys::Event::new("scroll").unwrap())
                 .unwrap();
             wait_until("bounded wrapped paint at target", || {
-                let first = mounted
-                    .element(selector)
+                let Some(row) = mounted.root.query_selector(selector).unwrap() else {
+                    return false;
+                };
+                let first = row
                     .get_attribute("data-line")
                     .unwrap()
                     .parse::<usize>()

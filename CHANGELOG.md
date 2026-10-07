@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Select and drag prepared editor source with shared Rust caret, word and logical-line rules, including Shift-click anchors and Unicode/CRLF direction, in both workspace modes. Discard drags after source, read, project or account changes. Route single-selection copy and cut through the shared source clipboard policy; cold/touch selection and edge auto-scroll remain pending bounded input work.
+
 - Paint the primary editor caret and selection from the same source geometry as secondary cursors in both workspace modes. Route single-cursor arrow, word and document navigation through the shared Rust engine, revealing offscreen carets through the common scroll viewport and rejecting stale paint/read/account results.
 
 - Replay native editor edits and IME previews against borrowed source pieces in both workspace modes, preserving multiple cursors, repeated-text selections, Unicode/CRLF offsets and atomic rollback without building a complete replacement value. Reject IME previews whose eventual cursor replicas exceed editor limits. Composition snapshots and full textarea layout remain pending bounded-input work.

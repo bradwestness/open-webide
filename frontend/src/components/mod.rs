@@ -7,6 +7,7 @@ mod editor_geometry;
 mod editor_motion;
 mod editor_options;
 pub(crate) mod editor_paint;
+mod editor_pointer;
 mod editor_rows;
 mod editor_selections;
 mod editor_tabs;

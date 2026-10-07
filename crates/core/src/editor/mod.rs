@@ -14,6 +14,8 @@ pub use navigation::{
 pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
 mod clipboard;
 mod motion;
+mod pointer;
+pub use pointer::PointerSelection;
 mod motion_queue;
 pub use motion_queue::{MotionQueue, MotionRequest};
 mod visual_index;
