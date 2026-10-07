@@ -262,7 +262,16 @@ native offsets map to full document coordinates, including partial rows, Unicode
 CRLF and folded gaps; replacing a larger directional selection still edits its
 complete source range. Native origins and source/read/account/document/selection
 checks reject stale declarations. This bounds the retained declaration, not the
-textarea value or layout. Prepared primary caret/selection paint and single-cursor
+textarea value or layout. The shared editor facade also captures immutable native
+contexts with 12 KiB of surrounding text and 4 KiB of growth headroom. Context
+replay borrows the source and preserves the complete selection even when the
+browser can hold only part of it, including directional Unicode/CRLF replacements
+and multiple cursors. Source, selection, fold, document, read, project and account
+changes reject stale contexts. After a commit, the facade rebases the context to
+retain a matching browser value; composition can retain its growing value under
+the document admission limits instead of replacing active input-method text.
+These context contracts are tested in both workspace modes but are not yet bound
+to the native textarea. Prepared primary caret/selection paint and single-cursor
 keyboard motion use shared source geometry and Rust commands. Caret reveal uses
 the common scroll viewport, including offscreen rows. Prepared mouse clicks resolve measured character positions and clamp blank
 space past the text to the line end. Prepared clicks and

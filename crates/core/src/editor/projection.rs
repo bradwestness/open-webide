@@ -441,7 +441,11 @@ impl FoldProjection {
         input_type: &str,
         before_selection: Selection,
     ) -> Result<(Option<super::Edit>, Selection), ProjectionError> {
-        if source.len() != self.source_len {
+        if source.len() != self.source_len
+            || before_selection.range().end > source.len()
+            || !source.is_char_boundary(before_selection.anchor)
+            || !source.is_char_boundary(before_selection.head)
+        {
             return Err(ProjectionError::InvalidOffset);
         }
         let before = self.textarea_text();
@@ -454,7 +458,12 @@ impl FoldProjection {
             }
             Ok(source_offset)
         };
-        let Some(change) = super::text_change(before, value) else {
+        let selected_context = self.selected_context_change(value, input_type, before_selection)?;
+        let change = selected_context
+            .as_ref()
+            .map(|(change, _)| change.clone())
+            .or_else(|| super::text_change(before, value));
+        let Some(change) = change else {
             return Ok((
                 None,
                 Selection {
@@ -473,7 +482,10 @@ impl FoldProjection {
         );
         let crosses =
             self.source_edit_range(raw_start..raw_end) == Err(ProjectionError::HiddenText);
-        let mut range = map(change.range.start)?..map(change.range.end)?;
+        let mut range = selected_context.map_or_else(
+            || Ok(map(change.range.start)?..map(change.range.end)?),
+            |(_, range)| Ok(range),
+        )?;
         let inserted = &value[change.range.start..change.new_end];
         // A caret deletion at a fold boundary consumes one logical newline,
         // including both CRLF bytes, rather than the omitted block.
@@ -529,6 +541,56 @@ impl FoldProjection {
             head: endpoint(selection.head)?,
         };
         Ok((Some(super::Edit { range, text }), mapped))
+    }
+
+    /// A native selection can be clipped to the input window while the source
+    /// selection still spans omitted text. Reconstruct the declared replacement
+    /// from unchanged native surroundings, including locally identical values.
+    fn selected_context_change(
+        &self,
+        value: &str,
+        input_type: &str,
+        selection: Selection,
+    ) -> Result<Option<(super::TextChange, Range<usize>)>, ProjectionError> {
+        let source = selection.range();
+        if !self.is_windowed()
+            || source.is_empty()
+            || (source.start >= self.source_range.start && source.end <= self.source_range.end)
+            || !(input_type.starts_with("insert") || input_type.starts_with("delete"))
+        {
+            return Ok(None);
+        }
+        let visible = self.input_selection(selection)?.range();
+        let before = self.textarea_text();
+        let start = super::utf16_to_byte(
+            before,
+            self.byte_to_textarea(visible.start)
+                .map_err(|_| ProjectionError::InvalidOffset)?,
+        );
+        let end = super::utf16_to_byte(
+            before,
+            self.byte_to_textarea(visible.end)
+                .map_err(|_| ProjectionError::InvalidOffset)?,
+        );
+        let new_end = value
+            .len()
+            .checked_sub(before.len() - end)
+            .filter(|end| *end >= start)
+            .ok_or(ProjectionError::InvalidOffset)?;
+        if !value.is_char_boundary(start)
+            || !value.is_char_boundary(new_end)
+            || value[..start] != before[..start]
+            || value[new_end..] != before[end..]
+        {
+            return Err(ProjectionError::InvalidOffset);
+        }
+        Ok(Some((
+            super::TextChange {
+                range: start..end,
+                new_end,
+            },
+            source,
+        )))
     }
 
     /// Compatibility replay for callers requiring a complete normalized value.
@@ -605,6 +667,117 @@ fn word_delete_len(chars: impl Iterator<Item = char>) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn windowed_replacements_keep_complete_source_selections_and_line_endings() {
+        let source = format!("before\r\n{}after\r\nlast", "row α🦀 kept\r\n".repeat(20));
+        let begin = source.find("α").unwrap();
+        let end = source.rfind("kept").unwrap() + 4;
+        for (begin, end) in [(begin, end), (0, source.len())] {
+            for backward in [false, true] {
+                let selection = if backward {
+                    Selection {
+                        anchor: end,
+                        head: begin,
+                    }
+                } else {
+                    Selection {
+                        anchor: begin,
+                        head: end,
+                    }
+                };
+                let full = FoldProjection::new(&source, &super::super::FoldState::default());
+                let context = full.input_context(selection, 64).unwrap();
+                assert!(context.is_windowed());
+                assert!(context.text().len() <= 64);
+                let visible = context.input_selection(selection).unwrap().range();
+                let native_start = super::super::utf16_to_byte(
+                    context.textarea_text(),
+                    context.byte_to_textarea(visible.start).unwrap(),
+                );
+                let native_end = super::super::utf16_to_byte(
+                    context.textarea_text(),
+                    context.byte_to_textarea(visible.end).unwrap(),
+                );
+                for inserted in [
+                    "日\n🦀",
+                    "",
+                    &context.textarea_text()[native_start..native_end],
+                ] {
+                    let mut value = context.textarea_text().to_string();
+                    value.replace_range(native_start..native_end, inserted);
+                    let (edit, after) = context
+                        .replay_edit(
+                            &source,
+                            &value,
+                            Selection::caret(native_start + inserted.len()),
+                            "insertReplacementText",
+                            selection,
+                        )
+                        .unwrap();
+                    let edit = edit.unwrap();
+                    assert_eq!(edit.range, begin..end);
+                    assert_eq!(edit.text, inserted.replace('\n', "\r\n"));
+                    assert_eq!(after, Selection::caret(begin + edit.text.len()));
+                    let mut actual = source.clone();
+                    actual.replace_range(edit.range, &edit.text);
+                    let expected = format!(
+                        "{}{}{}",
+                        &source[..begin],
+                        inserted.replace('\n', "\r\n"),
+                        &source[end..]
+                    );
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clipped_selection_replay_rejects_changed_surroundings_and_invalid_source_boundaries() {
+        let source = format!("prefix {} suffix", "α🦀".repeat(30));
+        let selection = Selection {
+            anchor: 7,
+            head: source.len() - 7,
+        };
+        let full = FoldProjection::new(&source, &super::super::FoldState::default());
+        let context = full.input_context(selection, 32).unwrap();
+        let visible = context.input_selection(selection).unwrap().range();
+        let start = super::super::utf16_to_byte(
+            context.textarea_text(),
+            context.byte_to_textarea(visible.start).unwrap(),
+        );
+        let end = super::super::utf16_to_byte(
+            context.textarea_text(),
+            context.byte_to_textarea(visible.end).unwrap(),
+        );
+        let mut value = context.textarea_text().to_string();
+        value.replace_range(start..end, "x");
+        value.push('!');
+        assert_eq!(
+            context.replay_edit(
+                &source,
+                &value,
+                Selection::caret(start + 1),
+                "insertText",
+                selection
+            ),
+            Err(ProjectionError::InvalidOffset)
+        );
+        assert_eq!(
+            context.replay_edit(
+                &source,
+                context.textarea_text(),
+                Selection::caret(0),
+                "insertText",
+                Selection {
+                    anchor: 8,
+                    head: selection.head
+                }
+            ),
+            Err(ProjectionError::InvalidOffset)
+        );
+    }
     use super::*;
     use crate::editor::FoldRange;
 

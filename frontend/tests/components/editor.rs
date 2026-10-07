@@ -11549,3 +11549,391 @@ async fn file_tab_context_actions_share_tree_actions_and_guard_bulk_closes_in_bo
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn bounded_native_context_replaces_complete_selections_and_preserves_history_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for backward in [false, true] {
+            let original = format!("before\r\n{}after\r\nlast", "row α🦀 kept\r\n".repeat(2000));
+            let start = original.find('α').unwrap();
+            let end = original.rfind("kept").unwrap() + 4;
+            let selected = if backward {
+                Selection {
+                    anchor: end,
+                    head: start,
+                }
+            } else {
+                Selection {
+                    anchor: start,
+                    head: end,
+                }
+            };
+            let source = original.clone();
+            let slot = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+            let captured = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("context.txt".into()));
+                state.workspace.content.set(source.clone());
+                let actions = EditorActions::new(state.workspace);
+                actions.record_selection(selected).unwrap();
+                captured.set(Some(actions));
+                view! { <div /> }
+            });
+            let actions = slot.get().unwrap();
+            let context = actions.native_context().unwrap();
+            assert!(context.projection().is_windowed());
+            assert!(context.projection().textarea_text().len() <= 16 * 1024);
+            let native = context.native_selection().unwrap();
+            assert_eq!(context.source_selection(native).unwrap(), selected);
+            assert_eq!(actions.selection(&original), Some(selected));
+            let range = native.range();
+            let native_start = openwebide_core::editor::utf16_to_byte(
+                context.projection().textarea_text(),
+                range.start,
+            );
+            let native_end = openwebide_core::editor::utf16_to_byte(
+                context.projection().textarea_text(),
+                range.end,
+            );
+            let mut value = context.projection().textarea_text().to_string();
+            value.replace_range(native_start..native_end, "日\n🦀");
+            actions
+                .native_context_input(
+                    &context,
+                    &value,
+                    Selection::caret(native_start + "日\n🦀".len()),
+                    "insertReplacementText",
+                    1.0,
+                )
+                .unwrap();
+            let expected = format!("{}日\r\n🦀{}", &original[..start], &original[end..]);
+            assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+            assert!(mounted.state.workspace.dirty.get_untracked());
+            let after = actions.selection(&expected).unwrap();
+            assert_eq!(after, Selection::caret(start + "日\r\n🦀".len()));
+            actions
+                .command(EditorCommand::Undo, after, actions.rules().indentation)
+                .unwrap();
+            assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+            assert_eq!(actions.selection(&original), Some(selected));
+            actions
+                .command(EditorCommand::Redo, selected, actions.rules().indentation)
+                .unwrap();
+            assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+            assert_eq!(actions.selection(&expected), Some(after));
+            assert!(
+                actions
+                    .native_context_input(&context, &value, Selection::caret(0), "insertText", 4.0)
+                    .is_err()
+            );
+            assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn bounded_native_context_rejects_stale_source_selection_and_owner_scopes_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Document, EditError, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for changed in 0..9 {
+            let original = "α🦀 row\r\n".repeat(3000);
+            let source = original.clone();
+            let slot = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+            let captured = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("scope.txt".into()));
+                state.workspace.content.set(source.clone());
+                let actions = EditorActions::new(state.workspace);
+                actions
+                    .record_selection(Selection::caret(source.len()))
+                    .unwrap();
+                captured.set(Some(actions));
+                view! { <div /> }
+            });
+            let actions = slot.get().unwrap();
+            let context = actions.native_context().unwrap();
+            match changed {
+                0 => mounted.state.workspace.content.set(format!("{original}x")),
+                1 => actions.record_selection(Selection::caret(0)).unwrap(),
+                2 => mounted
+                    .state
+                    .workspace
+                    .open_file
+                    .set(Some("other.txt".into())),
+                3 => mounted.state.workspace.active_project.set(Some(2)),
+                4 => mounted
+                    .state
+                    .workspace
+                    .editor_read_revision
+                    .update(|revision| *revision += 1),
+                5 => mounted
+                    .state
+                    .workspace
+                    .pending_epoch
+                    .update(|epoch| *epoch += 1),
+                6 => mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation += 1),
+                7 => mounted
+                    .state
+                    .workspace
+                    .editor_documents
+                    .update(|documents| {
+                        let mut replacement = Document::new(original.clone());
+                        replacement
+                            .set_selections(vec![Selection::caret(original.len())])
+                            .unwrap();
+                        documents.insert((1, "scope.txt".into()), replacement);
+                    }),
+                _ => {
+                    mounted
+                        .state
+                        .workspace
+                        .editor_documents
+                        .update(|documents| {
+                            documents
+                                .get_mut(&(1, "scope.txt".into()))
+                                .unwrap()
+                                .set_fold_ranges(vec![openwebide_core::editor::FoldRange {
+                                    start_line: 0,
+                                    end_line: 1,
+                                }]);
+                        });
+                    actions.fold_command(openwebide_core::editor::FoldCommand::Toggle(0));
+                }
+            }
+            let before = mounted.state.workspace.content.get_untracked();
+            let dirty = mounted.state.workspace.dirty.get_untracked();
+            let mut value = context.projection().textarea_text().to_string();
+            value.push('x');
+            assert_eq!(
+                actions.native_context_input(
+                    &context,
+                    &value,
+                    Selection::caret(value.len()),
+                    "insertText",
+                    1.0
+                ),
+                Err(EditError::StaleContext)
+            );
+            assert_eq!(mounted.state.workspace.content.get_untracked(), before);
+            assert_eq!(mounted.state.workspace.dirty.get_untracked(), dirty);
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn bounded_native_context_multicursor_replay_and_failures_share_source_contract_in_both_modes()
+ {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{EditError, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let body = "α🦀 row\r\n".repeat(3000);
+        let original = format!("A:{body}:B:ZZZ");
+        let selections = vec![
+            Selection {
+                anchor: 2,
+                head: 2 + body.len(),
+            },
+            Selection {
+                anchor: original.len() - 3,
+                head: original.len(),
+            },
+        ];
+        let source = original.clone();
+        let selected = selections.clone();
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+        let captured = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("multiple.txt".into()));
+            state.workspace.content.set(source.clone());
+            let actions = EditorActions::new(state.workspace);
+            actions.record_selection(selected[0]).unwrap();
+            state.workspace.editor_documents.update(|documents| {
+                documents
+                    .get_mut(&(1, "multiple.txt".into()))
+                    .unwrap()
+                    .set_selections(selected.clone())
+                    .unwrap();
+            });
+            captured.set(Some(actions));
+            view! { <div /> }
+        });
+        let actions = slot.get().unwrap();
+        let context = actions.native_context().unwrap();
+        let range = context.native_selection().unwrap().range();
+        let native_start = openwebide_core::editor::utf16_to_byte(
+            context.projection().textarea_text(),
+            range.start,
+        );
+        let native_end =
+            openwebide_core::editor::utf16_to_byte(context.projection().textarea_text(), range.end);
+        let mut value = context.projection().textarea_text().to_string();
+        value.replace_range(native_start..native_end, "日\n🦀");
+        let mut invalid = value.clone();
+        invalid.push('!');
+        assert_eq!(
+            actions.native_context_input(
+                &context,
+                &invalid,
+                Selection::caret(native_start + "日\n🦀".len()),
+                "insertText",
+                1.0
+            ),
+            Err(EditError::InvalidRange)
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        assert_eq!(actions.selections(&original), selections);
+        actions
+            .native_context_input(
+                &context,
+                &value,
+                Selection::caret(native_start + "日\n🦀".len()),
+                "insertText",
+                2.0,
+            )
+            .unwrap();
+        assert_eq!(
+            mounted.state.workspace.content.get_untracked(),
+            "A:日\r\n🦀:B:日\r\n🦀"
+        );
+        actions
+            .command(
+                EditorCommand::Undo,
+                actions.selection(&actions.source()).unwrap(),
+                actions.rules().indentation,
+            )
+            .unwrap();
+        assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+        assert_eq!(actions.selections(&original), selections);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn bounded_native_context_keeps_composition_values_through_clipped_replacements_in_both_modes()
+ {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for backward in [false, true] {
+            let original = format!("before\r\n{}after\r\nlast", "row α🦀 kept\r\n".repeat(3000));
+            let begin = original.find('α').unwrap();
+            let end = original.rfind("kept").unwrap() + 4;
+            let selected = if backward {
+                Selection {
+                    anchor: end,
+                    head: begin,
+                }
+            } else {
+                Selection {
+                    anchor: begin,
+                    head: end,
+                }
+            };
+            let source = original.clone();
+            let slot = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+            let captured = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("composition.txt".into()));
+                state.workspace.content.set(source.clone());
+                let actions = EditorActions::new(state.workspace);
+                actions.record_selection(selected).unwrap();
+                captured.set(Some(actions));
+                view! { <div /> }
+            });
+            let actions = slot.get().unwrap();
+            actions.begin_composition();
+            let context = actions.native_context().unwrap();
+            let range = context.native_selection().unwrap().range();
+            let start = openwebide_core::editor::utf16_to_byte(
+                context.projection().textarea_text(),
+                range.start,
+            );
+            let stop = openwebide_core::editor::utf16_to_byte(
+                context.projection().textarea_text(),
+                range.end,
+            );
+            let mut value = context.projection().textarea_text().to_string();
+            value.replace_range(start..stop, "日");
+            let first = actions
+                .native_context_input(
+                    &context,
+                    &value,
+                    Selection::caret(start + "日".len()),
+                    "insertCompositionText",
+                    1.0,
+                )
+                .unwrap();
+            assert!(first.retain_native_value);
+            assert_eq!(first.context.projection().textarea_text(), value);
+            assert!(first.context.projection().textarea_text().len() <= 16 * 1024);
+            assert_eq!(
+                mounted.state.workspace.content.get_untracked(),
+                format!("{}日{}", &original[..begin], &original[end..])
+            );
+            value.replace_range(start..start + "日".len(), "文🦀");
+            let second = actions
+                .native_context_input(
+                    &first.context,
+                    &value,
+                    Selection::caret(start + "文🦀".len()),
+                    "insertCompositionText",
+                    2.0,
+                )
+                .unwrap();
+            assert!(second.retain_native_value);
+            assert_eq!(second.context.projection().textarea_text(), value);
+            assert_eq!(
+                mounted.state.workspace.content.get_untracked(),
+                format!("{}文🦀{}", &original[..begin], &original[end..])
+            );
+            assert!(actions.end_composition().unwrap().is_some());
+            actions
+                .command(
+                    EditorCommand::Undo,
+                    actions.selection(&actions.source()).unwrap(),
+                    actions.rules().indentation,
+                )
+                .unwrap();
+            assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+            assert_eq!(actions.selection(&original), Some(selected));
+            assert!(!mounted.state.workspace.dirty.get_untracked());
+        }
+    }
+}

@@ -154,8 +154,13 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   checkpoints; indivisible clusters remain bounded by source limits. Native textarea input retains the
   full projected source. Native typing declarations now retain at most 16 KiB of
   surrounding projected text, with local/native/document coordinate contracts,
-  partial logical rows and full selection edits. Move native layout/value to this
-  context next. Native input fallback now maps projected deltas directly to raw
+  partial logical rows and full selection edits. The shared facade now captures
+  scoped 12 KiB native contexts with growth headroom, preserves complete source
+  selections during clipped native replacement, and rebases matching browser
+  values after commits and composition previews. Both-mode contracts cover
+  multiple cursors, grouped history and stale source/selection/fold/document/read/
+  project/account rejection. Bind native layout/value to these contexts next.
+  Native input fallback now borrows source and maps projected deltas directly to raw
   source edits without full-source normalization; shared native replay validates
   borrowed proposed pieces for IME and multiple cursors, including resulting
   Unicode/CRLF selections and complete replica admission before previews.

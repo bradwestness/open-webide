@@ -22,7 +22,9 @@ pub enum EditorCommand {
     Reindent,
 }
 
+mod input;
 mod motion;
+pub use input::{EditorNativeCommit, EditorNativeContext};
 mod preparation;
 mod rows;
 pub use rows::{EditorFragmentCache, EditorFragmentWindow, EditorRowSourceSlice};
@@ -1110,25 +1112,55 @@ impl EditorActions {
         input_type: &str,
         timestamp: f64,
     ) -> Result<(), EditError> {
-        let source = self.workspace.content.get_untracked();
         let Some(projection) = self.projection() else {
             return self.native_input(value, selection, input_type, timestamp);
         };
-        let (edit, selection) = projection
-            .replay_edit(
-                &source,
-                &value,
-                selection,
-                input_type,
-                self.selection(&source).unwrap_or_default(),
-            )
+        self.replay_projected_input(
+            &projection,
+            &projection,
+            &value,
+            selection,
+            input_type,
+            timestamp,
+        )
+    }
+
+    fn replay_projected_input(
+        self,
+        projection: &openwebide_core::editor::FoldProjection,
+        original: &openwebide_core::editor::FoldProjection,
+        value: &str,
+        selection: Selection,
+        input_type: &str,
+        timestamp: f64,
+    ) -> Result<(), EditError> {
+        let key = self.key().ok_or(EditError::StaleContext)?;
+        let revision = self
+            .workspace
+            .editor_documents
+            .with_untracked(|documents| documents.get(&key).map(Document::revision))
+            .ok_or(EditError::StaleContext)?;
+        let (edit, selection) = self
+            .workspace
+            .content
+            .with_untracked(|source| {
+                projection.replay_edit(
+                    source,
+                    value,
+                    selection,
+                    input_type,
+                    self.selection(source).unwrap_or_default(),
+                )
+            })
             .map_err(|_| EditError::InvalidRange)?;
         if edit.is_none() && input_type == "insertFromComposition" && !self.is_composing() {
             return Ok(());
         }
         self.native_input_prepared(input_type, timestamp, |document| {
-            if document.text() != source {
-                return Err(EditError::UnsupportedNativeInput);
+            if document.revision() != revision
+                || !input::same_projection(&document.projection(), original)
+            {
+                return Err(EditError::StaleContext);
             }
             Ok((edit, selection))
         })

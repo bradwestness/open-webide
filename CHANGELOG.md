@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Preserve complete source selections when replaying clipped native editor contexts, including Unicode/CRLF replacements, multiple cursors, grouped undo and composition previews in both workspace modes. Capture scoped surrounding text, reject stale document ownership, and rebase matching native values after commits. Existing input fallback now borrows source; actual bounded textarea binding remains in progress.
+
 - Add shared project/file tab context actions for closing other tabs, closing tabs to either side and moving tabs left/right. File tabs reuse the tree’s file, Git and chat actions; bulk closes protect unsaved buffers with one guarded confirmation. Resolve editor gutter/container hits against measured text boundaries, including clicks past line ends, in both workspace modes.
 
 - Retain rebased folding indicators and the last styled editor frame while syntax analysis and repainting are pending in both workspace modes. Replace indicators with authoritative ranges, disable obsolete fold controls, and release retained paint when the document, read, project or account changes.
