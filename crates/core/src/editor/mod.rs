@@ -15,7 +15,7 @@ pub use search::{SearchError, SearchMatch, SearchOptions, SearchPattern};
 mod clipboard;
 mod motion;
 mod pointer;
-pub use pointer::PointerSelection;
+pub use pointer::{PointerSelection, selection_scroll_delta};
 mod motion_queue;
 pub use motion_queue::{MotionQueue, MotionRequest};
 mod visual_index;

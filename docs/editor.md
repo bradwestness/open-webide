@@ -259,15 +259,18 @@ checks reject stale declarations. This bounds the retained declaration, not the
 textarea value or layout. Prepared primary caret/selection paint and single-cursor
 keyboard motion use shared source geometry and Rust commands. Caret reveal uses
 the common scroll viewport, including offscreen rows. Prepared mouse clicks and
-in-viewport drags select source carets, words or logical lines through the same
+drags select source carets, words or logical lines through the same
 Rust policy; Shift-click preserves the existing anchor. Copy/cut use full source
 ranges for single selections too, preserving CRLF and shared undo behavior.
-Source/read/project/account changes discard active drags. Prepared source row
+Holding a drag near or beyond a viewport edge scrolls and extends the source
+selection vertically or horizontally, including with a stationary pointer. Mouse
+release or window blur stops it; pending paint is retried. Source/read/project/
+account and fold changes discard active drags. Prepared source row
 widths/heights now control scroll extents, reusing unchanged row dimensions after
 edits and retaining the source viewport's trailing padding when native scrolling
 clamps earlier. Source/account/syntax/layout guards discard obsolete dimensions; prepared
 scrolling reads no native input width/height. Physical browser size limits still
-apply. Cold/touch selection, edge auto-scroll, cold extents and cold caret ownership
+apply. Cold/touch selection, cold extents and cold caret ownership
 still need to move out of native input before using a bounded textarea.
 Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME map projected changes

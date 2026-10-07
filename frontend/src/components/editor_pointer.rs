@@ -15,6 +15,10 @@ struct Gesture {
     read: u64,
     account: u64,
     pointer: PointerSelection,
+    point: (f64, f64),
+    #[cfg(target_arch = "wasm32")]
+    time: f64,
+    projection_revision: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -25,6 +29,7 @@ pub(super) struct PointerAdapter {
     ready: RwSignal<bool>,
     motion: MotionAdapter,
     gesture: StoredValue<Option<Gesture>>,
+    generation: StoredValue<u64>,
 }
 impl PointerAdapter {
     pub fn new(
@@ -41,6 +46,7 @@ impl PointerAdapter {
             ready,
             motion,
             gesture: StoredValue::new(None),
+            generation: StoredValue::new(0),
         };
         let movement =
             window_event_listener(leptos::ev::mousemove, move |event| adapter.drag(&event));
@@ -60,10 +66,15 @@ impl PointerAdapter {
     fn offset(
         self,
         input: &web_sys::HtmlTextAreaElement,
-        event: &web_sys::MouseEvent,
+        x: f64,
+        y: f64,
+        dragging: bool,
     ) -> Option<usize> {
-        let offset =
-            crate::viewport::editor_caret_from_point(input, event.client_x(), event.client_y())?;
+        let offset = if dragging {
+            crate::viewport::editor_caret_from_drag_point(input, x, y)?
+        } else {
+            crate::viewport::editor_caret_from_point(input, x, y)?
+        };
         let projection = self.actions.projection()?;
         projection
             .source_offset(projection.textarea_to_byte(offset as usize))
@@ -73,13 +84,17 @@ impl PointerAdapter {
     fn offset(
         self,
         _input: &web_sys::HtmlTextAreaElement,
-        _event: &web_sys::MouseEvent,
+        _x: f64,
+        _y: f64,
+        _dragging: bool,
     ) -> Option<usize> {
         None
     }
 
     pub fn start(self, event: &web_sys::MouseEvent) {
         self.gesture.set_value(None);
+        self.generation
+            .update_value(|generation| *generation = generation.wrapping_add(1));
         if event.button() != 0
             || event.alt_key()
             || self.actions.is_composing()
@@ -98,7 +113,7 @@ impl PointerAdapter {
             event.prevent_default();
             return;
         }
-        let Some(offset) = self.offset(&input, event) else {
+        let Some(offset) = self.offset(&input, event.client_x(), event.client_y(), false) else {
             return;
         };
         event.prevent_default();
@@ -126,8 +141,13 @@ impl PointerAdapter {
                     epoch: self.workspace.pending_epoch.get_untracked(),
                     read: self.workspace.editor_read_revision.get_untracked(),
                     account: self.actions.account_generation(),
+                    point: (event.client_x(), event.client_y()),
+                    #[cfg(target_arch = "wasm32")]
+                    time: js_sys::Date::now(),
+                    projection_revision: self.workspace.editor_projection_revision.get_untracked(),
                 }));
                 self.render(&input);
+                self.schedule(self.generation.get_value());
                 let options = web_sys::FocusOptions::new();
                 options.set_prevent_scroll(true);
                 let _ = input.focus_with_options(&options);
@@ -143,6 +163,9 @@ impl PointerAdapter {
         }
     }
     fn drag(self, event: &web_sys::MouseEvent) {
+        if !self.gesture.with_value(Option::is_some) {
+            return;
+        }
         if event.buttons() & 1 == 0 {
             self.gesture.set_value(None);
             return;
@@ -155,23 +178,38 @@ impl PointerAdapter {
             self.gesture.set_value(None);
             return;
         };
-        let stale = self.gesture.with_value(|gesture| {
+        if self.stale() {
+            self.gesture.set_value(None);
+            return;
+        }
+        self.gesture.update_value(|gesture| {
+            if let Some(gesture) = gesture {
+                gesture.point = (event.client_x(), event.client_y());
+            }
+        });
+        event.prevent_default();
+        self.select_at(&input, event.client_x(), event.client_y());
+    }
+    fn stale(self) -> bool {
+        self.gesture.with_value(|gesture| {
             gesture.as_ref().is_some_and(|gesture| {
-                self.workspace.pending_epoch.get_untracked() != gesture.epoch
+                self.actions.is_composing()
+                    || self.workspace.pending_epoch.get_untracked() != gesture.epoch
                     || self.workspace.editor_read_revision.get_untracked() != gesture.read
                     || self.actions.account_generation() != gesture.account
                     || !self.actions.is_current(gesture.project, &gesture.path)
-                    || self.actions.source() != gesture.source
+                    || self.workspace.editor_projection_revision.get_untracked()
+                        != gesture.projection_revision
             })
-        });
-        if stale {
-            self.gesture.set_value(None);
+        })
+    }
+    fn select_at(self, input: &web_sys::HtmlTextAreaElement, x: f64, y: f64) {
+        if !self.ready.get_untracked() {
             return;
         }
         let result = self.gesture.with_value(|gesture| {
             let gesture = gesture.as_ref()?;
-            let offset = self.offset(&input, event)?;
-            event.prevent_default();
+            let offset = self.offset(input, x, y, true)?;
             Some(self.actions.drag_pointer_selection(
                 gesture.project,
                 &gesture.path,
@@ -181,7 +219,7 @@ impl PointerAdapter {
             ))
         });
         match result {
-            Some(Ok(Some(_))) => self.render(&input),
+            Some(Ok(Some(_))) => self.render(input),
             Some(
                 Err(openwebide_core::editor::SelectionError::Edit(
                     openwebide_core::editor::EditError::StaleContext,
@@ -194,5 +232,66 @@ impl PointerAdapter {
             }
             None => {}
         }
+    }
+    fn schedule(self, generation: u64) {
+        leptos::leptos_dom::helpers::request_animation_frame(move || {
+            if self.motion.error.is_disposed() || self.generation.get_value() != generation {
+                return;
+            }
+            untrack(|| self.scroll_frame());
+            if self.gesture.with_value(Option::is_some) {
+                self.schedule(generation);
+            }
+        });
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn scroll_frame(self) {}
+    #[cfg(target_arch = "wasm32")]
+    fn scroll_frame(self) {
+        use openwebide_core::editor::selection_scroll_delta;
+        let Some(input) = self
+            .input
+            .get_untracked()
+            .filter(|input| current_editor_target(self.actions, input))
+        else {
+            self.gesture.set_value(None);
+            return;
+        };
+        if self.stale() {
+            self.gesture.set_value(None);
+            return;
+        }
+        let now = js_sys::Date::now();
+        let Some((point, elapsed)) = self.gesture.with_value(|gesture| {
+            gesture
+                .as_ref()
+                .map(|gesture| (gesture.point, now - gesture.time))
+        }) else {
+            return;
+        };
+        self.gesture.update_value(|gesture| {
+            if let Some(gesture) = gesture {
+                gesture.time = now;
+            }
+        });
+        let bounds = input.get_bounding_client_rect();
+        if bounds.width() <= 2.0 || bounds.height() <= 2.0 {
+            return;
+        }
+        let scroll = crate::viewport::editor_scroll(&input);
+        let dx = selection_scroll_delta(point.0, bounds.left(), bounds.right(), elapsed);
+        let dy = selection_scroll_delta(point.1, bounds.top(), bounds.bottom(), elapsed);
+        if dx.abs() < f64::EPSILON && dy.abs() < f64::EPSILON {
+            return;
+        }
+        crate::viewport::set_editor_scroll_left(&input, scroll.scroll_left() + dx);
+        crate::viewport::set_editor_scroll_top(&input, scroll.scroll_top() + dy);
+        // Hit only visible paint. Scroll events prepare the next window; missing
+        // or superseded paint is retried on the next frame rather than guessed.
+        self.select_at(
+            &input,
+            point.0.clamp(bounds.left() + 1.0, bounds.right() - 1.0),
+            point.1.clamp(bounds.top() + 1.0, bounds.bottom() - 1.0),
+        );
     }
 }

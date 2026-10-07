@@ -19,6 +19,29 @@ pub struct PointerSelection {
     revision: u64,
 }
 
+/// Distance to scroll one selection-drag frame along an axis, in CSS pixels.
+/// A narrow edge zone accelerates smoothly; outside pointers saturate at 720 px/s.
+/// Clamp delayed frames so returning from a suspended tab cannot jump the document.
+pub fn selection_scroll_delta(point: f64, start: f64, end: f64, elapsed_ms: f64) -> f64 {
+    if ![point, start, end, elapsed_ms]
+        .iter()
+        .all(|value| value.is_finite())
+        || end <= start
+        || elapsed_ms <= 0.0
+    {
+        return 0.0;
+    }
+    let edge = ((end - start) / 4.0).min(24.0);
+    let proximity = if point < start + edge {
+        -((start + edge - point) / edge).min(1.0)
+    } else if point > end - edge {
+        ((point - (end - edge)) / edge).min(1.0)
+    } else {
+        0.0
+    };
+    proximity * proximity.abs() * 720.0 * elapsed_ms.min(50.0) / 1000.0
+}
+
 impl Document {
     fn pointer_unit(&self, offset: usize, unit: Unit) -> Result<Range<usize>, EditError> {
         if !super::valid_position(&self.text, offset) {
@@ -123,6 +146,28 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selection_scroll_preserves_direction_speed_and_suspended_frame_bounds() {
+        assert!(selection_scroll_delta(100.0, 0.0, 200.0, 20.0).abs() < f64::EPSILON);
+        let right = selection_scroll_delta(200.0, 0.0, 200.0, 20.0);
+        let left = selection_scroll_delta(0.0, 0.0, 200.0, 20.0);
+        assert!((right + left).abs() < f64::EPSILON);
+        assert!((right - 14.4).abs() < 1e-10);
+        assert!(selection_scroll_delta(188.0, 0.0, 200.0, 20.0) < right);
+        assert!((selection_scroll_delta(1000.0, 0.0, 200.0, 20.0) - right).abs() < f64::EPSILON);
+        assert!((selection_scroll_delta(200.0, 0.0, 200.0, 10.0) * 2.0 - right).abs() < 1e-10);
+        assert!((selection_scroll_delta(200.0, 0.0, 200.0, 5000.0) - 36.0).abs() < f64::EPSILON);
+        assert!(selection_scroll_delta(5.0, 0.0, 10.0, 20.0).abs() < f64::EPSILON);
+        for (point, start, end, time) in [
+            (f64::NAN, 0.0, 200.0, 20.0),
+            (0.0, 0.0, 0.0, 20.0),
+            (0.0, 20.0, 0.0, 20.0),
+            (0.0, 0.0, 200.0, -1.0),
+            (0.0, 0.0, 200.0, f64::INFINITY),
+        ] {
+            assert!(selection_scroll_delta(point, start, end, time).abs() < f64::EPSILON);
+        }
+    }
     #[test]
     fn pointer_units_preserve_unicode_direction_and_crlf() {
         let text = "a\u{301}bc  文_foo!\r\nlast";

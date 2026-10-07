@@ -168,7 +168,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   keyboard motion now use shared source geometry and Rust commands, including
   offscreen caret reveal. Prepared mouse click/word/line selection and drags now
   use source hits with shared Rust policy; single-selection copy/cut also use the
-  source clipboard facade. Finish cold/touch pointer selection, edge auto-scroll,
+  source clipboard facade. Prepared drags now scroll near or beyond viewport edges
+  with shared Rust speed rules, retry pending paint and stop on release or stale
+  source/read/project/account/fold state. Finish cold/touch pointer selection,
   cold caret ownership and cold source extents before binding bounded values and
   validating IME and clipboard on devices. Bundled Monaspace families and
   independent healing/ligature preferences now share editor font metrics.

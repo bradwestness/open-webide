@@ -913,6 +913,109 @@ async fn primary_pointer_units_and_drag_use_source_in_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn stationary_selection_drag_scrolls_and_stops_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = (0..100)
+            .map(|line| format!("row {line} {}\n", "abcdef ".repeat(100)))
+            .collect::<String>();
+        let content = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = false);
+            state.workspace.open_file.set(Some("drag.txt".into()));
+            state.workspace.content.set(content);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:260px">{editor_view(state)}</div> }
+        });
+        frame().await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let scroll = openwebide_frontend::viewport::editor_scroll(&input);
+        assert!(editorPrimaryGesture(&input, 1, 2, 1, false, "mousedown").default_prevented());
+        assert!(editorEdgeGesture(&input, false, true, "mousemove").default_prevented());
+        wait_until("stationary drag scroll and source selection", || {
+            scroll.scroll_top() > 80.0
+                && actions
+                    .selection(&source)
+                    .is_some_and(|selection| selection.head > 2000)
+        })
+        .await;
+        let first_top = scroll.scroll_top();
+        let first_head = actions.selection(&source).unwrap().head;
+        wait_until("stationary vertical drag keeps extending", || {
+            scroll.scroll_top() > first_top + 50.0
+                && actions
+                    .selection(&source)
+                    .is_some_and(|selection| selection.head > first_head)
+        })
+        .await;
+        let anchor = actions.selection(&source).unwrap().anchor;
+        editorEdgeGesture(&input, false, true, "mouseup");
+        frame().await;
+        let stopped = scroll.scroll_top();
+        let selected = actions.selection(&source);
+        for _ in 0..4 {
+            frame().await;
+        }
+        assert!((scroll.scroll_top() - stopped).abs() < 0.1);
+        assert_eq!(actions.selection(&source), selected);
+        assert_eq!(selected.unwrap().anchor, anchor);
+        openwebide_frontend::viewport::set_editor_scroll_top(&input, 0.0);
+        frame().await;
+        editorPrimaryGesture(&input, 1, 2, 1, false, "mousedown");
+        editorEdgeGesture(&input, true, true, "mousemove");
+        wait_until("horizontal stationary drag", || {
+            scroll.scroll_left() > 80.0
+                && actions
+                    .selection(&source)
+                    .is_some_and(|selection| selection.head > 40)
+        })
+        .await;
+        let first_left = scroll.scroll_left();
+        let first_head = actions.selection(&source).unwrap().head;
+        wait_until("stationary horizontal drag keeps extending", || {
+            scroll.scroll_left() > first_left + 50.0
+                && actions
+                    .selection(&source)
+                    .is_some_and(|selection| selection.head > first_head + 4)
+        })
+        .await;
+        let right = scroll.scroll_left();
+        let right_head = actions.selection(&source).unwrap().head;
+        editorEdgeGesture(&input, true, false, "mousemove");
+        wait_until("reverse horizontal drag", || {
+            scroll.scroll_left() < right - 20.0
+                && actions
+                    .selection(&source)
+                    .is_some_and(|selection| selection.head < right_head)
+        })
+        .await;
+        mounted
+            .state
+            .workspace
+            .editor_read_revision
+            .update(|revision| *revision += 1);
+        frame().await;
+        let stale = scroll.scroll_left();
+        for _ in 0..4 {
+            frame().await;
+        }
+        assert!((scroll.scroll_left() - stale).abs() < 0.1);
+        assert_eq!(actions.source(), source);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
 async fn primary_caret_and_selection_follow_source_motion_and_scroll_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -3755,6 +3858,14 @@ function editorGestureRect(target, line, column) {
     const range = document.createRange(); range.setStart(node, offset); range.collapse(true);
     return range.getBoundingClientRect();
 }
+export function editorEdgeGesture(target, horizontal, end, type) {
+    const bounds = target.getBoundingClientRect();
+    const x = horizontal ? (end ? bounds.right + 30 : bounds.left - 30) : bounds.left + 70;
+    const y = horizontal ? bounds.top + 10 : (end ? bounds.bottom + 30 : bounds.top - 30);
+    const event = new MouseEvent(type, {bubbles:true, cancelable:true, button:0,
+        buttons:type === 'mouseup' ? 0 : 1, clientX:x, clientY:y});
+    target.dispatchEvent(event); return event;
+}
 export function editorPrimaryGesture(target, line, column, clicks, shift, type) {
     const rect = editorGestureRect(target, line, column), viewport = target.getBoundingClientRect();
     // A partially clipped final row still has a visible glyph to click. Its full
@@ -3783,6 +3894,12 @@ extern "C" {
     fn editorClipboardPasteData(
         target: &web_sys::HtmlTextAreaElement,
         copied_event: &web_sys::Event,
+    ) -> web_sys::Event;
+    fn editorEdgeGesture(
+        target: &web_sys::HtmlTextAreaElement,
+        horizontal: bool,
+        end: bool,
+        kind: &str,
     ) -> web_sys::Event;
     fn editorPrimaryGesture(
         target: &web_sys::HtmlTextAreaElement,
@@ -5048,7 +5165,16 @@ async fn wrapping_whitespace_fold_geometry_and_navigation_share_both_modes() {
             row < narrow && (row - fold).abs() < 1.0
         })
         .await;
-        let before = highlight_count();
+        wait_until("resized source dimensions prepared", || {
+            mounted
+                .element(".editor-scroll-extent")
+                .has_attribute("data-source-width")
+        })
+        .await;
+        frame().await;
+        // Layout changes may generate temporary measurement HTML. The reusable
+        // visible paint must remain unchanged when only wrapping is toggled.
+        let before = openwebide_frontend::components::viewport_highlight_count();
         mounted
             .state
             .settings
@@ -5060,7 +5186,10 @@ async fn wrapping_whitespace_fold_geometry_and_navigation_share_both_modes() {
         .await;
         frame().await;
         frame().await;
-        assert_eq!(highlight_count(), before);
+        assert_eq!(
+            openwebide_frontend::components::viewport_highlight_count(),
+            before
+        );
         assert_eq!(actions.source(), expected);
         mounted
             .state

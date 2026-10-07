@@ -303,10 +303,26 @@ pub fn set_editor_scroll_left(input: &web_sys::HtmlTextAreaElement, left: f64) {
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(inline_js = r#"
-export function editor_point(input, x, y) {
+export function editor_point(input, x, y, dragging) {
     const paint = input.parentElement?.querySelector('.editor-highlight-content');
     const overlay = paint?.parentElement;
     if (!paint || !overlay) return undefined;
+    if (dragging) {
+        const bounds = input.getBoundingClientRect();
+        if (bounds.width <= 2 || bounds.height <= 2) return undefined;
+        let nearest, distance = Infinity;
+        for (const row of paint.querySelectorAll('.editor-source-line')) {
+            const rect = row.getBoundingClientRect();
+            const top = Math.max(bounds.top, rect.top), bottom = Math.min(bounds.bottom, rect.bottom);
+            if (bottom <= top) continue;
+            const at = Math.max(top + Math.min(.5, (bottom - top) / 2),
+                Math.min(bottom - Math.min(.5, (bottom - top) / 2), y));
+            if (Math.abs(at - y) < distance) { nearest = at; distance = Math.abs(at - y); }
+        }
+        if (nearest === undefined) return undefined;
+        x = Math.max(bounds.left + 1, Math.min(bounds.right - 1, x));
+        y = nearest;
+    }
     const inputEvents = input.style.pointerEvents, paintEvents = overlay.style.pointerEvents;
     try {
         input.style.pointerEvents = 'none'; overlay.style.pointerEvents = 'auto';
@@ -325,7 +341,28 @@ extern "C" {
         input: &web_sys::HtmlTextAreaElement,
         x: f64,
         y: f64,
+        dragging: bool,
     ) -> Result<JsValue, JsValue>;
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn editor_caret_from_point(
+    input: &web_sys::HtmlTextAreaElement,
+    x: f64,
+    y: f64,
+) -> Option<u32> {
+    editor_caret_at_point(input, x, y, false)
+}
+
+/// Dragging can leave the text's painted area. Resolve against the nearest
+/// visible row without introducing source-unit or selection policy in the DOM.
+#[cfg(target_arch = "wasm32")]
+pub fn editor_caret_from_drag_point(
+    input: &web_sys::HtmlTextAreaElement,
+    x: f64,
+    y: f64,
+) -> Option<u32> {
+    editor_caret_at_point(input, x, y, true)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -334,10 +371,11 @@ extern "C" {
     clippy::cast_sign_loss,
     reason = "DOM point offsets are checked for integer value and the u32 range before conversion"
 )]
-pub fn editor_caret_from_point(
+fn editor_caret_at_point(
     input: &web_sys::HtmlTextAreaElement,
     x: f64,
     y: f64,
+    dragging: bool,
 ) -> Option<u32> {
     let paint = input
         .parent_element()?
@@ -346,7 +384,7 @@ pub fn editor_caret_from_point(
     if paint.get_attribute("data-editor-scope") != input.get_attribute("data-editor-scope") {
         return None;
     }
-    let point = editor_point(input, x, y).ok()?;
+    let point = editor_point(input, x, y, dragging).ok()?;
     if !js_sys::Array::is_array(&point) {
         return None;
     }

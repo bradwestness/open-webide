@@ -9,13 +9,15 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Scroll and extend prepared editor source selections when dragging near or beyond vertical and horizontal viewport edges, including stationary pointers, in both workspace modes. Share bounded speed rules in Rust, retry pending paint, and stop on release, blur or stale document/read/project/account/fold state. Cold and touch selection remain pending bounded input work.
+
 - Keep the editor folding column reserved while syntax updates, preventing horizontal jumps when pressing Enter or editing files without folds.
 
 - Invalidate editor dimensions and source geometry when switching already loaded font families, including Chrome with an empty font shorthand. Font properties and OpenType options share the same identity in measurement probes and viewport observers.
 
 - Derive prepared editor scroll width and height from source row measurements in both workspace modes, reusing unchanged dimensions after edits and rejecting stale account/syntax/layout results. Preserve trailing padding without letting clamped native scroll echoes move the source viewport. Coalesce row planning and geometry probes until the next frame, measuring only the latest edit in an input burst. Cold and superseded layouts retain native fallback while bounded input remains in progress.
 
-- Select and drag prepared editor source with shared Rust caret, word and logical-line rules, including Shift-click anchors and Unicode/CRLF direction, in both workspace modes. Discard drags after source, read, project or account changes. Route single-selection copy and cut through the shared source clipboard policy; cold/touch selection and edge auto-scroll remain pending bounded input work.
+- Select and drag prepared editor source with shared Rust caret, word and logical-line rules, including Shift-click anchors and Unicode/CRLF direction, in both workspace modes. Discard drags after source, read, project or account changes. Route single-selection copy and cut through the shared source clipboard policy; cold/touch selection remains pending bounded input work.
 
 - Paint the primary editor caret and selection from the same source geometry as secondary cursors in both workspace modes. Route single-cursor arrow, word and document navigation through the shared Rust engine, revealing offscreen carets through the common scroll viewport and rejecting stale paint/read/account results.
 
