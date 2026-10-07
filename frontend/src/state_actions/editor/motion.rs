@@ -7,6 +7,32 @@ use openwebide_core::editor::{
 };
 
 impl EditorActions {
+    /// DOM callers provide their stamped project/file; source stays borrowed here.
+    pub fn queue_current_motion(
+        self,
+        project: i64,
+        path: &str,
+        motion: SelectionMotion,
+        extend: bool,
+    ) -> Result<Option<(u64, bool)>, SelectionError> {
+        self.workspace
+            .content
+            .with_untracked(|source| self.queue_motion(project, path, source, motion, extend))
+    }
+
+    pub fn queue_current_page_motion(
+        self,
+        project: i64,
+        path: &str,
+        down: bool,
+        extend: bool,
+        viewport: (f64, f64),
+    ) -> Result<Option<(u64, bool)>, SelectionError> {
+        self.workspace.content.with_untracked(|source| {
+            self.queue_page_motion(project, path, source, down, extend, viewport)
+        })
+    }
+
     /// Page motion retains one visual row of overlap and uses the same ordered
     /// source-motion queue as arrows, including wrapped cursor-neighbor probes.
     pub fn queue_page_motion(

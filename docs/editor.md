@@ -106,6 +106,13 @@ range measurements stay within short text nodes. It reuses measurements across
 cursors and caps prepared
 caret positions at 65,536. While paint is pending, arrow requests queue in order, including
 Shift selections. Typing, commands, composition and clipboard actions apply queued motion first.
+The shared facade borrows the current source when scheduling arrows/pages. Queues
+retain document identity, revision, selections and their immutable projection
+without another full-source copy. Replacing/recovering a document invalidates its
+old queue even when the replacement has identical text and revision; a clone of
+the same text version shares identity, while editing either clone creates a new
+identity. Divergent clones cannot accept each other’s queued motion even with
+matching revisions and selections.
 When a full row-height table is still preparing, styled probes measure the current
 and neighboring logical lines using the same caret sampler as prepared paint.
 

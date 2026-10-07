@@ -31,7 +31,7 @@ impl MotionAdapter {
         };
         match self
             .actions
-            .queue_motion(project, &path, &self.actions.source(), motion, extend)
+            .queue_current_motion(project, &path, motion, extend)
         {
             Ok(Some((ticket, true))) => self.schedule(ticket, input.clone()),
             Err(error) => self.error.set(Some(error.to_string())),
@@ -52,14 +52,10 @@ impl MotionAdapter {
             f64::from(crate::viewport::editor_scroll(input).client_height()),
             super::editor::editor_row_height(input),
         );
-        match self.actions.queue_page_motion(
-            project,
-            &path,
-            &self.actions.source(),
-            down,
-            extend,
-            viewport,
-        ) {
+        match self
+            .actions
+            .queue_current_page_motion(project, &path, down, extend, viewport)
+        {
             Ok(Some((ticket, true))) => self.schedule(ticket, input.clone()),
             Err(error) => self.error.set(Some(error.to_string())),
             _ => {}

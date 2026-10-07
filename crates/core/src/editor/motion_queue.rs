@@ -22,7 +22,7 @@ impl MotionRequest {
 
 #[derive(Clone, Debug)]
 pub struct MotionQueue {
-    source: String,
+    identity: std::sync::Arc<()>,
     projection: FoldProjection,
     selections: Vec<Selection>,
     revision: u64,
@@ -39,7 +39,7 @@ impl MotionQueue {
             return Err(SelectionError::TooLarge);
         }
         Ok(Self {
-            source: document.text().into(),
+            identity: document.identity.clone(),
             projection: document.projection(),
             selections: document.selections().to_vec(),
             revision: document.revision(),
@@ -51,7 +51,7 @@ impl MotionQueue {
     pub fn matches(&self, document: &Document) -> bool {
         !document.is_composing()
             && self.revision == document.revision()
-            && self.source == document.text()
+            && std::sync::Arc::ptr_eq(&self.identity, &document.identity)
             && self.selections == document.selections()
             && self.projection == document.projection()
     }
@@ -124,6 +124,74 @@ impl MotionQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queued_motion_rejects_replacements_even_with_identical_text_revision_and_selection() {
+        let original = Document::new("文😀\r\ntail");
+        let mut queue = MotionQueue::new(&original).unwrap();
+        queue
+            .push(MotionRequest {
+                motion: SelectionMotion::Right,
+                extend: false,
+                wrapped: false,
+            })
+            .unwrap();
+        let mut replacement = Document::new(original.text());
+        assert_eq!(original, replacement);
+        assert!(!queue.matches(&replacement));
+        let before = replacement.clone();
+        assert_eq!(
+            queue.apply_next(&mut replacement, Indentation::default(), None),
+            Err(EditError::StaleContext.into())
+        );
+        assert_eq!(replacement, before);
+        assert!(queue.next_request().is_some());
+        let mut same_version = original.clone();
+        assert!(queue.matches(&same_version));
+        assert!(
+            queue
+                .apply_next(&mut same_version, Indentation::default(), None)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn queued_motion_rejects_divergent_clones_with_the_same_revision() {
+        let original = Document::new("abc");
+        let mut left = original.clone();
+        let mut right = original;
+        for (document, text) in [(&mut left, "x"), (&mut right, "y")] {
+            document
+                .apply(
+                    vec![super::super::Edit {
+                        range: 0..1,
+                        text: text.into(),
+                    }],
+                    vec![Selection::caret(0)],
+                    None,
+                )
+                .unwrap();
+        }
+        assert_eq!(left.revision(), right.revision());
+        assert_eq!(left.selections(), right.selections());
+        assert!(!std::sync::Arc::ptr_eq(&left.identity, &right.identity));
+        let mut queue = MotionQueue::new(&left).unwrap();
+        queue
+            .push(MotionRequest {
+                motion: SelectionMotion::Right,
+                extend: false,
+                wrapped: false,
+            })
+            .unwrap();
+        assert!(!queue.matches(&right));
+        assert_eq!(
+            queue.apply_next(&mut right, Indentation::default(), None),
+            Err(EditError::StaleContext.into())
+        );
+        assert_eq!(right.text(), "ybc");
+        assert_eq!(right.selections(), [Selection::caret(0)]);
+    }
 
     #[test]
     fn measured_progress_extends_wait_but_a_stalled_preparation_still_fails() {

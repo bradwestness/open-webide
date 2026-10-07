@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Borrow editor source when scheduling cursor/page movement and remove the motion queue's full-file copy. Guard queued requests with document identity as well as revision, selection and projection, rejecting replacements with identical text without affecting shared local/remote movement behavior.
+
 - Add release-app Chromium composition and history checks to CI for local and remote drafts with LF and CRLF. Exercise pending syntax and bounded native windows, verify candidate updates/commit/cancel and one-step undo/redo against full recovered source, and retain physical PWA input/clipboard verification on the roadmap.
 
 - Compress unchanged worker token rows into validated runs, retaining shared token allocations and the facade's immutable source snapshot in both workspace modes. Reject invalid run counts/ranges and reconstructed token-budget overflow. Warm syntax queries reuse that snapshot instead of cloning the whole buffer while preserving source-change cancellation guards.

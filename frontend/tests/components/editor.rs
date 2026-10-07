@@ -7265,8 +7265,37 @@ async fn queued_motion_cannot_cross_accounts_files_or_newer_tickets_in_both_mode
         actions
             .record_selection(openwebide_core::editor::Selection::caret(0))
             .unwrap();
+        assert!(
+            actions
+                .queue_current_motion(2, "queued.rs", SelectionMotion::Down, false)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            actions
+                .queue_current_page_motion(1, "other.rs", true, false, (100.0, 20.0))
+                .unwrap()
+                .is_none()
+        );
+        let replacement_ticket = actions
+            .queue_current_motion(1, "queued.rs", SelectionMotion::Down, false)
+            .unwrap()
+            .unwrap()
+            .0;
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .update(|documents| {
+                documents.insert(
+                    (1, "queued.rs".into()),
+                    openwebide_core::editor::Document::new(source.clone()),
+                );
+            });
+        assert!(actions.next_queued_motion(replacement_ticket).is_none());
+        assert_eq!(actions.selection(&source).unwrap().head, 0);
         let old = actions
-            .queue_motion(1, "queued.rs", &source, SelectionMotion::Down, false)
+            .queue_current_motion(1, "queued.rs", SelectionMotion::Down, false)
             .unwrap()
             .unwrap()
             .0;

@@ -223,6 +223,8 @@ struct HistoryStep {
 /// History stores replacements rather than a whole-file snapshot for every keypress.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {
+    // Clones share a text version; edits and replacements create a new identity.
+    identity: std::sync::Arc<()>,
     text: String,
     editor_limits: bool,
     line_index: index::LineIndex,
@@ -264,6 +266,7 @@ impl Document {
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
         Self {
+            identity: std::sync::Arc::new(()),
             saved: text.clone(),
             editor_limits: false,
             line_index: index::LineIndex::new(&text),
@@ -570,6 +573,7 @@ impl Document {
         self.selections = after;
         self.selection_history.clear();
         self.motion_columns = None;
+        self.identity = std::sync::Arc::new(());
         self.revision = self.revision.wrapping_add(1);
         Ok(true)
     }
@@ -592,6 +596,7 @@ impl Document {
         self.history_cursor -= 1;
         self.selection_history.clear();
         self.motion_columns = None;
+        self.identity = std::sync::Arc::new(());
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -614,6 +619,7 @@ impl Document {
         self.history_cursor += 1;
         self.selection_history.clear();
         self.motion_columns = None;
+        self.identity = std::sync::Arc::new(());
         self.revision = self.revision.wrapping_add(1);
         true
     }
