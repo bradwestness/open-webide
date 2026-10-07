@@ -7870,6 +7870,7 @@ struct DeferredSyntax {
     service: std::cell::RefCell<openwebide_core::editor::SyntaxPreparations<String>>,
     calls: std::cell::Cell<usize>,
     stopped: std::cell::Cell<bool>,
+    source_delta: std::cell::Cell<bool>,
 }
 impl openwebide_frontend::editor_worker::SyntaxTransport for DeferredSyntax {
     fn request(
@@ -7913,6 +7914,10 @@ impl DeferredSyntax {
         } else {
             Err(openwebide_frontend::editor_worker::WorkerError::Transport)
         };
+        self.source_delta.set(output.as_ref().is_ok_and(|message| {
+            let value: serde_json::Value = serde_json::from_str(message).unwrap();
+            value["analysis"]["source"].is_object()
+        }));
         sender.send(output).unwrap();
     }
     fn source(&self) -> String {
@@ -8450,7 +8455,7 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
     use openwebide_core::WorkspaceMode;
     use openwebide_frontend::state_actions::editor::EditorActions;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        let source = "{\r\n  \"name\": \"文😀\", \"value\": 42\r\n}\r\n";
+        let source = "{\r\n  \"name\": \"文😀 unchanged source text keeps the publication large enough to benefit from a source replacement span while testing raw CRLF preservation\", \"value\": 42\r\n}\r\n";
         let transport = std::rc::Rc::new(DeferredSyntax::default());
         let installed = transport.clone();
         let captured = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
@@ -8528,6 +8533,10 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
             "updates advertise a scoped published base"
         );
         transport.respond(true);
+        assert!(
+            transport.source_delta.get(),
+            "updates publish only the changed source span"
+        );
         wait_until("revised lexical paint", || {
             actions.syntax_highlights().is_some()
         })

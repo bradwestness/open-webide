@@ -2,7 +2,7 @@
 use super::{MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData, SyntaxPreparations, SyntaxStatus};
 use crate::{editor::MAX_STRUCTURE_BYTES, highlight::Language};
 
-pub const SYNTAX_PROTOCOL_VERSION: u32 = 2;
+pub const SYNTAX_PROTOCOL_VERSION: u32 = 3;
 pub const MAX_SYNTAX_REQUEST_BYTES: usize = MAX_STRUCTURE_BYTES * 6 + 8192;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -159,6 +159,12 @@ mod tests {
         let delta = service
             .handle_message(&serde_json::to_string(&input).unwrap(), || true)
             .unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&delta).unwrap();
+        assert_eq!(wire["analysis"]["source"]["text"], "revised_");
+        assert_eq!(
+            wire["analysis"]["source"]["start"],
+            source.find("value").unwrap()
+        );
         let updated = SyntaxReply::receive_reusing(&delta, 43, &revised, Some((42, &old)))
             .unwrap()
             .1

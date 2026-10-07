@@ -30,11 +30,11 @@ def check():
                 result = browser.call('POST', '/execute/async', {'script': r'''
                     const done = arguments[0];
                     const worker = new Worker('/editor-worker.js', {type: 'module'});
-                    const waiting = new Map(), bases = new Map(); let ticket = 0;
+                    const waiting = new Map(), bases = new Map(), sources = new Map(); let ticket = 0;
                     let wake; const ready = new Promise(resolve => {wake = resolve;});
                     worker.onerror = e => { worker.terminate(); done({error: e.message}); };
                     worker.onmessage = event => {
-                        if (event.data === 'openwebide-editor-ready:2') {wake(); return;}
+                        if (event.data === 'openwebide-editor-ready:3') {wake(); return;}
                         const reply = JSON.parse(event.data);
                         waiting.get(reply.ticket)?.(reply); waiting.delete(reply.ticket);
                     };
@@ -43,11 +43,26 @@ def check():
                         return new Promise(resolve => {
                             const id = ++ticket;
                             waiting.set(id, reply => {
-                                if (reply.analysis) bases.set(document, reply.ticket);
-                                else bases.delete(document);
+                                if (reply.analysis) {
+                                    const published = reply.analysis.source;
+                                    if (typeof published !== 'string') {
+                                        const old = sources.get(document);
+                                        // Protocol offsets are UTF-8 bytes, not JavaScript characters.
+                                        const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', {fatal:true});
+                                        const bytes = encoder.encode(old), inserted = encoder.encode(published.text);
+                                        const combined = new Uint8Array(published.start + inserted.length + bytes.length - published.end);
+                                        combined.set(bytes.subarray(0, published.start));
+                                        combined.set(inserted, published.start);
+                                        combined.set(bytes.subarray(published.end), published.start + inserted.length);
+                                        reply.analysis.sourceDelta = true;
+                                        reply.analysis.source = decoder.decode(combined);
+                                    }
+                                    sources.set(document, reply.analysis.source);
+                                    bases.set(document, reply.ticket);
+                                } else { bases.delete(document); sources.delete(document); }
                                 resolve(reply);
                             });
-                            worker.postMessage(JSON.stringify({version:2,ticket:id,document,language,source,tab_width:4,base_ticket:bases.get(document)}));
+                            worker.postMessage(JSON.stringify({version:3,ticket:id,document,language,source,tab_width:4,base_ticket:bases.get(document)}));
                         });
                     }
                     (async () => {
@@ -98,14 +113,18 @@ def check():
                         let uiEvent = false;
                         setTimeout(() => {uiEvent = true;}, 0);
                         const prepared = await request('large', 'Rust', heavy);
+                        const heavyUpdate = await request('large', 'Rust', heavy.replace('文😀', '🦀 changed'));
                         const oversized = await request('large', 'Rust', 'x'.repeat(2*1024*1024+1));
                         worker.terminate();
                         done({first, next, providers, lexical, heavyStatus: prepared.status,
                             heavySource: prepared.analysis?.source === heavy, uiEvent,
+                            heavyDelta: heavyUpdate.analysis?.sourceDelta === true,
+                            heavyUpdateSource: heavyUpdate.analysis?.source === heavy.replace('文😀', '🦀 changed'),
                             oversizedStatus: oversized.status, oversizedAnalysis: oversized.analysis});
                     })().catch(error => {worker.terminate(); done({error:String(error)});});
                 ''', 'args': []})
                 assert 'error' not in result, result
+                assert result['heavyDelta'] and result['heavyUpdateSource'], result
                 assert result['first']['status'] == {'Ready': {'incremental': False}}, result['first']['status']
                 assert result['next']['status'] == {'Ready': {'incremental': True}}, result['next']['status']
                 assert result['first']['analysis']['source'] != result['next']['analysis']['source']

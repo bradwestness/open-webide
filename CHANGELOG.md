@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Publish small worker source updates as validated UTF-8 replacement spans against the acknowledged snapshot in both workspace modes. Preserve Unicode and CRLF, reject malformed ranges or mismatching sources, and retain standalone replies for stale or evicted bases.
+
 - Publish unchanged worker token rows by validated base-ticket references instead of sending and reconstructing their token spans. Preserve shared row allocations in both workspace modes, reject stale or mismatching bases, and send complete results when a base is unavailable.
 
 - Share compact immutable token rows during lexical updates and editor paint preparation. Reused rows retain their token strings instead of copying them across source revisions, while worker transfer validation and rendering keep the same content and scope guards. Defer full-row probes until cooperative fallback tokens resolve, avoiding discarded neutral cold-layout batches while preserving pending-worker source previews.

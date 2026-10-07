@@ -12,13 +12,76 @@ pub(super) const MAX_ANALYSIS_RECORDS: usize = 100_000;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SyntaxAnalysisData {
-    source: String,
+    source: SourceData,
     folds: Vec<FoldRange>,
     structure: Option<StructureData>,
     // Per-line UTF-8 end offsets, avoiding another copy of every token's text.
     highlights: Option<Vec<TokenRowData>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_ticket: Option<u32>,
+}
+
+/// Source coordinates are UTF-8 bytes, never browser UTF-16 positions.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum SourceData {
+    Full(String),
+    Replace {
+        start: usize,
+        end: usize,
+        text: String,
+    },
+}
+
+impl SourceData {
+    fn publication(source: &str, previous: Option<&SyntaxAnalysis>) -> Self {
+        if let Some(previous) = previous {
+            let change = text_change(previous.source(), source);
+            let (start, end, text) = change.map_or((0, 0, ""), |change| {
+                (
+                    change.range.start,
+                    change.range.end,
+                    &source[change.range.start..change.new_end],
+                )
+            });
+            // Reserve envelope overhead; full replacements remain standalone.
+            if text.len().saturating_add(96) < source.len() {
+                return Self::Replace {
+                    start,
+                    end,
+                    text: text.into(),
+                };
+            }
+        }
+        Self::Full(source.into())
+    }
+
+    fn validate(self, expected: &str, previous: Option<&SyntaxAnalysis>) -> Option<Arc<str>> {
+        if expected.len() > MAX_STRUCTURE_BYTES {
+            return None;
+        }
+        match self {
+            Self::Full(source) => (source == expected).then(|| Arc::from(source)),
+            Self::Replace { start, end, text } => {
+                let old = previous?.source();
+                if start > end {
+                    return None;
+                }
+                let prefix = old.get(..start)?;
+                let suffix = old.get(end..)?;
+                let new_end = start.checked_add(text.len())?;
+                let length = new_end.checked_add(suffix.len())?;
+                if length != expected.len()
+                    || expected.get(..start)? != prefix
+                    || expected.get(start..new_end)? != text
+                    || expected.get(new_end..)? != suffix
+                {
+                    return None;
+                }
+                Some(Arc::from(expected))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -97,12 +160,14 @@ impl SyntaxAnalysis {
                 })
                 .collect()
         });
+        let source = SourceData::publication(&self.source, previous.map(|(_, analysis)| analysis));
+        reused |= matches!(source, SourceData::Replace { .. });
         let data = SyntaxAnalysisData {
-            source: self.source.to_string(),
+            source,
             folds: self.folds.clone(),
             structure,
             highlights,
-            base_ticket: reused.then(|| previous.expect("reused previous rows").0),
+            base_ticket: reused.then(|| previous.expect("reused previous publication").0),
         };
         (data.record_count() <= MAX_ANALYSIS_RECORDS).then_some(data)
     }
@@ -140,17 +205,19 @@ impl SyntaxAnalysisData {
         {
             return None;
         }
-        if self.source != expected_source
-            || self.source.len() > MAX_STRUCTURE_BYTES
-            || self.record_count() > MAX_ANALYSIS_RECORDS
-        {
+        if self.record_count() > MAX_ANALYSIS_RECORDS {
             return None;
         }
-        let line_count = self.source.split('\n').count();
+        if matches!(self.source, SourceData::Replace { .. }) && self.base_ticket.is_none() {
+            return None;
+        }
+        let source = self
+            .source
+            .validate(expected_source, previous.map(|(_, analysis)| analysis))?;
+        let line_count = source.split('\n').count();
         if normalize_folds(self.folds.clone(), line_count) != self.folds {
             return None;
         }
-        let source: Arc<str> = Arc::from(self.source);
         let structure = match self.structure {
             Some(data) => Some(Arc::new(data.validate(source.clone())?)),
             None => None,
@@ -219,6 +286,68 @@ impl SyntaxAnalysisData {
 mod tests {
     use super::*;
     use crate::highlight::language_from_path;
+    #[test]
+    fn source_publications_validate_unicode_edits_and_reject_invalid_bases_and_ranges() {
+        let source = format!("{}文😀\r\n{}", "prefix ".repeat(30), "suffix ".repeat(30));
+        let mut document = SyntaxDocument::new(crate::highlight::Language::Plain).unwrap();
+        let old = document.prepare(&source, 4, || true).1.unwrap();
+        for revised in [
+            source.clone(),
+            source.replace("文😀", "🦀 new"),
+            source.replace("文😀", ""),
+            source.replace("文😀", "文😀 inserted\r\n"),
+            format!("{source}🦀"),
+            format!("🦀{source}"),
+            source
+                .replace("prefix ", "prefix changed ")
+                .replace("suffix ", "tail "),
+        ] {
+            let next = document.prepare(&revised, 4, || true).1.unwrap();
+            let wire = next.transfer_data_reusing(Some((42, &old))).unwrap();
+            let restored = wire
+                .clone()
+                .validate_reusing(&revised, Some((42, &old)))
+                .unwrap();
+            assert_eq!(restored.source(), revised);
+            assert_eq!(restored.highlights(), next.highlights());
+            if matches!(wire.source, SourceData::Replace { .. }) {
+                assert!(wire.clone().validate(&revised).is_none());
+                assert!(
+                    wire.clone()
+                        .validate_reusing(&revised, Some((43, &old)))
+                        .is_none()
+                );
+                assert!(
+                    wire.validate_reusing(&(revised.clone() + "x"), Some((42, &old)))
+                        .is_none()
+                );
+            }
+        }
+        let start = source.find('文').unwrap();
+        for (start, end, text) in [
+            (start + 1, start + 1, ""), // Inside a UTF-8 scalar.
+            (start + 3, start, ""),     // Reversed range.
+            (0, usize::MAX, ""),
+            (0, 0, "wrong"),
+        ] {
+            assert!(
+                SourceData::Replace {
+                    start,
+                    end,
+                    text: text.into()
+                }
+                .validate(&source, Some(&old))
+                .is_none()
+            );
+        }
+        let mut wire = old.transfer_data_reusing(Some((42, &old))).unwrap();
+        assert!(matches!(wire.source, SourceData::Replace { .. }));
+        wire.base_ticket = None;
+        assert!(wire.validate_reusing(&source, Some((42, &old))).is_none());
+        let malformed = serde_json::json!({"start":0,"end":0,"text":"","extra":true});
+        assert!(serde_json::from_value::<SourceData>(malformed).is_err());
+    }
+
     #[test]
     fn round_trip_all_languages_and_literals_preserves_every_consumer() {
         let cases = crate::editor::syntax_contracts::LANGUAGE_CASES
