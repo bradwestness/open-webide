@@ -38,7 +38,7 @@ jobs:
       # The Pages convenience action excludes dot directories, including .well-known.
       - name: Package site including WebFinger discovery
         run: |
-          tar --dereference --hard-dereference --exclude=.open-webide-site \
+          tar --dereference --hard-dereference --exclude=.openwebide-site \
             -cf "$RUNNER_TEMP/artifact.tar" -C "$RUNNER_TEMP/project-site" .
           tar -tf "$RUNNER_TEMP/artifact.tar" | grep -Fx "./.well-known/webfinger"
       - uses: actions/upload-artifact@v4

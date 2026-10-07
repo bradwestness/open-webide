@@ -776,28 +776,18 @@ pub fn ChatPane(
                 when=move || !messages.handles.with(Vec::is_empty)
                 fallback=move || {
                     view! {
-                        <Show
-                            when=move || has_session.get()
-                            fallback=move || {
-                                view! {
-                                    <div class="empty-state tui-empty-state">
-                                        <h1 class="phone-welcome">"Open WebIDE"</h1>
-                                        <div class="tui-banner-ascii">
-                                            "┌────────────────────────────────────────────────────────┐\n\
-                                             │ Open WebIDE Terminal Execution Surface                 │\n\
-                                             │ A WebAssembly IDE for local-LLM coding agents.         │\n\
-                                             └────────────────────────────────────────────────────────┘"
-                                        </div>
-                                        <p class="muted">"Type a prompt or /help to inspect available commands."</p>
+                        <div class="chat-welcome">
+                            <div class="empty-state tui-empty-state">
+                                <div class="chat-welcome-heading">
+                                    <super::ui::LogoMark class="chat-welcome-logo" />
+                                    <div>
+                                        <h1>"Open WebIDE"</h1>
+                                        <p>"A home for your code and local models."</p>
                                     </div>
-                                }
-                            }
-                        >
-                            <div class="messages tui-stream">
-                                <div class="tui-stream-spacer"></div>
-                                <p class="empty tui-empty">"Stream initialized. Ready for execution."</p>
+                                </div>
+                                <p class="chat-welcome-tip">"Ask a question, describe a change, or type "<code>"/help"</code>" to explore commands."</p>
                             </div>
-                        </Show>
+                        </div>
                     }
                 }
             >

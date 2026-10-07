@@ -2251,11 +2251,6 @@ button.browser-item {
   margin-top: auto;
 }
 
-.tui-stream .tui-empty {
-  margin-top: auto;
-  margin-bottom: 0;
-}
-
 .tui-stream-line {
   display: flex;
   flex-direction: column;
@@ -2660,20 +2655,11 @@ button.browser-item {
   font-size: 12px;
 }
 
-.tui-empty-state {
-  margin-top: auto;
-  margin-bottom: 24px;
-  text-align: center;
-  font-family: var(--mono);
-}
-
-.tui-banner-ascii {
-  white-space: pre;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.3;
-  margin-bottom: 12px;
-}
+.chat-welcome { display: flex; flex: 1; min-height: 0; overflow: auto; padding: var(--space-6); }
+.tui-empty-state { margin: auto; max-width: 480px; font-family: var(--mono); }
+.chat-welcome-heading { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: var(--space-4); }
+.logo-mark.chat-welcome-logo { width: 72px; height: 72px; }
+.chat-welcome-tip { padding-top: var(--space-4); font-size: var(--font-control); }
 
 .tui-stopped-marker {
   color: var(--offline);
@@ -2912,10 +2898,6 @@ button.browser-item {
 .phone-layout .search-pane, .phone-layout .git-pane { width: 100%; flex: 1; }
 .tui-model-picker { position: relative; min-width: 0; }
 .btn.tui-model-name { font: inherit; padding: 2px 4px; max-width: 100%; overflow-wrap: anywhere; }
-.phone-welcome { display: none; }
-.phone-layout .phone-welcome { display: block; }
-.phone-layout .tui-banner-ascii { display: none; }
-.phone-layout .tui-empty-state { max-width: calc(100% - 32px); }
 .phone-layout .tui-statusline { flex-wrap: wrap; gap: 4px 8px; }
 .phone-layout .tui-statusline .tui-sep { display: none; }
 .phone-layout .tui-model-picker { max-width: calc(100% - 84px); }
@@ -3178,7 +3160,8 @@ button.browser-item {
 .editor-find-match { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .logo { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
-.logo-mark { width: 32px; height: 32px; flex: none; border-radius: var(--radius-sm); }
+.logo-mark { width: 32px; height: 32px; flex: none; color: var(--accent); }
+.logo-mark svg { display: block; width: 100%; height: 100%; }
 
 /* Chat keeps primary controls compact and secondary actions in the panel menu. */
 .tui-user { min-height: 40px; justify-content: center; }

@@ -8,9 +8,9 @@ if [[ ! -f "$repo/target/wasm32-wasip2/release/openwebide_backend.wasm" || ! -f 
 fi
 
 docker build --file "$repo/tools/editor-view.Dockerfile" \
-    --tag open-webide:editor-view-measurements "$repo/tools" >&2
-image=$(docker image inspect --format '{{.Id}}' open-webide:editor-view-measurements)
+    --tag openwebide:editor-view-measurements "$repo/tools" >&2
+image=$(docker image inspect --format '{{.Id}}' openwebide:editor-view-measurements)
 docker run --rm --init --shm-size=1g --memory=10g --cpus=4 \
-    --mount "type=bind,src=$repo,dst=/workspace/repos/open-webide" \
+    --mount "type=bind,src=$repo,dst=/workspace/repos/openwebide" \
     --env "EDITOR_VIEW_IMAGE=$image" \
     "$image" --require-pss "$@"

@@ -17,7 +17,7 @@ import uuid
 
 parser = argparse.ArgumentParser()
 parser.add_argument("engine", choices=["docker", "podman"])
-parser.add_argument("--image", default="open-webide:ci")
+parser.add_argument("--image", default="openwebide:ci")
 parser.add_argument("--port", type=int, default=8446)
 args = parser.parse_args()
 engine = args.engine

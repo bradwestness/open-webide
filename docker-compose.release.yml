@@ -1,0 +1,20 @@
+# Downloadable release install; no checkout or local build required.
+name: openwebide
+services:
+  openwebide:
+    image: ${OPENWEBIDE_IMAGE:-ghcr.io/openwebide/openwebide:latest}
+    ports:
+      - "8080:3000"
+      - "3001:3001"
+    volumes:
+      - openwebide-data:/app/.spin
+      - ${OPENWEBIDE_WORKSPACE:-${HOME}/source}:/workspace
+    environment:
+      - OPENWEBIDE_BRIDGE=${OPENWEBIDE_BRIDGE:-1}
+      - OPENWEBIDE_BRIDGE_ALLOWED_HOSTS=${OPENWEBIDE_BRIDGE_ALLOWED_HOSTS:-}
+      - OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS=${OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS:-}
+    restart: unless-stopped
+
+volumes:
+  openwebide-data:
+    name: ${OPENWEBIDE_DATA_VOLUME:-openwebide-data}

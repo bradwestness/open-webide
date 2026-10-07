@@ -3,7 +3,8 @@
 What's left, grouped by how soon it's coming: **Next** (queued up), **Later**
 (planned, not yet started). Finished work —
 phases 1 through 14, telemetry, hardening, streaming, `/test`, database-backed
-theme and prompt history, and frontend performance & polish — moved to [CHANGELOG.md](../CHANGELOG.md).
+theme and prompt history, frontend performance & polish, app branding and the chat
+welcome — moved to [CHANGELOG.md](../CHANGELOG.md).
 
 ## Next
 
@@ -301,6 +302,160 @@ autocomplete) into the editor while keeping the core diagnostics engine
 - One diagnostics UI regardless of whether a diagnostic came from the
   in-browser linter or a remote host LSP.
 
+### Editor Git annotations and file-tree changes
+
+- GitLens-style editor annotations showing line authorship, commit details and
+  history, with navigation to the relevant commit or diff.
+- GitHub-style colored folder/file icons in the file tree instead of the `M`/`U`/`A`
+  Git indicators; show added/removed line counts for changed files.
+- Use shared Git orchestration and the existing bridge adapters in both modes;
+  guard asynchronous results against file, project and account changes.
+
+### Test discovery, running and debugging
+
+- Discover tests for supported languages and frameworks in both modes. Initially,
+  expose inline **Run test** actions in remote projects, in the style of Rider/Visual
+  Studio; local projects can show discovered tests with execution unavailable.
+- In remote mode, run individual tests, suites or all project tests through the
+  existing server-side bridge, with results and failure
+  locations linked back to the editor. Stream runner stdout/stderr to the terminal,
+  retaining output alongside structured test results. Define supported frameworks
+  and runtime requirements explicitly.
+- Assess remote debugger integration through Debug Adapter Protocol (DAP): the
+  server-side bridge hosts debugger adapters, and the browser provides breakpoints,
+  stepping, stack frames and variable inspection. Route debuggee output to the
+  terminal. Add inline **Debug test** only for validated runner/debugger combinations,
+  including test-process launch/attach, source mapping and clean session shutdown.
+  See [DAP architecture](https://microsoft.github.io/debug-adapter-protocol/overview.html).
+- **Initial scope exception:** test execution and debugging are remote-only at first.
+  A local companion bridge is outside this feature's scope. Keep local execution and
+  debugging parity as remaining work requiring a browser-compatible runtime; do not
+  mark the overall feature complete when only remote execution ships. Source-based
+  discovery uses `Workspace` in both modes; unavailable actions explain the runtime
+  limitation.
+- Keep discovery, action availability and result handling shared across modes;
+  use thin runtime adapters for execution and explain missing capabilities.
+  Coordinate editor integration with Code intelligence.
+
+### Selection context menu and agent actions
+
+- Right-click highlighted code to open a shared context menu with editor and
+  agent actions, such as explain, refactor or generate tests.
+- Carry the selected text, file path and line range into the agent request and
+  pending-edit review; reject stale selections after document or project changes.
+- Offer the same actions through keyboard and touch controls in both modes.
+
+### TUI goals and common controls
+
+- Support `/goal` in the TUI through shared agent goal orchestration, with visible
+  progress, cancellation and session recovery.
+- Review other common TUI features and prioritize the missing controls; reuse
+  shared command behavior across the TUI and browser wherever applicable.
+
+### Universal command palette omnibar
+
+Extend the existing searchable command palette into a universal omnibar, replacing
+the **Commands** button and its current UI. Combine commands, file navigation and
+project/session navigation behind one searchable entry point, with keyboard and
+touch access, consistent focus behavior and context-aware action availability.
+Reuse shared actions in both modes.
+
+### In-app About and open-source software
+
+- Add an About page showing the running build version and commit.
+- Include an in-app open-source software inventory with license notices, including
+  the bundled Monaspace fonts. Reuse the project site's generated credits inventory
+  and extend it to cover bundled assets as well as dependencies.
+- Make build details and notices available in both modes and the offline PWA.
+
+### Compact desktop layout and phone navigation
+
+Combine related bars and reveal occasional controls on demand, preserving control
+sizes and usable hit targets. Aim for two app rows above editor content and one
+footer, excluding the browser/PWA window title bar.
+
+- **App navigation:** combine branding and project tabs into one row. Make the logo
+  an app-menu dropdown with a discoverable chevron: Open local folder, Open remote
+  folder, Recent projects, Settings, Servers, Help/Keyboard shortcuts and
+  About/Open-source software. Remove the separate opening controls from the project
+  strip. Coordinate the searchable command entry point with the Universal command
+  palette omnibar item above. Keep Sessions focused on conversation navigation;
+  move server and system-prompt management into app-level configuration.
+- **Editor header:** replace the separate **Editor** heading with file tabs on the
+  left; right-align the view selector, Save, Find and finally the `⋯` pane menu.
+  Combine the current title, tabs and path/action bars rather than shrink them.
+  Align Files and Chat headers with the editor tab/action row. Show the full file
+  path through tab tooltips or a breadcrumb popover, with copy-path/reveal-in-tree
+  actions, rather than reserve a permanent path row. Save and Find can use icons
+  with tooltips and accessible labels; keep view choices readable on desktop and
+  collapse them to an active-view selector on narrow screens.
+- **Changes view:** replace the awkward **Diff HEAD** control with an **Edit /
+  Changes / Preview** view selector (Preview only for supported files). Keep file
+  tabs, navigation and toolbar positions consistent across views. Show **Inline /
+  Split** as a small display control when viewing Changes; describe the comparison
+  as **Against last commit**, with `HEAD` available in a tooltip/advanced selector.
+  Move the prominent red **Revert to HEAD** action into `⋯` and the command palette
+  as **Discard changes…**, retaining confirmation and unsaved-buffer/review guards.
+- **Files controls:** keep Explorer/Changes visible. Put the search icon in the
+  pane header; clicking it reveals and focuses the search UI, and Escape dismisses
+  it. Move Include hidden files and folders, refresh and tree preferences into the
+  pane menu. Editor Find likewise appears only when invoked by icon or shortcut.
+- **Status and occasional settings:** combine the editor and app footers. Show
+  cursor position, one indentation control (**Spaces: 4** / **Tabs: 4**), connection,
+  Git status and Output access. Put separate indent/tab widths and detection/default
+  details behind the indentation control; move **Convert indentation** into `⋯`
+  and the command palette. Keep chat model and approval-mode state visible, while
+  detailed telemetry can open from the context gauge. Review duplicate pane-collapse
+  buttons where dock toggles already provide the same action. Use one app logo/menu
+  and consistent `⋯` pane menus for app navigation versus pane options.
+- **Chat density and narrow layouts:** keep model and approval controls readable
+  without clipping or horizontal overflow. On phones, reduce telemetry to a compact
+  context indicator that opens details. Group consecutive collapsed thought/tool
+  events into an expandable activity summary (for example, **4 steps · 6.3s**),
+  retaining access to individual events and keeping pending approvals and failures
+  visible without expanding the group.
+- **Phone navigation:** use a full-width bottom bar with four equal, justified
+  icon-and-label destinations: Sessions, Files, Editor and Chat. Selecting one
+  makes that pane the main view, with a clear active state. The logo opens the
+  Material-style offcanvas app/project drawer. Output can open as a sheet from
+  its status indicator. Respect safe-area insets and choose keyboard behavior that
+  preserves composer/editor space without obscuring controls.
+- **Visual state consistency:** use shared selected-state styling across project/file
+  tabs, pane navigation and segmented controls; distinguish keyboard focus from
+  selection. Coordinate file-tree status with the Editor Git annotations and
+  file-tree changes item: replace cryptic change dots/letter indicators with colored
+  icons and added/removed counts, retaining accessible status descriptions.
+- **Shared behavior and verification:** use shared feature actions, components and
+  theme tokens in both modes. Keep frequent actions accessible outside menus;
+  retain keyboard shortcuts, focus restoration, touch targets and account-synced
+  layout preferences. Verify tab overflow, narrow layouts, keyboard/IME behavior,
+  accessibility, Changes/review safeguards and real phones in both modes.
+
+### Build, test and process output
+
+Prioritize the existing terminal pane as a useful place to follow build, test and
+other process output: readable streamed logs, separate runs, exit status, cancellation,
+copy/search and file/line links back to the editor. Preserve output during reconnects
+and keep runs scoped to their project/session. Use shared output behavior with thin
+runtime adapters; local output is available only for browser-supported execution,
+while host-native builds/tests initially run in remote mode.
+
+- Default an empty, idle output pane to collapsed. When a process starts, reveal
+  it at a modest desktop height while honoring explicit hide/resize choices.
+  On phones, show output in a sheet rather than stack it beneath the active pane
+  and squeeze the conversation/editor into the remaining space.
+- Combine the pane title, connection state and `⋯` actions into one header.
+  Show command input only when manual execution is requested; avoid reserving
+  separate connection/input bands around an empty output area. Keep running/failure
+  status visible through the shared footer's Output indicator when the pane is hidden.
+
+Prioritize idle output behavior, phone control overflow and grouped chat activity
+alongside the compact-layout work above. Verify both-mode output contracts and
+mobile focus/keyboard behavior before considering these refinements complete.
+
+A fully interactive terminal (cursor movement, direct keyboard input and shell/TUI
+programs) is optional later work, pending a concrete need beyond process output.
+
 ### Process execution: MCP client & headless browser
 
 The rest of the Phase 11 bridge work that
@@ -364,46 +519,43 @@ shared tool-execution trait.
 
 ### Productionization & public release (1.0)
 
-The milestone that marks **1.0** — the first version tagged for public use. A hygiene and packaging pass once the hardening sequence, refactors and the main Next features have
+The milestone that marks **1.0** — the first stable version tagged for public use. A hygiene and packaging pass once the hardening sequence, refactors and the main Next features have
 landed — before sharing the repo publicly.
 
-- **Repo hygiene:** remove cruft and unused artifacts (stray scratch files, dead code, stale specs
-  and docs, unused dependencies and features, leftover config), make sure `.gitignore` covers build
-  and tool output, and that CI enforces fmt/clippy/tests on every crate.
-- **Setup story:** a quick start that works in minutes — pull an image and point it at a model
-  server — plus bare-metal, Docker/Podman and Tailscale guides, a configuration reference (flags,
-  Spin variables, settings), upgrade/migration notes and troubleshooting.
-- **Public launch & support:** finish the [generated project site](project-site.md) for 1.0 with
-  release-ready landing-page copy and an optional demo. The site already has a dedicated
-  homepage, a PWA screenshot, social link previews, and generated open-source credits.
-  It builds documentation from repository Markdown, with GitHub Issues for feedback and support. Add a site link to the README once deployed, add issue templates for bugs, feature
-  requests and support questions, and prepare community announcements and directory submissions.
-- **Documentation & architecture diagrams** (Mermaid in `docs/`, rendered on GitHub, updated in the
-  same PR as the code they describe):
-  - Architecture overview: the browser app (Leptos → wasm32-unknown-unknown), the Spin backend
-    (wasm32-wasip2) with SQLite, the native `openwebide-bridge` daemon, the model servers, and the
-    shared crates (`core`, `llm`, `agent`, `storage`, `auth`) — which binary each compiles into and
-    what runs where in Remote vs Local mode.
-  - Transport map: REST + SSE to the backend, the multiplexed bridge WebSocket (hello/auth,
-    terminal, agent runs), the SSE fallback, and the HTTPS proxy / same-origin `/bridge` path.
-  - Request-flow sequence diagrams: a prompt from the composer through the transport to the agent
-    loop, the provider call and streamed tokens back, a tool call through the approval gate
-    (`ApprovalMode`, single-use decisions) into the tool executor and the VFS (`HostFsVfs` /
-    `BrowserFsaVfs` / `MemoryVfs`, path confinement), and results/diffs back to the UI and SQLite.
-  - Data model and security model (trust boundaries — model output is untrusted — and what each
-    check protects).
-- **Install without cloning:**
-  - GitHub Actions building multi-arch images (`linux/amd64`, `linux/arm64`) and publishing to
-    GHCR only (`ghcr.io/<owner>/open-webide`, public package linked to the repo), tagged by SemVer
-    plus `latest`. Auth via the built-in `GITHUB_TOKEN` (`packages: write`) — no extra accounts or
-    secrets. Build each arch on a native runner (`ubuntu-24.04-arm` for arm64) instead of QEMU, then
-    merge into one multi-arch manifest.
-  - A published `docker-compose.yml` and Podman quadlet (`.image` + `.container`) that reference
-    the registry image, so users download one file and start it.
-  - The bridge shipped inside the image (sequence step 47) and as prebuilt release binaries for
-    macOS/Linux (amd64/arm64) for laptop-companion use.
-  - SemVer releases with release notes generated from `CHANGELOG.md`; this item ships as `v1.0.0`
-    (the workspace is `0.1.0` until then), and `[Unreleased]` in the changelog becomes `[1.0.0]`.
+Release automation, download-only Compose/Quadlet files, support issue forms,
+configuration/upgrade/backup guidance, architecture diagrams and font credits are
+prepared. See [releases and upgrades](releases.md). Version/changelog gates,
+archive/checksum contracts, workflow lint and Compose configuration checks cover
+this preparation; publication and release-host verification remain outstanding.
+
+- **Release gates:** finish the hardening/editor dependencies and the Remaining
+  manual verification checks above. Do not declare 1.0 while both-mode contracts,
+  device checks or known responsiveness issues remain unresolved.
+- **Repo hygiene:** finish the unused-code/dependency/configuration sweep and remove
+  confirmed scratch files and stale specs once concurrent development is finished.
+  Generated Python caches, browser test configuration and output are now ignored;
+  existing native/WASI/WASM fmt/clippy/tests remain release gates.
+- **Release rehearsal:** run the Release workflow's nonpublishing manual build and
+  verify its native Linux amd64/arm64 images and Linux/macOS bridge archives. Exercise
+  download-only Compose, rootless Quadlet (including registry auto-updates), HTTPS,
+  database backup/restore/upgrade and both workspace modes. CI validates generated
+  Quadlet services; actual systemd service and update-timer checks remain hands-on.
+- **Prerelease publication:** the prepared pipeline also accepts `-alpha.N`, `-beta.N`
+  and `-rc.N`, publishes versioned images plus the matching rolling channel, and marks
+  GitHub Releases as prereleases. Validate a first prerelease install and make GHCR
+  public before using alpha/beta distribution for feedback; this does not complete 1.0.
+- **First stable publication:** move shipped changelog entries to `[1.0.0]`, bump workspace,
+  Spin and lockfile versions together, and publish `v1.0.0` after rehearsal passes.
+  The prepared workflow runs CI, merges native platform images into
+  `ghcr.io/openwebide/openwebide:v1.0.0` and `latest`, and publishes changelog-derived
+  notes, archives, install files and checksums using `GITHUB_TOKEN`. Make the GHCR
+  package public and verify anonymous pulls and clean installs on both architectures.
+  The workspace currently remains `0.1.0`; a prerelease version can be adopted before
+  the stable-release gates pass.
+- **Public launch:** update the [site landing page](project-site.md) and pre-release
+  documentation wording for the actual release, then prepare community announcements
+  and directory submissions. Support uses the new GitHub issue forms; an optional
+  demo remains future launch work.
 
 ### Offline & error-state recovery
 

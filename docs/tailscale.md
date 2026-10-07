@@ -16,7 +16,7 @@ contains the app and execution bridge; it does not contain Tailscale.
 - Enable MagicDNS and HTTPS Certificates in the tailnet's DNS settings.
 - Create a non-ephemeral auth key for the server container. Supply it through
   the `TS_AUTHKEY` environment variable at startup; keep it out of committed files.
-- Choose the node name `open-webide` and find your tailnet DNS suffix in the
+- Choose the node name `openwebide` and find your tailnet DNS suffix in the
   Tailscale admin console. Substitute the full hostname below. If that name is
   already in use, choose a unique name and update `TS_HOSTNAME` too.
 
@@ -30,20 +30,34 @@ Use `docker-compose.https.yml` on its own. It publishes no host ports: the app a
 bridge bind to loopback inside Tailscale's network namespace. The app database,
 workspace and Tailscale identity remain in separate persistent volumes/mounts.
 
+The file uses the published GHCR image (override it with `OPENWEBIDE_IMAGE`); it
+becomes installable after the first public release. Release assets also include
+`serve-config.sh` so this setup does not require a checkout. For a source checkout,
+build with the override instead:
+
 ```sh
-export OPENWEBIDE_TAILSCALE_HOST=open-webide.tailNNNN.ts.net
+docker compose -f docker-compose.https.yml -f docker-compose.https.build.yml up -d --build
+```
+
+Use the same two `-f` arguments for subsequent source-build operations.
+
+```sh
+export OPENWEBIDE_TAILSCALE_HOST=openwebide.tailNNNN.ts.net
 export OPENWEBIDE_SERVE_CONFIG_DIR="$HOME/.config/openwebide/tailscale"
 mkdir -p "$OPENWEBIDE_SERVE_CONFIG_DIR"
-sh docker/tailscale/serve-config.sh "$OPENWEBIDE_TAILSCALE_HOST" \
+sh serve-config.sh "$OPENWEBIDE_TAILSCALE_HOST" \
   > "$OPENWEBIDE_SERVE_CONFIG_DIR/serve.json"
 # Set TS_AUTHKEY in your shell; do not put it in a committed file.
-docker compose -f docker-compose.https.yml up -d --build
+docker compose -f docker-compose.https.yml up -d
 docker compose -f docker-compose.https.yml exec tailscale tailscale status
 docker compose -f docker-compose.https.yml exec tailscale tailscale serve status
 ```
 
+In a checkout, the generator is `docker/tailscale/serve-config.sh` rather than
+the downloaded `serve-config.sh`.
+
 Set `OPENWEBIDE_WORKSPACE` if your projects are outside `$HOME/source`. Set
-`OPENWEBIDE_TAILSCALE_NAME` if using a node name other than `open-webide`. The full
+`OPENWEBIDE_TAILSCALE_NAME` if using a node name other than `openwebide`. The full
 hostname in `OPENWEBIDE_TAILSCALE_HOST` must match the enrolled node; a conflicting
 node name may acquire a suffix. After enrollment, you can remove `TS_AUTHKEY` and
 recreate the container with the same state volume. Recreate the app too whenever
@@ -74,21 +88,21 @@ Use your existing database/workspace mounts when migrating; never run two app
 instances against the same database.
 
 ```sh
-podman build -t open-webide:local .
-podman run -d --name open-webide-tailscale \
+podman build -t openwebide:local .
+podman run -d --name openwebide-tailscale \
   -v openwebide-tailscale:/var/lib/tailscale \
   -v "$OPENWEBIDE_SERVE_CONFIG_DIR:/config:ro,Z" \
   -e TS_AUTHKEY -e TS_AUTH_ONCE=true -e TS_USERSPACE=true \
-  -e TS_HOSTNAME=open-webide -e TS_STATE_DIR=/var/lib/tailscale \
+  -e TS_HOSTNAME=openwebide -e TS_STATE_DIR=/var/lib/tailscale \
   -e TS_SERVE_CONFIG=/config/serve.json tailscale/tailscale:stable
-podman run -d --name open-webide \
-  --network container:open-webide-tailscale \
+podman run -d --name openwebide \
+  --network container:openwebide-tailscale \
   -v openwebide-data:/app/.spin -v "$HOME/source:/workspace:Z" \
   -e OPENWEBIDE_APP_HOST=127.0.0.1 -e OPENWEBIDE_BRIDGE_HOST=127.0.0.1 \
   -e OPENWEBIDE_BRIDGE_ALLOWED_HOSTS="$OPENWEBIDE_TAILSCALE_HOST" \
   -e OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS="https://$OPENWEBIDE_TAILSCALE_HOST" \
-  open-webide:local
-podman exec open-webide-tailscale tailscale serve status
+  openwebide:local
+podman exec openwebide-tailscale tailscale serve status
 ```
 
 Integrate the containers into systemd/Quadlet for restart management; the
@@ -146,10 +160,10 @@ SSE and authenticated WebSockets in both workspace modes, checks proxy request
 guards, and restarts the app to verify persistence. Run it after building:
 
 ```sh
-python3 docker/https-test/check.py docker --image open-webide:local
+python3 docker/https-test/check.py docker --image openwebide:local
 # Use the same image in Podman, then run the rootless contract:
-docker save open-webide:local | podman load
-python3 docker/https-test/check.py podman --image open-webide:local --port 8447
+docker save openwebide:local | podman load
+python3 docker/https-test/check.py podman --image openwebide:local --port 8447
 ```
 
 Both engine contracts have passed. Live verification of the official Tailscale

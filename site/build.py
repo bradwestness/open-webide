@@ -72,10 +72,11 @@ def shared_styles():
 
 def build(output, site_url):
     output = output.resolve()
-    marker = output / ".open-webide-site"
-    if output.exists() and any(output.iterdir()) and not marker.is_file():
+    marker = output / ".openwebide-site"
+    legacy_marker = output / ".open-webide-site"
+    if output.exists() and any(output.iterdir()) and not (marker.is_file() or legacy_marker.is_file()):
         raise ValueError(f"Refusing to replace non-site output directory: {output}")
-    with tempfile.TemporaryDirectory(prefix="open-webide-docs-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="openwebide-docs-") as temporary:
         staging = Path(temporary)
         content = staging / "content"
         shutil.copytree(ROOT / "docs", content / "docs")

@@ -1,0 +1,5 @@
+# Source-build override for docker-compose.https.yml.
+services:
+  openwebide:
+    build: .
+    image: openwebide:local

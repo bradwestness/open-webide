@@ -8,3 +8,8 @@ frontend/dist
 ai_docs
 webdriver.json
 frontend/webdriver.json
+tools/editor-bench/webdriver.json
+**/__pycache__
+**/*.pyc
+output
+site/.venv

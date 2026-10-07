@@ -1,3 +1,5 @@
+<img src="frontend/pwa/favicon.svg" width="80" height="80" alt="Open WebIDE house logo" />
+
 # Open WebIDE
 
 A self-hosted browser IDE for coding with local LLMs: edit files, run an agent,
@@ -30,7 +32,18 @@ See the [roadmap](docs/roadmap.md) for remaining work and the
 The [project site guide](docs/project-site.md) explains how the landing page and documentation
 are built and published to GitHub Pages from this repository.
 
+Documentation and project updates: [openwebide.com](https://openwebide.com/).
+
 ## Run with Docker
+
+The first public image release is being prepared. Once published, download the
+versioned Compose file from [GitHub Releases](https://github.com/openwebide/openwebide/releases)
+and run `docker compose up -d` without cloning or building. See
+[releases, configuration and upgrades](docs/releases.md) for installation and backup
+instructions. The source-build path below remains available now.
+
+Existing installs should follow the [deployment-name migration notes](docs/releases.md#existing-installations-with-the-old-project-name)
+to retain their database and Tailscale identity when adopting the `openwebide` name.
 
 From a checkout of this repository:
 
@@ -49,10 +62,10 @@ OPENWEBIDE_WORKSPACE=/path/to/projects docker compose up --build
 For a standalone container:
 
 ```sh
-docker build -t open-webide .
-docker run -d --name open-webide \
+docker build -t openwebide .
+docker run -d --name openwebide \
   -p 8080:3000 -p 3001:3001 \
-  -v openwebide-data:/app/.spin -v ~/source:/workspace open-webide
+  -v openwebide-data:/app/.spin -v ~/source:/workspace openwebide
 ```
 
 The workspace mount is accessible to file tools and the agent; choose its scope

@@ -21,6 +21,10 @@ builds. See the [project site guide](project-site.md) for the build command.
 
 ## Other components
 
+- [Monaspace](https://github.com/githubnext/monaspace): bundled variable editor fonts
+  (Argon, Neon, Xenon, Radon and Krypton), release v1.400. Copyright © 2023 GitHub;
+  licensed under the [SIL Open Font License 1.1](https://github.com/openwebide/openwebide/blob/main/frontend/fonts/OFL.txt).
+  The unmodified fonts and license are distributed together in `frontend/fonts/`.
 - [SQLite](https://sqlite.org/): embedded database, bundled through `libsqlite3-sys`.
   SQLite is [in the public domain](https://sqlite.org/copyright.html).
 ## Development and runtime tools

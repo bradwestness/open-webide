@@ -6,3 +6,9 @@ frontend/dist/
 *.db-wal
 *.db-shm
 .DS_Store
+__pycache__/
+*.py[cod]
+/output/
+/webdriver.json
+/frontend/webdriver.json
+/tools/editor-bench/webdriver.json

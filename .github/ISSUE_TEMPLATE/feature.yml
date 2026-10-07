@@ -1,0 +1,26 @@
+name: Feature request
+description: Describe a workflow you would like Open WebIDE to support.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the workflow and what currently gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Workspace mode
+      options: [Both, Remote, Local, No project]
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current workaround or alternatives

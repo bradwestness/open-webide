@@ -17,10 +17,10 @@ render using a pinned external renderer, with readable source as a fallback.
 Install Rust/Cargo (as for app development), then run from the repository root:
 
 ```sh
-python3 -m venv /tmp/open-webide-pages-venv
-/tmp/open-webide-pages-venv/bin/pip install -r site/requirements.txt
-/tmp/open-webide-pages-venv/bin/python site/build.py --output /tmp/open-webide-site
-python3 -m http.server 8000 --directory /tmp/open-webide-site
+python3 -m venv /tmp/openwebide-pages-venv
+/tmp/openwebide-pages-venv/bin/pip install -r site/requirements.txt
+/tmp/openwebide-pages-venv/bin/python site/build.py --output /tmp/openwebide-site
+python3 -m http.server 8000 --directory /tmp/openwebide-site
 ```
 
 Open <http://localhost:8000/>. Builds run in strict mode and check generated HTML,
@@ -59,8 +59,8 @@ pass `--site-url https://example.com/` to the build command.
 
 The build does not compile the Rust/WASM app and works the same for visitors
 using either workspace mode. It links GitHub Issues for feedback and support.
-Issue templates, an optional demo, and launch announcements remain part of the
-1.0 public-release work.
+Issue forms cover bugs, feature requests and setup/usage help. An optional demo
+and launch announcements remain part of the 1.0 public-release work.
 
 ## Social profiles
 

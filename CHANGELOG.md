@@ -11,6 +11,10 @@ for what's still ahead.
 
 - Preserve complete source selections when replaying clipped native editor contexts, including Unicode/CRLF replacements, multiple cursors, grouped undo and composition previews in both workspace modes. Capture scoped surrounding text, reject stale document ownership, and rebase matching native values after commits. Existing input fallback now borrows source; actual bounded textarea binding remains in progress.
 
+- Standardize app, container, service, deployment and tooling names on `openwebide`. Give Compose stable project/volume names with existing-volume overrides, document migration from older installs, and retain legacy generated-site marker recognition.
+
+- Prepare SemVer release automation with full CI gates, native Linux amd64/arm64 GHCR image builds, macOS/Linux bridge archives, version/changelog validation, checksums and downloadable Compose/Quadlet install files. Support alpha, beta and RC channel tags and GitHub prereleases while reserving `latest` for stable releases; prerelease Quadlet downloads follow their own channel. Add release/configuration/backup guidance, support issue forms, architecture diagrams and Monaspace font credits; ignore generated Python/browser tooling output. Publication and release-host verification remain pending.
+
 - Add shared project/file tab context actions for closing other tabs, closing tabs to either side and moving tabs left/right. File tabs reuse the tree’s file, Git and chat actions; bulk closes protect unsaved buffers with one guarded confirmation. Resolve editor gutter/container hits against measured text boundaries, including clicks past line ends, in both workspace modes.
 
 - Retain rebased folding indicators and the last styled editor frame while syntax analysis and repainting are pending in both workspace modes. Replace indicators with authoritative ranges, disable obsolete fold controls, and release retained paint when the document, read, project or account changes.
@@ -93,17 +97,21 @@ for what's still ahead.
 
 - Show a screenshot of the running PWA on the project landing page, with a full-resolution image for sharing.
 
-- Add a disposable production-editor benchmark for native browser input, scrolling, frame stalls, WASM allocation and Chrome process-tree memory in both workspace modes. Record byte, row-count and long-line boundary baselines; bounded cold paint and incremental input remain in progress.
-
 - Update project links and Pages configuration guidance for the repository transfer to `openwebide/openwebide`.
+
+- Add a disposable production-editor benchmark for native browser input, scrolling, frame stalls, WASM allocation and Chrome process-tree memory in both workspace modes. Record byte, row-count and long-line boundary baselines; bounded cold paint and incremental input remain in progress.
 
 - Synchronize native editor viewport dimensions before paint and wrapped cursor measurements, keeping immediate and queued movement aligned when resize or scrollbar geometry settles between frames in both workspace modes.
 
-- Add a dedicated project landing page and GitHub Pages build workflow for openwebide.com. Generate documentation directly from repository Markdown with automatic navigation, validated links, shared app colors and buttons, GitHub Issues links for feedback and support, and Bluesky, Mastodon, and YouTube profile links with Mastodon website verification support.
-
 - Window wrapped editor paint using exact browser row heights in both workspace modes. Preserve global Unicode/CRLF caret mapping, offscreen multi-cursor motion and resize remeasurement; reject stale layout tables. Initial full paint and bounded cold measurement remain in progress.
 
+- Add a dedicated project landing page and GitHub Pages build workflow for openwebide.com. Generate documentation directly from repository Markdown with automatic navigation, validated links, shared app colors and buttons, GitHub Issues links for feedback and support, and Bluesky, Mastodon, and YouTube profile links with Mastodon website verification support.
+
 - Open files beyond full-editor byte, line-count or long-line limits in bounded, read-only Unicode text pages in both workspace modes. Keep complete source separate from page text, preserve before/after review access, reject oversized interactive transactions before indexing, and recover clean oversized tabs by reopening their host file.
+
+- Show the house logo in the README and a vertically centered chat welcome in both workspace modes, including empty saved sessions. Replace terminal execution labels with the app name and prompt guidance; share the brand mark with the wordmark and keep the welcome responsive when the pane resizes.
+
+- Replace the code-bracket logo with a softly rounded house silhouette, thicker eaves, chimney and larger terminal-prompt cutout extending into the attic. Share the theme-aware SVG wordmark icon across both workspace modes and use matching square favicons, Apple touch and maskable PWA icons, cached with the app shell.
 
 - Maintain incremental document line/UTF-16 coordinates through edits, grouped undo/redo and IME; reuse immutable folded/normalized view allocations across scrolling and caret consumers. Use indexed rows for commands and native selections, record native/WASM query and projection measurements, and keep composer growth compatible with the shared welcome container. Full wrapped viewport and end-to-end resource measurements remain in progress.
 

@@ -8,5 +8,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CI=true CHROME=/usr/bin/chromium CHROMEDRIVER=/usr/bin/chromedriver
-WORKDIR /workspace/repos/open-webide
+WORKDIR /workspace/repos/openwebide
 ENTRYPOINT ["python3", "tools/measure-editor-view.py"]

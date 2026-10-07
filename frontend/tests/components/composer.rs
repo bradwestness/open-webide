@@ -17,6 +17,87 @@ use wasm_bindgen_test::*;
 use super::support::{chat_view, mount_test, settle};
 
 #[wasm_bindgen_test]
+async fn empty_chat_welcome_stays_centered_across_sessions_modes_and_resizes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+        None,
+    ] {
+        for saved_session in [false, true] {
+            let mounted = mount_test(move |state| {
+                state.seed_connection();
+                if let Some(mode) = mode {
+                    state.seed_project();
+                    state
+                        .projects
+                        .projects
+                        .update(|projects| projects[0].mode = mode);
+                }
+                if saved_session {
+                    state.seed_session();
+                    if mode.is_none() {
+                        state
+                            .chat
+                            .sessions
+                            .update(|sessions| sessions[0].project_id = None);
+                    }
+                }
+                view! {
+                    <style>{include_str!("../../styles.css")}</style>
+                    <div class="welcome-test-frame" style="display:flex;width:640px;height:600px">{chat_view(state)}</div>
+                }
+            });
+            settle().await;
+            let pane = mounted.element(".chat-pane");
+            pane.set_attribute("style", "width:100%;height:100%;flex:none")
+                .unwrap();
+            let frame = mounted.element(".welcome-test-frame");
+            for (width, height) in [(640, 600), (320, 600), (640, 400)] {
+                frame
+                    .set_attribute(
+                        "style",
+                        &format!("display:flex;width:{width}px;height:{height}px"),
+                    )
+                    .unwrap();
+                settle().await;
+                let region = mounted.element(".chat-welcome").get_bounding_client_rect();
+                let welcome = mounted.element(".tui-empty-state");
+                let bounds = welcome.get_bounding_client_rect();
+                assert!(
+                    ((bounds.top() + bounds.bottom()) - (region.top() + region.bottom())).abs()
+                        < 2.0
+                );
+                assert!(bounds.left() >= region.left() && bounds.right() <= region.right());
+                assert!(
+                    mounted
+                        .root
+                        .query_selector(".chat-welcome-logo svg")
+                        .unwrap()
+                        .is_some()
+                );
+                let text = welcome.text_content().unwrap();
+                assert!(text.contains("Open WebIDE") && text.contains("/help"));
+                assert!(
+                    !text.contains("Terminal Execution") && !text.contains("Stream initialized")
+                );
+            }
+            mounted.state.chat.messages.update(|items| {
+                items.push(openwebide_frontend::conversation::local_message(1, "hello"));
+            });
+            settle().await;
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".chat-welcome")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn composer_creates_a_projectless_session_and_sends() {
     let mounted = mount_test(|state| {
         state.seed_connection();

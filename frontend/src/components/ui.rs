@@ -2,6 +2,14 @@
 
 use leptos::prelude::*;
 
+/// The shared brand mark, with its color and size supplied by theme classes.
+#[component]
+pub fn LogoMark(#[prop(default = "")] class: &'static str) -> impl IntoView {
+    view! {
+        <span class=format!("logo-mark {class}") aria-hidden="true" inner_html=include_str!("../../pwa/logo.svg") />
+    }
+}
+
 /// Visual variant for buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ButtonVariant {

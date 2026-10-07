@@ -1,0 +1,23 @@
+name: Setup or usage help
+description: Ask for help installing, configuring or using Open WebIDE.
+labels: [question]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What do you need help with?
+      description: Include what you tried and any errors.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Version/commit, browser/OS, installation method, workspace mode and model server.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove credentials and private project content before sharing.

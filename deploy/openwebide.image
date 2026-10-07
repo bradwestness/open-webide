@@ -1,0 +1,5 @@
+[Image]
+Image=ghcr.io/openwebide/openwebide:latest
+
+[Service]
+TimeoutStartSec=900

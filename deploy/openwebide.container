@@ -1,0 +1,19 @@
+[Container]
+Image=openwebide.image
+Pull=newer
+AutoUpdate=registry
+ContainerName=openwebide
+PublishPort=127.0.0.1:8080:3000
+PublishPort=127.0.0.1:3001:3001
+Volume=%h/.local/state/openwebide/data:/app/.spin:Z
+Volume=%h/source:/workspace:Z
+# Environment=OPENWEBIDE_BRIDGE=0
+# Environment=OPENWEBIDE_BRIDGE_ALLOWED_HOSTS=webide.example
+# Environment=OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS=http://webide.example:8080
+
+[Service]
+Restart=always
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

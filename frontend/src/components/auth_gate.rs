@@ -48,7 +48,7 @@ pub fn AuthGate() -> impl IntoView {
     view! {
         <div class="auth-gate">
             <div class="auth-card">
-                <h1 class="auth-logo">"open-webide"</h1>
+                <h1 class="auth-logo">"openwebide"</h1>
                 <p class="auth-subtitle">
                     {move || {
                         if register.get() {

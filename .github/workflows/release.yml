@@ -1,0 +1,232 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Build and smoke-test artifacts without publishing a release or registry image.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+      channel: ${{ steps.version.outputs.channel }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate versions and changelog
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          PUBLISH: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+        run: |
+          if [ "$PUBLISH" = true ]; then
+            python3 tools/release.py validate --tag "$RELEASE_TAG" --notes "$RUNNER_TEMP/release-notes.md" --github-output "$GITHUB_OUTPUT"
+          else
+            python3 tools/release.py validate --notes "$RUNNER_TEMP/release-notes.md" --github-output "$GITHUB_OUTPUT"
+          fi
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+
+  checks:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  images:
+    needs: [validate, checks]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: needs.validate.outputs.publish == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build native image for smoke tests
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: openwebide:release-test
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+      - name: Smoke-test bundled bridge and mounted Git access
+        run: |
+          docker run --rm openwebide:release-test openwebide-bridge --help
+          docker run --rm -v "$PWD/docker/git-ownership-test.sh:/git-ownership-test.sh:ro" openwebide:release-test bash /git-ownership-test.sh
+          python3 docker/https-test/check.py docker --image openwebide:release-test
+      - name: Package Linux bridge from tested image
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          container=$(docker create openwebide:release-test)
+          docker cp "$container:/usr/local/bin/openwebide-bridge" "$RUNNER_TEMP/openwebide-bridge"
+          docker rm "$container"
+          python3 tools/release.py package-bridge --target "$RELEASE_TARGET" --binary "$RUNNER_TEMP/openwebide-bridge" --output "$RUNNER_TEMP/assets"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-${{ matrix.target }}
+          path: ${{ runner.temp }}/assets/*.tar.gz
+          if-no-files-found: error
+      - name: Push tested platform image by digest
+        if: needs.validate.outputs.publish == 'true'
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+      - name: Export digest
+        if: needs.validate.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: needs.validate.outputs.publish == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+
+  macos-bridges:
+    needs: [validate, checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and smoke-test native bridge
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          cargo build -p openwebide-bridge --release --locked --target "$RELEASE_TARGET"
+          "target/$RELEASE_TARGET/release/openwebide-bridge" --help
+          python3 tools/release.py package-bridge --target "$RELEASE_TARGET" --binary "target/$RELEASE_TARGET/release/openwebide-bridge" --output "$RUNNER_TEMP/assets"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-${{ matrix.target }}
+          path: ${{ runner.temp }}/assets/*.tar.gz
+          if-no-files-found: error
+
+  assets:
+    needs: [validate, images, macos-bridges]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bridge-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/assets
+      - name: Prepare install files and checksums
+        run: |
+          python3 tools/release.py prepare-install-files --output "$RUNNER_TEMP/assets"
+          python3 tools/release.py checksums "$RUNNER_TEMP/assets"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+
+  publish:
+    if: needs.validate.outputs.publish == 'true'
+    needs: [validate, assets]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: notes
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish multi-architecture image and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          image="ghcr.io/$GH_REPO"
+          refs=()
+          for digest in digests/*; do refs+=("$image@sha256:$(basename "$digest")"); done
+          test "${#refs[@]}" -eq 2
+          docker buildx imagetools create --tag "$image:$RELEASE_TAG" "${refs[@]}"
+          docker buildx imagetools inspect "$image:$RELEASE_TAG"
+          if [ "$PRERELEASE" = true ]; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease --latest=false --title "$RELEASE_TAG" --notes-file notes/release-notes.md assets/*
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file notes/release-notes.md assets/*
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          fi
+          docker buildx imagetools create --tag "$image:$CHANNEL" "$image:$RELEASE_TAG"

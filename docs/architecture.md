@@ -61,6 +61,110 @@ browser
               └── outbound HTTP → localhost (Ollama / llama.cpp)
 ```
 
+### Compilation and deployment
+
+```mermaid
+flowchart LR
+    core["core: domain, editor and VFS"] --> browser["frontend: browser WASM"]
+    core --> backend["backend: WASI component"]
+    core --> bridge["bridge: native daemon"]
+    agent["agent: shared loop and tools"] --> browser
+    agent --> backend
+    agent --> bridge
+    llm["llm: provider integration"] --> browser
+    llm --> backend
+    llm --> bridge
+    storage["storage: SQLite"] --> backend
+    auth["auth: passwords and tokens"] --> backend
+    auth --> bridge
+    browser --> assets["Trunk assets served by Spin fileserver"]
+    backend --> spin["Spin runtime"]
+    bridge --> host["Host processes and filesystem"]
+```
+
+The container ships Spin, both WASM components/assets and the native bridge.
+The browser always runs the same frontend WASM. Remote files use backend workspace
+access; local files use browser directory handles. Process/Git primitives require
+a bridge that can see the project; browser-only local editing remains available
+without a companion. Model servers are separate HTTP services reachable from the
+deployment, not bundled into the app image.
+
+### Transport paths
+
+```mermaid
+flowchart LR
+    browser["Browser / PWA"] -->|"HTTPS"| proxy["Optional Tailscale / reverse proxy"]
+    proxy -->|"/api: REST + SSE"| backend["Spin backend"]
+    proxy -->|"/bridge: HTTP + WebSocket"| bridge["Native bridge"]
+    browser -->|"Direct /api on HTTP deployments"| backend
+    browser -->|"Direct bridge WebSocket + hello token"| bridge
+    bridge -->|"Secret + acting-user REST"| backend
+    backend --> db["SQLite"]
+    bridge --> models["Model servers"]
+    backend -->|"SSE / completion fallback"| models
+```
+
+### Agent requests and review
+
+```mermaid
+sequenceDiagram
+    participant UI as Browser
+    participant API as Backend
+    participant Run as Agent loop (bridge or browser)
+    participant Model as Model server
+    participant Tools as Tool executor / VFS
+    participant DB as SQLite
+    UI->>API: Prepare scoped session run plan
+    API->>DB: Load owned session, history and configuration
+    API-->>UI: Validated run plan
+    UI->>Run: Start agent with editor context
+    Run->>Model: Prompt, history and tool definitions
+    Model-->>Run: Stream text / request tool call
+    Run->>Run: Validate call and apply approval policy
+    opt Approval required
+        Run-->>UI: Single-use permission request
+        UI->>Run: Approve or deny
+    end
+    Run->>Tools: Execute admitted call
+    Note over Tools: HostFsVfs for remote, BrowserFsaVfs for local; MemoryVfs in contracts
+    Tools-->>Run: Result and pending changes
+    Run->>API: Persist messages, steps and review state
+    API->>DB: Save scoped run records
+    Run-->>UI: Stream output, telemetry and pending diffs
+    UI->>API: Accept / reject reviewed edits
+    Note over UI,API: Shared review facade reconciles edits through the active workspace adapter
+```
+
+The shared agent policy lives above filesystem/process adapters. The SSE fallback
+uses the same run planning and agent behavior; local runs retain their loop in the
+browser. See [workspace modes](#workspace-local-and-remote-modes) and
+[agent turn streaming](#agent-turn-streaming) for persistence and recovery details.
+
+### Data and trust boundaries
+
+```mermaid
+flowchart TD
+    user["User"] --> settings["User settings: preferences and defaults"]
+    user --> projects["Projects"]
+    projects --> sessions["Sessions"]
+    sessions --> messages["Messages, tool steps and run review state"]
+    servers["Shared servers and model profiles"] --> sessions
+    cookie["HttpOnly session cookie"] --> checks["Backend authentication and ownership checks"]
+    checks --> sessions
+    token["Short-lived bridge token / local pairing token"] --> gate["Bridge host, origin and hello gates"]
+    model["Untrusted model output"] --> policy["Typed tool validation and permission gate"]
+    policy --> vfs["VFS path confinement and reversible edit backups"]
+    policy --> commands["Host commands with inherited user environment"]
+```
+
+This is a single-user trusted-LAN deployment. Authentication, browser-origin checks,
+typed tool admission, path confinement and edit review protect against malicious
+browser tabs, injected model instructions and accidental data loss. Commands retain
+host shell access and the user's environment; VFS confinement does not sandbox those
+processes. SQLite stores accounts, history and user settings; server/model facts are
+shared. Browser IndexedDB stores origin-bound folder handles and optional pairing
+credentials, not general user preferences.
+
 ### `crates/core`
 
 Plain data types shared by every other crate: `Connection` (with an optional
@@ -221,8 +325,8 @@ Constraints & Device Roles:
   devices natural Remote-mode control clients.
 - Keep the modes coherent: remote = a project on the device hosting Open WebIDE;
   local = a project on this device (the browser's File System Access API).
-  The LLM runs on the hosting device in remote mode and on this device in local mode.
-  A mixed split (remote files, local LLM) is deferred.
+  Model-server location is configured independently: model requests use the backend
+  or bridge transport, while workspace mode determines where file operations run.
 
 ### Chat execution and streaming
 

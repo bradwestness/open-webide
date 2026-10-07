@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,6 +28,13 @@ jobs:
 
       - name: Format check
         run: cargo fmt --all --check
+
+      - name: Validate release tooling and install configuration
+        run: |
+          python3 -m unittest discover -s tools -p 'test_release.py'
+          python3 tools/release.py validate
+          docker compose -f docker-compose.release.yml config --quiet
+          OPENWEBIDE_TAILSCALE_HOST=openwebide.example.ts.net OPENWEBIDE_SERVE_CONFIG_DIR=/tmp/serve docker compose -f docker-compose.https.yml config --quiet
 
       - name: Clippy (native crates)
         run: cargo clippy -p openwebide-core -p openwebide-llm -p openwebide-storage -p openwebide-agent -p openwebide-auth --features openwebide-core/editor-parser --all-targets -- -D warnings
@@ -165,13 +173,13 @@ jobs:
         run: bash docker/entrypoint-test.sh
 
       - name: Build container image
-        run: docker build -t open-webide:ci .
+        run: docker build -t openwebide:ci .
 
       - name: Check bundled bridge
-        run: docker run --rm open-webide:ci openwebide-bridge --help
+        run: docker run --rm openwebide:ci openwebide-bridge --help
 
       - name: Check host-owned workspace Git access
-        run: docker run --rm -v "$PWD/docker/git-ownership-test.sh:/git-ownership-test.sh:ro" open-webide:ci bash /git-ownership-test.sh
+        run: docker run --rm -v "$PWD/docker/git-ownership-test.sh:/git-ownership-test.sh:ro" openwebide:ci bash /git-ownership-test.sh
 
       - name: Check HTTPS REST, SSE and WebSocket transport (Docker)
         run: python3 docker/https-test/check.py docker
@@ -179,8 +187,15 @@ jobs:
       - name: Install rootless Podman
         run: sudo apt-get update && sudo apt-get install -y podman
 
+      - name: Validate release Quadlet services without starting them
+        run: |
+          QUADLET_UNIT_DIRS="$PWD/deploy" /usr/lib/systemd/system-generators/podman-system-generator --user --dryrun > "$RUNNER_TEMP/quadlet-services"
+          grep -F 'openwebide.service' "$RUNNER_TEMP/quadlet-services"
+          grep -F 'openwebide-image.service' "$RUNNER_TEMP/quadlet-services"
+          grep -F 'ghcr.io/openwebide/openwebide:latest' "$RUNNER_TEMP/quadlet-services"
+
       - name: Load the same image into rootless Podman
-        run: docker save open-webide:ci | podman load
+        run: docker save openwebide:ci | podman load
 
       - name: Check HTTPS REST, SSE and WebSocket transport (rootless Podman)
         run: python3 docker/https-test/check.py podman --port 8447

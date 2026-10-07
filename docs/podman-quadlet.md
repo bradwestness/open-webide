@@ -1,99 +1,123 @@
 # Running Open WebIDE as a Podman quadlet
 
-Quadlet lets systemd manage Podman containers with unit files. This turns
-Open WebIDE into a normal Linux service: built from the repo's Dockerfile,
-started at boot, SQLite persisted on disk.
+Quadlet lets systemd manage Open WebIDE as a Linux service, with SQLite and
+project files persisted on the host. Use a recent Podman with Quadlet `.image`
+support and systemd. See [Podman's Quadlet reference](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html).
+This deployment is not available on macOS/Windows.
 
-**Requirements:** Linux with systemd, `podman` (quadlet is built into
-recent podman/systemd — `systemd --version` ≥ 252 or a distro that ships
-quadlet). Not available on macOS/Windows.
+## Install a published release
 
-## Unit files
+After the first public release, download `openwebide.image` and
+`openwebide.container` from [GitHub Releases](https://github.com/openwebide/openwebide/releases).
+The image unit tracks its release channel (`latest` for stable releases, or
+`alpha`/`beta`/`rc` for prereleases); no checkout or build is needed.
+Repository templates in `deploy/` default to `latest`.
 
-### `open-webide.image` — builds the image from the Dockerfile
-
-```ini
-[Image]
-Image=open-webide:local
-BuildFile=Dockerfile
-# Absolute path to the repo checkout (the unit file itself lives in
-# ~/.config/containers/systemd/, so the default context is wrong):
-BuildContextDirectory=/path/to/open-webide
+```sh
+mkdir -p ~/.config/containers/systemd
+mkdir -p ~/.local/state/openwebide/data ~/source
+cp openwebide.image openwebide.container ~/.config/containers/systemd/
+systemctl --user daemon-reload
+systemctl --user start openwebide.service
+systemctl --user enable --now podman-auto-update.timer
 ```
 
-If the image does not exist, quadlet runs `podman build` for it before
-starting anything that requires it. Rebuild after code changes with
-`systemctl --user restart open-webide.image` after deleting the image
-(`podman rmi open-webide:local`), or just tag a new version.
+The `.container` uses `Image=openwebide.image`, which makes Quadlet generate a
+dependency on `openwebide-image.service`. The generated app service is
+`openwebide.service`, not `openwebide.container`. `[Install] WantedBy=default.target`
+starts it when the user manager starts; generated units are not enabled with
+`systemctl enable`. To keep the user service running without an interactive login,
+configure user lingering (`loginctl enable-linger "$USER"`).
 
-### `open-webide.container` — runs the app
+Before starting, edit the workspace mount if your projects are outside `~/source`.
+The supplied units use:
 
 ```ini
+# openwebide.image
+[Image]
+Image=ghcr.io/openwebide/openwebide:latest
+
+[Service]
+TimeoutStartSec=900
+```
+
+```ini
+# openwebide.container
 [Container]
-Image=open-webide:local
-ContainerName=open-webide
-# Host port 8080 keeps it clear of bare `spin build --up` (3000); the
-# container itself always listens on 3000.
+Image=openwebide.image
+Pull=newer
+AutoUpdate=registry
+ContainerName=openwebide
 PublishPort=127.0.0.1:8080:3000
-PublishPort=3001:3001
-Volume=%h/.local/state/open-webide/data:/app/.spin:Z
+PublishPort=127.0.0.1:3001:3001
+Volume=%h/.local/state/openwebide/data:/app/.spin:Z
 Volume=%h/source:/workspace:Z
-# Disable the bundled bridge for SSE-only chat:
-# Environment=OPENWEBIDE_BRIDGE=0
-# Hostnames need an allowlist; IP literals and localhost work by default:
-# Environment=OPENWEBIDE_BRIDGE_ALLOWED_HOSTS=webide.example
-# Environment=OPENWEBIDE_BRIDGE_ALLOWED_ORIGINS=http://webide.example:8080
-Requires=open-webide.image
 
 [Service]
 Restart=always
+TimeoutStartSec=900
 
 [Install]
 WantedBy=default.target
 ```
 
-Notes:
+The `:Z` suffix relabels bind mounts for SELinux; drop it on systems without
+SELinux, and choose the workspace scope deliberately. The bundled entrypoint
+keeps Spin's host-write mount flags and runs the bridge against `/workspace`.
+Its persistent secret lives in the mounted data directory.
 
-- `PublishPort=127.0.0.1:8080:3000` binds to loopback only. Use
-  `8080:3000` to expose it on all interfaces. The API requires sign-in with
-  an HttpOnly cookie session; logout invalidates sessions on all devices.
-- The volume maps the SQLite data directory (`/app/.spin` inside the
-  container) to a host directory. `:Z` relabels it for SELinux; drop the
-  suffix on systems without SELinux. The workspace volume maps your
-  projects directory. The image entrypoint carries the required mount flags
-  (`--direct-mounts --allow-transient-write`).
-- The bundled bridge listens on port 3001 and uses `/workspace`. Its secret
-  persists in `/app/.spin/bridge-secret`; the backend discovers it over loopback.
-  `OPENWEBIDE_BRIDGE=0` disables the terminal and uses SSE chat. The allowed-host
-  and allowed-origin environment variables accept comma-separated lists; the
-  origin is only needed when the page and bridge use different hostnames.
-- The first start downloads `spin_static_fs.wasm` (the static file server
-  component) from GitHub; after that it is cached in the container image's
-  Spin home.
-
-## Install (user-level service)
+Open <http://localhost:8080/> and register the first account. Both ports bind to
+loopback; use [private HTTPS via Tailscale](tailscale.md) for other devices.
+If explicitly exposing ports on the LAN, change the bindings and configure the
+bridge's allowed hostnames/origins as described in the [bridge reference](execution-bridge.md).
+`/api/health` requires authentication; an unsigned 401 is expected.
 
 ```sh
-mkdir -p ~/.config/containers/systemd
-mkdir -p ~/source
-# copy both unit files there, fixing BuildContextDirectory
+systemctl --user status openwebide.service
+journalctl --user -u openwebide.service -f
+```
+
+For a system service, install units in `/etc/containers/systemd/`, replace `%h`
+volumes with absolute paths, use `WantedBy=multi-user.target`, and omit `--user`.
+
+## Build from source
+
+Until a public image exists, or to test a checkout, build the Dockerfile with
+Podman:
+
+```sh
+podman build -t openwebide:local .
+```
+
+Use the same container unit but change its image line to `Image=openwebide:local`.
+Remove `Pull=newer` and `AutoUpdate=registry` for this locally built image.
+The image unit is unnecessary for this path. Reload systemd and start the app
+service as above; rebuild and restart the service after source changes.
+
+## Upgrade
+
+`Pull=newer` checks for a newer image when the container starts; `AutoUpdate=registry`
+lets `podman-auto-update.timer` check the registry periodically and restart the
+service when the tracked image changes. The supplied timer runs daily by default.
+Check upcoming runs with `systemctl --user list-timers podman-auto-update.timer`,
+or preview available updates with `podman auto-update --dry-run`.
+See [Podman's automatic-update documentation](https://docs.podman.io/en/latest/markdown/podman-auto-update.1.html).
+
+Keep `latest` to receive new releases automatically. A `v1.0.0` tag or digest stays
+on that version; for manual upgrades, pin the image and remove `AutoUpdate=registry`.
+Choose `alpha`, `beta` or `rc` to follow [prerelease updates](releases.md#alpha-beta-and-release-candidate-channels).
+Automatic updates restart the app and may interrupt active runs. Keep regular data
+backups using the [release guide](releases.md#upgrade-and-restore).
+
+Stop the app and back up `~/.local/state/openwebide/data/` first. Set the target
+version in `openwebide.image`, then:
+
+```sh
 systemctl --user daemon-reload
-systemctl --user start open-webide.container
+systemctl --user restart openwebide-image.service
+systemctl --user start openwebide.service
 ```
 
-Useful commands:
-
-```sh
-systemctl --user status open-webide.container
-journalctl --user -u open-webide.container -f   # logs
-systemctl --user enable open-webide.container   # start at login
-```
-
-For a system-wide service, put the units in `/etc/containers/systemd/`
-instead and drop `--user` (use an absolute path for the data volume, e.g.
-`/var/lib/open-webide/data:/app/.spin:z`).
-
-## Access
-
-- Frontend: <http://localhost:8080/>
-- API: <http://localhost:8080/api/health>
+Keep the data/workspace paths unchanged. Read [upgrade and restore guidance](releases.md#upgrade-and-restore)
+before switching versions; a database schema upgrade requires restoring the
+pre-upgrade backup to roll back safely.

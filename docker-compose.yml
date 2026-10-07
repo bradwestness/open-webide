@@ -1,7 +1,8 @@
+name: openwebide
 services:
-  open-webide:
+  openwebide:
     build: .
-    image: open-webide:local
+    image: openwebide:local
     ports:
       # Host port differs from bare `spin build --up` (3000) so both can
       # run side by side; the container itself always listens on 3000.
@@ -23,3 +24,4 @@ services:
 
 volumes:
   openwebide-data:
+    name: ${OPENWEBIDE_DATA_VOLUME:-openwebide-data}
