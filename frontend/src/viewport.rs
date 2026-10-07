@@ -160,12 +160,23 @@ export function refresh_editor_scroll(input) {
     const set = (element, name, value) => {
         if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name, value);
     };
-    // The source is still native layout until bounded input supplies document
-    // extents. Size native input to the scroll viewport, excluding its bars.
     set(input.parentElement, '--editor-input-width', `${scroll.clientWidth}px`);
     set(input.parentElement, '--editor-input-height', `${scroll.clientHeight}px`);
-    set(extent, 'width', `${Math.max(scroll.clientWidth, input.scrollWidth)}px`);
-    set(extent, 'height', `${Math.max(scroll.clientHeight, input.scrollHeight)}px`);
+    const source = extent.dataset.editorScope === input.dataset.editorScope && extent.dataset.editorView === input.parentElement.dataset.editorView && extent.dataset.editorAccount === input.parentElement.dataset.editorAccount;
+    const width = source ? Number(extent.dataset.sourceWidth) : NaN;
+    const height = source ? Number(extent.dataset.sourceHeight) : NaN;
+    const ready = Number.isFinite(width) && width >= 0 && Number.isFinite(height) && height >= 0;
+    // Cold or superseded source measurements retain native layout until prepared.
+    set(extent, 'width', `${Math.max(scroll.clientWidth, ready ? width : input.scrollWidth)}px`);
+    set(extent, 'height', `${Math.max(scroll.clientHeight, ready ? height : input.scrollHeight)}px`);
+}
+export function check_editor_extent(width, height) {
+    const probe = document.createElement('div'), extent = document.createElement('div');
+    probe.style.cssText = 'position:fixed;left:-10000px;top:0;width:1px;height:1px;overflow:hidden;padding:0;border:0;visibility:hidden;pointer-events:none';
+    extent.style.cssText = `width:${width}px;height:${height}px;padding:0;border:0`;
+    probe.append(extent); document.body.append(probe);
+    try { return Math.abs(probe.scrollWidth - Math.max(1, width)) <= 2 && Math.abs(probe.scrollHeight - Math.max(1, height)) <= 2; }
+    finally { probe.remove(); }
 }
 export function set_editor_scroll_position(input, value, horizontal) {
     refresh_editor_scroll(input);
@@ -173,15 +184,25 @@ export function set_editor_scroll_position(input, value, horizontal) {
     const property = horizontal ? 'scrollLeft' : 'scrollTop';
     scroll[property] = value;
     input[property] = scroll[property];
+    if (scroll !== input) editor_native_echo.set(input, {top:input.scrollTop, left:input.scrollLeft, scope:input.dataset.editorScope, view:input.parentElement.dataset.editorView, account:input.parentElement.dataset.editorAccount});
 }
+const editor_native_echo = new WeakMap();
 export function sync_editor_scroll(input, fromNative) {
     const scroll = editor_scroll_element(input);
     if (scroll === input) return false;
     refresh_editor_scroll(input);
+    if (fromNative) {
+        const echo = editor_native_echo.get(input);
+        if (echo && echo.scope === input.dataset.editorScope && echo.view === input.parentElement.dataset.editorView && echo.account === input.parentElement.dataset.editorAccount && Math.abs(input.scrollTop - echo.top) <= .25 && Math.abs(input.scrollLeft - echo.left) <= .25) return false;
+        editor_native_echo.delete(input);
+    }
     const source = fromNative ? input : scroll;
     const target = fromNative ? scroll : input;
     const changed = Math.abs(source.scrollTop - target.scrollTop) > .25 || Math.abs(source.scrollLeft - target.scrollLeft) > .25;
-    if (changed) { target.scrollTop = source.scrollTop; target.scrollLeft = source.scrollLeft; }
+    if (changed) {
+        target.scrollTop = source.scrollTop; target.scrollLeft = source.scrollLeft;
+        if (!fromNative) editor_native_echo.set(input, {top:input.scrollTop, left:input.scrollLeft, scope:input.dataset.editorScope, view:input.parentElement.dataset.editorView, account:input.parentElement.dataset.editorAccount});
+    }
     return changed;
 }
 export function forward_editor_wheel(input, event) {
@@ -198,6 +219,14 @@ export function forward_editor_wheel(input, event) {
     event.preventDefault();
     scroll.scrollLeft += x; scroll.scrollTop += y;
     sync_editor_scroll(input, false);
+}
+export function editor_font_identity(input) {
+    const style = getComputedStyle(input);
+    // CSS font shorthand may be empty when OpenType features are enabled.
+    return JSON.stringify(['font-family', 'font-size', 'font-style', 'font-weight',
+        'font-stretch', 'line-height', 'letter-spacing', 'font-kerning',
+        'font-feature-settings', 'font-variant-ligatures', 'font-variation-settings',
+        'font-variant-caps', 'font-variant-numeric'].map(name => style.getPropertyValue(name)));
 }
 export function observe_editor_viewport(input, overlay, onLayout) {
     const pane = input.parentElement;
@@ -221,10 +250,7 @@ export function observe_editor_viewport(input, overlay, onLayout) {
     if (scroll !== input) observer.observe(scroll);
     const mutation = new MutationObserver(() => schedule());
     mutation.observe(overlay, {childList: true, subtree: true});
-    const fontIdentity = () => {
-        const style = getComputedStyle(input);
-        return [style.font, style.fontFeatureSettings, style.fontVariantLigatures].join('|');
-    };
+    const fontIdentity = () => editor_font_identity(input);
     let preferenceFont = fontIdentity();
     const preferences = new MutationObserver(() => {
         const next = fontIdentity(); schedule(next !== preferenceFont); preferenceFont = next;
@@ -250,8 +276,10 @@ extern "C" {
     );
     fn editor_scroll_element(input: &web_sys::HtmlTextAreaElement) -> web_sys::HtmlElement;
     pub fn refresh_editor_scroll(input: &web_sys::HtmlTextAreaElement);
+    pub fn check_editor_extent(width: f64, height: f64) -> bool;
     pub fn sync_editor_scroll(input: &web_sys::HtmlTextAreaElement, from_native: bool) -> bool;
     pub fn forward_editor_wheel(input: &web_sys::HtmlTextAreaElement, event: &web_sys::WheelEvent);
+    pub fn editor_font_identity(input: &web_sys::HtmlTextAreaElement) -> String;
     pub fn observe_editor_viewport(
         input: &web_sys::HtmlTextAreaElement,
         overlay: &web_sys::HtmlElement,

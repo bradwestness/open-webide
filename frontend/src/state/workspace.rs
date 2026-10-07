@@ -38,7 +38,13 @@ pub struct PreparedEditorSyntax {
 /// Browser measurements are bound to one exact source/projection/layout revision.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditorRowMeasurements {
+    pub whitespace: bool,
+    pub syntax: Option<(
+        bool,
+        std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+    )>,
     pub revision: u64,
+    pub account_generation: u64,
     pub metrics: String,
     pub rows: openwebide_core::editor::MeasuredRows,
 }
@@ -956,7 +962,10 @@ mod tests {
             workspace.content.set("one\ntwo".into());
             let revision = workspace.editor_view_revision.get();
             workspace.editor_rows.set(Some(EditorRowMeasurements {
+                whitespace: false,
+                syntax: None,
                 revision,
+                account_generation: 0,
                 metrics: "font".into(),
                 rows: MeasuredRows::new([19.5, 39.0]).unwrap(),
             }));

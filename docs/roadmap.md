@@ -161,13 +161,15 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Unicode/CRLF selections and complete replica admission before previews.
   Composition snapshots and published workspace sources remain full Strings.
   Document scrolling now has an independent viewport with shared
-  wheel/navigation/restoration behavior in both modes; full native layout still
-  supplies extents. Prepared primary caret/selection paint and single-cursor
+  wheel/navigation/restoration behavior in both modes. Prepared source row
+  widths/heights now supply independent extents with unchanged-row reuse and
+  source/account/syntax/layout guards; row plans and probes coalesce before allocating or rendering. Cold and superseded layouts retain native fallback.
+  Prepared primary caret/selection paint and single-cursor
   keyboard motion now use shared source geometry and Rust commands, including
   offscreen caret reveal. Prepared mouse click/word/line selection and drags now
   use source hits with shared Rust policy; single-selection copy/cut also use the
   source clipboard facade. Finish cold/touch pointer selection, edge auto-scroll,
-  cold caret ownership and document extents before binding bounded values and
+  cold caret ownership and cold source extents before binding bounded values and
   validating IME and clipboard on devices. Bundled Monaspace families and
   independent healing/ligature preferences now share editor font metrics.
   Shared admission now bounds full-editor bytes, display breaks and long lines

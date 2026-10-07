@@ -274,11 +274,15 @@ impl EditorActions {
     pub fn layout_epoch(self) -> u64 {
         self.workspace.editor_layout_epoch.get()
     }
+    pub fn font_epoch(self) -> u64 {
+        self.workspace.editor_font_epoch.get()
+    }
     pub fn measured_rows(self) -> Option<crate::state::workspace::EditorRowMeasurements> {
         let revision = self.view_revision();
+        let account = self.auth.map_or(0, |auth| auth.generation.get());
         self.workspace.editor_rows.with(|rows| {
             rows.as_ref()
-                .filter(|rows| rows.revision == revision)
+                .filter(|rows| rows.revision == revision && rows.account_generation == account)
                 .cloned()
         })
     }
@@ -289,7 +293,9 @@ impl EditorActions {
             .update(|epoch| *epoch = epoch.wrapping_add(1));
     }
     pub fn begin_row_preparation(self, revision: u64, total: usize) -> Option<u64> {
-        if self.view_revision() != revision || total > openwebide_core::editor::MAX_EDITOR_LINES {
+        if self.workspace.editor_view_revision.get_untracked() != revision
+            || total > openwebide_core::editor::MAX_EDITOR_LINES
+        {
             return None;
         }
         self.workspace
@@ -311,7 +317,9 @@ impl EditorActions {
             .editor_row_preparation
             .with_untracked(|preparation| {
                 preparation.is_some_and(|preparation| {
-                    preparation.ticket == ticket && preparation.revision == self.view_revision()
+                    preparation.ticket == ticket
+                        && preparation.revision
+                            == self.workspace.editor_view_revision.get_untracked()
                 })
             })
     }
@@ -346,7 +354,26 @@ impl EditorActions {
         metrics: String,
         rows: openwebide_core::editor::MeasuredRows,
     ) -> bool {
-        if self.view_revision() != revision
+        self.publish_measured_paint(
+            revision,
+            metrics,
+            rows,
+            None,
+            self.preferences().show_whitespace,
+        )
+    }
+    pub fn publish_measured_paint(
+        self,
+        revision: u64,
+        metrics: String,
+        rows: openwebide_core::editor::MeasuredRows,
+        syntax: Option<(
+            bool,
+            std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+        )>,
+        whitespace: bool,
+    ) -> bool {
+        if self.workspace.editor_view_revision.get_untracked() != revision
             || self
                 .projection()
                 .is_none_or(|projection| projection.lines().len() != rows.len())
@@ -356,7 +383,10 @@ impl EditorActions {
         self.workspace
             .editor_rows
             .set(Some(crate::state::workspace::EditorRowMeasurements {
+                syntax,
+                whitespace,
                 revision,
+                account_generation: self.account_generation(),
                 metrics,
                 rows,
             }));
@@ -482,10 +512,12 @@ impl EditorActions {
         }
         let message = match result {
             Ok(Some(rows)) => {
-                if self.publish_measured_rows(
-                    self.view_revision(),
+                if self.publish_measured_paint(
+                    self.workspace.editor_view_revision.get_untracked(),
                     paint.metrics.clone(),
                     rows.clone(),
+                    Some((paint.prepared_source, paint.tokens.clone())),
+                    paint.whitespace,
                 ) {
                     self.workspace.editor_row_cache.set(Some(
                         crate::state::workspace::EditorRowCache { paint, rows },

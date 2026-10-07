@@ -768,14 +768,21 @@ use crate::text::escape_html;
 
 #[cfg(feature = "test-support")]
 thread_local! {
+    static VIEWPORT_HIGHLIGHT_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static HIGHLIGHT_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static HIGHLIGHT_SOURCE_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Number of overlay generations, for browser performance regressions.
+/// HTML generations including temporary probes, for browser performance regressions.
 #[cfg(feature = "test-support")]
 pub fn highlight_count() -> usize {
     HIGHLIGHT_COUNT.get()
+}
+
+/// Visible overlay generations, excluding temporary source geometry probes.
+#[cfg(feature = "test-support")]
+pub fn viewport_highlight_count() -> usize {
+    VIEWPORT_HIGHLIGHT_COUNT.get()
 }
 
 /// Largest source row passed to HTML escaping since the last browser audit.
@@ -849,7 +856,12 @@ fn highlight_html(
     trailing_line_ending: bool,
 ) -> String {
     #[cfg(feature = "test-support")]
-    HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
+    {
+        HIGHLIGHT_COUNT.set(HIGHLIGHT_COUNT.get() + 1);
+        if rows.projection.is_some() {
+            VIEWPORT_HIGHLIGHT_COUNT.set(VIEWPORT_HIGHLIGHT_COUNT.get() + 1);
+        }
+    }
     let mut html = String::new();
     for &idx in rows.indices {
         let Some(line) = lines.get(idx) else {
@@ -1053,6 +1065,13 @@ fn HighlightOverlay(
 ) -> impl IntoView {
     use wasm_bindgen::closure::Closure;
 
+    let painted_whitespace = StoredValue::new(false);
+    let painted_syntax = StoredValue::new(
+        None::<(
+            bool,
+            std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+        )>,
+    );
     let layout_callback =
         StoredValue::new_local(Closure::<dyn FnMut(bool)>::new(move |font_changed| {
             if layout_revision.is_disposed() {
@@ -1061,7 +1080,14 @@ fn HighlightOverlay(
             if let (Some(input), Some(overlay)) =
                 (textarea_ref.get_untracked(), node_ref.get_untracked())
             {
-                super::editor_rows::update_measurements(actions, &input, &overlay, font_changed);
+                super::editor_rows::update_measurements(
+                    actions,
+                    &input,
+                    &overlay,
+                    font_changed,
+                    painted_syntax.get_value(),
+                    painted_whitespace.get_value(),
+                );
             }
             layout_revision.update(|value| *value = value.wrapping_add(1));
         }));
@@ -1117,7 +1143,7 @@ fn HighlightOverlay(
     Effect::new(move || {
         layout_revision.track();
         actions.view_revision();
-        let preferences = actions.preferences();
+        actions.preferences();
         let prepared_tokens = tokens.get();
         let whitespace = show_whitespace.get();
         let tab = indentation.get();
@@ -1136,8 +1162,8 @@ fn HighlightOverlay(
         let Some(projection) = actions.projection() else {
             return;
         };
-        if (!preferences.word_wrap && projection.has_uniform_rows())
-            || !openwebide_core::editor::needs_measured_batches(
+        if visible.get().len() == projection.lines().len()
+            && !openwebide_core::editor::needs_measured_batches(
                 projection.lines().len(),
                 projection.text().len(),
             )
@@ -1156,7 +1182,14 @@ fn HighlightOverlay(
             whitespace,
         );
         if let Some(measured) = actions.measured_rows() {
-            if measured.metrics == metrics && batch_key.get_value().as_ref() == Some(&key) {
+            if measured.metrics == metrics
+                && measured.whitespace == whitespace
+                && measured.syntax.as_ref().is_some_and(|syntax| {
+                    syntax.0 == prepared_tokens.0
+                        && std::sync::Arc::ptr_eq(&syntax.1, &prepared_tokens.1)
+                })
+            {
+                batch_key.set_value(Some(key));
                 return;
             }
             actions.invalidate_measured_rows();
@@ -1171,17 +1204,6 @@ fn HighlightOverlay(
         };
         batch_ticket.set_value(Some(ticket));
         let guides: std::sync::Arc<[usize]> = guides.get_untracked();
-        let Some((paint, plan)) = actions.prepare_row_measurements(
-            metrics.clone(),
-            projection.clone(),
-            prepared_tokens.clone(),
-            guides.clone(),
-            tab,
-            whitespace,
-        ) else {
-            actions.end_row_preparation(ticket);
-            return;
-        };
         fragment_cache.update_value(|cache| {
             actions.fragment_scope(
                 cache,
@@ -1192,8 +1214,27 @@ fn HighlightOverlay(
                 whitespace,
             );
         });
-        let geometry_paint = paint.clone();
         wasm_bindgen_futures::spawn_local(async move {
+            // Collapse a burst before allocating plans or rendering source probes.
+            crate::util::yield_frame().await;
+            if batch_key.try_get_value().as_ref().and_then(Option::as_ref) != Some(&key)
+                || !actions.row_preparation_current(ticket)
+            {
+                actions.end_row_preparation(ticket);
+                return;
+            }
+            let Some((paint, plan)) = actions.prepare_row_measurements(
+                metrics.clone(),
+                projection.clone(),
+                prepared_tokens.clone(),
+                guides.clone(),
+                tab,
+                whitespace,
+            ) else {
+                actions.end_row_preparation(ticket);
+                return;
+            };
+            let geometry_paint = paint.clone();
             let result = super::editor_rows::measure_batches(
                 input,
                 paint.clone(),
@@ -1381,6 +1422,8 @@ fn HighlightOverlay(
                 sync_highlight_scroll(&textarea, &overlay);
             }
         }
+        painted_whitespace.set_value(show_whitespace.get_untracked());
+        painted_syntax.set_value(Some(tokens.get_untracked()));
         rendered_scope.set(actions.projection_revision());
         rendered.set(html);
         ready.set(!viewport.get_untracked().rows.is_empty());
@@ -1462,6 +1505,7 @@ fn HighlightOverlay(
         content.track();
         actions.projection_revision();
         actions.preparation_revision();
+        actions.font_epoch();
         indentation.get();
         show_whitespace.get();
         tokens.with(|_| ());
@@ -1977,6 +2021,33 @@ pub fn Editor(
     let hl = NodeRef::<leptos::html::Div>::new();
     let highlight_ready = RwSignal::new(false);
     let layout_revision = RwSignal::new(0_u64);
+    let source_extent = Memo::new(move |_| {
+        layout_revision.track();
+        let measured = editor_actions.measured_rows()?;
+        let input = ta.get()?;
+        if input
+            .parent_element()?
+            .get_attribute("data-editor-account")
+            .as_deref()
+            != Some(measured.account_generation.to_string().as_str())
+            || super::editor_rows::metrics_identity(&input).as_ref() != Some(&measured.metrics)
+        {
+            return None;
+        }
+        let extent = super::editor_rows::document_extent(&input, &measured.rows)?;
+        Some((
+            editor_actions.projection_revision(),
+            measured.revision,
+            measured.account_generation,
+            extent,
+        ))
+    });
+    Effect::new(move || {
+        source_extent.track();
+        if let Some(input) = ta.get() {
+            crate::viewport::refresh_editor_scroll(&input);
+        }
+    });
     let viewport = Memo::new(move |_| {
         layout_revision.track();
         let (rows, uniform) = projection.with(|view| (view.lines().len(), view.has_uniform_rows()));
@@ -2858,7 +2929,7 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code" style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + {}px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), if fold_state.with(|state| state.ranges().is_empty()) { 24 } else { 42 }, editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
+                                    <div class="editor-code" data-editor-view=move || editor_actions.view_revision().to_string() data-editor-account=editor_account_generation.to_string() style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 42px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
                                         <div class="editor-scroll-surface" aria-hidden="true" on:scroll=move |event: web_sys::Event| {
                                             let Some(textarea) = ta.get_untracked() else { return; };
                                             let Some(target) = event.current_target().and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok()) else { return; };
@@ -2873,7 +2944,12 @@ pub fn Editor(
                                             editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), scroll.scroll_top(), scroll.scroll_left());
                                             if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
                                             layout_revision.update(|revision| *revision = revision.wrapping_add(1));
-                                        }><div class="editor-scroll-extent" /></div>
+                                        }><div class="editor-scroll-extent"
+                                            data-editor-scope=move || source_extent.get().map(|(scope, _, _, _)| scope.to_string())
+                                            data-editor-view=move || source_extent.get().map(|(_, view, _, _)| view.to_string())
+                                            data-editor-account=move || source_extent.get().map(|(_, _, account, _)| account.to_string())
+                                            data-source-width=move || source_extent.get().map(|(_, _, _, extent)| extent.width.to_string())
+                                            data-source-height=move || source_extent.get().map(|(_, _, _, extent)| extent.height.to_string()) /></div>
                                         <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready error=action_error visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
                                         <super::editor_selections::SelectionOverlay textarea=ta ready=highlight_ready layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>

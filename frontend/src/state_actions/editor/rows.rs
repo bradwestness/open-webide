@@ -154,7 +154,7 @@ impl EditorActions {
     }
     pub(super) fn row_paint_current(self, paint: &EditorRowPaint) -> bool {
         self.workspace.editor_font_epoch.get_untracked() == paint.font_epoch
-            && self.view_revision() == paint.view_revision
+            && self.workspace.editor_view_revision.get_untracked() == paint.view_revision
             && self.workspace.editor_layout_epoch.get_untracked() == paint.layout_epoch
             && self.key().as_ref() == Some(&paint.key)
             && self.workspace.pending_epoch.get_untracked() == paint.epoch
@@ -172,7 +172,7 @@ impl EditorActions {
         whitespace: bool,
     ) -> Option<EditorRowPaint> {
         Some(EditorRowPaint {
-            view_revision: self.view_revision(),
+            view_revision: self.workspace.editor_view_revision.get_untracked(),
             layout_epoch: self.workspace.editor_layout_epoch.get_untracked(),
             font_epoch: self.workspace.editor_font_epoch.get_untracked(),
             key: self.key()?,
@@ -205,7 +205,7 @@ impl EditorActions {
             if !same_measurement_environment(old, &paint) {
                 return None;
             }
-            RowMeasurementPlan::reuse(&paint_rows(old)?, &paint_rows(&paint)?, &cache.rows)
+            RowMeasurementPlan::reuse_layout(&paint_rows(old)?, &paint_rows(&paint)?, &cache.rows)
         });
         let plan = reused.or_else(|| RowMeasurementPlan::new(paint.projection.lines().len()))?;
         Some((paint, plan))
@@ -258,7 +258,7 @@ impl EditorActions {
             cache.geometry.clear();
             return false;
         };
-        let revision = self.view_revision();
+        let revision = self.workspace.editor_view_revision.get_untracked();
         let layout = self.workspace.editor_layout_epoch.get_untracked();
         let same = cache
             .scope
@@ -300,7 +300,7 @@ impl EditorActions {
     ) -> Option<Arc<openwebide_core::editor::MeasuredRowGeometry>> {
         let (paint, revision, layout) = cache.scope.as_ref()?;
         if !self.row_paint_current(paint)
-            || *revision != self.view_revision()
+            || *revision != self.workspace.editor_view_revision.get_untracked()
             || *layout != self.workspace.editor_layout_epoch.get_untracked()
         {
             return None;
@@ -361,7 +361,7 @@ impl EditorActions {
             return;
         };
         if !self.row_paint_current(paint)
-            || *revision != self.view_revision()
+            || *revision != self.workspace.editor_view_revision.get_untracked()
             || *layout != self.workspace.editor_layout_epoch.get_untracked()
         {
             return;
@@ -405,7 +405,7 @@ impl EditorActions {
     ) -> Option<String> {
         let (paint, revision, layout) = cache.scope.as_ref()?;
         if !self.row_paint_current(paint)
-            || *revision != self.view_revision()
+            || *revision != self.workspace.editor_view_revision.get_untracked()
             || *layout != self.workspace.editor_layout_epoch.get_untracked()
         {
             return None;
@@ -420,7 +420,7 @@ impl EditorActions {
     ) {
         if let Some((paint, revision, layout)) = cache.scope.as_ref()
             && self.row_paint_current(paint)
-            && *revision == self.view_revision()
+            && *revision == self.workspace.editor_view_revision.get_untracked()
             && *layout == self.workspace.editor_layout_epoch.get_untracked()
         {
             cache.paint.insert(window, html);

@@ -6,9 +6,11 @@ local and remote projects. The full editor roadmap is still in progress.
 Settings → Editor defaults offers all five bundled Monaspace families: Neon (the
 default), Argon, Xenon, Radon, and Krypton. Texture healing and coding ligatures
 are independent toggles, both enabled by default. These preferences sync through
-your account and apply to Edit and diff views; fonts are available offline in the PWA.
+your account and apply to Edit and diff views; fonts are available offline in the PWA. Font family and OpenType changes invalidate source geometry even when the browser cannot serialize the font shorthand.
 
 - Tab advances to the next indentation stop; Shift+Tab outdents selected lines.
+- The folding gutter keeps a fixed width while syntax detection updates, so typing
+  and pressing Enter do not shift the text horizontally.
 - Enter retains indentation and uses the configured line ending, or the file's
   first line ending when no rule is set. Supported code languages indent after an
   opening bracket; Python also indents after a code colon. Enter inside an empty
@@ -260,9 +262,13 @@ the common scroll viewport, including offscreen rows. Prepared mouse clicks and
 in-viewport drags select source carets, words or logical lines through the same
 Rust policy; Shift-click preserves the existing anchor. Copy/cut use full source
 ranges for single selections too, preserving CRLF and shared undo behavior.
-Source/read/project/account changes discard active drags. Cold/touch selection,
-edge auto-scroll, viewport extents and cold caret ownership still need to move
-out of native input before using a bounded textarea.
+Source/read/project/account changes discard active drags. Prepared source row
+widths/heights now control scroll extents, reusing unchanged row dimensions after
+edits and retaining the source viewport's trailing padding when native scrolling
+clamps earlier. Source/account/syntax/layout guards discard obsolete dimensions; prepared
+scrolling reads no native input width/height. Physical browser size limits still
+apply. Cold/touch selection, edge auto-scroll, cold extents and cold caret ownership
+still need to move out of native input before using a bounded textarea.
 Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME map projected changes
 into source replacements and validate their resulting selections against borrowed

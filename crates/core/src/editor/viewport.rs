@@ -127,11 +127,12 @@ pub fn row_measurement_batch(lengths: impl IntoIterator<Item = usize>) -> usize 
     rows
 }
 
-/// Exact unchanged paint rows retain their measured height after a transaction.
+/// Exact unchanged paint rows retain their measured dimensions after a transaction.
 /// Adapters measure only missing rows; no hashes or wrapping estimates are used.
 #[derive(Clone, Debug)]
 pub struct RowMeasurementPlan {
     heights: Vec<Option<f64>>,
+    widths: Vec<Option<f64>>,
     next: usize,
     completed: usize,
 }
@@ -139,6 +140,7 @@ impl RowMeasurementPlan {
     pub fn new(rows: usize) -> Option<Self> {
         (rows <= super::MAX_EDITOR_LINES).then(|| Self {
             heights: vec![None; rows],
+            widths: vec![None; rows],
             next: 0,
             completed: 0,
         })
@@ -166,15 +168,17 @@ impl RowMeasurementPlan {
             .count();
         for row in 0..prefix {
             plan.heights[row] = Some(measured.top(row + 1)? - measured.top(row)?);
+            plan.widths[row] = measured.row_width(row);
         }
         for offset in 0..suffix {
             let old = previous.len() - 1 - offset;
             plan.heights[current.len() - 1 - offset] =
                 Some(measured.top(old + 1)? - measured.top(old)?);
+            plan.widths[current.len() - 1 - offset] = measured.row_width(old);
         }
         plan.completed = prefix + suffix;
         if current.len() - plan.completed > MAX_MEASURE_ROWS {
-            let mut known = HashMap::<&T, Option<f64>>::new();
+            let mut known = HashMap::<&T, Option<(f64, Option<f64>)>>::new();
             for (row, key) in previous
                 .iter()
                 .enumerate()
@@ -186,11 +190,15 @@ impl RowMeasurementPlan {
                     .entry(key)
                     .and_modify(|value| {
                         // Context-sensitive or rounded duplicates are not reusable.
-                        if value.is_some_and(|old| old.to_bits() != height.to_bits()) {
+                        if value.is_some_and(|(old, width)| {
+                            old.to_bits() != height.to_bits()
+                                || width.map(f64::to_bits)
+                                    != measured.row_width(row).map(f64::to_bits)
+                        }) {
                             *value = None;
                         }
                     })
-                    .or_insert(Some(height));
+                    .or_insert(Some((height, measured.row_width(row))));
             }
             for (row, key) in current
                 .iter()
@@ -198,13 +206,23 @@ impl RowMeasurementPlan {
                 .take(current.len() - suffix)
                 .skip(prefix)
             {
-                if let Some(Some(height)) = known.get(key) {
+                if let Some(Some((height, width))) = known.get(key) {
                     plan.heights[row] = Some(*height);
+                    plan.widths[row] = *width;
                     plan.completed += 1;
                 }
             }
         }
         Some(plan)
+    }
+    /// Geometry consumers can only reuse complete width/height measurements.
+    pub fn reuse_layout<T: Eq + Hash>(
+        previous: &[T],
+        current: &[T],
+        measured: &MeasuredRows,
+    ) -> Option<Self> {
+        measured.width()?;
+        Self::reuse(previous, current, measured)
     }
     pub fn completed(&self) -> usize {
         self.completed
@@ -244,8 +262,25 @@ impl RowMeasurementPlan {
         self.next = rows.end;
         true
     }
+    pub fn record_layout(&mut self, rows: Range<usize>, heights: &[f64], widths: &[f64]) -> bool {
+        if widths.len() != heights.len() || widths.iter().any(|width| !valid_width(*width)) {
+            return false;
+        }
+        if !self.record(rows.clone(), heights) {
+            return false;
+        }
+        for (row, width) in rows.zip(widths) {
+            self.widths[row] = Some(*width);
+        }
+        true
+    }
     pub fn finish(self) -> Option<MeasuredRows> {
-        MeasuredRows::new(self.heights.into_iter().collect::<Option<Vec<_>>>()?)
+        let heights = self.heights.into_iter().collect::<Option<Vec<_>>>()?;
+        let widths = self.widths.into_iter().collect::<Option<Vec<_>>>();
+        match widths {
+            Some(widths) => MeasuredRows::layout(heights, widths),
+            None => MeasuredRows::new(heights),
+        }
     }
 }
 
@@ -256,10 +291,24 @@ pub struct EditorViewport {
     pub height: f64,
 }
 
-/// Exact browser-measured logical row heights. Shared Rust validates the
-/// measurements and chooses windows; it never estimates text wrapping.
+/// Exact browser-measured logical row dimensions. Shared Rust validates source
+/// extents and chooses windows; it never estimates text wrapping.
 #[derive(Clone, Debug, PartialEq)]
-pub struct MeasuredRows(std::sync::Arc<[f64]>);
+pub struct MeasuredRows {
+    offsets: std::sync::Arc<[f64]>,
+    widths: Option<std::sync::Arc<[f64]>>,
+    width: Option<f64>,
+}
+
+/// Source layout dimensions, before applying the browser viewport minimum.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DocumentExtent {
+    pub width: f64,
+    pub height: f64,
+}
+fn valid_width(width: f64) -> bool {
+    width.is_finite() && (0.0..=1_000_000_000.0).contains(&width)
+}
 impl MeasuredRows {
     pub fn new(heights: impl IntoIterator<Item = f64>) -> Option<Self> {
         let mut offsets = vec![0.0];
@@ -273,19 +322,50 @@ impl MeasuredRows {
             }
             offsets.push(end);
         }
-        Some(Self(offsets.into()))
+        Some(Self {
+            offsets: offsets.into(),
+            widths: None,
+            width: None,
+        })
+    }
+    pub fn layout(
+        heights: impl IntoIterator<Item = f64>,
+        widths: impl IntoIterator<Item = f64>,
+    ) -> Option<Self> {
+        let mut rows = Self::new(heights)?;
+        let widths = widths.into_iter().collect::<Vec<_>>();
+        if widths.len() != rows.len() || widths.iter().any(|width| !valid_width(*width)) {
+            return None;
+        }
+        rows.width = Some(widths.iter().copied().fold(0.0, f64::max));
+        rows.widths = Some(widths.into());
+        Some(rows)
+    }
+    pub fn row_width(&self, row: usize) -> Option<f64> {
+        self.widths.as_ref()?.get(row).copied()
+    }
+    pub fn width(&self) -> Option<f64> {
+        self.width
+    }
+    pub fn extent(&self, horizontal_padding: f64, vertical_padding: f64) -> Option<DocumentExtent> {
+        if !valid_width(horizontal_padding) || !valid_width(vertical_padding) {
+            return None;
+        }
+        let width = self.width()? + horizontal_padding;
+        let height = self.height() + vertical_padding;
+        (valid_width(width) && valid_width(height)).then_some(DocumentExtent { width, height })
     }
     pub fn len(&self) -> usize {
-        self.0.len() - 1
+        self.offsets.len() - 1
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
     pub fn top(&self, row: usize) -> Option<f64> {
-        self.0.get(row).copied()
+        self.offsets.get(row).copied()
     }
     pub fn height(&self) -> f64 {
-        *self.0.last().unwrap()
+        *self.offsets.last().unwrap()
     }
     pub fn window(&self, scroll: f64, height: f64, padding: f64) -> EditorViewport {
         let scroll = if scroll.is_finite() {
@@ -305,19 +385,19 @@ impl MeasuredRows {
         };
         let top = (scroll - padding).max(0.0).min(self.height());
         let first = self
-            .0
+            .offsets
             .partition_point(|offset| *offset <= top)
             .saturating_sub(1)
             .min(self.len().saturating_sub(1));
         let end = self
-            .0
+            .offsets
             .partition_point(|offset| *offset < top + height)
             .min(self.len());
         let start = first.saturating_sub(8);
         let end = end.saturating_add(8).min(self.len());
         EditorViewport {
             rows: start..end,
-            top: self.0[start],
+            top: self.offsets[start],
             height: self.height(),
         }
     }
@@ -366,6 +446,44 @@ impl EditorViewport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_extents_validate_dimensions_and_reuse_changed_rows() {
+        let rows = MeasuredRows::layout([20.0, 40.0, 20.0], [10.0, 1000.0, 30.0]).unwrap();
+        assert_eq!(
+            rows.extent(16.0, 24.0),
+            Some(DocumentExtent {
+                width: 1016.0,
+                height: 104.0
+            })
+        );
+        assert!(MeasuredRows::layout([20.0], [f64::NAN]).is_none());
+        assert!(MeasuredRows::layout([20.0], [-1.0]).is_none());
+        assert!(MeasuredRows::layout([20.0], []).is_none());
+        assert!(rows.extent(f64::INFINITY, 0.0).is_none());
+        assert!(
+            RowMeasurementPlan::reuse_layout(
+                &[1, 2, 3],
+                &[1, 4, 3],
+                &MeasuredRows::new([20.0; 3]).unwrap()
+            )
+            .is_none()
+        );
+        let mut plan = RowMeasurementPlan::reuse_layout(&[1, 2, 3], &[1, 4, 3], &rows).unwrap();
+        assert_eq!(plan.completed(), 2);
+        assert_eq!(plan.pending_batch(&[1; 3]), Some(1..2));
+        assert!(!plan.record_layout(1..2, &[20.0], &[f64::NAN]));
+        assert_eq!(plan.completed(), 2);
+        assert!(plan.record_layout(1..2, &[20.0], &[15.0]));
+        let rows = plan.finish().unwrap();
+        assert_eq!(
+            rows.extent(16.0, 24.0),
+            Some(DocumentExtent {
+                width: 46.0,
+                height: 84.0
+            })
+        );
+    }
+
     #[test]
     fn horizontal_windows_keep_unicode_and_tabs_and_reject_nonmonotonic_paragraphs() {
         let body = "文😀e\u{301}\t abc ".repeat(10_000);

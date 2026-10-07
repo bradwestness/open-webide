@@ -646,6 +646,159 @@ async fn multi_cursor_pointer_and_column_gestures_share_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn prepared_source_extents_ignore_native_dimensions_and_reject_stale_scopes_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for wrap in [false, true] {
+            let wide = "wide 文😀 ".repeat(160);
+            let source = (0..700)
+                .map(|row| {
+                    if row == 650 {
+                        format!("{wide}\r\n")
+                    } else {
+                        format!("row {row}\t文😀\r\n")
+                    }
+                })
+                .collect::<String>();
+            let initial = source.clone();
+            let actions_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+            let mounted_actions = actions_slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = wrap);
+                state.workspace.open_file.set(Some("extents.txt".into()));
+                state.workspace.content.set(initial);
+                mounted_actions.set(Some(EditorActions::new(state.workspace)));
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:240px">{editor_view(state)}</div> }
+            });
+            frame().await;
+            let actions = actions_slot.get().unwrap();
+            let textarea: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            wait_until("prepared source dimensions", || {
+                mounted
+                    .element(".editor-scroll-extent")
+                    .has_attribute("data-source-width")
+            })
+            .await;
+            frame().await;
+            let extent = mounted.element(".editor-scroll-extent");
+            let scroll = openwebide_frontend::viewport::editor_scroll(&textarea);
+            let native_width = textarea.scroll_width();
+            let native_height = textarea.scroll_height();
+            assert!(
+                (scroll.scroll_width() - (native_width + if wrap { 0 } else { 16 })).abs() <= 2,
+                "source width must match full layout: mode={mode:?} wrap={wrap} source={} native={native_width}",
+                scroll.scroll_width()
+            );
+            assert!(
+                (scroll.scroll_height() - native_height).abs() <= 2,
+                "source height must match full layout: mode={mode:?} wrap={wrap} source={} native={native_height}",
+                scroll.scroll_height()
+            );
+            if !wrap {
+                scroll.set_scroll_left(f64::from(scroll.scroll_width()));
+                openwebide_frontend::viewport::sync_editor_scroll(&textarea, false);
+                let source_end = scroll.scroll_left();
+                assert!(
+                    source_end > textarea.scroll_left(),
+                    "source viewport retains trailing padding independently of native clamping"
+                );
+                openwebide_frontend::viewport::sync_editor_scroll(&textarea, true);
+                assert!(
+                    (scroll.scroll_left() - source_end).abs() < 0.1,
+                    "native scroll echo must not rewind the source viewport"
+                );
+            }
+            let counts = watchNativeExtentReads(&textarea);
+            for _ in 0..3 {
+                openwebide_frontend::viewport::refresh_editor_scroll(&textarea);
+            }
+            assert_eq!(
+                counts.call0(&wasm_bindgen::JsValue::NULL).unwrap().as_f64(),
+                Some(0.0),
+                "prepared extents must not read the full input dimensions"
+            );
+            let scope = extent.get_attribute("data-editor-scope").unwrap();
+            extent.set_attribute("data-editor-scope", "stale").unwrap();
+            openwebide_frontend::viewport::refresh_editor_scroll(&textarea);
+            assert_eq!(
+                counts.call0(&wasm_bindgen::JsValue::NULL).unwrap().as_f64(),
+                Some(2.0)
+            );
+            extent.set_attribute("data-editor-scope", &scope).unwrap();
+            let account = extent.get_attribute("data-editor-account").unwrap();
+            extent
+                .set_attribute("data-editor-account", "stale")
+                .unwrap();
+            openwebide_frontend::viewport::refresh_editor_scroll(&textarea);
+            assert_eq!(
+                counts.call0(&wasm_bindgen::JsValue::NULL).unwrap().as_f64(),
+                Some(4.0),
+                "stale account dimensions must fall back"
+            );
+            extent
+                .set_attribute("data-editor-account", &account)
+                .unwrap();
+            restoreNativeExtentReads(&textarea);
+            assert!(
+                !openwebide_frontend::viewport::check_editor_extent(
+                    1_000_000_000.0,
+                    1_000_000_000.0
+                ),
+                "physical browser limits must remain a validation gate"
+            );
+            let replacement = source.replace(&wide, "tiny");
+            mounted.state.workspace.content.set(replacement.clone());
+            wait_until("shrunk source width/height", || {
+                actions.measured_rows().is_some_and(|measured| {
+                    measured.rows.width().is_some_and(|width| width < 500.0)
+                        && mounted
+                            .element(".editor-scroll-extent")
+                            .get_attribute("data-editor-scope")
+                            == textarea.get_attribute("data-editor-scope")
+                })
+            })
+            .await;
+            frame().await;
+            assert!(scroll.scroll_width() < native_width || wrap);
+            assert!(scroll.scroll_height() < native_height || !wrap);
+            assert_eq!(actions.source(), replacement);
+            mounted
+                .state
+                .auth
+                .generation
+                .update(|generation| *generation += 1);
+            assert!(
+                actions.measured_rows().is_none(),
+                "another account cannot reuse previous measurements"
+            );
+            frame().await;
+            if let Some(measured) = actions.measured_rows() {
+                assert_eq!(
+                    measured.account_generation,
+                    mounted.state.auth.generation.get_untracked()
+                );
+                assert_ne!(
+                    mounted
+                        .element(".editor-scroll-extent")
+                        .get_attribute("data-editor-account"),
+                    Some(account)
+                );
+            }
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn primary_pointer_units_and_drag_use_source_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -2417,14 +2570,29 @@ fn now() -> f64 {
 async fn measure_highlight_bursts() {
     for lines in [1_000, 10_000] {
         let source = "fn example() { let value = 42; }\n".repeat(lines);
-        let mounted = mount_editor(source.clone());
+        let initial = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.workspace.open_file.set(Some("fixture.rs".into()));
+            state.workspace.content.set(initial);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:700px;height:400px">{editor_view(state)}</div> }
+        });
         settle().await;
         frame().await;
+        let actions =
+            openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
+        wait_until("warm source dimension cache", || {
+            actions.measured_rows().is_some()
+        })
+        .await;
+        frame().await;
+        let mut probes = Vec::new();
         let mut latency = Vec::new();
         let mut frames = Vec::new();
         let mut counts = Vec::new();
         for run in 0..5 {
-            let before = highlight_count();
+            let before = openwebide_frontend::components::viewport_highlight_count();
+            let all_before = highlight_count();
             let start = now();
             for event in 0..10 {
                 let text = format!("{source}// burst {run} input {event}\n");
@@ -2435,13 +2603,22 @@ async fn measure_highlight_bursts() {
             }
             frame().await;
             frames.push(now() - start);
-            counts.push(highlight_count() - before);
+            let visible = openwebide_frontend::components::viewport_highlight_count() - before;
+            counts.push(visible);
+            probes.push(highlight_count() - all_before - visible);
         }
-        assert!(counts.iter().all(|count| *count == 1));
+        assert!(
+            counts.iter().all(|count| *count == 1),
+            "visible generations={counts:?}"
+        );
+        assert!(
+            probes.iter().all(|count| *count <= 1),
+            "coalesced changed-row probes={probes:?}"
+        );
         latency.sort_by(f64::total_cmp);
         frames.sort_by(f64::total_cmp);
         console_log!(
-            "editor {lines} lines: executions/10 inputs={counts:?}, input+microtasks median={:.3}ms p95={:.3}ms, burst-to-frame median={:.3}ms p95={:.3}ms",
+            "editor {lines} lines: visible generations/10 inputs={counts:?}, changed-row probes={probes:?}, input+microtasks median={:.3}ms p95={:.3}ms, burst-to-frame median={:.3}ms p95={:.3}ms",
             latency[25],
             latency[47],
             frames[2],
@@ -2947,7 +3124,8 @@ async fn numbered_views_scroll_horizontally_with_compact_gutters_and_linked_spli
                 .element(".editor-code")
                 .get_bounding_client_rect()
                 .left();
-        assert!(compact_width < 45.0);
+        // Reserve the 18px folding column even when this file has no folds.
+        assert!(compact_width < 63.0);
         mounted.click("button[aria-label^='Find in file']");
         settle().await;
         let search: web_sys::HtmlInputElement =
@@ -3090,7 +3268,8 @@ async fn edit_scrollbars_stay_above_paint_and_outside_gutter_in_both_modes() {
                 .element(".editor-code")
                 .get_bounding_client_rect()
                 .left();
-        assert!(gutter_width > 30.0 && gutter_width < 60.0);
+        // The folding column stays reserved alongside the three-digit gutter.
+        assert!(gutter_width > 48.0 && gutter_width < 78.0);
         assert!(scroll.scroll_width() > scroll.client_width());
         assert!(scroll.scroll_height() > scroll.client_height());
         assert!(
@@ -3577,8 +3756,12 @@ function editorGestureRect(target, line, column) {
     return range.getBoundingClientRect();
 }
 export function editorPrimaryGesture(target, line, column, clicks, shift, type) {
-    const rect = editorGestureRect(target, line, column);
-    const event = new MouseEvent(type, {bubbles:true, cancelable:true, detail:clicks, shiftKey:shift, button:0, buttons:type === 'mouseup' ? 0 : 1, clientX:rect.left + .25, clientY:rect.top + rect.height / 2});
+    const rect = editorGestureRect(target, line, column), viewport = target.getBoundingClientRect();
+    // A partially clipped final row still has a visible glyph to click. Its full
+    // rectangle midpoint can sit below the pane, depending on platform fonts.
+    const top = Math.max(rect.top, viewport.top), bottom = Math.min(rect.bottom, viewport.bottom);
+    if (bottom <= top) throw new Error('Gesture glyph is outside the editor viewport');
+    const event = new MouseEvent(type, {bubbles:true, cancelable:true, detail:clicks, shiftKey:shift, button:0, buttons:type === 'mouseup' ? 0 : 1, clientX:rect.left + .25, clientY:(top + bottom) / 2});
     target.dispatchEvent(event); return event;
 }
 export function editorGesture(target, line, column, shift, moving) {
@@ -6527,11 +6710,19 @@ async fn measured_multi_cursor_motion_skips_folded_rows_in_both_modes() {
             u32::try_from(byte_to_textarea(projection.text(), visible.head).unwrap()).unwrap();
         textarea.set_selection_range(primary, primary).unwrap();
         assert!(editor_key(&textarea, "ArrowDown", false, false).default_prevented());
+        wait_until("folded downward motion applied", || {
+            actions.queued_motion_ticket().is_none()
+        })
+        .await;
         let after = actions.selections(source);
         assert_eq!(after.len(), 2);
         assert_eq!(line_column(source, after[0].head).0, 5);
         assert_eq!(line_column(source, after[1].head).0, 4);
         assert!(editor_key(&textarea, "ArrowUp", false, false).default_prevented());
+        wait_until("folded upward motion applied", || {
+            actions.queued_motion_ticket().is_none()
+        })
+        .await;
         assert_eq!(actions.selections(source), before);
         assert_eq!(actions.source(), source);
         assert!(!mounted.state.workspace.dirty.get_untracked());
@@ -7163,6 +7354,100 @@ impl DeferredSyntax {
         )
         .unwrap()
         .source
+    }
+}
+
+#[wasm_bindgen_test]
+async fn entering_newlines_keeps_fold_gutter_fixed_while_syntax_is_pending_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let captured = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+        let capture = captured.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state
+                .workspace
+                .open_file
+                .set(Some("fixed-gutter.rs".into()));
+            state
+                .workspace
+                .content
+                .set("fn main() {\n    call();\n}".into());
+            let actions = EditorActions::new(state.workspace);
+            actions.install_syntax_transport(installed);
+            capture.set(Some(actions));
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:700px;height:400px">{editor_view(state)}</div> }
+        });
+        let actions = captured.get().unwrap();
+        wait_until("initial folding request", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        let code: web_sys::HtmlElement = mounted.element(".editor-code").unchecked_into();
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let gutter = code
+            .style()
+            .get_property_value("--editor-gutter-width")
+            .unwrap();
+        assert!(gutter.contains("42px"));
+        wait_until("folding controls", || {
+            if !transport.pending.borrow().is_empty() {
+                transport.respond(true);
+            }
+            mounted
+                .root
+                .query_selector(".editor-fold-control")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert_eq!(
+            code.style()
+                .get_property_value("--editor-gutter-width")
+                .unwrap(),
+            gutter
+        );
+        frame().await;
+        let left = input.get_bounding_client_rect().left();
+        input.focus().unwrap();
+        input.set_selection_range(12, 12).unwrap();
+        assert!(editor_key(&input, "Enter", false, false).default_prevented());
+        wait_until("new folding request", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        assert!(actions.syntax_structure(|| true).is_none());
+        assert_eq!(actions.source().split('\n').count(), 4);
+        assert_eq!(
+            code.style()
+                .get_property_value("--editor-gutter-width")
+                .unwrap(),
+            gutter
+        );
+        assert!((input.get_bounding_client_rect().left() - left).abs() < 0.1);
+        transport.respond(true);
+        wait_until("updated folding controls", || {
+            actions.syntax_structure(|| true).is_some()
+        })
+        .await;
+        settle().await;
+        assert_eq!(
+            code.style()
+                .get_property_value("--editor-gutter-width")
+                .unwrap(),
+            gutter
+        );
+        assert!((input.get_bounding_client_rect().left() - left).abs() < 0.1);
+        drop(mounted);
+        settle().await;
     }
 }
 
@@ -8905,8 +9190,10 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
                 .unwrap();
             wait_until("wrapped anchor scope settled", || {
                 mounted
-                    .element(".editor-source-line")
-                    .get_attribute("data-paint-top")
+                    .root
+                    .query_selector(".editor-source-line")
+                    .unwrap()
+                    .and_then(|row| row.get_attribute("data-paint-top"))
                     .and_then(|value| value.parse::<f64>().ok())
                     .is_some_and(|paint_top| (paint_top - input.scroll_top()).abs() < 200.0)
             })
@@ -8922,8 +9209,10 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
                 .unwrap();
             wait_until("fragment follows scrolling inside one logical row", || {
                 mounted
-                    .element(".editor-source-line")
-                    .get_attribute("data-paint-top")
+                    .root
+                    .query_selector(".editor-source-line")
+                    .unwrap()
+                    .and_then(|row| row.get_attribute("data-paint-top"))
                     .and_then(|value| value.parse::<f64>().ok())
                     .is_some_and(|paint_top| (paint_top - input.scroll_top()).abs() < 200.0)
             })
@@ -9002,7 +9291,13 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
                 if input.scroll_top() <= height - 1000.0 {
                     return false;
                 }
-                let fragment = mounted.element(".editor-source-fragment");
+                let Some(fragment) = mounted
+                    .root
+                    .query_selector(".editor-source-fragment")
+                    .unwrap()
+                else {
+                    return false;
+                };
                 let mut pending = vec![web_sys::Node::from(fragment)];
                 while let Some(node) = pending.pop() {
                     if node.node_type() == web_sys::Node::TEXT_NODE
@@ -9048,8 +9343,10 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
             || {
                 input.value() == bidi
                     && mounted
-                        .element(".editor-source-line")
-                        .get_attribute("data-paint-length")
+                        .root
+                        .query_selector(".editor-source-line")
+                        .unwrap()
+                        .and_then(|row| row.get_attribute("data-paint-length"))
                         .and_then(|length| length.parse::<usize>().ok())
                         == Some(bidi.encode_utf16().count())
                     && mounted
@@ -9066,8 +9363,10 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
             .unwrap();
         wait_until("wrapped bidi fallback follows the destination", || {
             mounted
-                .element(".editor-source-line")
-                .get_attribute("data-paint-top")
+                .root
+                .query_selector(".editor-source-line")
+                .unwrap()
+                .and_then(|row| row.get_attribute("data-paint-top"))
                 .and_then(|top| top.parse::<f64>().ok())
                 .is_some_and(|top| (top - input.scroll_top()).abs() < 200.0)
         })
@@ -9119,6 +9418,16 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
                 .is_some()
         })
         .await;
+        wait_until("horizontal source dimensions prepared", || {
+            mounted
+                .state
+                .workspace
+                .editor_rows
+                .get_untracked()
+                .is_some()
+        })
+        .await;
+        frame().await;
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
         let width = input.scroll_width();
@@ -9132,8 +9441,10 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
                 .unwrap();
             wait_until("initial horizontal geometry settled", || {
                 mounted
-                    .element(".editor-source-line")
-                    .get_attribute("data-paint-left")
+                    .root
+                    .query_selector(".editor-source-line")
+                    .unwrap()
+                    .and_then(|row| row.get_attribute("data-paint-left"))
                     .and_then(|left| left.parse::<f64>().ok())
                     .is_some_and(|left| if x == 0.0 { left == 0.0 } else { left > 9000.0 })
             })
@@ -9172,8 +9483,10 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
                 "horizontal fragment follows viewport-sized intervals",
                 || {
                     mounted
-                        .element(".editor-source-line")
-                        .get_attribute("data-paint-left")
+                        .root
+                        .query_selector(".editor-source-line")
+                        .unwrap()
+                        .and_then(|row| row.get_attribute("data-paint-left"))
                         .and_then(|value| value.parse::<f64>().ok())
                         .is_some_and(|left| {
                             left <= input.scroll_left() + 30.0
@@ -9329,6 +9642,16 @@ async fn repeated_fragment_windows_reuse_validated_paint_and_font_changes_remeas
                 .is_some()
         })
         .await;
+        wait_until("initial source dimensions prepared", || {
+            mounted
+                .state
+                .workspace
+                .editor_rows
+                .get_untracked()
+                .is_some()
+        })
+        .await;
+        frame().await;
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
         let observer = js_sys::Function::new_no_args(r#"
@@ -9355,12 +9678,15 @@ async fn repeated_fragment_windows_reuse_validated_paint_and_font_changes_remeas
                     .dispatch_event(&web_sys::Event::new("scroll").unwrap())
                     .unwrap();
                 wait_until("cached window follows input", || {
-                    let left = mounted
-                        .element(".editor-source-line")
-                        .get_attribute("data-paint-left")
+                    let Some(left) = mounted
+                        .root
+                        .query_selector(".editor-source-line")
                         .unwrap()
-                        .parse::<f64>()
-                        .unwrap();
+                        .and_then(|row| row.get_attribute("data-paint-left"))
+                        .and_then(|left| left.parse::<f64>().ok())
+                    else {
+                        return false;
+                    };
                     if x == 0.0 {
                         left == 0.0
                     } else {
@@ -9378,12 +9704,15 @@ async fn repeated_fragment_windows_reuse_validated_paint_and_font_changes_remeas
                 .dispatch_event(&web_sys::Event::new("scroll").unwrap())
                 .unwrap();
             wait_until("retained fragment revisited", || {
-                let left = mounted
-                    .element(".editor-source-line")
-                    .get_attribute("data-paint-left")
+                let Some(left) = mounted
+                    .root
+                    .query_selector(".editor-source-line")
                     .unwrap()
-                    .parse::<f64>()
-                    .unwrap();
+                    .and_then(|row| row.get_attribute("data-paint-left"))
+                    .and_then(|left| left.parse::<f64>().ok())
+                else {
+                    return false;
+                };
                 if x == 0.0 { left == 0.0 } else { left > 9000.0 }
             })
             .await;
@@ -9391,7 +9720,8 @@ async fn repeated_fragment_windows_reuse_validated_paint_and_font_changes_remeas
         }
         assert!(
             (count() - before).abs() < 0.5,
-            "revisiting exact intervals must avoid styled probes"
+            "revisiting exact intervals must avoid styled probes: before={before} after={}",
+            count()
         );
         input
             .unchecked_ref::<web_sys::HtmlElement>()
@@ -9409,8 +9739,10 @@ async fn repeated_fragment_windows_reuse_validated_paint_and_font_changes_remeas
             .unwrap();
         wait_until("shaped origin", || {
             mounted
-                .element(".editor-source-line")
-                .get_attribute("data-paint-left")
+                .root
+                .query_selector(".editor-source-line")
+                .unwrap()
+                .and_then(|row| row.get_attribute("data-paint-left"))
                 .as_deref()
                 == Some("0")
         })
@@ -9855,8 +10187,10 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
                 .unwrap();
             wait_until("source anchor scope settled", || {
                 mounted
-                    .element(".editor-source-line")
-                    .get_attribute("data-paint-top")
+                    .root
+                    .query_selector(".editor-source-line")
+                    .unwrap()
+                    .and_then(|row| row.get_attribute("data-paint-top"))
                     .and_then(|top| top.parse::<f64>().ok())
                     .is_some_and(|top| (top - input.scroll_top()).abs() < 200.0)
             })
@@ -9890,8 +10224,10 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
                     .as_bool()
                     == Some(true)
                     && mounted
-                        .element(".editor-source-line")
-                        .text_content()
+                        .root
+                        .query_selector(".editor-source-line")
+                        .unwrap()
+                        .and_then(|row| row.text_content())
                         .as_deref()
                         == Some(original.as_str())
             },
@@ -9916,8 +10252,10 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
             .unwrap();
         wait_until("fresh full probe restores bounded paint", || {
             mounted
-                .element(".editor-source-line")
-                .get_attribute("data-paint-top")
+                .root
+                .query_selector(".editor-source-line")
+                .unwrap()
+                .and_then(|row| row.get_attribute("data-paint-top"))
                 .and_then(|top| top.parse::<f64>().ok())
                 .is_some_and(|top| (top - input.scroll_top()).abs() < 200.0)
         })
@@ -10507,6 +10845,15 @@ async fn trusted_native_commits_skip_full_value_reads_and_other_inputs_reconcile
 }
 
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function watchNativeExtentReads(input) {
+    let reads = 0;
+    for (const name of ['scrollWidth', 'scrollHeight']) {
+        const getter = Object.getOwnPropertyDescriptor(Element.prototype, name).get;
+        Object.defineProperty(input, name, {configurable:true, get() { ++reads; return getter.call(this); }});
+    }
+    return () => reads;
+}
+export function restoreNativeExtentReads(input) { delete input.scrollWidth; delete input.scrollHeight; }
 export async function editorFontsReady() { document.body.getBoundingClientRect(); await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(resolve)); }
 export async function loadEditorFont(name, bytes) {
     const font = new FontFace('Monaspace ' + name, bytes, {weight:'200 800', stretch:'100% 125%', style:'oblique -11deg 0deg'});
@@ -10515,6 +10862,8 @@ export async function loadEditorFont(name, bytes) {
 export function removeEditorFont(font) { document.fonts.delete(font); }
 "#)]
 extern "C" {
+    fn watchNativeExtentReads(input: &web_sys::HtmlTextAreaElement) -> js_sys::Function;
+    fn restoreNativeExtentReads(input: &web_sys::HtmlTextAreaElement);
     #[wasm_bindgen(catch)]
     async fn editorFontsReady() -> Result<(), wasm_bindgen::JsValue>;
     #[wasm_bindgen(catch)]
@@ -10523,6 +10872,120 @@ extern "C" {
         bytes: &[u8],
     ) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
     fn removeEditorFont(font: &wasm_bindgen::JsValue);
+}
+
+#[wasm_bindgen_test]
+async fn switching_loaded_font_families_invalidates_source_layout_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::EditorFont};
+    let neon = loadEditorFont(
+        "Neon",
+        include_bytes!("../../fonts/MonaspaceNeon-v1.400.woff2"),
+    )
+    .await
+    .unwrap();
+    let radon = loadEditorFont(
+        "Radon",
+        include_bytes!("../../fonts/MonaspaceRadon-v1.400.woff2"),
+    )
+    .await
+    .unwrap();
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state
+                .workspace
+                .open_file
+                .set(Some("font-layout.txt".into()));
+            state.workspace.content.set(
+                "!= => === 文😀
+"
+                .repeat(160),
+            );
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = false);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:300px">{editor_view(state)}</div> }
+        });
+        frame().await;
+        wait_until("initial source font dimensions", || {
+            mounted
+                .state
+                .workspace
+                .editor_rows
+                .get_untracked()
+                .is_some()
+        })
+        .await;
+        let before = mounted.state.workspace.editor_rows.get_untracked().unwrap();
+        let epoch = mounted.state.workspace.editor_font_epoch.get_untracked();
+        let visible_paint = openwebide_frontend::components::viewport_highlight_count();
+        let textarea: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let identity = openwebide_frontend::viewport::editor_font_identity(&textarea);
+        mounted
+            .state
+            .settings
+            .editor_preferences
+            .update(|preferences| preferences.font = EditorFont::Radon);
+        wait_until("new loaded font dimensions", || {
+            mounted.state.workspace.editor_font_epoch.get_untracked() > epoch
+                && mounted
+                    .state
+                    .workspace
+                    .editor_rows
+                    .get_untracked()
+                    .is_some_and(|rows| rows.metrics != before.metrics)
+        })
+        .await;
+        frame().await;
+        assert_ne!(
+            openwebide_frontend::viewport::editor_font_identity(&textarea),
+            identity
+        );
+        wait_until("settled source extent after font loading", || {
+            mounted
+                .state
+                .workspace
+                .editor_rows
+                .get_untracked()
+                .is_some_and(|rows| {
+                    rows.metrics != before.metrics
+                        && openwebide_frontend::components::viewport_highlight_count()
+                            > visible_paint
+                        && mounted
+                            .element(".editor-scroll-extent")
+                            .get_attribute("data-editor-view")
+                            == Some(rows.revision.to_string())
+                })
+        })
+        .await;
+        let rows = mounted.state.workspace.editor_rows.get_untracked().unwrap();
+        let scroll = openwebide_frontend::viewport::editor_scroll(&textarea);
+        assert!((f64::from(scroll.scroll_height()) - rows.rows.height() - 24.0).abs() <= 2.0);
+        assert!(
+            mounted
+                .state
+                .settings
+                .editor_preferences
+                .get_untracked()
+                .texture_healing
+        );
+        assert!(
+            mounted
+                .state
+                .settings
+                .editor_preferences
+                .get_untracked()
+                .ligatures
+        );
+    }
+    removeEditorFont(&neon);
+    removeEditorFont(&radon);
 }
 
 #[wasm_bindgen_test]

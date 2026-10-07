@@ -36,6 +36,10 @@ pub(super) fn styled_row_probe(
         "font-size",
         "font-style",
         "font-weight",
+        "font-stretch",
+        "font-variation-settings",
+        "font-variant-caps",
+        "font-variant-numeric",
         "line-height",
         "tab-size",
         "white-space",
@@ -65,6 +69,30 @@ pub(super) fn styled_row_probe(
     Ok((RowProbe(probe), paint))
 }
 
+/// CSS padding is a DOM primitive; dimensions and validity come from shared rows.
+pub(super) fn document_extent(
+    input: &web_sys::HtmlTextAreaElement,
+    rows: &MeasuredRows,
+) -> Option<openwebide_core::editor::DocumentExtent> {
+    let style = window().get_computed_style(input).ok()??;
+    let padding = |name| {
+        style
+            .get_property_value(name)
+            .ok()?
+            .trim_end_matches("px")
+            .parse::<f64>()
+            .ok()
+    };
+    rows.extent(
+        padding("padding-right")? + padding("padding-left")?,
+        padding("padding-top")? + padding("padding-bottom")?,
+    )
+}
+fn extent_supported(input: &web_sys::HtmlTextAreaElement, rows: &MeasuredRows) -> bool {
+    document_extent(input, rows)
+        .is_some_and(|extent| crate::viewport::check_editor_extent(extent.width, extent.height))
+}
+
 /// Browser primitives only: styled HTML, exact rectangles and yielding. The
 /// shared core chooses batch sizes and validates the completed height table;
 /// the editor facade rechecks document/layout ownership before publication.
@@ -78,6 +106,11 @@ pub(super) async fn measure_batches(
     render: impl Fn(&[usize], bool) -> String,
 ) -> Result<Option<MeasuredRows>, ()> {
     if !current()
+        || input
+            .parent_element()
+            .and_then(|parent| parent.get_attribute("data-editor-account"))
+            .as_deref()
+            != Some(scope.account_generation.to_string().as_str())
         || !input.is_connected()
         || crate::viewport::editor_scroll(&input).client_width() <= 0
         || crate::viewport::editor_scroll(&input).client_height() <= 0
@@ -137,6 +170,7 @@ pub(super) async fn measure_batches(
         }
         let mut previous_bottom = None;
         let mut batch = Vec::with_capacity(count);
+        let mut widths = Vec::with_capacity(count);
         for index in 0..measured.length() {
             let row: web_sys::Element = measured.item(index).ok_or(())?.unchecked_into();
             let bounds = row.get_bounding_client_rect();
@@ -145,6 +179,7 @@ pub(super) async fn measure_batches(
             }
             previous_bottom = Some(bounds.bottom());
             batch.push(bounds.height());
+            widths.push(f64::from(row.scroll_width()));
             let logical = start + usize::try_from(index).map_err(|_| ())?;
             let line = &projection.lines()[logical];
             let end = projection
@@ -156,7 +191,10 @@ pub(super) async fn measure_batches(
                 .strip_suffix("\r\n")
                 .or_else(|| raw.strip_suffix('\n'))
                 .unwrap_or(raw);
-            if let Some(index) = projection.visual_line_index(logical)
+            if input
+                .parent_element()
+                .is_some_and(|parent| parent.class_list().contains("editor-word-wrap"))
+                && let Some(index) = projection.visual_line_index(logical)
                 && let Some(measured) =
                     super::editor_geometry::wrapped_geometry(&row, body, index, &bounds)
                 && current()
@@ -164,7 +202,7 @@ pub(super) async fn measure_batches(
                 geometry(logical, measured);
             }
         }
-        if !plan.record(range, &batch) {
+        if !plan.record_layout(range, &batch, &widths) {
             return Err(());
         }
         progress(plan.completed());
@@ -183,10 +221,7 @@ pub(super) async fn measure_batches(
         return Ok(None);
     }
     let rows = plan.finish().ok_or(())?;
-    let expected = (rows.height() + 24.0).max(f64::from(
-        crate::viewport::editor_scroll(&input).client_height(),
-    ));
-    if (f64::from(crate::viewport::editor_scroll(&input).scroll_height()) - expected).abs() > 2.0 {
+    if !extent_supported(&input, &rows) {
         return Err(());
     }
     Ok(Some(rows))
@@ -197,7 +232,7 @@ pub(super) fn metrics_identity(input: &web_sys::HtmlTextAreaElement) -> Option<S
     Some(format!(
         "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         crate::viewport::editor_scroll(input).client_width(),
-        style.get_property_value("font").ok()?,
+        crate::viewport::editor_font_identity(input),
         style.get_property_value("line-height").ok()?,
         style.get_property_value("tab-size").ok()?,
         style.get_property_value("white-space").ok()?,
@@ -216,8 +251,19 @@ pub(super) fn update_measurements(
     input: &web_sys::HtmlTextAreaElement,
     overlay: &web_sys::HtmlElement,
     font_changed: bool,
+    syntax: Option<(
+        bool,
+        std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+    )>,
+    whitespace: bool,
 ) {
-    if !current_editor_target(actions, input) {
+    if !current_editor_target(actions, input)
+        || input
+            .parent_element()
+            .and_then(|parent| parent.get_attribute("data-editor-account"))
+            .as_deref()
+            != Some(actions.account_generation().to_string().as_str())
+    {
         return;
     }
     if font_changed {
@@ -231,14 +277,26 @@ pub(super) fn update_measurements(
     let Some(projection) = actions.projection() else {
         return;
     };
-    if !actions.preferences().word_wrap && projection.has_uniform_rows() {
+    // Large or fragmented paints require full-source batch measurements. A
+    // visible fragment cannot establish the dimensions of its omitted source.
+    if openwebide_core::editor::needs_measured_batches(
+        projection.lines().len(),
+        projection.text().len(),
+    ) {
         return;
     }
     let Some(metrics) = metrics_identity(input) else {
         return;
     };
     if let Some(cached) = actions.measured_rows() {
-        if cached.metrics == metrics {
+        if cached.metrics == metrics
+            && cached.whitespace == whitespace
+            && cached
+                .syntax
+                .as_ref()
+                .zip(syntax.as_ref())
+                .is_some_and(|(old, new)| old.0 == new.0 && std::sync::Arc::ptr_eq(&old.1, &new.1))
+        {
             return;
         }
         actions.invalidate_measured_rows();
@@ -259,6 +317,7 @@ pub(super) fn update_measurements(
         return;
     }
     let mut heights = Vec::with_capacity(projection.lines().len());
+    let mut widths = Vec::with_capacity(projection.lines().len());
     let mut previous_bottom = None;
     for (index, line) in projection.lines().iter().enumerate() {
         let Some(row) = u32::try_from(index).ok().and_then(|index| rows.item(index)) else {
@@ -276,19 +335,13 @@ pub(super) fn update_measurements(
         }
         previous_bottom = Some(bounds.bottom());
         heights.push(bounds.height());
+        widths.push(f64::from(row.scroll_width()));
     }
-    let Some(rows) = MeasuredRows::new(heights) else {
+    let Some(rows) = MeasuredRows::layout(heights, widths) else {
         return;
     };
-    let expected_height = (rows.height() + 24.0).max(f64::from(
-        crate::viewport::editor_scroll(input).client_height(),
-    ));
-    // Refuse to virtualize a paint surface that disagrees with native layout,
-    // including a browser's physical scroll-height limit.
-    if (f64::from(crate::viewport::editor_scroll(input).scroll_height()) - expected_height).abs()
-        > 2.0
-    {
+    if !extent_supported(input, &rows) {
         return;
     }
-    actions.publish_measured_rows(revision, metrics, rows);
+    actions.publish_measured_paint(revision, metrics, rows, syntax, whitespace);
 }

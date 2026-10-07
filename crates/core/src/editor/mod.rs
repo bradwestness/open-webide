@@ -54,8 +54,8 @@ mod paint;
 pub use paint::{PaintCoverage, PaintPosition, PaintSelection};
 mod viewport;
 pub use viewport::{
-    EditorViewport, MAX_MEASURE_BATCHES_PER_FRAME, MAX_MEASURE_BYTES, MAX_MEASURE_ROWS,
-    MeasuredRows, RowMeasurementPlan, RowPaintWindow, horizontal_paint_bounds,
+    DocumentExtent, EditorViewport, MAX_MEASURE_BATCHES_PER_FRAME, MAX_MEASURE_BYTES,
+    MAX_MEASURE_ROWS, MeasuredRows, RowMeasurementPlan, RowPaintWindow, horizontal_paint_bounds,
     needs_measured_batches, row_measurement_batch, wrapped_paint_window,
 };
 mod projection;
