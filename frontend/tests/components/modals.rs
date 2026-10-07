@@ -266,16 +266,38 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
         settle().await;
         mounted.click("[aria-label='Account menu']");
         settle().await;
-        mounted
-            .element("[aria-label='About / Open-source software']")
-            .focus()
-            .unwrap();
-        mounted.click("[aria-label='About / Open-source software']");
+        mounted.element("[aria-label='About']").focus().unwrap();
+        mounted.click("[aria-label='About']");
         settle().await;
         let panel = mounted.element("[role='dialog']");
         let text = panel.text_content().unwrap();
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
         assert!(text.contains("Commit"));
+        assert!(!text.contains("SIL OPEN FONT LICENSE"));
+        assert_eq!(
+            mounted
+                .element("#about-tab-overview")
+                .get_attribute("aria-selected")
+                .as_deref(),
+            Some("true")
+        );
+        key(
+            &mounted.element("#about-tab-overview"),
+            "ArrowRight",
+            false,
+            false,
+        );
+        settle().await;
+        assert!(active().is_same_node(Some(&mounted.element("#about-tab-software"))));
+        assert_eq!(
+            mounted
+                .element("#about-tab-software")
+                .get_attribute("aria-selected")
+                .as_deref(),
+            Some("true")
+        );
+        let text = panel.text_content().unwrap();
+        assert!(!text.contains("Commit"));
         assert!(text.contains("SIL OPEN FONT LICENSE"));
         assert!(text.contains("Lucide icons"));
         assert!(text.contains("leptos"));
@@ -311,7 +333,30 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
         mounted.click("#command-about");
         settle().await;
         assert!(!mounted.state.ui.palette_open.get_untracked());
+        assert!(
+            mounted
+                .element(".about-content")
+                .text_content()
+                .unwrap()
+                .contains("Commit")
+        );
+        mounted.click("#about-tab-software");
+        settle().await;
         assert_eq!(mounted.element(".about-content").inner_html(), contents);
+        key(
+            &mounted.element("#about-tab-software"),
+            "Home",
+            false,
+            false,
+        );
+        settle().await;
+        assert!(
+            mounted
+                .element(".about-content")
+                .text_content()
+                .unwrap()
+                .contains("Commit")
+        );
         mounted.state.ui.about_open.set(false);
         settle().await;
         assert!(Command::About.unavailable(Default::default()).is_none());

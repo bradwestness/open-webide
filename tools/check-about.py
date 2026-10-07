@@ -33,6 +33,7 @@ def check(screenshots=None):
                 for width, theme in [(1280, 'dark'), (390, 'light')]:
                     browser.call('POST', '/window/rect', {'width': width, 'height': 900})
                     browser.call('POST', '/goog/cdp/execute', {'cmd': 'Emulation.setDeviceMetricsOverride', 'params': {'width': width, 'height': 900, 'deviceScaleFactor': 1, 'mobile': width < 600}})
+                    browser.script("document.getElementById('about-tab-software').click();")
                     browser.script(f"document.documentElement.dataset.theme = '{theme}'; document.querySelector('.about-package').open = true;")
                     layout = browser.script("""
                         return {width: innerWidth, scroll: document.documentElement.scrollWidth,
@@ -66,6 +67,9 @@ def check(screenshots=None):
                 assert browser.script("return !!document.querySelector('a[href=\"/about.html\"]');")
                 browser.call('POST', '/url', {'url': url + '/about.html'})
                 assert browser.script("return document.querySelector('.about-build').textContent;") == initial
+                assert browser.script("return document.getElementById('about-software').hidden;")
+                browser.script("document.getElementById('about-tab-software').click();")
+                assert browser.script("return !document.getElementById('about-software').hidden && document.getElementById('about-overview').hidden;")
                 assert browser.script("return document.body.textContent.includes('SIL OPEN FONT LICENSE');")
                 print('PASS: built About notices, desktop/phone themes, scroll/overflow and real offline PWA navigation')
             finally:

@@ -246,7 +246,7 @@ footer, excluding the browser/PWA window title bar.
 - **App navigation:** combine branding and project tabs into one row. Make the logo
   an app-menu dropdown with a discoverable chevron: Open local folder, Open remote
   folder, Recent projects, Settings, Servers, Help/Keyboard shortcuts and
-  About/Open-source software. Remove the separate opening controls from the project
+  About. Remove the separate opening controls from the project
   strip. Coordinate the searchable command entry point with the Universal command
   palette omnibar item above. Keep Sessions focused on conversation navigation;
   move server and system-prompt management into app-level configuration.

@@ -1,14 +1,14 @@
 # About and open-source software
 
-Open the account menu and choose **About / Open-source software**, or search for
+Open the account menu and choose **About**, or search for
 **About**, **version**, **commit** or **licenses** in the command palette.
 
-About shows the running frontend's version and Git commit, including a modified
+The **About** tab shows the running frontend's version and Git commit, including a modified
 source marker for development builds. It uses the same component and bundled
 content for local and remote projects, without requesting anything from the
 server. Escape or Close dismisses it and restores focus.
 
-Expand a library or bundled asset to read its license text and copyright notices.
+Select the **Open-source software** tab, then expand a library or bundled asset to read its license text and copyright notices.
 The inventory follows `Cargo.lock`, including direct, transitive, vendored,
 platform-specific and build/test dependencies. Individual binaries use a subset.
 It includes the original Monaspace font and Lucide icon notices. Where a crate
@@ -16,7 +16,7 @@ archive omits its notice, a version-pinned upstream copy is bundled when availab
 entries without a full text say so and link to the upstream project.
 
 Once the PWA has cached a build, the offline connection screen links to
-**About / Open-source software**. Its standalone page uses the cached build's
+**About**. Its standalone page uses the cached build's
 version, commit, inventory and styles without requiring sign-in or an API request.
 External project links still require network access.
 

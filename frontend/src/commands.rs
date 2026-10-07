@@ -63,7 +63,7 @@ pub const COMMANDS: &[CommandDefinition] = &[
     command!(
         "about",
         Command::About,
-        "About / Open-source software",
+        "About",
         "version build commit licenses notices credits fonts",
         ""
     ),

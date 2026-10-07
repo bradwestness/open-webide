@@ -130,11 +130,12 @@ def render_app(root):
     version = next(package["version"] for package in metadata["packages"] if package["name"] == "openwebide-frontend")
     commit = build_commit(root)
     own = {"name": "Open WebIDE", "version": version, "license": "MIT", "url": "https://github.com/openwebide/openwebide", "notices": [("LICENSE", (root / "LICENSE").read_text())]}
-    fragment = (
-        '<div class="about-content">'
+    overview = (
         f'<dl class="about-build"><div><dt>Version</dt><dd>{html.escape(version)}</dd></div>'
         f'<div><dt>Commit</dt><dd><code>{html.escape(commit)}</code></dd></div></dl>'
         '<p>A self-hosted browser IDE for coding with local models.</p>'
+    )
+    software = (
         '<h2>Open-source software</h2><p>Third-party projects retain their own licenses. '
         'Expand a library to read its bundled or pinned upstream license texts and copyright notices.</p>'
         + package_html(own) + '<h3>Bundled assets</h3>'
@@ -142,7 +143,7 @@ def render_app(root):
         + f'<h3>Rust libraries ({len(packages)} crate versions)</h3>'
         '<p>This inventory follows Cargo.lock with all workspace features, including local and remote modes, '
         'platform-specific, build, test and benchmark dependencies. Each binary uses a subset.</p>'
-        + ''.join(package_html(package) for package in packages) + '</div>'
+        + ''.join(package_html(package) for package in packages)
     )
     if not os.environ.get("OPENWEBIDE_BUILD_COMMIT"):
         for name in ["HEAD", "index"]:
@@ -154,7 +155,7 @@ def render_app(root):
             result = subprocess.run(["git", "rev-parse", "--git-path", branch.stdout.strip()], cwd=root, capture_output=True, text=True)
             if result.returncode == 0:
                 watched.add(root / result.stdout.strip())
-    return fragment, watched
+    return {"about": overview, "software": software}, watched
 
 
 def render_page(fragment, stylesheets):
@@ -163,7 +164,15 @@ def render_page(fragment, stylesheets):
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>About Open WebIDE</title>' + styles +
             '<script>document.documentElement.setAttribute("data-theme",matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");</script>'
-            '</head><body class="about-page"><main><h1>About Open WebIDE</h1>' + fragment +
+            '</head><body class="about-page"><main><h1>About Open WebIDE</h1>'
+            '<div class="ui-segmented-control about-tabs" role="tablist" aria-label="About pages">'
+            '<button class="ui-seg-btn active" id="about-tab-overview" role="tab" aria-selected="true" aria-controls="about-overview" tabindex="0">About</button>'
+            '<button class="ui-seg-btn" id="about-tab-software" role="tab" aria-selected="false" aria-controls="about-software" tabindex="-1">Open-source software</button></div>'
+            '<section class="about-content" id="about-overview" role="tabpanel" aria-labelledby="about-tab-overview" tabindex="0">' + fragment['about'] + '</section>'
+            '<section class="about-content" id="about-software" role="tabpanel" aria-labelledby="about-tab-software" tabindex="0" hidden>' + fragment['software'] + '</section>'
+            '<script>const tabs=[...document.querySelectorAll("[role=tab]")];'
+            'function select(index,focus){tabs.forEach((tab,i)=>{const active=i===index;tab.setAttribute("aria-selected",String(active));tab.tabIndex=active?0:-1;tab.classList.toggle("active",active);document.getElementById(tab.getAttribute("aria-controls")).hidden=!active;});if(focus)tabs[index].focus();}'
+            'tabs.forEach((tab,i)=>{tab.addEventListener("click",()=>select(i,false));tab.addEventListener("keydown",event=>{const key=event.key;if(!["ArrowLeft","ArrowRight","Home","End"].includes(key))return;event.preventDefault();select(key==="Home"?0:key==="End"?1:1-i,true);});});</script>' +
             '<p><a class="btn" href="/">Open WebIDE</a></p></main></body></html>')
 
 
@@ -176,7 +185,9 @@ def main():
         parser.error("Provide an output path")
     fragment, watched = render_app(ROOT)
     if args.fragment_output:
-        args.fragment_output.write_text(fragment)
+        args.fragment_output.write_text(fragment["about"] + fragment["software"])
+        args.fragment_output.with_name("about-overview.html").write_text(fragment["about"])
+        args.fragment_output.with_name("about-software.html").write_text(fragment["software"])
         for path in sorted(watched):
             print(f"cargo::rerun-if-changed={path}")
     if args.page_output:

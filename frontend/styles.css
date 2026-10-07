@@ -3288,3 +3288,7 @@ button.browser-item {
 .about-document { height: auto; min-height: 100%; overflow: auto; }
 .about-page { height: auto; min-height: 100vh; overflow: auto; background: var(--bg); color: var(--text); }
 .about-page main { max-width: var(--dialog-wide); margin: 0 auto; padding: var(--space-6); }
+.about-tabs { margin: var(--space-3) var(--space-6) 0; flex-shrink: 0; }
+.about-tabs .ui-seg-btn { font-family: inherit; white-space: normal; }
+.about-page .about-tabs { margin: var(--space-4) 0; }
+.about-content[hidden] { display: none; }

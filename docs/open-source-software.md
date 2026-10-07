@@ -11,7 +11,7 @@ Thank you to everyone who builds and maintains these projects.
 Open WebIDE's own code is [MIT licensed](https://github.com/openwebide/openwebide/blob/main/LICENSE).
 Third-party projects retain their own licenses. The inventory below links to
 upstream projects and reports license declarations from their package metadata.
-Open **About / Open-source software** from the app account menu or command
+Open **About** from the app account menu or command
 palette to read the bundled license texts and copyright notices. The offline PWA
 screen links to the same build details and notices. Some upstream distributions
 provide only a declared license; those entries explicitly identify the missing text.

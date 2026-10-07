@@ -28,7 +28,7 @@ pub fn TopBar(
                     <div class="ui-action-items">
                         <button role="menuitem" class="ui-dropdown-item recent-item" title="Settings" aria-label="Settings" on:click=move |_| { menu_open.set(false); on_open_settings.run(()); }><crate::components::ui::Icon name=crate::components::ui::IconName::Settings /><span>"Settings"</span></button>
                         <button role="menuitem" class="ui-dropdown-item recent-item" title="Model setup" aria-label="Model setup" on:click=move |_| { menu_open.set(false); open_models.run(()); }><crate::components::ui::Icon name=crate::components::ui::IconName::SlidersHorizontal /><span>"Models"</span></button>
-                        <button role="menuitem" class="ui-dropdown-item recent-item" title="About / Open-source software" aria-label="About / Open-source software" on:click=move |_| { menu_open.set(false); ui.about_open.set(true); }><crate::components::ui::Icon name=crate::components::ui::IconName::Info /><span>"About / Open-source software"</span></button>
+                        <button role="menuitem" class="ui-dropdown-item recent-item" title="About" aria-label="About" on:click=move |_| { menu_open.set(false); ui.about_open.set(true); }><crate::components::ui::Icon name=crate::components::ui::IconName::Info /><span>"About"</span></button>
                         <button role="menuitem" class="ui-dropdown-item recent-item" title="Log out" aria-label="Log out" on:click=move |_| { menu_open.set(false); on_logout.run(()); }><crate::components::ui::Icon name=crate::components::ui::IconName::LogOut /><span>"Log out"</span></button>
                     </div>
                 </super::dropdown::Dropdown>

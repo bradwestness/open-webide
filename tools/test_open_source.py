@@ -43,7 +43,8 @@ class NoticeTests(unittest.TestCase):
             self.assertEqual(open_source.build_commit(open_source.ROOT), 'unknown (source archive)')
 
     def test_resolved_inventory_retains_vendored_crates_and_bundled_asset_texts(self):
-        fragment, watched = open_source.render_app(open_source.ROOT)
+        sections, watched = open_source.render_app(open_source.ROOT)
+        fragment = sections["about"] + sections["software"]
         self.assertIn('SIL OPEN FONT LICENSE', fragment)
         self.assertIn('Lucide icons', fragment)
         self.assertIn('Copyright (c) 2022 Greg Johnston', fragment)
@@ -52,7 +53,7 @@ class NoticeTests(unittest.TestCase):
         self.assertIn('Commit', fragment)
         self.assertIn('source archive', open_source.build_commit(Path(tempfile.gettempdir())))
         self.assertIn(open_source.ROOT / 'Cargo.lock', watched)
-        page = open_source.render_page(fragment, [Path('styles-123.css')])
+        page = open_source.render_page(sections, [Path('styles-123.css')])
         self.assertIn('href="/styles-123.css"', page)
         self.assertNotIn('/api/', page)
         self.assertNotIn('localStorage', page)
