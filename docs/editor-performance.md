@@ -585,3 +585,68 @@ initial shaping and native textarea layout remain.
 
 Raw production records: [wrapped](editor-performance/production-linux-buffer-transactions-wrapped.jsonl),
 [unwrapped](editor-performance/production-linux-buffer-transactions-unwrapped.jsonl).
+
+## Cold layout candidate check
+
+The first cold logical-row probe still shapes a complete paragraph. Before
+replacing it, `tools/measure-editor-layout.py` compares Parley 0.11.1 in native
+Rust and browser WASM with DOM and canvas geometry. Parley provides shaping,
+line breaking and bidirectional layout; see its
+[layout description](https://github.com/linebender/parley/blob/main/doc/concept.md).
+
+The isolated probe uses the same supplied Monaspace Neon v1.400 variable TTF in
+each engine, 13 px text, 19.5 px line height, wrapping at 300 px, and texture
+healing/ligature settings enabled and disabled. Parley has only that registered
+font, with system-font discovery disabled to match the WASM environment. The
+browser supplies its normal fallback fonts. Tab-size policy is supplied to the
+DOM; Parley and canvas receive the original tab characters without an additional
+tab-stop implementation. These are integration gaps to resolve, rather than
+evidence that the libraries cannot support those features.
+
+Recorded unwrapped widths with features enabled, in CSS pixels:
+
+| Case | DOM | Rust/WASM Parley | Canvas |
+| --- | ---: | ---: | ---: |
+| ASCII source | 241.8125 | 241.8000 | 241.7981 |
+| `a\tb\tc` | 72.5469 | 40.3000 | 40.2997 |
+| Combining mark, CJK and emoji | 93.7500 | 80.6000 | 93.7395 |
+| Mixed LTR/RTL | 175.2969 | 177.3200 | 175.2493 |
+| 990,000-byte ASCII paragraph | 7,979,337 | 7,933,542 | 7,957,381.5 |
+
+The large paragraph requires further precision investigation: its width differs
+substantially even with the same font data. Wrapped heights match in this sample,
+which does not establish matching glyph/caret positions. The Parley browser
+measurement took 513 ms for the long unwrapped paragraph versus 45.65 ms for the
+bare DOM row. These are single observations, not latency percentiles. The Rust
+measurement includes constructing font/layout contexts and shaping; the DOM
+measurement covers layout after text installation with a loaded font. Neither
+measures the application renderer, styled-span parsing, input, or process memory.
+
+Chrome 154 reports no extended canvas index, cluster or selection-rectangle
+methods. Registering separate font faces with feature descriptors does change
+canvas pixels, but canvas width still differs from DOM width. Future canvas
+editing methods are described in the
+[Chromium proposal](https://groups.google.com/a/chromium.org/g/blink-dev/c/Wf1iK1bc_00/m/JDtlgk-eAwAJ);
+they cannot be assumed available in the browsers tested here.
+
+**Decision:** keep the current DOM geometry adapter while developing bounded cold
+preparation. A different shaper needs matching tab stops, explicit fallback-font
+ownership, source/glyph precision, and a painter using the same geometry. Passing
+this comparison probe only proves the candidate runs and produces measurements;
+it does not complete cold rendering, bidi windows, native input, or either-mode
+performance gates. Experimental dependencies stay outside the production
+workspace, and the main Cargo lockfile is unchanged.
+
+Raw records: [layout comparison](editor-performance/layout-candidate-parley.jsonl).
+The tool freezes candidate dependencies, uses the repository's current WASM
+bindings and lint policy, builds only in its shared `target/`, and removes its
+temporary source directory afterward. With matching wasm-bindgen tools and Chrome
+available, reproduce using the
+[upstream font](https://github.com/githubnext/monaspace/blob/v1.400/fonts/Variable%20Fonts/Monaspace%20Neon/Monaspace%20Neon%20Var.ttf):
+
+```bash
+CHROMEDRIVER=/path/to/chromedriver \
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=/path/to/wasm-bindgen-test-runner \
+python3 tools/measure-editor-layout.py \
+  --font /path/to/MonaspaceNeon.ttf --output /tmp/editor-layout.jsonl --lint
+```

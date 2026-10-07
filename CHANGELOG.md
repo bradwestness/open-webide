@@ -339,6 +339,8 @@ for what's still ahead.
 
 ### Added
 
+- Add a reproducible native/WASM text-layout comparison tool and recorded cold-layout candidate measurements. Keep experimental dependencies outside the production workspace and reuse its build directory.
+
 - Add transactional editor recovery hydration and shared disk reconciliation primitives. Preserve saved baselines, ordered tabs and hidden drafts; reject stale editor activity and distinguish changed, missing and already-written disk text. Native folder-permission/device verification remains in progress.
 
 - Add [file and folder context menus](docs/file-tree-menus.md) in both workspace modes: create, rename, move, copy path, confirmed delete/revert, status-aware Git tracking/staging/unstaging/ignore, and Explain/Summarize/Review chat shortcuts. Share filesystem policy and Git planning across adapters; guard unsaved buffers, pending reviews, concurrent operations and stale account/project/folder results. Preserve originals on failed moves and untracked files on revert.
