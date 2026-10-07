@@ -294,9 +294,10 @@ Cancellable, noncomposing text insertion records event data before the browser's
 native edit, then commits through the shared document transaction engine after
 validating source, read, account, selection and folded projection ownership.
 
-Single-cursor insertion keeps the native textarea value; trusted browser commits
-without folds also skip the input handler's full DOM-value read. Folded, multiple-
-cursor, synthetic and fallback input still reconcile the complete value. Multiple
+Small unbound single-cursor insertion keeps the native textarea value; trusted
+browser commits without folds also skip the input handler's full DOM-value read.
+Folded, multiple-cursor, synthetic and fallback input reconcile the installed
+value, using scoped surrounding text when a native window is bound. Multiple
 cursors use the same typing-history group. Typing declarations retain a bounded
 16 KiB surrounding-text projection around the selected range start. Local byte and
 native offsets map to full document coordinates, including partial rows, Unicode,
@@ -315,8 +316,26 @@ Source, selection, fold, document, read, project and account
 changes reject stale contexts. After a commit, the facade rebases the context to
 retain a matching browser value; composition can retain its growing value under
 the document admission limits instead of replacing active input-method text.
-These context contracts are tested in both workspace modes but are not yet bound
-to the native textarea.
+Prepared larger editors on fine-pointer devices now bind these contexts to the
+native textarea. Binding state belongs to the workspace, so independently created
+facades and capture-in-chat commands use the same installed context. Source paint,
+clipboard and keyboard commands retain full-source
+coordinates; Select All and Page Up/Down operate on the document rather than the
+clipped window. Leaving Edit view releases the native binding; a remounted input
+uses full-source geometry until its prepared source extent is ready again. A
+generation stamp is installed after native value/selection
+restoration, rejecting events from older windows. Composition ownership includes
+read revision and account, so stale previews cannot restore snapshots into new
+reads or accounts. Provider metadata retains the native projection when collapsed
+ranges are unchanged. A bounded native probe positions the browser composition
+caret at the source paint point without changing the source viewport. Small files
+retain the trusted insertion shortcut. Initial cold layout and coarse/touch devices
+retain full native input until source caret, extents and touch selection are ready;
+physical Chrome/Edge PWA input-method verification remains pending.
+
+Frontend app and browser-test links reserve a 2 MiB WASM stack for nested Leptos
+views. The editor erases its outer view type to reduce return-value copying;
+source buffers and admission limits remain independent of this stack allocation.
 
 Prepared primary caret/selection paint and single-cursor
 keyboard motion use shared source geometry and Rust commands. Caret reveal uses
@@ -337,8 +356,10 @@ widths/heights now control scroll extents, reusing unchanged row dimensions afte
 edits and retaining the source viewport's trailing padding when native scrolling
 clamps earlier. Source/account/syntax/layout guards discard obsolete dimensions; prepared
 scrolling reads no native input width/height. Physical browser size limits still
-apply. Cold/touch selection, cold extents and cold caret ownership
-still need to move out of native input before using a bounded textarea.
+apply. During prepared edits, the source viewport retains its last measured
+extents until replacement measurements arrive; local native scrolling cannot
+change that viewport. Cold/touch selection, initial cold extents and cold caret
+ownership still need to move out of full native input.
 
 Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME map projected changes
@@ -358,9 +379,10 @@ cursors rebuild a shared row once, while distant edits retain interior coordinat
 
 Fold rebasing uses precise edited boundaries and retains unaffected collapsed ranges
 until providers refresh. Admission still scans the proposed source; publishing buffers,
-projections and IME paths still materialize full Strings. The native textarea owns
-the complete projected source, so storage and input memory remain unbounded by the
-viewport.
+projections and IME paths still materialize full Strings. The native textarea still owns
+the complete projected source during initial cold preparation and on touch devices;
+prepared fine-pointer editors retain surrounding text instead. Full source
+publication and composition snapshots still prevent complete viewport memory bounds.
 
 ## Document coordinates and caches
 

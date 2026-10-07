@@ -274,7 +274,7 @@ impl PointerAdapter {
                 gesture.time = now;
             }
         });
-        let bounds = input.get_bounding_client_rect();
+        let bounds = crate::viewport::editor_scroll(&input).get_bounding_client_rect();
         if bounds.width() <= 2.0 || bounds.height() <= 2.0 {
             return;
         }

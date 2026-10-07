@@ -125,16 +125,29 @@ pub(super) fn capture_active_editor(
     let textarea = textarea.dyn_into::<web_sys::HtmlTextAreaElement>().ok()?;
     let selection_start = textarea.selection_start().ok().flatten().unwrap_or(0) as usize;
     let selection_end = textarea.selection_end().ok().flatten().unwrap_or(0) as usize;
-    let projection = super::editor::EditorActions::new(workspace).projection();
-    let visible = projection.as_ref().map_or(content, |view| view.text());
-    let source_offset = |offset| {
-        let byte = openwebide_core::editor::textarea_to_byte(visible, offset);
-        projection
-            .as_ref()
-            .map_or(byte, |view| view.source_offset(byte).unwrap_or(byte))
+    let actions = super::editor::EditorActions::new(workspace);
+    if !crate::viewport::current_editor_target(actions, &textarea)
+        || !actions.native_input_current(
+            textarea
+                .get_attribute("data-editor-native-bound")
+                .as_deref()
+                == Some("true"),
+            textarea
+                .get_attribute("data-editor-native-generation")
+                .as_deref(),
+        )
+    {
+        return None;
+    }
+    let native = openwebide_core::editor::Selection {
+        anchor: selection_start,
+        head: selection_end,
     };
-    let start = source_offset(selection_start);
-    let end = source_offset(selection_end);
+    let selection = actions
+        .input_source_selection(native)
+        .or_else(|| actions.projection()?.source_native_selection(native).ok())?;
+    let start = selection.range().start;
+    let end = selection.range().end;
     Some(crate::text::editor_context(
         file_path,
         content,

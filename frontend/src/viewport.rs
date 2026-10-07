@@ -2,6 +2,24 @@
 use leptos::prelude::*;
 use wasm_bindgen::{JsCast, prelude::*};
 
+#[cfg(target_arch = "wasm32")]
+pub fn current_editor_target(
+    actions: crate::state_actions::editor::EditorActions,
+    textarea: &web_sys::HtmlTextAreaElement,
+) -> bool {
+    textarea.is_connected()
+        && textarea
+            .parent_element()
+            .and_then(|parent| parent.get_attribute("data-editor-account"))
+            .and_then(|account| account.parse::<u64>().ok())
+            == Some(actions.account_generation())
+        && textarea
+            .get_attribute("data-editor-project")
+            .and_then(|project| project.parse().ok())
+            .zip(textarea.get_attribute("data-editor-path"))
+            .is_some_and(|(project, path)| actions.is_current(project, &path))
+}
+
 #[wasm_bindgen(inline_js = r#"
 export function observe_visible_height() {
     const viewport = window.visualViewport;
@@ -166,9 +184,42 @@ export function refresh_editor_scroll(input) {
     const width = source ? Number(extent.dataset.sourceWidth) : NaN;
     const height = source ? Number(extent.dataset.sourceHeight) : NaN;
     const ready = Number.isFinite(width) && width >= 0 && Number.isFinite(height) && height >= 0;
-    // Cold or superseded source measurements retain native layout until prepared.
-    set(extent, 'width', `${Math.max(scroll.clientWidth, ready ? width : input.scrollWidth)}px`);
-    set(extent, 'height', `${Math.max(scroll.clientHeight, ready ? height : input.scrollHeight)}px`);
+    // Bound native surrounding text has local dimensions. Retain the last
+    // source extents until replacement source measurements are ready.
+    const bounded = input.dataset.editorNativeBound === 'true';
+    const previousWidth = parseFloat(extent.style.width) || scroll.clientWidth;
+    const previousHeight = parseFloat(extent.style.height) || scroll.clientHeight;
+    set(extent, 'width', `${Math.max(scroll.clientWidth, ready ? width : bounded ? previousWidth : input.scrollWidth)}px`);
+    set(extent, 'height', `${Math.max(scroll.clientHeight, ready ? height : bounded ? previousHeight : input.scrollHeight)}px`);
+}
+// Position the browser's composition caret using bounded surrounding text.
+// Paint supplies the source point; native scrolling remains local.
+export function align_editor_native_input(input, x, y, composing) {
+    input.style.removeProperty('--editor-native-ime-x');
+    input.style.removeProperty('--editor-native-ime-y');
+    if (!composing || input.dataset.editorNativeBound !== 'true' || !input.isConnected) return;
+    const style = getComputedStyle(input), probe = document.createElement('div');
+    probe.style.cssText = `position:fixed;left:-10000px;top:0;width:${input.clientWidth}px;height:auto;visibility:hidden;pointer-events:none;box-sizing:border-box;`;
+    for (const name of ['font-family','font-size','font-style','font-weight','font-stretch',
+        'font-variation-settings','font-feature-settings','font-variant-ligatures',
+        'font-kerning','letter-spacing','line-height','tab-size','white-space','overflow-wrap',
+        'padding-top','padding-bottom','padding-left','padding-right','direction']) {
+        probe.style.setProperty(name, style.getPropertyValue(name));
+    }
+    const value = input.value, text = document.createTextNode(value + '\u200b');
+    probe.append(text); document.body.append(probe);
+    try {
+        const head = input.selectionDirection === 'backward' ? input.selectionStart : input.selectionEnd;
+        const range = document.createRange(); range.setStart(text, Math.min(value.length, head)); range.collapse(true);
+        let caret = range.getBoundingClientRect();
+        if (!caret.height) { range.setEnd(text, Math.min(text.length, head + 1)); caret = range.getBoundingClientRect(); }
+        const origin = probe.getBoundingClientRect(), bounds = input.getBoundingClientRect();
+        const localX = caret.left - origin.left, localY = caret.top - origin.top;
+        input.scrollLeft = Math.max(0, localX - (x - bounds.left));
+        input.scrollTop = Math.max(0, localY - (y - bounds.top));
+        input.style.setProperty('--editor-native-ime-x', `${x - bounds.left - localX + input.scrollLeft}px`);
+        input.style.setProperty('--editor-native-ime-y', `${y - bounds.top - localY + input.scrollTop}px`);
+    } finally { probe.remove(); }
 }
 export function check_editor_extent(width, height) {
     const probe = document.createElement('div'), extent = document.createElement('div');
@@ -183,6 +234,7 @@ export function set_editor_scroll_position(input, value, horizontal) {
     const scroll = editor_scroll_element(input);
     const property = horizontal ? 'scrollLeft' : 'scrollTop';
     scroll[property] = value;
+    if (input.dataset.editorNativeBound === 'true') return;
     input[property] = scroll[property];
     if (scroll !== input) editor_native_echo.set(input, {top:input.scrollTop, left:input.scrollLeft, scope:input.dataset.editorScope, view:input.parentElement.dataset.editorView, account:input.parentElement.dataset.editorAccount});
 }
@@ -191,6 +243,7 @@ export function sync_editor_scroll(input, fromNative) {
     const scroll = editor_scroll_element(input);
     if (scroll === input) return false;
     refresh_editor_scroll(input);
+    if (input.dataset.editorNativeBound === 'true') return false;
     if (fromNative) {
         const echo = editor_native_echo.get(input);
         if (echo && echo.scope === input.dataset.editorScope && echo.view === input.parentElement.dataset.editorView && echo.account === input.parentElement.dataset.editorAccount && Math.abs(input.scrollTop - echo.top) <= .25 && Math.abs(input.scrollLeft - echo.left) <= .25) return false;
@@ -277,6 +330,12 @@ extern "C" {
     fn editor_scroll_element(input: &web_sys::HtmlTextAreaElement) -> web_sys::HtmlElement;
     pub fn refresh_editor_scroll(input: &web_sys::HtmlTextAreaElement);
     pub fn check_editor_extent(width: f64, height: f64) -> bool;
+    pub fn align_editor_native_input(
+        input: &web_sys::HtmlTextAreaElement,
+        x: f64,
+        y: f64,
+        composing: bool,
+    );
     pub fn sync_editor_scroll(input: &web_sys::HtmlTextAreaElement, from_native: bool) -> bool;
     pub fn forward_editor_wheel(input: &web_sys::HtmlTextAreaElement, event: &web_sys::WheelEvent);
     pub fn editor_font_identity(input: &web_sys::HtmlTextAreaElement) -> String;

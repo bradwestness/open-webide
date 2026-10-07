@@ -76,9 +76,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Finish uncached initial/cold shaping, bidirectional visual-run windows, fine
   long-row paint and incremental measurement. Language formatting remains in
   Code intelligence.
-- **Bounded native input:** bind the scoped native contexts to textarea values
-  and layout. Finish cold/touch pointer selection, cold caret ownership and cold
-  source extents first. Reduce full-source access in remaining input paths,
+- **Bounded native input:** prepared larger fine-pointer editors bind scoped
+  surrounding text to the textarea, with full-source selections and source-owned
+  scrolling. Finish initial/cold and touch pointer selection, caret ownership and
+  source extents, then verify physical Chrome/Edge PWA input methods. Reduce
+  full-source access in remaining input paths,
   composition snapshots and buffer/projection publication; admission still scans
   proposed text and storage still shifts suffix bytes and coordinates.
   See [viewport preparation](editor.md#preparation-and-viewport-rendering).

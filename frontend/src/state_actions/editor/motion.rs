@@ -7,6 +7,48 @@ use openwebide_core::editor::{
 };
 
 impl EditorActions {
+    /// Page motion retains one visual row of overlap and uses the same ordered
+    /// source-motion queue as arrows, including wrapped cursor-neighbor probes.
+    pub fn queue_page_motion(
+        self,
+        project: i64,
+        path: &str,
+        source: &str,
+        down: bool,
+        extend: bool,
+        viewport: (f64, f64),
+    ) -> Result<Option<(u64, bool)>, SelectionError> {
+        let (height, row_height) = viewport;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "finite viewport row counts are floored and clamped to 1..=512 before conversion"
+        )]
+        let rows = if height.is_finite() && row_height.is_finite() && row_height > 0.0 {
+            (height / row_height - 1.0).floor().clamp(1.0, 512.0) as usize
+        } else {
+            1
+        };
+        let motion = if down {
+            SelectionMotion::Down
+        } else {
+            SelectionMotion::Up
+        };
+        let mut result = None;
+        let mut scheduled = false;
+        for _ in 0..rows {
+            if let Some((ticket, start)) =
+                self.queue_motion(project, path, source, motion, extend)?
+            {
+                scheduled |= start;
+                result = Some((ticket, scheduled));
+            } else {
+                return Ok(None);
+            }
+        }
+        Ok(result)
+    }
+
     fn motion_current(self, pending: &PendingEditorMotion) -> bool {
         self.key().as_ref() == Some(&pending.key)
             && self.workspace.pending_epoch.get_untracked() == pending.epoch
@@ -18,7 +60,10 @@ impl EditorActions {
             && self.workspace.editor_documents.with_untracked(|documents| {
                 documents.get(&pending.key).is_some_and(|document| {
                     pending.queue.matches(document)
-                        && document.text() == self.workspace.content.get_untracked()
+                        && self
+                            .workspace
+                            .content
+                            .with_untracked(|source| document.text() == source)
                 })
             })
     }
@@ -50,7 +95,12 @@ impl EditorActions {
         motion: SelectionMotion,
         extend: bool,
     ) -> Result<Option<(u64, bool)>, SelectionError> {
-        if !self.is_current(project, path) || self.source() != source {
+        if !self.is_current(project, path)
+            || self
+                .workspace
+                .content
+                .with_untracked(|current| current != source)
+        {
             return Ok(None);
         }
         let existing = self

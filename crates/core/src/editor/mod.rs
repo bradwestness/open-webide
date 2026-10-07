@@ -307,8 +307,19 @@ impl Document {
         self.folds.set_ranges(ranges, self.line_index.rows.len());
         let changed = before != self.folds;
         if changed {
-            self.projection.0.take();
-            self.motion_columns = None;
+            let before_collapsed = before
+                .ranges()
+                .iter()
+                .filter_map(|range| before.collapsed_at(range.start_line));
+            let after_collapsed = self
+                .folds
+                .ranges()
+                .iter()
+                .filter_map(|range| self.folds.collapsed_at(range.start_line));
+            if !before_collapsed.eq(after_collapsed) {
+                self.projection.0.take();
+                self.motion_columns = None;
+            }
         }
         changed
     }
@@ -926,6 +937,43 @@ mod tests {
                 .unwrap()
                 .shared_with(&retained)
         );
+    }
+
+    #[test]
+    fn provider_metadata_preserves_native_projection_until_visible_folds_change() {
+        let mut document = Document::new("header\none\ntwo\nthree\nfour\n");
+        let full = document.projection();
+        assert!(document.set_fold_ranges(vec![FoldRange {
+            start_line: 0,
+            end_line: 2
+        }]));
+        assert!(std::ptr::eq(
+            full.text().as_ptr(),
+            document.projection().text().as_ptr()
+        ));
+        assert!(document.fold_command(FoldCommand::Toggle(0)));
+        let collapsed = document.projection();
+        assert_ne!(full.text(), collapsed.text());
+        assert!(document.set_fold_ranges(vec![
+            FoldRange {
+                start_line: 0,
+                end_line: 2
+            },
+            FoldRange {
+                start_line: 3,
+                end_line: 4
+            },
+        ]));
+        assert!(std::ptr::eq(
+            collapsed.text().as_ptr(),
+            document.projection().text().as_ptr()
+        ));
+        assert!(document.set_fold_ranges(vec![FoldRange {
+            start_line: 0,
+            end_line: 3
+        }]));
+        assert_ne!(collapsed.text(), document.projection().text());
+        assert_eq!(document.projection().text(), "header\nfour\n");
     }
 
     #[test]

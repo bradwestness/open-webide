@@ -71,6 +71,8 @@ pub struct EditorActions {
     capacity: Memo<Option<openwebide_core::editor::EditorLimit>>,
     group: RwSignal<u64>,
     typing: RwSignal<TypingState>,
+    native_binding: RwSignal<Option<EditorNativeContext>>,
+    native_binding_generation: StoredValue<u64>,
 }
 
 impl EditorActions {
@@ -100,6 +102,8 @@ impl EditorActions {
             }),
             group: workspace.editor_group,
             typing: RwSignal::new(None),
+            native_binding: workspace.editor_native_binding,
+            native_binding_generation: workspace.editor_native_generation,
         }
     }
 
@@ -202,15 +206,29 @@ impl EditorActions {
             .set(Some(crate::state::workspace::EditorComposition {
                 key,
                 epoch: self.workspace.pending_epoch.get_untracked(),
+                read_revision: self.workspace.editor_read_revision.get_untracked(),
+                account_generation: self.account_generation(),
             }));
+    }
+
+    pub fn composition_owner_current(
+        self,
+        owner: &crate::state::workspace::EditorComposition,
+    ) -> bool {
+        self.presentation_scope().is_some_and(|scope| {
+            scope.project == owner.key.0
+                && scope.path == owner.key.1
+                && scope.epoch == owner.epoch
+                && scope.read == owner.read_revision
+                && scope.account == owner.account_generation
+        })
     }
 
     pub fn is_composing(self) -> bool {
         self.workspace.editor_composition.with_untracked(|owner| {
-            owner.as_ref().is_some_and(|owner| {
-                self.key().as_ref() == Some(&owner.key)
-                    && self.workspace.pending_epoch.get_untracked() == owner.epoch
-            })
+            owner
+                .as_ref()
+                .is_some_and(|owner| untrack(|| self.composition_owner_current(owner)))
         })
     }
 
@@ -233,17 +251,21 @@ impl EditorActions {
             .flatten();
         if let Some((preview, source, dirty)) = result
             && self.workspace.pending_epoch.get_untracked() == owner.epoch
+            && self.account_generation() == owner.account_generation
         {
+            let current_read =
+                self.workspace.editor_read_revision.get_untracked() == owner.read_revision;
             self.workspace.snapshots.update(|snapshots| {
                 if let Some(snapshot) = snapshots.get_mut(&owner.key.0)
                     && snapshot.open_file.as_deref() == Some(&owner.key.1)
                     && snapshot.content == preview
+                    && (self.key().as_ref() != Some(&owner.key) || current_read)
                 {
                     snapshot.content.clone_from(&source);
                     snapshot.dirty = dirty;
                 }
             });
-            if self.key().as_ref() == Some(&owner.key) && self.source() == preview {
+            if current_read && self.key().as_ref() == Some(&owner.key) && self.source() == preview {
                 self.workspace.content.set(source);
                 self.workspace.dirty.set(dirty);
             }
@@ -254,9 +276,7 @@ impl EditorActions {
         let Some(owner) = self.workspace.editor_composition.get_untracked() else {
             return Ok(None);
         };
-        if self.key().as_ref() != Some(&owner.key)
-            || self.workspace.pending_epoch.get_untracked() != owner.epoch
-        {
+        if !untrack(|| self.composition_owner_current(&owner)) {
             self.cancel_composition();
             return Ok(None);
         }
@@ -1112,6 +1132,13 @@ impl EditorActions {
         input_type: &str,
         timestamp: f64,
     ) -> Result<(), EditError> {
+        self.refresh_native_binding();
+        if let Some(context) = self.native_binding.get_untracked() {
+            let commit =
+                self.native_context_input(&context, &value, selection, input_type, timestamp)?;
+            self.set_native_binding(Some(commit.context));
+            return Ok(());
+        }
         let Some(projection) = self.projection() else {
             return self.native_input(value, selection, input_type, timestamp);
         };
@@ -1203,7 +1230,7 @@ impl EditorActions {
     /// Capture the declared insertion while the browser still owns its original caret.
     pub fn begin_native_text(self, text: String) {
         self.cancel_native_text();
-        if self.is_composing() {
+        if self.is_composing() || self.native_binding.with_untracked(Option::is_some) {
             return;
         }
         let Some(key) = self.key() else {
@@ -1368,6 +1395,15 @@ impl EditorActions {
         {
             self.cancel_composition();
             return Err(EditError::UnsupportedNativeInput);
+        }
+        if !composing
+            && self
+                .workspace
+                .editor_documents
+                .with_untracked(|documents| documents.get(&key).is_some_and(Document::is_composing))
+        {
+            self.cancel_composition();
+            return Err(EditError::StaleContext);
         }
         let (coalesces, group) = self.native_history_group(&key, input_type, timestamp);
         let result = self

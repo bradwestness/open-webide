@@ -288,7 +288,7 @@ async fn palette_captures_editor_selection_and_focuses_chat_without_overwriting_
             let actions = command_actions(state.clone());
             install_keyboard_shortcuts(state.chat);
             view! { <button class="opener" on:click=move |_| actions.run.run(Command::Palette)>"Commands"</button>
-            <textarea class="editor-textarea">"first\nselected\nlast"</textarea><textarea class="composer-input"/><CommandDialogs/> }
+            {super::support::editor_view(state.clone())}<textarea class="composer-input"/><CommandDialogs/> }
         });
         settle().await;
         let editor: web_sys::HtmlTextAreaElement =

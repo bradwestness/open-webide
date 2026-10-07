@@ -3,6 +3,22 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use openwebide_core::{EditDecision, FileDiff, FileEntry, PersistedEdit, SearchHit};
 
+/// Immutable surrounding text and its complete source selection. The full view
+/// shares existing allocations and proves provenance; only the input text is sliced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorNativeContext {
+    pub(crate) key: (i64, String),
+    pub(crate) epoch: u64,
+    pub(crate) read: u64,
+    pub(crate) account: u64,
+    pub(crate) source: u64,
+    pub(crate) projection_revision: u64,
+    pub(crate) revision: u64,
+    pub(crate) original: openwebide_core::editor::FoldProjection,
+    pub(crate) projection: openwebide_core::editor::FoldProjection,
+    pub(crate) selections: Vec<openwebide_core::editor::Selection>,
+}
+
 /// An insertion declared by beforeinput, bound to the unchanged source until input.
 #[derive(Clone, Debug)]
 pub struct EditorTextInsertion {
@@ -91,6 +107,8 @@ pub struct EditorScroll {
 pub struct EditorComposition {
     pub key: (i64, String),
     pub epoch: u64,
+    pub read_revision: u64,
+    pub account_generation: u64,
 }
 
 /// A loaded file retained independently of the currently selected document.
@@ -275,6 +293,8 @@ pub struct WorkspaceState {
         send_wrapper::SendWrapper<openwebide_core::editor::SyntaxPreparations<(i64, String)>>,
     >,
     pub editor_scroll: RwSignal<HashMap<(i64, String), EditorScroll>>,
+    pub editor_native_binding: RwSignal<Option<EditorNativeContext>>,
+    pub editor_native_generation: StoredValue<u64>,
     pub editor_composition: RwSignal<Option<EditorComposition>>,
     pub editor_text_insertion: RwSignal<Option<EditorTextInsertion>>,
     pub editor_rules: RwSignal<HashMap<(i64, String), openwebide_core::editor::EditorRules>>,
@@ -370,6 +390,8 @@ impl WorkspaceState {
             editor_preparation_revision: RwSignal::new(0),
             editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(Default::default())),
             editor_scroll: RwSignal::new(HashMap::new()),
+            editor_native_binding: RwSignal::new(None),
+            editor_native_generation: StoredValue::new(0),
             editor_composition: RwSignal::new(None),
             editor_text_insertion: RwSignal::new(None),
             editor_rules: RwSignal::new(HashMap::new()),
@@ -796,6 +818,9 @@ impl WorkspaceState {
         self.editor_recovery_overwrites.set(HashMap::new());
         self.begin_editor_read();
         self.editor_documents.set(HashMap::new());
+        self.editor_native_binding.set(None);
+        self.editor_native_generation
+            .update_value(|generation| *generation = generation.wrapping_add(1));
         self.editor_composition.set(None);
         self.editor_text_insertion.set(None);
         self.editor_preparation.set(None);
@@ -1156,6 +1181,8 @@ mod tests {
             workspace.editor_composition.set(Some(EditorComposition {
                 key: (1, "one.rs".into()),
                 epoch: 0,
+                read_revision: 0,
+                account_generation: 0,
             }));
             assert!(
                 workspace

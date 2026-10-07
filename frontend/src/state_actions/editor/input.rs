@@ -3,21 +3,7 @@ use super::{EditorActions, NATIVE_CONTEXT_BYTES};
 use leptos::prelude::*;
 use openwebide_core::editor::{EditError, FoldProjection, ProjectionError, Selection};
 
-/// Immutable surrounding text and its complete source selection. The full view
-/// shares existing allocations and proves provenance; only the input text is sliced.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EditorNativeContext {
-    key: (i64, String),
-    epoch: u64,
-    read: u64,
-    account: u64,
-    source: u64,
-    projection_revision: u64,
-    revision: u64,
-    original: FoldProjection,
-    projection: FoldProjection,
-    selections: Vec<Selection>,
-}
+pub use crate::state::workspace::EditorNativeContext;
 
 /// Native ownership can continue when the committed source still matches the
 /// browser's value. Other replicas or a full context request reconciliation.
@@ -86,6 +72,111 @@ impl EditorNativeContext {
 }
 
 impl EditorActions {
+    pub(super) fn set_native_binding(self, context: Option<EditorNativeContext>) {
+        if self
+            .native_binding
+            .with_untracked(|previous| previous != &context)
+        {
+            self.native_binding_generation
+                .update_value(|generation| *generation = generation.wrapping_add(1));
+            self.native_binding.set(context);
+        }
+    }
+
+    pub fn native_input_generation(self) -> Option<u64> {
+        self.native_binding
+            .with_untracked(Option::is_some)
+            .then(|| self.native_binding_generation.get_value())
+    }
+
+    /// The DOM stamps a context only after installing its value and selection.
+    /// Events from a previously installed native window cannot edit its replacement.
+    pub fn native_input_current(self, bound: bool, generation: Option<&str>) -> bool {
+        match (bound, self.native_input_generation()) {
+            (true, Some(current)) => {
+                generation.and_then(|value| value.parse::<u64>().ok()) == Some(current)
+            }
+            (false, None) => true,
+            _ => false,
+        }
+    }
+
+    /// Enable a native window once the view can supply document geometry.
+    /// Composition retains its existing context until its native commit rebases it.
+    pub fn bind_native_context(self) -> bool {
+        if self.is_composing() {
+            return self.native_binding.with_untracked(Option::is_some);
+        }
+        let context = self.native_context();
+        if self.native_binding.with_untracked(Option::is_none)
+            && context
+                .as_ref()
+                .is_some_and(|context| !context.projection.is_windowed())
+        {
+            return false;
+        }
+        let bound = context.is_some();
+        self.set_native_binding(context);
+        bound
+    }
+
+    pub fn track_native_context(self) {
+        self.native_binding.track();
+    }
+
+    pub fn release_native_context(self) {
+        self.set_native_binding(None);
+    }
+
+    pub fn bound_native_context(self) -> Option<EditorNativeContext> {
+        self.native_binding.get_untracked()
+    }
+
+    pub(super) fn refresh_native_binding(self) {
+        let Some(mut context) = self.native_binding.get_untracked() else {
+            return;
+        };
+        let previous = context.projection_revision;
+        context.projection_revision = self.workspace.editor_projection_revision.get_untracked();
+        // Provider metadata can change without changing native text or its mapping.
+        // Full source, selection and immutable projection provenance still apply.
+        if previous != context.projection_revision && context.current(self) {
+            self.set_native_binding(Some(context));
+        }
+    }
+
+    pub fn input_projection(self) -> Option<FoldProjection> {
+        self.refresh_native_binding();
+        if let Some(context) = self.native_binding.get_untracked() {
+            if context.current(self) {
+                return Some(context.projection);
+            }
+            if self.bind_native_context() {
+                return self.native_binding.with_untracked(|context| {
+                    context.as_ref().map(|context| context.projection.clone())
+                });
+            }
+        }
+        self.projection()
+    }
+
+    pub fn input_source_selection(self, native: Selection) -> Option<Selection> {
+        self.refresh_native_binding();
+        self.native_binding.with_untracked(|context| {
+            context.as_ref().map(|context| {
+                if context.current(self) {
+                    context
+                        .source_selection(native)
+                        .unwrap_or(context.selections[0])
+                } else {
+                    self.workspace
+                        .content
+                        .with_untracked(|source| self.selection(source).unwrap_or_default())
+                }
+            })
+        })
+    }
+
     pub fn native_context(self) -> Option<EditorNativeContext> {
         let key = self.key()?;
         self.workspace.content.with_untracked(|source| {
@@ -93,6 +184,9 @@ impl EditorActions {
                 let document = documents
                     .get(&key)
                     .filter(|document| document.text() == source)?;
+                if document.is_composing() != self.is_composing() {
+                    return None;
+                }
                 let original = document.projection();
                 let projection = document
                     .input_context(NATIVE_CONTEXT_BYTES - CONTEXT_HEADROOM_BYTES)

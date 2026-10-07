@@ -13,17 +13,7 @@ use crate::components::ui::{
 use crate::state::{git::GitState, projects::ProjectsState, workspace::WorkspaceState};
 use crate::state_actions::editor::{EditorActions, EditorCommand};
 
-pub(super) fn current_editor_target(
-    actions: EditorActions,
-    textarea: &web_sys::HtmlTextAreaElement,
-) -> bool {
-    textarea.is_connected()
-        && textarea
-            .get_attribute("data-editor-project")
-            .and_then(|project| project.parse().ok())
-            .zip(textarea.get_attribute("data-editor-path"))
-            .is_some_and(|(project, path)| actions.is_current(project, &path))
-}
+pub(super) use crate::viewport::current_editor_target;
 
 /// The DOM adapter supplies clipboard access; source selection and transactions
 /// stay in EditorActions and the shared document engine.
@@ -106,6 +96,29 @@ fn editor_selection_key(
     let modified = event.ctrl_key() || event.meta_key();
     let source = actions.source();
     let multiple = actions.selections(&source).len() > 1;
+    if modified && !event.alt_key() && event.key().eq_ignore_ascii_case("a") {
+        let selection = openwebide_core::editor::Selection {
+            anchor: 0,
+            head: source.len(),
+        };
+        match actions.record_selection(selection) {
+            Ok(()) => {
+                render_editor_selection(actions, textarea, selection, false);
+                error.set(None);
+            }
+            Err(failure) => error.set(Some(failure.to_string())),
+        }
+        return true;
+    }
+    if !modified && !event.alt_key() && matches!(event.key().as_str(), "PageUp" | "PageDown") {
+        let selection = projected_selection(actions, textarea, &source);
+        if let Err(failure) = actions.record_native_selection(selection) {
+            error.set(Some(failure.to_string()));
+        } else {
+            motion_adapter.page(textarea, event.key() == "PageDown", event.shift_key());
+        }
+        return true;
+    }
     let command = match event.key().as_str() {
         "d" | "D" if modified && !event.alt_key() && !event.shift_key() => {
             Some(Command::NextOccurrence)
@@ -285,6 +298,9 @@ fn projected_selection(
     source: &str,
 ) -> openwebide_core::editor::Selection {
     let native = native_selection_units(textarea);
+    if let Some(selection) = actions.input_source_selection(native) {
+        return selection;
+    }
     if let Some(projection) = actions
         .projection()
         .filter(openwebide_core::editor::FoldProjection::is_folded)
@@ -312,6 +328,16 @@ fn refresh_editor_folds(actions: EditorActions) {
     actions.refresh_fold_ranges(|| js_sys::Date::now() <= deadline);
 }
 
+fn stamp_editor_input(actions: EditorActions, input: &web_sys::HtmlTextAreaElement) {
+    if let Some(generation) = actions.native_input_generation() {
+        let _ = input.set_attribute("data-editor-native-bound", "true");
+        let _ = input.set_attribute("data-editor-native-generation", &generation.to_string());
+    } else {
+        let _ = input.remove_attribute("data-editor-native-bound");
+        let _ = input.remove_attribute("data-editor-native-generation");
+    }
+}
+
 // Avoid replacing an unchanged textarea value/selection while its native IME
 // owns the composition range. Commands explicitly restore their source caret.
 pub(super) fn render_editor_selection(
@@ -320,8 +346,8 @@ pub(super) fn render_editor_selection(
     selection: openwebide_core::editor::Selection,
     native: bool,
 ) {
-    if let Some(projection) = actions.projection()
-        && let Ok(visible) = projection.visible_selection(selection)
+    if let Some(projection) = actions.input_projection()
+        && let Ok(visible) = projection.input_selection(selection)
     {
         let changed = textarea.value() != projection.textarea_text();
         let scroll = (
@@ -334,6 +360,7 @@ pub(super) fn render_editor_selection(
         if changed || !native {
             restore_editor_selection(textarea, &projection, visible);
         }
+        stamp_editor_input(actions, textarea);
         crate::viewport::set_editor_scroll_top(textarea, scroll.0);
         crate::viewport::set_editor_scroll_left(textarea, scroll.1);
     }
@@ -383,7 +410,7 @@ pub(super) fn reveal_editor_caret(
     }
 }
 
-fn editor_row_height(textarea: &web_sys::HtmlTextAreaElement) -> f64 {
+pub(super) fn editor_row_height(textarea: &web_sys::HtmlTextAreaElement) -> f64 {
     window()
         .get_computed_style(textarea)
         .ok()
@@ -496,7 +523,9 @@ fn navigate_editor_with_retry(
                     crate::viewport::set_editor_scroll_top(
                         &textarea,
                         (crate::viewport::editor_scroll(&textarea).scroll_top() + rect.top()
-                            - textarea.get_bounding_client_rect().top()
+                            - crate::viewport::editor_scroll(&textarea)
+                                .get_bounding_client_rect()
+                                .top()
                             - f64::from(crate::viewport::editor_scroll(&textarea).client_height())
                                 / 2.0)
                             .max(0.0),
@@ -545,8 +574,8 @@ fn apply_fold_command(
     if let Some((projection, selection)) = actions.fold_command(command)
         && let Ok(visible) = projection.visible_selection(selection)
     {
-        textarea.set_value(projection.text());
-        restore_editor_selection(textarea, &projection, visible);
+        let _ = (projection, visible);
+        render_editor_selection(actions, textarea, selection, false);
         let focus = web_sys::FocusOptions::new();
         focus.set_prevent_scroll(true);
         let _ = textarea.focus_with_options(&focus);
@@ -1898,14 +1927,8 @@ pub fn Editor(
     let editor_actions = EditorActions::new(workspace);
     editor_actions.install_syntax_worker();
     Effect::new(move || {
-        let key = workspace
-            .active_project
-            .get()
-            .zip(workspace.open_file.get());
-        let epoch = workspace.pending_epoch.get();
         if let Some(owner) = workspace.editor_composition.get()
-            && (Some(&owner.key) != key.as_ref()
-                || owner.epoch != epoch
+            && (!editor_actions.composition_owner_current(&owner)
                 || !workspace.editor_documents.with(|documents| {
                     documents.get(&owner.key).is_some_and(|document| {
                         document.is_composing()
@@ -2133,6 +2156,54 @@ pub fn Editor(
         paint: paint_request,
         error: action_error,
     };
+    Effect::new(move || {
+        workspace.editor_documents.track();
+        workspace.editor_composition.track();
+        paint_epoch.track();
+        layout_revision.track();
+        if let Some(input) = ta.get() {
+            let composing = editor_actions.is_composing();
+            if !composing {
+                crate::viewport::align_editor_native_input(&input, 0.0, 0.0, false);
+            } else if let Some(selection) = content.with(|source| editor_actions.selection(source))
+                && let Some(rect) = paint_request
+                    .get()
+                    .and_then(|paint| paint.caret.run(selection.head))
+            {
+                crate::viewport::align_editor_native_input(&input, rect.left(), rect.top(), true);
+            }
+        }
+    });
+    let native_scope = StoredValue::new(None);
+    let native_input_node = StoredValue::new_local(None::<web_sys::HtmlTextAreaElement>);
+    Effect::new(move || {
+        let scope = editor_actions.presentation_scope();
+        let mode = view_mode.get();
+        let node = ta.get().filter(|input| input.is_connected());
+        let remounted = native_input_node.with_value(|previous| previous != &node);
+        if native_scope.get_value() != scope || remounted || mode != ViewMode::Code {
+            editor_actions.release_native_context();
+            native_scope.set_value(scope);
+            native_input_node.set_value(node.clone());
+        }
+        if mode != ViewMode::Code || node.is_none() {
+            return;
+        }
+        let ready = highlight_ready.get();
+        let extent = source_extent.get();
+        // Touch selection still relies on the full native surface. Keep that
+        // capability fallback until source-owned touch handles are implemented.
+        let touch = window()
+            .match_media("(any-pointer: coarse)")
+            .ok()
+            .flatten()
+            .is_some_and(|query| query.matches());
+        if ready && extent.is_some() && !touch && editor_actions.bound_native_context().is_none() {
+            untrack(|| {
+                editor_actions.bind_native_context();
+            });
+        }
+    });
     let pointer_adapter = super::editor_pointer::PointerAdapter::new(
         editor_actions,
         workspace,
@@ -2458,10 +2529,10 @@ pub fn Editor(
             {
                 editor_actions.fold_command(openwebide_core::editor::FoldCommand::Reveal(line.saturating_sub(1)));
                 if let Some(projection) = editor_actions.projection() {
-                    textarea.set_value(projection.text());
+                    let _ = projection;
                     let source_selection = openwebide_core::editor::Selection { anchor: openwebide_core::editor::utf16_to_byte(&source, start as usize), head: openwebide_core::editor::utf16_to_byte(&source, end as usize) };
-                    if let Ok(visible) = projection.visible_selection(source_selection) { restore_editor_selection(&textarea, &projection, visible); }
                     let _ = editor_actions.record_selection(source_selection);
+                    render_editor_selection(editor_actions, &textarea, source_selection, false);
                 } else { let _ = textarea.set_selection_range(start, end); }
                 if let Ok(Some(row)) =
                     root.query_selector(&format!(".editor-highlight .editor-source-line[data-line='{line}']"))
@@ -2473,7 +2544,7 @@ pub fn Editor(
                         .or_else(|| paint_request.get_untracked()?.caret.run(source_offset));
                     if let Some(caret) = caret {
                         crate::viewport::set_editor_scroll_top(&textarea, (crate::viewport::editor_scroll(&textarea).scroll_top() + caret.top()
-                            - textarea.get_bounding_client_rect().top() - 12.0).max(0.0));
+                            - crate::viewport::editor_scroll(&textarea).get_bounding_client_rect().top() - 12.0).max(0.0));
                         reveal_caret_column(&caret, &textarea, gutter);
                     } else {
                         crate::viewport::set_editor_scroll_top(&textarea, f64::from(row.offset_top().saturating_sub(12)));
@@ -2538,7 +2609,9 @@ pub fn Editor(
     let restored_textarea =
         StoredValue::new_local(None::<(web_sys::HtmlTextAreaElement, Option<(i64, String)>)>);
     Effect::new(move || {
-        let current_projection = projection.get();
+        let full_projection = projection.get();
+        editor_actions.track_native_context();
+        let current_projection = editor_actions.input_projection().unwrap_or(full_projection);
         let value = current_projection.textarea_text();
         let key = workspace.active_project.get().zip(open_file.get());
         let Some(el) = ta.get() else {
@@ -2564,7 +2637,7 @@ pub fn Editor(
             }
             if let Some(selection) = editor_actions
                 .selection(&content.get_untracked())
-                .and_then(|selection| current_projection.visible_selection(selection).ok())
+                .and_then(|selection| current_projection.input_selection(selection).ok())
                 .or_else(|| mounted.then_some(openwebide_core::editor::Selection::caret(0)))
             {
                 restore_editor_selection(&el, &current_projection, selection);
@@ -2576,6 +2649,7 @@ pub fn Editor(
                 sync_highlight_scroll(&el, &overlay);
             }
         }
+        stamp_editor_input(editor_actions, &el);
     });
 
     view! {
@@ -3106,7 +3180,11 @@ pub fn Editor(
                                             }
                                             on:compositionend=move |event: web_sys::CompositionEvent| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) {
-                                                    if editor_actions.is_composing() { let _ = editor_actions.projected_input(textarea.value(), editor_selection(&textarea), "insertCompositionText", event.time_stamp()); }
+                                                    let installed = editor_actions.native_input_current(
+                                                        textarea.get_attribute("data-editor-native-bound").as_deref() == Some("true"),
+                                                        textarea.get_attribute("data-editor-native-generation").as_deref(),
+                                                    );
+                                                    if installed && editor_actions.is_composing() { let _ = editor_actions.projected_input(textarea.value(), editor_selection(&textarea), "insertCompositionText", event.time_stamp()); }
                                                     let _ = editor_actions.end_composition(); refresh_editor_folds(editor_actions);
                                                     if let Some(selection) = editor_actions.selection(&workspace.content.get_untracked()) { render_editor_selection(editor_actions, &textarea, selection, false); }
                                                 }
@@ -3155,6 +3233,17 @@ pub fn Editor(
                                                     && current_editor_target(editor_actions, textarea)
                                                 {
                                                     if read_only.get_untracked() { editor_actions.cancel_native_text(); return; }
+                                                    if !editor_actions.native_input_current(
+                                                        textarea.get_attribute("data-editor-native-bound").as_deref() == Some("true"),
+                                                        textarea.get_attribute("data-editor-native-generation").as_deref(),
+                                                    ) {
+                                                        editor_actions.cancel_native_text();
+                                                        action_error.set(Some(openwebide_core::editor::EditError::StaleContext.to_string()));
+                                                        if let Some(selection) = content.with_untracked(|source| editor_actions.selection(source)) {
+                                                            render_editor_selection(editor_actions, textarea, selection, false);
+                                                        }
+                                                        return;
+                                                    }
                                                     let input_type = e.dyn_ref::<web_sys::InputEvent>().map_or_else(String::new, |event| if event.is_composing() { "insertCompositionText".to_string() } else { event.input_type() });
                                                     let mut retain_native_value = false;
                                                     let result = if input_type == "insertText" {
@@ -3217,7 +3306,7 @@ pub fn Editor(
                 </div>
             </Show>
         </div>
-    }
+    }.into_any()
 }
 
 #[cfg(test)]

@@ -1232,6 +1232,14 @@ body {
 .editor-textarea.editor-visual-carets { caret-color: transparent; }
 .editor-textarea.editor-source-selections::selection { background: transparent; }
 
+/* Local native surrounding text is input-only; source paint owns its display. */
+.editor-textarea[data-editor-native-bound="true"] {
+  color: transparent;
+  caret-color: transparent;
+  transform: translate(var(--editor-native-ime-x, 0px), var(--editor-native-ime-y, 0px));
+}
+.editor-textarea[data-editor-native-bound="true"]::selection { background: transparent; }
+
 .editor-textarea {
   position: absolute;
   inset: 0;

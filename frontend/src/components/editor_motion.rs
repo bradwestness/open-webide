@@ -38,6 +38,34 @@ impl MotionAdapter {
             _ => {}
         }
     }
+    pub fn page(self, input: &web_sys::HtmlTextAreaElement, down: bool, extend: bool) {
+        let Some(project) = input
+            .get_attribute("data-editor-project")
+            .and_then(|project| project.parse().ok())
+        else {
+            return;
+        };
+        let Some(path) = input.get_attribute("data-editor-path") else {
+            return;
+        };
+        let viewport = (
+            f64::from(crate::viewport::editor_scroll(input).client_height()),
+            super::editor::editor_row_height(input),
+        );
+        match self.actions.queue_page_motion(
+            project,
+            &path,
+            &self.actions.source(),
+            down,
+            extend,
+            viewport,
+        ) {
+            Ok(Some((ticket, true))) => self.schedule(ticket, input.clone()),
+            Err(error) => self.error.set(Some(error.to_string())),
+            _ => {}
+        }
+    }
+
     fn schedule(self, ticket: u64, input: web_sys::HtmlTextAreaElement) {
         leptos::leptos_dom::helpers::request_animation_frame(move || {
             if self.error.is_disposed() || !current_editor_target(self.actions, &input) {

@@ -9,13 +9,15 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Bind prepared desktop editors to scoped native surrounding text in both workspace modes, preserving full-source selections, clipboard actions, page navigation, chat capture and grouped history. Keep source scrolling independent of the input window, reject stale window/read/account events, and retain composition ownership across fold metadata updates. Reserve a consistent 2 MiB frontend WASM stack and reduce editor view return-value copying. Initial cold/touch input and physical PWA verification remain in progress.
+
 - Consolidate repeated workspace, bridge fallback and reconnect guidance into linked references. Divide long documentation paragraphs and organize editor and design-system references into topic sections. Replace the roadmap's repeated editor implementation history with remaining tasks and links to detailed guides.
 
 - Render documentation Mermaid fences in downloaded/file previews as well as hosted pages, with theme-aware ELK flowcharts and readable source fallback. Replace the architecture Components text tree with a Mermaid overview of the browser, Spin, bridge, files, database and model services; fix the agent sequence diagram's note syntax.
 
 - Organize documentation into Getting started, Using Open WebIDE, Hosting and administration, Development, and Project, with section overviews, first-session and workspace guides, collapsible navigation and breadcrumbs. Validate navigation coverage during site builds while preserving existing guide URLs.
 
-- Preserve complete source selections when replaying clipped native editor contexts, including Unicode/CRLF replacements, multiple cursors, grouped undo and composition previews in both workspace modes. Capture scoped surrounding text, reject stale document ownership, and rebase matching native values after commits. Existing input fallback now borrows source; actual bounded textarea binding remains in progress.
+- Preserve complete source selections when replaying clipped native editor contexts, including Unicode/CRLF replacements, multiple cursors, grouped undo and composition previews in both workspace modes. Capture scoped surrounding text, reject stale document ownership, and rebase matching native values after commits. Existing input fallback borrows source; prepared desktop textarea binding is included above.
 
 - Standardize app, container, service, deployment and tooling names on `openwebide`. Give Compose stable project/volume names with existing-volume overrides, document migration from older installs, and retain legacy generated-site marker recognition.
 
