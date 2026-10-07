@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share immutable undo transactions and retained history steps across document/composition snapshots. Appending a typing group detaches its metadata while reusing earlier edit payloads; undo, redo, divergent edits and per-document retention limits remain independent.
+
 - Restore cancelled composition before publishing its borrowed preview and committed source. Avoid full-file cancellation copies for stale owners and allocate UI source only where the matching active view or project snapshot needs restoration, with shared local/remote guards.
 
 - Borrow editor source when scheduling cursor/page movement and remove the motion queue's full-file copy. Guard queued requests with document identity as well as revision, selection and projection, rejecting replacements with identical text without affecting shared local/remote movement behavior.

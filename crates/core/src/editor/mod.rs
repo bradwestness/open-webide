@@ -215,7 +215,7 @@ struct Transaction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HistoryStep {
     group: Option<u64>,
-    transactions: Vec<Transaction>,
+    transactions: Vec<std::sync::Arc<Transaction>>,
     bytes: usize,
 }
 
@@ -231,7 +231,7 @@ pub struct Document {
     projection: ProjectionCache,
     saved: String,
     selections: Vec<Selection>,
-    history: Vec<HistoryStep>,
+    history: Vec<std::sync::Arc<HistoryStep>>,
     history_cursor: usize,
     history_bytes: usize,
     revision: u64,
@@ -538,12 +538,12 @@ impl Document {
             .chain(&inverse)
             .map(|edit| edit.text.len())
             .sum();
-        let transaction = Transaction {
+        let transaction = std::sync::Arc::new(Transaction {
             forward: edits,
             inverse,
             before: self.selections.clone(),
             after: after.clone(),
-        };
+        });
         for step in self.history.drain(self.history_cursor..) {
             self.history_bytes -= step.bytes;
         }
@@ -552,14 +552,15 @@ impl Document {
             .last_mut()
             .filter(|step| group.is_some() && step.group == group)
         {
+            let step = std::sync::Arc::make_mut(step);
             step.transactions.push(transaction);
             step.bytes += bytes;
         } else {
-            self.history.push(HistoryStep {
+            self.history.push(std::sync::Arc::new(HistoryStep {
                 group,
                 transactions: vec![transaction],
                 bytes,
-            });
+            }));
         }
         self.history_bytes += bytes;
         self.history_cursor = self.history.len();
@@ -1124,6 +1125,139 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn cloned_typing_groups_share_payloads_but_have_independent_history() {
+        let mut document = Document::new("😀\r\n");
+        document.insert_native_text("a", Some(7)).unwrap();
+        let mut snapshot = document.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            &document.history[0],
+            &snapshot.history[0]
+        ));
+        document.insert_native_text("b", Some(7)).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(
+            &document.history[0],
+            &snapshot.history[0]
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &document.history[0].transactions[0],
+            &snapshot.history[0].transactions[0],
+        ));
+        assert_eq!(snapshot.history[0].transactions.len(), 1);
+        assert_eq!(document.history[0].transactions.len(), 2);
+        assert!(snapshot.undo());
+        assert_eq!(snapshot.text(), "😀\r\n");
+        assert_eq!(document.text(), "ab😀\r\n");
+        assert!(snapshot.redo());
+        assert_eq!(snapshot.text(), "a😀\r\n");
+        assert!(document.undo());
+        assert_eq!(document.text(), "😀\r\n");
+        document.insert_native_text("c", None).unwrap();
+        assert!(!document.can_redo());
+        assert!(snapshot.undo());
+        assert!(snapshot.redo());
+        assert_eq!(snapshot.text(), "a😀\r\n");
+    }
+
+    #[test]
+    fn history_retention_prunes_one_document_without_changing_its_snapshot() {
+        let mut document = Document::new("");
+        for _ in 0..HISTORY_STEPS {
+            document.insert_native_text("x", None).unwrap();
+        }
+        let mut snapshot = document.clone();
+        document.insert_native_text("y", None).unwrap();
+        assert_eq!(document.history.len(), HISTORY_STEPS);
+        assert_eq!(snapshot.history.len(), HISTORY_STEPS);
+        assert!(std::sync::Arc::ptr_eq(
+            &document.history[0],
+            &snapshot.history[1]
+        ));
+        for _ in 0..HISTORY_STEPS {
+            assert!(document.undo());
+            assert!(snapshot.undo());
+        }
+        assert!(!document.undo());
+        assert!(!snapshot.undo());
+        assert_eq!(document.text(), "x");
+        assert_eq!(snapshot.text(), "");
+        assert_eq!(document.history_bytes, HISTORY_STEPS);
+        assert_eq!(snapshot.history_bytes, HISTORY_STEPS);
+    }
+
+    #[test]
+    fn shared_history_keeps_the_byte_budget_independent_for_each_document() {
+        let mut document = Document::new("");
+        let length = HISTORY_BYTES / 2 + 1;
+        document
+            .insert_native_text(&"x".repeat(length), None)
+            .unwrap();
+        let mut snapshot = document.clone();
+        document
+            .insert_native_text(&"y".repeat(length), None)
+            .unwrap();
+        assert_eq!(document.history.len(), 1);
+        assert_eq!(snapshot.history.len(), 1);
+        assert_eq!(document.history_bytes, length);
+        assert_eq!(snapshot.history_bytes, length);
+        assert_eq!(
+            snapshot.history[0].transactions[0].forward[0].text.len(),
+            length
+        );
+        assert!(document.undo());
+        assert_eq!(document.text(), snapshot.text());
+        assert!(!document.can_undo());
+        assert!(snapshot.undo());
+        assert_eq!(snapshot.text(), "");
+        assert!(snapshot.redo());
+        assert_eq!(document.text(), snapshot.text());
+        assert!(document.redo());
+        assert_eq!(document.text().len(), length * 2);
+    }
+
+    #[test]
+    fn composition_shares_prior_history_without_publishing_preview_transactions() {
+        let mut document = Document::new("before");
+        document.insert_native_text("a", None).unwrap();
+        let step = document.history[0].clone();
+        document.begin_composition(Some(8));
+        assert!(std::sync::Arc::ptr_eq(
+            &step,
+            &document
+                .composition
+                .as_ref()
+                .unwrap()
+                .committed_document()
+                .history[0],
+        ));
+        document
+            .native_edit(
+                Some(Edit::replace(1..1, "文")),
+                Selection::caret(4),
+                NativeInputKind::Insert,
+                None,
+            )
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&step, &document.history[0]));
+        assert_eq!(
+            document
+                .composition
+                .as_ref()
+                .unwrap()
+                .committed_document()
+                .history
+                .len(),
+            1
+        );
+        document.end_composition().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&step, &document.history[0]));
+        assert_eq!(document.history.len(), 2);
+        assert!(document.undo());
+        assert_eq!(document.text(), "abefore");
+        assert!(document.undo());
+        assert_eq!(document.text(), "before");
+    }
 
     #[test]
     fn a_saved_snapshot_does_not_mark_newer_typing_clean() {

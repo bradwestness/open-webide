@@ -393,7 +393,10 @@ frames restore the pre-composition source, selections and redo history.
 Composition cancellation restores the committed document before publishing. Its
 discarded preview and restored source stay borrowed during ownership checks; only
 matching active views and retained project snapshots copy the restored source.
-The engine still retains a full committed baseline while composition is active.
+The engine still retains a full committed source baseline while composition is active.
+Document clones share immutable history steps and transaction payloads. Appending
+a shared typing group copies its step metadata and transaction references, retaining
+the existing replacement strings; undo/redo cursors and pruning remain independent.
 
 Ownership checks, cursor counts, Select All and navigation queries borrow current
 source instead of cloning complete file values. Native selection mapping lives in
