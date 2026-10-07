@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare the browser parser compiler by probing installed Clang versions before using package mirrors. Bound fallback package requests and setup duration so compiler installation cannot stall CI for hours.
+
+- Share the parser’s exact source-change span with grammar paint when its retained source owns that base. Avoid repeated unchanged-byte comparisons; skipped paint versions fall back to comparing the retained source, and cancellation clears the span.
+
 - Add About to the account menu and command palette, with separate About and Open-source software tabs for the frontend build version, commit, shared dependency inventory and bundled license notices for crates, Monaspace and Lucide. Load license notices only when opening their tab, with a bounded scroll area and a centered, compact About view. Cache the same tabs, build details and notices for the offline PWA screen.
 
 - Keep the visible caret at the end of highlighted lines when clicking beyond the text. Measure the final token boundary instead of a standalone newline with an empty browser rectangle; verify painted caret position as well as insertion offsets.

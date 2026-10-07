@@ -29,11 +29,14 @@ struct PaintedRow {
 
 #[derive(Default)]
 pub(super) struct SyntaxPaint {
-    source: Arc<str>,
+    pub(super) source: Arc<str>,
+    pub(super) source_change: Option<super::InputEdit>,
     pieces: HashMap<usize, Piece>,
     rows: HashMap<usize, PaintedRow>,
     #[cfg(test)]
     repainted_pieces: usize,
+    #[cfg(test)]
+    reused_source_change: bool,
 }
 
 fn previous_range(range: Range<usize>, edit: &super::InputEdit) -> Option<Range<usize>> {
@@ -106,7 +109,19 @@ impl SyntaxDocument {
         }
         let boundaries: Vec<_> = boundaries.into_iter().collect();
         let mut previous = self.paint.borrow_mut();
-        let edit = super::input_edit(&previous.source, &self.text);
+        // Only a source-identity match permits the parser's exact change span
+        // to validate retained paint. Updates without paint can leave an older
+        // base; compute that wider envelope instead of trusting the last edit.
+        let source_change = previous.source_change;
+        #[cfg(test)]
+        let reused_source_change = source_change.is_some();
+        let edit = if Arc::ptr_eq(&previous.source, &self.text) {
+            super::input_edit("", "")
+        } else if let Some(edit) = source_change {
+            edit
+        } else {
+            super::input_edit(&previous.source, &self.text)
+        };
         let mut pieces = HashMap::new();
         #[cfg(test)]
         let mut repainted_pieces = 0;
@@ -167,8 +182,7 @@ impl SyntaxDocument {
                 let part = previous.pieces.get(&range.start)?;
                 (part.end == range.end
                     && part.paint.language == language
-                    && part.paint.kind == kind
-                    && previous.source.get(range)? == piece)
+                    && part.paint.kind == kind)
                     .then(|| part.paint.clone())
             });
             let paint = retained.unwrap_or_else(|| {
@@ -228,7 +242,6 @@ impl SyntaxDocument {
                 previous_range(start..end, &edit).and_then(|range| {
                     let row = previous.rows.get(&range.start)?;
                     (row.end == range.end
-                        && previous.source.get(range)? == source
                         && row.pieces.len() == parts.len()
                         && row.pieces.iter().zip(&parts).all(
                             |((old, old_row), (next, next_row))| {
@@ -267,10 +280,13 @@ impl SyntaxDocument {
         }
         *previous = SyntaxPaint {
             source: self.text.clone(),
+            source_change: None,
             pieces,
             rows,
             #[cfg(test)]
             repainted_pieces,
+            #[cfg(test)]
+            reused_source_change,
         };
         Some(tokens)
     }
@@ -379,6 +395,7 @@ mod tests {
                 > rows.len() / 2
         );
         assert!(document.paint.borrow().repainted_pieces < pieces / 10);
+        assert!(document.paint.borrow().reused_source_change);
         assert!(original.matches_source(&source));
         let shifted = document
             .prepare(&format!("\r\n{changed}"), 4, || true)
@@ -396,6 +413,33 @@ mod tests {
         assert!(document.paint.borrow().pieces.is_empty());
         assert!(document.paint.borrow().rows.is_empty());
         assert!(next.matches_source(&changed));
+    }
+
+    #[test]
+    fn skipped_paint_versions_use_the_retained_source_base() {
+        let source = "fn first() { call(\"文😀\"); }\r\nfn second() { call(); }\r\n";
+        let mut document = SyntaxDocument::new(Language::Rust).unwrap();
+        let first = document.prepare(source, 4, || true).1.unwrap();
+        let middle = source.replacen("文😀", "middle", 1);
+        let changed = middle.replace("second", "renamed");
+        document.update(&middle, || true);
+        document.update(&changed, || true);
+        let warm = document.prepare(&changed, 4, || true).1.unwrap();
+        assert!(!document.paint.borrow().reused_source_change);
+        let mut fresh = SyntaxDocument::new(Language::Rust).unwrap();
+        assert_eq!(
+            warm.highlights,
+            fresh.prepare(&changed, 4, || true).1.unwrap().highlights
+        );
+        assert!(first.matches_source(source));
+        document.update("cancelled", || false);
+        assert!(document.paint.borrow().source_change.is_none());
+        let restored = document.prepare(source, 4, || true).1.unwrap();
+        let mut fresh = SyntaxDocument::new(Language::Rust).unwrap();
+        assert_eq!(
+            restored.highlights,
+            fresh.prepare(source, 4, || true).1.unwrap().highlights
+        );
     }
 
     #[test]

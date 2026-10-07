@@ -73,6 +73,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Grammar paint reuses exact source/classification pieces and unchanged token-row
   allocations. Color classifiers reuse retained descendants while refreshing roots
   with external parent roles; document-dependent custom selectors remain fresh.
+  Grammar paint now shares the parser’s source-change span for matching retained bases
+  instead of recomputing it or comparing unchanged piece/row bytes again; skipped paint
+  versions use the complete retained-source comparison.
   Semantic list assembly, boundary construction and row indexing still visit the file.
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list

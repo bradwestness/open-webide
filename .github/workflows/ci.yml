@@ -21,8 +21,9 @@ jobs:
           components: clippy, rustfmt, llvm-tools
           targets: wasm32-wasip2, wasm32-unknown-unknown
 
-      - name: Install browser parser C compiler
-        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Prepare browser parser C compiler
+        timeout-minutes: 12
+        run: bash tools/setup-wasm-compiler.sh
 
       - uses: Swatinem/rust-cache@v2
 
@@ -90,8 +91,9 @@ jobs:
           components: llvm-tools
           targets: wasm32-unknown-unknown, wasm32-wasip2
 
-      - name: Install browser parser C compiler
-        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Prepare browser parser C compiler
+        timeout-minutes: 12
+        run: bash tools/setup-wasm-compiler.sh
 
       - uses: Swatinem/rust-cache@v2
 
@@ -149,8 +151,9 @@ jobs:
           components: llvm-tools
           targets: wasm32-unknown-unknown
 
-      - name: Install browser parser C compiler
-        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Prepare browser parser C compiler
+        timeout-minutes: 12
+        run: bash tools/setup-wasm-compiler.sh
 
       - uses: Swatinem/rust-cache@v2
 

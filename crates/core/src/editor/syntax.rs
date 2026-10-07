@@ -175,6 +175,9 @@ impl SyntaxDocument {
             Ok(tree) => {
                 self.ready = true;
                 self.tree = Some(tree);
+                let mut paint = self.paint.borrow_mut();
+                paint.source_change = Arc::ptr_eq(&paint.source, &self.text).then_some(edit);
+                drop(paint);
                 self.text = Arc::from(text);
                 SyntaxStatus::Ready { incremental }
             }
