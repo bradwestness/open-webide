@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep highlighted editor clicks and drags at the intended column, including blank space after a line and padding above or below its glyphs. Validate browser hit results against measured text boundaries; cover trusted press/move/release plus insertion/undo in Rust, C# and JSON drafts in both project modes.
+
 - Share source text, line indexes and prepared projections across document and composition snapshots. Detach edited versions with insertion headroom, retain unchanged snapshot coordinates/history, and restore original allocations and prepared projection when composition is cancelled.
 
 - Borrow current editor source during pointer selection and rendering instead of copying or retaining the whole file. Reject drags from replaced documents even with identical text/revision, and add trusted Chromium highlighted-click checks for small, bounded and scrolled drafts in both project modes.

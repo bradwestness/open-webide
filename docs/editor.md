@@ -349,8 +349,11 @@ Pointer selection adapters borrow current source while gestures retain the share
 document version identity. Replacing a document invalidates its gestures even when
 text and revision match; unchanged document snapshots remain valid.
 `tools/check-editor-pointer.py` uses trusted Chromium mouse events to check token
-columns, line ends and scrolled bounded drafts in both workspace modes. It does not
-prove physical touch selection or installed-PWA behavior.
+columns, far-right blank space and scrolled bounded Rust/C#/JSON drafts with
+press/move/release and insertion/undo in both workspace modes. Click and drag hits
+validate browser positions against measured text boundaries, including token and
+container fallbacks, and normalize vertical row padding to the glyph band. It does
+not prove physical touch selection or installed-PWA behavior.
 
 While worker syntax is pending, cold views borrow plain row bodies from the existing
 projection instead of normalizing and tokenizing another complete file on the UI

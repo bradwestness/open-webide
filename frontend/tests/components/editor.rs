@@ -884,6 +884,27 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
                     "{mode:?}, column={column}, beyond={beyond}"
                 );
             }
+            for vertical in [0.05, 0.5, 0.95] {
+                assert!(editorClickFarRight(&input, 2, vertical));
+                frame().await;
+                assert_eq!(
+                    actions.selection(&source),
+                    Some(Selection::caret(start + 28)),
+                    "{mode:?}: blank right edge at row height {vertical} must select the line end"
+                );
+            }
+            for container in [false, true] {
+                assert!(
+                    editorPrimaryGesture(&input, 2, 16, 1, false, "mousedown").default_prevented()
+                );
+                assert!(editorDragFallback(&input, 2, 16, container));
+                assert_eq!(
+                    actions.selection(&source),
+                    Some(Selection::caret(start + 16)),
+                    "{mode:?}: a container/incorrect text hit must resolve to the actual mouse column"
+                );
+                editorPrimaryGesture(&input, 2, 16, 1, false, "mouseup");
+            }
         }
     }
 }
@@ -4077,6 +4098,34 @@ export function editorClickContainerFallback(target, line, column, beyond) {
         else delete document.caretPositionFromPoint;
     }
 }
+export function editorClickFarRight(target, line, vertical) {
+    const rect = target.parentElement.querySelector(`.editor-source-line[data-line='${line}']`).getBoundingClientRect();
+    const bounds = target.getBoundingClientRect();
+    const x = bounds.right - 20, y = rect.top + rect.height * vertical;
+    let prevented;
+    for (const type of ['mousedown', 'mousemove', 'mouseup', 'click']) {
+        const event = new MouseEvent(type, {bubbles:true,cancelable:true,detail:1,button:0,
+            buttons:type === 'mousedown' || type === 'mousemove' ? 1 : 0,clientX:x,clientY:y});
+        target.dispatchEvent(event);
+        if (type === 'mousedown') prevented = event.defaultPrevented;
+    }
+    return prevented;
+}
+export function editorDragFallback(target, line, column, container) {
+    const original = Object.getOwnPropertyDescriptor(document, 'caretPositionFromPoint');
+    const row = target.parentElement.querySelector(`.editor-source-line[data-line='${line}']`);
+    const node = container ? row : document.createTreeWalker(row, NodeFilter.SHOW_TEXT).nextNode();
+    Object.defineProperty(document, 'caretPositionFromPoint', {configurable:true, value:() => ({offsetNode:node, offset:0})});
+    try {
+        const rect = editorGestureRect(target, line, column);
+        const event = new MouseEvent('mousemove', {bubbles:true,cancelable:true,button:0,buttons:1,
+            clientX:rect.left+.25,clientY:rect.top+rect.height/2});
+        target.dispatchEvent(event); return event.defaultPrevented;
+    } finally {
+        if (original) Object.defineProperty(document, 'caretPositionFromPoint', original);
+        else delete document.caretPositionFromPoint;
+    }
+}
 export function editorClickPosition(target, line, column, beyond) {
     const rect = editorGestureRect(target, line, column);
     const x = rect.left + (beyond ? 60 : .25), y = rect.top + rect.height / 2;
@@ -4126,6 +4175,14 @@ extern "C" {
         end: bool,
         kind: &str,
     ) -> web_sys::Event;
+    fn editorClickFarRight(target: &web_sys::HtmlTextAreaElement, line: u32, vertical: f64)
+    -> bool;
+    fn editorDragFallback(
+        target: &web_sys::HtmlTextAreaElement,
+        line: u32,
+        column: u32,
+        container: bool,
+    ) -> bool;
     fn editorClickContainerFallback(
         target: &web_sys::HtmlTextAreaElement,
         line: u32,

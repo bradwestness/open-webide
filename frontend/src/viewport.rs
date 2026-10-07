@@ -420,17 +420,23 @@ export function editor_point(input, x, y, dragging) {
         }
         if (nearest === undefined) return undefined;
         x = Math.max(bounds.left + 1, Math.min(bounds.right - 1, x));
-        y = nearest;
+        // Clicks in a visual row's leading/descender space still belong to
+        // that row. Query its glyph band, otherwise rectangle binary search
+        // can ignore x when y sits above the font's actual ink rectangle.
+        const lineHeight = parseFloat(getComputedStyle(input).lineHeight);
+        const row = hitRow.getBoundingClientRect();
+        const center = Number.isFinite(lineHeight) && lineHeight > 0
+            ? row.top + (Math.floor((nearest - row.top) / lineHeight) + .5) * lineHeight
+            : nearest;
+        y = Math.max(bounds.top + .5, Math.min(bounds.bottom - .5, center));
     }
     const inputEvents = input.style.pointerEvents, paintEvents = overlay.style.pointerEvents;
     try {
         input.style.pointerEvents = 'none'; overlay.style.pointerEvents = 'auto';
         const position = document.caretPositionFromPoint?.(x, y);
         const caret = position ? {startContainer:position.offsetNode, startOffset:position.offset} : document.caretRangeFromPoint?.(x, y);
-        if (dragging) {
-            return caret && paint.contains(caret.startContainer) ? [caret.startContainer, caret.startOffset] : undefined;
-        }
-        // Browser caret APIs can return the row/container boundary for blank
+        // Validate click and drag hits alike: browser caret APIs can return
+        // a token start or row/container boundary for blank
         // space or generated gutters. Resolve such hits from measured text
         // boundaries instead of treating the container offset as character zero.
         if (caret && hitRow.contains(caret.startContainer) && caret.startContainer.nodeType === Node.TEXT_NODE) {

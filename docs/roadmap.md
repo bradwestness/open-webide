@@ -101,8 +101,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   selection dispatch and motion scheduling now borrow source; motion queues retain
   document identity instead of another source copy. Pointer gestures now borrow current
   source and retain document identity, rejecting replacement documents even at the
-  same revision. Release-app Chromium checks cover highlighted token/line-end clicks
-  and scrolled bounded input in both modes. Composition baselines share source text,
+  same revision. Release-app Chromium checks cover highlighted token/line-end clicks,
+  far-right blank space and held pointer movement in Rust/C#/JSON and scrolled
+  bounded input in both modes. Click/drag hits share measured-boundary validation
+  and row-padding normalization. Composition baselines share source text,
   line indexes and prepared projections; edits detach the changed version and
   cancellation restores the original allocations. Reduce remaining buffer/projection
   publication. History snapshots
