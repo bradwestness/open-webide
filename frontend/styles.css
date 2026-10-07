@@ -3292,3 +3292,10 @@ button.browser-item {
 .about-tabs .ui-seg-btn { font-family: inherit; white-space: normal; }
 .about-page .about-tabs { margin: var(--space-4) 0; }
 .about-content[hidden] { display: none; }
+
+.about-modal .about-body { padding: 0; overflow: hidden; }
+.about-modal .about-content { padding: var(--space-6); min-height: 0; }
+.about-modal .about-overview { min-height: min(12rem, 30dvh); display: flex; align-items: center; justify-content: center; text-align: center; }
+.about-overview .about-build div { display: block; margin-bottom: var(--space-3); }
+.about-modal .about-software { height: min(55dvh, 28rem); overflow-y: auto; overscroll-behavior: contain; }
+.about-modal .modal-header, .about-modal .modal-footer { flex-shrink: 0; }

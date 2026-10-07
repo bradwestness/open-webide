@@ -5,10 +5,12 @@ Open the account menu and choose **About**, or search for
 
 The **About** tab shows the running frontend's version and Git commit, including a modified
 source marker for development builds. It uses the same component and bundled
-content for local and remote projects, without requesting anything from the
-server. Escape or Close dismisses it and restores focus.
+content for local and remote projects. Build details are bundled with the app;
+license notices load from a versioned static asset when their tab opens. Escape or Close dismisses it and restores focus.
 
-Select the **Open-source software** tab, then expand a library or bundled asset to read its license text and copyright notices.
+The About view is centered in a compact dialog. Select the **Open-source software**
+tab to load the license inventory into its own scroll area, then expand a library
+or bundled asset to read its license text and copyright notices.
 The inventory follows `Cargo.lock`, including direct, transitive, vendored,
 platform-specific and build/test dependencies. Individual binaries use a subset.
 It includes the original Monaspace font and Lucide icon notices. Where a crate

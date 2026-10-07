@@ -1,6 +1,7 @@
 """Shared, build-time inventory for the site, application and offline notices."""
 
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -158,6 +159,11 @@ def render_app(root):
     return {"about": overview, "software": software}, watched
 
 
+def software_path(fragment):
+    digest = hashlib.sha256(fragment["software"].encode()).hexdigest()[:16]
+    return f"/about-software-{digest}.html"
+
+
 def render_page(fragment, stylesheets):
     styles = ''.join(f'<link rel="stylesheet" href="/{html.escape(path.name, quote=True)}">' for path in stylesheets)
     return ('<!doctype html><html lang="en" class="about-document"><head><meta charset="utf-8">'
@@ -169,9 +175,11 @@ def render_page(fragment, stylesheets):
             '<button class="ui-seg-btn active" id="about-tab-overview" role="tab" aria-selected="true" aria-controls="about-overview" tabindex="0">About</button>'
             '<button class="ui-seg-btn" id="about-tab-software" role="tab" aria-selected="false" aria-controls="about-software" tabindex="-1">Open-source software</button></div>'
             '<section class="about-content" id="about-overview" role="tabpanel" aria-labelledby="about-tab-overview" tabindex="0">' + fragment['about'] + '</section>'
-            '<section class="about-content" id="about-software" role="tabpanel" aria-labelledby="about-tab-software" tabindex="0" hidden>' + fragment['software'] + '</section>'
-            '<script>const tabs=[...document.querySelectorAll("[role=tab]")];'
-            'function select(index,focus){tabs.forEach((tab,i)=>{const active=i===index;tab.setAttribute("aria-selected",String(active));tab.tabIndex=active?0:-1;tab.classList.toggle("active",active);document.getElementById(tab.getAttribute("aria-controls")).hidden=!active;});if(focus)tabs[index].focus();}'
+            '<section class="about-content" id="about-software" role="tabpanel" aria-labelledby="about-tab-software" tabindex="0" hidden>' + '<p role="status">Loading open-source software…</p></section>'
+            '<script>let loaded=false,pending=false;const softwareUrl=' + json.dumps(software_path(fragment)) + ';'
+            'async function load(){if(loaded||pending)return;pending=true;const panel=document.getElementById("about-software");panel.innerHTML=\'<p role="status">Loading open-source software…</p>\';try{const response=await fetch(softwareUrl);if(!response.ok)throw new Error();panel.innerHTML=await response.text();loaded=true;}catch{panel.innerHTML=\'<p role="alert">Could not load open-source software.</p><button class="btn" id="about-retry">Retry</button>\';document.getElementById("about-retry").onclick=load;}finally{pending=false;}}'
+            'const tabs=[...document.querySelectorAll("[role=tab]")];'
+            'function select(index,focus){if(index===1)load();tabs.forEach((tab,i)=>{const active=i===index;tab.setAttribute("aria-selected",String(active));tab.tabIndex=active?0:-1;tab.classList.toggle("active",active);document.getElementById(tab.getAttribute("aria-controls")).hidden=!active;});if(focus)tabs[index].focus();}'
             'tabs.forEach((tab,i)=>{tab.addEventListener("click",()=>select(i,false));tab.addEventListener("keydown",event=>{const key=event.key;if(!["ArrowLeft","ArrowRight","Home","End"].includes(key))return;event.preventDefault();select(key==="Home"?0:key==="End"?1:1-i,true);});});</script>' +
             '<p><a class="btn" href="/">Open WebIDE</a></p></main></body></html>')
 
@@ -185,15 +193,17 @@ def main():
         parser.error("Provide an output path")
     fragment, watched = render_app(ROOT)
     if args.fragment_output:
-        args.fragment_output.write_text(fragment["about"] + fragment["software"])
+        args.fragment_output.write_text(fragment["about"])
         args.fragment_output.with_name("about-overview.html").write_text(fragment["about"])
         args.fragment_output.with_name("about-software.html").write_text(fragment["software"])
+        print(f"cargo::rustc-env=OPENWEBIDE_SOFTWARE_URL={software_path(fragment)}")
         for path in sorted(watched):
             print(f"cargo::rerun-if-changed={path}")
     if args.page_output:
         stylesheets = sorted(args.page_output.parent.glob("*.css"))
         if not stylesheets:
             raise ValueError("The About page requires the built frontend stylesheet")
+        args.page_output.with_name(software_path(fragment).lstrip("/")).write_text(fragment["software"])
         args.page_output.write_text(render_page(fragment, stylesheets))
 
 

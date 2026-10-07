@@ -9,7 +9,7 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Add About to the account menu and command palette, with separate About and Open-source software tabs for the frontend build version, commit, shared dependency inventory and bundled license notices for crates, Monaspace and Lucide. Cache the same tabs, build details and notices for the offline PWA screen.
+- Add About to the account menu and command palette, with separate About and Open-source software tabs for the frontend build version, commit, shared dependency inventory and bundled license notices for crates, Monaspace and Lucide. Load license notices only when opening their tab, with a bounded scroll area and a centered, compact About view. Cache the same tabs, build details and notices for the offline PWA screen.
 
 - Keep the visible caret at the end of highlighted lines when clicking beyond the text. Measure the final token boundary instead of a standalone newline with an empty browser rectangle; verify painted caret position as well as insertion offsets.
 

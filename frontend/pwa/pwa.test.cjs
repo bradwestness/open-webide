@@ -133,7 +133,11 @@ test('bundled editor fonts are cached offline and font updates change the PWA bu
     const before = build();
     assert.ok(before.files.includes("/about.html"));
     const about = fs.readFileSync(path.join(dist, "about.html"), "utf8");
-    assert.match(about, /SIL OPEN FONT LICENSE/);
+    assert.doesNotMatch(about, /SIL OPEN FONT LICENSE/);
+    const software = before.files.find(file => /^\/about-software-[a-f0-9]+\.html$/.test(file));
+    assert.ok(software);
+    assert.ok(about.includes(software));
+    assert.match(fs.readFileSync(path.join(dist, software.slice(1)), 'utf8'), /SIL OPEN FONT LICENSE/);
     assert.match(about, /styles-test.css/);
     for (const family of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) assert.ok(before.files.includes(`/fonts/Monaspace${family}-v1.400.woff2`));
     fs.appendFileSync(path.join(dist, 'fonts/MonaspaceNeon-v1.400.woff2'), 'changed');

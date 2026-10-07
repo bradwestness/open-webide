@@ -14,6 +14,16 @@ ROOT = Path(__file__).resolve().parent.parent
 Browser = runpy.run_path(str(ROOT / 'tools/check-editor-recovery.py'))['Browser']
 
 
+def wait_notices(browser):
+    result = browser.call('POST', '/execute/async', {'script': """
+        const done=arguments[0]; const deadline=Date.now()+5000;
+        function wait(){if(document.body.textContent.includes('SIL OPEN FONT LICENSE'))done(true);
+          else if(Date.now()>deadline)done(false);else setTimeout(wait,20);}
+        wait();
+    """, 'args': []})
+    assert result is True, 'Notices did not load'
+
+
 def check(screenshots=None):
     assert os.environ.get('CHROMEDRIVER'), 'Set CHROMEDRIVER to a compatible driver'
     dist = ROOT / 'frontend/dist'
@@ -29,11 +39,14 @@ def check(screenshots=None):
             try:
                 url = f'http://127.0.0.1:{server.server_port}'
                 browser.call('POST', '/url', {'url': url + '/about.html'})
+                assert not browser.script("return document.body.textContent.includes('SIL OPEN FONT LICENSE');")
+                assert browser.script("return performance.getEntriesByType('resource').filter(entry=>entry.name.includes('/about-software-')).length;") == 0
                 initial = browser.script("return document.querySelector('.about-build').textContent;")
                 for width, theme in [(1280, 'dark'), (390, 'light')]:
                     browser.call('POST', '/window/rect', {'width': width, 'height': 900})
                     browser.call('POST', '/goog/cdp/execute', {'cmd': 'Emulation.setDeviceMetricsOverride', 'params': {'width': width, 'height': 900, 'deviceScaleFactor': 1, 'mobile': width < 600}})
                     browser.script("document.getElementById('about-tab-software').click();")
+                    wait_notices(browser)
                     browser.script(f"document.documentElement.dataset.theme = '{theme}'; document.querySelector('.about-package').open = true;")
                     layout = browser.script("""
                         return {width: innerWidth, scroll: document.documentElement.scrollWidth,
@@ -69,6 +82,7 @@ def check(screenshots=None):
                 assert browser.script("return document.querySelector('.about-build').textContent;") == initial
                 assert browser.script("return document.getElementById('about-software').hidden;")
                 browser.script("document.getElementById('about-tab-software').click();")
+                wait_notices(browser)
                 assert browser.script("return !document.getElementById('about-software').hidden && document.getElementById('about-overview').hidden;")
                 assert browser.script("return document.body.textContent.includes('SIL OPEN FONT LICENSE');")
                 print('PASS: built About notices, desktop/phone themes, scroll/overflow and real offline PWA navigation')

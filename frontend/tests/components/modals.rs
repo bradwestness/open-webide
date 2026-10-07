@@ -8,7 +8,22 @@ use openwebide_frontend::{
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
-use super::support::{mount_test, settle};
+use super::support::{mount_test, settle, wait_until};
+
+#[wasm_bindgen::prelude::wasm_bindgen(
+    inline_js = "export function noticeFetch(html) { const original=window.fetch; let requests=0; let fail=false; window.fetch=async request => { if (!request.url.includes('/about-software-')) return original(request); requests++; return new Response(html, {status:fail?503:200}); }; return { count:()=>requests, fail:value=>{fail=value;}, restore:()=>{window.fetch=original;} }; }"
+)]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = noticeFetch)]
+    fn notice_fetch(html: &str) -> js_sys::Object;
+}
+
+fn notice_call(mock: &js_sys::Object, name: &str) -> wasm_bindgen::JsValue {
+    let function: js_sys::Function = js_sys::Reflect::get(mock, &name.into())
+        .unwrap()
+        .unchecked_into();
+    function.call0(mock).unwrap()
+}
 
 fn active() -> web_sys::Element {
     document().active_element().unwrap()
@@ -243,6 +258,10 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
         components::{CommandDialogs, TopBar},
     };
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mock = notice_fetch(include_str!(concat!(
+            env!("OUT_DIR"),
+            "/about-software.html"
+        )));
         let mounted = mount_test(move |state| {
             state.seed_project();
             state
@@ -274,6 +293,21 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
         assert!(text.contains("Commit"));
         assert!(!text.contains("SIL OPEN FONT LICENSE"));
+        assert_eq!(notice_call(&mock, "count").as_f64(), Some(0.0));
+        let overview = mounted
+            .element(".about-overview")
+            .get_bounding_client_rect();
+        let details = mounted
+            .element(".about-overview > div")
+            .get_bounding_client_rect();
+        assert!(
+            (overview.x() + overview.width() / 2.0 - details.x() - details.width() / 2.0).abs()
+                < 2.0
+        );
+        assert!(
+            (overview.y() + overview.height() / 2.0 - details.y() - details.height() / 2.0).abs()
+                < 2.0
+        );
         assert_eq!(
             mounted
                 .element("#about-tab-overview")
@@ -296,12 +330,24 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
                 .as_deref(),
             Some("true")
         );
+        wait_until("license notices", || {
+            panel
+                .text_content()
+                .unwrap()
+                .contains("SIL OPEN FONT LICENSE")
+        })
+        .await;
         let text = panel.text_content().unwrap();
         assert!(!text.contains("Commit"));
         assert!(text.contains("SIL OPEN FONT LICENSE"));
         assert!(text.contains("Lucide icons"));
         assert!(text.contains("leptos"));
         assert!(text.contains("Copyright (c) 2022 Greg Johnston"));
+        assert_eq!(notice_call(&mock, "count").as_f64(), Some(1.0));
+        let body = mounted.element(".about-body");
+        let notices_panel = mounted.element(".about-software");
+        assert!(notices_panel.scroll_height() > notices_panel.client_height());
+        assert!(body.scroll_height() <= body.client_height());
         let contents = mounted.element(".about-content").inner_html();
         assert!(
             mounted
@@ -340,8 +386,29 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
                 .unwrap()
                 .contains("Commit")
         );
+        let fail: js_sys::Function = js_sys::Reflect::get(&mock, &"fail".into())
+            .unwrap()
+            .unchecked_into();
+        fail.call1(&mock, &true.into()).unwrap();
         mounted.click("#about-tab-software");
         settle().await;
+        assert!(
+            mounted
+                .element("[role='alert']")
+                .text_content()
+                .unwrap()
+                .contains("Could not load")
+        );
+        fail.call1(&mock, &false.into()).unwrap();
+        mounted.click(".about-content .btn");
+        wait_until("retried license notices", || {
+            mounted
+                .element(".about-content")
+                .text_content()
+                .unwrap()
+                .contains("SIL OPEN FONT LICENSE")
+        })
+        .await;
         assert_eq!(mounted.element(".about-content").inner_html(), contents);
         key(
             &mounted.element("#about-tab-software"),
@@ -357,8 +424,13 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
                 .unwrap()
                 .contains("Commit")
         );
+        assert_eq!(notice_call(&mock, "count").as_f64(), Some(3.0));
+        mounted.click("#about-tab-software");
+        settle().await;
+        assert_eq!(notice_call(&mock, "count").as_f64(), Some(3.0));
         mounted.state.ui.about_open.set(false);
         settle().await;
+        notice_call(&mock, "restore");
         assert!(Command::About.unavailable(Default::default()).is_none());
     }
 }

@@ -11,10 +11,10 @@ module=$(find "$dist" -maxdepth 1 -name 'openwebide-frontend-*.js' -type f)
 wasm="${module%.js}_bg.wasm"
 [ -f "$wasm" ]
 printf 'import init from "./%s";\nawait init({module_or_path: new URL("./%s", import.meta.url)});\n' "${module##*/}" "${wasm##*/}" > "$dist/editor-worker.js"
-version=$({ cksum "$dist/index.html" "$dist/pwa.js" "$dist/manifest.webmanifest" "$dist/offline.html" "$dist/about.html" "$dist/logo.svg" "$dist/favicon.svg" "$dist/favicon.png" "$dist/apple-touch-icon.png" "$dist/icon-192.png" "$dist/icon-512.png" pwa/service-worker.js pwa/build.sh; find "$dist/fonts" -type f -name '*.woff2' -exec cksum {} \; | sort; } | cksum | cut -d ' ' -f 1)
+version=$({ cksum "$dist/index.html" "$dist/pwa.js" "$dist/manifest.webmanifest" "$dist/offline.html" "$dist/about.html" "$dist"/about-software-*.html "$dist/logo.svg" "$dist/favicon.svg" "$dist/favicon.png" "$dist/apple-touch-icon.png" "$dist/icon-192.png" "$dist/icon-512.png" pwa/service-worker.js pwa/build.sh; find "$dist/fonts" -type f -name '*.woff2' -exec cksum {} \; | sort; } | cksum | cut -d ' ' -f 1)
 {
   printf 'const BUILD_ID = "%s";\nconst SHELL_FILES = ["/", "/offline.html", "/about.html", "/manifest.webmanifest", "/logo.svg", "/favicon.svg", "/favicon.png", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png", "/pwa.js"' "$version"
-  for file in "$dist"/*.wasm "$dist"/*.js "$dist"/*.css; do
+  for file in "$dist"/*.wasm "$dist"/*.js "$dist"/*.css "$dist"/about-software-*.html; do
     [ -f "$file" ] || continue
     name=${file##*/}
     [ "$name" = pwa.js ] && continue

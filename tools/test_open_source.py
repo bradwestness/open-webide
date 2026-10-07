@@ -55,6 +55,8 @@ class NoticeTests(unittest.TestCase):
         self.assertIn(open_source.ROOT / 'Cargo.lock', watched)
         page = open_source.render_page(sections, [Path('styles-123.css')])
         self.assertIn('href="/styles-123.css"', page)
+        self.assertNotIn('SIL OPEN FONT LICENSE', page)
+        self.assertIn(open_source.software_path(sections), page)
         self.assertNotIn('/api/', page)
         self.assertNotIn('localStorage', page)
 
