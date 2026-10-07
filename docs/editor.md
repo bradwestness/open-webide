@@ -254,8 +254,11 @@ native offsets map to full document coordinates, including partial rows, Unicode
 CRLF and folded gaps; replacing a larger directional selection still edits its
 complete source range. Native origins and source/read/account/document/selection
 checks reject stale declarations. This bounds the retained declaration, not the
-textarea value or layout. Global scrolling, pointer selection and caret ownership
-still need to move out of native input before using a bounded textarea.
+textarea value or layout. Prepared primary caret/selection paint and single-cursor
+keyboard motion use shared source geometry and Rust commands. Caret reveal uses
+the common scroll viewport, including offscreen rows. Viewport extents, pointer
+selection and cold caret ownership still need to move out of native input before
+using a bounded textarea.
 Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME map projected changes
 into source replacements and validate their resulting selections against borrowed

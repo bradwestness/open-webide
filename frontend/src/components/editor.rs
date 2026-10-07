@@ -122,7 +122,7 @@ fn editor_selection_key(
         "Escape" if multiple && !modified && !event.alt_key() => Some(Command::Single),
         _ => None,
     };
-    let motion = if multiple && command.is_none() {
+    let motion = if command.is_none() {
         match event.key().as_str() {
             "ArrowLeft" if event.meta_key() => Some(Motion::LineStart),
             "ArrowRight" if event.meta_key() => Some(Motion::LineEnd),
@@ -206,6 +206,7 @@ fn editor_selection_key(
             error.set(None);
             if let Some(selection) = selections.first() {
                 render_editor_selection(actions, textarea, *selection, false);
+                reveal_editor_caret(actions, textarea, motion_adapter.paint);
             }
         }
         Err(failure) => error.set(Some(failure.to_string())),
@@ -337,6 +338,50 @@ pub(super) fn render_editor_selection(
         }
         crate::viewport::set_editor_scroll_top(textarea, scroll.0);
         crate::viewport::set_editor_scroll_left(textarea, scroll.1);
+    }
+}
+
+/// Reveal the source caret using paint geometry and the shared scroll viewport.
+pub(super) fn reveal_editor_caret(
+    actions: EditorActions,
+    textarea: &web_sys::HtmlTextAreaElement,
+    paint: RwSignal<Option<EditorPaint>>,
+) {
+    if !current_editor_target(actions, textarea) {
+        return;
+    }
+    let source = actions.source();
+    let Some(selection) = actions.selection(&source) else {
+        return;
+    };
+    let Some(rect) = paint
+        .get_untracked()
+        .and_then(|paint| paint.caret.run(selection.head))
+    else {
+        return;
+    };
+    let scroll = crate::viewport::editor_scroll(textarea);
+    let viewport = scroll.get_bounding_client_rect();
+    let bottom = viewport.top() + f64::from(scroll.client_height()) - 12.0;
+    let delta = if rect.top() < viewport.top() + 12.0 {
+        rect.top() - viewport.top() - 12.0
+    } else if rect.bottom() > bottom {
+        rect.bottom() - bottom
+    } else {
+        0.0
+    };
+    if delta != 0.0 {
+        crate::viewport::set_editor_scroll_top(textarea, (scroll.scroll_top() + delta).max(0.0));
+    }
+    if rect.left() < viewport.left()
+        || rect.right() > viewport.left() + f64::from(scroll.client_width()) - 16.0
+    {
+        let delta = if rect.left() < viewport.left() {
+            rect.left() - viewport.left()
+        } else {
+            rect.right() - viewport.left() - f64::from(scroll.client_width()) + 16.0
+        };
+        crate::viewport::set_editor_scroll_left(textarea, (scroll.scroll_left() + delta).max(0.0));
     }
 }
 

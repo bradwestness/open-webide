@@ -1,6 +1,6 @@
 //! Thin frame/paint/measurement adapter for the shared ordered motion queue.
 use super::{
-    editor::{EditorPaint, current_editor_target, render_editor_selection},
+    editor::{EditorPaint, current_editor_target, render_editor_selection, reveal_editor_caret},
     editor_geometry::visual_layout,
 };
 use crate::state_actions::editor::EditorActions;
@@ -92,6 +92,7 @@ impl MotionAdapter {
                     self.error.set(None);
                     if let Some(selection) = selections.first() {
                         render_editor_selection(self.actions, input, *selection, false);
+                        reveal_editor_caret(self.actions, input, self.paint);
                     }
                 }
                 Ok(None) => return true,

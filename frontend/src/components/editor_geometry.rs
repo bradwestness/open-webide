@@ -1099,6 +1099,9 @@ pub(super) fn caret_top(
     let within = id.checked_sub(projection.lines()[index].visible_start)?;
     let top = if let Some(rows) = actions.measured_rows() {
         metrics.top + rows.rows.top(index)?
+    } else if !actions.preferences().word_wrap && projection.has_uniform_rows() {
+        // Fixed source-row heights also locate carets outside the painted window.
+        metrics.top + f64::from(u32::try_from(index).ok()?) * metrics.line_height
     } else {
         input
             .parent_element()?

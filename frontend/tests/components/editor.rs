@@ -646,6 +646,126 @@ async fn multi_cursor_pointer_and_column_gestures_share_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn primary_caret_and_selection_follow_source_motion_and_scroll_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for wrap in [false, true] {
+            let source = format!("a\u{301}文😀\tvalue\r\n{}last", "row\r\n".repeat(80));
+            let initial = source.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = wrap);
+                state.workspace.open_file.set(Some("primary.txt".into()));
+                state.workspace.content.set(initial);
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:240px">{editor_view(state)}</div> }
+            });
+            frame().await;
+            let actions = EditorActions::new(mounted.state.workspace);
+            let textarea: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            textarea.focus().unwrap();
+            actions.record_selection(Selection::caret(3)).unwrap();
+            textarea.set_selection_range(2, 2).unwrap();
+            assert!(editor_key(&textarea, "ArrowRight", false, false).default_prevented());
+            assert_eq!(actions.selection(&source), Some(Selection::caret(6)));
+            frame().await;
+            wait_until("primary source caret", || {
+                mounted
+                    .root
+                    .query_selector(".editor-primary-caret")
+                    .unwrap()
+                    .is_some()
+            })
+            .await;
+            let row = mounted.element(".editor-source-line[data-line='1']");
+            let fragment = row
+                .query_selector(":scope > .editor-source-fragment")
+                .unwrap()
+                .unwrap();
+            let node = fragment.first_child().unwrap();
+            let range = document().create_range().unwrap();
+            range.set_start(&node, 3).unwrap();
+            range.collapse_with_to_start(true);
+            let expected = range.get_bounding_client_rect();
+            let caret = mounted
+                .element(".editor-primary-caret")
+                .get_bounding_client_rect();
+            assert!(
+                (caret.left() - expected.left()).abs() < 0.5,
+                "primary caret left={} expected={} mode={mode:?} wrap={wrap}",
+                caret.left(),
+                expected.left()
+            );
+            assert!(
+                (caret.top() - expected.top()).abs() < 0.5,
+                "primary caret top={} expected={} mode={mode:?} wrap={wrap}",
+                caret.top(),
+                expected.top()
+            );
+            assert!(textarea.class_list().contains("editor-visual-carets"));
+            assert!(editor_key(&textarea, "ArrowRight", false, true).default_prevented());
+            assert_eq!(
+                actions.selection(&source),
+                Some(Selection {
+                    anchor: 6,
+                    head: 10
+                })
+            );
+            wait_until("primary source selection", || {
+                mounted
+                    .root
+                    .query_selector(".editor-primary-selection")
+                    .unwrap()
+                    .is_some()
+            })
+            .await;
+            assert!(textarea.class_list().contains("editor-source-selections"));
+            assert_eq!(
+                actions
+                    .clipboard_content(Selection {
+                        anchor: 6,
+                        head: 10
+                    })
+                    .unwrap()
+                    .unwrap()
+                    .text,
+                "😀"
+            );
+            assert!(editor_key(&textarea, "End", true, false).default_prevented());
+            assert_eq!(
+                actions.selection(&source),
+                Some(Selection::caret(source.len()))
+            );
+            frame().await;
+            wait_until("document end caret visible", || {
+                let Some(caret) = mounted
+                    .root
+                    .query_selector(".editor-primary-caret")
+                    .unwrap()
+                else {
+                    return false;
+                };
+                let bounds = caret.get_bounding_client_rect();
+                let viewport = mounted.element(".editor-code").get_bounding_client_rect();
+                bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom() + 0.5
+            })
+            .await;
+            assert!(openwebide_frontend::viewport::editor_scroll(&textarea).scroll_top() > 100.0);
+            assert_eq!(actions.source(), source);
+            assert!(!mounted.state.workspace.dirty.get_untracked());
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn multi_cursor_shortcuts_motion_and_paint_share_both_modes() {
     use openwebide_core::WorkspaceMode;
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -6203,7 +6323,7 @@ async fn wrapped_multi_cursor_arrows_follow_measured_rows_in_both_modes() {
             textarea.class_list().contains("editor-visual-carets")
                 && mounted
                     .root
-                    .query_selector_all(".editor-secondary-caret")
+                    .query_selector_all(".editor-primary-caret, .editor-secondary-caret")
                     .unwrap()
                     .length()
                     == 2

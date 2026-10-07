@@ -1230,6 +1230,7 @@ body {
 .editor-code.highlight-ready .editor-highlight { visibility: visible; }
 .editor-code.highlight-ready .editor-textarea { color: transparent; }
 .editor-textarea.editor-visual-carets { caret-color: transparent; }
+.editor-textarea.editor-source-selections::selection { background: transparent; }
 
 .editor-textarea {
   position: absolute;
@@ -3229,8 +3230,12 @@ button.browser-item {
 .editor-source-line.editor-active-line { background: var(--bg-hover); }
 .editor-bracket-layer { position:absolute; inset:0; z-index:1; overflow:hidden; pointer-events:none; }
 .editor-selection-layer { position:absolute; inset:0; z-index:1; overflow:hidden; pointer-events:none; clip-path:inset(0 0 0 var(--editor-gutter-width, 40px)); }
-.editor-secondary-selection { position:absolute; background:color-mix(in srgb, var(--accent) 30%, transparent); }
-.editor-secondary-caret { position:absolute; background:var(--accent); }
+.editor-primary-selection, .editor-secondary-selection { position:absolute; background:color-mix(in srgb, var(--accent) 30%, transparent); }
+.editor-primary-caret, .editor-secondary-caret { position:absolute; background:var(--accent); }
+.editor-primary-caret { background:var(--text); animation:editor-caret-blink 1s steps(1) infinite; }
+.editor-code:not(:focus-within) .editor-primary-caret { visibility:hidden; }
+@keyframes editor-caret-blink { 50% { opacity:0; } }
+@media (prefers-reduced-motion:reduce) { .editor-primary-caret { animation:none; } }
 .editor-bracket-match { position:absolute; border:1px solid var(--accent); border-radius:2px; transform:translate(var(--editor-scroll-x, 0px), var(--editor-scroll-y, 0px)); }
 
 .editor-source-line::after { content:""; position:absolute; left:0; top:0; bottom:0; width:calc(var(--editor-indent-columns, 0) * 1ch); pointer-events:none; background:repeating-linear-gradient(to right,var(--border) 0,var(--border) 1px,transparent 1px,transparent calc(var(--editor-indent-step, 4) * 1ch)); }

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Paint the primary editor caret and selection from the same source geometry as secondary cursors in both workspace modes. Route single-cursor arrow, word and document navigation through the shared Rust engine, revealing offscreen carets through the common scroll viewport and rejecting stale paint/read/account results.
+
 - Replay native editor edits and IME previews against borrowed source pieces in both workspace modes, preserving multiple cursors, repeated-text selections, Unicode/CRLF offsets and atomic rollback without building a complete replacement value. Reject IME previews whose eventual cursor replicas exceed editor limits. Composition snapshots and full textarea layout remain pending bounded-input work.
 
 - Map native editor input directly to source replacements in both workspace modes, preserving CRLF, Unicode selections and hidden code without normalizing the complete source before replay. IME and multiple cursors retain shared replay validation; full source publication and textarea layout remain pending bounded input work.
