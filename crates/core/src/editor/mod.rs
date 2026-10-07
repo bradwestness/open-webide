@@ -321,6 +321,13 @@ impl Document {
             .clone()
     }
 
+    /// Browser surrounding text is bounded independently of document selections.
+    /// Clipboard, commands and visual layout continue to use full source offsets.
+    pub fn input_context(&self, max_bytes: usize) -> Result<FoldProjection, ProjectionError> {
+        self.projection()
+            .input_context(self.selections[0], max_bytes)
+    }
+
     pub fn reveal_selection(&mut self) -> bool {
         let rows = &self.line_index.rows;
         let mut changed = false;

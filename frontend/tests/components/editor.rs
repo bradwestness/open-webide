@@ -9573,6 +9573,209 @@ async fn cancellable_text_groups_unicode_multi_cursor_edits_and_keeps_native_fal
 }
 
 #[wasm_bindgen_test]
+async fn bounded_native_declarations_keep_global_offsets_and_full_selection_edits_in_both_modes() {
+    use openwebide_core::editor::{Document, Indentation, Selection, byte_to_textarea};
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    let row = "row 文😀\r\n";
+    let source = row.repeat(4000);
+    let start = row.len() * 1200;
+    let end = row.len() * 3000;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        for backward in [false, true] {
+            let source = source.clone();
+            let original = source.clone();
+            let selection = if backward {
+                Selection {
+                    anchor: end,
+                    head: start,
+                }
+            } else {
+                Selection {
+                    anchor: start,
+                    head: end,
+                }
+            };
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("native-context.txt".into()));
+                state.workspace.content.set(source.clone());
+                let mut document = Document::new(source);
+                document.set_selections(vec![selection]).unwrap();
+                state.workspace.editor_documents.update(|documents| {
+                    documents.insert((1, "native-context.txt".into()), document);
+                });
+                editor_view(state)
+            });
+            settle().await;
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            input
+                .set_selection_range_with_direction(
+                    byte_to_textarea(&original, start)
+                        .unwrap()
+                        .try_into()
+                        .unwrap(),
+                    byte_to_textarea(&original, end)
+                        .unwrap()
+                        .try_into()
+                        .unwrap(),
+                    if backward { "backward" } else { "forward" },
+                )
+                .unwrap();
+            let init = web_sys::InputEventInit::new();
+            init.set_bubbles(true);
+            init.set_cancelable(true);
+            init.set_input_type("insertText");
+            init.set_data(Some("文😀"));
+            let before =
+                web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+            input.dispatch_event(&before).unwrap();
+            assert!(!before.default_prevented());
+            let insertion = mounted
+                .state
+                .workspace
+                .editor_text_insertion
+                .get_untracked()
+                .unwrap();
+            assert!(insertion.projection.is_windowed());
+            assert!(insertion.projection.text().len() <= 16 * 1024);
+            assert!(insertion.projection.textarea_origin() > 0);
+            assert_eq!(
+                insertion.native_caret,
+                byte_to_textarea(&original, start).unwrap() + "文😀".encode_utf16().count()
+            );
+            assert_eq!(insertion.selections, vec![selection]);
+            assert!(insertion.retain_native_value);
+            editorNativeInput(&input, "文😀", "insertText", false);
+            let expected = format!("{}文😀{}", &original[..start], &original[end..]);
+            assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+            assert_eq!(input.value(), expected.replace("\r\n", "\n"));
+            let actions = EditorActions::new(mounted.state.workspace);
+            let caret = actions.selections(&expected)[0];
+            assert_eq!(caret, Selection::caret(start + "文😀".len()));
+            actions
+                .command(EditorCommand::Undo, caret, Indentation::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+            assert_eq!(actions.selections(&original), vec![selection]);
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn bounded_native_declarations_validate_fold_origins_and_full_input_retention_in_both_modes()
+{
+    use openwebide_core::editor::{Document, EditError, FoldRange, Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let row = "row 文😀\r\n";
+    let source = row.repeat(4000);
+    let at = row.len() * 2000;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        for change_prefix in [false, true] {
+            let source = source.clone();
+            let original = source.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("native-context.txt".into()));
+                state.workspace.content.set(source.clone());
+                let mut document = Document::new(source);
+                document.set_selections(vec![Selection::caret(at)]).unwrap();
+                document.set_fold_ranges(vec![
+                    FoldRange {
+                        start_line: 0,
+                        end_line: 2,
+                    },
+                    FoldRange {
+                        start_line: 3800,
+                        end_line: 3802,
+                    },
+                ]);
+                document.fold_state_mut().toggle(0);
+                state.workspace.editor_documents.update(|documents| {
+                    documents.insert((1, "native-context.txt".into()), document);
+                });
+                view! { <div /> }
+            });
+            let actions = EditorActions::new(mounted.state.workspace);
+            actions.begin_native_text("X".into());
+            let insertion = mounted
+                .state
+                .workspace
+                .editor_text_insertion
+                .get_untracked()
+                .unwrap();
+            assert!(insertion.projection.is_windowed());
+            assert!(
+                !insertion.projection.is_folded(),
+                "the nearby context excludes the distant folds"
+            );
+            assert!(
+                !insertion.retain_native_value,
+                "full folded input still requires reconciliation"
+            );
+            mounted
+                .state
+                .workspace
+                .editor_documents
+                .update(|documents| {
+                    documents
+                        .get_mut(&(1, "native-context.txt".into()))
+                        .unwrap()
+                        .fold_state_mut()
+                        .toggle(if change_prefix { 0 } else { 3800 });
+                });
+            let result = actions.finish_native_text(
+                Some("X"),
+                Selection::caret(insertion.native_caret),
+                1.0,
+            );
+            if change_prefix {
+                assert_eq!(result, Err(EditError::StaleContext));
+                assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+                assert_eq!(actions.selections(&original), vec![Selection::caret(at)]);
+            } else {
+                let commit = result.unwrap().unwrap();
+                assert!(!commit.retain_native_value);
+                assert_eq!(commit.selection, Selection::caret(at + 1));
+                assert_eq!(
+                    mounted.state.workspace.content.get_untracked(),
+                    format!("{}X{}", &original[..at], &original[at..])
+                );
+            }
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_text_insertion
+                    .get_untracked()
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn declared_native_commits_keep_native_value_and_reject_stale_scopes_in_both_modes() {
     for mode in [
         openwebide_core::WorkspaceMode::Local,

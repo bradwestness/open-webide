@@ -36,6 +36,20 @@ pub struct NativeTextCommit {
 
 type TypingState = Option<((i64, String), String, f64)>;
 
+const NATIVE_CONTEXT_BYTES: usize = 16 * 1024;
+
+/// The browser inserts at the beginning of its selected range, independent of
+/// selection direction. Bound that input mapping without clipping source edits.
+fn insertion_projection(document: &Document) -> Option<openwebide_core::editor::FoldProjection> {
+    document
+        .projection()
+        .input_context(
+            Selection::caret(document.selections()[0].range().start),
+            NATIVE_CONTEXT_BYTES,
+        )
+        .ok()
+}
+
 #[derive(Clone, Copy)]
 pub struct EditorActions {
     workspace: WorkspaceState,
@@ -1067,11 +1081,12 @@ impl EditorActions {
         };
         let insertion = self.workspace.editor_documents.with_untracked(|documents| {
             let document = documents.get(&key)?;
-            let projection = document.projection();
+            let projection = insertion_projection(document)?;
             let visible = projection
-                .visible_selection(document.selections()[0])
+                .visible_selection(Selection::caret(document.selections()[0].range().start))
                 .ok()?;
-            let at = projection.byte_to_textarea(visible.range().start).ok()?;
+            let at =
+                projection.textarea_origin() + projection.byte_to_textarea(visible.head).ok()?;
             let added = text
                 .replace("\r\n", "\n")
                 .replace('\r', "\n")
@@ -1080,6 +1095,8 @@ impl EditorActions {
             Some(crate::state::workspace::EditorTextInsertion {
                 key: key.clone(),
                 source_revision: self.workspace.editor_source_revision.get_untracked(),
+                retain_native_value: document.selections().len() == 1
+                    && !document.projection().is_folded(),
                 projection,
                 document_revision: document.revision(),
                 account_generation: self.auth.map_or(0, |auth| auth.generation.get_untracked()),
@@ -1111,7 +1128,9 @@ impl EditorActions {
             && self.workspace.editor_documents.with_untracked(|documents| {
                 documents.get(&insertion.key).is_some_and(|document| {
                     document.revision() == insertion.document_revision
-                        && document.projection() == insertion.projection
+                        && insertion_projection(document).as_ref() == Some(&insertion.projection)
+                        && (document.selections().len() == 1 && !document.projection().is_folded())
+                            == insertion.retain_native_value
                         && document.selections() == insertion.selections
                 })
             });
@@ -1123,8 +1142,7 @@ impl EditorActions {
         {
             return Ok(None);
         }
-        let retain_native_value =
-            insertion.selections.len() == 1 && !insertion.projection.is_folded();
+        let retain_native_value = insertion.retain_native_value;
         self.insert_native_text(&insertion.text, timestamp)
             .map(|selection| {
                 selection.map(|selection| NativeTextCommit {

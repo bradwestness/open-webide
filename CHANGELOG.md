@@ -147,6 +147,8 @@ for what's still ahead.
 
 ### Changed
 
+- Bound retained editor typing contexts to 16 KiB through the shared Rust projection and typing facade. Preserve document/native offsets, partial rows, Unicode/CRLF, distant fold ownership and edits across larger forward/backward selections in both workspace modes. The textarea still lays out the full projected source; bounded native layout remains roadmap work.
+
 - Preserve Edit viewport offsets while folding and unfolding. Refocus the native input without scrolling its distant caret into view, and keep syntax paint aligned in both modes.
 
 - Add shared editor selection primitives: overlap normalization, next/all occurrences, grapheme/tab-aware columns, vertical cursors and expand/shrink selection. Preserve primary order/direction, canonicalize cursors after folds and edits, and replace selected ranges with bounded aggregate allocation and grouped undo. Route selection commands through the scope-checked editor facade and retain secondary selections during editing commands in both modes. Real-device verification remains in progress.

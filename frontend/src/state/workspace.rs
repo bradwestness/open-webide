@@ -8,7 +8,9 @@ use openwebide_core::{EditDecision, FileDiff, FileEntry, PersistedEdit, SearchHi
 pub struct EditorTextInsertion {
     pub key: (i64, String),
     pub source_revision: u64,
+    /// Bounded surrounding text; native_caret remains in the current full input.
     pub projection: openwebide_core::editor::FoldProjection,
+    pub retain_native_value: bool,
     pub document_revision: u64,
     pub account_generation: u64,
     pub selections: Vec<openwebide_core::editor::Selection>,

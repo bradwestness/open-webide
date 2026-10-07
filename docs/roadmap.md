@@ -152,7 +152,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Unicode checkpoints in long rows, including folded views; native/WASM benchmarks
   cover lookup and construction costs. Glyph queries scan from sparse cluster
   checkpoints; indivisible clusters remain bounded by source limits. Native textarea input retains the
-  full projected source.
+  full projected source. Native typing declarations now retain at most 16 KiB of
+  surrounding projected text, with local/native/document coordinate contracts,
+  partial logical rows and full selection edits. Move native layout/value to this
+  context next, separating global scrolling, pointer selections and caret paint
+  from the textarea before validating IME and clipboard on devices.
   Shared admission now bounds full-editor bytes, display breaks and long lines
   before allocating document metadata. Oversized files use bounded read-only
   pages, including before/after review sources; interactive transactions enforce

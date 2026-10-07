@@ -243,7 +243,14 @@ validating source, read, account, selection and folded projection ownership.
 Single-cursor insertion keeps the native textarea value; trusted browser commits
 without folds also skip the input handler's full DOM-value read. Folded, multiple-
 cursor, synthetic and fallback input still reconcile the complete value. Multiple
-cursors use the same typing-history group.
+cursors use the same typing-history group. Typing declarations retain a bounded
+16 KiB surrounding-text projection around the selected range start. Local byte and
+native offsets map to full document coordinates, including partial rows, Unicode,
+CRLF and folded gaps; replacing a larger directional selection still edits its
+complete source range. Native origins and source/read/account/document/selection
+checks reject stale declarations. This bounds the retained declaration, not the
+textarea value or layout. Global scrolling, pointer selection and caret ownership
+still need to move out of native input before using a bounded textarea.
 Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME retain native replay.
 Ordinary transactions validate borrowed proposed pieces before mutating the existing

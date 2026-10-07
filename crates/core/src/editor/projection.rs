@@ -32,6 +32,8 @@ pub struct FoldProjection {
     text: Arc<str>,
     textarea_text: Arc<str>,
     source_len: usize,
+    source_range: Range<usize>,
+    textarea_origin: usize,
     lines: Arc<[VisibleLine]>,
     hidden: Arc<[HiddenText]>,
     uniform_rows: bool,
@@ -114,6 +116,8 @@ impl FoldProjection {
             uniform_rows,
             coordinates: coordinates.into(),
             source_len: source.len(),
+            source_range: 0..source.len(),
+            textarea_origin: 0,
             lines: visible.into(),
             hidden: hidden.into(),
         }
@@ -124,6 +128,176 @@ impl FoldProjection {
     }
     pub fn textarea_text(&self) -> &str {
         &self.textarea_text
+    }
+    /// The native offsets in a context are local; this is its offset in the
+    /// complete projected input. Source offsets always remain document offsets.
+    pub fn textarea_origin(&self) -> usize {
+        self.textarea_origin
+    }
+
+    pub fn source_range(&self) -> Range<usize> {
+        self.source_range.clone()
+    }
+
+    pub fn is_windowed(&self) -> bool {
+        self.source_range != (0..self.source_len)
+    }
+
+    /// Retain only this visible byte interval, including partial logical rows.
+    /// A context is not a new document: folds and source row identities survive,
+    /// while byte and native coordinates start at zero within the context.
+    pub fn window(&self, range: Range<usize>) -> Result<Self, ProjectionError> {
+        let between_crlf = |at: usize| {
+            at > 0
+                && self.text.as_bytes().get(at - 1) == Some(&b'\r')
+                && self.text.as_bytes().get(at) == Some(&b'\n')
+        };
+        if range.start > range.end
+            || range.end > self.text.len()
+            || !self.text.is_char_boundary(range.start)
+            || !self.text.is_char_boundary(range.end)
+            || between_crlf(range.start)
+            || between_crlf(range.end)
+        {
+            return Err(ProjectionError::InvalidOffset);
+        }
+        if range == (0..self.text.len()) {
+            return Ok(self.clone());
+        }
+        let source_range = self.source_offset(range.start)?..self.source_offset(range.end)?;
+        let textarea_origin = self.textarea_origin
+            + self
+                .byte_to_textarea(range.start)
+                .map_err(|_| ProjectionError::InvalidOffset)?;
+        let first = self
+            .lines
+            .partition_point(|line| line.visible_start <= range.start)
+            .saturating_sub(1);
+        let mut lines = Vec::new();
+        let mut coordinates = Vec::new();
+        let mut native = 0;
+        for row in first..self.lines.len() {
+            let line = &self.lines[row];
+            if line.visible_start > range.end {
+                break;
+            }
+            let end = self
+                .lines
+                .get(row + 1)
+                .map_or(self.text.len(), |next| next.visible_start);
+            let start = line.visible_start.max(range.start);
+            let end = end.min(range.end);
+            let slice = &self.text[start..end];
+            let source_start = line.source.start + start - line.visible_start;
+            lines.push(VisibleLine {
+                source_line: line.source_line,
+                source: source_start..source_start + slice.len(),
+                visible_start: start - range.start,
+                textarea_start: native,
+            });
+            coordinates.push(
+                if start == line.visible_start && end - start == line.source.len() {
+                    self.coordinates[row].clone()
+                } else {
+                    super::coordinates::LineCoordinates::new(slice)
+                },
+            );
+            native += super::byte_to_textarea(slice, slice.len())
+                .map_err(|_| ProjectionError::InvalidOffset)?;
+        }
+        let text: Arc<str> = self.text[range.clone()].into();
+        let textarea_text = if text.contains('\r') {
+            Arc::from(text.replace("\r\n", "\n").replace('\r', "\n"))
+        } else {
+            text.clone()
+        };
+        let uniform_rows = !text.as_bytes().iter().enumerate().any(|(offset, byte)| {
+            *byte == b'\r' && text.as_bytes().get(offset + 1) != Some(&b'\n')
+        });
+        let first_gap = self
+            .hidden
+            .partition_point(|gap| gap.visible_offset <= range.start);
+        let last_gap = self
+            .hidden
+            .partition_point(|gap| gap.visible_offset <= range.end);
+        let hidden = self.hidden[first_gap..last_gap]
+            .iter()
+            .map(|gap| HiddenText {
+                source: gap.source.clone(),
+                visible_offset: gap.visible_offset - range.start,
+                header_end: gap.header_end,
+            })
+            .collect::<Vec<_>>();
+        Ok(Self {
+            text,
+            textarea_text,
+            source_len: self.source_len,
+            source_range,
+            textarea_origin,
+            lines: lines.into(),
+            hidden: hidden.into(),
+            uniform_rows,
+            coordinates: coordinates.into(),
+        })
+    }
+
+    /// Bound the browser's surrounding text around the primary selection head.
+    /// Large selections remain in the document and are clipped only for native
+    /// input; callers must retain the original selection for editing/clipboard.
+    pub fn input_context(
+        &self,
+        selection: Selection,
+        max_bytes: usize,
+    ) -> Result<Self, ProjectionError> {
+        if max_bytes < 4 {
+            return Err(ProjectionError::InvalidOffset);
+        }
+        let head = self.visible_selection(selection)?.head;
+        let head = if head > 0
+            && self.text.as_bytes().get(head - 1) == Some(&b'\r')
+            && self.text.as_bytes().get(head) == Some(&b'\n')
+        {
+            head - 1
+        } else {
+            head
+        };
+        let mut start = head.saturating_sub(max_bytes / 2);
+        let mut end = start.saturating_add(max_bytes).min(self.text.len());
+        start = end.saturating_sub(max_bytes);
+        while !self.text.is_char_boundary(start) {
+            start += 1;
+        }
+        while !self.text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if start > 0
+            && self.text.as_bytes().get(start - 1) == Some(&b'\r')
+            && self.text.as_bytes().get(start) == Some(&b'\n')
+        {
+            start += 1;
+        }
+        if end > 0
+            && self.text.as_bytes().get(end - 1) == Some(&b'\r')
+            && self.text.as_bytes().get(end) == Some(&b'\n')
+        {
+            end -= 1;
+        }
+        self.window(start..end)
+    }
+
+    /// Selection for the native context, without changing document selections.
+    pub fn input_selection(&self, selection: Selection) -> Result<Selection, ProjectionError> {
+        if selection.anchor > self.source_len || selection.head > self.source_len {
+            return Err(ProjectionError::InvalidOffset);
+        }
+        self.visible_selection(Selection {
+            anchor: selection
+                .anchor
+                .clamp(self.source_range.start, self.source_range.end),
+            head: selection
+                .head
+                .clamp(self.source_range.start, self.source_range.end),
+        })
     }
     pub fn visual_line_index(&self, row: usize) -> Option<super::VisualLineIndex> {
         self.coordinates.get(row)?.visual()
@@ -199,7 +373,7 @@ impl FoldProjection {
             return Err(ProjectionError::InvalidOffset);
         }
         if visible == self.text.len() {
-            return Ok(self.source_len);
+            return Ok(self.source_range.end);
         }
         let line = self
             .lines
@@ -210,10 +384,10 @@ impl FoldProjection {
     }
 
     pub fn visible_offset(&self, source: usize) -> Result<usize, ProjectionError> {
-        if source > self.source_len {
+        if source < self.source_range.start || source > self.source_range.end {
             return Err(ProjectionError::InvalidOffset);
         }
-        if source == self.source_len {
+        if source == self.source_range.end {
             return Ok(self.text.len());
         }
         if self.hidden_at(source).is_some() {
@@ -243,7 +417,10 @@ impl FoldProjection {
         let endpoint = |position| match self.visible_offset(position) {
             Err(ProjectionError::HiddenText) => {
                 let gap = self.hidden_at(position).unwrap();
-                self.visible_offset(gap.header_end)
+                self.visible_offset(
+                    gap.header_end
+                        .clamp(self.source_range.start, self.source_range.end),
+                )
             }
             result => result,
         };
@@ -394,6 +571,193 @@ mod tests {
     use crate::editor::FoldRange;
 
     #[test]
+    fn bounded_context_keeps_global_source_and_native_offsets_with_partial_rows() {
+        for source in [
+            "😀文e\u{301}\t\r\na\rbreak\nlast 😀\r\n",
+            "header\r\nhidden 文\r\nend\r\nnext 😀\r\n",
+        ] {
+            let mut folds = FoldState::default();
+            folds.set_ranges(
+                vec![FoldRange {
+                    start_line: 0,
+                    end_line: 2,
+                }],
+                5,
+            );
+            for folded in [false, true] {
+                if folded {
+                    folds.collapse_all();
+                }
+                let full = FoldProjection::new(source, &folds);
+                let boundaries: Vec<_> = (0..=full.text().len())
+                    .filter(|&at| {
+                        full.text().is_char_boundary(at)
+                            && !(at > 0
+                                && full.text().as_bytes().get(at - 1) == Some(&b'\r')
+                                && full.text().as_bytes().get(at) == Some(&b'\n'))
+                    })
+                    .collect();
+                for &start in &boundaries {
+                    for &end in boundaries.iter().filter(|&&end| end >= start) {
+                        let context = full.window(start..end).unwrap();
+                        assert_eq!(context.text(), &full.text()[start..end]);
+                        assert_eq!(
+                            context.textarea_origin(),
+                            full.byte_to_textarea(start).unwrap()
+                        );
+                        assert_eq!(
+                            context.source_range(),
+                            full.source_offset(start).unwrap()..full.source_offset(end).unwrap()
+                        );
+                        for &byte in boundaries
+                            .iter()
+                            .filter(|&&byte| start <= byte && byte <= end)
+                        {
+                            let local = byte - start;
+                            let document = full.source_offset(byte).unwrap();
+                            assert_eq!(context.source_offset(local), Ok(document));
+                            assert_eq!(context.visible_offset(document), Ok(local));
+                            assert_eq!(
+                                context.textarea_origin()
+                                    + context.byte_to_textarea(local).unwrap(),
+                                full.byte_to_textarea(byte).unwrap()
+                            );
+                            let row = context
+                                .lines()
+                                .partition_point(|line| line.visible_start <= local)
+                                .saturating_sub(1);
+                            let full_row = full
+                                .lines()
+                                .partition_point(|line| line.visible_start <= byte)
+                                .saturating_sub(1);
+                            assert_eq!(
+                                context.lines()[row].source_line,
+                                full.lines()[full_row].source_line
+                            );
+                        }
+                        for native in 0..=context.textarea_text().encode_utf16().count() {
+                            let local = context.textarea_to_byte(native);
+                            assert_eq!(
+                                context.source_offset(local),
+                                full.source_offset(
+                                    full.textarea_to_byte(context.textarea_origin() + native)
+                                )
+                            );
+                        }
+                        if start > 0 {
+                            assert_eq!(
+                                context.visible_offset(0),
+                                Err(ProjectionError::InvalidOffset)
+                            );
+                        }
+                        if end < full.text().len() {
+                            assert_eq!(
+                                context.visible_offset(source.len()),
+                                Err(ProjectionError::InvalidOffset)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn contexts_clip_large_backward_selections_without_changing_document_selections() {
+        let source = "文😀abc\r\n".repeat(100_000);
+        let full = FoldProjection::new(&source, &FoldState::default());
+        let head = source.find("abc").unwrap() + 50_000 * "文😀abc\r\n".len();
+        let selection = Selection {
+            anchor: source.len(),
+            head,
+        };
+        let context = full.input_context(selection, 4096).unwrap();
+        assert!(context.is_windowed());
+        assert!(context.text().len() <= 4096);
+        let local = context.input_selection(selection).unwrap();
+        assert_eq!(local.anchor, context.text().len());
+        assert_eq!(context.source_offset(local.head), Ok(head));
+        assert_eq!(
+            context.source_offset(context.text().len()),
+            Ok(context.source_range().end)
+        );
+        assert_ne!(
+            context.source_offset(context.text().len()),
+            Ok(source.len())
+        );
+        let nested = context.window(0..local.head).unwrap();
+        assert_eq!(nested.textarea_origin(), context.textarea_origin());
+        assert_eq!(nested.source_range().end, head);
+        assert_eq!(full.visible_selection(selection).unwrap(), selection);
+        assert_eq!(full.text(), source);
+    }
+
+    #[test]
+    fn bounded_context_replay_edits_the_full_source_and_preserves_folded_text() {
+        let source = "before\r\nheader\r\nhidden 文\r\nend\r\nnext 😀\r\nafter";
+        let mut folds = FoldState::default();
+        folds.set_ranges(
+            vec![FoldRange {
+                start_line: 1,
+                end_line: 3,
+            }],
+            6,
+        );
+        folds.collapse_all();
+        let full = FoldProjection::new(source, &folds);
+        let at = source.find("next").unwrap();
+        let context = full.input_context(Selection::caret(at), 18).unwrap();
+        let local = context.visible_offset(at).unwrap();
+        let local_native = context.byte_to_textarea(local).unwrap();
+        let mut value = context.textarea_text().to_string();
+        let local = super::super::utf16_to_byte(&value, local_native);
+        value.insert(local, '🦀');
+        let (result, selection) = context
+            .replay_input(
+                source,
+                &value,
+                Selection::caret(local + '🦀'.len_utf8()),
+                "insertText",
+                Selection::caret(at),
+            )
+            .unwrap();
+        let mut expected = source.replace("\r\n", "\n");
+        let at = expected.find("next").unwrap();
+        expected.insert(at, '🦀');
+        assert_eq!(result, expected);
+        assert_eq!(selection, Selection::caret(at + '🦀'.len_utf8()));
+        assert!(result.contains("hidden 文\nend\n"));
+    }
+
+    #[test]
+    fn bounded_context_rejects_invalid_bounds_and_never_splits_unicode_or_crlf() {
+        let full = FoldProjection::new("😀\r\n文\rnext", &FoldState::default());
+        let reversed = Range { start: 9, end: 8 };
+        for range in [1..4, 0..5, 5..6, reversed, 0..100] {
+            assert_eq!(full.window(range), Err(ProjectionError::InvalidOffset));
+        }
+        for head in (0..=full.text().len()).filter(|&at| full.text().is_char_boundary(at)) {
+            for budget in 4..=full.text().len() + 4 {
+                let context = full.input_context(Selection::caret(head), budget).unwrap();
+                assert!(context.text().len() <= budget);
+                assert!(context.input_selection(Selection::caret(head)).is_ok());
+                assert_eq!(
+                    context.textarea_text(),
+                    context.text().replace("\r\n", "\n").replace('\r', "\n")
+                );
+            }
+        }
+        assert_eq!(
+            full.input_context(Selection::caret(0), 3),
+            Err(ProjectionError::InvalidOffset)
+        );
+        assert_eq!(
+            full.input_context(Selection::caret(100), 16),
+            Err(ProjectionError::InvalidOffset)
+        );
+    }
+
+    #[test]
     fn document_projection_reuses_immutable_storage_and_invalidates_on_edits_and_folds() {
         use crate::editor::{Document, Edit, FoldCommand};
         let mut document = Document::new("head 😀\r\nbody 文\r\nend\r\nnext");
@@ -453,6 +817,29 @@ mod tests {
     }
 
     proptest::proptest! {
+        #[test]
+        fn bounded_input_contexts_round_trip_arbitrary_unicode_and_folds(
+            rows in proptest::collection::vec(".{0,30}", 3..12),
+            budget in 4usize..128,
+            location in 0usize..1000,
+        ) {
+            let source = rows.join("\r\n");
+            let mut folds = FoldState::default();
+            folds.set_ranges(vec![FoldRange { start_line: 0, end_line: rows.len() - 2 }], rows.len());
+            folds.collapse_all();
+            let full = FoldProjection::new(&source, &folds);
+            let boundaries: Vec<_> = full.text().char_indices().map(|(at, _)| at).chain([full.text().len()]).filter(|&at| {
+                !(at > 0 && full.text().as_bytes().get(at - 1) == Some(&b'\r') && full.text().as_bytes().get(at) == Some(&b'\n'))
+            }).collect();
+            let visible = boundaries[location % boundaries.len()];
+            let caret = Selection::caret(full.source_offset(visible).unwrap());
+            let context = full.input_context(caret, budget).unwrap();
+            proptest::prop_assert!(context.text().len() <= budget);
+            let local = context.input_selection(caret).unwrap();
+            proptest::prop_assert_eq!(context.source_selection(local), Ok(caret));
+            proptest::prop_assert_eq!(context.textarea_origin() + context.byte_to_textarea(local.head).unwrap(), full.byte_to_textarea(visible).unwrap());
+        }
+
         #[test]
         fn every_visible_unicode_boundary_round_trips(rows in proptest::collection::vec(".*", 3..20)) {
             let source = rows.join("\r\n");
