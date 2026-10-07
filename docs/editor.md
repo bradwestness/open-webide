@@ -397,6 +397,10 @@ The engine still retains a full committed source baseline while composition is a
 Document clones share immutable history steps and transaction payloads. Appending
 a shared typing group copies its step metadata and transaction references, retaining
 the existing replacement strings; undo/redo cursors and pruning remain independent.
+Saved-text baselines are also immutable and shared by clones. A save acknowledgement
+retains the written version separately from newer edits, shares it with an active
+composition baseline and reuses an identical saved version. Recovery still serializes
+owned text at the persistence boundary.
 
 Ownership checks, cursor counts, Select All and navigation queries borrow current
 source instead of cloning complete file values. Native selection mapping lives in

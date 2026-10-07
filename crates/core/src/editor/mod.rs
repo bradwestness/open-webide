@@ -229,7 +229,7 @@ pub struct Document {
     editor_limits: bool,
     line_index: index::LineIndex,
     projection: ProjectionCache,
-    saved: String,
+    saved: std::sync::Arc<str>,
     selections: Vec<Selection>,
     history: Vec<std::sync::Arc<HistoryStep>>,
     history_cursor: usize,
@@ -267,7 +267,7 @@ impl Document {
         let text = text.into();
         Self {
             identity: std::sync::Arc::new(()),
-            saved: text.clone(),
+            saved: std::sync::Arc::from(text.as_str()),
             editor_limits: false,
             line_index: index::LineIndex::new(&text),
             projection: ProjectionCache::default(),
@@ -430,21 +430,29 @@ impl Document {
         self.revision
     }
     pub fn is_dirty(&self) -> bool {
-        self.text != self.saved
+        self.text != self.saved.as_ref()
     }
     pub fn mark_saved(&mut self) {
-        self.saved.clone_from(&self.text);
-        if let Some(composition) = &mut self.composition {
-            composition.mark_saved_version(&self.text);
-        }
+        let saved = self.saved_version(&self.text);
+        self.mark_saved_snapshot(saved);
     }
     /// A write can finish after another edit. Record the version actually written
     /// without treating the newer in-memory document as saved.
     pub fn mark_saved_version(&mut self, text: &str) {
-        self.saved.clear();
-        self.saved.push_str(text);
+        let saved = self.saved_version(text);
+        self.mark_saved_snapshot(saved);
+    }
+    fn saved_version(&self, text: &str) -> std::sync::Arc<str> {
+        if self.saved.as_ref() == text {
+            self.saved.clone()
+        } else {
+            std::sync::Arc::from(text)
+        }
+    }
+    fn mark_saved_snapshot(&mut self, saved: std::sync::Arc<str>) {
+        self.saved = saved;
         if let Some(composition) = &mut self.composition {
-            composition.mark_saved_version(text);
+            composition.mark_saved_snapshot(self.saved.clone());
         }
     }
     pub const fn can_undo(&self) -> bool {
@@ -1257,6 +1265,75 @@ mod tests {
         assert_eq!(document.text(), "abefore");
         assert!(document.undo());
         assert_eq!(document.text(), "before");
+    }
+
+    #[test]
+    fn saved_baselines_are_shared_until_a_distinct_version_is_acknowledged() {
+        let mut document = Document::new("文\r\n😀");
+        let snapshot = document.clone();
+        assert!(std::sync::Arc::ptr_eq(&document.saved, &snapshot.saved));
+        document.insert_native_text("a", None).unwrap();
+        document.mark_saved();
+        assert!(!document.is_dirty());
+        assert!(!snapshot.is_dirty());
+        assert!(!std::sync::Arc::ptr_eq(&document.saved, &snapshot.saved));
+        assert_eq!(snapshot.recovery().saved, "文\r\n😀");
+        let saved = document.saved.clone();
+        document.mark_saved();
+        document.mark_saved_version("a文\r\n😀");
+        assert!(std::sync::Arc::ptr_eq(&saved, &document.saved));
+        document.insert_native_text("b", None).unwrap();
+        document.mark_saved_version("a文\r\n😀");
+        assert!(document.is_dirty());
+        assert!(std::sync::Arc::ptr_eq(&saved, &document.saved));
+        assert!(document.undo());
+        assert!(!document.is_dirty());
+        assert!(document.undo());
+        assert!(document.is_dirty());
+        assert!(!snapshot.is_dirty());
+    }
+
+    #[test]
+    fn composition_save_acknowledgements_share_one_baseline_and_survive_cancellation() {
+        let mut document = Document::new("文\r\n😀");
+        document.begin_composition(Some(1));
+        assert!(std::sync::Arc::ptr_eq(
+            &document.saved,
+            &document
+                .composition
+                .as_ref()
+                .unwrap()
+                .committed_document()
+                .saved,
+        ));
+        document
+            .native_edit(
+                Some(Edit::replace(0..0, "a")),
+                Selection::caret(1),
+                NativeInputKind::Insert,
+                None,
+            )
+            .unwrap();
+        document.mark_saved_version("a文\r\n😀");
+        let saved = document.saved.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            &saved,
+            &document
+                .composition
+                .as_ref()
+                .unwrap()
+                .committed_document()
+                .saved,
+        ));
+        assert!(!document.is_dirty());
+        let recovery = document.recovery();
+        assert_eq!(recovery.text, "文\r\n😀");
+        assert_eq!(recovery.saved, "a文\r\n😀");
+        assert!(document.cancel_composition());
+        assert!(std::sync::Arc::ptr_eq(&saved, &document.saved));
+        assert_eq!(document.text(), "文\r\n😀");
+        assert!(document.is_dirty());
+        assert!(!document.can_undo());
     }
 
     #[test]

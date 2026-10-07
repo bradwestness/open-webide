@@ -46,8 +46,8 @@ impl Composition {
     pub(super) fn committed_document(&self) -> &Document {
         &self.before
     }
-    pub(super) fn mark_saved_version(&mut self, text: &str) {
-        self.before.mark_saved_version(text);
+    pub(super) fn mark_saved_snapshot(&mut self, saved: std::sync::Arc<str>) {
+        self.before.mark_saved_snapshot(saved);
     }
 }
 fn left(text: &str, at: usize, count: usize) -> usize {

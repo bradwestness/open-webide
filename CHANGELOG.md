@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share immutable saved-text baselines across document and composition snapshots. Save acknowledgements replace only the written baseline, reuse identical versions and propagate one allocation through active composition while preserving dirty-state and recovery behavior.
+
 - Share immutable undo transactions and retained history steps across document/composition snapshots. Appending a typing group detaches its metadata while reusing earlier edit payloads; undo, redo, divergent edits and per-document retention limits remain independent.
 
 - Restore cancelled composition before publishing its borrowed preview and committed source. Avoid full-file cancellation copies for stale owners and allocate UI source only where the matching active view or project snapshot needs restoration, with shared local/remote guards.

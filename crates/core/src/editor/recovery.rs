@@ -34,7 +34,7 @@ impl Document {
             .map_or(self, |composition| composition.committed_document());
         DocumentRecovery {
             text: document.text.clone(),
-            saved: document.saved.clone(),
+            saved: document.saved.to_string(),
             selections: document.selections.clone(),
             collapsed: document
                 .folds
