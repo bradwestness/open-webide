@@ -17,12 +17,12 @@ sessions, and preferences live in SQLite, so you can resume from another browser
   last-used session restored when opening a project.
 - Chat with a coding agent that reads, searches, edits, runs commands, and uses Git;
   review pending edits with Accept/Reject controls.
-- Choose Default, Auto-accept edits, Auto, or YOLO approval modes with `Shift+Tab`.
+- Choose Manual, Auto-accept edits, Auto, or YOLO approval modes with `Shift+Tab`.
   Auto uses an optional fast model, falling back to the primary model.
 - Choose personal primary/fast defaults in Settings. Configure shared servers,
-  credentials, context, sampling, output, thinking, and tool settings from Servers. The saved auto-compaction
-  threshold defaults to 85% (0 disables it). Local and remote runs compact before model requests, reserve output space, and retain original history alongside saved summaries.
-  Server setup uses a rerunnable provider → URL/auth → model discovery wizard; review and customize detected settings before applying. Re-run it from Servers or the model setup toolbar button.
+  credentials and model settings through the Servers setup wizard. See
+  [your first session](docs/first-session.md#connect-a-model) for setup and
+  [architecture](docs/architecture.md#shared-feature-boundaries) for context compaction.
 - Use slash commands such as `/model`, `/test`, `/diff`, `/commit`, and `/sync`,
   with live token/speed telemetry and a context-window gauge.
 
@@ -33,6 +33,8 @@ The [project site guide](docs/project-site.md) explains how the landing page and
 are built and published to GitHub Pages from this repository.
 
 Documentation and project updates: [openwebide.com](https://openwebide.com/).
+Browse the [documentation](docs/index.md) by Getting started, Using Open WebIDE,
+Hosting and administration, Development, or Project.
 
 ## Run with Docker
 
@@ -116,20 +118,10 @@ copy of the workspace.
 
 ## Open a project
 
-After signing in, add your model server in Settings, choose a primary model,
-and open a project. Both workspace modes share the editor and agent features:
-
-| Mode | Folder picker | File access |
-| --- | --- | --- |
-| Remote | Folders on the Open WebIDE host | Backend workspace mount |
-| Local | Folders on the browser's device | Chromium File System Access API |
-
-Local mode stores browser directory handles in IndexedDB. For commands and Git,
-a bridge on that device must also see the selected folder: start it inside the
-project or with a workspace containing it within five directory levels. A temporary
-probe file verifies the match and is removed afterward. If the folder is unreachable,
-those tools are hidden and chat explains how to enable them. An interrupted local
-run can be continued with **Resume**.
+After signing in, [connect a model](docs/first-session.md#connect-a-model) and
+choose **Open remote** for host folders or **Open local** for this device's folders.
+See [local and remote projects](docs/workspaces.md) for browser requirements,
+folder permissions and command/Git capabilities.
 
 ## Connect over the LAN
 

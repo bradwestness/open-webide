@@ -1,0 +1,30 @@
+- Home: index.md
+- Documentation: docs/index.md
+- Getting started:
+    - Overview: docs/start.md
+    - Install and run: getting-started.md
+    - First session: docs/first-session.md
+    - Local and remote projects: docs/workspaces.md
+- Using Open WebIDE:
+    - Overview: docs/using.md
+    - Editor: docs/editor.md
+    - Files and context menus: docs/file-tree-menus.md
+    - Reload and reconnect: docs/reload-recovery.md
+- Hosting and administration:
+    - Overview: docs/hosting.md
+    - Releases, configuration and backups: docs/releases.md
+    - Podman services: docs/podman-quadlet.md
+    - HTTPS with Tailscale: docs/tailscale.md
+    - Execution bridge: docs/execution-bridge.md
+- Development:
+    - Overview: docs/development.md
+    - Architecture: docs/architecture.md
+    - API examples: docs/api-examples.md
+    - Design system: docs/design-system.md
+    - Editor performance: docs/editor-performance.md
+    - Project website: docs/project-site.md
+- Project:
+    - Overview: docs/project.md
+    - Roadmap: docs/roadmap.md
+    - Changelog: CHANGELOG.md
+    - Open source software: docs/open-source-software.md

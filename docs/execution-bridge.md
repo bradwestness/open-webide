@@ -18,9 +18,17 @@ cargo build -p openwebide-bridge
   --backend-url http://127.0.0.1:3000/api --secret-file /tmp/openwebide-bridge-secret
 ```
 
-Signed-in connections (hello with a bridge token) can run chat and agents over the bridge when it shares the backend's secret. Runs continue after a browser disconnect and can replay their events on reconnect. Otherwise, runs use SSE and completions use `/api/chat-tools`. HTTP-only builds (`cargo build -p openwebide-bridge --no-default-features`) advertise no run support; terminal and Git operations remain available.
+Signed-in connections can run chat and agents over the bridge when it shares the
+backend's secret. The frontend selects WebSocket runs when `hello_ok` advertises
+run support. In browser DevTools, prompts send `run_start` and replies arrive as
+`run_event` frames. Local agents remain in the browser and request model
+completions through `completion_start`.
 
-**Chat over the bridge:** the frontend uses WebSocket runs after `hello_ok` advertises run support. In browser DevTools, prompts send `run_start` and replies arrive as `run_event` frames without an SSE request. Local folders keep their agent loop in the browser and stream model completions through `completion_start`. Reloading a running session attaches its snapshot; reconnecting resumes from the last sequence. If the bridge is unavailable, rejects authentication, or doesn't finish hello within about two seconds, chat uses SSE and local completions use `/api/chat-tools`. A project the bridge cannot see shows an info notice before server fallback; busy sessions and planning failures show errors. LAN clients use the same flow.
+HTTP-only builds (`cargo build -p openwebide-bridge --no-default-features`)
+advertise no run support; terminal and Git operations remain available.
+See [chat execution and fallback](architecture.md#chat-execution-and-streaming)
+for transport selection, and [reload recovery](reload-recovery.md) for reconnect
+and interrupted-run behavior.
 
 - `--backend-url <URL>` (or env `OPENWEBIDE_BRIDGE_BACKEND_URL`): backend API URL for run plans and persistence (default: `http://127.0.0.1:3000/api`); set it on the daemon, never in a client request. A frontend `?api=` development override needs a matching `--backend-url`.
 - `--workspace <DIR>` (or env `OPENWEBIDE_BRIDGE_WORKSPACE`): sets the workspace root directory for command execution and repository operations (defaults to the current working directory). This directory must match the `files` source mount used by the Spin backend (e.g. `~/source` locally or `/workspace` in Docker). All `cwd` arguments passed to the bridge are evaluated relative to this root, and requests escaping the root are rejected (lexical confinement).

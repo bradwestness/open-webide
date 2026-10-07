@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  {% set title = config.site_name if page and page.is_homepage else ((page.title if page else 'Page not found') ~ ' · ' ~ config.site_name) %}
+  {% set page_title = page.ancestors[0].title if page and page.title == 'Overview' and page.ancestors else (page.title if page else 'Page not found') %}
+  {% set title = config.site_name if page and page.is_homepage else (page_title ~ ' · ' ~ config.site_name) %}
   {% set description = page.meta.description if page and page.meta.description else config.site_description %}
   {% set canonical = config.site_url if page and page.is_homepage else (page.canonical_url if page else '') %}
   {% set image = config.site_url ~ 'assets/social-card.png' %}
@@ -29,7 +30,7 @@
   <link rel="icon" href="{{ 'frontend/pwa/favicon.svg' | url }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ 'assets/shared.css' | url }}">
   <link rel="stylesheet" href="{{ 'assets/site.css' | url }}">
-  <script type="module" src="{{ 'assets/diagrams.js' | url }}"></script>
+  <script defer src="{{ 'assets/diagrams.js' | url }}"></script>
 </head>
 <body>
   <a class="skip-link" href="#content">Skip to content</a>
@@ -38,7 +39,7 @@
     <nav aria-label="Primary">
       {% for item in nav.pages %}
         {% if item.file.src_path == 'getting-started.md' %}<a href="{{ item.url | url }}">Get started</a>{% endif %}
-        {% if item.file.src_path == 'docs/architecture.md' %}<a href="{{ item.url | url }}">Docs</a>{% endif %}
+        {% if item.file.src_path == 'docs/index.md' %}<a href="{{ item.url | url }}">Docs</a>{% endif %}
       {% endfor %}
       <a href="{{ config.repo_url }}/issues">Issues</a>
       <a href="{{ config.repo_url }}">GitHub</a>
@@ -51,18 +52,39 @@
       <details open>
         <summary>Documentation</summary>
         <nav aria-label="Documentation">
-          {% for item in nav %}
-            {% if item.children %}
-              {% for child in item.children %}<a href="{{ child.url | url }}"{% if child.active %} aria-current="page"{% endif %}>{{ child.title }}</a>{% endfor %}
-            {% else %}<a href="{{ item.url | url }}"{% if item.active %} aria-current="page"{% endif %}>{{ item.title }}</a>{% endif %}
-          {% endfor %}
+          {% macro navigation(items) %}
+            <ul>
+            {% for item in items %}
+              <li>
+              {% if item.children %}
+                <details class="nav-section"{% if item.active %} open{% endif %}>
+                  <summary>{{ item.title }}</summary>
+                  {{ navigation(item.children) }}
+                </details>
+              {% else %}
+                <a href="{{ item.url | url }}"{% if item.active %} aria-current="page"{% endif %}>{{ item.title }}</a>
+              {% endif %}
+              </li>
+            {% endfor %}
+            </ul>
+          {% endmacro %}
+          {{ navigation(nav) }}
         </nav>
       </details>
     </aside>
     {% endif %}
     <main id="content" tabindex="-1">
       {% if page %}
-        {% if not home %}<p class="source-link"><a href="{{ config.repo_url }}/blob/main/{{ 'README.md' if page.file.src_path == 'getting-started.md' else page.file.src_path }}">View source on GitHub</a></p>{% endif %}
+        {% if not home %}
+          <nav class="breadcrumbs" aria-label="Breadcrumb">
+            <a href="{{ 'docs/index.html' | url }}">Docs</a>
+            {% for ancestor in page.ancestors | reverse %}
+              {% if ancestor.children %}<span aria-hidden="true">/</span><a href="{{ ancestor.children[0].url | url }}">{{ ancestor.title }}</a>{% endif %}
+            {% endfor %}
+            <span aria-hidden="true">/</span><span aria-current="page">{{ page.title }}</span>
+          </nav>
+          <p class="source-link"><a href="{{ config.repo_url }}/blob/main/{{ 'README.md' if page.file.src_path == 'getting-started.md' else page.file.src_path }}">View source on GitHub</a></p>
+        {% endif %}
         {{ page.content }}
       {% else %}<h1>Page not found</h1><p><a href="{{ nav.homepage.url | url }}">Return home</a></p>{% endif %}
     </main>

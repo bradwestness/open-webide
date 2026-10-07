@@ -46,19 +46,34 @@ The recorder must save the summary before execution polls the next model request
 
 ## Components
 
-```
-browser
-  └── frontend (Leptos → wasm32-unknown-unknown, built by Trunk)
-        │  REST + SSE /api/...
-        ├── shared WebSocket → native bridge → model HTTP + host tools
-        │                      └── REST → backend (secret + acting user)
-        ▼
-  Spin (wasm32-wasip2)
-        ├── static file server component  → serves frontend/dist at /
-        └── backend component (this repo) → /api/...
-              ├── spin-sdk http  (request/response)
-              ├── spin-sdk sqlite (the "default" database)
-              └── outbound HTTP → localhost (Ollama / llama.cpp)
+```mermaid
+flowchart TB
+    subgraph device["Browser device"]
+        frontend["Leptos frontend · browser WASM<br/>Built by Trunk"]
+        local["Local project files<br/>File System Access API"]
+        frontend -->|"Local file operations"| local
+    end
+    subgraph host["Open WebIDE host"]
+        subgraph spin["Spin runtime"]
+            assets["Static fileserver<br/>frontend/dist"]
+            backend["Backend · WASI component<br/>REST and SSE APIs"]
+        end
+        bridge["Native execution bridge<br/>Agent runs, terminals and host tools"]
+        sqlite[("SQLite<br/>default database")]
+        remote["Remote project files"]
+        processes["Host commands and Git"]
+        backend -->|"spin-sdk sqlite"| sqlite
+        backend -->|"Host filesystem VFS"| remote
+        bridge --> remote
+        bridge --> processes
+        bridge -->|"REST · secret and acting user"| backend
+    end
+    models["Model servers<br/>Ollama / OpenAI-compatible API"]
+    assets -->|"Frontend assets at /"| frontend
+    frontend -->|"REST and SSE at /api"| backend
+    frontend <-->|"Shared authenticated WebSocket"| bridge
+    bridge -->|"Model HTTP"| models
+    backend -->|"Model HTTP fallback"| models
 ```
 
 ### Compilation and deployment
@@ -126,7 +141,7 @@ sequenceDiagram
         UI->>Run: Approve or deny
     end
     Run->>Tools: Execute admitted call
-    Note over Tools: HostFsVfs for remote, BrowserFsaVfs for local; MemoryVfs in contracts
+    Note over Tools: HostFsVfs for remote, BrowserFsaVfs for local, MemoryVfs in contracts
     Tools-->>Run: Result and pending changes
     Run->>API: Persist messages, steps and review state
     API->>DB: Save scoped run records
@@ -269,64 +284,30 @@ is the Spin image plus Rust and Trunk, and runs `spin build` (so the
 `spin.toml` build commands stay the single source of truth); the runtime
 stage copies `spin.toml`, the backend WASM, `frontend/dist`, and the native bridge
 into a fresh Spin image. Port 3000 serves frontend and API; port 3001 serves the
-bridge. SQLite and the bridge secret live in `/app/.spin`; the host workspace is
+bridge.
+
+SQLite and the bridge secret live in `/app/.spin`; the host workspace is
 mounted at `/workspace`. A bash supervisor stops both children if either exits and
 forwards shutdown signals. A non-flag command override runs directly.
 `OPENWEBIDE_BRIDGE=0` disables the bridge; chat uses SSE. Old container project
 paths are migrated automatically to the `/workspace` mount.
 
-`docs/podman-quadlet.md` documents running the same image as a systemd
-service on Linux via Podman quadlet (`.image` + `.container` units).
+See [Podman services](podman-quadlet.md) for Linux systemd deployment and
+[releases and upgrades](releases.md) for installation, configuration and backups.
 
 ## Workspace: local and remote modes
 
-The IDE operates on a project folder. Where that folder lives defines two
-modes; the UI is mode-agnostic, sitting behind a `Workspace` trait in the
-frontend with one impl per mode.
+The frontend's `Workspace` facade selects filesystem adapters: remote files use
+Spin's host mount, while local files use `window.showDirectoryPicker()` through
+web-sys/wasm-bindgen. Commands and Git use a bridge with access to the same folder.
+Backend APIs persist project metadata, settings and session history for both modes.
 
-**Remote mode** — remote = a project on the device hosting Open WebIDE:
+Local agent loops execute in the browser; remote loops execute on the bridge or
+backend. Model requests use the configured HTTP transport independently of file
+location. Unix-domain socket transport is not implemented.
 
-- Operates on repositories inside Spin's configured filesystem mount. The bridge
-  uses the same workspace root for commands and Git. Multi-project tabs switch
-  between folders under that root. Unix-domain sockets are not implemented.
-- The backend exposes a file API (`/api/files`: list, read, write, search) and git API,
-  and the frontend calls it like any other REST/WebSocket endpoint.
-- The agent edits project files and executes commands directly in the native host
-  directory with full access to host Git identity and toolchains.
-- The LLM also runs on the host (outbound HTTP to localhost is already permitted).
-
-**Local mode** — local = a project on this device (the browser's File System Access API):
-
-- File System Access API (`window.showDirectoryPicker()`) via web-sys /
-  `wasm_bindgen` interop; the directory handle is persisted in IndexedDB and
-  re-authorized on reload
-- File operations and the agent loop stay in the browser. The backend persists
-  settings, sessions, messages, and tool steps. Model completions stream through
-  the companion bridge, falling back to backend `/api/chat-tools`.
-- A temporary probe file discovers the picked folder under the bridge root (up
-  to five levels), verifies it at each run, and is removed afterwards. Command
-  and Git tools are hidden if the bridge cannot see it. Interrupted local runs
-  can resume from persisted history without another user message.
-
-Constraints & Device Roles:
-
-- **Desktop + Mobile Workflow (Shared Sessions):** Remote mode is not just for
-  remote servers. When running Open WebIDE on a workstation alongside local LLMs,
-  using Remote mode on your desktop (`http://localhost:3000`) and on your phone or
-  tablet (`http://workstation:3000` via LAN/Tailscale) means both devices view the
-  exact same projects and chat sessions stored in backend SQLite. You can prompt
-  the agent at your desk, walk away, and monitor streaming tool steps and review
-  diffs on your mobile device without any session desynchronization.
-- **Local Mode Role:** local = a project on this device (the browser's File System Access API).
-  Access an Open WebIDE deployment with private, on-disk repositories that you
-  do not want to mount or upload to the host.
-- The File System Access API is Chromium-only (Chrome/Edge). Mobile browsers
-  (iOS Safari, Android Chrome) do not support directory picking, making mobile
-  devices natural Remote-mode control clients.
-- Keep the modes coherent: remote = a project on the device hosting Open WebIDE;
-  local = a project on this device (the browser's File System Access API).
-  Model-server location is configured independently: model requests use the backend
-  or bridge transport, while workspace mode determines where file operations run.
+See [local and remote projects](workspaces.md) for the user-facing capabilities,
+browser requirements and cross-device workflow.
 
 ### Chat execution and streaming
 
@@ -346,17 +327,15 @@ by a blank line. For example, `event: delta` carries `{"kind":"delta","content":
 append a plain-text reply-cutoff marker. Message and done events wrap the persisted message in `message`. The frontend parses the data's
 `kind` tag. Frontend and backend must be deployed together for this frame format.
 
-Sending waits up to about two seconds for a connecting bridge. Unavailable or unauthorized
-bridges fall back silently. A project unavailable to the bridge shows a notice and falls back;
-busy or failed run plans show an error. Stops and approvals address the active WS run. History
-loads discover running bridge runs and merge snapshots by message and step IDs, including pending
-approvals and live text. Socket reconnects attach using the last received sequence; an unknown
-run clears streaming, reloads history, and adds an interrupted-run notice if no reply was saved.
-Runs survive socket disconnects; a daemon restart loses its in-memory run registry.
-Browser-owned agents offer Resume after reload, including unfinished tool turns. Shared
-history reconstruction pairs each saved call with its recorded result or an explicit unknown
-outcome; continuation allocates a new turn and never replays those tools automatically.
-See [reload recovery](reload-recovery.md) for behavior and live verification.
+Sending waits up to about two seconds for a connecting bridge. Unavailable or
+unauthorized bridges fall back silently. A project unavailable to the bridge shows
+a notice and falls back; busy or failed run plans show an error. Stops and approvals
+address the active WebSocket run.
+
+History loads merge snapshots by message and step IDs; socket reconnects attach
+using the last received sequence. An unknown run clears streaming, reloads history
+and adds an interrupted-run notice if no reply was saved. See
+[reload recovery](reload-recovery.md) for run lifetime, Resume and pending reviews.
 
 ### Virtual File System (VFS) & process execution
 
@@ -365,18 +344,14 @@ tools operate against a unified `Vfs` abstraction (Phase 10). Whether backed by
 Spin's mounted filesystem on the host or browser directory handles in local mode,
 the agent interacts with standard POSIX paths without mode-specific branching.
 
-For process execution and terminal access (Phase 11), a thin native WebSocket
-bridge handles PTY sessions and command execution outside Spin's WASI sandbox,
-providing execution capabilities (`cargo test`, interactive shell) to both the
-agent and the user. Origin-less HTTP tool requests require the backend/bridge shared secret. Browser
-HTTP tool requests and WebSocket hello use a short-lived HMAC bridge token or
-local pairing token. Host/Origin allowlists reject foreign origins and DNS
-rebinding; browser tool POSTs require JSON. `POST /secret` bootstraps only on
-loopback. Remote bridges use `SPIN_VARIABLE_BRIDGE_URL` and
-`SPIN_VARIABLE_BRIDGE_SECRET`. Working directories are confined lexically under
-the canonical workspace root; directory symlinks are permitted. Agent file tools
-refuse `.spin/` and `.git` writes. Shell commands still have host access and
-require approval; confinement is not an OS sandbox.
+The native bridge handles PTY sessions and commands outside Spin's WASI sandbox.
+Working directories are confined lexically under the canonical workspace root;
+directory symlinks are permitted. Agent file tools refuse `.spin/` and `.git`
+writes. Shell commands retain host access and require approval; filesystem
+confinement is not an OS sandbox.
+
+The [bridge reference](execution-bridge.md#host-and-origin-security-baseline)
+defines authentication, Host/Origin validation and request limits.
 
 The native bridge separates `server/` (HTTP parsing, routes, WebSocket connections),
 `terminals/` (PTY/headless sessions and replay rings), `exec/` (command and Git execution),
@@ -401,12 +376,16 @@ Server-side agent runs stream model text token by token over SSE, alongside
 telemetry and tool steps. Text preceding tool calls is persisted as an interim
 assistant message with wire tool calls and emitted as an `interim` event; tool steps follow that message
 in the conversation. The same text is included in the assistant tool-call message
-sent back to the model. Tool-call ids use the initiating user message id throughout
+sent back to the model.
+
+Tool-call ids use the initiating user message id throughout
 the run, while the display anchor moves to each persisted interim message.
 History reconstructs tool replies from anchored step summaries; incomplete row sets
 fall back to plain text. Empty interim messages carrying calls are hidden in the UI.
 Local-mode runs use the same loop, persist interim text and calls, and stream
-model turns over bridge completions when available. The `/api/chat-tools` fallback
+model turns over bridge completions when available.
+
+The `/api/chat-tools` fallback
 delivers a complete turn.
 
 `POST /api/sessions/<id>/run-plan` prepares a run without persisting a message or

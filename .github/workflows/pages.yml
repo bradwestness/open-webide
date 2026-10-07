@@ -33,6 +33,8 @@ jobs:
           shared-key: pages-metadata
           cache-targets: false
       - run: pip install -r site/requirements.txt
+      - name: Check documentation navigation
+        run: python -m unittest discover -s site -p 'test_*.py'
       - name: Build and validate site
         run: python site/build.py --output "$RUNNER_TEMP/project-site"
       # The Pages convenience action excludes dot directories, including .well-known.

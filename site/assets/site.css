@@ -11,10 +11,19 @@ a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outli
 .layout.landing { display: block; max-width: 1120px; }
 main { min-width: 0; max-width: 900px; }
 .landing main { max-width: none; }
-.sidebar nav { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+.sidebar nav { margin-top: 16px; }
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li { margin: 4px 0; }
+.sidebar a { display: block; padding: 6px 8px; border-radius: var(--radius-sm); }
+.sidebar .nav-section { margin-top: 12px; }
+.sidebar .nav-section summary { padding: 6px 0; font-size: 14px; }
+.sidebar .nav-section ul { margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--border); }
 .sidebar summary { font-weight: 600; cursor: pointer; }
 .sidebar a { font-size: 14px; text-decoration: none; color: var(--text-muted); }
 .sidebar a:hover, .sidebar a[aria-current] { color: var(--accent); }
+.sidebar a[aria-current] { background: var(--bg-panel); font-weight: 600; }
+.breadcrumbs { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; color: var(--text-muted); margin-bottom: 12px; }
+.breadcrumbs a { text-decoration: none; }
 .source-link { font-size: 13px; margin: 0 0 24px; }
 h1, h2, h3 { line-height: 1.25; color: var(--text); scroll-margin-top: 24px; }
 h1 { font-size: 2.4rem; letter-spacing: -.035em; }
@@ -26,6 +35,8 @@ table { display: block; overflow-x: auto; border-collapse: collapse; max-width: 
 th, td { padding: 10px 14px; border: 1px solid var(--border); text-align: left; }
 th { background: var(--bg-panel); }
 img, svg { max-width: 100%; height: auto; }
+.mermaid { margin: 24px 0; overflow-x: auto; padding: 16px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.mermaid svg { display: block; margin: auto; }
 blockquote { margin-left: 0; border-left: 3px solid var(--accent); padding-left: 20px; color: var(--text-muted); }
 .hero { padding: 48px 0 56px; max-width: 800px; }
 .hero h1 { font-size: clamp(2.6rem, 6vw, 4.4rem); margin: 20px 0 24px; }

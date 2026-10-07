@@ -128,7 +128,9 @@ main-thread long tasks, main WASM committed memory before/after input, DOM size,
 Chrome process-tree RSS at 200 ms intervals. Linux additionally reports apportioned
 PSS when every owned process's `smaps_rollup` is readable. Summed RSS counts shared
 pages repeatedly; it is not unique resident memory. Main WASM allocation excludes
-worker instances; process-tree measurements include their hosting renderer. Samples
+worker instances; process-tree measurements include their hosting renderer.
+
+Samples
 can miss brief peaks. These are complete application workloads, including recovery,
 background preparation and deferred saves, rather than isolated core operations.
 Input timing includes the native event through paint observation; cold timing also
@@ -330,6 +332,7 @@ syntax results could discard anchors while reusing heights, leaving no cold prob
 that would repopulate them. The final policy preserves only identical styled rows
 with valid previous height provenance; browser contracts verify transfer and stale
 publication rejection, including font loading with unchanged computed metrics.
+
 These individual observations support further investigation, not percentiles or
 admission validation. Complete cold row shaping, long-line input and multi-GiB
 summed Chrome RSS remain costly. Summed RSS can double-count shared pages; Linux
@@ -429,7 +432,9 @@ in progress when it is installed, rather than settled readiness. The
 [after trace](editor-performance/production-font-ready-after.jsonl) records one
 startup height probe per mode, retains font generation zero and has no font
 events or trace truncation. Measurement probes record their original immutable
-scope so diagnostic timing cannot mislabel jobs with newer state. Traces record
+scope so diagnostic timing cannot mislabel jobs with newer state.
+
+Traces record
 style and revision attributes, never source text. These instrumented observations
 perturb timings and establish probe counts rather than latency thresholds.
 Both builds include concurrent branding/welcome changes; module identifiers

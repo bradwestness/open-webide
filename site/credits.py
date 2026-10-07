@@ -63,9 +63,11 @@ def render(root):
         packages.append((package["id"] in direct, row))
     direct_rows = [row for is_direct, row in packages if is_direct]
     transitive_rows = [row for is_direct, row in packages if not is_direct]
-    mermaid = re.search(r"mermaid@([0-9.]+)/", (root / "site/assets/diagrams.js").read_text())
-    if mermaid is None:
-        raise ValueError("Missing pinned Mermaid version")
+    diagrams = (root / "site/assets/diagrams.js").read_text()
+    mermaid = re.search(r"mermaid@([0-9.]+)/", diagrams)
+    elk = re.search(r"@mermaid-js/layout-elk@([0-9.]+)/", diagrams)
+    if mermaid is None or elk is None:
+        raise ValueError("Missing pinned Mermaid or ELK layout version")
     return (
         f"\n## Rust libraries\n\nThis build credits **{len(packages)} third-party crate versions**, "
         "resolved from `Cargo.lock` with all workspace features. This includes both workspace modes, "
@@ -76,7 +78,11 @@ def render(root):
         table(transitive_rows) + "\n\n</details>\n\n## Website build libraries\n\n"
         "These packages build the documentation site. Versions reflect the environment used for this build.\n\n" +
         python_packages(root / "site/requirements.txt") + "\n\n## Website browser library\n\n" +
-        table([("Mermaid", mermaid[1], "MIT", "https://github.com/mermaid-js/mermaid")]) +
-        "\n\nMermaid renders the architecture diagrams and includes its own bundled dependencies. "
+        table([
+            ("Mermaid", mermaid[1], "MIT", "https://github.com/mermaid-js/mermaid"),
+            ("Mermaid ELK layout", elk[1], "MIT", "https://github.com/mermaid-js/mermaid/tree/develop/packages/mermaid-layout-elk"),
+        ]) +
+        "\n\nMermaid renders the architecture diagrams; its ELK layout uses elkjs (EPL-2.0). "
+        "Both distributions include bundled dependencies. "
         "See its upstream distribution for third-party notices.\n"
     )

@@ -2,15 +2,39 @@
 
 The GitHub Pages site has its own landing page in `site/index.md`. Documentation
 is generated directly from `docs/**/*.md`, `README.md` and `CHANGELOG.md`; edit those
-files with the code they describe. The build makes a temporary snapshot, discovers
-documentation pages automatically, and copies supporting assets such as CSV files.
+files with the code they describe. The build makes a temporary snapshot and
+copies supporting assets such as CSV files.
 There are no maintained copies of the documentation and no separate wiki.
+
+## Documentation structure
+
+[Documentation](index.md) is the entry point. The navigation groups guides into
+Getting started, Using Open WebIDE, Hosting and administration, Development, and
+Project. Each group begins with an overview linking its guides; existing guide
+filenames stay in place so published URLs and repository links remain usable.
+
+Edit `site/navigation.yml` to place a new page in the appropriate section. The
+builder requires every Markdown page to appear exactly once and rejects missing
+files, duplicate entries and unlisted pages. Section names and link labels are
+curated independently of page headings. The sidebar expands the current section,
+and breadcrumbs link back to its overview.
+
+Keep step-by-step user guides in Getting started or Using Open WebIDE, installation
+and operations in Hosting, and implementation references in Development. Link
+related material across sections rather than duplicating it. Update the section
+overview when adding a guide.
 
 The site uses MkDocs with a small custom theme in `site/theme/`. Its palette and
 button foundations are extracted from `frontend/styles.css` during the build;
 site layout styles live in `site/assets/site.css`. Light and dark appearance follow
 the device preference without persisting browser settings. Mermaid code fences
 render using a pinned external renderer, with readable source as a fallback.
+
+Flowcharts use a pinned ELK layout plugin, with Mermaid's default layout as a
+fallback if the plugin cannot load. Sequence diagrams use their own renderer.
+Mermaid fences use the `mermaid` language tag. The deferred loader works on hosted
+pages and local `file://` previews; rendering requires access to jsDelivr. Diagrams
+follow the device's light/dark preference when the page loads.
 
 ## Build and preview
 
@@ -19,6 +43,7 @@ Install Rust/Cargo (as for app development), then run from the repository root:
 ```sh
 python3 -m venv /tmp/openwebide-pages-venv
 /tmp/openwebide-pages-venv/bin/pip install -r site/requirements.txt
+/tmp/openwebide-pages-venv/bin/python -m unittest discover -s site -p 'test_*.py'
 /tmp/openwebide-pages-venv/bin/python site/build.py --output /tmp/openwebide-site
 python3 -m http.server 8000 --directory /tmp/openwebide-site
 ```
@@ -109,6 +134,7 @@ third-party crates across the workspace, including platform, development,
 benchmark and vendored dependencies. The inventory reports package versions,
 upstream links and declared licenses, with direct dependencies listed first.
 The site builder also inventories MkDocs and its installed Python dependencies.
+
 Generated tables only exist in the build output; there is no second list to edit.
 Pages rebuilds when Cargo manifests or the lockfile change. CI uses stable Cargo
 for metadata without compiling the app or installing WASM targets.

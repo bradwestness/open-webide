@@ -3,6 +3,8 @@
 Edit runs in Rust/WebAssembly and uses the same commands and file policies for
 local and remote projects. The full editor roadmap is still in progress.
 
+## Appearance and tabs
+
 Settings → Editor defaults offers all five bundled Monaspace families: Neon (the
 default), Argon, Xenon, Radon, and Krypton. Texture healing and coding ligatures
 are independent toggles, both enabled by default. These preferences sync through
@@ -13,6 +15,8 @@ to left/right**, and **Move left/right**. File tabs also expose the tree's file,
 Git and chat actions, even when the Files dock is collapsed. Bulk file closes
 confirm unsaved changes together and reject changes made while confirmation is
 open. The persistent project-less Chat tab remains available.
+
+## Typing and editing commands
 
 - Tab advances to the next indentation stop; Shift+Tab outdents selected lines.
 - The folding gutter keeps a fixed width while syntax detection updates, so typing
@@ -51,12 +55,15 @@ undo step. Reindent aligns selected bracket-delimited blocks, leaves multiline
 string contents untouched and preserves Python's existing block depth; it is not
 a language formatter. Unsupported comment/reindent actions appear disabled.
 
+## Multiple selections and clipboard
+
 With multiple selections, Copy joins their source text in primary-selection order;
 Cut removes those ranges in one undo step after writing the clipboard. Paste puts
 one clipboard line into each selection when the line and selection counts match;
 otherwise it repeats the complete text at every selection. Copy also includes compact
 selection metadata: when it survives the clipboard and the cursor counts match,
 each cursor receives its original fragment, including multiline and empty fragments.
+
 Paste and match indentation rebases each fragment at its receiving line. Changed,
 invalid or stripped metadata uses the plain-text behavior above. CRLF separators
 between distributed plain-text lines are removed from their bodies. Clipboard
@@ -77,30 +84,39 @@ primary anchor, honoring tab stops and complete Unicode graphemes. Secondary
 carets and selections use the same font metrics as the syntax paint, including
 wrapped text; screen readers receive the cursor count. Arrow keys move all cursors
 by grapheme or logical line; with word wrap enabled, Up/Down use measured visual
-rows. Ctrl/Alt+Left/Right move by word, and Shift extends
+rows.
+
+Ctrl/Alt+Left/Right move by word, and Shift extends
 each selection. Home/End move to line boundaries, Ctrl/Cmd+Home/End to document
 boundaries; on macOS Cmd+arrows use line/document boundaries. Vertical movement
 retains the desired column across short lines, using pixels for wrapped rows.
 The shared engine retains soft-wrap affinity, skips folded rows and resets its
-horizontal goal after width/font changes. Measured primary and secondary carets
+horizontal goal after width/font changes.
+
+Measured primary and secondary carets
 share the existing selection overlay so a wrap boundary stays on the selected row.
 Measurements bind to the complete source and fold projection; stale/missing
 coverage rejects the entire movement without changing text, selections or history.
 The DOM adapter indexes bounded logical lines by grapheme byte/UTF-16 coordinates,
 locates visual rows with binary DOM range searches and measures only current and
-neighboring visual rows. Oversized paint tokens use Unicode-safe text runs so
+neighboring visual rows.
+
+Oversized paint tokens use Unicode-safe text runs so
 range measurements stay within short text nodes. It reuses measurements across
 cursors and caps prepared
 caret positions at 65,536. While paint is pending, arrow requests queue in order, including
 Shift selections. Typing, commands, composition and clipboard actions apply queued motion first.
 When a full row-height table is still preparing, styled probes measure the current
 and neighboring logical lines using the same caret sampler as prepared paint.
+
 Explicit neighbor links preserve wrapped movement without estimating unmeasured
 heights; stable line-relative IDs are mapped separately to screen coordinates. File/account/source/fold changes cancel stale
 requests; unavailable layout cancels after eight frames with an error. Full paint
 viewport rendering remains a follow-up. Multiple selection movement and
 structural selection commands are bounded to files up to 2 MiB; Escape still
 returns to the primary cursor in larger files.
+
+## Indentation
 
 The editor footer shows Spaces/Tabs, the indentation width and the tab width.
 These are separate: an indentation step can be four columns while a hard tab
@@ -138,26 +154,34 @@ files are limited to 256 KiB. Saving `.editorconfig` refreshes the active file's
 rules; switching files rediscovers rules. A pending discovery is discarded after
 a project, folder, bridge or account change.
 
+## Syntax and language behavior
+
 Paired typing/deletion, Enter, selected-line reindent, line/block comments,
 structural selection expansion and bracket navigation use validated parser
 contexts when available, including JavaScript template interpolation and HTML
 script/style bodies. Reindent keeps multiline literal content unchanged and
 separates embedded bodies, including after an unclosed block. Block comments use
 the language at each selection; caret edits stay within an embedded body, and
-selections escaping that body leave the document unchanged. Line comments combine
+selections escaping that body leave the document unchanged.
+
+Line comments combine
 per-language line markers and block-comment fallbacks in one transaction, deduplicate
 identical targets and preserve caret/selection direction through undo/redo.
 Selection expansion follows parsed words, expressions, blocks and functions
 before whole-line fallbacks, with validated source ranges and reversible shrink
 history. Bracket navigation and its decorations use the same contexts, including
-interpolation code and separate embedded bodies. Both retain bounded lexical
+interpolation code and separate embedded bodies.
+
+Both retain bounded lexical
 fallbacks when a parser is unavailable. Edit highlighting uses the same cached
 providers, with extensible highlight selectors and parser-protected literal/comment
 spans, including interpolation code and HTML script/style bodies. Tokens preserve
 source bytes; the DOM adapter only normalizes CRLF for textarea alignment.
 Inline/Split diffs, recovery reviews, Git previews and chat diff previews parse
 each complete source version with the shared providers, then intersect syntax
-colors with word-change boundaries. Source line numbers remain independent of
+colors with word-change boundaries.
+
+Source line numbers remain independent of
 alignment gaps; CRLF terminators are excluded while a final bare CR is preserved.
 PHP heredocs/nowdocs and shell heredocs preserve literal contents. PHP interpolated
 expressions (including their braces), shell command/parameter/arithmetic substitutions,
@@ -197,12 +221,16 @@ publishes one source-bound snapshot of folds, structure and tokens per source/ta
 width. Consumers share immutable allocations; updates and cancellation invalidate
 the cache while previously published snapshots retain their original source.
 The frontend facade also rejects changed account, file-read, source and tab-width
-scopes before publishing results. Each cursor uses its own language, including JavaScript/CSS
+scopes before publishing results.
+
+Each cursor uses its own language, including JavaScript/CSS
 in HTML, and template interpolation code remains editable while literal text is
 protected. Incomplete input uses bounded lexical fallback; JavaScript template
 interpolation also works during incomplete typing. Contexts verify their exact
 source before a command can mutate history. Custom provider classifiers use the
 same traversal, limits and fallback policy.
+
+## Preparation and viewport rendering
 
 The production editor runs preparation in a dedicated module worker using the
 same Rust/WASM build. The browser adapter handles messages, startup readiness,
@@ -210,12 +238,15 @@ timeouts and termination; the shared Rust engine owns analysis, validation and
 cache policy. One request runs at a time and one latest source waits, so repeated
 typing replaces queued work. Replies must match the exact source, file/project,
 account generation, read revision, epoch and tab width before publication.
+
 UTF-8 ranges, folds, token coverage and bracket links are validated without parsing
 the document again on the UI thread. Transport/startup failures use the same
 preparation engine synchronously with a 12 ms parser budget; unavailable contexts
 retain ordinary lexical editing. Worker parsing has a 100 ms budget.
 Languages with lexical highlighting, including JSON, TOML, YAML, SQL and Markdown,
-use the same preparation cache and worker. Multiline lexical state stays intact;
+use the same preparation cache and worker.
+
+Multiline lexical state stays intact;
 cancellation returns no partial rows. Plain text retains plain rendering.
 
 Unwrapped edit views render an overscanned row window for syntax, line-number
@@ -223,36 +254,46 @@ gutters and fold controls. The shared row-window policy receives browser geometr
 projected rows retain global native UTF-16 offsets for Unicode/CRLF pointer mapping.
 Syntax tokens and indentation guides are reused across scrolling. Paint and cursor
 measurements synchronize native viewport dimensions as well as scroll offsets,
-so a delayed resize/scrollbar observer cannot move a cursor using stale wrap width. Find and navigation
+so a delayed resize/scrollbar observer cannot move a cursor using stale wrap width.
+
+Find and navigation
 can reveal rows outside the current paint window. Wrapped views and rows containing
 standalone CR also use exact measured row-height windows. Cold measurement and
 remeasurement use temporary batches of at most 128 logical rows and 64 KiB of
 source, keeping each logical row intact. An individually longer row may exceed
 that byte budget up to the admission cap; finer rendering within these rows
-remains a follow-up. Batches release their DOM before yielding, with a frame turn
+remains a follow-up.
+
+Batches release their DOM before yielding, with a frame turn
 every eight batches. The native input stays visible and editable until exact
 measurements are ready. Shared progress permits queued cursor movement to wait
 while preparation advances, retaining a bounded retry for stalled work.
 Measurement publication checks source, folds, project, account and font/width
-scope, and rejects a height table that disagrees with native scrolling. Offscreen
+scope, and rejects a height table that disagrees with native scrolling.
+
+Offscreen
 cursor-neighbor probes measure exact geometry on demand in temporary row/byte
 batches; no hidden neighbor paint is retained between key presses. Both-mode
 browser contracts move 60 distant cursors and restore their exact selections,
 check the actual probe limits and release, and keep persistent paint in its viewport
 window. Cursor motion preserves the projection revision when folds do not
-change. Resize, font and styled-paint changes require fresh measurements; collapsed
+change.
+
+Resize, font and styled-paint changes require fresh measurements; collapsed
 panels cancel pending work and restart when visible. Localized edits reuse exact
 heights for unchanged styled prefixes and suffixes, including row insertions,
 deletions and undo. Reuse checks account, project, file-read, font/width,
 indentation, whitespace, token styles and line-ending scope; font changes clear the
 cache. Large regions between disjoint edits reuse matching interior rows through exact
 paint equality as well; conflicting measurements for identical rows are not reused.
+
 Browser contracts compare exact source and selections after queued arrows followed
 by typing, composition, paste and cut with cold versus prepared layouts in both
 workspace modes. Real-device input and clipboard verification remain follow-ups.
 Cancellable, noncomposing text insertion records event data before the browser's
 native edit, then commits through the shared document transaction engine after
 validating source, read, account, selection and folded projection ownership.
+
 Single-cursor insertion keeps the native textarea value; trusted browser commits
 without folds also skip the input handler's full DOM-value read. Folded, multiple-
 cursor, synthetic and fallback input still reconcile the complete value. Multiple
@@ -260,34 +301,45 @@ cursors use the same typing-history group. Typing declarations retain a bounded
 16 KiB surrounding-text projection around the selected range start. Local byte and
 native offsets map to full document coordinates, including partial rows, Unicode,
 CRLF and folded gaps; replacing a larger directional selection still edits its
-complete source range. Native origins and source/read/account/document/selection
+complete source range.
+
+Native origins and source/read/account/document/selection
 checks reject stale declarations. This bounds the retained declaration, not the
 textarea value or layout. The shared editor facade also captures immutable native
 contexts with 12 KiB of surrounding text and 4 KiB of growth headroom. Context
 replay borrows the source and preserves the complete selection even when the
 browser can hold only part of it, including directional Unicode/CRLF replacements
-and multiple cursors. Source, selection, fold, document, read, project and account
+and multiple cursors.
+
+Source, selection, fold, document, read, project and account
 changes reject stale contexts. After a commit, the facade rebases the context to
 retain a matching browser value; composition can retain its growing value under
 the document admission limits instead of replacing active input-method text.
 These context contracts are tested in both workspace modes but are not yet bound
-to the native textarea. Prepared primary caret/selection paint and single-cursor
+to the native textarea.
+
+Prepared primary caret/selection paint and single-cursor
 keyboard motion use shared source geometry and Rust commands. Caret reveal uses
 the common scroll viewport, including offscreen rows. Prepared mouse clicks resolve measured character positions and clamp blank
 space past the text to the line end. Prepared clicks and
 drags select source carets, words or logical lines through the same
-Rust policy; Shift-click preserves the existing anchor. Copy/cut use full source
+Rust policy; Shift-click preserves the existing anchor.
+
+Copy/cut use full source
 ranges for single selections too, preserving CRLF and shared undo behavior.
 Holding a drag near or beyond a viewport edge scrolls and extends the source
 selection vertically or horizontally, including with a stationary pointer. Mouse
 release or window blur stops it; pending paint is retried. Source/read/project/
-account and fold changes discard active drags. Prepared source row
+account and fold changes discard active drags.
+
+Prepared source row
 widths/heights now control scroll extents, reusing unchanged row dimensions after
 edits and retaining the source viewport's trailing padding when native scrolling
 clamps earlier. Source/account/syntax/layout guards discard obsolete dimensions; prepared
 scrolling reads no native input width/height. Physical browser size limits still
 apply. Cold/touch selection, cold extents and cold caret ownership
 still need to move out of native input before using a bounded textarea.
+
 Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME map projected changes
 into source replacements and validate their resulting selections against borrowed
@@ -295,17 +347,22 @@ prefix/insertion/suffix pieces. Replay constructs no complete replacement value;
 ambiguous repeated-text edits retain the original selected occurrence. IME previews
 validate eventual secondary edits against the same byte, line and long-line limits
 before publishing the primary change, and failed
-frames restore the pre-composition source, selections and redo history. Composition
+frames restore the pre-composition source, selections and redo history.
+
+Composition
 snapshots and workspace publication still retain complete source Strings.
 Ordinary transactions validate borrowed proposed pieces before mutating the existing
 String, including grouped undo/redo. Growth reserves at most 64 KiB of headroom
 above the transaction's peak size, rather than doubling a large buffer. Affected row contexts are merged so multiple
 cursors rebuild a shared row once, while distant edits retain interior coordinates.
+
 Fold rebasing uses precise edited boundaries and retains unaffected collapsed ranges
 until providers refresh. Admission still scans the proposed source; publishing buffers,
 projections and IME paths still materialize full Strings. The native textarea owns
 the complete projected source, so storage and input memory remain unbounded by the
 viewport.
+
+## Document coordinates and caches
 
 The shared document maintains logical-line and UTF-16 prefixes across transactions,
 grouped undo/redo and composition. Commands reuse indexed rows; native caret mapping
@@ -313,31 +370,39 @@ binary-searches the appropriate row. Long rows retain sparse, Unicode-safe
 byte/native-UTF-16/character checkpoints every approximately 512 bytes. Document
 and folded-view offset queries and cursor line/column status scan only the tail
 after a checkpoint. Rows outside the rebuilt edit region retain their indexes;
-folded views share the same immutable checkpoints. Long-row paint and cursor probes
+folded views share the same immutable checkpoints.
+
+Long-row paint and cursor probes
 also share sparse grapheme/UTF-16 coordinates and cached horizontal eligibility;
 unchanged rows retain their allocation. Lookups scan from exact cluster boundaries
 instead of preparing a complete glyph array on each probe. Validated fragment paint is retained for revisited intervals (at most 16 entries
 and 2 MiB of HTML), scoped by document, account, read/pending ownership, projection,
-syntax/guide allocation, indentation, whitespace and browser shaping/layout. Font
+syntax/guide allocation, indentation, whitespace and browser shaping/layout.
+
+Font
 events invalidate even when computed font text stays the same. Horizontal and
 wrapped rows additionally retain at most eight geometry tables with 4,096
 allocated glyph anchors each, including glyph overflow beyond the logical CSS box.
 Newly visited intervals clone bounded source before layout, validate measured
 anchors, then apply the complete fragment glyph check. Wrapped slices preserve
 original visual-row/tab origins, logical heights and global native offsets.
+
 Full-paragraph measurement remains the fallback for invalid geometry, oversized
 cluster slices, bidi paragraphs or reshaping differences. Cold height measurement
 supplies wrapped paint with these anchors while they
 remain in the bounded cache, avoiding a second complete-row shaping pass.
 Equivalent syntax results preserve proven geometry for identical styled rows;
 font loading advances independent font provenance even if computed font text is
-unchanged. Geometry publication checks the
+unchanged.
+
+Geometry publication checks the
 original source/view, font and layout epochs as well as read, account, syntax and
 style ownership. Retained anchors select bounded token source before HTML
 generation and parsing. Partial measurement failure discards those anchors and
 restores complete source before a fresh probe; Unicode offsets, token styles and
 logical extents remain intact. Unwrapped rows retain equivalent styled geometry
 within the same font generation without requiring a wrapped height table.
+
 Ordinary layout reconciliation can follow equivalent syntax paint without
 discarding its validated anchors; actual font invalidation always discards them.
 Already-settled browser font readiness does not invalidate initial geometry;
@@ -345,6 +410,7 @@ font loading completion and failure still invalidate it.
 First measurement still shapes the complete row. Initial layout,
 uncached full-row HTML construction and native
 input costs remain performance follow-ups.
+
 CRLF inverse mapping still selects the original CR, and surrogate offsets retain
 the existing boundary behavior. Projected text, normalized textarea text and
 visible-row coordinates share immutable allocations until source or folds change.
@@ -378,7 +444,9 @@ Supported code files show fold controls beside the logical line numbers for decl
 blocks and multiline comments/literals. Existing indicators follow line edits
 while analysis is pending; their controls remain disabled until fresh ranges
 arrive. The editor retains its last styled frame during same-document repaints
-and replaces it with the new paint, avoiding flashes of plain text. Replacing
+and replaces it with the new paint, avoiding flashes of plain text.
+
+Replacing
 a file, project, read generation or account releases that retained frame.
 Click a control to collapse or expand;
 the editing menu also offers cursor, recursive and all-document commands.
@@ -391,12 +459,15 @@ retains the full file's context, and Find reveals a hidden match. Native editing
 paste, cut and composition reveal the selected source lines before the browser
 changes them; disjoint folds remain collapsed. Commands and undo/redo rebase the
 remaining anchors and restore the source caret through the updated projection.
+
 Input-only browser events replay their change against the complete source.
 Unchanged projected values and selections stay under the native input method's
 control during composition.
 Languages without a grammar use the shared language-aware lexer for bracket blocks and multiline
 comments/literals, with indentation fallback when no parser is available. Adjacent
-full-line comments can fold as a group. Indentation uses the configured tab width;
+full-line comments can fold as a group.
+
+Indentation uses the configured tab width;
 blank rows do not create blocks, and multiline literal contents do not contribute
 fake indentation. YAML block scalars remain opaque.
 
@@ -424,13 +495,17 @@ and the footer shows line, column and selected character count. Indentation
 guides use visual tab stops and complete indentation steps, independently of
 source columns; blank lines continue the common surrounding indentation.
 These controls also work in read-only files and share the same source-coordinate
-facade in both modes. Horizontal scrolling remains the default. **Settings → Editor defaults** offers
+facade in both modes.
+
+Horizontal scrolling remains the default. **Settings → Editor defaults** offers
 **Word wrap** and **Show whitespace**, saved with the existing user-scoped database
 preferences. These reading options affect Edit without changing file content.
 Wrapping keeps one gutter number per logical source line and measures fold-row
 heights after resizing; navigation uses the rendered caret position. Whitespace
 markers show spaces, tabs and line endings while retaining their original text
-nodes and source offsets. The paint adapter normalizes CRLF to match the native
+nodes and source offsets.
+
+The paint adapter normalizes CRLF to match the native
 textarea; the document and saved file retain their original separators.
 
 ## Find and replace
@@ -471,7 +546,9 @@ Confirmed delete/revert clears affected buffers. Loading temporarily disables
 editing, and late reads cannot replace newer input or another account/project.
 The file tab strip keeps opening order, shows unsaved indicators, and supports
 Left/Right/Home/End navigation. Closing an unsaved file asks before discarding it;
-Cancel leaves it open. Closing the selected file chooses an adjacent tab. A close
+Cancel leaves it open.
+
+Closing the selected file chooses an adjacent tab. A close
 confirmation cannot discard newer edits or files from another account/project.
 The recovery facade loads saved tabs and drafts when a project opens and saves
 committed changes after a short debounce. A fresh window restores the selected
@@ -501,6 +578,7 @@ kept distinct from transport errors; recovery replies and save acknowledgements
 are validated. Old-session REST responses cannot expire a newly active session.
 Automatic loading and debounced saves are installed in the app. Saves are serialized
 per project; edits arriving during a write are saved after its acknowledgement.
+
 Failures keep the last acknowledged revision and current drafts; Retry recovery
 resumes writes. A revision conflict pauses writes until Restore saved files or Keep
 this window is confirmed. Late loads cannot discard files opened or edited in flight.
@@ -511,13 +589,17 @@ restore ordered tabs and active or hidden buffers, and preserve unrelated worksp
 state. Guards reject a changed project, reset, pending read, document revision,
 selection, draft, or composition. Old media URLs are returned to the caller for
 revocation. Shared disk reconciliation preserves conflicting/missing drafts, detects
-an already completed write, and refreshes clean files. Optional disk reads distinguish
+an already completed write, and refreshes clean files.
+
+Optional disk reads distinguish
 missing ancestors from permission/transport errors through the same Workspace
 primitive used by rewind. Recovered files are checked before host Save is enabled,
 and their baseline is checked again before a write. Missing/changed/unavailable host
 files preserve drafts and show feedback with Check disk again. Existing folder access
 controls restore local permissions. Review recovered file compares the current disk
-file with the draft using the shared inline diff. Cancel retains both versions;
+file with the draft using the shared inline diff.
+
+Cancel retains both versions;
 Reload disk replaces the draft, and Save draft uses the normal save policy with a
 one-use approval for the reviewed disk and draft versions. Missing files can be
 recreated explicitly, including empty files. Changed editor/root/account state or
@@ -542,7 +624,9 @@ selected/hidden tabs, invalid/root/stale revisions, actual Spin restarts and dur
 close-all tombstones. The browser check types into the built WASM editor, verifies
 worker preparation for the current source, observes
 its debounced database save, restarts Spin, reloads and opens a fresh window, and
-checks the selected tab and draft in both modes. Local recovery is tested without
+checks the selected tab and draft in both modes.
+
+Local recovery is tested without
 a native folder handle; it does not establish real-device permission restoration.
 Set `CHROME` if ChromeDriver needs an explicit Chrome binary.
 

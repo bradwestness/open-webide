@@ -71,184 +71,29 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   line-ending and trailing-whitespace save policies are undoable; finish real
   input-method/clipboard verification, preserving Unicode and LF/CRLF without
   rewriting unrelated text.
-- **Syntax-aware editing:** the shared incremental parser now has extensible grammar
-  providers and fold descriptors for Rust, TypeScript/TSX, JavaScript/JSX, Python,
-  Java, C#, C++, PHP, Shell, C, Go, HTML and CSS. Native/browser contracts cover
-  parsed folds, incremental Unicode/CRLF updates, cancellation and size fallbacks.
-  HTML script/style bodies now use separate incremental JavaScript/CSS parsers
-  with full-file fold coordinates, declared-type selection and shared limits.
-  Paired typing/deletion, Enter, selected-line reindent, line/block comments,
-  structural selection expansion and bracket navigation now consume parser-backed
-  contexts, including template interpolation and HTML embedded JavaScript/CSS.
-  Selection expansion uses validated named syntax-node ranges and retains shrink
-  history and direction. Edit highlighting now uses cached providers for grammar
-  classifications, literals/comments, template interpolation and embedded bodies.
-  Inline/Split diffs, recovery reviews, Git previews and chat diff previews now
-  share full-document syntax paint while retaining word-change highlights.
-  PHP heredoc/nowdoc and shell heredoc contexts now protect text while exposing
-  executable interpolation, including PHP braces and nested shell string wrappers.
-  Shared contracts also cover Python and C# interpolation and nested literals.
-  Fold, structural-command and highlight consumers now share one immutable,
-  source-bound preparation per document/tab width, with cancellation and stale
-  account/read/source/indentation guards. This preparation now runs in a dedicated
-  Rust/WASM worker, with coalesced requests, validated replies, bounded shared LRU
-  retention and synchronous/lexical fallbacks. Native/browser contracts and the
-  built-worker Chrome check cover providers, incremental Unicode/CRLF, stale
-  scopes, transport failure, size limits and PWA asset inclusion. Finish viewport
-  paint and end-to-end latency/memory measurements below. Unwrapped paint,
-  gutters and fold controls now use a bounded overscanned row window, with cached
-  tokens/guides and global projected UTF-16 caret offsets. The document now updates
-  logical-line/UTF-16 prefixes from transaction envelopes and shares immutable
-  projections across view consumers; commands, cursor status and native selections
-  use the index. Native/WASM measurements cover indexed queries and cold/warm
-  projection access. Warm wrapped paint now uses exact measured row-height windows
-  and on-demand offscreen cursor-neighbor probes, with source/project/account/layout
-  guards. Temporary batches replace retained hidden neighbor paint; both-mode
-  browser contracts cover 60 distant cursors, probe limits/release and exact movement.
-  Cold measurement now uses bounded temporary logical-row batches,
-  yielding tasks and frames while native input remains visible; progressing jobs
-  retain queued arrow requests and reject superseded results in both modes.
-  Localized edits now reuse exact unchanged styled prefix/suffix heights, with
-  row insertion/deletion/undo and font invalidation contracts in both modes;
-  disjoint edits also reuse exactly matching interior rows.
-  Carets, bracket marks and secondary selections now share validated UTF-16
-  paint coverage with independent clipping across omitted fragments. Rendered
-  rows now publish projected native fragment offsets; pointer hits use the same
-  coverage map and reject stale paint scopes.
-  Very long wrapped logical rows now retain exact logical heights while painting
-  overscanned visual fragments. Temporary probes preserve styled source spans and
-  validate every retained glyph after reshaping, falling back to complete rows if
-  geometry changes. Both-mode contracts cover scrolling, native pointer offsets,
-  queued cursor movement and Find into omitted text. Long unwrapped LTR rows now
-  use horizontal source fragments with viewport-sized overscan, original tab
-  origins and scroll extents; source-point probes reveal omitted matches even
-  when a row exceeds movement limits. Bidirectional paragraphs and display breaks
-  retain complete paint. Source eligibility and sparse grapheme/UTF-16 coordinates
-  now share unchanged-row allocations across document and folded views; native/WASM
-  measurements cover construction, distributed queries and metadata retention.
-  Validated fragment paint is now retained for revisited unchanged scroll intervals
-  within a bounded shared cache, with source/account/read/fold/syntax/font/layout
-  invalidation. Horizontal and wrapped rows now retain exact styled source anchors; new
-  intervals isolate bounded source slices before layout and validate the retained
-  anchors, falling back on unsupported geometry or shaping. First wrapped paint
-  now reuses anchors sampled during cold height measurement with the same
-  source/read/account/syntax/font provenance checks. Retained anchors now bound
-  source before HTML generation and parsing, with full-source fallback on invalid
-  partial measurements. Independent font provenance now preserves validated
-  anchors when equivalent syntax paint precedes row-height reconciliation.
-  Settled font readiness no longer discards initial measurements; loading events
-  still invalidate them.
-  Finish uncached initial/cold
-  shaping and bidirectional visual-run windows, then further incremental access:
-  declared browser-native text now commits through guarded shared grouped
-  insertion transactions instead of full-value diff/replay, with common newline policy and native
-  IME/non-cancellable fallbacks. Trusted, unfolded single-cursor commits skip
-  the input handler's full DOM-value read; preparation and other input paths still
-  access full values. Shared transactions now validate borrowed proposed pieces,
-  mutate the existing String with bounded growth headroom and rebuild merged affected row contexts, including
-  grouped undo/redo. Precise edits retain unrelated collapsed folds and distant
-  interior coordinates. Admission still scans proposed text; buffer/projection/IME
-  publication still materializes full Strings, and storage shifts suffix bytes
-  and coordinates. Native offset and line/column queries now use shared sparse
-  Unicode checkpoints in long rows, including folded views; native/WASM benchmarks
-  cover lookup and construction costs. Glyph queries scan from sparse cluster
-  checkpoints; indivisible clusters remain bounded by source limits. Native textarea input retains the
-  full projected source. Native typing declarations now retain at most 16 KiB of
-  surrounding projected text, with local/native/document coordinate contracts,
-  partial logical rows and full selection edits. The shared facade now captures
-  scoped 12 KiB native contexts with growth headroom, preserves complete source
-  selections during clipped native replacement, and rebases matching browser
-  values after commits and composition previews. Both-mode contracts cover
-  multiple cursors, grouped history and stale source/selection/fold/document/read/
-  project/account rejection. Bind native layout/value to these contexts next.
-  Native input fallback now borrows source and maps projected deltas directly to raw
-  source edits without full-source normalization; shared native replay validates
-  borrowed proposed pieces for IME and multiple cursors, including resulting
-  Unicode/CRLF selections and complete replica admission before previews.
-  Composition snapshots and published workspace sources remain full Strings.
-  Document scrolling now has an independent viewport with shared
-  wheel/navigation/restoration behavior in both modes. Prepared source row
-  widths/heights now supply independent extents with unchanged-row reuse and
-  source/account/syntax/layout guards; row plans and probes coalesce before allocating or rendering. Cold and superseded layouts retain native fallback.
-  Prepared primary caret/selection paint and single-cursor
-  keyboard motion now use shared source geometry and Rust commands, including
-  offscreen caret reveal. Prepared mouse click/word/line selection and drags now
-  use source hits with shared Rust policy; single-selection copy/cut also use the
-  source clipboard facade. Prepared drags now scroll near or beyond viewport edges
-  with shared Rust speed rules, retry pending paint and stop on release or stale
-  source/read/project/account/fold state. Finish cold/touch pointer selection,
-  cold caret ownership and cold source extents before binding bounded values and
-  validating IME and clipboard on devices. Bundled Monaspace families and
-  independent healing/ligature preferences now share editor font metrics. Rebased
-  fold indicators and same-document styled frames now survive pending analysis
-  and repainting, with disabled obsolete controls and replacement/read/account
-  guards.
-  Shared admission now bounds full-editor bytes, display breaks and long lines
-  before allocating document metadata. Oversized files use bounded read-only
-  pages, including before/after review sources; interactive transactions enforce
-  the same limits. Production input/scroll and process-memory baselines now cover
-  admitted byte, row-count and long-line boundaries in both modes. Repeated Linux
-  container runs now provide Chrome PSS with CJK/emoji fonts; input and cold paint
-  still stall. Finish fine long-row paint,
-  incremental measurement and input, then repeat the boundary workloads (including Linux PSS)
-  and the unresponsive wrapped cases before validating these limits. The corrected
-  destination-verified 1 MiB single-row workload now covers horizontal and wrapped
-  scrolling in both modes; broader startup scroll latency remains unverified
-  despite bounded steady-state HTML and layout checks. The reproduced
-  syntax-paint/height-reconciliation anchor loss is fixed with independent font
-  provenance. Settled font readiness no longer causes duplicate initial height
-  shaping; verify broader startup samples.
-  Trace remaining uncached probes; wrapped input/layout and
-  process-memory stalls remain.
-  Lexical JSON/TOML/YAML/SQL/Markdown paint also uses this cache and worker,
-  preserving multiline state and discarding partial rows on cancellation.
-  Reindent preserves
-  existing Python block depth; language formatting remains in Code intelligence.
-
-- **Selections and files:** the shared document now normalizes overlapping selections,
-  selects next/all occurrences, maps column selections using graphemes and tab stops,
-  expands/shrinks selections and replaces multiple ranges in one grouped transaction.
-  The editor facade retains secondary selections during commands and native input.
-  IME previews change the primary range, then commit all ranges in one undo step;
-  cancellation and stale file/project/account events preserve document state.
-  Copy/cut use full source selections and preserve multiline fragment boundaries
-  through clipboard metadata; foreign or stripped metadata falls back to matching
-  clipboard lines or repeating the complete text in one transaction.
-  Occurrence/vertical/expand/shrink
-  controls, Alt-click/column gestures and secondary selection paint share the same
-  facade. Arrow movement retains all cursors with grapheme, word, logical-line and
-  sticky-column behavior. Wrapped Up/Down now use measured visual rows, retained
-  pixel goals and soft-wrap caret affinity, skipping folds and rejecting stale
-  source/projection measurements. Pending-paint motion now queues in order and
-  flushes before edits, IME and clipboard actions, with bounded retries and stale
-  account/file/projection guards. Cold layout now measures styled cursor neighborhoods
-  before typing, IME and clipboard actions; browser contracts compare exact text
-  and selections against prepared layouts in both modes. Long wrapped lines use shared Unicode
-  indexing and bounded DOM searches to prepare only neighboring visual rows,
-  reusing measurements across cursors. Finish real-device input/clipboard
-  verification for multiple cursors. File navigation now
-  retains independent dirty buffers, history, caret and scroll state in memory,
-  with protected reads and filesystem mutation guards. Project and file tabs now
-  share context close/reorder actions; file tabs reuse tree operations and bulk
-  close confirmations retain unsaved-buffer and stale-scope guards. File tabs share selected-tab
-  styling, keyboard navigation and guarded close/discard controls. Horizontal overflow
-  keeps a stable strip height and tab nodes; dirty indicators reserve their space.
-  Validated recovery
-  snapshots, revision-guarded user-scoped SQLite/API storage, typed frontend
-  transport and active/hidden buffer collection are in place. Transactional
-  hydration and shared disk reconciliation preserve baselines and reject stale
-  editor activity. The shared frontend facade now loads tabs/selected files and
-  drafts and serializes debounced database saves. Failed writes retain drafts;
-  explicit restore/keep choices resolve database revision conflicts. Disk checks
-  block unsafe host saves and use the existing folder-access flow. Recovered-file
-  reviews reuse inline diffs and offer guarded reload or explicit draft saves,
-  including missing/empty file recreation. A disposable Spin/SQLite and Chrome
-  check verifies real browser edits, autosave, server restarts and reload/new-window
-  selected-tab/draft restoration in both modes; local recovery is checked without
-  a native folder handle. Finish permission/error regression coverage and native
-  folder-permission/real-device verification.
-  Coordinate draft/reload recovery with the existing Offline & error-state recovery
-  item instead of implementing separate persistence.
+- **Syntax-aware editing:** shared parsers, source-bound preparation and the
+  Rust/WASM worker are in place; see [syntax behavior](editor.md#syntax-and-language-behavior).
+  Finish uncached initial/cold shaping, bidirectional visual-run windows, fine
+  long-row paint and incremental measurement. Language formatting remains in
+  Code intelligence.
+- **Bounded native input:** bind the scoped native contexts to textarea values
+  and layout. Finish cold/touch pointer selection, cold caret ownership and cold
+  source extents first. Reduce full-source access in remaining input paths,
+  composition snapshots and buffer/projection publication; admission still scans
+  proposed text and storage still shifts suffix bytes and coordinates.
+  See [viewport preparation](editor.md#preparation-and-viewport-rendering).
+- **Editor performance verification:** input, cold paint, wrapped layout and
+  process-memory stalls remain. Trace uncached probes, then repeat admitted byte,
+  row-count and long-line boundary workloads in both modes, including Linux Chrome
+  PSS and the unresponsive wrapped cases. Broader startup scroll latency and
+  initial-shaping samples remain unverified despite bounded steady-state paint.
+  See [recorded measurements](editor-performance.md).
+- **Selections and files:** finish real-device input/IME/clipboard verification
+  for multiple cursors, permission/error regression coverage and native folder
+  permission/recovery checks. Shared selection, tab/buffer and database recovery
+  behavior is documented in [editor controls](editor.md); the disposable recovery
+  check covers both modes but uses no native local folder handle. Coordinate
+  draft/reload recovery with Offline & error-state recovery below.
 
 **Rust/WebAssembly architecture:** keep the editor in Rust/Leptos compiled to WASM;
 do not embed CodeMirror, Monaco or another substantial JavaScript editor client.
@@ -258,7 +103,9 @@ editor component. Evaluate WASM-compatible Rust crates for text storage and synt
 parsing before choosing dependencies. [Native/browser storage measurements](editor-performance.md)
 compare the current document with Crop/Ropey edits, display materialization and
 UTF-16 indexing; retain current production storage until viewport/worker work
-changes its access pattern. Keep browser glue thin: DOM events, input/IME,
+changes its access pattern.
+
+Keep browser glue thin: DOM events, input/IME,
 selection, clipboard, measurements and worker transport; editing policy and algorithms
 belong in Rust. Preserve native browser input behavior where possible, and evaluate
 a richer view for multiple selections beyond the current projected textarea/paint
@@ -527,6 +374,9 @@ configuration/upgrade/backup guidance, architecture diagrams and font credits ar
 prepared. See [releases and upgrades](releases.md). Version/changelog gates,
 archive/checksum contracts, workflow lint and Compose configuration checks cover
 this preparation; publication and release-host verification remain outstanding.
+Documentation now has [section overviews](index.md), first-session/workspace guides
+and curated site navigation. Complete the remaining task guides and installation
+walkthroughs against the final app before public launch.
 
 - **Release gates:** finish the hardening/editor dependencies and the Remaining
   manual verification checks above. Do not declare 1.0 while both-mode contracts,
@@ -535,6 +385,10 @@ this preparation; publication and release-host verification remain outstanding.
   confirmed scratch files and stale specs once concurrent development is finished.
   Generated Python caches, browser test configuration and output are now ignored;
   existing native/WASI/WASM fmt/clippy/tests remain release gates.
+- **User documentation:** expand model/provider setup, approval modes and agent
+  workflows, sessions, Git, commands/output and troubleshooting into task guides.
+  Validate them on a clean installation and on both workspace modes; refresh
+  editor and mobile walkthroughs after the ongoing UI work lands.
 - **Release rehearsal:** run the Release workflow's nonpublishing manual build and
   verify its native Linux amd64/arm64 images and Linux/macOS bridge archives. Exercise
   download-only Compose, rootless Quadlet (including registry auto-updates), HTTPS,

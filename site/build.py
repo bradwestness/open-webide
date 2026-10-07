@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 import yaml
+from navigation import validate_navigation
 
 from credits import render as render_credits
 
@@ -95,10 +96,9 @@ def build(output, site_url):
         for path in content.rglob("*.md"):
             path.write_text(re.sub(r"(\]\([^\s)]*?)README\.md(?=[)#])", r"\1getting-started.md", path.read_text()))
 
-        docs = []
-        for path in sorted((content / "docs").rglob("*.md")):
-            title = re.search(r"^# (.+)$", path.read_text(), re.MULTILINE)
-            docs.append({title[1] if title else path.stem: path.relative_to(content).as_posix()})
+        navigation = validate_navigation(
+            yaml.safe_load((ROOT / "site/navigation.yml").read_text()), content
+        )
         config = {
             "site_name": "Open WebIDE",
             "site_description": "A self-hosted browser IDE for coding with your own models.",
@@ -111,7 +111,7 @@ def build(output, site_url):
             "plugins": [],
             "markdown_extensions": ["fenced_code", "tables", "toc", "attr_list", "md_in_html"],
             "validation": {"links": {"not_found": "warn", "anchors": "warn"}},
-            "nav": [{"Home": "index.md"}, {"Get started": "getting-started.md"}, {"Documentation": docs}, {"Changelog": "CHANGELOG.md"}],
+            "nav": navigation,
         }
         config_path = staging / "mkdocs.yml"
         config_path.write_text(yaml.safe_dump(config, sort_keys=False))

@@ -1,28 +1,104 @@
 # Frontend design system
 
-Use `frontend/src/components/ui.rs` and the tokens in `frontend/styles.css` when composing controls. Icons come from the Rust `lepticons` Lucide library, behind `ui::Icon`; category features keep the dependency scoped to application controls. No emoji or font-dependent glyphs for action icons.
+## Foundations
 
-- `Modal` owns focus, dismissal, header and size. Compose its scrolling content with `DialogBody`, `FormSection`, `FormField`, `CheckboxField` and `FormNotice`. Put its final actions in `DialogActions`, outside the scrolling body. Describe sections in sentence case; keep helper text next to its field. Group related controls with `FormField group=true` rather than placing multiple controls inside a label.
-- Use standard `Button` variants and `InlineActions`. Use `IconButton` for compact actions with an accessible label. `Icon` renders decorative 20px SVGs in the current theme color; the parent control supplies meaning. Top-bar actions retain desktop text. Action tooltips appear after 200ms on hover and immediately on keyboard focus, escape clipping, and disappear on Escape, pointer activation, scrolling or cleanup.
-- `DisclosurePanel` retains mounted content when collapsed. Live tool calls share counts in first-use order; approval requests force the relevant group open. Thinking retains its separate text and token summary.
-- `ToolPanel` owns headings, ordering/minimize actions, dock widths and full-height resize boundaries. Handles sit inside the panel edge independently of content wrappers. Feature panes provide content. `FilesPanel` composes Explorer/Changes selection inside `SearchPane`, which switches between mounted file views and results. `LayoutState` owns limits and fitting; `LayoutActions` saves preferences and widths through user-scoped database settings, with serialized writes and account-generation guards. Browser events belong to `PanelResizer`; local/remote feature operations still use existing Workspace and ProjectGit facades.
-- Phone tool sheets use the available width and retain desktop preferences. Collapsing panels and switching file views preserves their mounted state. Editor uses remaining width; each adjacent tool window has the same resize behavior and keyboard support.
-- The composer uses a shared browser sizing primitive, grows up to 80% of its pane while reserving transcript/chrome space, and shrinks on programmatic draft changes. Whole-pane drops and paste/picker input all call `Composer::import`, preserving validation and project/session/account guards.
+Use `frontend/src/components/ui.rs` and the tokens in `frontend/styles.css` when
+composing controls. Colors, spacing, typography, radii, dialog sizes and control
+height come from shared tokens. Existing shared CSS classes remain supported as
+components migrate; avoid private control styles in individual dialogs or panes.
 
-Existing shared CSS classes remain supported while components migrate. Colors, spacing, typography, radii, dialog sizes and control height come from theme/design tokens. Avoid adding private control styles to individual dialogs or panes.
+Icons come from the Rust `lepticons` Lucide library through `ui::Icon`. Category
+features scope the dependency to app controls. `Icon` renders decorative 20px SVGs
+in the current theme color; the parent control supplies meaning. Use SVG action
+icons instead of emoji or font-dependent glyphs.
 
-Reasoning, run context and tools use `DisclosurePanel` for left-aligned headers, down/up caret controls and retained collapsed content. Transcript entries do not shrink when history exceeds the viewport; the stream scrolls while each header keeps its natural height. Active reasoning adds its timing, token estimate and spinner to the shared header.
+## Dialogs, buttons and menus
 
-`PanelToolbar` groups contextual information and actions beneath the single `ToolPanel` heading; feature panes do not repeat their panel or selected-view titles. Explorer and Changes share file-row spacing, icons and selection treatment.
+`Modal` owns focus, dismissal, header and size. Compose its scrolling content with
+`DialogBody`, `FormSection`, `FormField`, `CheckboxField` and `FormNotice`. Put final
+actions in `DialogActions`, outside the scrolling body. Use sentence case for
+sections and keep helper text beside its field. Group controls with
+`FormField group=true` rather than putting several controls inside a label.
 
-`BranchPicker` uses the shared dropdown for branch selection and New branch action in Changes and the footer. Keep the picker mounted across status refreshes; update status badges separately and discover branches on branch/scope changes or explicit menu opening. `GitActions` owns discovery, checkout and prompt scope, using `ProjectGit` adapters and guarding late results by project, account and host revision.
+Use standard `Button` variants and `InlineActions`. `IconButton` needs an accessible
+label; top-bar actions retain desktop text. Tooltips appear after 200ms on hover
+and immediately on keyboard focus. They escape clipping and dismiss on Escape,
+pointer activation, scrolling or cleanup.
 
-`Dropdown` owns the Recent-style menu surface, viewport fitting, focus, keyboard navigation and dismissal. `DropdownSelect` builds value choices on it. Recent projects, chat models and approval modes, Git branches, wizard choices and settings selectors share those primitives; use `SegmentedControl` for compact mutually exclusive view/mode switches. `PanelSearchRow` gives Files, Sessions and Find in file the same input and inline-action layout. Editor gutters fit the file’s largest line number and stay pinned while source scrolls horizontally; Inline uses old/new numbers and Split numbers each side. Split panes share horizontal and vertical scroll positions and the same content width. Edit’s text viewport sits beside its gutter, with syntax paint clipped above the horizontal scrollbar so paint never covers themed tracks or thumbs.
+`Dropdown` owns menu surfaces, viewport fitting, focus, keyboard navigation and
+dismissal. `DropdownSelect` builds value choices on it. Recent projects, models,
+approval modes, branches, wizard choices and settings selectors share these
+primitives. Use `SegmentedControl` for compact mutually exclusive views or modes.
 
-Panel headings always show Minimize directly; only panels with other actions show an overflow menu. `ActionMenu` groups secondary actions behind a right-aligned Lucide ellipsis and reuses `Dropdown`. Keep it inline with the row’s label or view switcher, reserving space by allowing long labels to truncate rather than wrapping the menu onto its own row. Files creation actions share the Explorer/Changes toolbar and appear only in Explorer. Keep primary actions such as Send, Stop, Save and Cancel visible. Menu items use explicit labels and existing feature callbacks; dialog handlers outlive the temporary menu surface.
+`ActionMenu` groups secondary actions behind a right-aligned Lucide ellipsis and
+reuses `Dropdown`. Keep it inline with the label or view switcher; truncate long
+labels instead of wrapping the menu onto another row. Items use explicit labels
+and existing callbacks. Dialog handlers must outlive the temporary menu surface.
+Keep Send, Stop, Save and Cancel visible.
 
-Dock title bars use the shared ToolPanel heading spacing and typography. Each shared vertical boundary has one trailing grip. Resizing changes the fixed dock on the outer side of the flexible editor or Chat, so the seam follows the pointer after reordering. Only the dragged grip highlights. Server rows preserve the server name before provider metadata when space is limited.
+## Panels and layout
 
-Terminal is a full-width bottom dock, controlled from the status bar and available only with a project. Its top-edge separator resizes the database-backed height without consuming editor width. Account actions live in the shared username dropdown.
+`ToolPanel` owns headings, ordering/minimize actions, dock widths and full-height
+resize boundaries. Feature panes provide content. Headings always show Minimize;
+only panels with additional actions show an overflow menu. `PanelToolbar` groups
+contextual information and actions below that heading. Panes do not repeat the
+panel or selected-view title.
 
-Chat uses compact, labeled icon controls beside the composer. Enter sends or queues, Ctrl/⌘+Enter steers an active run, and Escape stops it. Attach images lives in the Chat panel menu; paste/drop use the same image import path. Status telemetry stays on one line, with secondary fields hidden in narrower panes.
+Each shared vertical boundary has one trailing grip inside the panel edge,
+independent of content wrappers. Resizing changes the fixed dock beside the
+flexible Editor or Chat so the seam follows the pointer after reordering. Only
+the dragged grip highlights. Adjacent tool windows share resize and keyboard behavior.
+
+`LayoutState` owns limits and fitting. `LayoutActions` saves preferences and widths
+through user-scoped database settings, serializing writes and guarding account
+generations. Browser events belong to `PanelResizer`; feature operations use the
+Workspace and ProjectGit facades.
+
+Phone tool sheets use the available width and retain desktop preferences.
+Collapsing panels and switching file views preserves mounted state. Server rows
+preserve the server name before provider metadata when space is limited.
+
+## Files, search and Git
+
+`FilesPanel` composes Explorer/Changes selection inside `SearchPane`, which switches
+between mounted file views and results. `PanelSearchRow` gives Files, Sessions and
+Find in file the same input and inline actions. Explorer and Changes share row
+spacing, icons and selection treatment. Creation actions appear in their shared
+toolbar only when Explorer is selected.
+
+`BranchPicker` uses the shared dropdown for branch selection and New branch in
+Changes and the footer. Keep it mounted across status refreshes; update badges
+separately. Discover branches on branch/scope changes or explicit menu opening.
+`GitActions` owns discovery, checkout and prompt scope through ProjectGit adapters,
+guarding late results by project, account and host revision.
+
+## Editor layout
+
+Gutters fit the file's largest line number and stay pinned during horizontal
+scrolling. Inline diffs use old/new numbers; Split numbers each side. Split panes
+share horizontal/vertical scroll positions and content width.
+
+Edit's text viewport sits beside its gutter. Syntax paint is clipped above the
+horizontal scrollbar so it cannot cover themed tracks or thumbs.
+
+## Chat and output
+
+Reasoning, run context and tools use `DisclosurePanel`: left-aligned headers,
+down/up carets and retained collapsed content. Tool calls share counts in first-use
+order; approvals force their group open. Active reasoning adds timing, token
+estimates and a spinner. Transcript entries retain their height when history
+exceeds the viewport; the stream scrolls around those headers.
+
+The composer uses a shared browser sizing primitive. It grows to at most 80% of
+its pane while reserving transcript/chrome space, and shrinks when drafts change
+programmatically. Whole-pane drops and paste/picker input call `Composer::import`,
+preserving validation and project/session/account guards.
+
+Chat uses compact labeled icon controls beside the composer. Enter sends or queues,
+Ctrl/⌘+Enter steers an active run, and Escape stops it. Attach images lives in the
+Chat menu; paste/drop use the same import path. Telemetry stays on one line, hiding
+secondary fields in narrow panes.
+
+Terminal is a full-width bottom dock controlled from the status bar and available
+only with a project. Its top-edge separator resizes the database-backed height
+without consuming editor width. Account actions live in the username dropdown.
