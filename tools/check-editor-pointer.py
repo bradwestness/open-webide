@@ -76,8 +76,14 @@ def check(mode, repeat, language):
                 if line > 2:
                     browser.script("const s=document.querySelector('.editor-scroll-surface');s.scrollTop=2000*parseFloat(getComputedStyle(document.querySelector('textarea[data-editor-path]')).lineHeight);")
                 wait('painted target row', lambda: browser.script(f"return !!document.querySelector('.editor-source-line[data-line=\"{line}\"]');"))
-                for column, beyond in [(8, False), (16, False), (end_column, True)]:
+                for column, beyond, gap, drag in [
+                        (8, False, 0, True), (16, False, 0, True),
+                        (end_column, True, None, True),
+                        (end_column, True, 4, False), (end_column, True, 40, False)]:
                     browser.script("document.querySelector('textarea[data-editor-path]').blur();")
+                    x = 'rect.left+0.25'
+                    if beyond:
+                        x = 'input.getBoundingClientRect().right-20' if gap is None else f'rect.left+{gap}'
                     point = browser.script(f"""
                         const input=document.querySelector('textarea[data-editor-path]');
                         const row=document.querySelector('.editor-source-line[data-line="{line}"]');
@@ -90,13 +96,13 @@ def check(mode, repeat, language):
                             const event={{type,trusted:e.isTrusted}};pointerEvents.push(event);
                             queueMicrotask(()=>{{event.prevented=e.defaultPrevented;event.bounds=input.getBoundingClientRect().toJSON();event.row=row.getBoundingClientRect().toJSON();}});
                         }},{{once:true}});
-                        return {{x:Math.min(input.getBoundingClientRect().right-2,{"input.getBoundingClientRect().right-20" if beyond else "rect.left+0.25"}),y:rect.top+rect.height/2,bound:input.dataset.editorNativeBound==='true',bounds:input.getBoundingClientRect().toJSON()}};
+                        return {{x:Math.min(input.getBoundingClientRect().right-2,{x}),y:rect.top+rect.height/2,bound:input.dataset.editorNativeBound==='true',bounds:input.getBoundingClientRect().toJSON()}};
                     """)
                     for kind in ['mouseMoved', 'mousePressed', 'mouseReleased']:
                         args = {'type': kind, 'x': point['x'], 'y': point['y']}
                         if kind != 'mouseMoved': args.update(button='left', clickCount=1)
                         cdp(browser, 'Input.dispatchMouseEvent', args)
-                        if kind == 'mousePressed':
+                        if kind == 'mousePressed' and drag:
                             time.sleep(0.12)
                             cdp(browser, 'Input.dispatchMouseEvent', {'type': 'mouseMoved',
                                 'x': point['x'], 'y': point['y'] + 0.25, 'buttons': 1})
@@ -110,7 +116,7 @@ def check(mode, repeat, language):
                     except AssertionError:
                         saved = runtime.request('GET', endpoint)['state']['files'][0]['document']
                         raise AssertionError({'mode': mode, 'repeat': repeat, 'language': language, 'line': line, 'column': column,
-                            'expected': expected, 'point': point, 'events': browser.script('return pointerEvents;'), 'selection': saved['selections'], 'native': browser.script(f"const i=document.querySelector('textarea[data-editor-path]');const p=document.querySelector('.editor-highlight-content');const row=p.querySelector('.editor-source-line[data-line=\"{line}\"]');return {{start:i.selectionStart,end:i.selectionEnd,bound:i.dataset.editorNativeBound,readonly:i.readOnly,scope:i.dataset.editorScope,paint_scope:p.dataset.editorScope,scroll_top:i.scrollTop,scroll_left:i.scrollLeft,fonts:document.fonts.status,bounds:i.getBoundingClientRect().toJSON(),row:row?.getBoundingClientRect().toJSON()}};")}) from None
+                            'gap': gap, 'drag': drag, 'expected': expected, 'point': point, 'events': browser.script('return pointerEvents;'), 'selection': saved['selections'], 'native': browser.script(f"const i=document.querySelector('textarea[data-editor-path]');const p=document.querySelector('.editor-highlight-content');const row=p.querySelector('.editor-source-line[data-line=\"{line}\"]');return {{start:i.selectionStart,end:i.selectionEnd,bound:i.dataset.editorNativeBound,readonly:i.readOnly,scope:i.dataset.editorScope,paint_scope:p.dataset.editorScope,scroll_top:i.scrollTop,scroll_left:i.scrollLeft,fonts:document.fonts.status,bounds:i.getBoundingClientRect().toJSON(),row:row?.getBoundingClientRect().toJSON()}};")}) from None
                     events = browser.script('return pointerEvents;')
                     assert len(events) == 3 and all(event['trusted'] for event in events), events
                     # Prove the next actual insertion uses that source position,

@@ -828,6 +828,60 @@ mod tests {
     }
 
     #[test]
+    fn stable_interpolation_ancestors_preserve_subtree_reuse() {
+        let source = (0..200)
+            .map(|index| {
+                format!("function f{index}() {{ return `text ${{call(\"inner\")}} tail`; }}\r\n")
+            })
+            .collect::<String>();
+        let mut syntax = SyntaxDocument::new(Language::JavaScript).unwrap();
+        syntax.update(&source, || true);
+        let original = syntax.structure().unwrap();
+        let changed = format!("// before\r\n{source}");
+        syntax.update(&changed, || true);
+        let next = syntax.structure().unwrap();
+        let mut nodes = 0;
+        visit_tree(syntax.tree.as_ref().unwrap(), &mut nodes, |_| Ok(())).unwrap();
+        assert!(syntax.contexts.borrow().reused_nodes > nodes / 2);
+        let mut fresh = SyntaxDocument::new(Language::JavaScript).unwrap();
+        fresh.update(&changed, || true);
+        assert_eq!(
+            serde_json::to_value(next.transfer_data()).unwrap(),
+            serde_json::to_value(fresh.structure().unwrap().transfer_data()).unwrap()
+        );
+        assert!(original.matches_source(&source));
+    }
+
+    #[test]
+    fn changed_ancestor_classification_cannot_reuse_interpolation_contexts() {
+        fn context(node: Node<'_>) -> Option<SyntaxContextKind> {
+            match node.kind() {
+                "source_file" if node.has_error() => Some(SyntaxContextKind::String),
+                "identifier" => Some(SyntaxContextKind::Interpolation),
+                _ => None,
+            }
+        }
+        let provider = SyntaxProvider {
+            context: Some(context),
+            context_scope: super::super::SyntaxContextScope::Node,
+            ..syntax_provider(Language::Rust).unwrap()
+        };
+        let source = "fn first() { call(); }\r\nfn second() { call(); }\r\n";
+        let mut syntax = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        syntax.update(source, || true);
+        syntax.structure().unwrap();
+        let changed = format!("{source}fn broken(");
+        syntax.update(&changed, || true);
+        let next = syntax.structure().unwrap();
+        let mut fresh = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        fresh.update(&changed, || true);
+        assert_eq!(
+            serde_json::to_value(next.transfer_data()).unwrap(),
+            serde_json::to_value(fresh.structure().unwrap().transfer_data()).unwrap()
+        );
+    }
+
+    #[test]
     fn interpolation_owners_outside_a_subtree_are_recomputed() {
         fn context(node: Node<'_>) -> Option<SyntaxContextKind> {
             match node.kind() {

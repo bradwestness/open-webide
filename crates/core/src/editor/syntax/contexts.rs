@@ -12,11 +12,13 @@ pub(super) struct SyntaxContexts {
     pub protected: Vec<(Range<usize>, bool, RegionKind)>,
     pub holes: Vec<(Range<usize>, Range<usize>)>,
     pub selections: Vec<Range<usize>>,
+    has_interpolation: bool,
 }
 
 impl SyntaxContexts {
     fn mapped(&self, mut map: impl FnMut(&Range<usize>) -> Option<Range<usize>>) -> Option<Self> {
         Some(Self {
+            has_interpolation: self.has_interpolation,
             protected: self
                 .protected
                 .iter()
@@ -35,15 +37,23 @@ impl SyntaxContexts {
         })
     }
     fn append(&mut self, mut other: Self) {
+        self.has_interpolation |= other.has_interpolation;
         self.protected.append(&mut other.protected);
         self.holes.append(&mut other.holes);
         self.selections.append(&mut other.selections);
     }
 }
 
+type Ancestors = Vec<(u16, Option<SyntaxContextKind>)>;
+
+struct RetainedContexts {
+    contexts: SyntaxContexts,
+    ancestors: Option<Ancestors>,
+}
+
 #[derive(Default)]
 pub(super) struct ParsedContexts {
-    subtrees: ParsedSubtrees<SyntaxContexts>,
+    subtrees: ParsedSubtrees<RetainedContexts>,
     #[cfg(test)]
     pub(super) reused_nodes: usize,
 }
@@ -88,7 +98,12 @@ impl ParsedContexts {
         let mut cursor = root.walk();
         for node in root.children(&mut cursor) {
             let retained = self.subtrees.candidate(root, node).and_then(|part| {
-                let metadata = part.value.mapped(|range| {
+                if let Some(previous) = &part.value.ancestors
+                    && previous != &ancestors(node, provider)?
+                {
+                    return None;
+                }
+                let metadata = part.value.contexts.mapped(|range| {
                     let start = range.start.checked_add(node.start_byte())?;
                     let end = range.end.checked_add(node.start_byte())?;
                     (start <= end
@@ -121,7 +136,24 @@ impl ParsedContexts {
                         )
                     })
                 {
-                    next.insert(node.id(), Part::new(node, *visited - before, relative));
+                    let owners = if relative.has_interpolation {
+                        ancestors(node, provider).map(Some)
+                    } else {
+                        Some(None)
+                    };
+                    if let Some(ancestors) = owners {
+                        next.insert(
+                            node.id(),
+                            Part::new(
+                                node,
+                                *visited - before,
+                                RetainedContexts {
+                                    contexts: relative,
+                                    ancestors,
+                                },
+                            ),
+                        );
+                    }
                 }
                 metadata
             };
@@ -182,6 +214,7 @@ fn extract_node(
         return Ok(());
     };
     if class == SyntaxContextKind::Interpolation {
+        contexts.has_interpolation = true;
         let mut parent = node.parent();
         let mut inside = node.id() != boundary.id();
         while let Some(owner) = parent {
@@ -226,4 +259,22 @@ fn extract_node(
     };
     contexts.protected.push((range, closed, kind));
     Ok(())
+}
+
+// A previously unrelated ancestor may become a literal after another subtree
+// changes. Its classification and depth must still match before retaining holes.
+fn ancestors(node: Node<'_>, provider: SyntaxProvider) -> Option<Ancestors> {
+    let mut parent = node.parent();
+    let mut result = Vec::new();
+    while let Some(owner) = parent {
+        if result.len() == MAX_FOLD_NODES {
+            return None;
+        }
+        result.push((
+            owner.kind_id(),
+            provider.context.and_then(|classify| classify(owner)),
+        ));
+        parent = owner.parent();
+    }
+    Some(result)
 }

@@ -89,7 +89,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Tab-width changes share unchanged structure and token rows while recomputing folds.
   Parser folds and editing contexts share retained top-level subtrees, shifted
   positions and visit limits. Document-dependent classifiers and external owners
-  use fresh extraction; folds recheck closing-line text.
+  use fresh extraction; interpolation contexts revalidate ancestor classifications,
+  and folds recheck closing-line text.
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list
   reconstruction/validation and row-table construction still visit the whole file.
