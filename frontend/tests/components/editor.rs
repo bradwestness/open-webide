@@ -10007,7 +10007,9 @@ async fn cold_wrapped_preparation_keeps_input_visible_and_rejects_superseded_bat
     }
     use openwebide_core::WorkspaceMode;
     use openwebide_frontend::state_actions::editor::EditorActions;
-    let source = "row 文😀 café\t words for wrapping more words\n".repeat(12_000);
+    let source = (0..12_000)
+        .map(|row| format!("row {row} 文😀 café\t words for wrapping more words\n"))
+        .collect::<String>();
     for (mode, fallback) in [
         (WorkspaceMode::Local, false),
         (WorkspaceMode::Remote, false),
@@ -10171,6 +10173,94 @@ async fn cold_wrapped_preparation_keeps_input_visible_and_rejects_superseded_bat
                 .query_selector("[role='alert']")
                 .unwrap()
                 .is_none()
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn cold_repeated_wrapped_rows_share_layout_and_preserve_far_edits_in_both_modes() {
+    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+    export function count_cold_repeated_layout() {
+        const previous = window.__openwebideEditorProbeTiming;
+        let count = 0;
+        window.__openwebideEditorProbeTiming = (paint, phase, elapsed, units) => {
+            if (phase === 'layout') count += units;
+            previous?.(paint, phase, elapsed, units);
+        };
+        return () => {
+            if (previous === undefined) delete window.__openwebideEditorProbeTiming;
+            else window.__openwebideEditorProbeTiming = previous;
+            return count;
+        };
+    }
+    "#)]
+    extern "C" {
+        fn count_cold_repeated_layout() -> js_sys::Function;
+    }
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let body = "row 文😀 café\t words for wrapping more words\r\n";
+    let source = body.repeat(12_000);
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let observed = count_cold_repeated_layout();
+        let mounted = mount_test({
+            let source = source.clone();
+            move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("cold-repeated.txt".into()));
+                state.workspace.content.set(source);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = true);
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        wait_until("complete repeated wrapped layout", || {
+            !actions.syntax_is_pending() && actions.measured_rows().is_some()
+        })
+        .await;
+        let count = observed
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(
+            count > 0.0 && count <= 256.0,
+            "{mode:?}: measured {count} repeated rows"
+        );
+        let rows = actions.measured_rows().unwrap().rows;
+        assert_eq!(rows.len(), 12_001);
+        let height = rows.top(1).unwrap();
+        assert!(height > 20.0, "fixture must wrap");
+        for row in [127, 500, 9_000, 11_999] {
+            assert_eq!(rows.top(row + 1).unwrap() - rows.top(row).unwrap(), height);
+        }
+        let at = body.len() * 9_000 + 4;
+        actions
+            .paste("changed ", openwebide_core::editor::Selection::caret(at))
+            .unwrap();
+        let mut expected = source.clone();
+        expected.insert_str(at, "changed ");
+        assert_eq!(actions.source(), expected);
+        wait_until("far changed wrapped row preserves layout", || {
+            actions.measured_rows().is_some()
+        })
+        .await;
+        let changed = actions.measured_rows().unwrap().rows;
+        assert_eq!(changed.len(), rows.len());
+        assert_eq!(changed.top(9_000), rows.top(9_000));
+        assert_eq!(
+            changed.top(12_000).unwrap() - changed.top(9_001).unwrap(),
+            rows.top(12_000).unwrap() - rows.top(9_001).unwrap()
         );
     }
 }
@@ -10512,9 +10602,11 @@ async fn cold_neighborhoods_flush_arrows_before_native_edits_composition_and_cli
  {
     use openwebide_core::WorkspaceMode;
     use openwebide_frontend::state_actions::editor::EditorActions;
-    let row = "line row 文😀 café\t words for wrapping more words\r\n";
-    let source = row.repeat(12_000);
-    let second = row.len() * 9_000;
+    let row = "line row 文😀 café\t words for wrapping more words ";
+    let source = (0..12_000)
+        .map(|index| format!("{row}{index:05}\r\n"))
+        .collect::<String>();
+    let second = (row.len() + 7) * 9_000;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         for operation in 0..4 {
             let mut eager: Option<(String, Vec<openwebide_core::editor::Selection>)> = None;

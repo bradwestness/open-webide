@@ -540,6 +540,14 @@ Ordinary layout reconciliation can follow equivalent syntax paint without
 discarding its validated anchors; actual font invalidation always discards them.
 Already-settled browser font readiness does not invalidate initial geometry;
 font loading completion and failure still invalidate it.
+Cold row-height preparation groups exact current paint keys, including token
+boundaries, row endings and guides. After at least two measured members agree in
+both width and height, the shared plan fills their remaining identical rows. Every
+sample in the current batch is checked before reuse; differing dimensions retain
+fresh measurement for that group. This reuses dimensions, not glyph anchors, and
+keeps the same source, account, font and layout publication guards. Distinct cold
+rows still require full styled measurement.
+
 First measurement still shapes the complete row. Initial layout,
 uncached full-row HTML construction and native
 input costs remain performance follow-ups.

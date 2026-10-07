@@ -229,15 +229,20 @@ impl EditorActions {
         }
         let paint =
             self.row_paint_snapshot(metrics, projection, tokens, guides, indentation, whitespace)?;
+        let current_rows = paint_rows(&paint)?;
         let reused = self.workspace.editor_row_cache.with_untracked(|cache| {
             let cache = cache.as_ref()?;
             let old = &cache.paint;
             if !same_measurement_environment(old, &paint) {
                 return None;
             }
-            RowMeasurementPlan::reuse_layout(&paint_rows(old)?, &paint_rows(&paint)?, &cache.rows)
+            RowMeasurementPlan::reuse_layout(&paint_rows(old)?, &current_rows, &cache.rows)
         });
-        let plan = reused.or_else(|| RowMeasurementPlan::new(paint.projection.lines().len()))?;
+        let mut plan =
+            reused.or_else(|| RowMeasurementPlan::new(paint.projection.lines().len()))?;
+        if !plan.share_repeated(&current_rows) {
+            return None;
+        }
         Some((paint, plan))
     }
     /// A native notification can arrive after geometry already used the loaded

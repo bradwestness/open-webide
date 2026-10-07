@@ -129,14 +129,29 @@ pub fn row_measurement_batch(lengths: impl IntoIterator<Item = usize>) -> usize 
     rows
 }
 
+#[derive(Clone, Debug)]
+struct RepeatedRowGroup {
+    rows: Vec<usize>,
+    sample: Option<(f64, f64)>,
+    samples: usize,
+    consistent: bool,
+    applied: bool,
+}
+#[derive(Clone, Debug)]
+struct RepeatedRows {
+    rows: Vec<Option<usize>>,
+    groups: Vec<RepeatedRowGroup>,
+}
+
 /// Exact unchanged paint rows retain their measured dimensions after a transaction.
-/// Adapters measure only missing rows; no hashes or wrapping estimates are used.
+/// Adapters measure only missing rows; exact key equality validates reuse.
 #[derive(Clone, Debug)]
 pub struct RowMeasurementPlan {
     heights: Vec<Option<f64>>,
     widths: Vec<Option<f64>>,
     next: usize,
     completed: usize,
+    repeated: Option<RepeatedRows>,
 }
 impl RowMeasurementPlan {
     pub fn new(rows: usize) -> Option<Self> {
@@ -145,6 +160,7 @@ impl RowMeasurementPlan {
             widths: vec![None; rows],
             next: 0,
             completed: 0,
+            repeated: None,
         })
     }
     pub fn reuse<T: Eq + Hash>(
@@ -226,6 +242,98 @@ impl RowMeasurementPlan {
         measured.width()?;
         Self::reuse(previous, current, measured)
     }
+    /// Share repeated current paint only after two matching layout observations.
+    /// Disagreeing samples disable that group before any dimensions are propagated.
+    pub fn share_repeated<T: Eq + Hash>(&mut self, keys: &[T]) -> bool {
+        if keys.len() != self.heights.len() || self.repeated.is_some() {
+            return false;
+        }
+        enum Seen {
+            First(usize),
+            Group(usize),
+        }
+        let mut seen = HashMap::new();
+        let mut rows = vec![None; keys.len()];
+        let mut groups: Vec<RepeatedRowGroup> = Vec::new();
+        for (row, key) in keys.iter().enumerate() {
+            match seen.entry(key) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Seen::First(row));
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let group = match entry.get() {
+                        Seen::First(first) => {
+                            let group = groups.len();
+                            rows[*first] = Some(group);
+                            groups.push(RepeatedRowGroup {
+                                rows: vec![*first],
+                                sample: None,
+                                samples: 0,
+                                consistent: true,
+                                applied: false,
+                            });
+                            entry.insert(Seen::Group(group));
+                            group
+                        }
+                        Seen::Group(group) => *group,
+                    };
+                    rows[row] = Some(group);
+                    groups[group].rows.push(row);
+                }
+            }
+        }
+        if groups.iter().all(|group| group.rows.len() < 3) {
+            return true;
+        }
+        for group in &mut groups {
+            group.consistent = group.rows.len() >= 3;
+        }
+        self.repeated = Some(RepeatedRows { rows, groups });
+        self.observe_repeated(0..keys.len());
+        true
+    }
+
+    fn observe_repeated(&mut self, observed: Range<usize>) {
+        let Some(repeated) = &mut self.repeated else {
+            return;
+        };
+        for row in observed.clone() {
+            let Some(group) = repeated.rows[row] else {
+                continue;
+            };
+            let group = &mut repeated.groups[group];
+            let Some(sample) = self.heights[row].zip(self.widths[row]) else {
+                continue;
+            };
+            if let Some((height, width)) = group.sample {
+                group.consistent &=
+                    height.to_bits() == sample.0.to_bits() && width.to_bits() == sample.1.to_bits();
+            } else {
+                group.sample = Some(sample);
+            }
+            group.samples += 1;
+        }
+        // Check every sample in this batch before trusting any matching group.
+        for row in observed {
+            let Some(group) = repeated.rows[row] else {
+                continue;
+            };
+            let group = &mut repeated.groups[group];
+            if !group.consistent || group.samples < 2 || group.applied {
+                continue;
+            }
+            group.applied = true;
+            let (height, width) = group.sample.expect("matching layout samples");
+            for &row in &group.rows {
+                if self.heights[row].is_none() {
+                    self.heights[row] = Some(height);
+                    self.widths[row] = Some(width);
+                    self.completed += 1;
+                }
+            }
+        }
+    }
+
     pub fn completed(&self) -> usize {
         self.completed
     }
@@ -271,9 +379,10 @@ impl RowMeasurementPlan {
         if !self.record(rows.clone(), heights) {
             return false;
         }
-        for (row, width) in rows.zip(widths) {
+        for (row, width) in rows.clone().zip(widths) {
             self.widths[row] = Some(*width);
         }
+        self.observe_repeated(rows);
         true
     }
     pub fn finish(self) -> Option<MeasuredRows> {
@@ -455,6 +564,61 @@ impl EditorViewport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repeated_paint_requires_two_matching_samples_and_preserves_distinct_rows() {
+        let mut plan = RowMeasurementPlan::new(6).unwrap();
+        assert!(!plan.share_repeated(&[1]));
+        assert!(plan.share_repeated(&[1, 1, 1, 2, 2, 3]));
+        assert!(!plan.share_repeated(&[1, 1, 1, 2, 2, 3]));
+        assert!(!plan.record_layout(0..1, &[20.0], &[f64::NAN]));
+        assert_eq!(plan.completed(), 0);
+        assert!(plan.record_layout(0..1, &[20.0], &[90.0]));
+        assert_eq!(plan.completed(), 1);
+        assert!(plan.record_layout(1..2, &[20.0], &[90.0]));
+        assert_eq!(plan.completed(), 3);
+        assert_eq!(plan.pending_batch(&[10; 6]), Some(3..6));
+        assert!(plan.record_layout(3..6, &[40.0, 40.0, 60.0], &[100.0, 100.0, 120.0]));
+        assert_eq!(plan.completed(), 6);
+        assert_eq!(plan.pending_batch(&[10; 6]), None);
+        let rows = plan.finish().unwrap();
+        assert_eq!(rows.top(3), Some(60.0));
+        assert_eq!(rows.top(6), Some(200.0));
+        assert_eq!(rows.width(), Some(120.0));
+    }
+
+    #[test]
+    fn conflicting_repeated_samples_disable_reuse_before_batch_publication() {
+        for (heights, widths) in [
+            ([20.0, 20.0, 40.0], [90.0; 3]),
+            ([20.0; 3], [90.0, 90.0, 100.0]),
+        ] {
+            let mut plan = RowMeasurementPlan::new(4).unwrap();
+            assert!(plan.share_repeated(&[1; 4]));
+            assert!(plan.record_layout(0..3, &heights, &widths));
+            assert_eq!(plan.completed(), 3);
+            assert_eq!(plan.pending_batch(&[10; 4]), Some(3..4));
+            assert!(plan.record_layout(3..4, &[30.0], &[95.0]));
+            let rows = plan.finish().unwrap();
+            assert_eq!(rows.top(4), Some(heights.iter().sum::<f64>() + 30.0));
+        }
+    }
+
+    #[test]
+    fn repeated_paint_reuses_only_consistent_retained_layout_samples() {
+        for widths in [[90.0, 90.0], [90.0, 100.0]] {
+            let measured = MeasuredRows::layout([20.0; 2], widths).unwrap();
+            let mut plan =
+                RowMeasurementPlan::reuse_layout(&[1, 1], &[1, 1, 1, 2], &measured).unwrap();
+            assert!(plan.share_repeated(&[1, 1, 1, 2]));
+            let consistent = widths[0].to_bits() == widths[1].to_bits();
+            assert_eq!(plan.completed(), if consistent { 3 } else { 2 });
+            assert_eq!(
+                plan.pending_batch(&[10; 4]),
+                Some(if consistent { 3..4 } else { 2..4 })
+            );
+        }
+    }
+
     #[test]
     fn source_extents_validate_dimensions_and_reuse_changed_rows() {
         let rows = MeasuredRows::layout([20.0, 40.0, 20.0], [10.0, 1000.0, 30.0]).unwrap();

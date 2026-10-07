@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse cold editor row dimensions for identical paint after two matching layout samples. Check every measured batch for conflicts before sharing dimensions; retain fresh layout for distinct rows and preserve source, font and account ownership checks.
+
 - Bind bounded native input for ready unwrapped editor frames before full-file row measurement completes. Validate the current frame, complete native source and dimensions, retain its scroll extents before the handoff, and stamp restored windows before scroll reconciliation. Wrapped input and active composition retain their existing ownership boundary.
 - Reuse incremental source-line coordinates for parser fold validation and shared fold assembly. Avoid splitting grammar-backed files or rebuilding their logical rows for each fold query; preserve LF/CRLF columns, closing-line siblings, directives and existing fallback limits.
 - Separate lexical structural scanning from source ownership. Parser preparation and lexical folding consume borrowed metadata without copying complete files or embedded-language bodies into temporary structures; owned editing contexts use the same scanner and region queries.
