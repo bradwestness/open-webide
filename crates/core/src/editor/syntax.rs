@@ -1,6 +1,7 @@
 //! Incremental syntax analysis shared by browser and native editor adapters.
 mod cache;
 pub use cache::{MAX_SYNTAX_DOCUMENTS, MAX_SYNTAX_SOURCE_BYTES, SyntaxPreparations};
+mod folds;
 mod highlighting;
 mod service;
 pub use service::{MAX_SYNTAX_REQUEST_BYTES, SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxRequest};
@@ -75,6 +76,7 @@ struct EmbeddedSyntax {
     parser: Parser,
     tree: Option<Tree>,
     range: Range,
+    folds: std::cell::RefCell<folds::ParsedFolds>,
 }
 
 /// One outer parser plus independent embedded bodies. All positions are source coordinates.
@@ -89,6 +91,7 @@ pub struct SyntaxDocument {
     prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
     lexical: Option<Arc<crate::highlight::LexicalSnapshot>>,
     publication: Option<(u32, Arc<SyntaxAnalysis>)>,
+    folds: std::cell::RefCell<folds::ParsedFolds>,
 }
 
 impl SyntaxDocument {
@@ -112,6 +115,7 @@ impl SyntaxDocument {
             prepared: None,
             lexical: None,
             publication: None,
+            folds: std::cell::RefCell::default(),
         })
     }
 
@@ -260,6 +264,7 @@ impl SyntaxDocument {
                     provider,
                     parser: new_parser(provider)?,
                     tree: None,
+                    folds: std::cell::RefCell::default(),
                     range,
                 }
             };
@@ -428,6 +433,7 @@ impl SyntaxDocument {
         self.prepared = None;
         self.lexical = None;
         self.publication = None;
+        self.folds.borrow_mut().clear();
     }
 
     pub fn folds(&self) -> Vec<FoldRange> {
@@ -451,12 +457,20 @@ impl SyntaxDocument {
         let lines: Vec<_> = self.text.split('\n').collect();
         let mut ranges = Vec::new();
         let mut visited = 0;
-        if collect_folds(tree, provider, &lines, &mut ranges, &mut visited).is_err() {
+        if self
+            .folds
+            .borrow_mut()
+            .collect(tree, provider, &lines, &mut ranges, &mut visited)
+            .is_err()
+        {
             return Vec::new();
         }
         for embedded in &self.embedded {
             if let Some(tree) = &embedded.tree
-                && collect_folds(tree, embedded.provider, &lines, &mut ranges, &mut visited)
+                && embedded
+                    .folds
+                    .borrow_mut()
+                    .collect(tree, embedded.provider, &lines, &mut ranges, &mut visited)
                     .is_err()
             {
                 return Vec::new();
@@ -591,9 +605,17 @@ fn parse_tree(
 fn visit_tree<'tree>(
     tree: &'tree Tree,
     visited: &mut usize,
+    visitor: impl FnMut(Node<'tree>) -> Result<(), SyntaxStatus>,
+) -> Result<(), SyntaxStatus> {
+    visit_node(tree.root_node(), visited, visitor)
+}
+
+fn visit_node<'tree>(
+    node: Node<'tree>,
+    visited: &mut usize,
     mut visitor: impl FnMut(Node<'tree>) -> Result<(), SyntaxStatus>,
 ) -> Result<(), SyntaxStatus> {
-    let mut cursor = tree.walk();
+    let mut cursor = node.walk();
     loop {
         *visited += 1;
         if *visited > MAX_FOLD_NODES {
@@ -675,37 +697,6 @@ fn select_injections(
         Ok(())
     })?;
     Ok(selected)
-}
-
-fn collect_folds(
-    tree: &Tree,
-    provider: SyntaxProvider,
-    lines: &[&str],
-    ranges: &mut Vec<FoldRange>,
-    visited: &mut usize,
-) -> Result<(), SyntaxStatus> {
-    visit_tree(tree, visited, |node| {
-        if provider.fold_nodes.contains(&node.kind()) && !node.is_missing() {
-            let start = if provider.parent_headers.contains(&node.kind()) {
-                node.parent()
-                    .map_or(node.start_position(), |parent| parent.start_position())
-            } else {
-                node.start_position()
-            };
-            let end = node.end_position();
-            let trailing = lines
-                .get(end.row)
-                .and_then(|line| line.get(end.column..))
-                .is_some_and(|rest| !rest.trim().is_empty());
-            ranges.push(FoldRange {
-                start_line: start.row,
-                end_line: end
-                    .row
-                    .saturating_sub(usize::from(end.column == 0 || trailing)),
-            });
-        }
-        Ok(())
-    })
 }
 
 fn point(text: &str, offset: usize) -> Point {
@@ -825,6 +816,94 @@ mod tests {
         assert!(next.structure().unwrap().matches_source(&revised));
         assert_eq!(first.source(), source);
         assert_eq!(next.source(), revised);
+    }
+
+    #[test]
+    fn reused_parser_folds_match_fresh_parses_across_provider_edits() {
+        for &(path, source, _) in super::super::syntax_contracts::LANGUAGE_CASES {
+            let language = crate::highlight::language_from_path(path);
+            let original = source.repeat(3);
+            let changed = original.replace("文😀", "😀 changed");
+            let mut syntax = SyntaxDocument::new(language).unwrap();
+            for text in [
+                original.clone(),
+                format!("\r\n{original}"),
+                changed.clone(),
+                changed.replace("😀 changed", "文"),
+                format!("{source}\r\n{changed}"),
+                format!("文😀 {original}"),
+                original.replace('}', ""),
+                original,
+            ] {
+                syntax.update(&text, || true);
+                let mut fresh = SyntaxDocument::new(language).unwrap();
+                fresh.update(&text, || true);
+                assert_eq!(
+                    syntax.parser_folds(),
+                    fresh.parser_folds(),
+                    "{path}: {text}"
+                );
+                assert_eq!(
+                    syntax.folds_with_tab_width(3),
+                    fresh.folds_with_tab_width(3)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parser_folds_skip_unchanged_subtrees_without_bypassing_limits() {
+        let source = (0..200)
+            .map(|index| format!("fn f{index}() {{\r\n call(\"文😀\");\r\n}}\r\n"))
+            .collect::<String>();
+        let mut syntax = SyntaxDocument::new(Language::Rust).unwrap();
+        syntax.update(&source, || true);
+        syntax.parser_folds();
+        let changed = format!("// shifted\r\n{source}");
+        syntax.update(&changed, || true);
+        let folds = syntax.parser_folds();
+        let mut nodes = 0;
+        visit_tree(syntax.tree.as_ref().unwrap(), &mut nodes, |_| Ok(())).unwrap();
+        assert!(syntax.folds.borrow().reused_nodes > nodes / 2);
+        let mut fresh = SyntaxDocument::new(Language::Rust).unwrap();
+        fresh.update(&changed, || true);
+        assert_eq!(folds, fresh.parser_folds());
+        let mut visited = MAX_FOLD_NODES - 1;
+        let mut ranges = Vec::new();
+        assert_eq!(
+            syntax.folds.borrow_mut().collect(
+                syntax.tree.as_ref().unwrap(),
+                syntax.provider.unwrap(),
+                &changed.split('\n').collect::<Vec<_>>(),
+                &mut ranges,
+                &mut visited,
+            ),
+            Err(SyntaxStatus::TooLarge)
+        );
+        syntax.update(&changed, || false);
+        assert_eq!(syntax.folds.borrow().reused_nodes, 0);
+        assert!(syntax.parser_folds().is_empty());
+    }
+
+    #[test]
+    fn parent_owned_fold_headers_are_not_rebased_from_an_external_owner() {
+        let provider = SyntaxProvider {
+            fold_nodes: &["function_item"],
+            parent_headers: &["function_item"],
+            ..syntax_provider(Language::Rust).unwrap()
+        };
+        let source = "fn main() {\n call();\n}\n";
+        let mut syntax = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        syntax.update(source, || true);
+        syntax.parser_folds();
+        let changed = format!("// before\n{source}");
+        syntax.update(&changed, || true);
+        let mut fresh = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        fresh.update(&changed, || true);
+        let folds = syntax.parser_folds();
+        assert_eq!(folds, fresh.parser_folds());
+        assert_eq!(folds[0].start_line, 0);
+        assert_eq!(syntax.folds.borrow().reused_nodes, 0);
     }
 
     #[test]

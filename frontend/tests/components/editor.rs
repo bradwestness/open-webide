@@ -6306,6 +6306,83 @@ async fn editor_recovery_late_load_preserves_new_files_and_does_not_cross_accoun
 }
 
 #[wasm_bindgen_test]
+async fn recovery_busy_status_distinguishes_pending_checks_from_stable_issues_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state::workspace::RecoveredFileIssue;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("recovered.rs".into()));
+            state.workspace.editor_recovery_checks.update(|checks| {
+                checks.insert((1, "recovered.rs".into()), RecoveredFileIssue::Pending);
+            });
+            editor_view(state)
+        });
+        assert_eq!(
+            mounted
+                .element(".editor-recovery")
+                .get_attribute("aria-busy")
+                .as_deref(),
+            Some("true")
+        );
+        mounted.state.projects.needs_grant.update(|ids| {
+            ids.insert(1);
+        });
+        settle().await;
+        assert_eq!(
+            mounted
+                .element(".editor-recovery")
+                .get_attribute("aria-busy")
+                .as_deref(),
+            Some("false")
+        );
+        mounted.state.projects.needs_grant.update(|ids| {
+            ids.remove(&1);
+        });
+        settle().await;
+        assert_eq!(
+            mounted
+                .element(".editor-recovery")
+                .get_attribute("aria-busy")
+                .as_deref(),
+            Some("true")
+        );
+        mounted
+            .state
+            .workspace
+            .editor_recovery_checks
+            .update(|checks| {
+                checks.insert((1, "recovered.rs".into()), RecoveredFileIssue::Missing);
+            });
+        settle().await;
+        assert_eq!(
+            mounted
+                .element(".editor-recovery")
+                .get_attribute("aria-busy")
+                .as_deref(),
+            Some("false")
+        );
+        mounted
+            .state
+            .workspace
+            .editor_recovery_checks
+            .update(|checks| checks.clear());
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".editor-recovery")
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[wasm_bindgen_test]
 async fn editor_recovery_disk_conflict_blocks_host_save_and_retry_keeps_the_draft() {
     use openwebide_frontend::{
         state::workspace::RecoveredFileIssue, state_actions::workspace::WorkspaceActions,

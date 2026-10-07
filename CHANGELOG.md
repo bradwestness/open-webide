@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse parser fold descriptors from unchanged top-level subtrees across edits, rebasing shifted positions and checking closing-line text without another full tree walk. Keep analysis limits, embedded languages and parent-owned headers intact.
+- Mark pending editor recovery checks as busy for assistive technology and wait for them before production pointer verification, avoiding gesture coordinates measured across the disappearing recovery banner.
+
 - Reuse unchanged source structure and syntax token rows when tab width changes, while recomputing indentation-dependent folds. Source edits and cancellation still invalidate preparation.
 
 - Publish command, clipboard, search replacement and composition results directly into shared editor state, returning caret selections without another full-file text copy.

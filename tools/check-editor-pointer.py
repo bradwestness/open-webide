@@ -62,6 +62,7 @@ def check(mode, repeat, language):
                 const input=document.querySelector('textarea[data-editor-path]');
                 const paint=document.querySelector('.editor-highlight-content');
                 return input && !input.readOnly && paint &&
+                    !document.querySelector('.editor-recovery[aria-busy="true"]') &&
                     input.dataset.editorScope===paint.dataset.editorScope &&
                     !!document.querySelector('.highlight-ready .tok-string');
             """))

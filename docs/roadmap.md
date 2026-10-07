@@ -87,8 +87,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   when a worker base is unavailable. Consecutive unchanged token rows transfer as
   validated runs; replies and warm queries retain the facade's source snapshot.
   Tab-width changes share unchanged structure and token rows while recomputing folds.
+  Parser fold extraction reuses unchanged top-level subtrees with shifted positions
+  and fresh closing-line checks.
   Structural metadata now transfers changed list spans against a validated ticket,
-  avoiding complete wire copies for retained records. Structural extraction, list
+  avoiding complete wire copies for retained records. Context extraction, list
   reconstruction/validation and row-table construction still visit the whole file.
   Finish those incremental paths and remaining source snapshot
   ownership,

@@ -229,6 +229,11 @@ width. Tab-width changes retain structure and token allocations for unchanged so
 recomputing indentation-dependent folds. Consumers share immutable allocations;
 source updates and cancellation invalidate the cache while previously published
 snapshots retain their original source.
+Parser folds retain descriptors for unchanged top-level subtrees. The previous
+tree keeps node IDs alive; reused positions rebase from the new subtree origin,
+closing-line text is checked again and reused nodes still count toward analysis
+limits. External parent-owned headers use fresh extraction. Each embedded parser
+retains its own bounded current-tree cache, cleared with parser cancellation.
 The frontend facade also rejects changed account, file-read, source and tab-width
 scopes before publishing results.
 
@@ -356,7 +361,7 @@ press/move/release and insertion/undo in both workspace modes. Click and drag hi
 validate browser positions against measured text boundaries, including token and
 container fallbacks, and normalize vertical row padding to the glyph band. It does
 not prove physical touch selection or installed-PWA behavior. The verifier awaits
-editable, source-owned paint and loaded fonts before measuring gesture coordinates;
+editable, source-owned paint, completed recovery checks and loaded fonts before measuring gesture coordinates;
 failure diagnostics retain row/input rectangles and event cancellation state.
 
 While worker syntax is pending, cold views borrow plain row bodies from the existing

@@ -34,9 +34,17 @@ pub fn RecoveryStatus() -> impl IntoView {
                     .with(|checks| checks.get(&key).cloned())
             })
     });
+    let busy = Memo::new(move |_| {
+        matches!(phase.get(), Some(RecoveryPhase::Loading))
+            || (issue.get() == Some(crate::state::workspace::RecoveredFileIssue::Pending)
+                && !workspace
+                    .active_project
+                    .get()
+                    .is_some_and(|id| projects.needs_grant.with(|ids| ids.contains(&id))))
+    });
     view! {
         <Show when=move || phase.get().is_some_and(|phase| phase != RecoveryPhase::Ready) || issue.get().is_some()>
-            <div class="editor-recovery" role="status">
+            <div class="editor-recovery" role="status" aria-busy=move || busy.get().to_string()>
                 <FormNotice tone=NoticeTone::Warning>
                     {move || match phase.get() {
                         Some(RecoveryPhase::Loading) => "Loading saved editor files…".into(),
