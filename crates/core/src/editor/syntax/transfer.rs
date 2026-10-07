@@ -91,12 +91,12 @@ impl SyntaxSource {
         }
     }
 
-    fn validate(self, expected: &str, previous: Option<&SyntaxAnalysis>) -> Option<Arc<str>> {
+    fn validate(self, expected: Arc<str>, previous: Option<&SyntaxAnalysis>) -> Option<Arc<str>> {
         if expected.len() > MAX_STRUCTURE_BYTES {
             return None;
         }
         match self {
-            Self::Full(source) => (source == expected).then(|| Arc::from(source)),
+            Self::Full(source) => (source == expected.as_ref()).then_some(expected),
             Self::Replace { start, end, text } => {
                 let old = previous?.source();
                 if start > end {
@@ -113,7 +113,7 @@ impl SyntaxSource {
                 {
                     return None;
                 }
-                Some(Arc::from(expected))
+                Some(expected)
             }
         }
     }
@@ -123,13 +123,19 @@ impl SyntaxSource {
 #[serde(untagged, deny_unknown_fields)]
 enum TokenRowData {
     Spans(Vec<(usize, TokenKind)>),
-    Previous { reuse: usize },
+    Previous { reuse: usize, count: usize },
 }
 impl TokenRowData {
+    fn row_count(&self) -> usize {
+        match self {
+            Self::Spans(_) => 1,
+            Self::Previous { count, .. } => *count,
+        }
+    }
     fn records(&self) -> usize {
         match self {
             Self::Spans(spans) => spans.len(),
-            Self::Previous { .. } => 1,
+            Self::Previous { count, .. } => *count,
         }
     }
 }
@@ -162,38 +168,43 @@ impl SyntaxAnalysis {
         let structure = self.structure.as_ref().map(|value| value.transfer_data());
         let mut reused = false;
         let highlights = self.highlights.as_ref().map(|lines| {
-            lines
-                .iter()
-                .enumerate()
-                .map(|(index, line)| {
-                    if let Some(old) =
-                        previous.and_then(|(_, analysis)| analysis.highlights.as_ref())
+            let mut data = Vec::new();
+            for (index, line) in lines.iter().enumerate() {
+                if let Some(old) = previous.and_then(|(_, analysis)| analysis.highlights.as_ref()) {
+                    let shifted = if lines.len() >= old.len() {
+                        index.checked_sub(lines.len() - old.len())
+                    } else {
+                        index.checked_add(old.len() - lines.len())
+                    };
+                    if let Some(reuse) = [Some(index), shifted]
+                        .into_iter()
+                        .flatten()
+                        .find(|&candidate| old.get(candidate).is_some_and(|row| row == line))
                     {
-                        let shifted = if lines.len() >= old.len() {
-                            index.checked_sub(lines.len() - old.len())
-                        } else {
-                            index.checked_add(old.len() - lines.len())
-                        };
-                        if let Some(reuse) = [Some(index), shifted]
-                            .into_iter()
-                            .flatten()
-                            .find(|&candidate| old.get(candidate).is_some_and(|row| row == line))
-                        {
-                            reused = true;
-                            return TokenRowData::Previous { reuse };
+                        reused = true;
+                        match data.last_mut() {
+                            Some(TokenRowData::Previous {
+                                reuse: start,
+                                count,
+                            }) if start.checked_add(*count) == Some(reuse) => {
+                                *count += 1;
+                            }
+                            _ => data.push(TokenRowData::Previous { reuse, count: 1 }),
                         }
+                        continue;
                     }
-                    let mut end = 0;
-                    TokenRowData::Spans(
-                        line.iter()
-                            .map(|token| {
-                                end += token.text.len();
-                                (end, token.kind)
-                            })
-                            .collect(),
-                    )
-                })
-                .collect()
+                }
+                let mut end = 0;
+                data.push(TokenRowData::Spans(
+                    line.iter()
+                        .map(|token| {
+                            end += token.text.len();
+                            (end, token.kind)
+                        })
+                        .collect(),
+                ));
+            }
+            data
         });
         let source = SyntaxSource::publication(
             &self.source,
@@ -237,6 +248,16 @@ impl SyntaxAnalysisData {
         expected_source: &str,
         previous: Option<(u32, &SyntaxAnalysis)>,
     ) -> Option<Arc<SyntaxAnalysis>> {
+        if expected_source.len() > MAX_STRUCTURE_BYTES {
+            return None;
+        }
+        self.validate_shared(Arc::from(expected_source), previous)
+    }
+    pub(super) fn validate_shared(
+        self,
+        expected_source: Arc<str>,
+        previous: Option<(u32, &SyntaxAnalysis)>,
+    ) -> Option<Arc<SyntaxAnalysis>> {
         if self
             .base_ticket
             .is_some_and(|ticket| previous.is_none_or(|(base, _)| base != ticket))
@@ -261,50 +282,77 @@ impl SyntaxAnalysisData {
             None => None,
         };
         let highlights = if let Some(lines) = self.highlights {
-            if lines.len() != line_count {
+            let declared_rows = lines
+                .iter()
+                .try_fold(0_usize, |count, line| count.checked_add(line.row_count()))?;
+            if declared_rows != line_count || declared_rows > MAX_ANALYSIS_RECORDS {
                 return None;
             }
-            let mut tokens = Vec::with_capacity(lines.len());
-            for (line, data) in source.split('\n').zip(lines) {
-                let spans = match data {
-                    TokenRowData::Spans(spans) => spans,
-                    TokenRowData::Previous { reuse } => {
+            let mut records = self
+                .folds
+                .len()
+                .saturating_add(structure.as_ref().map_or(0, |value| value.record_count()));
+            let mut raw_lines = source.split('\n');
+            let mut tokens = Vec::with_capacity(line_count);
+            for data in lines {
+                match data {
+                    TokenRowData::Previous { reuse, count } => {
                         self.base_ticket?;
-                        let row = previous?.1.highlights.as_ref()?.get(reuse)?;
-                        let mut start = 0_usize;
-                        for token in row.iter() {
-                            let end = start.checked_add(token.text.len())?;
-                            if line.get(start..end) != Some(token.text.as_str()) {
+                        if count == 0 {
+                            return None;
+                        }
+                        let end = reuse.checked_add(count)?;
+                        let rows = previous?.1.highlights.as_ref()?.get(reuse..end)?;
+                        for row in rows {
+                            records = records.saturating_add(row.len()).saturating_add(1);
+                            if records > MAX_ANALYSIS_RECORDS {
                                 return None;
                             }
+                            let line = raw_lines.next()?;
+                            let mut start = 0_usize;
+                            for token in row.iter() {
+                                let end = start.checked_add(token.text.len())?;
+                                if line.get(start..end) != Some(token.text.as_str()) {
+                                    return None;
+                                }
+                                start = end;
+                            }
+                            if start != line.len() {
+                                return None;
+                            }
+                            tokens.push(row.clone());
+                        }
+                    }
+                    TokenRowData::Spans(spans) => {
+                        records = records.saturating_add(spans.len()).saturating_add(1);
+                        if records > MAX_ANALYSIS_RECORDS {
+                            return None;
+                        }
+                        let line = raw_lines.next()?;
+                        let mut start = 0;
+                        let mut row = Vec::with_capacity(spans.len());
+                        for (end, kind) in spans {
+                            if end < start
+                                || (end == start && !line.is_empty())
+                                || !line.is_char_boundary(end)
+                            {
+                                return None;
+                            }
+                            row.push(Token {
+                                kind,
+                                text: line[start..end].to_string(),
+                            });
                             start = end;
                         }
                         if start != line.len() {
                             return None;
                         }
-                        tokens.push(row.clone());
-                        continue;
+                        tokens.push(Arc::from(row));
                     }
-                };
-                let mut start = 0;
-                let mut row = Vec::with_capacity(spans.len());
-                for (end, kind) in spans {
-                    if end < start
-                        || (end == start && !line.is_empty())
-                        || !line.is_char_boundary(end)
-                    {
-                        return None;
-                    }
-                    row.push(Token {
-                        kind,
-                        text: line[start..end].to_string(),
-                    });
-                    start = end;
                 }
-                if start != line.len() {
-                    return None;
-                }
-                tokens.push(Arc::from(row));
+            }
+            if raw_lines.next().is_some() {
+                return None;
             }
             Some(Arc::new(tokens))
         } else {
@@ -324,6 +372,90 @@ impl SyntaxAnalysisData {
 mod tests {
     use super::*;
     use crate::highlight::language_from_path;
+    #[test]
+    fn token_row_runs_preserve_insertions_deletions_disjoint_edits_and_source_ownership() {
+        let source: String = (0..1000)
+            .map(|index| format!("SELECT {index}, '文😀';\r\n"))
+            .collect();
+        let mut document = SyntaxDocument::new(crate::highlight::Language::Sql).unwrap();
+        let old = document.prepare(&source, 4, || true).1.unwrap();
+        let row = "SELECT 500, '文😀';\r\n";
+        for (revised, max_runs) in [
+            (source.clone(), 1),
+            (source.replacen(row, "SELECT changed, '🦀';\r\n", 1), 3),
+            (
+                source.replacen(row, &format!("SELECT inserted, '🦀';\r\n{row}"), 1),
+                3,
+            ),
+            (source.replacen(row, "", 1), 2),
+            (
+                source
+                    .replace("SELECT 100,", "SELECT first,")
+                    .replace("SELECT 900,", "SELECT last,"),
+                5,
+            ),
+        ] {
+            let next = document.prepare(&revised, 4, || true).1.unwrap();
+            let wire = next.transfer_data_reusing(Some((42, &old))).unwrap();
+            assert!(wire.highlights.as_ref().unwrap().len() <= max_runs);
+            let snapshot: Arc<str> = Arc::from(revised);
+            let restored = wire
+                .validate_shared(snapshot.clone(), Some((42, &old)))
+                .unwrap();
+            assert!(Arc::ptr_eq(&snapshot, restored.source_snapshot()));
+            assert_eq!(restored.highlights(), next.highlights());
+        }
+        let full = old.transfer_data().unwrap();
+        let snapshot: Arc<str> = Arc::from(source);
+        let restored = full.validate_shared(snapshot.clone(), None).unwrap();
+        assert!(Arc::ptr_eq(&snapshot, restored.source_snapshot()));
+        let wire = old.transfer_data_reusing(Some((42, &old))).unwrap();
+        for (reuse, count) in [
+            (0, 0),
+            (0, 1000),
+            (0, 1002),
+            (1, 1001),
+            (usize::MAX, 2),
+            (0, usize::MAX),
+        ] {
+            let mut invalid = wire.clone();
+            invalid.highlights = Some(vec![TokenRowData::Previous { reuse, count }]);
+            assert!(
+                invalid
+                    .validate_shared(snapshot.clone(), Some((42, &old)))
+                    .is_none()
+            );
+        }
+        for malformed in [
+            serde_json::json!({"reuse":0}),
+            serde_json::json!({"reuse":0,"count":1,"extra":true}),
+        ] {
+            assert!(serde_json::from_value::<TokenRowData>(malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn reconstructed_row_runs_cannot_multiply_the_token_record_budget() {
+        let row: Arc<[Token]> = Arc::from(vec![
+            Token {
+                kind: TokenKind::Plain,
+                text: String::new()
+            };
+            MAX_ANALYSIS_RECORDS / 2
+        ]);
+        let old = SyntaxAnalysis {
+            source: Arc::from(""),
+            folds: vec![],
+            structure: None,
+            highlights: Some(Arc::new(vec![row])),
+        };
+        let mut wire = old.transfer_data().unwrap();
+        wire.source = SyntaxSource::Full("\n\n".into());
+        wire.base_ticket = Some(42);
+        wire.highlights = Some(vec![TokenRowData::Previous { reuse: 0, count: 3 }]);
+        assert!(wire.validate_reusing("\n\n", Some((42, &old))).is_none());
+    }
+
     #[test]
     fn source_publications_validate_unicode_edits_and_reject_invalid_bases_and_ranges() {
         let source = format!("{}文😀\r\n{}", "prefix ".repeat(30), "suffix ".repeat(30));
@@ -374,7 +506,7 @@ mod tests {
                     end,
                     text: text.into()
                 }
-                .validate(&source, Some(&old))
+                .validate(Arc::from(source.as_str()), Some(&old))
                 .is_none()
             );
         }

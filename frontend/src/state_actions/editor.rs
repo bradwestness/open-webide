@@ -878,25 +878,30 @@ impl EditorActions {
         let read_revision = self.workspace.editor_read_revision.get_untracked();
         let account_generation = self.auth.map_or(0, |auth| auth.generation.get_untracked());
         let language = openwebide_core::highlight::language_from_path(&key.1);
-        let text = self.workspace.content.get_untracked();
+        let worker_active = self.workspace.editor_worker_active.get_untracked();
+        let worker_prepared = worker_active
+            .then(|| self.workspace.editor_preparation.get_untracked())
+            .flatten();
+        let shared_source = worker_prepared
+            .as_ref()
+            .filter(|prepared| self.syntax_scope_current(&prepared.scope))
+            .map(|prepared| prepared.scope.source.clone());
+        let owned_source = shared_source
+            .is_none()
+            .then(|| self.workspace.content.get_untracked());
+        let text = shared_source.as_deref().or(owned_source.as_deref())?;
         let tab_width = self.rules_untracked().indentation.tab_width();
-        let result = if self.workspace.editor_worker_active.get_untracked() {
+        let result = if worker_active {
             if !should_continue() {
                 Some(result_for(
                     None,
                     openwebide_core::editor::SyntaxStatus::Cancelled,
                 ))
             } else {
-                self.workspace
-                    .editor_preparation
-                    .with_untracked(|prepared| {
-                        prepared
-                            .as_ref()
-                            .filter(|prepared| self.syntax_scope_current(&prepared.scope))
-                            .map(|prepared| {
-                                result_for(prepared.analysis.as_deref(), prepared.status)
-                            })
-                    })
+                worker_prepared
+                    .as_ref()
+                    .filter(|prepared| self.syntax_scope_current(&prepared.scope))
+                    .map(|prepared| result_for(prepared.analysis.as_deref(), prepared.status))
             }
         } else {
             let deadline = js_sys::Date::now() + 12.0;
@@ -904,7 +909,7 @@ impl EditorActions {
                 .editor_syntax
                 .try_update(|documents| {
                     let (status, prepared) =
-                        documents.prepare(key.clone(), language, &text, tab_width, || {
+                        documents.prepare(key.clone(), language, text, tab_width, || {
                             js_sys::Date::now() <= deadline && should_continue()
                         });
                     Some(result_for(prepared.as_deref(), status))
@@ -919,7 +924,7 @@ impl EditorActions {
             && self
                 .workspace
                 .content
-                .with_untracked(|current| current == &text))
+                .with_untracked(|current| current == text))
         .then_some(result)
         .flatten()
     }

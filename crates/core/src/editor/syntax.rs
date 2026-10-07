@@ -45,6 +45,9 @@ impl SyntaxAnalysis {
     pub fn source(&self) -> &str {
         &self.source
     }
+    pub fn source_snapshot(&self) -> &Arc<str> {
+        &self.source
+    }
     pub fn folds(&self) -> &[FoldRange] {
         &self.folds
     }

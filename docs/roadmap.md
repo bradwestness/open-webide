@@ -83,8 +83,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   fallback updates reuse exact source/context rows and share their immutable token
   allocations. Worker replies reference validated unchanged token rows and publish
   source replacement spans in both directions, with a bounded full-snapshot resync
-  when a worker base is unavailable. Structure and row-table publication remain
-  whole-file. Finish those incremental paths and remaining source snapshot ownership,
+  when a worker base is unavailable. Consecutive unchanged token rows transfer as
+  validated runs; replies and warm queries retain the facade's source snapshot.
+  Structural publication and row-table construction/validation still visit the
+  whole file. Finish those incremental paths and remaining source snapshot
+  ownership,
   uncached initial/cold shaping, bidirectional visual-run windows, fine long-row paint
   and incremental measurement. Language formatting remains in Code intelligence.
 - **Bounded native input:** prepared larger fine-pointer editors bind scoped

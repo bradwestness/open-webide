@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{editor::MAX_STRUCTURE_BYTES, highlight::Language};
 
-pub const SYNTAX_PROTOCOL_VERSION: u32 = 4;
+pub const SYNTAX_PROTOCOL_VERSION: u32 = 5;
 pub const MAX_SYNTAX_REQUEST_BYTES: usize = MAX_STRUCTURE_BYTES * 6 + 8192;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -157,6 +157,25 @@ impl SyntaxReply {
         source: &str,
         previous: Option<(u32, &super::SyntaxAnalysis)>,
     ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
+        Self::receive_source(message, ticket, || std::sync::Arc::from(source), previous)
+    }
+
+    /// Retain the facade's immutable snapshot after validating the worker's source.
+    pub fn receive_shared(
+        message: &str,
+        ticket: u32,
+        source: std::sync::Arc<str>,
+        previous: Option<(u32, &super::SyntaxAnalysis)>,
+    ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
+        Self::receive_source(message, ticket, || source, previous)
+    }
+
+    fn receive_source(
+        message: &str,
+        ticket: u32,
+        source: impl FnOnce() -> std::sync::Arc<str>,
+        previous: Option<(u32, &super::SyntaxAnalysis)>,
+    ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
         if message.len() > MAX_ANALYSIS_MESSAGE_BYTES {
             return None;
         }
@@ -166,7 +185,7 @@ impl SyntaxReply {
         }
         let analysis = match (reply.status, reply.analysis) {
             (SyntaxStatus::Ready { .. }, Some(data)) => {
-                Some(data.validate_reusing(source, previous)?)
+                Some(data.validate_shared(source(), previous)?)
             }
             (
                 SyntaxStatus::Cancelled | SyntaxStatus::TooLarge | SyntaxStatus::NeedsSource,
@@ -350,6 +369,8 @@ mod tests {
             .unwrap();
         let wire: serde_json::Value = serde_json::from_str(&delta).unwrap();
         assert_eq!(wire["analysis"]["source"]["text"], "revised_");
+        assert_eq!(wire["analysis"]["highlights"].as_array().unwrap().len(), 2);
+        assert_eq!(wire["analysis"]["highlights"][1]["count"], 1000);
         assert_eq!(
             wire["analysis"]["source"]["start"],
             source.find("value").unwrap()
@@ -441,9 +462,9 @@ mod tests {
             assert!(SyntaxReply::receive_reusing(&next, 43, &revised, Some((41, &old))).is_none());
             assert!(SyntaxReply::receive_reusing(&next, 44, &revised, Some((42, &old))).is_none());
             for replacement in [
-                serde_json::json!({"reuse":usize::MAX}),
-                serde_json::json!({"reuse":1}),
-                serde_json::json!({"reuse":0,"extra":true}),
+                serde_json::json!({"reuse":usize::MAX,"count":1}),
+                serde_json::json!({"reuse":1,"count":1}),
+                serde_json::json!({"reuse":0,"count":1,"extra":true}),
             ] {
                 let mut invalid = value.clone();
                 invalid["analysis"]["highlights"][0] = replacement;

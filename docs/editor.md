@@ -754,23 +754,28 @@ cancellation. Published rows use immutable shared token slices, so lexical reuse
 retains existing token strings without copying their text or token arrays. Parser
 paint and validated worker replies use the same row representation; the painter
 reads those rows without materializing a second token table. Row metadata and
-handle tables still visit the complete source. Worker protocol v4 replies reference
-unchanged token rows from the last published base ticket. The receiver checks the ticket and exact row text before sharing the
-existing allocation. Account, document, read and tab-width changes clear the
-frontend base; unavailable, stale or evicted worker bases produce complete results.
+handle tables still visit the complete source. Worker protocol v5 replies reference
+unchanged token rows from the last published base ticket. Consecutive references
+transfer as runs, so one edit does not serialize a reference record for every
+unchanged row. The receiver checks the ticket, count, old row range, exact new row
+coverage and reconstructed token budget before sharing existing allocations.
+Account, document, read and tab-width changes clear the frontend base; a full-source
+request without a matching worker base produces a standalone result.
 Malformed references are transport failures and retain the existing safe fallback.
 Replies also publish a UTF-8 replacement span when it is smaller than the full
 source. The receiver validates its range, unchanged prefix and suffix, inserted
 text and resulting length against the exact requested source before accepting it.
-No base, a stale ticket or worker cache eviction produces a standalone reply;
-malformed spans are rejected. Requests use the same span contract. If the worker
+Malformed spans are rejected. Full-source requests without a matching worker
+base produce standalone replies. Requests use the same span contract. If the worker
 no longer has the advertised base, it asks for a full snapshot; the shared
 publication facade retries once after rechecking source, account, read and ticket
 ownership. A second resync response stops the transport and uses the shared
 fallback. Invalid ranges remain transport failures; reconstructed byte and row
 limits apply before analysis. Structural data still transfers in full, and row
-tables still visit all rows. Initial preparation and changed rows still
-allocate token text.
+tables still visit all rows. Validated replies retain the facade's immutable
+source snapshot, and warm syntax queries use it without cloning the full buffer;
+source/read/account guards still run around callbacks. Initial preparation and
+changed rows still allocate token text.
 
 Parser fallback keeps its existing 12 ms budget and
 can supply ready paint before lexical preparation is needed. Core callers that

@@ -34,7 +34,7 @@ def check():
                     let wake; const ready = new Promise(resolve => {wake = resolve;});
                     worker.onerror = e => { worker.terminate(); done({error: e.message}); };
                     worker.onmessage = event => {
-                        if (event.data === 'openwebide-editor-ready:4') {wake(); return;}
+                        if (event.data === 'openwebide-editor-ready:5') {wake(); return;}
                         const reply = JSON.parse(event.data);
                         waiting.get(reply.ticket)?.(reply); waiting.delete(reply.ticket);
                     };
@@ -62,7 +62,7 @@ def check():
                                 } else { bases.delete(document); sources.delete(document); }
                                 resolve(reply);
                             });
-                            worker.postMessage(JSON.stringify({version:4,ticket:id,document,language,source:span || source,tab_width:4,base_ticket:bases.get(document)}));
+                            worker.postMessage(JSON.stringify({version:5,ticket:id,document,language,source:span || source,tab_width:4,base_ticket:bases.get(document)}));
                         });
                     }
                     (async () => {
@@ -107,7 +107,7 @@ def check():
                                 paint: !!reply.analysis?.highlights, sourceMatches: reply.analysis?.source === text,
                                 updateStatus: update.status, updatePaint: !!update.analysis?.highlights,
                                 updateSourceMatches: update.analysis?.source === revised,
-                                reusedRows: update.analysis?.highlights?.filter(row => !Array.isArray(row) && Number.isInteger(row.reuse)).length});
+                                reusedRows: update.analysis?.highlights?.reduce((total, row) => total + (!Array.isArray(row) && Number.isInteger(row.reuse) ? row.count : 0), 0)});
                         }
                         const heavy = 'fn call() {\n if true { println!("文😀"); }\n}\n'.repeat(1000);
                         let uiEvent = false;
@@ -127,6 +127,7 @@ def check():
                         done({first, next, providers, lexical, heavyStatus: prepared.status,
                             heavySource: prepared.analysis?.source === heavy, uiEvent,
                             heavyDelta: heavyUpdate.analysis?.sourceDelta === true,
+                            heavyRowRuns: heavyUpdate.analysis?.highlights?.length,
                             heavyUpdateSource: heavyUpdate.analysis?.source === heavy.replace('文😀', '🦀 changed'),
                             resyncStatus: resync.status, resyncedSource: resynced.analysis?.source === resyncText,
                             oversizedStatus: oversized.status, oversizedAnalysis: oversized.analysis});
@@ -134,6 +135,7 @@ def check():
                 ''', 'args': []})
                 assert 'error' not in result, result
                 assert result['heavyDelta'] and result['heavyUpdateSource'], result
+                assert result['heavyRowRuns'] == 3, result['heavyRowRuns']
                 assert result['resyncStatus'] == 'NeedsSource' and result['resyncedSource'], result
                 assert result['first']['status'] == {'Ready': {'incremental': False}}, result['first']['status']
                 assert result['next']['status'] == {'Ready': {'incremental': True}}, result['next']['status']
@@ -147,7 +149,7 @@ def check():
                 assert 'Ready' in result['heavyStatus'] and result['heavySource'] and result['uiEvent'], result
                 assert result['oversizedStatus'] == 'TooLarge' and result['oversizedAnalysis'] is None, result
                 print(json.dumps({'providers': len(result['providers'])+1, 'lexical_languages': len(result['lexical']), 'incremental': True,
-                                  'ui_event_during_worker': result['uiEvent'], 'oversize_fallback': True}))
+                                  'ui_event_during_worker': result['uiEvent'], 'oversize_fallback': True, 'changed_row_records': result['heavyRowRuns']}))
             finally:
                 browser.stop()
     finally:

@@ -365,10 +365,10 @@ impl EditorActions {
                         continue;
                     }
                     let mut result = reply.ok().and_then(|message| {
-                        SyntaxReply::receive_reusing(
+                        SyntaxReply::receive_shared(
                             &message,
                             request_ticket,
-                            &scope.source,
+                            scope.source.clone(),
                             previous
                                 .as_ref()
                                 .map(|previous| (previous.ticket, previous.analysis.as_ref())),
@@ -403,7 +403,12 @@ impl EditorActions {
                         result = reply
                             .ok()
                             .and_then(|message| {
-                                SyntaxReply::receive(&message, request_ticket, &scope.source)
+                                SyntaxReply::receive_shared(
+                                    &message,
+                                    request_ticket,
+                                    scope.source.clone(),
+                                    None,
+                                )
                             })
                             .filter(|(status, _)| {
                                 *status != openwebide_core::editor::SyntaxStatus::NeedsSource

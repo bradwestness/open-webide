@@ -8523,6 +8523,23 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
             actions.syntax_highlights().is_some()
         })
         .await;
+        let prepared = mounted
+            .state
+            .workspace
+            .editor_preparation
+            .get_untracked()
+            .unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(
+                &prepared.scope.source,
+                prepared.analysis.as_ref().unwrap().source_snapshot(),
+            ),
+            "the receiver retains the facade's immutable source snapshot"
+        );
+        assert_eq!(
+            actions.syntax_folds(|| false).unwrap().0,
+            openwebide_core::editor::SyntaxStatus::Cancelled,
+        );
         let first = actions.syntax_highlights().unwrap();
         assert!(std::sync::Arc::ptr_eq(
             &first,
@@ -8576,6 +8593,16 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
             &actions.syntax_highlights().unwrap()
         ));
         let updated = actions.syntax_highlights().unwrap();
+        let prepared = mounted
+            .state
+            .workspace
+            .editor_preparation
+            .get_untracked()
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &prepared.scope.source,
+            prepared.analysis.as_ref().unwrap().source_snapshot(),
+        ));
         assert!(
             std::sync::Arc::ptr_eq(&first[0], &updated[0]),
             "worker replies share unchanged row allocations in the receiver"
@@ -8618,6 +8645,15 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
                 .text_content()
                 .unwrap(),
             revised.replace("\r\n", "\n")
+        );
+        assert!(
+            actions
+                .syntax_folds(|| {
+                    mounted.state.workspace.content.set(revised.clone() + " ");
+                    false
+                })
+                .is_none(),
+            "cancellation callbacks cannot publish after changing the source"
         );
     }
 }
