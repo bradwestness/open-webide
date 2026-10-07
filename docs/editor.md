@@ -8,6 +8,12 @@ default), Argon, Xenon, Radon, and Krypton. Texture healing and coding ligatures
 are independent toggles, both enabled by default. These preferences sync through
 your account and apply to Edit and diff views; fonts are available offline in the PWA. Font family and OpenType changes invalidate source geometry even when the browser cannot serialize the font shorthand.
 
+Right-click or long-press a project or file tab for **Close others**, **Close all
+to left/right**, and **Move left/right**. File tabs also expose the tree's file,
+Git and chat actions, even when the Files dock is collapsed. Bulk file closes
+confirm unsaved changes together and reject changes made while confirmation is
+open. The persistent project-less Chat tab remains available.
+
 - Tab advances to the next indentation stop; Shift+Tab outdents selected lines.
 - The folding gutter keeps a fixed width while syntax detection updates, so typing
   and pressing Enter do not shift the text horizontally.
@@ -258,7 +264,8 @@ complete source range. Native origins and source/read/account/document/selection
 checks reject stale declarations. This bounds the retained declaration, not the
 textarea value or layout. Prepared primary caret/selection paint and single-cursor
 keyboard motion use shared source geometry and Rust commands. Caret reveal uses
-the common scroll viewport, including offscreen rows. Prepared mouse clicks and
+the common scroll viewport, including offscreen rows. Prepared mouse clicks resolve measured character positions and clamp blank
+space past the text to the line end. Prepared clicks and
 drags select source carets, words or logical lines through the same
 Rust policy; Shift-click preserves the existing anchor. Copy/cut use full source
 ranges for single selections too, preserving CRLF and shared undo behavior.

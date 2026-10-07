@@ -307,9 +307,11 @@ export function editor_point(input, x, y, dragging) {
     const paint = input.parentElement?.querySelector('.editor-highlight-content');
     const overlay = paint?.parentElement;
     if (!paint || !overlay) return undefined;
-    if (dragging) {
-        const bounds = input.getBoundingClientRect();
-        if (bounds.width <= 2 || bounds.height <= 2) return undefined;
+    const bounds = input.getBoundingClientRect();
+    if (bounds.width <= 2 || bounds.height <= 2) return undefined;
+    if (!dragging && (x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom)) return undefined;
+    let hitRow;
+    {
         let nearest, distance = Infinity;
         for (const row of paint.querySelectorAll('.editor-source-line')) {
             const rect = row.getBoundingClientRect();
@@ -317,7 +319,7 @@ export function editor_point(input, x, y, dragging) {
             if (bottom <= top) continue;
             const at = Math.max(top + Math.min(.5, (bottom - top) / 2),
                 Math.min(bottom - Math.min(.5, (bottom - top) / 2), y));
-            if (Math.abs(at - y) < distance) { nearest = at; distance = Math.abs(at - y); }
+            if (Math.abs(at - y) < distance) { hitRow = row; nearest = at; distance = Math.abs(at - y); }
         }
         if (nearest === undefined) return undefined;
         x = Math.max(bounds.left + 1, Math.min(bounds.right - 1, x));
@@ -328,8 +330,52 @@ export function editor_point(input, x, y, dragging) {
         input.style.pointerEvents = 'none'; overlay.style.pointerEvents = 'auto';
         const position = document.caretPositionFromPoint?.(x, y);
         const caret = position ? {startContainer:position.offsetNode, startOffset:position.offset} : document.caretRangeFromPoint?.(x, y);
-        if (!caret || !paint.contains(caret.startContainer)) return undefined;
-        return [caret.startContainer, caret.startOffset];
+        if (dragging) {
+            return caret && paint.contains(caret.startContainer) ? [caret.startContainer, caret.startOffset] : undefined;
+        }
+        // Browser caret APIs can return the row/container boundary for blank
+        // space or generated gutters. Resolve such hits from measured text
+        // boundaries instead of treating the container offset as character zero.
+        if (caret && hitRow.contains(caret.startContainer) && caret.startContainer.nodeType === Node.TEXT_NODE) {
+            const hit = document.createRange();
+            hit.setStart(caret.startContainer, caret.startOffset); hit.collapse(true);
+            const rect = hit.getBoundingClientRect();
+            if (rect.height && y >= rect.top && y <= rect.bottom && Math.abs(rect.left - x) <= rect.height / 2) {
+                return [caret.startContainer, caret.startOffset];
+            }
+            // At bidi run boundaries the collapsed caret can have another
+            // visual affinity; adjacent glyph rectangles validate that hit.
+            hit.setStart(caret.startContainer, Math.max(0, caret.startOffset - 1));
+            hit.setEnd(caret.startContainer, Math.min(caret.startContainer.length, caret.startOffset + 1));
+            for (const rect of hit.getClientRects()) {
+                if (rect.height && y >= rect.top && y <= rect.bottom && x >= rect.left && x <= rect.right) {
+                    return [caret.startContainer, caret.startOffset];
+                }
+            }
+        }
+        const walker = document.createTreeWalker(hitRow, NodeFilter.SHOW_TEXT);
+        const range = document.createRange();
+        let node, best, distance = Infinity;
+        const rectAt = offset => {
+            range.setStart(node, offset); range.collapse(true);
+            return range.getBoundingClientRect();
+        };
+        while ((node = walker.nextNode())) {
+            let low = 0, high = node.length;
+            while (low < high) {
+                const middle = (low + high) >>> 1, rect = rectAt(middle);
+                if (rect.bottom <= y || (rect.top <= y && rect.left < x)) low = middle + 1;
+                else high = middle;
+            }
+            for (const offset of new Set([low, Math.max(0, low - 1), node.length])) {
+                const rect = rectAt(offset);
+                if (!rect.height) continue;
+                const vertical = Math.max(rect.top - y, y - rect.bottom, 0);
+                const score = vertical * 10000 + Math.abs(rect.left - x);
+                if (score < distance) { best = [node, offset]; distance = score; }
+            }
+        }
+        return best;
     } finally {
         input.style.pointerEvents = inputEvents; overlay.style.pointerEvents = paintEvents;
     }

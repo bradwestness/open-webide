@@ -32,6 +32,12 @@ pub(super) fn EditorTabs() -> impl IntoView {
                     let open_path = path.clone();
                     let close_path = path.clone();
                     let keyboard_path = path.clone();
+                    let menu_path = path.clone();
+                    let action_path = path.clone();
+                    let on_tab_action = Callback::new(move |action| { if let Some(actions) = actions { actions.file_tab_action.run((action_path.clone(), action)); } });
+                    let position = Signal::derive(move || paths.with(|paths| paths.iter().position(|path| path == &menu_path).map(|index| (index, paths.len()))));
+                    let entry = openwebide_core::FileEntry { path: path.clone(), name: path.rsplit('/').next().unwrap_or(&path).to_string(), is_dir: false, size: 0 };
+
                     let selected = Signal::derive(move || workspace.open_file.with(|file| file.as_ref() == Some(&selected_path)));
                     let dirty = Signal::derive(move || {
                         if workspace.open_file.with(|file| file.as_ref() == Some(&dirty_path)) {
@@ -44,7 +50,10 @@ pub(super) fn EditorTabs() -> impl IntoView {
                     });
                     let name = path.rsplit('/').next().unwrap_or(&path).to_string();
                     view! {
-                        <div class="tab editor-file-tab" class:active=move || selected.get() role="presentation">
+                        <div class="tab editor-file-tab" class:active=move || selected.get() role="presentation" data-context-menu="">
+                            <super::file_tree::FileEntryMenu entry=entry context_only=true>
+                                <super::tab_actions::TabActionItems position=position on_action=on_tab_action />
+                            </super::file_tree::FileEntryMenu>
                             <button type="button" class="btn tab-select" role="tab" title=path.clone()
                                 aria-selected=move || selected.get().to_string()
                                 tabindex=move || if selected.get() { "0" } else { "-1" }

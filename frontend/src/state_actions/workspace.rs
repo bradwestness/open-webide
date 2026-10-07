@@ -148,6 +148,7 @@ pub struct WorkspaceActions {
     pub on_open_lossy: Callback<()>,
     pub request_open: Callback<String>,
     pub close_file: Callback<String>,
+    pub file_tab_action: Callback<(String, crate::tabs::TabAction)>,
     pub on_toggle: Callback<String>,
     pub on_save: Callback<()>,
     pub on_accept: Callback<()>,
@@ -578,7 +579,10 @@ impl WorkspaceActions {
 
         let request_open = on_open;
 
-        let close_file = Callback::new(move |path: String| {
+        let close_files = Callback::new(move |paths: Vec<String>| {
+            if paths.is_empty() {
+                return;
+            }
             let Some(project) = active_project.get_untracked() else {
                 return;
             };
@@ -588,8 +592,8 @@ impl WorkspaceActions {
             }
             let generation = auth.generation.get_untracked();
             let epoch = directory_epoch.get_untracked();
-            let buffer = || {
-                if workspace.open_file.get_untracked().as_deref() == Some(&path) {
+            let buffer = |path: &String| {
+                if workspace.open_file.get_untracked().as_deref() == Some(path) {
                     Some((
                         workspace.content.get_untracked(),
                         workspace.dirty.get_untracked(),
@@ -602,9 +606,16 @@ impl WorkspaceActions {
                     })
                 }
             };
-            let captured = buffer();
-            let dirty = captured.as_ref().is_some_and(|(_, dirty)| *dirty);
-            let close_path = path.clone();
+            let captured: Vec<_> = paths
+                .iter()
+                .map(|path| (path.clone(), buffer(path)))
+                .collect();
+            let dirty: Vec<_> = captured
+                .iter()
+                .filter(|(_, buffer)| buffer.as_ref().is_some_and(|(_, dirty)| *dirty))
+                .map(|(path, _)| path.clone())
+                .collect();
+            let count = paths.len();
             let close = Callback::new(move |()| {
                 if auth.generation.try_get_untracked() != Some(generation)
                     || directory_epoch.try_get_untracked() != Some(epoch)
@@ -613,29 +624,48 @@ impl WorkspaceActions {
                 {
                     return;
                 }
-                let latest = if workspace.open_file.get_untracked().as_deref() == Some(&close_path)
-                {
-                    Some((
-                        workspace.content.get_untracked(),
-                        workspace.dirty.get_untracked(),
-                    ))
-                } else {
-                    workspace.editor_buffers.with_untracked(|buffers| {
-                        buffers
-                            .get(&(project, close_path.clone()))
-                            .map(|buffer| (buffer.content.clone(), buffer.dirty))
+                let latest: Vec<_> = captured
+                    .iter()
+                    .map(|(path, _)| {
+                        let buffer = if workspace.open_file.get_untracked().as_ref() == Some(path) {
+                            Some((
+                                workspace.content.get_untracked(),
+                                workspace.dirty.get_untracked(),
+                            ))
+                        } else {
+                            workspace.editor_buffers.with_untracked(|buffers| {
+                                buffers
+                                    .get(&(project, path.clone()))
+                                    .map(|buffer| (buffer.content.clone(), buffer.dirty))
+                            })
+                        };
+                        (path.clone(), buffer)
                     })
-                };
+                    .collect();
                 if latest != captured {
                     ui.notify("The file changed while the close dialog was open. Close it again to review your latest edits.");
                     return;
                 }
-                let active = workspace.open_file.get_untracked().as_deref() == Some(&close_path);
+                let active = workspace
+                    .open_file
+                    .get_untracked()
+                    .is_some_and(|path| paths.contains(&path));
                 if active {
                     save_editor.cancel_composition();
                 }
                 let next = batch(|| {
-                    let next = workspace.remove_editor_tab(project, &close_path);
+                    let mut next = None;
+                    for path in &paths {
+                        let candidate = workspace.remove_editor_tab(project, path);
+                        if workspace.open_file.get_untracked().as_ref() == Some(path) {
+                            next = candidate;
+                        }
+                    }
+                    let next = workspace.editor_tabs.with_untracked(|tabs| {
+                        let remaining = tabs.get(&project)?;
+                        next.filter(|path| remaining.contains(path))
+                            .or_else(|| remaining.first().cloned())
+                    });
                     if active {
                         workspace.begin_editor_read();
                         workspace.editor_loading.set(false);
@@ -652,10 +682,22 @@ impl WorkspaceActions {
                     request_open.run(next);
                 }
             });
-            if dirty {
+            if !dirty.is_empty() {
                 ui.confirm.set(Some(ConfirmRequest {
-                    title: "Close unsaved file".into(),
-                    message: format!("Discard unsaved changes to `{path}` and close the file?"),
+                    title: if count == 1 {
+                        "Close unsaved file"
+                    } else {
+                        "Close unsaved files"
+                    }
+                    .into(),
+                    message: format!(
+                        "Discard unsaved changes to {} and close the selected files?",
+                        dirty
+                            .iter()
+                            .map(|path| format!("`{path}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                     confirm_label: "Discard and close".into(),
                     action: close,
                 }));
@@ -663,6 +705,29 @@ impl WorkspaceActions {
                 close.run(());
             }
         });
+
+        let close_file = Callback::new(move |path: String| close_files.run(vec![path]));
+        let file_tab_action =
+            Callback::new(move |(path, action): (String, crate::tabs::TabAction)| {
+                let Some(project) = active_project.get_untracked() else {
+                    return;
+                };
+                let paths = workspace
+                    .editor_tabs
+                    .with_untracked(|tabs| tabs.get(&project).cloned().unwrap_or_default());
+                if matches!(
+                    action,
+                    crate::tabs::TabAction::MoveLeft | crate::tabs::TabAction::MoveRight
+                ) {
+                    workspace.editor_tabs.update(|tabs| {
+                        if let Some(paths) = tabs.get_mut(&project) {
+                            action.reorder(paths, &path);
+                        }
+                    });
+                } else {
+                    close_files.run(action.targets(&paths, &path));
+                }
+            });
 
         let on_toggle = Callback::new(move |dir: String| {
             let mut expanded = workspace.expanded.get();
@@ -1213,6 +1278,7 @@ impl WorkspaceActions {
             on_open_lossy,
             request_open,
             close_file,
+            file_tab_action,
             on_toggle,
             on_save,
             on_accept,

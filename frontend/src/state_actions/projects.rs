@@ -27,6 +27,7 @@ pub struct ProjectsActions {
     pub select_project: Callback<i64>,
     pub select_chat: Callback<()>,
     pub close_project: Callback<i64>,
+    pub tab_action: Callback<(i64, crate::tabs::TabAction)>,
     pub on_open_project: Callback<i64>,
     pub on_open_local: Callback<()>,
     pub on_browser_select: Callback<String>,
@@ -104,6 +105,22 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
                     chat.active_editor_context.set(None);
                     chat.restore_chat_session();
                 }
+            }
+        }
+    });
+
+    let tab_action = Callback::new(move |(id, action): (i64, crate::tabs::TabAction)| {
+        let tabs = projects.open_tab_ids.get_untracked();
+        if matches!(
+            action,
+            crate::tabs::TabAction::MoveLeft | crate::tabs::TabAction::MoveRight
+        ) {
+            projects
+                .open_tab_ids
+                .update(|tabs| action.reorder(tabs, &id));
+        } else {
+            for target in action.targets(&tabs, &id) {
+                close_project.run(target);
             }
         }
     });
@@ -236,6 +253,7 @@ pub fn build_projects_actions(context: ProjectsActionContext) -> ProjectsActions
         select_project,
         select_chat,
         close_project,
+        tab_action,
         on_open_project,
         on_open_local,
         on_browser_select,

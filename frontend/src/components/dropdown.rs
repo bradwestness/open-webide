@@ -223,7 +223,11 @@ pub fn DropdownSelect(
 
 /// Secondary actions share the same menu, keyboard navigation and theme as selectors.
 #[component]
-pub fn ActionMenu(aria_label: &'static str, children: ChildrenFn) -> impl IntoView {
+pub fn ActionMenu(
+    aria_label: &'static str,
+    #[prop(default = false)] context_only: bool,
+    children: ChildrenFn,
+) -> impl IntoView {
     let open = RwSignal::new(false);
     let anchor = RwSignal::new(None::<(f64, f64)>);
     let root = NodeRef::<leptos::html::Span>::new();
@@ -246,7 +250,7 @@ pub fn ActionMenu(aria_label: &'static str, children: ChildrenFn) -> impl IntoVi
     let children = std::sync::Arc::new(children);
     view! {
         <span class="ui-action-menu-context" node_ref=root>
-        <Dropdown aria_label=aria_label class="ui-action-menu" trigger_class="icon-btn ui-icon" hide_caret=true open=open pointer_anchor=anchor.into()
+        <Dropdown aria_label=aria_label class="ui-action-menu" trigger_class=if context_only { "sr-only" } else { "icon-btn ui-icon" } hide_caret=true open=open pointer_anchor=anchor.into()
             on_open=Callback::new(move |()| anchor.set(None)) label=|| view! { <Icon name=IconName::Ellipsis /> }>
             <div class="ui-action-items" on:click=move |event| {
                 if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())

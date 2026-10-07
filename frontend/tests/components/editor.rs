@@ -868,6 +868,14 @@ async fn primary_pointer_units_and_drag_use_source_in_both_modes() {
                     head: 0
                 })
             );
+            assert!(editorClickContainerFallback(&textarea, 1, 2, false));
+            assert_eq!(actions.selection(source), Some(Selection::caret(2)));
+            assert!(editorClickContainerFallback(&textarea, 1, 9, true));
+            assert_eq!(actions.selection(source), Some(Selection::caret(11)));
+            assert!(editorClickPosition(&textarea, 1, 2, false));
+            assert_eq!(actions.selection(source), Some(Selection::caret(2)));
+            assert!(editorClickPosition(&textarea, 1, 9, true));
+            assert_eq!(actions.selection(source), Some(Selection::caret(11)));
             editorPrimaryGesture(&textarea, 2, 2, 3, false, "mousedown");
             assert_eq!(editorClipboardCopy(&textarea), "next\r\n");
             editorPrimaryGesture(&textarea, 3, 2, 1, true, "mousedown");
@@ -3880,6 +3888,26 @@ export function editorEdgeGesture(target, horizontal, end, type) {
         buttons:type === 'mouseup' ? 0 : 1, clientX:x, clientY:y});
     target.dispatchEvent(event); return event;
 }
+export function editorClickContainerFallback(target, line, column, beyond) {
+    const original = Object.getOwnPropertyDescriptor(document, 'caretPositionFromPoint');
+    Object.defineProperty(document, 'caretPositionFromPoint', {configurable:true, value:() => ({offsetNode:target.parentElement.querySelector(`.editor-source-line[data-line='${line}']`), offset:0})});
+    try { return editorClickPosition(target, line, column, beyond); }
+    finally {
+        if (original) Object.defineProperty(document, 'caretPositionFromPoint', original);
+        else delete document.caretPositionFromPoint;
+    }
+}
+export function editorClickPosition(target, line, column, beyond) {
+    const rect = editorGestureRect(target, line, column);
+    const x = rect.left + (beyond ? 60 : .25), y = rect.top + rect.height / 2;
+    let prevented;
+    for (const type of ['mousedown', 'mouseup', 'click']) {
+        const event = new MouseEvent(type, {bubbles:true,cancelable:true,detail:1,button:0,buttons:type === 'mousedown' ? 1 : 0,clientX:x,clientY:y});
+        target.dispatchEvent(event);
+        if (type === 'mousedown') prevented = event.defaultPrevented;
+    }
+    return prevented;
+}
 export function editorPrimaryGesture(target, line, column, clicks, shift, type) {
     const rect = editorGestureRect(target, line, column), viewport = target.getBoundingClientRect();
     // A partially clipped final row still has a visible glyph to click. Its full
@@ -3918,6 +3946,18 @@ extern "C" {
         end: bool,
         kind: &str,
     ) -> web_sys::Event;
+    fn editorClickContainerFallback(
+        target: &web_sys::HtmlTextAreaElement,
+        line: u32,
+        column: u32,
+        beyond: bool,
+    ) -> bool;
+    fn editorClickPosition(
+        target: &web_sys::HtmlTextAreaElement,
+        line: u32,
+        column: u32,
+        beyond: bool,
+    ) -> bool;
     fn editorPrimaryGesture(
         target: &web_sys::HtmlTextAreaElement,
         line: u32,
@@ -11357,5 +11397,155 @@ async fn monaspace_families_and_independent_features_share_native_and_paint_metr
     }
     for font in loaded {
         removeEditorFont(&font);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn file_tab_context_actions_share_tree_actions_and_guard_bulk_closes_in_both_modes() {
+    use openwebide_frontend::state_actions::{
+        file_tree::FileTreeActions, workspace::WorkspaceActions,
+    };
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None::<WorkspaceActions>));
+        let captured = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            for path in ["a.txt", "b.txt", "c.txt"] {
+                state.workspace.register_editor_tab(1, path.into());
+                state.workspace.open_file.set(Some(path.into()));
+                state.workspace.content.set(path.into());
+                state.workspace.retain_editor_buffer(false);
+            }
+            state.workspace.open_file.set(Some("a.txt".into()));
+            state.workspace.content.set("a.txt".into());
+            let view = editor_view(state.clone());
+            captured.set(Some(expect_context::<WorkspaceActions>()));
+            expect_context::<FileTreeActions>()
+                .send_prompt
+                .set(Some(Callback::new(move |prompt| {
+                    state.chat.notice.set(Some(prompt));
+                })));
+            view
+        });
+        frame().await;
+        let actions = slot.get().unwrap();
+        let tab = mounted.element("[data-editor-tab='a.txt']");
+        tab.dispatch_event(&web_sys::MouseEvent::new("contextmenu").unwrap())
+            .unwrap();
+        settle().await;
+        for label in [
+            "Rename",
+            "Move",
+            "Delete",
+            "Stage",
+            "Explain in chat",
+            "Close others",
+            "Move right",
+        ] {
+            assert!(
+                mounted
+                    .element(".ui-dropdown-menu")
+                    .text_content()
+                    .unwrap()
+                    .contains(label)
+            );
+        }
+        mounted.click_text("Move right");
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.editor_tabs.get_untracked()[&1],
+            ["b.txt", "a.txt", "c.txt"]
+        );
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("a.txt")
+        );
+        mounted
+            .element("[data-editor-tab='a.txt']")
+            .dispatch_event(&web_sys::MouseEvent::new("contextmenu").unwrap())
+            .unwrap();
+        settle().await;
+        mounted.click_text("Explain in chat");
+        assert_eq!(
+            mounted.state.chat.notice.get_untracked().as_deref(),
+            Some("Explain how this works: @file:\"a.txt\"")
+        );
+        mounted
+            .state
+            .workspace
+            .editor_buffers
+            .update(|buffers| buffers.get_mut(&(1, "b.txt".into())).unwrap().dirty = true);
+        actions.file_tab_action.run((
+            "a.txt".into(),
+            openwebide_frontend::tabs::TabAction::CloseOthers,
+        ));
+        let confirmation = mounted.state.ui.confirm.get_untracked().unwrap();
+        assert!(confirmation.message.contains("b.txt"));
+        assert_eq!(
+            mounted.state.workspace.editor_tabs.get_untracked()[&1].len(),
+            3
+        );
+        mounted.state.workspace.editor_buffers.update(|buffers| {
+            buffers
+                .get_mut(&(1, "b.txt".into()))
+                .unwrap()
+                .content
+                .push('!');
+        });
+        confirmation.action.run(());
+        assert_eq!(
+            mounted.state.workspace.editor_tabs.get_untracked()[&1].len(),
+            3
+        );
+        mounted.state.ui.confirm.set(None);
+        actions.file_tab_action.run((
+            "a.txt".into(),
+            openwebide_frontend::tabs::TabAction::CloseOthers,
+        ));
+        mounted
+            .state
+            .ui
+            .confirm
+            .get_untracked()
+            .unwrap()
+            .action
+            .run(());
+        assert_eq!(
+            mounted.state.workspace.editor_tabs.get_untracked()[&1],
+            ["a.txt"]
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), "a.txt");
+        mounted
+            .state
+            .workspace
+            .register_editor_tab(1, "b.txt".into());
+        mounted
+            .state
+            .workspace
+            .register_editor_tab(1, "c.txt".into());
+        settle().await;
+        mounted
+            .element("[data-editor-tab='a.txt']")
+            .dispatch_event(&web_sys::MouseEvent::new("contextmenu").unwrap())
+            .unwrap();
+        settle().await;
+        let stale_move = mounted.element(".ui-dropdown-menu button:nth-of-type(5)");
+        mounted
+            .state
+            .auth
+            .generation
+            .update(|generation| *generation += 1);
+        stale_move.click();
+        assert_eq!(
+            mounted.state.workspace.editor_tabs.get_untracked()[&1],
+            ["a.txt", "b.txt", "c.txt"]
+        );
     }
 }

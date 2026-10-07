@@ -38,6 +38,7 @@ pub mod sse;
 pub mod state;
 #[cfg(target_arch = "wasm32")]
 pub mod state_actions;
+pub mod tabs;
 pub mod terminal_output;
 #[cfg(all(target_arch = "wasm32", any(test, feature = "test-support")))]
 pub mod testing;

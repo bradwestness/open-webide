@@ -226,6 +226,7 @@ pub fn App() -> impl IntoView {
         select_project,
         select_chat,
         close_project,
+        tab_action,
         on_open_project,
         on_open_local,
         on_browser_select,
@@ -377,6 +378,7 @@ pub fn App() -> impl IntoView {
                             <TabBar
                                 on_select_chat=Callback::new(move |()| { select_chat.run(()); layout_actions.show.run(Panel::Chat); })
                                 on_select=select_project
+                                on_tab_action=tab_action
                                 on_close=close_project
                                 on_open_local=on_open_local
                                 on_open_remote=on_open_remote

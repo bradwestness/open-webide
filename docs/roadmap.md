@@ -222,7 +222,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   reusing measurements across cursors. Finish real-device input/clipboard
   verification for multiple cursors. File navigation now
   retains independent dirty buffers, history, caret and scroll state in memory,
-  with protected reads and filesystem mutation guards. File tabs share selected-tab
+  with protected reads and filesystem mutation guards. Project and file tabs now
+  share context close/reorder actions; file tabs reuse tree operations and bulk
+  close confirmations retain unsaved-buffer and stale-scope guards. File tabs share selected-tab
   styling, keyboard navigation and guarded close/discard controls. Horizontal overflow
   keeps a stable strip height and tab nodes; dirty indicators reserve their space.
   Validated recovery

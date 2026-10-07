@@ -260,3 +260,102 @@ async fn missing_local_folder_can_be_reconnected_cancelled_and_validated() {
     recoveryRestore(&fixture);
     openwebide_frontend::idb::delete_handle(777).await.unwrap();
 }
+
+#[wasm_bindgen_test]
+async fn project_tab_context_actions_preserve_chat_and_the_selected_anchor_in_both_modes() {
+    use openwebide_frontend::state_actions::projects::{
+        ProjectsActionContext, build_projects_actions,
+    };
+    use wasm_bindgen::JsCast;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            let mut projects = Vec::new();
+            for id in 1..=3 {
+                let mut project = state.projects.project(1).unwrap();
+                project.id = id;
+                project.name = format!("Project {id}");
+                project.mode = mode;
+                projects.push(project);
+            }
+            state.projects.projects.set(projects);
+            state.projects.open_tab_ids.set(vec![1, 2, 3]);
+            state.projects.active_project.set(Some(2));
+            let actions = build_projects_actions(ProjectsActionContext {
+                api: state.api,
+                projects: state.projects,
+                workspace: state.workspace,
+                git: state.git,
+                chat: state.chat,
+                ui: state.ui,
+                ensure_root: Callback::new(|_| ()),
+                refresh_git: Callback::new(|()| ()),
+            });
+            view! { <TabBar on_select=actions.select_project on_select_chat=actions.select_chat on_close=actions.close_project on_tab_action=actions.tab_action
+            on_open_local=Callback::new(|()| ()) on_open_remote=Callback::new(|()| ()) on_open_project=actions.on_open_project on_delete_project=actions.on_delete_project /> }
+        });
+        settle().await;
+        mounted
+            .element("[data-project-tab='2']")
+            .dispatch_event(&web_sys::MouseEvent::new("contextmenu").unwrap())
+            .unwrap();
+        settle().await;
+        mounted.click_text("Move left");
+        settle().await;
+        assert_eq!(
+            mounted.state.projects.open_tab_ids.get_untracked(),
+            [2, 1, 3]
+        );
+        assert_eq!(
+            mounted.state.projects.active_project.get_untracked(),
+            Some(2)
+        );
+        mounted
+            .element("[data-project-tab='2']")
+            .dispatch_event(&web_sys::MouseEvent::new("contextmenu").unwrap())
+            .unwrap();
+        settle().await;
+        let buttons = mounted
+            .element(".ui-dropdown-menu")
+            .query_selector_all("button")
+            .unwrap();
+        for index in 0..buttons.length() {
+            let button = buttons
+                .item(index)
+                .unwrap()
+                .unchecked_into::<web_sys::HtmlButtonElement>();
+            if matches!(
+                button.text_content().as_deref(),
+                Some("Move left" | "Close all to left")
+            ) {
+                assert!(button.disabled());
+            }
+        }
+        mounted.click_text("Close others");
+        settle().await;
+        assert_eq!(mounted.state.projects.open_tab_ids.get_untracked(), [2]);
+        assert_eq!(
+            mounted.state.projects.active_project.get_untracked(),
+            Some(2)
+        );
+        assert!(mounted.root.query_selector(".chat-tab").unwrap().is_some());
+        mounted.state.projects.open_tab_ids.set(vec![2, 1, 3]);
+        settle().await;
+        mounted
+            .element("[data-project-tab='2']")
+            .dispatch_event(&web_sys::MouseEvent::new("contextmenu").unwrap())
+            .unwrap();
+        settle().await;
+        let stale_move = mounted.element(".ui-dropdown-menu button:nth-of-type(5)");
+        mounted
+            .state
+            .auth
+            .generation
+            .update(|generation| *generation += 1);
+        stale_move.click();
+        assert_eq!(
+            mounted.state.projects.open_tab_ids.get_untracked(),
+            [2, 1, 3]
+        );
+    }
+}

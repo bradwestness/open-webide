@@ -11,6 +11,7 @@ pub fn TabBar(
     on_select: Callback<i64>,
     on_select_chat: Callback<()>,
     on_close: Callback<i64>,
+    #[prop(default = Callback::new(|_| ()))] on_tab_action: Callback<(i64, crate::tabs::TabAction)>,
     on_open_local: Callback<()>,
     on_open_remote: Callback<()>,
     on_open_project: Callback<i64>,
@@ -93,8 +94,11 @@ pub fn TabBar(
                                         "tab".to_string()
                                     }
                                 }
+                                data-project-tab=id.to_string()
+                                data-context-menu=""
                                 on:click=move |_| on_select.run(id)
                             >
+                                <super::tab_actions::TabActions position=Signal::derive(move || projects.open_tab_ids.with(|tabs| tabs.iter().position(|tab| *tab == id).map(|index| (index, tabs.len())))) on_action=Callback::new(move |action| on_tab_action.run((id, action))) />
                                 <span class="tab-name">
                                     {name}
                                 </span>
