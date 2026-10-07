@@ -9,7 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Map native editor input directly to source replacements in both workspace modes, preserving CRLF, Unicode selections and hidden code without normalizing the complete source before replay. IME and multiple cursors retain shared replay validation; full candidate publication remains pending bounded input work.
+- Replay native editor edits and IME previews against borrowed source pieces in both workspace modes, preserving multiple cursors, repeated-text selections, Unicode/CRLF offsets and atomic rollback without building a complete replacement value. Reject IME previews whose eventual cursor replicas exceed editor limits. Composition snapshots and full textarea layout remain pending bounded-input work.
+
+- Map native editor input directly to source replacements in both workspace modes, preserving CRLF, Unicode selections and hidden code without normalizing the complete source before replay. IME and multiple cursors retain shared replay validation; full source publication and textarea layout remain pending bounded input work.
 
 - Bundle all five Monaspace editor font families with account-synced family, texture-healing and coding-ligature preferences. Enable both features by default and cache fonts for offline PWA use; share font metrics across input, syntax paint, gutters and diffs in both workspace modes.
 

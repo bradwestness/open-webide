@@ -7557,6 +7557,60 @@ async fn editor_capacity_rejection_preserves_native_document_in_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn composition_replicas_obey_editor_admission_before_preview_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{EditError, EditorLimit, MAX_EDITOR_LINE_BYTES, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "x".repeat(MAX_EDITOR_LINE_BYTES - 1);
+        let initial = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("near-limit.txt".into()));
+            state.workspace.content.set(initial);
+            // Exercise facade input policy without measuring a 1 MiB DOM row.
+            view! { <div>"Composition admission"</div> }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        actions.record_selection(Selection::caret(0)).unwrap();
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .update(|documents| {
+                let document = documents.get_mut(&(1, "near-limit.txt".into())).unwrap();
+                document
+                    .set_selections(vec![Selection::caret(0), Selection::caret(source.len())])
+                    .unwrap();
+            });
+        let before = mounted.state.workspace.editor_documents.get_untracked();
+        actions.begin_composition();
+        assert_eq!(
+            actions.projected_input(
+                format!("X{source}"),
+                Selection::caret(1),
+                "insertCompositionText",
+                0.0
+            ),
+            Err(EditError::Capacity(EditorLimit::LineBytes))
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        assert_eq!(
+            mounted.state.workspace.editor_documents.get_untracked(),
+            before
+        );
+        assert!(!actions.is_composing());
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
 async fn oversized_change_review_retains_before_and_after_pages_in_both_modes() {
     use openwebide_core::{FileDiff, WorkspaceMode, editor::MAX_EDITOR_LINE_BYTES};
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {

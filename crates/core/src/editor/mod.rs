@@ -28,6 +28,7 @@ pub use visual_neighbors::{
     VisualLineRows, visual_neighbor_rows, visual_probe_rows, visual_row_id,
 };
 mod native;
+mod native_value;
 pub use clipboard::{CLIPBOARD_SELECTIONS_MIME, ClipboardContent};
 pub use motion::SelectionMotion;
 mod selections;
@@ -450,6 +451,15 @@ impl Document {
         Ok(())
     }
 
+    fn validate_editor_parts(&self, parts: &[&str]) -> Result<(), EditError> {
+        if self.editor_limits
+            && let Some(limit) = capacity::editor_limit_parts(parts)
+        {
+            return Err(EditError::Capacity(limit));
+        }
+        Ok(())
+    }
+
     /// Validate all edits and resulting selections before changing any state.
     /// The caller supplies a typing/composition group; commands use `None` to
     /// form independent undo steps. Redo is discarded only after a valid edit.
@@ -475,11 +485,7 @@ impl Document {
             return Err(EditError::OutputTooLarge);
         }
         let parts = edit_parts(&self.text, &edits);
-        if self.editor_limits
-            && let Some(limit) = capacity::editor_limit_parts(&parts)
-        {
-            return Err(EditError::Capacity(limit));
-        }
+        self.validate_editor_parts(&parts)?;
         let after = selections::normalize_selection_positions(after, |offset| {
             let mut start = 0;
             for part in &parts {
@@ -762,21 +768,28 @@ pub fn byte_to_utf16(text: &str, offset: usize) -> Result<usize, EditError> {
 /// Textareas normalize CRLF to LF; DOM offsets must be mapped to the original
 /// document rather than used against its differently sized line endings.
 pub fn textarea_to_byte(text: &str, offset: usize) -> usize {
+    textarea_chars_to_byte(text.chars(), offset)
+}
+
+fn textarea_chars_to_byte(chars: impl Iterator<Item = char>, offset: usize) -> usize {
     let mut units = 0;
-    let mut chars = text.char_indices().peekable();
-    while let Some((byte, ch)) = chars.next() {
+    let mut byte = 0;
+    let mut chars = chars.peekable();
+    while let Some(ch) = chars.next() {
         if units == offset {
             return byte;
         }
-        if ch == '\r' && chars.peek().is_some_and(|(_, next)| *next == '\n') {
+        if ch == '\r' && chars.peek().is_some_and(|next| *next == '\n') {
+            byte += ch.len_utf8();
             continue;
         }
         if units + ch.len_utf16() > offset {
             return byte;
         }
         units += ch.len_utf16();
+        byte += ch.len_utf8();
     }
-    text.len()
+    byte
 }
 
 pub fn byte_to_textarea(text: &str, offset: usize) -> Result<usize, EditError> {

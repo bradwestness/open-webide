@@ -257,7 +257,14 @@ checks reject stale declarations. This bounds the retained declaration, not the
 textarea value or layout. Global scrolling, pointer selection and caret ownership
 still need to move out of native input before using a bounded textarea.
 Direct insertion and native replay share newline normalization; rejected edits
-preserve source and selections. Non-cancellable input and IME retain native replay.
+preserve source and selections. Non-cancellable input and IME map projected changes
+into source replacements and validate their resulting selections against borrowed
+prefix/insertion/suffix pieces. Replay constructs no complete replacement value;
+ambiguous repeated-text edits retain the original selected occurrence. IME previews
+validate eventual secondary edits against the same byte, line and long-line limits
+before publishing the primary change, and failed
+frames restore the pre-composition source, selections and redo history. Composition
+snapshots and workspace publication still retain complete source Strings.
 Ordinary transactions validate borrowed proposed pieces before mutating the existing
 String, including grouped undo/redo. Growth reserves at most 64 KiB of headroom
 above the transaction's peak size, rather than doubling a large buffer. Affected row contexts are merged so multiple

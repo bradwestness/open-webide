@@ -1,5 +1,6 @@
-//! Native input replay policy. Adapters supply full source text and UTF-8 selections.
+//! Native input replay policy. Adapters supply source edits and UTF-8 selections.
 //! Composition previews edit only the primary range; secondary edits commit together.
+use super::native_value::NativeValue;
 use super::{Document, Edit, EditError, Selection, text_change};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -62,24 +63,18 @@ fn right(text: &str, at: usize, count: usize) -> usize {
         .nth(count)
         .map_or(text.len(), |(offset, _)| at + offset)
 }
-fn inserted<'a>(before: &str, candidate: &'a str, span: &Range<usize>) -> Option<&'a str> {
-    let start = span.start;
-    let end = candidate.len().checked_sub(before.len() - span.end)?;
-    (start <= end
-        && candidate.starts_with(&before[..start])
-        && candidate.ends_with(&before[span.end..]))
-    .then(|| &candidate[start..end])
-}
 fn extent(
     before: &Document,
-    candidate: &str,
+    candidate: &NativeValue<'_>,
     kind: NativeInputKind,
 ) -> Result<Range<usize>, EditError> {
     let primary = before.selections[0].range();
-    if inserted(&before.text, candidate, &primary).is_some() {
+    if candidate.inserted_range(&before.text, &primary).is_some() {
         return Ok(primary);
     }
-    let change = text_change(&before.text, candidate).ok_or(EditError::UnsupportedNativeInput)?;
+    let change = candidate
+        .change(&before.text)
+        .ok_or(EditError::UnsupportedNativeInput)?;
     let span = if primary.is_empty()
         && matches!(
             kind,
@@ -97,7 +92,9 @@ fn extent(
     } else {
         change.range.start.min(primary.start)..change.range.end.max(primary.end)
     };
-    inserted(&before.text, candidate, &span).ok_or(EditError::UnsupportedNativeInput)?;
+    candidate
+        .inserted_range(&before.text, &span)
+        .ok_or(EditError::UnsupportedNativeInput)?;
     Ok(span)
 }
 fn changes(
@@ -159,6 +156,17 @@ fn changes(
     {
         return Err(EditError::InvalidSelection);
     }
+    // A primary-only IME preview must not admit a replica which cannot commit.
+    // Share full-editor admission with ordinary transactions, without joining it.
+    let mut parts = Vec::with_capacity(sorted.len() * 2 + 1);
+    let mut start = 0;
+    for range in &sorted {
+        parts.push(&before.text[start..range.start]);
+        parts.push(text);
+        start = range.end;
+    }
+    parts.push(&before.text[start..]);
+    before.validate_editor_parts(&parts)?;
     Ok(ranges
         .into_iter()
         .enumerate()
@@ -221,6 +229,16 @@ impl Document {
         ))
     }
 
+    /// Convert proposed textarea UTF-16 selections using borrowed source pieces.
+    /// CRLF pairs may straddle the replacement's prefix, insertion and suffix.
+    pub fn native_selection_after(
+        &self,
+        edit: Option<&Edit>,
+        selection: Selection,
+    ) -> Result<Selection, EditError> {
+        Ok(NativeValue::replacement(&self.text, edit)?.native_selection(selection))
+    }
+
     pub fn is_composing(&self) -> bool {
         self.composition.is_some()
     }
@@ -257,12 +275,11 @@ impl Document {
             let Some(span) = span else {
                 return Ok(false);
             };
-            let text = inserted(&result.text, &self.text, &span)
-                .ok_or(EditError::UnsupportedNativeInput)?;
+            let text = NativeValue::plain(&self.text).inserted_text(&result.text, &span)?;
             if result.text == self.text {
                 return Ok(false);
             }
-            let edits = changes(&result, &span, text, self.selections[0])?;
+            let edits = changes(&result, &span, &text, self.selections[0])?;
             result.apply_grouped_caret_edits(edits, group)
         })();
         if matches!(outcome, Ok(true)) {
@@ -271,6 +288,8 @@ impl Document {
         *self = result;
         outcome
     }
+    /// Compatibility entry point for adapters which still provide a full value.
+    /// All replay policy is shared with edit-based native input.
     pub fn native_input(
         &mut self,
         candidate: &str,
@@ -278,52 +297,67 @@ impl Document {
         kind: NativeInputKind,
         group: Option<u64>,
     ) -> Result<bool, EditError> {
+        // Reject an oversized compatibility value before copying its insertion.
+        if candidate.len() > super::MAX_DOCUMENT_BYTES {
+            self.cancel_composition();
+            return Err(EditError::OutputTooLarge);
+        }
+        let edit = text_change(&self.text, candidate).map(|change| {
+            let start = change.range.start;
+            Edit::replace(change.range, &candidate[start..change.new_end])
+        });
+        self.native_edit(edit, after, kind, group)
+    }
+
+    /// Replay a native source replacement without constructing a full candidate.
+    /// IME previews validate eventual secondary edits before publishing any change.
+    pub fn native_edit(
+        &mut self,
+        edit: Option<Edit>,
+        after: Selection,
+        kind: NativeInputKind,
+        group: Option<u64>,
+    ) -> Result<bool, EditError> {
         let composition = self.composition.take();
-        let outcome =
-            self.native_input_inner(candidate, after, kind, group, composition.as_deref());
+        let outcome = self.native_edit_inner(edit, after, kind, group, composition.as_deref());
         match (outcome, composition) {
             (Err(error), Some(composition)) => {
                 *self = *composition.before;
                 Err(error)
             }
-            (Ok(changed), Some(mut composition)) => {
+            (Ok((changed, span)), Some(mut composition)) => {
                 if composition.span.is_none() && changed {
-                    match extent(&composition.before, candidate, NativeInputKind::Insert) {
-                        Ok(span) => composition.span = Some(span),
-                        Err(error) => {
-                            *self = *composition.before;
-                            return Err(error);
-                        }
-                    }
+                    composition.span = span;
                 }
                 self.composition = Some(composition);
                 Ok(changed)
             }
-            (outcome, None) => outcome,
+            (outcome, None) => outcome.map(|(changed, _)| changed),
         }
     }
-    fn native_input_inner(
+
+    fn native_edit_inner(
         &mut self,
-        candidate: &str,
+        edit: Option<Edit>,
         after: Selection,
         kind: NativeInputKind,
         group: Option<u64>,
         composition: Option<&Composition>,
-    ) -> Result<bool, EditError> {
+    ) -> Result<(bool, Option<Range<usize>>), EditError> {
+        let candidate = NativeValue::replacement(&self.text, edit.as_ref())?;
         if candidate.len() > super::MAX_DOCUMENT_BYTES {
             return Err(EditError::OutputTooLarge);
         }
-        super::validate_selections(candidate, &[after])?;
+        candidate.validate_selection(after)?;
         if let Some(composition) = composition {
             let before = &composition.before;
             let span = match &composition.span {
                 Some(span) => span.clone(),
-                None => extent(before, candidate, NativeInputKind::Insert)?,
+                None => extent(before, &candidate, NativeInputKind::Insert)?,
             };
-            let text = inserted(&before.text, candidate, &span)
-                .ok_or(EditError::UnsupportedNativeInput)?;
-            // Validate the eventual replicated edit before publishing any preview.
-            changes(before, &span, text, after)?;
+            let text = candidate.inserted_text(&before.text, &span)?;
+            // Reject invalid eventual replicas before publishing the primary preview.
+            changes(before, &span, &text, after)?;
             let mut selections = vec![after];
             for selection in before.selections.iter().skip(1) {
                 let map = |at| {
@@ -340,39 +374,162 @@ impl Document {
                     head: map(selection.head),
                 });
             }
-            // Minimal spans use independent old/new ends; repeated text must not
-            // move the primary edit to a different occurrence at commit time.
-            let edit = text_change(&self.text, candidate).map(|change| {
-                let start = change.range.start;
-                Edit::replace(change.range, &candidate[start..change.new_end])
-            });
-            return self.apply(edit.into_iter().collect(), selections, composition.group);
+            let changed = self.apply(edit.into_iter().collect(), selections, composition.group)?;
+            return Ok((changed, Some(span)));
         }
-        if self.selections.len() == 1 || candidate == self.text {
-            let edit = text_change(&self.text, candidate).map(|change| {
-                let start = change.range.start;
-                Edit::replace(change.range, &candidate[start..change.new_end])
-            });
-            let selections = if candidate == self.text && after == self.selections[0] {
+        let unchanged = candidate.matches(0..candidate.len(), &self.text);
+        if self.selections.len() == 1 || unchanged {
+            let selections = if unchanged && after == self.selections[0] {
                 self.selections.clone()
             } else {
                 vec![after]
             };
-            return self.apply(edit.into_iter().collect(), selections, group);
+            return self
+                .apply(edit.into_iter().collect(), selections, group)
+                .map(|changed| (changed, None));
         }
         if kind == NativeInputKind::Other {
             return Err(EditError::UnsupportedNativeInput);
         }
-        let span = extent(self, candidate, kind)?;
-        let text =
-            inserted(&self.text, candidate, &span).ok_or(EditError::UnsupportedNativeInput)?;
-        let edits = changes(self, &span, text, after)?;
+        let span = extent(self, &candidate, kind)?;
+        let text = candidate.inserted_text(&self.text, &span)?;
+        let edits = changes(self, &span, &text, after)?;
         self.apply_grouped_caret_edits(edits, group)
+            .map(|changed| (changed, None))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn composition_rejects_eventual_replica_admission_before_publishing_primary() {
+        for (source, inserted, limit) in [
+            (
+                "x".repeat(super::super::MAX_EDITOR_LINE_BYTES - 1),
+                "X",
+                super::super::EditorLimit::LineBytes,
+            ),
+            (
+                "\n".repeat(super::super::MAX_EDITOR_LINES - 2),
+                "\n",
+                super::super::EditorLimit::Lines,
+            ),
+        ] {
+            let mut doc = Document::for_editor(source).unwrap();
+            let end = doc.text().len();
+            doc.set_selections(vec![Selection::caret(0), Selection::caret(end)])
+                .unwrap();
+            let before = doc.clone();
+            // The primary insertion alone is within the admission boundary.
+            let mut primary = before.clone();
+            primary.set_selections(vec![Selection::caret(0)]).unwrap();
+            primary.insert_native_text(inserted, None).unwrap();
+            doc.begin_composition(Some(1));
+            assert_eq!(
+                doc.native_edit(
+                    Some(Edit::replace(0..0, inserted)),
+                    Selection::caret(inserted.len()),
+                    NativeInputKind::Insert,
+                    None
+                ),
+                Err(EditError::Capacity(limit))
+            );
+            assert_eq!(doc, before);
+            assert!(!doc.is_composing());
+            assert!(!doc.can_undo());
+        }
+    }
+
+    #[test]
+    fn native_edit_previews_replacement_and_rolls_back_failed_composition_frames() {
+        let mut doc = Document::new("foo\r\nfoo");
+        let selected = vec![
+            Selection { anchor: 0, head: 3 },
+            Selection { anchor: 5, head: 8 },
+        ];
+        doc.set_selections(selected.clone()).unwrap();
+        let before = doc.clone();
+        doc.begin_composition(Some(4));
+        doc.native_edit(
+            Some(Edit::replace(0..3, "文")),
+            Selection::caret(3),
+            NativeInputKind::Insert,
+            None,
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "文\r\nfoo");
+        doc.native_edit(
+            Some(Edit::replace(0..3, "文字")),
+            Selection::caret(6),
+            NativeInputKind::Insert,
+            None,
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "文字\r\nfoo");
+        assert!(doc.end_composition().unwrap());
+        assert_eq!(doc.text(), "文字\r\n文字");
+        assert!(doc.undo());
+        assert_eq!(doc.text(), before.text());
+        assert_eq!(doc.selections(), selected);
+        let before = doc.clone();
+        doc.begin_composition(Some(5));
+        doc.native_edit(
+            Some(Edit::replace(0..3, "文")),
+            Selection::caret(3),
+            NativeInputKind::Insert,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            doc.native_edit(
+                Some(Edit::replace(0..3, "😀")),
+                Selection::caret(1),
+                NativeInputKind::Insert,
+                None
+            ),
+            Err(EditError::InvalidSelection)
+        );
+        assert_eq!(doc, before);
+        assert!(doc.can_redo());
+    }
+
+    #[test]
+    fn native_edit_replays_ambiguous_selections_and_unicode_grapheme_deletion() {
+        let mut doc = Document::new("fooo\r\nfooo");
+        doc.set_selections(vec![
+            Selection { anchor: 2, head: 3 },
+            Selection { anchor: 8, head: 9 },
+        ])
+        .unwrap();
+        doc.native_edit(
+            Some(Edit::replace(3..4, "")),
+            Selection::caret(2),
+            NativeInputKind::Insert,
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "foo\r\nfoo");
+        assert_eq!(
+            doc.selections(),
+            &[Selection::caret(2), Selection::caret(7)]
+        );
+        let mut doc = Document::new("a\u{301}\r\n😀");
+        doc.set_selections(vec![Selection::caret(3), Selection::caret(9)])
+            .unwrap();
+        doc.native_edit(
+            Some(Edit::replace(0..3, "")),
+            Selection::caret(0),
+            NativeInputKind::DeleteBackward,
+            None,
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "\r\n");
+        assert_eq!(
+            doc.selections(),
+            &[Selection::caret(0), Selection::caret(2)]
+        );
+    }
+
     #[test]
     fn direct_native_text_failure_keeps_editor_state_and_history() {
         use super::*;

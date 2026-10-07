@@ -1,7 +1,7 @@
 //! Shared editor facade. DOM adapters provide text/selection/events; editing policy
 //! lives in the Rust document engine without filesystem-mode branches.
 use leptos::prelude::*;
-use openwebide_core::editor::{Document, EditError, Indentation, Selection};
+use openwebide_core::editor::{Document, Edit, EditError, Indentation, Selection};
 
 use crate::state::workspace::WorkspaceState;
 
@@ -1041,11 +1041,7 @@ impl EditorActions {
             if document.text() != source {
                 return Err(EditError::UnsupportedNativeInput);
             }
-            let mut candidate = source;
-            if let Some(edit) = edit {
-                candidate.replace_range(edit.range, &edit.text);
-            }
-            Ok((candidate, selection))
+            Ok((edit, selection))
         })
     }
 
@@ -1216,21 +1212,12 @@ impl EditorActions {
         }
         self.native_input_prepared(input_type, timestamp, |document| {
             let edit = document.native_replacement(&text);
-            let mut candidate = document.text().to_string();
-            if let Some(edit) = edit {
-                candidate.replace_range(edit.range, &edit.text);
-            }
-            let after = Selection {
-                anchor: openwebide_core::editor::textarea_to_byte(
-                    &candidate,
-                    openwebide_core::editor::byte_to_utf16(&text, selection.anchor)?,
-                ),
-                head: openwebide_core::editor::textarea_to_byte(
-                    &candidate,
-                    openwebide_core::editor::byte_to_utf16(&text, selection.head)?,
-                ),
+            let native = Selection {
+                anchor: openwebide_core::editor::byte_to_utf16(&text, selection.anchor)?,
+                head: openwebide_core::editor::byte_to_utf16(&text, selection.head)?,
             };
-            Ok((candidate, after))
+            let after = document.native_selection_after(edit.as_ref(), native)?;
+            Ok((edit, after))
         })
     }
 
@@ -1238,7 +1225,7 @@ impl EditorActions {
         self,
         input_type: &str,
         timestamp: f64,
-        prepare: impl FnOnce(&Document) -> Result<(String, Selection), EditError>,
+        prepare: impl FnOnce(&Document) -> Result<(Option<Edit>, Selection), EditError>,
     ) -> Result<(), EditError> {
         let Some(key) = self.key() else {
             return Ok(());
@@ -1268,9 +1255,9 @@ impl EditorActions {
             .try_update(|documents| {
                 let document = self.document(documents, key.clone());
                 let outcome = (|| {
-                    let (candidate, after) = prepare(document)?;
-                    document.native_input(
-                        &candidate,
+                    let (edit, after) = prepare(document)?;
+                    document.native_edit(
+                        edit,
                         after,
                         openwebide_core::editor::NativeInputKind::from_input_type(input_type),
                         group,
