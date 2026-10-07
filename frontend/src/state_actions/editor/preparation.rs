@@ -85,9 +85,19 @@ impl EditorActions {
     /// Initial neutral viewport paint is independent of whole-file fallback tokens.
     /// Wrapped/nonuniform rows and large paint still require complete preparation.
     pub fn viewport_paint_ready(self, source_rows: &[usize]) -> bool {
-        if self.full_row_paint_ready() {
-            return true;
-        }
+        self.full_row_paint_ready() || self.bounded_viewport_paint_ready(source_rows)
+    }
+
+    /// Publish an initial neutral frame without awaiting a browser frame callback.
+    pub fn initial_viewport_paint_ready(
+        self,
+        source_rows: &[usize],
+        paint: (bool, &openwebide_core::highlight::TokenRows),
+    ) -> bool {
+        !paint.0 && paint.1.is_empty() && self.bounded_viewport_paint_ready(source_rows)
+    }
+
+    fn bounded_viewport_paint_ready(self, source_rows: &[usize]) -> bool {
         if self.is_composing()
             || self.preferences().word_wrap
             || source_rows.is_empty()

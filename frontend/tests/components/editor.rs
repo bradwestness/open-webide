@@ -8693,7 +8693,7 @@ async fn retained_paint_releases_document_and_account_scopes_in_both_modes() {
                 }
                 mounted
                     .root
-                    .query_selector(".editor-code.highlight-ready")
+                    .query_selector(".editor-code.highlight-ready .tok-keyword")
                     .unwrap()
                     .is_some()
             })
@@ -8725,11 +8725,29 @@ async fn retained_paint_releases_document_and_account_scopes_in_both_modes() {
             assert!(
                 mounted
                     .root
-                    .query_selector(".editor-code.highlight-ready")
+                    .query_selector(".editor-code.highlight-ready .tok-keyword")
                     .unwrap()
                     .is_none(),
-                "scope boundary {boundary} must release the retained frame in {mode:?}"
+                "scope boundary {boundary} must release retained styled paint in {mode:?}"
             );
+            if mounted
+                .element(".editor-code")
+                .class_list()
+                .contains("highlight-ready")
+            {
+                assert_eq!(
+                    mounted
+                        .element(".editor-highlight-content")
+                        .get_attribute("data-editor-scope"),
+                    Some(actions.projection_revision().to_string()),
+                    "a new neutral frame must belong to the current source"
+                );
+                let input: web_sys::HtmlTextAreaElement =
+                    mounted.element(".editor-textarea").unchecked_into();
+                assert!(openwebide_frontend::viewport::current_editor_target(
+                    actions, &input
+                ));
+            }
             drop(mounted);
             settle().await;
         }
@@ -10158,6 +10176,23 @@ async fn cold_unwrapped_native_windows_preserve_extents_pointer_and_edits_in_bot
 #[wasm_bindgen_test]
 async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes() {
     #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+    export function pause_initial_editor_frames() {
+        const raf = window.requestAnimationFrame;
+        const cancel = window.cancelAnimationFrame;
+        let next = 1000000;
+        const pending = new Map();
+        window.requestAnimationFrame = callback => { const id = next++; pending.set(id, callback); return id; };
+        window.cancelAnimationFrame = id => { if (!pending.delete(id)) cancel.call(window, id); };
+        return (resume = true) => {
+            const count = pending.size;
+            if (!resume) return count;
+            window.requestAnimationFrame = raf;
+            window.cancelAnimationFrame = cancel;
+            pending.forEach(callback => raf.call(window, callback));
+            pending.clear();
+            return count;
+        };
+    }
     export function pause_initial_fallback_tasks() {
         const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'scheduler');
         const pending = [];
@@ -10173,6 +10208,7 @@ async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes(
     "#)]
     extern "C" {
         fn pause_initial_fallback_tasks() -> js_sys::Function;
+        fn pause_initial_editor_frames() -> js_sys::Function;
     }
     struct ResumeTasks(js_sys::Function);
     impl Drop for ResumeTasks {
@@ -10191,6 +10227,7 @@ async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes(
     );
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let paused = ResumeTasks(pause_initial_fallback_tasks());
+        let frames = ResumeTasks(pause_initial_editor_frames());
         let saved = std::rc::Rc::new(std::cell::Cell::new(None));
         let slot = saved.clone();
         let mounted = mount_test({
@@ -10216,12 +10253,39 @@ async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes(
                 && !actions.full_row_paint_ready()
                 && actions.bound_native_context().is_some()
                 && mounted
+                    .element(".editor-code")
+                    .class_list()
+                    .contains("highlight-ready")
+                && mounted
                     .root
                     .query_selector(".editor-source-line[data-line='1']")
                     .unwrap()
                     .is_some()
         })
         .await;
+        assert!(
+            frames
+                .0
+                .call1(&wasm_bindgen::JsValue::NULL, &wasm_bindgen::JsValue::FALSE)
+                .unwrap()
+                .as_f64()
+                .unwrap()
+                > 0.0,
+            "browser frame callbacks remain queued while initial input is bound"
+        );
+        let initial_input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert!(editorClickPosition(&initial_input, 1, 4, false));
+        assert_eq!(actions.current_selection(), Some(Selection::caret(4)));
+        let line_end = source.find("\r\n").unwrap();
+        let native_end = u32::try_from(source[..line_end].encode_utf16().count()).unwrap();
+        assert!(editorClickPosition(&initial_input, 1, native_end, true));
+        assert_eq!(
+            actions.current_selection(),
+            Some(Selection::caret(source.find("\r\n").unwrap())),
+            "clicks past the initial neutral row retain the source line end"
+        );
+        drop(frames);
         assert!(!actions.full_row_paint_ready());
         assert!(actions.measured_rows().is_none());
         assert!(
@@ -12710,90 +12774,127 @@ async fn bounded_native_declarations_keep_global_offsets_and_full_selection_edit
         openwebide_core::WorkspaceMode::Remote,
     ] {
         for backward in [false, true] {
-            let source = source.clone();
-            let original = source.clone();
-            let selection = if backward {
-                Selection {
-                    anchor: end,
-                    head: start,
-                }
-            } else {
-                Selection {
-                    anchor: start,
-                    head: end,
-                }
-            };
-            let mounted = mount_test(move |state| {
-                state.seed_project();
-                state
-                    .projects
-                    .projects
-                    .update(|projects| projects[0].mode = mode);
-                state
-                    .workspace
-                    .open_file
-                    .set(Some("native-context.txt".into()));
-                state.workspace.content.set(source.clone());
-                let mut document = Document::new(source);
-                document.set_selections(vec![selection]).unwrap();
-                state.workspace.editor_documents.update(|documents| {
-                    documents.insert((1, "native-context.txt".into()), document);
+            for native_window in [false, true] {
+                let source = source.clone();
+                let original = source.clone();
+                let selection = if backward {
+                    Selection {
+                        anchor: end,
+                        head: start,
+                    }
+                } else {
+                    Selection {
+                        anchor: start,
+                        head: end,
+                    }
+                };
+                let mounted = mount_test(move |state| {
+                    state.seed_project();
+                    state
+                        .projects
+                        .projects
+                        .update(|projects| projects[0].mode = mode);
+                    state
+                        .workspace
+                        .open_file
+                        .set(Some("native-context.txt".into()));
+                    state.workspace.content.set(source.clone());
+                    let mut document = Document::new(source);
+                    document.set_selections(vec![selection]).unwrap();
+                    state.workspace.editor_documents.update(|documents| {
+                        documents.insert((1, "native-context.txt".into()), document);
+                    });
+                    editor_view(state)
                 });
-                editor_view(state)
-            });
-            settle().await;
-            let input: web_sys::HtmlTextAreaElement =
-                mounted.element(".editor-textarea").unchecked_into();
-            input
-                .set_selection_range_with_direction(
-                    byte_to_textarea(&original, start)
-                        .unwrap()
-                        .try_into()
-                        .unwrap(),
-                    byte_to_textarea(&original, end)
-                        .unwrap()
-                        .try_into()
-                        .unwrap(),
-                    if backward { "backward" } else { "forward" },
-                )
-                .unwrap();
-            let init = web_sys::InputEventInit::new();
-            init.set_bubbles(true);
-            init.set_cancelable(true);
-            init.set_input_type("insertText");
-            init.set_data(Some("文😀"));
-            let before =
-                web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
-            input.dispatch_event(&before).unwrap();
-            assert!(!before.default_prevented());
-            let insertion = mounted
-                .state
-                .workspace
-                .editor_text_insertion
-                .get_untracked()
-                .unwrap();
-            assert!(insertion.projection.is_windowed());
-            assert!(insertion.projection.text().len() <= 16 * 1024);
-            assert!(insertion.projection.textarea_origin() > 0);
-            assert_eq!(
-                insertion.native_caret,
-                byte_to_textarea(&original, start).unwrap() + "文😀".encode_utf16().count()
-            );
-            assert_eq!(insertion.selections, vec![selection]);
-            assert!(insertion.retain_native_value);
-            editorNativeInput(&input, "文😀", "insertText", false);
-            let expected = format!("{}文😀{}", &original[..start], &original[end..]);
-            assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
-            assert_eq!(input.value(), expected.replace("\r\n", "\n"));
-            let actions = EditorActions::new(mounted.state.workspace);
-            let caret = actions.selections(&expected)[0];
-            assert_eq!(caret, Selection::caret(start + "文😀".len()));
-            actions
-                .command(EditorCommand::Undo, caret, Indentation::default())
-                .unwrap()
-                .unwrap();
-            assert_eq!(mounted.state.workspace.content.get_untracked(), original);
-            assert_eq!(actions.selections(&original), vec![selection]);
+                settle().await;
+                let input: web_sys::HtmlTextAreaElement =
+                    mounted.element(".editor-textarea").unchecked_into();
+                let actions = EditorActions::new(mounted.state.workspace);
+                let native = if native_window {
+                    wait_until("native window installs complete source selection", || {
+                        input.get_attribute("data-editor-native-bound").as_deref() == Some("true")
+                            && actions.bound_native_context().is_some()
+                    })
+                    .await;
+                    let context = actions.bound_native_context().unwrap();
+                    let native = context.native_selection().unwrap();
+                    assert_eq!(context.source_selection(native).unwrap(), selection);
+                    native
+                } else {
+                    // Keep the complete-native declaration path explicit even when
+                    // cold neutral paint can already bind before the first frame.
+                    actions.release_native_context();
+                    input.set_value(&original);
+                    input
+                        .set_attribute("data-editor-native-bound", "false")
+                        .unwrap();
+                    input
+                        .remove_attribute("data-editor-native-generation")
+                        .unwrap();
+                    Selection {
+                        anchor: byte_to_textarea(&original, selection.anchor).unwrap(),
+                        head: byte_to_textarea(&original, selection.head).unwrap(),
+                    }
+                };
+                input
+                    .set_selection_range_with_direction(
+                        u32::try_from(native.range().start).unwrap(),
+                        u32::try_from(native.range().end).unwrap(),
+                        if backward { "backward" } else { "forward" },
+                    )
+                    .unwrap();
+                let init = web_sys::InputEventInit::new();
+                init.set_bubbles(true);
+                init.set_cancelable(true);
+                init.set_input_type("insertText");
+                init.set_data(Some("文😀"));
+                let before =
+                    web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+                input.dispatch_event(&before).unwrap();
+                assert!(!before.default_prevented());
+                if native_window {
+                    assert!(
+                        mounted
+                            .state
+                            .workspace
+                            .editor_text_insertion
+                            .get_untracked()
+                            .is_none()
+                    );
+                } else {
+                    let insertion = mounted
+                        .state
+                        .workspace
+                        .editor_text_insertion
+                        .get_untracked()
+                        .unwrap();
+                    assert!(insertion.projection.is_windowed());
+                    assert!(insertion.projection.text().len() <= 16 * 1024);
+                    assert!(insertion.projection.textarea_origin() > 0);
+                    assert_eq!(
+                        insertion.native_caret,
+                        byte_to_textarea(&original, start).unwrap() + "文😀".encode_utf16().count()
+                    );
+                    assert_eq!(insertion.selections, vec![selection]);
+                    assert!(insertion.retain_native_value);
+                }
+                editorNativeInput(&input, "文😀", "insertText", false);
+                let expected = format!("{}文😀{}", &original[..start], &original[end..]);
+                assert_eq!(mounted.state.workspace.content.get_untracked(), expected);
+                assert_editor_native_source(&input, mounted.state.workspace, &expected);
+                if !native_window {
+                    assert_eq!(input.value(), expected.replace("\r\n", "\n"));
+                }
+                let actions = EditorActions::new(mounted.state.workspace);
+                let caret = actions.selections(&expected)[0];
+                assert_eq!(caret, Selection::caret(start + "文😀".len()));
+                actions
+                    .command(EditorCommand::Undo, caret, Indentation::default())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+                assert_eq!(actions.selections(&original), vec![selection]);
+            }
         }
     }
 }

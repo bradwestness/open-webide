@@ -876,6 +876,16 @@ instead of measuring a neutral table that will be discarded. Pending background
 workers retain their borrowed source preview. Both decisions use the same editor
 facade, and native input stays visible during cold preparation.
 
+Initial geometry installs the shared source document index before syntax completes.
+After native text is installed, bounded neutral unwrapped frames can publish without
+an animation callback, admitting at most 128 rows and 64 KiB of source. Identical
+source/font/layout frames revalidate without reinstalling DOM paint. Styled,
+wrapped and oversized cold paint retain their preparation path; touch keeps the
+complete native surface. Replacing a large windowed document with complete short
+native text releases the old binding so its retained scroll extents cannot survive.
+Browser contracts hold both frame callbacks and lexical
+jobs while checking native binding and source-column/line-end clicks in both modes.
+
 The job owns immutable source and reuses a terminal worker's source Arc when
 available. CRLF normalization happens per row, preserving standalone CR and
 avoiding a normalized full-file copy. Source, read, pending-edit, account, path

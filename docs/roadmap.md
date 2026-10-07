@@ -101,10 +101,13 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Cold layout shares exact repeated paint dimensions after matching representative samples;
   distinct or conflicting rows still require fresh measurement. Browser contracts verify
   each cold probe independently of font/layout retries and await styled tokens for token-click checks.
-  Initial bounded unwrapped
-  fallback frames paint before lexical completion; unsupported cold viewports restore
-  complete native input, and active composition retains its installed mapping.
-  Finish pre-frame initial input, remaining cold wrapped and touch pointer selection, caret ownership and
+  Initial bounded neutral unwrapped frames use the shared document index before lexical
+  completion and browser frame callbacks. Held-frame contracts cover bounded native input,
+  source columns and line-end clicks in both modes; identical frames revalidate without
+  reinstalling DOM paint. Unsupported cold viewports restore complete native input,
+  and active composition retains its installed mapping. Complete short replacements
+  release previous window bindings and restore current native dimensions.
+  Finish initial styled/large-row input, remaining cold wrapped and touch pointer selection, caret ownership and
   source extents, then verify physical Chrome/Edge PWA input methods. Reduce
   full-source access in remaining input paths. Ownership checks, ordinary typing
   selection dispatch and motion scheduling now borrow source; motion queues retain

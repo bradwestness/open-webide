@@ -893,6 +893,8 @@ impl EditorActions {
     }
 
     pub fn preparation_revision(self) {
+        self.workspace.editor_worker_active.track();
+        self.workspace.editor_fallback_active.track();
         self.workspace.editor_preparation_revision.track();
         self.workspace.editor_fallback_paint.track();
     }
@@ -1192,6 +1194,18 @@ impl EditorActions {
                 .update(|value| *value = value.wrapping_add(1));
         }
         result.map(|(_, view)| view)
+    }
+
+    /// Install the source document before geometry/native input needs its rows.
+    /// Syntax preparation can finish independently of this shared document index.
+    pub fn prepare_projection(self) -> Option<openwebide_core::editor::FoldProjection> {
+        if let Some(projection) = self.projection() {
+            return Some(projection);
+        }
+        let key = self.key()?;
+        self.workspace
+            .editor_documents
+            .try_update(|documents| self.document(documents, key).projection())
     }
 
     pub fn projection(self) -> Option<openwebide_core::editor::FoldProjection> {

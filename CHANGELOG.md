@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Install shared editor document rows before syntax preparation and publish bounded neutral unwrapped frames before animation callbacks. Revalidate source-owned native input without reinstalling identical paint; preserve source/font/account guards and deferred styled, wrapped and oversized paint. Release old native window bindings when complete short text fits, restoring current source scroll extents.
+
 - Make editor browser checks wait for styled token paint and verify repeated-row measurement bounds per probe, including font/layout retries on Linux.
 
 - Paint bounded unwrapped editor viewports before terminal lexical fallback finishes, borrowing projection rows. Bind native windows from complete native dimensions; restore complete native input for unsupported cold viewports and retain active composition mappings.

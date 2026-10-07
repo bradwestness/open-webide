@@ -307,6 +307,10 @@ fn refresh_editor_folds(actions: EditorActions) {
 }
 
 fn stamp_editor_input(actions: EditorActions, input: &web_sys::HtmlTextAreaElement) {
+    let _ = input.set_attribute(
+        "data-editor-native-value-scope",
+        &actions.projection_revision().to_string(),
+    );
     if let Some(generation) = actions.native_input_generation() {
         let _ = input.set_attribute("data-editor-native-bound", "true");
         let _ = input.set_attribute("data-editor-native-generation", &generation.to_string());
@@ -1103,6 +1107,7 @@ fn HighlightOverlay(
     indentation: Signal<openwebide_core::editor::Indentation>,
     show_whitespace: Signal<bool>,
     layout_revision: RwSignal<u64>,
+    native_install_revision: RwSignal<u64>,
 ) -> impl IntoView {
     use wasm_bindgen::closure::Closure;
 
@@ -1160,6 +1165,7 @@ fn HighlightOverlay(
     });
     let tokens = Memo::new(move |_| {
         content.track();
+        actions.presentation_scope();
         actions.preparation_revision();
         actions.syntax_paint()
     });
@@ -1572,8 +1578,22 @@ fn HighlightOverlay(
         }),
     }));
 
+    #[derive(Clone, PartialEq)]
+    struct NeutralFrame {
+        scope: Option<crate::state_actions::editor::EditorPresentationScope>,
+        projection: u64,
+        font: u64,
+        rows: Vec<usize>,
+        metrics: Option<String>,
+        indentation: openwebide_core::editor::Indentation,
+        whitespace: bool,
+        input: web_sys::HtmlTextAreaElement,
+    }
+    let neutral_frame = StoredValue::new_local(None::<NeutralFrame>);
+
     Effect::new(move || {
         content.track();
+        native_install_revision.track();
         actions.projection_revision();
         actions.preparation_revision();
         actions.font_epoch();
@@ -1602,6 +1622,54 @@ fn HighlightOverlay(
             path.set_value(current_path);
             rendered.set(String::new());
         }
+        // Native restoration stamps the installed source before this shortcut.
+        // A pending neutral frame does not need to wait for rAF. Layout/native
+        // binding notifications can revalidate that frame before the first rAF.
+        let initial = mounted
+            && (presented_scope.get_value() != presentation_scope.get_untracked()
+                || painted_syntax.with_value(|paint| {
+                    paint
+                        .as_ref()
+                        .is_none_or(|(prepared, tokens)| !prepared && tokens.is_empty())
+                }))
+            && textarea_ref.get_untracked().is_some_and(|input| {
+                current_editor_target(actions, &input)
+                    && input
+                        .get_attribute("data-editor-native-value-scope")
+                        .and_then(|scope| scope.parse::<u64>().ok())
+                        == Some(actions.projection_revision())
+                    && crate::viewport::editor_scroll(&input).client_width() > 0
+                    && crate::viewport::editor_scroll(&input).client_height() > 0
+            })
+            && tokens.with_untracked(|(prepared, tokens)| {
+                actions.initial_viewport_paint_ready(&visible.get_untracked(), (*prepared, tokens))
+            });
+        if initial {
+            if let Some(id) = request.get_value() {
+                let _ = window().cancel_animation_frame(id);
+            }
+            request.set_value(None);
+            let input = textarea_ref.get_untracked().unwrap();
+            let frame = NeutralFrame {
+                scope: presentation_scope.get_untracked(),
+                projection: actions.projection_revision(),
+                font: actions.font_epoch(),
+                rows: visible.get_untracked(),
+                metrics: super::editor_rows::metrics_identity(&input),
+                indentation: indentation.get_untracked(),
+                whitespace: show_whitespace.get_untracked(),
+                input,
+            };
+            if neutral_frame.with_value(|previous| previous.as_ref() == Some(&frame)) {
+                ready.set(true);
+                return;
+            }
+            neutral_frame.set_value(Some(frame));
+            queued_generation.set_value(generation.get_value());
+            paint.run(true);
+            return;
+        }
+        neutral_frame.set_value(None);
         if mounted && request.get_value().is_none() {
             queued_generation.set_value(generation.get_value());
             let id = callback.with_value(|callback| {
@@ -2016,11 +2084,8 @@ pub fn Editor(
         if editor_actions.limit().is_some() {
             return openwebide_core::editor::FoldProjection::new("", &Default::default());
         }
-        editor_actions.projection().unwrap_or_else(|| {
-            openwebide_core::editor::FoldProjection::new(
-                &content.get_untracked(),
-                &Default::default(),
-            )
+        editor_actions.prepare_projection().unwrap_or_else(|| {
+            openwebide_core::editor::FoldProjection::new("", &Default::default())
         })
     });
     let fold_state = Memo::new(move |_| {
@@ -2090,6 +2155,7 @@ pub fn Editor(
     let ta = NodeRef::<leptos::html::Textarea>::new();
     let hl = NodeRef::<leptos::html::Div>::new();
     let highlight_ready = RwSignal::new(false);
+    let native_install_revision = RwSignal::new(0_u64);
     let highlight_visible = RwSignal::new(false);
     let layout_revision = RwSignal::new(0_u64);
     let source_extent = Memo::new(move |_| {
@@ -2121,6 +2187,7 @@ pub fn Editor(
     });
     let viewport = Memo::new(move |_| {
         layout_revision.track();
+        native_install_revision.track();
         let (rows, uniform) = projection.with(|view| (view.lines().len(), view.has_uniform_rows()));
         if editor_actions.preferences().word_wrap || !uniform {
             if let Some(measured) = editor_actions.measured_rows() {
@@ -2710,6 +2777,21 @@ pub fn Editor(
             crate::viewport::set_editor_scroll_top(&el, scroll.top);
             crate::viewport::set_editor_scroll_left(&el, scroll.left);
             restored_textarea.set_value(Some((el.clone(), key)));
+            // The installed native value establishes cold source dimensions.
+            // Let initial viewport paint observe it without waiting for ResizeObserver/rAF.
+            if editor_actions.bound_native_context().is_none() {
+                let installed = editor_actions.projection_revision();
+                let input = el.clone();
+                leptos::leptos_dom::helpers::queue_microtask(move || {
+                    if !native_install_revision.is_disposed()
+                        && current_editor_target(editor_actions, &input)
+                        && editor_actions.projection_revision() == installed
+                    {
+                        native_install_revision
+                            .update(|revision| *revision = revision.wrapping_add(1));
+                    }
+                });
+            }
             if let Some(overlay) = hl.get_untracked() {
                 sync_highlight_scroll(&el, &overlay);
             }
@@ -3099,7 +3181,7 @@ pub fn Editor(
                                             data-editor-account=move || source_extent.get().map(|(_, _, account, _)| account.to_string())
                                             data-source-width=move || source_extent.get().map(|(_, _, _, extent)| extent.width.to_string())
                                             data-source-height=move || source_extent.get().map(|(_, _, _, extent)| extent.height.to_string()) /></div>
-                                        <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready presentation=highlight_visible error=action_error visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
+                                        <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready presentation=highlight_visible error=action_error visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision native_install_revision=native_install_revision />
                                         <super::editor_selections::SelectionOverlay textarea=ta ready=highlight_ready layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>
                                         <div class="editor-fold-column"><div class="editor-fold-track" style=move || format!("padding-top:{}px", viewport.get().top)>{move || {

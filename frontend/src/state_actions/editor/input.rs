@@ -132,11 +132,13 @@ impl EditorActions {
             return self.native_binding.with_untracked(Option::is_some);
         }
         let context = self.native_context();
-        if self.native_binding.with_untracked(Option::is_none)
-            && context
-                .as_ref()
-                .is_some_and(|context| !context.projection.is_windowed())
+        if context
+            .as_ref()
+            .is_some_and(|context| !context.projection.is_windowed())
         {
+            // Complete native text supplies its own extents. Keeping an old
+            // window binding here would retain the larger document's dimensions.
+            self.release_native_context();
             return false;
         }
         let bound = context.is_some();
