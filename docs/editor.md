@@ -339,6 +339,12 @@ caret at the source paint point without changing the source viewport. Small file
 retain the trusted insertion shortcut. Initial cold layout and coarse/touch devices
 retain full native input until source caret, extents and touch selection are ready;
 physical Chrome/Edge PWA input-method verification remains pending.
+Pointer selection adapters borrow current source while gestures retain the shared
+document version identity. Replacing a document invalidates its gestures even when
+text and revision match; unchanged document snapshots remain valid.
+`tools/check-editor-pointer.py` uses trusted Chromium mouse events to check token
+columns, line ends and scrolled bounded drafts in both workspace modes. It does not
+prove physical touch selection or installed-PWA behavior.
 
 While worker syntax is pending, cold views borrow plain row bodies from the existing
 projection instead of normalizing and tokenizing another complete file on the UI

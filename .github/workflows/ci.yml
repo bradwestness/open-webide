@@ -124,13 +124,14 @@ jobs:
       - name: Build backend for editor input verification
         run: cargo build -p openwebide-backend --target wasm32-wasip2 --release
 
-      - name: Check production editor IME and history
+      - name: Check production editor input, history and pointer selection
         env:
           CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
           CHROME: ${{ steps.chrome.outputs.chrome-path }}
         run: |
           python3 tools/check-editor-input.py
           python3 tools/check-editor-input.py --windowed
+          python3 tools/check-editor-pointer.py
 
   frontend-ui-tests:
     runs-on: ubuntu-latest

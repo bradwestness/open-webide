@@ -99,7 +99,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   source extents, then verify physical Chrome/Edge PWA input methods. Reduce
   full-source access in remaining input paths. Ownership checks, ordinary typing
   selection dispatch and motion scheduling now borrow source; motion queues retain
-  document identity instead of another source copy. Reduce
+  document identity instead of another source copy. Pointer gestures now borrow current
+  source and retain document identity, rejecting replacement documents even at the
+  same revision. Release-app Chromium checks cover highlighted token/line-end clicks
+  and scrolled bounded input in both modes. Reduce
   full-source composition baselines and buffer/projection publication. History snapshots
   share immutable steps and transaction payloads rather than copying retained edits,
   and document/composition snapshots share saved-text baselines. Cancellation now

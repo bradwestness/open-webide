@@ -17,6 +17,7 @@ pub struct PointerSelection {
     anchor: Range<usize>,
     unit: Unit,
     revision: u64,
+    identity: std::sync::Arc<()>,
 }
 
 /// Distance to scroll one selection-drag frame along an axis, in CSS pixels.
@@ -112,6 +113,7 @@ impl Document {
             anchor,
             unit,
             revision: self.revision,
+            identity: self.identity.clone(),
         };
         self.drag_pointer_selection(&pointer, offset)?;
         Ok(pointer)
@@ -122,7 +124,9 @@ impl Document {
         pointer: &PointerSelection,
         offset: usize,
     ) -> Result<bool, EditError> {
-        if self.revision != pointer.revision {
+        if self.revision != pointer.revision
+            || !std::sync::Arc::ptr_eq(&self.identity, &pointer.identity)
+        {
             return Err(EditError::StaleContext);
         }
         let hit = self.pointer_unit(offset, pointer.unit)?;
@@ -218,6 +222,23 @@ mod tests {
         let mut document = Document::new("");
         document.begin_pointer_selection(0, 3, false).unwrap();
         assert_eq!(document.selections(), &[Selection::caret(0)]);
+    }
+    #[test]
+    fn replacement_documents_cannot_reuse_a_pointer_gesture() {
+        let mut original = Document::new("one two");
+        let pointer = original.begin_pointer_selection(1, 1, false).unwrap();
+        let mut shared = original.clone();
+        assert!(shared.drag_pointer_selection(&pointer, 6).unwrap());
+        for text in ["one two", "new two"] {
+            let mut replacement = Document::new(text);
+            let before = replacement.clone();
+            assert_eq!(replacement.revision(), original.revision());
+            assert_eq!(
+                replacement.drag_pointer_selection(&pointer, 6),
+                Err(EditError::StaleContext)
+            );
+            assert_eq!(replacement, before);
+        }
     }
     #[test]
     fn edits_invalidate_pointer_gestures_without_changing_new_selections() {

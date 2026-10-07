@@ -825,6 +825,70 @@ async fn prepared_source_extents_ignore_native_dimensions_and_reject_stale_scope
 }
 
 #[wasm_bindgen_test]
+async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for repeat in [1, 1000] {
+            let source =
+                "fn main() {\r\n    let message = \"文😀\";\r\n    println!(\"hello\");\r\n}\r\n";
+            let source = source.repeat(repeat);
+            let fixture = source.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("click.rs".into()));
+                state.workspace.content.set(fixture);
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:640px;height:280px">{editor_view(state)}</div> }
+            });
+            for _ in 0..120 {
+                frame().await;
+                if mounted
+                    .element(".editor-code")
+                    .class_list()
+                    .contains("highlight-ready")
+                {
+                    break;
+                }
+            }
+            assert!(
+                mounted
+                    .element(".editor-code")
+                    .class_list()
+                    .contains("highlight-ready")
+            );
+            assert!(
+                mounted
+                    .element(".editor-highlight-content")
+                    .query_selector(".tok-keyword")
+                    .unwrap()
+                    .is_some()
+            );
+            let actions = EditorActions::new(mounted.state.workspace);
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            let start = source.find("    let").unwrap();
+            for (column, expected, beyond) in [
+                (8, start + 8, false),
+                (16, start + 16, false),
+                (24, start + 28, true),
+            ] {
+                assert!(editorClickPosition(&input, 2, column, beyond));
+                frame().await;
+                assert_eq!(
+                    actions.selection(&source),
+                    Some(Selection::caret(expected)),
+                    "{mode:?}, column={column}, beyond={beyond}"
+                );
+            }
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn primary_pointer_units_and_drag_use_source_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -919,7 +983,7 @@ async fn primary_pointer_units_and_drag_use_source_in_both_modes() {
                     head: 21
                 })
             );
-            for changed in 0..3 {
+            for changed in 0..4 {
                 frame().await;
                 editorPrimaryGesture(&textarea, 3, 2, 1, false, "mousedown");
                 let before = actions.selection(source);
@@ -934,17 +998,26 @@ async fn primary_pointer_units_and_drag_use_source_in_both_modes() {
                         .auth
                         .generation
                         .update(|generation| *generation += 1),
-                    _ => mounted
+                    2 => mounted
                         .state
                         .workspace
                         .pending_epoch
                         .update(|epoch| *epoch += 1),
+                    _ => mounted
+                        .state
+                        .workspace
+                        .editor_documents
+                        .update(|documents| {
+                            let mut replacement = openwebide_core::editor::Document::new(source);
+                            replacement.set_selections(vec![before.unwrap()]).unwrap();
+                            documents.insert((1, "pointer.txt".into()), replacement);
+                        }),
                 }
                 editorPrimaryGesture(&textarea, 1, 1, 1, false, "mousemove");
                 assert_eq!(
                     actions.selection(source),
                     before,
-                    "stale read/account/project epoch must discard the drag"
+                    "stale read/account/project epoch or document replacement must discard the drag"
                 );
             }
             assert_eq!(actions.source(), source);

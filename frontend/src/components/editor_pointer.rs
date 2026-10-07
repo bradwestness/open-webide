@@ -10,7 +10,6 @@ use openwebide_core::editor::PointerSelection;
 struct Gesture {
     project: i64,
     path: String,
-    source: String,
     epoch: u64,
     read: u64,
     account: u64,
@@ -123,11 +122,9 @@ impl PointerAdapter {
         ) else {
             return;
         };
-        let source = self.actions.source();
-        match self.actions.begin_pointer_selection(
+        match self.actions.begin_current_pointer_selection(
             project,
             &path,
-            &source,
             offset,
             event.detail().unsigned_abs(),
             event.shift_key(),
@@ -136,7 +133,6 @@ impl PointerAdapter {
                 self.gesture.set_value(Some(Gesture {
                     project,
                     path,
-                    source,
                     pointer,
                     epoch: self.workspace.pending_epoch.get_untracked(),
                     read: self.workspace.editor_read_revision.get_untracked(),
@@ -158,7 +154,7 @@ impl PointerAdapter {
     }
     fn render(self, input: &web_sys::HtmlTextAreaElement) {
         self.motion.error.set(None);
-        if let Some(selection) = self.actions.selection(&self.actions.source()) {
+        if let Some(selection) = self.actions.current_selection() {
             render_editor_selection(self.actions, input, selection, false);
         }
     }
@@ -210,10 +206,9 @@ impl PointerAdapter {
         let result = self.gesture.with_value(|gesture| {
             let gesture = gesture.as_ref()?;
             let offset = self.offset(input, x, y, true)?;
-            Some(self.actions.drag_pointer_selection(
+            Some(self.actions.drag_current_pointer_selection(
                 gesture.project,
                 &gesture.path,
-                &gesture.source,
                 &gesture.pointer,
                 offset,
             ))

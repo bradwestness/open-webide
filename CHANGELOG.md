@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Borrow current editor source during pointer selection and rendering instead of copying or retaining the whole file. Reject drags from replaced documents even with identical text/revision, and add trusted Chromium highlighted-click checks for small, bounded and scrolled drafts in both project modes.
+
 - Publish editor worker structural metadata as bounded list patches against the acknowledged analysis ticket. Retain standalone snapshots for small lists or language changes, reject stale/missing bases and invalid ranges, and check expanded record budgets before reconstructing and validating coordinates.
 
 - Share immutable saved-text baselines across document and composition snapshots. Save acknowledgements replace only the written baseline, reuse identical versions and propagate one allocation through active composition while preserving dirty-state and recovery behavior.

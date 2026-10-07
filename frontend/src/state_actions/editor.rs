@@ -712,6 +712,41 @@ impl EditorActions {
         })
     }
 
+    /// Pointer adapters borrow current source instead of retaining a file copy.
+    pub fn begin_current_pointer_selection(
+        self,
+        project: i64,
+        path: &str,
+        offset: usize,
+        clicks: u32,
+        extend: bool,
+    ) -> Result<
+        Option<openwebide_core::editor::PointerSelection>,
+        openwebide_core::editor::SelectionError,
+    > {
+        self.workspace.content.with_untracked(|source| {
+            self.begin_pointer_selection(project, path, source, offset, clicks, extend)
+        })
+    }
+
+    pub fn drag_current_pointer_selection(
+        self,
+        project: i64,
+        path: &str,
+        pointer: &openwebide_core::editor::PointerSelection,
+        offset: usize,
+    ) -> Result<Option<Vec<Selection>>, openwebide_core::editor::SelectionError> {
+        self.workspace.content.with_untracked(|source| {
+            self.drag_pointer_selection(project, path, source, pointer, offset)
+        })
+    }
+
+    pub fn current_selection(self) -> Option<Selection> {
+        self.workspace
+            .content
+            .with_untracked(|source| self.selection(source))
+    }
+
     pub fn begin_pointer_selection(
         self,
         project: i64,
