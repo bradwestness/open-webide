@@ -1,6 +1,6 @@
 //! Shared publication/coalescing policy above the thin worker transport.
 use super::EditorActions;
-use crate::state::workspace::{EditorSyntaxScope, PreparedEditorSyntax};
+use crate::state::workspace::{EditorFallbackPaint, EditorSyntaxScope, PreparedEditorSyntax};
 use leptos::prelude::*;
 use openwebide_core::editor::{SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxRequest};
 use std::{cell::Cell, rc::Rc};
@@ -31,7 +31,7 @@ impl EditorActions {
     }
 
     /// Pending worker results do not require a second full-file lexical pass.
-    pub fn syntax_is_pending(self) -> bool {
+    fn worker_syntax_pending(self) -> bool {
         self.workspace.editor_worker_active.get_untracked()
             && self.key().is_some()
             && self
@@ -44,6 +44,31 @@ impl EditorActions {
                 })
     }
 
+    fn fallback_paint(
+        self,
+    ) -> Option<(
+        bool,
+        std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
+    )> {
+        self.workspace
+            .editor_fallback_paint
+            .with_untracked(|paint| {
+                paint
+                    .as_ref()
+                    .filter(|paint| self.syntax_scope_current(&paint.scope))
+                    .map(|paint| (paint.prepared_source, paint.tokens.clone()))
+            })
+    }
+    pub fn syntax_is_pending(self) -> bool {
+        if self.worker_syntax_pending() {
+            return true;
+        }
+        self.workspace.editor_fallback_active.get_untracked()
+            && self.fallback_paint().is_none()
+            && (!self.workspace.editor_worker_active.get_untracked()
+                || self.syntax_highlights().is_none())
+    }
+
     /// Empty pending tokens borrow row bodies from the immutable projection.
     /// Terminal analysis fallback retains the existing contextual lexer.
     pub fn syntax_paint(
@@ -52,8 +77,17 @@ impl EditorActions {
         bool,
         std::sync::Arc<Vec<Vec<openwebide_core::highlight::Token>>>,
     ) {
+        if !self.workspace.editor_worker_active.get_untracked()
+            && self.workspace.editor_fallback_active.get_untracked()
+        {
+            return self
+                .fallback_paint()
+                .unwrap_or_else(|| (false, std::sync::Arc::new(Vec::new())));
+        }
         if let Some(tokens) = self.syntax_highlights() {
             (true, tokens)
+        } else if let Some(paint) = self.fallback_paint() {
+            paint
         } else if self.syntax_is_pending() {
             (false, std::sync::Arc::new(Vec::new()))
         } else {
@@ -75,6 +109,7 @@ impl EditorActions {
     }
 
     pub fn install_syntax_worker(self) {
+        self.install_fallback_paint();
         if !crate::editor_worker::enabled() {
             return;
         }
@@ -82,6 +117,128 @@ impl EditorActions {
             return;
         };
         self.install_syntax_transport(Rc::new(client));
+    }
+
+    /// Shared cooperative fallback policy above browser task/frame primitives.
+    fn install_fallback_paint(self) {
+        self.workspace.editor_fallback_active.set(true);
+        let ticket = StoredValue::new(0_u64);
+        on_cleanup(move || {
+            if !self.workspace.editor_fallback_active.is_disposed() {
+                self.workspace.editor_fallback_active.set(false);
+                self.workspace.editor_fallback_paint.set(None);
+            }
+        });
+        Effect::new(move || {
+            self.workspace.content.track();
+            self.workspace.open_file.track();
+            self.workspace.active_project.track();
+            self.workspace.pending_epoch.track();
+            self.workspace.editor_read_revision.track();
+            self.workspace.editor_worker_active.track();
+            self.workspace.editor_preparation_revision.track();
+            if let Some(auth) = self.auth {
+                auth.generation.track();
+            }
+            self.rules();
+            ticket.update_value(|value| *value = value.wrapping_add(1));
+            let next = ticket.get_value();
+            if self.worker_syntax_pending() || self.fallback_paint().is_some() {
+                return;
+            }
+            let scope = self
+                .workspace
+                .editor_preparation
+                .with_untracked(|prepared| {
+                    prepared
+                        .as_ref()
+                        .filter(|prepared| self.syntax_scope_current(&prepared.scope))
+                        .map(|prepared| prepared.scope.clone())
+                })
+                .or_else(|| self.syntax_scope());
+            let Some(scope) = scope else {
+                return;
+            };
+            if let Some(tokens) = self.syntax_highlights() {
+                if !self.workspace.editor_worker_active.get_untracked() {
+                    self.workspace
+                        .editor_fallback_paint
+                        .set(Some(EditorFallbackPaint {
+                            scope,
+                            prepared_source: true,
+                            tokens,
+                        }));
+                }
+                return;
+            }
+            let mut lexical = openwebide_core::highlight::LexicalPreparation::for_textarea(
+                scope.source.clone(),
+                openwebide_core::highlight::language_from_path(&scope.key.1),
+            );
+            // Resolve small files in one bounded batch without a transient pending
+            // frame. Larger jobs retain their context and yield before continuing.
+            lexical.advance(
+                openwebide_core::highlight::LEXICAL_BATCH_ROWS,
+                openwebide_core::highlight::LEXICAL_BATCH_BYTES,
+            );
+            if lexical.is_complete() {
+                self.workspace
+                    .editor_fallback_paint
+                    .set(Some(EditorFallbackPaint {
+                        scope,
+                        prepared_source: false,
+                        tokens: std::sync::Arc::new(
+                            lexical.finish().expect("completed lexical job"),
+                        ),
+                    }));
+                return;
+            }
+            leptos::task::spawn_local(async move {
+                // Let rapid source/read/account changes coalesce before more token allocation.
+                crate::util::yield_task().await;
+                let current = || {
+                    !ticket.is_disposed()
+                        && ticket.get_value() == next
+                        && self.syntax_scope_current(&scope)
+                        && !self.worker_syntax_pending()
+                };
+                if !current() {
+                    return;
+                }
+                let mut batches = 1_usize;
+                while !lexical.is_complete() {
+                    if !current() {
+                        return;
+                    }
+                    lexical.advance(
+                        openwebide_core::highlight::LEXICAL_BATCH_ROWS,
+                        openwebide_core::highlight::LEXICAL_BATCH_BYTES,
+                    );
+                    batches += 1;
+                    if !lexical.is_complete() {
+                        if batches
+                            .is_multiple_of(openwebide_core::highlight::LEXICAL_BATCHES_PER_FRAME)
+                        {
+                            crate::util::yield_frame().await;
+                        } else {
+                            crate::util::yield_task().await;
+                        }
+                    }
+                }
+                if !current() {
+                    return;
+                }
+                self.workspace
+                    .editor_fallback_paint
+                    .set(Some(EditorFallbackPaint {
+                        scope,
+                        prepared_source: false,
+                        tokens: std::sync::Arc::new(
+                            lexical.finish().expect("completed lexical job"),
+                        ),
+                    }));
+            });
+        });
     }
 
     /// Transport boundary; browser contracts inject deferred replies into the same policy.
@@ -172,8 +329,8 @@ impl EditorActions {
                                 analysis,
                             }));
                     } else {
-                        // Same preparation engine runs through the synchronous adapter after a
-                        // worker failure. The editor remains usable and never trusts a bad reply.
+                        // Keep the shared budgeted parser fallback and cooperative
+                        // lexical paint after failure; never trust a malformed reply.
                         self.workspace.editor_worker_active.set(false);
                         self.workspace.editor_preparation.set(None);
                         client.stop();

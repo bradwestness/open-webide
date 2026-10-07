@@ -855,6 +855,7 @@ impl EditorActions {
 
     pub fn preparation_revision(self) {
         self.workspace.editor_preparation_revision.track();
+        self.workspace.editor_fallback_paint.track();
     }
 
     pub fn syntax_highlights(

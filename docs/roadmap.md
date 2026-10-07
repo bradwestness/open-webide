@@ -79,7 +79,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.
-  Finish terminal lexical fallback, uncached initial/cold shaping, bidirectional
+  Terminal lexical paint now prepares in cooperative, source-owned batches.
+  Finish incremental lexical updates, uncached initial/cold shaping, bidirectional
   visual-run windows, fine long-row paint and incremental measurement. Language formatting remains in
   Code intelligence.
 - **Bounded native input:** prepared larger fine-pointer editors bind scoped

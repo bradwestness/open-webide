@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare terminal and unavailable-worker editor lexical paint cooperatively in Rust in both workspace modes. Preserve multiline state and Unicode/CRLF, share complete tokens and immutable worker source, coalesce edits, and discard cancelled or stale source/read/account jobs before publication.
+
 - Reconcile late editor font notifications against current source-owned measurements using actual registered-face identity and load state in both workspace modes. Briefly await pending faces with a 250 ms budget, retain editing during slow or failed loads, and reject superseded jobs before measurement.
 
 - Reuse exact row dimensions and glyph anchors when pending editor syntax resolves to an identical single plain-text run in both workspace modes. Preserve remeasurement for changed token spans, styles, fonts and source ownership.

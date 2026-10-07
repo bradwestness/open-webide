@@ -116,21 +116,100 @@ pub fn highlight_lines_while(
         if !should_continue() {
             return None;
         }
-        if line.len() > MAX_HIGHLIGHT_LINE_BYTES {
-            lines.push(vec![Token {
-                kind: TokenKind::Plain,
-                text: line.to_string(),
-            }]);
-            continue;
-        }
-        let (tokens, next_state) = match language {
-            Language::Rust => highlight_rust_line(line, state),
-            _ => highlight_generic_line(line, language, state),
-        };
+        let (tokens, next_state) = highlight_line(line, language, state);
         state = next_state;
         lines.push(tokens);
     }
     Some(lines)
+}
+
+fn highlight_line(line: &str, language: Language, state: State) -> (Vec<Token>, State) {
+    if line.len() > MAX_HIGHLIGHT_LINE_BYTES {
+        return (
+            vec![Token {
+                kind: TokenKind::Plain,
+                text: line.to_string(),
+            }],
+            state,
+        );
+    }
+    match language {
+        Language::Rust => highlight_rust_line(line, state),
+        _ => highlight_generic_line(line, language, state),
+    }
+}
+
+pub const LEXICAL_BATCH_ROWS: usize = 128;
+pub const LEXICAL_BATCH_BYTES: usize = 64 * 1024;
+pub const LEXICAL_BATCHES_PER_FRAME: usize = 8;
+
+/// A source-owned lexical job that preserves multiline state across cooperative
+/// batches. Callers can discard it on cancellation; unfinished paint is never
+/// returned by finish. Budgets count whole rows, allowing one oversized row.
+pub struct LexicalPreparation {
+    source: std::sync::Arc<str>,
+    language: Language,
+    normalize_crlf: bool,
+    next: usize,
+    state: State,
+    rows: Vec<Vec<Token>>,
+    complete: bool,
+}
+impl LexicalPreparation {
+    pub fn new(source: std::sync::Arc<str>, language: Language) -> Self {
+        Self {
+            source,
+            language,
+            normalize_crlf: false,
+            next: 0,
+            state: State::Normal,
+            rows: Vec::new(),
+            complete: false,
+        }
+    }
+    /// Match native textarea newline normalization without copying full source.
+    pub fn for_textarea(source: std::sync::Arc<str>, language: Language) -> Self {
+        Self {
+            normalize_crlf: true,
+            ..Self::new(source, language)
+        }
+    }
+    pub const fn is_complete(&self) -> bool {
+        self.complete
+    }
+    pub fn advance(&mut self, max_rows: usize, max_bytes: usize) -> usize {
+        let mut count = 0;
+        let mut bytes = 0;
+        if max_bytes == 0 {
+            return 0;
+        }
+        while !self.complete && count < max_rows {
+            let tail = &self.source[self.next..];
+            let newline = tail.find('\n');
+            let end = self.next + newline.unwrap_or(tail.len());
+            let raw = &self.source[self.next..end];
+            let cost = raw.len() + usize::from(newline.is_some());
+            if count > 0 && cost > max_bytes.saturating_sub(bytes) {
+                break;
+            }
+            let line = if self.normalize_crlf && newline.is_some() {
+                raw.strip_suffix('\r').unwrap_or(raw)
+            } else {
+                raw
+            };
+            let (tokens, state) = highlight_line(line, self.language, self.state);
+            self.rows.push(tokens);
+            self.state = state;
+            self.complete = newline.is_none();
+            self.next = if self.complete { end } else { end + 1 };
+            count += 1;
+            bytes += cost;
+        }
+        count
+    }
+    pub fn finish(self) -> Option<Vec<Vec<Token>>> {
+        self.complete.then_some(self.rows)
+    }
 }
 
 /// Tokenizer state carried across lines (a block comment may span lines).
@@ -1268,6 +1347,69 @@ const CSS_KEYWORDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cooperative_lexical_rows_preserve_context_and_newline_contracts() {
+        let source = format!(
+            "/* start\r\ninside 文😀\r\n*/ let value = 1;\n{}\r\ntail\r",
+            "x".repeat(MAX_HIGHLIGHT_LINE_BYTES + 1)
+        );
+        for language in [
+            Language::Rust,
+            Language::TypeScript,
+            Language::Tsx,
+            Language::JavaScript,
+            Language::Jsx,
+            Language::Python,
+            Language::Java,
+            Language::CSharp,
+            Language::Cpp,
+            Language::Php,
+            Language::Shell,
+            Language::C,
+            Language::Go,
+            Language::Html,
+            Language::Css,
+            Language::Plain,
+        ] {
+            for normalize in [false, true] {
+                let source: std::sync::Arc<str> = source.as_str().into();
+                let mut job = if normalize {
+                    LexicalPreparation::for_textarea(source.clone(), language)
+                } else {
+                    LexicalPreparation::new(source.clone(), language)
+                };
+                let mut steps = 0;
+                while !job.is_complete() {
+                    assert_eq!(job.advance(1, 16), 1);
+                    steps += 1;
+                }
+                assert!(steps > 3, "fixture must cross lexical batch boundaries");
+                let expected = if normalize {
+                    source.replace("\r\n", "\n")
+                } else {
+                    source.to_string()
+                };
+                assert_eq!(job.finish().unwrap(), highlight_lines(&expected, language));
+            }
+        }
+        for source in ["", "\n", "\r\n", "\r", "a\n\n"] {
+            let mut job = LexicalPreparation::new(source.into(), Language::Plain);
+            while !job.is_complete() {
+                job.advance(2, 8);
+            }
+            assert_eq!(
+                job.finish().unwrap(),
+                highlight_lines(source, Language::Plain)
+            );
+        }
+        let mut cancelled = LexicalPreparation::new("/*\nunfinished\n*/".into(), Language::Rust);
+        assert_eq!(cancelled.advance(1, 8), 1);
+        assert!(
+            cancelled.finish().is_none(),
+            "partial lexical jobs cannot publish"
+        );
+    }
 
     /// The concatenation of a line's token texts must equal the original line.
     fn rejoins(source: &str, language: Language) {

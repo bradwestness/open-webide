@@ -2757,7 +2757,7 @@ async fn measure_highlight_bursts() {
         let actions =
             openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
         wait_until("warm source dimension cache", || {
-            actions.measured_rows().is_some()
+            !actions.syntax_is_pending() && actions.measured_rows().is_some()
         })
         .await;
         frame().await;
@@ -2798,6 +2798,11 @@ async fn measure_highlight_bursts() {
                 latency.push(now() - start);
                 assert_eq!(actions.source(), format!("{source}{text}"));
             }
+            wait_until("coalesced current syntax paint", || {
+                !actions.syntax_is_pending()
+                    && openwebide_frontend::components::viewport_highlight_count() > before
+            })
+            .await;
             frame().await;
             frames.push(now() - start);
             let visible = openwebide_frontend::components::viewport_highlight_count() - before;
@@ -2815,7 +2820,7 @@ async fn measure_highlight_bursts() {
         latency.sort_by(f64::total_cmp);
         frames.sort_by(f64::total_cmp);
         console_log!(
-            "editor {lines} lines: visible generations/10 inputs={counts:?}, changed-row probes={probes:?}, input+microtasks median={:.3}ms p95={:.3}ms, burst-to-frame median={:.3}ms p95={:.3}ms",
+            "editor {lines} lines: visible generations/10 inputs={counts:?}, changed-row probes={probes:?}, input+microtasks median={:.3}ms p95={:.3}ms, burst-to-paint median={:.3}ms p95={:.3}ms",
             latency[25],
             latency[47],
             frames[2],
@@ -7484,6 +7489,175 @@ extern "C" {
 }
 
 #[wasm_bindgen_test]
+async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_scopes_in_both_modes()
+ {
+    use openwebide_core::{
+        WorkspaceMode,
+        highlight::{Language, TokenKind, highlight_lines},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    // Stay inside interactive line limits while exceeding the parser's source cap.
+    let row = format!("inside {}文😀\r\n", "words ".repeat(70));
+    let source = format!("/*\r\n{}*/\r\nlet done = 1;", row.repeat(6000));
+    assert!(source.len() > openwebide_core::editor::MAX_STRUCTURE_BYTES);
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for terminal in [false, true] {
+            let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let mounted = mount_test({
+                let source = source.clone();
+                let slot = slot.clone();
+                move |state| {
+                    state.seed_project();
+                    state
+                        .projects
+                        .projects
+                        .update(|projects| projects[0].mode = mode);
+                    state.workspace.open_file.set(Some("fallback.rs".into()));
+                    state.workspace.content.set(source.clone());
+                    if terminal {
+                        state.workspace.editor_worker_active.set(true);
+                        state.workspace.editor_preparation.set(Some(
+                            openwebide_frontend::state::workspace::PreparedEditorSyntax {
+                                scope: openwebide_frontend::state::workspace::EditorSyntaxScope {
+                                    key: (1, "fallback.rs".into()),
+                                    source: source.into(),
+                                    epoch: 0,
+                                    read_revision: state
+                                        .workspace
+                                        .editor_read_revision
+                                        .get_untracked(),
+                                    account_generation: state.auth.generation.get_untracked(),
+                                    tab_width: 4,
+                                },
+                                status: openwebide_core::editor::SyntaxStatus::TooLarge,
+                                analysis: None,
+                            },
+                        ));
+                    }
+                    let actions = EditorActions::new(state.workspace);
+                    actions.install_syntax_worker();
+                    *slot.borrow_mut() = Some(actions);
+                    view! { <div/> }
+                }
+            });
+            let actions = slot.borrow_mut().take().unwrap();
+            wait_until("fallback job becomes pending", || {
+                actions.syntax_is_pending()
+            })
+            .await;
+            assert!(
+                actions.syntax_paint().1.is_empty(),
+                "pending fallback borrows source instead of lexing synchronously"
+            );
+            wait_until(
+                "cooperative lexical job publishes complete contextual rows",
+                || {
+                    !actions.syntax_is_pending()
+                        && mounted
+                            .state
+                            .workspace
+                            .editor_fallback_paint
+                            .get_untracked()
+                            .is_some()
+                },
+            )
+            .await;
+            let painted = actions.syntax_paint();
+            assert!(!painted.0);
+            assert_eq!(
+                *painted.1,
+                highlight_lines(&source.replace("\r\n", "\n"), Language::Rust)
+            );
+            assert_eq!(painted.1[1][0].kind, TokenKind::Comment);
+            assert!(
+                std::sync::Arc::ptr_eq(&painted.1, &actions.syntax_paint().1),
+                "unchanged fallback consumers share completed paint"
+            );
+            if terminal {
+                assert!(
+                    std::sync::Arc::ptr_eq(
+                        &mounted
+                            .state
+                            .workspace
+                            .editor_preparation
+                            .get_untracked()
+                            .unwrap()
+                            .scope
+                            .source,
+                        &mounted
+                            .state
+                            .workspace
+                            .editor_fallback_paint
+                            .get_untracked()
+                            .unwrap()
+                            .scope
+                            .source,
+                    ),
+                    "terminal fallback reuses immutable worker source"
+                );
+                mounted.state.workspace.editor_worker_active.set(false);
+            }
+            mounted
+                .state
+                .workspace
+                .content
+                .set(format!("{source}\nold pending"));
+            wait_until("replacement starts pending fallback", || {
+                actions.syntax_is_pending()
+            })
+            .await;
+            mounted
+                .state
+                .auth
+                .generation
+                .update(|generation| *generation += 1);
+            mounted
+                .state
+                .workspace
+                .content
+                .set("/* new scope */ let revised = true;\r\n".into());
+            wait_until(
+                &format!(
+                    "new source/account owns paint after cancellation: {mode:?} terminal={terminal}"
+                ),
+                || {
+                    mounted
+                        .state
+                        .workspace
+                        .editor_fallback_paint
+                        .get_untracked()
+                        .is_some_and(|paint| {
+                            paint.scope.account_generation
+                                == mounted.state.auth.generation.get_untracked()
+                                && paint.scope.source.starts_with("/* new scope */")
+                        })
+                },
+            )
+            .await;
+            let current = actions.syntax_paint();
+            assert!(
+                current.1.len() < 5,
+                "old lexical rows must never replace current source"
+            );
+            for _ in 0..3 {
+                frame().await;
+            }
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_fallback_paint
+                    .get_untracked()
+                    .unwrap()
+                    .scope
+                    .source
+                    .starts_with("/* new scope */")
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn syntax_consumers_share_immutable_preparation_and_invalidate_it_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::SyntaxStatus};
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -9286,7 +9460,7 @@ async fn localized_wrapped_edits_reuse_exact_row_heights_in_both_modes() {
         frame().await;
         let actions = EditorActions::new(mounted.state.workspace);
         wait_until("initial reusable wrapped rows", || {
-            actions.measured_rows().is_some()
+            !actions.syntax_is_pending() && actions.measured_rows().is_some()
         })
         .await;
         let old = actions.measured_rows().unwrap().rows;
@@ -10080,6 +10254,12 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
                 .editor_rows
                 .get_untracked()
                 .is_some()
+        })
+        .await;
+        let actions =
+            openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
+        wait_until("horizontal fallback syntax ready", || {
+            !actions.syntax_is_pending()
         })
         .await;
         frame().await;

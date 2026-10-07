@@ -339,10 +339,11 @@ thread. Requested rows and source slices feed the same paint and measurement pat
 An existing styled frame stays visible within its document/read/account scope;
 replacement batch measurements wait for syntax, and source pointer controls remain
 disabled while its paint is stale. Forced caret probes can still reconcile current
-source. Completed or failed analysis retains the contextual lexical fallback, which
-can still process the whole file. Syntax queries reuse the published worker scope
-without allocating another source snapshot for comparison. Cold source geometry,
-long-row shaping and touch input remain unfinished.
+source. Terminal and unavailable-worker lexical paint preserves context in
+cooperative whole-row batches, publishing only complete current-source tokens.
+Each source change still needs a full lexical pass. Fallback preparation reuses a
+current published worker scope. Syntax queries still copy source in some paths.
+Cold source geometry, long-row shaping and touch input remain unfinished.
 
 Frontend app and browser-test links reserve a 2 MiB WASM stack for nested Leptos
 views. The editor erases its outer view type to reduce return-value copying;
@@ -720,3 +721,28 @@ Production input/scroll and process-memory baselines are recorded in
 [editor performance](editor-performance.md); they still reveal stalls at admitted
 file-size boundaries. Remaining work bounds cold and long-row wrapped rendering,
 reduces input/source costs, and repeats responsiveness and memory validation.
+
+### Cooperative lexical paint
+
+When a worker is unavailable or finishes without usable syntax paint, the editor
+facade prepares fallback rows through a resumable Rust lexical job. The same
+line tokenizer serves synchronous core callers and cooperative browser jobs.
+Multiline comment state survives batch boundaries. Each batch admits at most
+128 rows and 64 KiB of source, allowing one oversized row; the existing 10,000-byte
+plain-token rule bounds per-character lexing on that row. A first bounded batch
+can finish a small file without a pending frame. Larger jobs yield browser tasks
+between batches and a frame after eight batches. No partial token table is
+published, and pending paint borrows projected source bodies or retains an
+already scoped styled frame.
+
+The job owns immutable source and reuses a terminal worker's source Arc when
+available. CRLF normalization happens per row, preserving standalone CR and
+avoiding a normalized full-file copy. Source, read, pending-edit, account, path
+and tab-width changes cancel obsolete work; completed tokens are shared by
+subsequent paint consumers. Parser fallback keeps its existing 12 ms budget and
+can supply ready paint before lexical preparation is needed. Core callers that
+have not installed browser preparation retain their synchronous API.
+
+This makes terminal lexical work cooperative; it does not make full-source
+publication, parsing, geometry or long-row initial shaping incremental. Those
+remaining limits are tracked in the roadmap and performance guide.
