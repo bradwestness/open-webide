@@ -630,6 +630,17 @@ impl EditorActions {
         })
     }
 
+    /// Borrow current source for visual selection measurements, without publishing a file copy.
+    pub fn current_visual_caret(
+        self,
+        index: usize,
+        identity: &str,
+    ) -> Option<openwebide_core::editor::VisualCaret> {
+        self.workspace
+            .content
+            .with_untracked(|source| self.visual_caret(source, index, identity))
+    }
+
     pub fn visual_caret(
         self,
         source: &str,

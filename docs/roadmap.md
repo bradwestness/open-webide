@@ -87,12 +87,19 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   source extents, then verify physical Chrome/Edge PWA input methods. Reduce
   full-source access in remaining input paths. Ownership checks, ordinary typing
   selection dispatch and motion scheduling now borrow source; motion queues retain
-  document identity instead of another source copy. Pointer gestures now borrow current
+  document identity instead of another source copy. Selection overlays retain the scoped
+  projection and borrow current source for visual caret measurements instead of copying
+  the file on selection/layout changes. Pointer gestures now borrow current
   source and retain document identity, rejecting replacement documents even at the
   same revision. Release-app Chromium checks cover highlighted token/line-end clicks,
   far-right blank space and held pointer movement in Rust/C#/JSON and scrolled
   bounded input in both modes. Click/drag hits share measured-boundary validation
-  and row-padding normalization. Composition baselines share source text,
+  and row-padding normalization. Expanded LF checks cover upper/lower row padding
+  and painted caret coordinates.
+  The recorded click-past-line-end regression is reproduced in the release-app probe;
+  standalone newline boundaries now retain the final token’s measured caret.
+  The user verified the fix in the localhost PWA; broader physical IME/clipboard
+  and touch verification remains. Composition baselines share source text,
   line indexes and prepared projections; edits detach the changed version and
   cancellation restores the original allocations. Commands, clipboard edits,
   search replacements and composition completion move their text into shared state

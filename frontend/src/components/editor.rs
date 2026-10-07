@@ -612,8 +612,14 @@ pub(super) fn raw_text_position(
         end: &mut Option<(web_sys::Node, u32)>,
     ) -> Option<(web_sys::Node, u32)> {
         if node.node_type() == web_sys::Node::TEXT_NODE {
-            let length =
-                u32::try_from(node.node_value().unwrap_or_default().encode_utf16().count()).ok()?;
+            let text = node.node_value().unwrap_or_default();
+            let length = u32::try_from(text.encode_utf16().count()).ok()?;
+            // A standalone line-ending node has no glyph caret rectangle in
+            // Chromium. The preceding token's end is the same source offset
+            // and retains its measured inline position (including bidi affinity).
+            if *offset == 0 && text.starts_with('\n') && end.is_some() {
+                return end.take();
+            }
             if *offset < length {
                 return Some((node.clone(), *offset));
             }

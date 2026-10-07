@@ -221,6 +221,9 @@ mod tests {
         let (text, at) = position(&node, 3).unwrap();
         assert_eq!(text.node_value().as_deref(), Some("ab"));
         assert_eq!(at, 0);
+        let (text, at) = position(&node, 5).unwrap();
+        assert_eq!(text.node_value().as_deref(), Some("ab"));
+        assert_eq!(at, 2);
         let (text, at) = position(&node, 6).unwrap();
         assert_eq!(text.node_value().as_deref(), Some("\n"));
         assert_eq!(at, 1);

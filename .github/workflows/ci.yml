@@ -136,6 +136,7 @@ jobs:
           python3 tools/check-editor-input.py
           python3 tools/check-editor-input.py --windowed
           python3 tools/check-editor-pointer.py
+          python3 tools/check-editor-pointer.py --language rs --repeat 1 --source crates/auth/src/lib.rs --line 62 --ending lf
 
   frontend-ui-tests:
     runs-on: ubuntu-latest

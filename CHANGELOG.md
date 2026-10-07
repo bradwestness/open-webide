@@ -11,6 +11,10 @@ for what's still ahead.
 
 - Add About / Open-source software to the account menu and command palette, with the frontend build version, commit, shared dependency inventory and bundled license notices for crates, Monaspace and Lucide. Cache the same build details and notices for the offline PWA screen.
 
+- Keep the visible caret at the end of highlighted lines when clicking beyond the text. Measure the final token boundary instead of a standalone newline with an empty browser rectangle; verify painted caret position as well as insertion offsets.
+
+- Avoid full-file copies during editor selection-overlay updates. Retain scoped projection ownership, borrow source for visual caret measurements, and reject queued measurements after source, projection, selection or account changes. Expand pointer probes across row padding, with selectable line endings and wrapping.
+
 - Support Git over SSH in Docker with an OpenSSH client, opt-in host-agent forwarding and read-only public configuration import. Keep strict host-key checks, add pull/push credential guidance, and document native, Docker, Quadlet and HTTPS setup.
 
 - Reuse color classifications from unchanged parser descendants while refreshing subtree roots that depend on external parent fields. Declare custom classifier dependencies and retain fresh extraction for document-dependent selectors, with shared limits and cancellation across worker and fallback preparation.

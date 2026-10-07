@@ -63,7 +63,10 @@ pub(super) fn SelectionOverlay(
         workspace.editor_documents.track();
         layout_revision.track();
         let ready = ready.get();
-        let source = workspace.content.get();
+        workspace.content.track();
+        let source_revision = workspace.editor_source_revision.get();
+        let projection = actions.projection();
+        let source_len = actions.source_len();
         let key = workspace
             .active_project
             .get()
@@ -71,7 +74,7 @@ pub(super) fn SelectionOverlay(
         let epoch = workspace.pending_epoch.get();
         let read_revision = workspace.editor_read_revision.get();
         let account_generation = actions.account_generation();
-        let selections = actions.selections(&source);
+        let selections = actions.current_selections();
         leptos::leptos_dom::helpers::queue_microtask(move || {
             if marks.is_disposed()
                 || workspace.pending_epoch.get_untracked() != epoch
@@ -82,8 +85,15 @@ pub(super) fn SelectionOverlay(
                     .get_untracked()
                     .zip(workspace.open_file.get_untracked())
                     != key
-                || actions.source() != source
-                || actions.selections(&source) != selections
+                || workspace.editor_source_revision.get_untracked() != source_revision
+                || !projection
+                    .as_ref()
+                    .zip(actions.projection().as_ref())
+                    .is_some_and(|(before, now)| {
+                        std::ptr::eq(before.text().as_ptr(), now.text().as_ptr())
+                            && before.text().len() == now.text().len()
+                    })
+                || actions.current_selections() != selections
             {
                 return;
             }
@@ -125,7 +135,7 @@ pub(super) fn SelectionOverlay(
                     let range = selection.range();
                     if range.is_empty()
                         && let Some(metrics) = &metrics
-                        && let Some(caret) = actions.visual_caret(&source, index, &metrics.identity)
+                        && let Some(caret) = actions.current_visual_caret(index, &metrics.identity)
                         && let Some(top) =
                             super::editor_geometry::caret_top(actions, &input, metrics, caret.row)
                     {
@@ -169,7 +179,7 @@ pub(super) fn SelectionOverlay(
                         let contains_caret = range.is_empty()
                             && range.start >= line.source.start
                             && (range.start < line.source.end
-                                || range.start == source.len()
+                                || range.start == source_len
                                     && projection
                                         .lines()
                                         .last()
