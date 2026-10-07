@@ -9122,7 +9122,8 @@ async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_bot
         .await;
         let textarea: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
-        assert_eq!(textarea.value(), source.replace("\r\n", "\n"));
+        assert_editor_native_source(&textarea, mounted.state.workspace, &source);
+        let source_scroll = openwebide_frontend::viewport::editor_scroll(&textarea);
         assert!(
             mounted
                 .root
@@ -9132,8 +9133,8 @@ async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_bot
                 < 80
         );
         for line in [5000, 9990, 0, 2000] {
-            textarea.set_scroll_top(f64::from(line) * 19.5);
-            textarea
+            source_scroll.set_scroll_top(f64::from(line) * 19.5);
+            source_scroll
                 .dispatch_event(&web_sys::Event::new("scroll").unwrap())
                 .unwrap();
             wait_until("scrolled row window", || {
@@ -9270,7 +9271,7 @@ async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_bot
             .dispatch_event(&web_sys::Event::new("input").unwrap())
             .unwrap();
         wait_until("find reveals a row outside the paint window", || {
-            textarea.scroll_top() > 170_000.0
+            source_scroll.scroll_top() > 170_000.0
                 && mounted
                     .root
                     .query_selector(".editor-source-line[data-line='9001']")
@@ -9839,6 +9840,146 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
         .await;
         assert_eq!(input.value(), "small\n");
         assert!(mounted.root.query_selector_all(selector).unwrap().length() <= 2);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn cold_unwrapped_native_windows_preserve_extents_pointer_and_edits_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = (0..12_000)
+        .map(|row| {
+            if row == 9_000 {
+                format!("{}\r\n", "wide ".repeat(200))
+            } else {
+                format!("row {row} 文😀\r\n")
+            }
+        })
+        .collect::<String>();
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+        let captured = slot.clone();
+        let mounted = mount_test({
+            let source = source.clone();
+            move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("cold-native.txt".into()));
+                state.workspace.content.set(source);
+                captured.set(Some(EditorActions::new(state.workspace)));
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            }
+        });
+        let actions = slot.get().unwrap();
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        wait_until("native window before complete measurements", || {
+            actions.bound_native_context().is_some()
+        })
+        .await;
+        assert!(
+            actions.measured_rows().is_none(),
+            "initial input must not wait for the full row table"
+        );
+        frame().await;
+        assert_editor_native_source(&input, mounted.state.workspace, &source);
+        let scroll = openwebide_frontend::viewport::editor_scroll(&input);
+        assert!(scroll.scroll_height() > 100_000);
+        assert!(scroll.scroll_width() > input.scroll_width() + 1_000);
+        let height = web_sys::window()
+            .unwrap()
+            .get_computed_style(&input)
+            .unwrap()
+            .unwrap()
+            .get_property_value("line-height")
+            .unwrap()
+            .trim_end_matches("px")
+            .parse::<f64>()
+            .unwrap();
+        scroll.set_scroll_top(6_500.0 * height - f64::from(scroll.client_height()) / 2.0);
+        scroll
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        wait_until("cold scrolled source row", || {
+            mounted
+                .root
+                .query_selector(".editor-source-line[data-line='6501']")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert!(editorPrimaryGesture(&input, 6501, 4, 1, false, "mousedown").default_prevented());
+        editorPrimaryGesture(&input, 6501, 4, 1, false, "mouseup");
+        let offset = source.find("row 6500 ").unwrap() + 4;
+        assert_eq!(actions.current_selection().unwrap().head, offset);
+        editorNativeInput(&input, "X", "insertText", false);
+        let mut expected = source.clone();
+        expected.insert(offset, 'X');
+        assert_editor_native_source(&input, mounted.state.workspace, &expected);
+        assert!(scroll.scroll_height() > 100_000);
+        assert!(
+            actions
+                .cold_native_extent(actions.projection_revision(), 100.0, 100.0, || panic!(
+                    "bound input is not complete source"
+                ))
+                .is_none()
+        );
+        actions.release_native_context();
+        assert!(
+            actions
+                .cold_native_extent(
+                    actions.projection_revision().wrapping_sub(1),
+                    100.0,
+                    100.0,
+                    || panic!("stale frames cannot capture source dimensions")
+                )
+                .is_none()
+        );
+        assert!(
+            actions
+                .cold_native_extent(actions.projection_revision(), f64::NAN, 100.0, || panic!(
+                    "invalid dimensions"
+                ))
+                .is_none()
+        );
+        assert!(
+            actions
+                .cold_native_extent(actions.projection_revision(), 100.0, 100.0, || {
+                    "stale native source".into()
+                })
+                .is_none()
+        );
+        mounted
+            .state
+            .settings
+            .editor_preferences
+            .update(|preferences| preferences.word_wrap = true);
+        assert!(
+            actions
+                .cold_native_extent(actions.projection_revision(), 100.0, 100.0, || panic!(
+                    "wrapped geometry"
+                ))
+                .is_none()
+        );
+        mounted
+            .state
+            .settings
+            .editor_preferences
+            .update(|preferences| preferences.word_wrap = false);
+        actions.begin_composition();
+        assert!(
+            actions
+                .cold_native_extent(actions.projection_revision(), 100.0, 100.0, || panic!(
+                    "composition owns its native surface"
+                ))
+                .is_none()
+        );
     }
 }
 

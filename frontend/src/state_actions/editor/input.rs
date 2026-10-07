@@ -101,6 +101,30 @@ impl EditorActions {
         }
     }
 
+    /// Complete native source geometry can bridge cold unwrapped row preparation.
+    /// Never read a local window as if it described the whole document.
+    pub fn cold_native_extent(
+        self,
+        frame_scope: u64,
+        width: f64,
+        height: f64,
+        native: impl FnOnce() -> String,
+    ) -> Option<openwebide_core::editor::DocumentExtent> {
+        if frame_scope != self.projection_revision()
+            || self.bound_native_context().is_some()
+            || self.is_composing()
+            || self.preferences().word_wrap
+        {
+            return None;
+        }
+        let extent = openwebide_core::editor::DocumentExtent::new(width, height)?;
+        let projection = self.projection()?;
+        if !projection.has_uniform_rows() || native() != projection.textarea_text() {
+            return None;
+        }
+        Some(extent)
+    }
+
     /// Enable a native window once the view can supply document geometry.
     /// Composition retains its existing context until its native commit rebases it.
     pub fn bind_native_context(self) -> bool {

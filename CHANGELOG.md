@@ -9,6 +9,7 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Bind bounded native input for ready unwrapped editor frames before full-file row measurement completes. Validate the current frame, complete native source and dimensions, retain its scroll extents before the handoff, and stamp restored windows before scroll reconciliation. Wrapped input and active composition retain their existing ownership boundary.
 - Reuse incremental source-line coordinates for parser fold validation and shared fold assembly. Avoid splitting grammar-backed files or rebuilding their logical rows for each fold query; preserve LF/CRLF columns, closing-line siblings, directives and existing fallback limits.
 - Separate lexical structural scanning from source ownership. Parser preparation and lexical folding consume borrowed metadata without copying complete files or embedded-language bodies into temporary structures; owned editing contexts use the same scanner and region queries.
 - Maintain parser line coordinates incrementally and use them for edit positions and grammar paint boundaries. Share changed-row reconstruction and suffix rebasing with document UTF-16 indexes, preserve Unicode and LF/CRLF behavior, and bound direct parser updates to the existing row limit.

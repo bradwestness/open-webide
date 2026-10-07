@@ -308,6 +308,13 @@ pub struct DocumentExtent {
     pub width: f64,
     pub height: f64,
 }
+impl DocumentExtent {
+    /// Validate measured source dimensions independently of their browser adapter.
+    pub fn new(width: f64, height: f64) -> Option<Self> {
+        (valid_width(width) && valid_width(height)).then_some(Self { width, height })
+    }
+}
+
 fn valid_width(width: f64) -> bool {
     width.is_finite() && (0.0..=1_000_000_000.0).contains(&width)
 }
@@ -355,7 +362,7 @@ impl MeasuredRows {
         }
         let width = self.width()? + horizontal_padding;
         let height = self.height() + vertical_padding;
-        (valid_width(width) && valid_width(height)).then_some(DocumentExtent { width, height })
+        DocumentExtent::new(width, height)
     }
     pub fn len(&self) -> usize {
         self.offsets.len() - 1
@@ -462,6 +469,16 @@ mod tests {
         assert!(MeasuredRows::layout([20.0], [-1.0]).is_none());
         assert!(MeasuredRows::layout([20.0], []).is_none());
         assert!(rows.extent(f64::INFINITY, 0.0).is_none());
+        for (width, height) in [
+            (f64::NAN, 20.0),
+            (20.0, f64::INFINITY),
+            (-1.0, 20.0),
+            (20.0, -1.0),
+            (1_000_000_001.0, 20.0),
+        ] {
+            assert!(DocumentExtent::new(width, height).is_none());
+        }
+        assert_eq!(DocumentExtent::new(1016.0, 104.0), rows.extent(16.0, 24.0));
         assert!(
             RowMeasurementPlan::reuse_layout(
                 &[1, 2, 3],

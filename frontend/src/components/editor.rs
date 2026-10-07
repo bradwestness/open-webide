@@ -2227,10 +2227,41 @@ pub fn Editor(
             .ok()
             .flatten()
             .is_some_and(|query| query.matches());
-        if ready && extent.is_some() && !touch && editor_actions.bound_native_context().is_none() {
-            untrack(|| {
-                editor_actions.bind_native_context();
+        if ready
+            && !touch
+            && editor_actions.bound_native_context().is_none()
+            && let Some(input) = node.filter(|input| current_editor_target(editor_actions, input))
+        {
+            let frame_scope = hl.get().and_then(|overlay| {
+                overlay
+                    .query_selector(".editor-highlight-content")
+                    .ok()
+                    .flatten()?
+                    .get_attribute("data-editor-scope")?
+                    .parse::<u64>()
+                    .ok()
             });
+            let cold = extent.is_none()
+                && frame_scope
+                    .and_then(|scope| {
+                        editor_actions.cold_native_extent(
+                            scope,
+                            f64::from(input.scroll_width()),
+                            f64::from(input.scroll_height()),
+                            || input.value(),
+                        )
+                    })
+                    .is_some_and(|extent| {
+                        crate::viewport::check_editor_extent(extent.width, extent.height)
+                    });
+            if extent.is_some() || cold {
+                untrack(|| {
+                    // Capture complete-source dimensions before replacing native text.
+                    // The scroll adapter retains them until exact row measurements arrive.
+                    crate::viewport::refresh_editor_scroll(&input);
+                    editor_actions.bind_native_context();
+                });
+            }
         }
     });
     let pointer_adapter = super::editor_pointer::PointerAdapter::new(
@@ -2670,6 +2701,9 @@ pub fn Editor(
             {
                 restore_editor_selection(&el, &current_projection, selection);
             }
+            // Scroll reconciliation must already know that this value is a window;
+            // otherwise it replaces retained source extents with local dimensions.
+            stamp_editor_input(editor_actions, &el);
             crate::viewport::set_editor_scroll_top(&el, scroll.top);
             crate::viewport::set_editor_scroll_left(&el, scroll.left);
             restored_textarea.set_value(Some((el.clone(), key)));

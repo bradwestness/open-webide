@@ -93,9 +93,12 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   ownership,
   uncached initial/cold shaping, bidirectional visual-run windows, fine long-row paint
   and incremental measurement. Language formatting remains in Code intelligence.
-- **Bounded native input:** prepared larger fine-pointer editors bind scoped
+- **Bounded native input:** ready unwrapped larger fine-pointer editors bind scoped
   surrounding text to the textarea, with full-source selections and source-owned
-  scrolling. Finish initial/cold and touch pointer selection, caret ownership and
+  scrolling before full row measurements finish, using validated complete-native
+  dimensions and a scoped plain/styled frame. Cold transitions retain source
+  extents and reject stale frames/native text, invalid dimensions, wrapping and active composition.
+  Finish pre-frame initial input, cold wrapped and touch pointer selection, caret ownership and
   source extents, then verify physical Chrome/Edge PWA input methods. Reduce
   full-source access in remaining input paths. Ownership checks, ordinary typing
   selection dispatch and motion scheduling now borrow source; motion queues retain

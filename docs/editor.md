@@ -489,6 +489,14 @@ allocations; changed classifications rebuild the row. This avoids temporary
 piece lists for the complete source, while boundary construction and the final
 row table still visit the file.
 
+Ready unwrapped frames can bind bounded native surrounding text while complete
+row measurement is still pending. The shared input facade validates the current
+frame's source revision, complete native value and dimensions; the browser captures its full-source scroll extents
+before replacing that value. Restored windows publish their ownership stamp
+before scroll reconciliation, preserving the complete file's viewport. This
+transition rejects wrapping and active composition. Before a ready frame, and for
+cold wrapped or touch input, the full native surface remains the fallback.
+
 Lexical scanning returns source-independent structural metadata. Parser fallback
 and lexical folding consume this borrowed scan without copying complete files or
 embedded-language bodies into temporary structures. Owned editing contexts use
