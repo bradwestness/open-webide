@@ -116,11 +116,11 @@ impl SyntaxDocument {
         #[cfg(test)]
         let reused_source_change = source_change.is_some();
         let edit = if Arc::ptr_eq(&previous.source, &self.text) {
-            super::input_edit("", "")
+            super::input_edit("", "", None).ok()?
         } else if let Some(edit) = source_change {
             edit
         } else {
-            super::input_edit(&previous.source, &self.text)
+            super::input_edit(&previous.source, &self.text, None).ok()?
         };
         let mut pieces = HashMap::new();
         #[cfg(test)]
@@ -231,8 +231,13 @@ impl SyntaxDocument {
         }
         let mut rows = HashMap::new();
         let mut tokens = Vec::with_capacity(lines.len());
-        let mut start = 0;
-        for (mut parts, source) in lines.into_iter().zip(self.text.split('\n')) {
+        if lines.len() != self.source_lines.len() {
+            return None;
+        }
+        for (mut parts, row) in lines.into_iter().zip(&self.source_lines) {
+            let raw = &self.text[row.start..row.end];
+            let source = raw.strip_suffix('\n').unwrap_or(raw);
+            let start = row.start;
             let end = start + source.len();
             let plain = source.len() > crate::highlight::MAX_HIGHLIGHT_LINE_BYTES;
             if plain {
@@ -276,7 +281,6 @@ impl SyntaxDocument {
                     tokens: line,
                 },
             );
-            start = end + 1;
         }
         *previous = SyntaxPaint {
             source: self.text.clone(),

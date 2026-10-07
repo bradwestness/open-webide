@@ -93,6 +93,7 @@ pub struct SyntaxDocument {
     tree: Option<Tree>,
     embedded: Vec<EmbeddedSyntax>,
     text: Arc<str>,
+    source_lines: Vec<super::lines::Line>,
     prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
     lexical: Option<Arc<crate::highlight::LexicalSnapshot>>,
     publication: Option<(u32, Arc<SyntaxAnalysis>)>,
@@ -120,6 +121,7 @@ impl SyntaxDocument {
             tree: None,
             embedded: Vec::new(),
             text: Arc::from(""),
+            source_lines: provider.map_or_else(Vec::new, |_| super::lines::lines("")),
             prepared: None,
             lexical: None,
             publication: None,
@@ -152,7 +154,13 @@ impl SyntaxDocument {
             self.ready = true;
             return SyntaxStatus::Ready { incremental: false };
         };
-        let edit = input_edit(&self.text, text);
+        let edit = match input_edit(&self.text, text, Some(&mut self.source_lines)) {
+            Ok(edit) => edit,
+            Err(status) => {
+                self.clear();
+                return status;
+            }
+        };
         let mut previous = self.tree.clone();
         if let Some(tree) = previous.as_mut() {
             tree.edit(&edit);
@@ -451,6 +459,9 @@ impl SyntaxDocument {
         self.tree = None;
         self.embedded.clear();
         self.text = Arc::from("");
+        self.source_lines = self
+            .provider
+            .map_or_else(Vec::new, |_| super::lines::lines(""));
         self.prepared = None;
         self.lexical = None;
         self.publication = None;
@@ -647,7 +658,11 @@ fn point(text: &str, offset: usize) -> Point {
     }
 }
 
-fn input_edit(old: &str, new: &str) -> InputEdit {
+fn input_edit(
+    old: &str,
+    new: &str,
+    source_lines: Option<&mut Vec<super::lines::Line>>,
+) -> Result<InputEdit, SyntaxStatus> {
     let change = super::text_change(old, new).unwrap_or(super::TextChange {
         range: 0..0,
         new_end: 0,
@@ -655,19 +670,129 @@ fn input_edit(old: &str, new: &str) -> InputEdit {
     let start = change.range.start;
     let old_end = change.range.end;
     let new_end = change.new_end;
-    InputEdit {
+    let (start_position, old_end_position, new_end_position) = if let Some(rows) = source_lines {
+        let indexed_point = |rows: &[super::lines::Line], offset| {
+            let row = super::lines::row_at(rows, offset);
+            Point {
+                row,
+                column: offset - rows[row].start,
+            }
+        };
+        let start_position = indexed_point(rows, start);
+        let old_end_position = indexed_point(rows, old_end);
+        let edit = super::lines::LineEdit::new(rows, old.len(), new.len(), change.range, new_end);
+        let retained = rows.len() - edit.rows.len();
+        let limit = super::MAX_EDITOR_LINES
+            .checked_sub(retained)
+            .ok_or(SyntaxStatus::TooLarge)?;
+        let replacement = edit.replacement(new, limit).ok_or(SyntaxStatus::TooLarge)?;
+        edit.apply(rows, replacement);
+        (
+            start_position,
+            old_end_position,
+            indexed_point(rows, new_end),
+        )
+    } else {
+        (point(old, start), point(old, old_end), point(new, new_end))
+    };
+    Ok(InputEdit {
         start_byte: start,
         old_end_byte: old_end,
         new_end_byte: new_end,
-        start_position: point(old, start),
-        old_end_position: point(old, old_end),
-        new_end_position: point(new, new_end),
-    }
+        start_position,
+        old_end_position,
+        new_end_position,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_parser_points_match_complete_unicode_line_scans() {
+        let mut source = "文😀\r\nsecond\nlast\r\n".to_owned();
+        let mut rows = super::super::lines::lines(&source);
+        let payloads = ["", "文😀", "\n", "\r", "\r\n", "x\n\ny"];
+        for step in 0..240 {
+            let boundaries = source
+                .char_indices()
+                .map(|(at, _)| at)
+                .chain(std::iter::once(source.len()))
+                .collect::<Vec<_>>();
+            let first = (step * 17 + 3) % boundaries.len();
+            let last = (first + step % 5).min(boundaries.len() - 1);
+            let mut changed = source.clone();
+            changed.replace_range(
+                boundaries[first]..boundaries[last],
+                payloads[step % payloads.len()],
+            );
+            let incremental = input_edit(&source, &changed, Some(&mut rows)).unwrap();
+            let complete = input_edit(&source, &changed, None).unwrap();
+            assert_eq!(
+                (
+                    incremental.start_byte,
+                    incremental.old_end_byte,
+                    incremental.new_end_byte,
+                    incremental.start_position,
+                    incremental.old_end_position,
+                    incremental.new_end_position
+                ),
+                (
+                    complete.start_byte,
+                    complete.old_end_byte,
+                    complete.new_end_byte,
+                    complete.start_position,
+                    complete.old_end_position,
+                    complete.new_end_position
+                )
+            );
+            assert_eq!(rows, super::super::lines::lines(&changed));
+            source = changed;
+        }
+        let changed = "";
+        let incremental = input_edit(&source, changed, Some(&mut rows)).unwrap();
+        assert_eq!(incremental.new_end_position, Point { row: 0, column: 0 });
+        assert_eq!(rows, super::super::lines::lines(changed));
+    }
+
+    #[test]
+    fn parser_rows_bound_changed_scans_and_direct_update_admission() {
+        let source = "fn call() {}\r\n".repeat(2_000);
+        let mut changed = source.clone();
+        let last = source.rfind("call").unwrap();
+        changed.replace_range(last..last + 4, "renamed");
+        let rows = super::super::lines::lines(&source);
+        let change = super::super::text_change(&source, &changed).unwrap();
+        let edit = super::super::lines::LineEdit::new(
+            &rows,
+            source.len(),
+            changed.len(),
+            change.range,
+            change.new_end,
+        );
+        assert!(edit.bytes.len() < 100);
+        let mut document = SyntaxDocument::new(Language::Rust).unwrap();
+        document.prepare(&source, 4, || true).1.unwrap();
+        document.prepare(&changed, 4, || true).1.unwrap();
+        assert_eq!(document.source_lines, super::super::lines::lines(&changed));
+        assert_eq!(
+            document.update(&"\n".repeat(super::super::MAX_EDITOR_LINES), || true),
+            SyntaxStatus::TooLarge
+        );
+        assert_eq!(document.source_lines, super::super::lines::lines(""));
+        let restored = document.prepare(&source, 4, || true).1.unwrap();
+        let mut fresh = SyntaxDocument::new(Language::Rust).unwrap();
+        assert_eq!(
+            restored.highlights(),
+            fresh.prepare(&source, 4, || true).1.unwrap().highlights()
+        );
+        assert_eq!(
+            document.update("cancelled", || false),
+            SyntaxStatus::Cancelled
+        );
+        assert_eq!(document.source_lines, super::super::lines::lines(""));
+    }
 
     #[test]
     fn lexical_languages_prepare_cache_and_transfer_the_same_lossless_paint() {

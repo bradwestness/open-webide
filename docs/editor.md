@@ -470,6 +470,13 @@ and folded-view offset queries and cursor line/column status scan only the tail
 after a checkpoint. Rows outside the rebuilt edit region retain their indexes;
 folded views share the same immutable checkpoints.
 
+Parser byte coordinates use an incremental logical-line table with the same
+changed-row reconstruction and suffix rebasing as document coordinates. Edit
+points query indexed rows, and grammar paint reads those row boundaries rather
+than splitting the complete source again. Direct parser updates enforce the
+existing row limit; cancellation clears the retained coordinates. Shifted suffix
+records still require rebasing.
+
 Long-row paint and cursor probes
 also share sparse grapheme/UTF-16 coordinates and cached horizontal eligibility;
 unchanged rows retain their allocation. Lookups scan from exact cluster boundaries
@@ -846,8 +853,8 @@ no longer has the advertised base, it asks for a full snapshot; the shared
 publication facade retries once after rechecking source, account, read and ticket
 ownership. A second resync response stops the transport and uses the shared
 fallback. Invalid ranges remain transport failures; reconstructed byte and row
-limits apply before analysis. Structural data still transfers in full, and row
-tables still visit all rows. Validated replies retain the facade's immutable
+limits apply before analysis. Structural publication can transfer changed record
+spans, while reconstruction and row tables still visit all rows. Validated replies retain the facade's immutable
 source snapshot, and warm syntax queries use it without cloning the full buffer;
 source/read/account guards still run around callbacks. Initial preparation and
 changed rows still allocate token text.

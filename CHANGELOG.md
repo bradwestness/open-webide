@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Maintain parser line coordinates incrementally and use them for edit positions and grammar paint boundaries. Share changed-row reconstruction and suffix rebasing with document UTF-16 indexes, preserve Unicode and LF/CRLF behavior, and bound direct parser updates to the existing row limit.
+
 - Prepare the browser parser compiler by probing installed Clang versions before using package mirrors. Bound fallback package requests and setup duration so compiler installation cannot stall CI for hours.
 
 - Share the parser’s exact source-change span with grammar paint when its retained source owns that base. Avoid repeated unchanged-byte comparisons; skipped paint versions fall back to comparing the retained source, and cancellation clears the span.

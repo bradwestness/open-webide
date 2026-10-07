@@ -20,34 +20,104 @@ pub(super) struct Line {
     pub end: usize,
 }
 
-pub(super) fn lines(text: &str) -> Vec<Line> {
-    let mut result = Vec::new();
+fn line_iter(text: &str) -> impl Iterator<Item = Line> + '_ {
     let mut start = 0;
-    for line in text.split_inclusive('\n') {
-        let end = start + line.len();
-        let body_end = if line.ends_with("\r\n") {
-            end - 2
-        } else if line.ends_with('\n') {
-            end - 1
-        } else {
-            end
-        };
-        result.push(Line {
-            start,
-            body_end,
-            end,
-        });
-        start = end;
-    }
-    if text.is_empty() || text.ends_with('\n') {
-        result.push(Line {
-            start,
-            body_end: start,
-            end: start,
-        });
-    }
-    result
+    text.split_inclusive('\n')
+        .map(move |line| {
+            let end = start + line.len();
+            let body_end = if line.ends_with("\r\n") {
+                end - 2
+            } else if line.ends_with('\n') {
+                end - 1
+            } else {
+                end
+            };
+            let row = Line {
+                start,
+                body_end,
+                end,
+            };
+            start = end;
+            row
+        })
+        .chain((text.is_empty() || text.ends_with('\n')).then_some(Line {
+            start: text.len(),
+            body_end: text.len(),
+            end: text.len(),
+        }))
 }
+
+pub(super) fn lines(text: &str) -> Vec<Line> {
+    line_iter(text).collect()
+}
+
+/// One changed-row envelope for source coordinates and their derived indexes.
+pub(super) struct LineEdit {
+    pub rows: Range<usize>,
+    pub bytes: Range<usize>,
+    has_suffix: bool,
+    old_end: usize,
+}
+impl LineEdit {
+    pub fn new(
+        rows: &[Line],
+        old_len: usize,
+        new_len: usize,
+        changed: Range<usize>,
+        new_end: usize,
+    ) -> Self {
+        let start_row = row_at(rows, changed.start).saturating_sub(1);
+        let mut end_row = (row_at(rows, changed.end) + 1).min(rows.len());
+        if rows.get(end_row).is_some_and(|row| row.start == old_len) {
+            end_row = rows.len();
+        }
+        let start = rows[start_row].start;
+        let old_end = rows.get(end_row).map_or(old_len, |row| row.start);
+        let end = new_len - (old_len - old_end);
+        debug_assert!(start <= changed.start && changed.end <= old_end && new_end <= end);
+        Self {
+            rows: start_row..end_row,
+            bytes: start..end,
+            has_suffix: end < new_len,
+            old_end,
+        }
+    }
+
+    /// A temporary trailing empty row belongs to the retained suffix, not the edit.
+    pub fn trim_suffix_row(&self, row: Option<&Line>) -> bool {
+        self.has_suffix && row.is_some_and(|row| row.start == self.bytes.len())
+    }
+
+    #[cfg(feature = "editor-parser")]
+    pub fn replacement(&self, source: &str, limit: usize) -> Option<Vec<Line>> {
+        let mut replacement = Vec::new();
+        for row in line_iter(&source[self.bytes.clone()]) {
+            if self.trim_suffix_row(Some(&row)) {
+                continue;
+            }
+            if replacement.len() == limit {
+                return None;
+            }
+            replacement.push(row);
+        }
+        Some(replacement)
+    }
+
+    pub fn apply(&self, rows: &mut Vec<Line>, mut replacement: Vec<Line>) {
+        for row in &mut rows[self.rows.end..] {
+            row.start = self.bytes.end + (row.start - self.old_end);
+            row.body_end = self.bytes.end + (row.body_end - self.old_end);
+            row.end = self.bytes.end + (row.end - self.old_end);
+        }
+        for row in &mut replacement {
+            row.start += self.bytes.start;
+            row.body_end += self.bytes.start;
+            row.end += self.bytes.start;
+        }
+        rows.splice(self.rows.clone(), replacement);
+    }
+}
+
 pub(super) fn row_at(lines: &[Line], position: usize) -> usize {
     lines
         .partition_point(|line| line.start <= position)

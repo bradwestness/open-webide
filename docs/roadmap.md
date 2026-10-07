@@ -76,7 +76,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Grammar paint now shares the parser’s source-change span for matching retained bases
   instead of recomputing it or comparing unchanged piece/row bytes again; skipped paint
   versions use the complete retained-source comparison.
-  Semantic list assembly, boundary construction and row indexing still visit the file.
+  Parser edit positions now query incremental logical-line coordinates; grammar paint
+  reads the same row boundaries. Parser and document indexes share changed-row
+  reconstruction and suffix rebasing. Warm semantic list assembly, boundary construction,
+  paint-table iteration and shifted suffix metadata still visit the file.
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list
   reconstruction/validation and row-table construction still visit the whole file.

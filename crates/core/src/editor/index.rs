@@ -2,7 +2,7 @@
 use super::{
     EditError, Selection,
     coordinates::LineCoordinates,
-    lines::{Line, lines, row_at},
+    lines::{Line, LineEdit, lines, row_at},
 };
 use std::ops::Range;
 
@@ -50,27 +50,11 @@ impl LineIndex {
     /// Re-scan changed logical rows, preserving all unchanged suffix coordinates.
     /// The edit envelope includes every replacement in one overlapping row batch.
     pub fn update(&mut self, old_len: usize, new: &str, changed: Range<usize>, new_end: usize) {
-        let start_row = row_at(&self.rows, changed.start).saturating_sub(1);
-        let mut end_row = (row_at(&self.rows, changed.end) + 1).min(self.rows.len());
-        if self
-            .rows
-            .get(end_row)
-            .is_some_and(|row| row.start == old_len)
-        {
-            end_row = self.rows.len();
-        }
-        let start = self.rows[start_row].start;
-        let old_end = self.rows.get(end_row).map_or(old_len, |row| row.start);
-        let suffix = old_len - old_end;
-        let end = new.len() - suffix;
-        debug_assert!(start <= changed.start && changed.end <= old_end && new_end <= end);
+        let edit = LineEdit::new(&self.rows, old_len, new.len(), changed, new_end);
+        let (start_row, end_row) = (edit.rows.start, edit.rows.end);
+        let (start, end) = (edit.bytes.start, edit.bytes.end);
         let mut replacement = Self::new(&new[start..end]);
-        if end < new.len()
-            && replacement
-                .rows
-                .last()
-                .is_some_and(|row| row.start == end - start)
-        {
+        if edit.trim_suffix_row(replacement.rows.last()) {
             replacement.rows.pop();
             replacement.offsets.pop();
             replacement.oversized_rows.pop();
@@ -85,20 +69,10 @@ impl LineIndex {
         let next_raw = raw_start + replacement.utf16_len;
         let next_native = native_start + replacement.textarea_len;
         let next_breaks = breaks_start + replacement.breaks;
-        for row in &mut self.rows[end_row..] {
-            row.start = end + (row.start - old_end);
-            row.body_end = end + (row.body_end - old_end);
-            row.end = end + (row.end - old_end);
-        }
         for (raw, native, breaks) in &mut self.offsets[end_row..] {
             *breaks = next_breaks + (*breaks - breaks_end);
             *raw = next_raw + (*raw - raw_end);
             *native = next_native + (*native - native_end);
-        }
-        for row in &mut replacement.rows {
-            row.start += start;
-            row.body_end += start;
-            row.end += start;
         }
         for (raw, native, breaks) in &mut replacement.offsets {
             *breaks += breaks_start;
@@ -116,7 +90,7 @@ impl LineIndex {
             .splice(start_row..end_row, replacement.oversized_rows);
         self.utf16_len = next_raw + (self.utf16_len - raw_end);
         self.textarea_len = next_native + (self.textarea_len - native_end);
-        self.rows.splice(start_row..end_row, replacement.rows);
+        edit.apply(&mut self.rows, replacement.rows);
         self.offsets.splice(start_row..end_row, replacement.offsets);
         self.coordinates
             .splice(start_row..end_row, replacement.coordinates);
