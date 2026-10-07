@@ -43,10 +43,94 @@ pub struct Structure {
     pub brackets: Vec<(usize, char, Option<usize>)>,
 }
 
+#[derive(Default)]
+pub(super) struct LexicalStructure {
+    pub opaque_starts: Vec<usize>,
+    pub protected: Vec<(Range<usize>, bool, RegionKind)>,
+    pub brackets: Vec<(usize, char, Option<usize>)>,
+}
+
+/// Source-independent region queries shared by retained and borrowed analysis.
+#[derive(Clone, Copy)]
+pub(super) struct Regions<'a> {
+    protected: &'a [(Range<usize>, bool, RegionKind)],
+    opaque_starts: &'a [usize],
+}
+impl<'a> Regions<'a> {
+    pub(super) fn literals(self) -> impl Iterator<Item = &'a Range<usize>> {
+        self.protected.iter().filter_map(|(range, _, kind)| {
+            matches!(
+                kind,
+                RegionKind::String | RegionKind::Template | RegionKind::BlockComment
+            )
+            .then_some(range)
+        })
+    }
+
+    pub(super) fn is_literal(self, position: usize) -> bool {
+        self.region_at(position)
+            .is_some_and(|(range, _, kind)| kind.is_literal() && range.contains(&position))
+    }
+
+    pub(super) fn is_opaque_body(self, position: usize) -> bool {
+        self.region_at(position).is_some_and(|(range, _, _)| {
+            (range.start < position || self.opaque_starts.binary_search(&position).is_ok())
+                && range.contains(&position)
+        })
+    }
+
+    pub(super) fn is_line_comment(self, position: usize) -> bool {
+        self.region_at(position).is_some_and(|(range, _, kind)| {
+            *kind == RegionKind::LineComment && range.contains(&position)
+        })
+    }
+
+    pub(super) fn is_comment(self, position: usize) -> bool {
+        self.region_at(position).is_some_and(|(range, _, kind)| {
+            matches!(kind, RegionKind::LineComment | RegionKind::BlockComment)
+                && range.contains(&position)
+        })
+    }
+
+    fn region_at(self, position: usize) -> Option<&'a (Range<usize>, bool, RegionKind)> {
+        let end = self
+            .protected
+            .partition_point(|(range, _, _)| range.start <= position);
+        end.checked_sub(1)
+            .and_then(|index| self.protected.get(index))
+    }
+}
+
+impl LexicalStructure {
+    pub fn regions(&self) -> Regions<'_> {
+        Regions {
+            protected: &self.protected,
+            opaque_starts: &self.opaque_starts,
+        }
+    }
+}
+
 impl Structure {
     pub fn new(text: &str, language: Language) -> Self {
-        if language == Language::Plain || text.len() > MAX_STRUCTURE_BYTES {
+        let Some(lexical) = Self::scan(text, language) else {
             return Self::unavailable();
+        };
+        Self {
+            source: text.into(),
+            language,
+            scopes: Vec::new(),
+            selection_ranges: Vec::new(),
+            opaque_starts: lexical.opaque_starts,
+            available: true,
+            protected: lexical.protected,
+            brackets: lexical.brackets,
+        }
+    }
+
+    /// Scan borrowed source; callers that only need metadata need no source snapshot.
+    pub(super) fn scan(text: &str, language: Language) -> Option<LexicalStructure> {
+        if language == Language::Plain || text.len() > MAX_STRUCTURE_BYTES {
+            return None;
         }
         let mut protected = Vec::new();
         let mut opaque_starts = Vec::new();
@@ -213,7 +297,7 @@ impl Structure {
             }
             if supports_brackets(language) && matches!(ch, '(' | '[' | '{' | ')' | ']' | '}') {
                 if brackets.len() == MAX_BRACKETS {
-                    return Self::unavailable();
+                    return None;
                 }
                 let index = brackets.len();
                 brackets.push((i, ch, None));
@@ -245,16 +329,11 @@ impl Structure {
             }
             i += ch.len_utf8();
         }
-        Self {
-            source: text.into(),
-            language,
-            scopes: Vec::new(),
-            selection_ranges: Vec::new(),
+        Some(LexicalStructure {
             opaque_starts,
-            available: true,
             protected,
             brackets,
-        }
+        })
     }
 
     fn unavailable() -> Self {
@@ -438,47 +517,18 @@ impl Structure {
         self.available
     }
 
+    fn regions(&self) -> Regions<'_> {
+        Regions {
+            protected: &self.protected,
+            opaque_starts: &self.opaque_starts,
+        }
+    }
+
     pub(super) fn literals(&self) -> impl Iterator<Item = &Range<usize>> {
-        self.protected.iter().filter_map(|(range, _, kind)| {
-            matches!(
-                kind,
-                RegionKind::String | RegionKind::Template | RegionKind::BlockComment
-            )
-            .then_some(range)
-        })
+        self.regions().literals()
     }
-
-    pub(super) fn is_literal(&self, position: usize) -> bool {
-        self.region_at(position)
-            .is_some_and(|(range, _, kind)| kind.is_literal() && range.contains(&position))
-    }
-
-    pub(super) fn is_opaque_body(&self, position: usize) -> bool {
-        self.region_at(position).is_some_and(|(range, _, _)| {
-            (range.start < position || self.opaque_starts.binary_search(&position).is_ok())
-                && range.contains(&position)
-        })
-    }
-
-    pub(super) fn is_line_comment(&self, position: usize) -> bool {
-        self.region_at(position).is_some_and(|(range, _, kind)| {
-            *kind == RegionKind::LineComment && range.contains(&position)
-        })
-    }
-
-    pub(super) fn is_comment(&self, position: usize) -> bool {
-        self.region_at(position).is_some_and(|(range, _, kind)| {
-            matches!(kind, RegionKind::LineComment | RegionKind::BlockComment)
-                && range.contains(&position)
-        })
-    }
-
     fn region_at(&self, position: usize) -> Option<&(Range<usize>, bool, RegionKind)> {
-        let end = self
-            .protected
-            .partition_point(|(range, _, _)| range.start <= position);
-        end.checked_sub(1)
-            .and_then(|index| self.protected.get(index))
+        self.regions().region_at(position)
     }
 
     pub fn is_code(&self, position: usize) -> bool {

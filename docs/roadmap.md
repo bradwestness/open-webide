@@ -85,6 +85,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list
   reconstruction/validation and row-table construction still visit the whole file.
+  Parser fallback metadata and lexical folding now scan borrowed source without
+  creating temporary source snapshots; owned contexts share their scan/query policy.
   Finish those incremental paths, larger retained-container reuse and remaining source snapshot
   ownership,
   uncached initial/cold shaping, bidirectional visual-run windows, fine long-row paint

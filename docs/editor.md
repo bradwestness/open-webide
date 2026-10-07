@@ -483,6 +483,12 @@ allocations; changed classifications rebuild the row. This avoids temporary
 piece lists for the complete source, while boundary construction and the final
 row table still visit the file.
 
+Lexical scanning returns source-independent structural metadata. Parser fallback
+and lexical folding consume this borrowed scan without copying complete files or
+embedded-language bodies into temporary structures. Owned editing contexts use
+the same scanner and region queries, including the byte/bracket limits and
+unavailable-context fallback. Scanning and metadata assembly still visit the source.
+
 Long-row paint and cursor probes
 also share sparse grapheme/UTF-16 coordinates and cached horizontal eligibility;
 unchanged rows retain their allocation. Lookups scan from exact cluster boundaries

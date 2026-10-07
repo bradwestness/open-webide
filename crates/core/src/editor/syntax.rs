@@ -331,7 +331,7 @@ impl SyntaxDocument {
         if !self.ready || self.provider.is_none() {
             return None;
         }
-        let fallback = Structure::new(&self.text, self.language);
+        let fallback = Structure::scan(&self.text, self.language).unwrap_or_default();
         let mut opaque_starts = fallback.opaque_starts;
         let mut baseline = fallback.protected;
         let scopes: Vec<_> = self
@@ -347,7 +347,7 @@ impl SyntaxDocument {
         baseline.retain(|(range, _, _)| !scopes.iter().any(|(body, _)| overlaps(range, body)));
         opaque_starts.retain(|position| !scopes.iter().any(|(body, _)| body.contains(position)));
         for (body, language) in &scopes {
-            let fallback = Structure::new(&self.text[body.clone()], *language);
+            let fallback = Structure::scan(&self.text[body.clone()], *language).unwrap_or_default();
             opaque_starts.extend(
                 fallback
                     .opaque_starts

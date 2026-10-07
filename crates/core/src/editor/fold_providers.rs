@@ -24,9 +24,12 @@ pub fn fold_ranges(
     if rows.len() > MAX_FOLD_LINES {
         return Vec::new();
     }
-    let structure = Structure::new(text, language);
+    let lexical = Structure::scan(text, language);
+    let available = lexical.is_some();
+    let structure = lexical.unwrap_or_default();
+    let context = structure.regions();
     let mut ranges = parsed.map_or_else(Vec::new, <[FoldRange]>::to_vec);
-    if parsed.is_none() && structure.available() {
+    if parsed.is_none() && available {
         for &(offset, ch, pair) in &structure.brackets {
             if matches!(ch, '(' | '[' | '{')
                 && let Some(close) = pair
@@ -43,7 +46,7 @@ pub fn fold_ranges(
                 });
             }
         }
-        for range in structure.literals() {
+        for range in context.literals() {
             if !range.is_empty() {
                 ranges.push(FoldRange {
                     start_line: row_at(&rows, range.start),
@@ -64,7 +67,7 @@ pub fn fold_ranges(
                 continue;
             }
             let offset = line.start + body.len() - trimmed.len();
-            if structure.is_opaque_body(offset) {
+            if context.is_opaque_body(offset) {
                 last_content = row;
                 continue;
             }
@@ -99,7 +102,7 @@ pub fn fold_ranges(
     for (row, line) in rows.iter().enumerate() {
         let body = &text[line.start..line.body_end];
         let offset = line.start + body.len() - body.trim_start().len();
-        if structure.is_line_comment(offset) {
+        if context.is_line_comment(offset) {
             comment_start.get_or_insert(row);
         } else if let Some(start) = comment_start.take() {
             ranges.push(FoldRange {
@@ -121,12 +124,12 @@ pub fn fold_ranges(
         let offset = line.start + body.len() - trimmed.len();
         // Markers inside quoted text are never directives. Plain text allows
         // explicit hash regions without claiming to understand its language.
-        if structure.is_literal(offset) {
+        if context.is_literal(offset) {
             continue;
         }
         let marker = if language == Language::Plain {
             trimmed.strip_prefix('#')
-        } else if structure.is_comment(offset) {
+        } else if context.is_comment(offset) {
             ["//", "#", "--", "<!--", "/*"]
                 .iter()
                 .find_map(|prefix| trimmed.strip_prefix(prefix))

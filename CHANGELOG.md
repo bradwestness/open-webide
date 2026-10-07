@@ -9,6 +9,7 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Separate lexical structural scanning from source ownership. Parser preparation and lexical folding consume borrowed metadata without copying complete files or embedded-language bodies into temporary structures; owned editing contexts use the same scanner and region queries.
 - Maintain parser line coordinates incrementally and use them for edit positions and grammar paint boundaries. Share changed-row reconstruction and suffix rebasing with document UTF-16 indexes, preserve Unicode and LF/CRLF behavior, and bound direct parser updates to the existing row limit.
 - Assemble grammar paint one row at a time and retain unchanged rows' piece-list allocations. Validate classification and piece identity while streaming; rebuild changed rows without allocating temporary lists for the complete file.
 
