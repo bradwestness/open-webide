@@ -192,30 +192,37 @@ impl SyntaxDocument {
         {
             return (status, Some(analysis.clone()));
         }
-        let structure = self.structure().map(Arc::new);
-        let highlights = if self.provider.is_none() && self.language != Language::Plain {
-            let mut lexical =
-                crate::highlight::LexicalPreparation::new(self.text.clone(), self.language);
-            if let Some(previous) = &self.lexical {
-                lexical = lexical.reuse(previous.clone());
-            }
-            while !lexical.is_complete() {
-                if !should_continue() {
-                    self.clear();
-                    return (SyntaxStatus::Cancelled, None);
-                }
-                // Keep the synchronous adapter's per-row cancellation contract.
-                lexical.advance(1, crate::highlight::LEXICAL_BATCH_BYTES);
-            }
-            let lexical = Arc::new(lexical.finish_snapshot().expect("completed lexical job"));
-            let tokens = lexical.tokens().clone();
-            self.lexical = Some(lexical);
-            Some(tokens)
+        // update() clears preparation on every source change. Tab width only
+        // affects indentation-derived folds; contexts and tokens stay source-bound.
+        let (structure, highlights) = if let Some((_, previous)) = &self.prepared {
+            (previous.structure.clone(), previous.highlights.clone())
         } else {
-            structure
-                .as_ref()
-                .and_then(|structure| self.highlight_with_structure(structure))
-                .map(|rows| Arc::new(crate::highlight::share_token_rows(rows)))
+            let structure = self.structure().map(Arc::new);
+            let highlights = if self.provider.is_none() && self.language != Language::Plain {
+                let mut lexical =
+                    crate::highlight::LexicalPreparation::new(self.text.clone(), self.language);
+                if let Some(previous) = &self.lexical {
+                    lexical = lexical.reuse(previous.clone());
+                }
+                while !lexical.is_complete() {
+                    if !should_continue() {
+                        self.clear();
+                        return (SyntaxStatus::Cancelled, None);
+                    }
+                    // Keep the synchronous adapter's per-row cancellation contract.
+                    lexical.advance(1, crate::highlight::LEXICAL_BATCH_BYTES);
+                }
+                let lexical = Arc::new(lexical.finish_snapshot().expect("completed lexical job"));
+                let tokens = lexical.tokens().clone();
+                self.lexical = Some(lexical);
+                Some(tokens)
+            } else {
+                structure
+                    .as_ref()
+                    .and_then(|structure| self.highlight_with_structure(structure))
+                    .map(|rows| Arc::new(crate::highlight::share_token_rows(rows)))
+            };
+            (structure, highlights)
         };
         let analysis = Arc::new(SyntaxAnalysis {
             source: self.text.clone(),
@@ -818,6 +825,82 @@ mod tests {
         assert!(next.structure().unwrap().matches_source(&revised));
         assert_eq!(first.source(), source);
         assert_eq!(next.source(), revised);
+    }
+
+    #[test]
+    fn tab_width_changes_share_source_metadata_and_recompute_folds() {
+        let providers = super::super::syntax_contracts::LANGUAGE_CASES
+            .iter()
+            .map(|&(path, source, _)| (crate::highlight::language_from_path(path), source));
+        let lexical = [
+            (Language::Json, "{\r\n\t\"name\": \"文😀\"\r\n}"),
+            (
+                Language::Sql,
+                "/* first\r\n still comment */\r\nSELECT '文😀';",
+            ),
+            (Language::Plain, "root\r\n\tbranch\r\n    文😀\r\nend"),
+        ];
+        for (language, source) in providers.chain(lexical) {
+            let mut syntax = SyntaxDocument::new(language).unwrap();
+            let (_, first) = syntax.prepare(source, 3, || true);
+            let first = first.unwrap();
+            for width in [8, 2, 3] {
+                let (_, next) = syntax.prepare(source, width, || true);
+                let next = next.unwrap();
+                assert!(!Arc::ptr_eq(&first, &next));
+                assert!(Arc::ptr_eq(first.source_snapshot(), next.source_snapshot()));
+                match (first.structure(), next.structure()) {
+                    (Some(first), Some(next)) => assert!(Arc::ptr_eq(first, next)),
+                    (None, None) => (),
+                    _ => panic!("structure changed with tab width for {language:?}"),
+                }
+                match (first.highlights(), next.highlights()) {
+                    (Some(first), Some(next)) => assert!(Arc::ptr_eq(first, next)),
+                    (None, None) => (),
+                    _ => panic!("tokens changed with tab width for {language:?}"),
+                }
+                let mut fresh = SyntaxDocument::new(language).unwrap();
+                let (_, expected) = fresh.prepare(source, width, || true);
+                let expected = expected.unwrap();
+                assert_eq!(
+                    next.folds(),
+                    expected.folds(),
+                    "{language:?}, width={width}"
+                );
+                if language == Language::Plain && width == 8 {
+                    assert_ne!(
+                        first.folds(),
+                        next.folds(),
+                        "tab stops must change nested folds"
+                    );
+                }
+                assert_eq!(next.highlights(), expected.highlights());
+            }
+            let changed = source.replace("文😀", "😀 changed");
+            let (_, next) = syntax.prepare(&changed, 8, || true);
+            let next = next.unwrap();
+            assert!(next.matches_source(&changed));
+            assert!(!Arc::ptr_eq(
+                first.source_snapshot(),
+                next.source_snapshot()
+            ));
+            if let (Some(first), Some(next)) = (first.structure(), next.structure()) {
+                assert!(!Arc::ptr_eq(first, next));
+            }
+            if let (Some(first), Some(next)) = (first.highlights(), next.highlights()) {
+                assert!(!Arc::ptr_eq(first, next));
+            }
+            let (status, cancelled) = syntax.prepare(&changed, 4, || false);
+            assert_eq!(status, SyntaxStatus::Cancelled);
+            assert!(cancelled.is_none());
+            let (_, recovered) = syntax.prepare(&changed, 4, || true);
+            let recovered = recovered.unwrap();
+            assert!(!Arc::ptr_eq(
+                next.source_snapshot(),
+                recovered.source_snapshot()
+            ));
+            assert!(first.matches_source(source));
+        }
     }
 
     #[test]

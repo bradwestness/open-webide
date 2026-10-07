@@ -225,8 +225,10 @@ on cancellation or an exceeded limit.
 Editing commands, structural selection expansion and bracket navigation use
 immutable parser contexts from the shared per-document cache. `SyntaxDocument::prepare`
 publishes one source-bound snapshot of folds, structure and tokens per source/tab
-width. Consumers share immutable allocations; updates and cancellation invalidate
-the cache while previously published snapshots retain their original source.
+width. Tab-width changes retain structure and token allocations for unchanged source,
+recomputing indentation-dependent folds. Consumers share immutable allocations;
+source updates and cancellation invalidate the cache while previously published
+snapshots retain their original source.
 The frontend facade also rejects changed account, file-read, source and tab-width
 scopes before publishing results.
 
@@ -353,7 +355,9 @@ columns, far-right blank space and scrolled bounded Rust/C#/JSON drafts with
 press/move/release and insertion/undo in both workspace modes. Click and drag hits
 validate browser positions against measured text boundaries, including token and
 container fallbacks, and normalize vertical row padding to the glyph band. It does
-not prove physical touch selection or installed-PWA behavior.
+not prove physical touch selection or installed-PWA behavior. The verifier awaits
+editable, source-owned paint and loaded fonts before measuring gesture coordinates;
+failure diagnostics retain row/input rectangles and event cancellation state.
 
 While worker syntax is pending, cold views borrow plain row bodies from the existing
 projection instead of normalizing and tokenizing another complete file on the UI

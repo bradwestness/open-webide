@@ -7900,7 +7900,10 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
 
 #[wasm_bindgen_test]
 async fn syntax_consumers_share_immutable_preparation_and_invalidate_it_in_both_modes() {
-    use openwebide_core::{WorkspaceMode, editor::SyntaxStatus};
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Indentation, SyntaxStatus},
+    };
     use openwebide_frontend::state_actions::editor::EditorActions;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let source = "fn main() {\r\n    call(\"文😀\");\r\n}\r\n";
@@ -7926,6 +7929,21 @@ async fn syntax_consumers_share_immutable_preparation_and_invalidate_it_in_both_
             &first_paint,
             &actions.syntax_highlights().unwrap()
         ));
+        for tab_width in [2, 8, 4] {
+            actions.set_indentation(Indentation {
+                tab_width,
+                ..Indentation::default()
+            });
+            assert!(std::sync::Arc::ptr_eq(
+                &first,
+                &actions.syntax_structure(|| true).unwrap()
+            ));
+            assert!(std::sync::Arc::ptr_eq(
+                &first_paint,
+                &actions.syntax_highlights().unwrap()
+            ));
+            assert_eq!(actions.source(), source);
+        }
         let revised = source.replace("文😀", "😀 changed");
         mounted.state.workspace.content.set(revised.clone());
         let next = actions.syntax_structure(|| true).unwrap();

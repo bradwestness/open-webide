@@ -58,7 +58,19 @@ def check(mode, repeat, language):
                 browser.call('POST', '/cookie', {'cookie': {'name': cookie.name, 'value': cookie.value,
                     'domain': '127.0.0.1', 'path': cookie.path, 'httpOnly': True}})
             browser.call('POST', '/url', {'url': runtime.url + '/'})
-            wait('syntax paint', lambda: browser.script("return !!document.querySelector('.highlight-ready .tok-string');"))
+            wait('editable source-owned syntax paint', lambda: browser.script("""
+                const input=document.querySelector('textarea[data-editor-path]');
+                const paint=document.querySelector('.editor-highlight-content');
+                return input && !input.readOnly && paint &&
+                    input.dataset.editorScope===paint.dataset.editorScope &&
+                    !!document.querySelector('.highlight-ready .tok-string');
+            """))
+            # Font loading and recovery can move rows after their first paint.
+            # Measure the interactive layout, rather than a transient startup frame.
+            browser.call('POST', '/execute/async', {'args': [], 'script': """
+                const done=arguments[0];
+                document.fonts.ready.then(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>done(true))));
+            """})
             for line in ([2] if repeat == 1 else [2, 2002]):
                 if line > 2:
                     browser.script("const s=document.querySelector('.editor-scroll-surface');s.scrollTop=2000*parseFloat(getComputedStyle(document.querySelector('textarea[data-editor-path]')).lineHeight);")
@@ -73,7 +85,10 @@ def check(mode, repeat, language):
                         const range=document.createRange();range.setStart(node,at);range.collapse(true);
                         const rect=range.getBoundingClientRect();
                         window.pointerEvents=[];
-                        for(const type of ['mousedown','mouseup','click']) input.addEventListener(type,e=>pointerEvents.push({{type,trusted:e.isTrusted}}),{{once:true}});
+                        for(const type of ['mousedown','mouseup','click']) input.addEventListener(type,e=>{{
+                            const event={{type,trusted:e.isTrusted}};pointerEvents.push(event);
+                            queueMicrotask(()=>{{event.prevented=e.defaultPrevented;event.bounds=input.getBoundingClientRect().toJSON();event.row=row.getBoundingClientRect().toJSON();}});
+                        }},{{once:true}});
                         return {{x:Math.min(input.getBoundingClientRect().right-2,{"input.getBoundingClientRect().right-20" if beyond else "rect.left+0.25"}),y:rect.top+rect.height/2,bound:input.dataset.editorNativeBound==='true',bounds:input.getBoundingClientRect().toJSON()}};
                     """)
                     for kind in ['mouseMoved', 'mousePressed', 'mouseReleased']:
@@ -94,7 +109,7 @@ def check(mode, repeat, language):
                     except AssertionError:
                         saved = runtime.request('GET', endpoint)['state']['files'][0]['document']
                         raise AssertionError({'mode': mode, 'repeat': repeat, 'language': language, 'line': line, 'column': column,
-                            'expected': expected, 'point': point, 'events': browser.script('return pointerEvents;'), 'selection': saved['selections'], 'native': browser.script("const i=document.querySelector('textarea[data-editor-path]');return {start:i.selectionStart,end:i.selectionEnd,bound:i.dataset.editorNativeBound};")}) from None
+                            'expected': expected, 'point': point, 'events': browser.script('return pointerEvents;'), 'selection': saved['selections'], 'native': browser.script(f"const i=document.querySelector('textarea[data-editor-path]');const p=document.querySelector('.editor-highlight-content');const row=p.querySelector('.editor-source-line[data-line=\"{line}\"]');return {{start:i.selectionStart,end:i.selectionEnd,bound:i.dataset.editorNativeBound,readonly:i.readOnly,scope:i.dataset.editorScope,paint_scope:p.dataset.editorScope,scroll_top:i.scrollTop,scroll_left:i.scrollLeft,fonts:document.fonts.status,bounds:i.getBoundingClientRect().toJSON(),row:row?.getBoundingClientRect().toJSON()}};")}) from None
                     events = browser.script('return pointerEvents;')
                     assert len(events) == 3 and all(event['trusted'] for event in events), events
                     # Prove the next actual insertion uses that source position,
