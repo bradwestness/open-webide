@@ -228,13 +228,6 @@ autocomplete) into the editor while keeping the core diagnostics engine
   pending-edit review; reject stale selections after document or project changes.
 - Offer the same actions through keyboard and touch controls in both modes.
 
-### TUI goals and common controls
-
-- Support `/goal` in the TUI through shared agent goal orchestration, with visible
-  progress, cancellation and session recovery.
-- Review other common TUI features and prioritize the missing controls; reuse
-  shared command behavior across the TUI and browser wherever applicable.
-
 ### Universal command palette omnibar
 
 Extend the existing searchable command palette into a universal omnibar, replacing
@@ -285,10 +278,10 @@ footer, excluding the browser/PWA window title bar.
   and consistent `⋯` pane menus for app navigation versus pane options.
 - **Chat density and narrow layouts:** keep model and approval controls readable
   without clipping or horizontal overflow. On phones, reduce telemetry to a compact
-  context indicator that opens details. Group consecutive collapsed thought/tool
-  events into an expandable activity summary (for example, **4 steps · 6.3s**),
-  retaining access to individual events and keeping pending approvals and failures
-  visible without expanding the group.
+  context indicator that opens details. Activity groups now summarize consecutive
+  tool and finished reasoning events;
+  verify their density and touch controls on real phones alongside the context
+  indicator.
 - **Phone navigation:** use a full-width bottom bar with four equal, justified
   icon-and-label destinations: Sessions, Files, Editor and Chat. Selecting one
   makes that pane the main view, with a clear active state. The logo opens the
@@ -324,8 +317,8 @@ while host-native builds/tests initially run in remote mode.
   separate connection/input bands around an empty output area. Keep running/failure
   status visible through the shared footer's Output indicator when the pane is hidden.
 
-Prioritize idle output behavior, phone control overflow and grouped chat activity
-alongside the compact-layout work above. Verify both-mode output contracts and
+Prioritize idle output behavior, phone control overflow and activity-group density
+on phones alongside the compact-layout work above. Verify both-mode output contracts and
 mobile focus/keyboard behavior before considering these refinements complete.
 
 A fully interactive terminal (cursor movement, direct keyboard input and shell/TUI

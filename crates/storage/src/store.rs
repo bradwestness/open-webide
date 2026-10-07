@@ -3,6 +3,7 @@
 mod branches;
 mod chat_queue;
 mod editor_recovery;
+mod goals;
 mod model_setup;
 mod reviews;
 mod rewind;

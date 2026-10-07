@@ -5,6 +5,8 @@ Project tabs let you switch repositories; sessions keep separate conversations.
 
 - [First session](first-session.md): connect a model and review agent changes.
 - [Local and remote projects](workspaces.md): file access and execution capabilities.
+- [Chat commands and goals](chat-controls.md): command discovery, activity,
+  manual compaction and saved objectives.
 - [Editor](editor.md): editing, navigation, diffs and previews.
 - [Files and context menus](file-tree-menus.md): actions on files and folders.
 - [About and open-source software](about.md): build details and bundled notices,

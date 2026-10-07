@@ -276,7 +276,7 @@ fn render_tool_step(
         "err" => "[✖ err]",
         "awaiting" => "[? permission required]",
         "stopped" => "[⏹ stopped]",
-        _ => "[⠋ running]",
+        _ => "[running]",
     };
     let show_diff = RwSignal::new(true);
 
@@ -288,6 +288,7 @@ fn render_tool_step(
                 <span class="tui-tool-title">{move || format!(" {}(\"{}\") ", name_sig.get(), summary.get())}</span>
                 <span class="tui-tool-spacer"></span>
                 <super::tool_duration::ToolDuration timing=timing />
+                <Show when=move || status_class() == "running"><span class="tui-spinner" aria-hidden="true"/></Show>
                 <span class=move || format!("tui-tool-status-badge {}", status_class())>{status_badge}</span>
                 <span class="tui-box-corner">"─┐"</span>
             </div>
@@ -409,9 +410,7 @@ fn conversation_blocks(
             .copied()
             .filter(|handle| handle.visible.get())
             .filter(|handle| {
-                let tool = handle
-                    .item
-                    .with_untracked(|item| matches!(item, ConversationItem::ToolStep { .. }));
+                let tool = handle.item.with(crate::conversation::is_activity);
                 let include = !tool || !previous_tool;
                 previous_tool = tool;
                 include
@@ -436,11 +435,7 @@ fn render_tool_group(
                 .filter(|handle| handle.visible.get());
             visible
                 .skip_while(|handle| handle.key != first)
-                .take_while(|handle| {
-                    handle
-                        .item
-                        .with_untracked(|item| matches!(item, ConversationItem::ToolStep { .. }))
-                })
+                .take_while(|handle| handle.item.with(crate::conversation::is_activity))
                 .collect::<Vec<_>>()
         })
     });
@@ -457,7 +452,14 @@ fn render_tool_group(
         })
     });
     let counts = Memo::new(move |_| {
-        names.with(|names| crate::conversation::tool_count_labels(names.iter().map(String::as_str)))
+        names.with(|names| {
+            crate::conversation::tool_count_labels(
+                names
+                    .iter()
+                    .filter(|name| !name.is_empty())
+                    .map(String::as_str),
+            )
+        })
     });
     let approval = Signal::derive(move || {
         awaiting_step.with(|awaiting| {
@@ -474,14 +476,36 @@ fn render_tool_group(
             })
         })
     });
+    let chat = expect_context::<ChatState>();
+    let running = Signal::derive(move || {
+        chat.streaming.get()
+            && chat.streaming_session.get() == chat.active_session.get()
+            && rows.with(|rows| {
+                rows.iter().any(|row| {
+                    row.item.with(|item| {
+                        matches!(item, ConversationItem::ToolStep {
+                    result: None, awaiting_permission: false, timing, ..
+                } if !timing.is_some_and(|timing| timing.finished))
+                    })
+                })
+            })
+    });
     view! {
-        <super::ui::DisclosurePanel class="tui-tool-group" force_open=approval
+        <super::ui::DisclosurePanel class="tui-tool-group" force_open=Signal::derive(move || approval.get() || rows.with(|rows| rows.iter().any(|row| row.item.with(|item| matches!(item, ConversationItem::ToolStep { result: Some(result), .. } if !result.ok)))))
             summary=move || view! {
-                <span class="tui-tool-tag">"[tool]"</span>
+                <Show when=move || running.get()><span class="tui-spinner" aria-hidden="true"/></Show>
+                <span class="tui-tool-tag">{move || rows.with(|rows| format!("{} steps", rows.len()))}</span>
+                <span class="form-hint" title="Total recorded tool execution time, excluding approval waits">{move || rows.with(|rows| {
+                    let elapsed: u64 = rows.iter().map(|row| row.item.with(|item| match item { ConversationItem::ToolStep { timing: Some(timing), .. } => timing.elapsed_ms, _ => 0 })).sum();
+                    format!("· {}.{}s", elapsed / 1000, elapsed % 1000 / 100)
+                })}</span>
                 {move || counts.get().into_iter().map(|label| view! { <code class="tui-tool-count">{label}</code> }).collect_view()}
             }>
-            <For each=move || rows.get() key=|handle| handle.key children=move |handle| {
-                render_tool_step(handle.item, awaiting_step, on_permission, on_permission_always)
+            <For each=move || rows.get() key=|handle| (handle.key, handle.item.with(crate::conversation::is_activity)) children=move |handle| {
+                match handle.item.get_untracked() {
+                    ConversationItem::Message(_) => render_assistant_message(Memo::new(move |_| handle.item.with(|item| match item { ConversationItem::Message(message) => message.content.clone(), _ => String::new() }))),
+                    _ => render_tool_step(handle.item, awaiting_step, on_permission, on_permission_always).into_any(),
+                }
             } />
         </super::ui::DisclosurePanel>
     }
@@ -698,6 +722,36 @@ pub fn ChatPane(
     let input_ref = NodeRef::<leptos::html::Textarea>::new();
     crate::viewport::install_composer(input_ref);
     let prompt_composer = crate::prompt::Composer::new(input_ref);
+    let slash_index = RwSignal::new(0usize);
+    let slash_dismissed = RwSignal::new(None::<String>);
+    let slash_options = Memo::new(move |_| {
+        let text = draft.get();
+        if slash_dismissed.get().as_ref() == Some(&text) {
+            Vec::new()
+        } else {
+            openwebide_core::tui::slash_suggestions(&text)
+        }
+    });
+    let complete_slash = move |info: openwebide_core::tui::SlashInfo| {
+        set_draft.set(format!(
+            "{}{}",
+            info.command,
+            if info.arguments.is_empty() { "" } else { " " }
+        ));
+        slash_dismissed.set(Some(draft.get_untracked()));
+        slash_index.set(0);
+        if let Some(input) = input_ref.get_untracked() {
+            let _ = input.focus();
+        }
+    };
+    let slash_hint = Memo::new(move |_| {
+        let text = draft.get();
+        let (name, _) = text.split_once(' ')?;
+        openwebide_core::tui::SLASH_COMMANDS
+            .iter()
+            .find(|info| info.command == name)
+            .copied()
+    });
 
     // Readline prompt history state
     let prompt_history = chat.prompt_history;
@@ -795,13 +849,14 @@ pub fn ChatPane(
                     <div class="tui-stream-spacer"></div>
                     <For
                         each=move || conversation_blocks(messages)
-                        key=|handle| handle.key
+                        key=|handle| (handle.key, handle.item.with(crate::conversation::is_activity))
                         children=move |handle| {
                             let item = handle.item;
                             match item.get_untracked() {
                                 ConversationItem::Task(_) => render_task_run(Memo::new(move |_| item.with(|item| match item { ConversationItem::Task(task) => (**task).clone(), _ => unreachable!() })), awaiting_step, on_permission, on_permission_always).into_any(),
                                 ConversationItem::Stopped { .. } => view! { <div class="stopped-marker tui-stopped-marker">"⏹ execution aborted"</div> }.into_any(),
                                 ConversationItem::ToolStep { .. } => render_tool_group(messages, handle.key, awaiting_step, on_permission, on_permission_always).into_any(),
+                                ConversationItem::Message(ref message) if crate::conversation::is_reasoning_activity(message) => render_tool_group(messages, handle.key, awaiting_step, on_permission, on_permission_always).into_any(),
                                 ConversationItem::Message(_) | ConversationItem::Notice { .. } => {
                                     let content = Memo::new(move |_| item.with(|item| match item {
                                         ConversationItem::Message(message) => message.content.clone(),
@@ -884,6 +939,8 @@ pub fn ChatPane(
                 </div>
             </Show>
 
+            <Show when=move || chat.compacting.get()><p class="form-hint" role="status">"Compacting conversation…" <button class="btn stop" on:click=move |_| on_stop.run(())>"Stop"</button></p></Show>
+            <super::goal::GoalPanel />
             <super::todo_plan::TodoPlanPanel />
             <crate::prompt::PromptControls composer=prompt_composer />
             <Show when=move || chat.prompt_edit.get().is_some()>
@@ -893,12 +950,26 @@ pub fn ChatPane(
             </Show>
             <Show when=move || chat.branching.get()><div class="tui-prompt-edit">"Copying conversation…"</div></Show>
             {queue_actions.map(|actions| view! { <crate::components::chat_pane::PromptQueueControls actions=actions /> })}
+            <Show when=move || !slash_options.with(Vec::is_empty)>
+                <div class="slash-suggestions" id="slash-suggestions" role="listbox" aria-label="Slash commands">
+                    {move || slash_options.get().into_iter().enumerate().map(|(index, info)| view! {
+                        <button class="ui-dropdown-item" class:active=move || slash_index.get() == index id=format!("slash-option-{index}") role="option" aria-selected=move || (slash_index.get() == index).to_string() type="button" on:mousedown=move |event| event.prevent_default() on:click=move |_| complete_slash(info)>
+                            <code>{info.command} " " {info.arguments}</code><span>{info.description}</span>
+                        </button>
+                    }).collect_view()}
+                </div>
+            </Show>
+            <Show when=move || slash_hint.get().is_some()><p class="form-hint slash-hint">{move || slash_hint.get().map(|info| format!("{} {} · {}", info.command, info.arguments, info.description))}</p></Show>
             <div class="composer tui-composer" class:is-streaming=move || streaming.get()>
                 <span class="tui-prompt-glyph">"❯"</span>
                 <textarea
                     class="composer-input tui-input"
                     rows="1"
                     aria-label="Chat message"
+                    aria-autocomplete="list"
+                    aria-controls="slash-suggestions"
+                    aria-expanded=move || (!slash_options.with(Vec::is_empty)).to_string()
+                    aria-activedescendant=move || (!slash_options.with(Vec::is_empty)).then(|| format!("slash-option-{}", slash_index.get()))
                     title="Enter to send or queue; Ctrl/⌘+Enter to steer; Escape to stop; Shift/Alt+Enter for a newline; Up/Down for history; paste/drop images; @ for file references"
                     node_ref=input_ref
                     placeholder=move || {
@@ -924,6 +995,8 @@ pub fn ChatPane(
                             && let Some(textarea) = target.dyn_ref::<web_sys::HtmlTextAreaElement>()
                         {
                             set_draft.set(textarea.value());
+                            slash_index.set(0);
+                            slash_dismissed.set(None);
                             prompt_composer.update();
                         }
                     }
@@ -931,6 +1004,20 @@ pub fn ChatPane(
                         let submit = submit_or_command;
                         move |e: leptos::ev::KeyboardEvent| {
                             if e.is_composing() { return; }
+                            if !e.ctrl_key() && !e.meta_key() && !e.alt_key() && !e.shift_key() {
+                                let options = slash_options.get_untracked();
+                                if !options.is_empty() {
+                                    match e.key().as_str() {
+                                        "ArrowDown" => { e.prevent_default(); slash_index.update(|index| *index=(*index+1)%options.len()); return; },
+                                        "ArrowUp" => { e.prevent_default(); slash_index.update(|index| *index=(*index+options.len()-1)%options.len()); return; },
+                                        "Escape" => { e.prevent_default(); slash_dismissed.set(Some(draft.get_untracked())); return; },
+                                        "Tab" | "Enter" if e.key() == "Tab" || !options.iter().any(|info| info.command == draft.get_untracked()) => {
+                                            e.prevent_default(); complete_slash(options[slash_index.get_untracked().min(options.len()-1)]); return;
+                                        },
+                                        _ => {},
+                                    }
+                                }
+                            }
                             if prompt_composer.key(&e) { return; }
                             let key = e.key();
                             // Intercept permission handshake if waiting for approval
@@ -1053,7 +1140,7 @@ pub fn ChatPane(
                                 class="btn send tui-btn-send ui-icon"
                                 title="Send (Enter)"
                                 aria-label=move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else if chat.prompt_edit.get().is_some() { "Send edit" } else { "Send" }
-                                disabled=move || chat.branching.get() || chat.queue_busy.get() || chat.rewinding.get() || reviews.is_some_and(|state| state.busy.get().is_some()) || chat.creating_session.get() || chat.reading_images.get() || (draft.with(|d| d.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty))
+                                disabled=move || chat.compacting.get() || chat.goal_busy.get() || chat.branching.get() || chat.queue_busy.get() || chat.rewinding.get() || reviews.is_some_and(|state| state.busy.get().is_some()) || chat.creating_session.get() || chat.reading_images.get() || (draft.with(|d| d.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty))
                                 on:click=move |_| submit()
                             >
                                 <super::ui::Icon name=super::ui::IconName::ArrowUp /><span class="sr-only">{move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else if chat.prompt_edit.get().is_some() { "Send edit" } else { "Send" }}</span>
@@ -1175,10 +1262,11 @@ fn render_task_run(
                 <span class="muted">{move || task.with(|task| format!("{}{} tokens · {} tools", if task.usages().iter().any(|usage| usage.estimated) { "~" } else { "" }, task.total_tokens(), task.task.tool_count))}</span>
             </button>
             <div class="tui-task-content" hidden=move || !expanded.get() && !active_approval.get()>
-                <For each=move || conversation_blocks(history) key=|handle| handle.key children=move |handle| {
+                <For each=move || conversation_blocks(history) key=|handle| (handle.key, handle.item.with(crate::conversation::is_activity)) children=move |handle| {
                     let item = handle.item;
                     match item.get_untracked() {
                         ConversationItem::ToolStep { .. } => render_tool_group(history, handle.key, awaiting_step, on_permission, on_permission_always).into_any(),
+                        ConversationItem::Message(ref message) if crate::conversation::is_reasoning_activity(message) => render_tool_group(history, handle.key, awaiting_step, on_permission, on_permission_always).into_any(),
                         ConversationItem::Message(message) => {
                             let content = Memo::new(move |_| item.with(|item| match item { ConversationItem::Message(message) => message.content.clone(), _ => String::new() }));
                             if message.role == Role::User { render_user_message(content, ().into_any()) }

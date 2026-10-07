@@ -387,6 +387,21 @@ pub trait Backend {
         &'a self,
         request: &'a ChatRequest,
     ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>>;
+    fn get_goal(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<Option<openwebide_core::Goal>, String>>;
+    fn update_goal<'a>(
+        &'a self,
+        session: i64,
+        revision: u64,
+        command: &'a openwebide_core::GoalCommand,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::Goal, String>>;
+    fn compact_session<'a>(
+        &'a self,
+        session: i64,
+        model: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<ChatMessage, String>>;
     fn get_todo_plan(
         &self,
         session: i64,
@@ -1040,6 +1055,27 @@ impl Backend for BackendApi {
         request: &'a ChatRequest,
     ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
         Box::pin(BackendApi::chat_tools(self, request))
+    }
+    fn get_goal(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<Option<openwebide_core::Goal>, String>> {
+        Box::pin(BackendApi::get_goal(self, session))
+    }
+    fn update_goal<'a>(
+        &'a self,
+        session: i64,
+        revision: u64,
+        command: &'a openwebide_core::GoalCommand,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::Goal, String>> {
+        Box::pin(BackendApi::update_goal(self, session, revision, command))
+    }
+    fn compact_session<'a>(
+        &'a self,
+        session: i64,
+        model: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<ChatMessage, String>> {
+        Box::pin(BackendApi::compact_session(self, session, model))
     }
     fn get_todo_plan(
         &self,

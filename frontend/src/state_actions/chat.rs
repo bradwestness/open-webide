@@ -41,6 +41,7 @@ type RunIntent = (
     Option<InterruptedRun>,
     Option<openwebide_core::QueuedPrompt>,
     Option<String>,
+    Option<String>,
 );
 
 pub struct ChatActions {
@@ -239,7 +240,8 @@ impl ChatActions {
             let auth = expect_context::<crate::state::auth::AuthState>();
             let local_cancel = chat.local_cancel_flag.get_value();
             let local_permissions = chat.local_permissions.get_value();
-            Callback::new(move |(resume, queued, shortcut): RunIntent| {
+            Callback::new(move |intent: RunIntent| {
+                let (resume, queued, shortcut, goal_objective) = intent;
                 let content = shortcut.clone().unwrap_or_else(|| {
                     queued.as_ref().map_or_else(
                         || chat.draft.with(|draft| draft.trim().to_string()),
@@ -254,6 +256,8 @@ impl ChatActions {
                 if (resume.is_none() && content.is_empty() && images.is_empty())
                     || chat.reading_images.get_untracked()
                     || chat.streaming.get()
+                    || chat.compacting.get()
+                    || chat.goal_busy.get()
                     || chat.rewinding.get()
                     || reviews.is_some_and(|state| state.busy.get().is_some())
                     || chat.connection_changing.get()
@@ -544,6 +548,41 @@ impl ChatActions {
                         }
                         return;
                     }
+                    if let Some(objective) = goal_objective {
+                        let revision = chat
+                            .goal
+                            .with_untracked(|goal| goal.as_ref().map_or(0, |goal| goal.revision));
+                        match api
+                            .with_value(Clone::clone)
+                            .update_goal(
+                                session_id,
+                                revision,
+                                &openwebide_core::GoalCommand::Start { objective },
+                            )
+                            .await
+                        {
+                            Ok(goal) if current() => chat.goal.set(Some(goal)),
+                            Ok(_) => {
+                                if same_run() {
+                                    chat.streaming.set(false);
+                                }
+                                return;
+                            }
+                            Err(error) => {
+                                if current() {
+                                    chat.goal_error.set(Some(error));
+                                    chat.streaming.set(false);
+                                }
+                                return;
+                            }
+                        }
+                        if !current() || local_cancel.load(Ordering::Relaxed) {
+                            if same_run() {
+                                chat.streaming.set(false);
+                            }
+                            return;
+                        }
+                    }
                     let model = chat
                         .session_model
                         .get()
@@ -643,10 +682,33 @@ impl ChatActions {
             projects,
             project_git,
             ui,
-            Callback::new(move |prompt| start.run((None, Some(prompt), None))),
+            Callback::new(move |prompt| start.run((None, Some(prompt), None, None))),
             stop,
         );
         let stop = Callback::new(move |()| {
+            if chat.compacting.get_untracked() {
+                chat.compact_epoch.update_value(|epoch| *epoch += 1);
+                let epoch = chat.compact_epoch.get_value();
+                let project = projects.active_project.get_untracked();
+                if let Some(session) = chat.active_session.get_untracked() {
+                    spawn_local(async move {
+                        let result = api.with_value(Clone::clone).cancel_session(session).await;
+                        if chat.compact_epoch.try_get_value() != Some(epoch)
+                            || projects.active_project.try_get_untracked() != Some(project)
+                            || chat.active_session.try_get_untracked() != Some(Some(session))
+                        {
+                            return;
+                        }
+                        chat.compacting.set(false);
+                        if let Err(error) = result {
+                            chat.notify(format!("Could not stop compaction: {error}"));
+                        }
+                    });
+                } else {
+                    chat.compacting.set(false);
+                }
+                return;
+            }
             chat.queue_running.set(Default::default());
             chat.queue_steering.set(None);
             stop.run(());
@@ -718,9 +780,27 @@ impl ChatActions {
                 });
             });
 
-        let send = Callback::new(move |()| start.run((None, None, None)));
+        let send = Callback::new(move |()| start.run((None, None, None, None)));
         let send_prompt =
-            Callback::new(move |prompt: String| start.run((None, None, Some(prompt))));
+            Callback::new(move |prompt: String| start.run((None, None, Some(prompt), None)));
+        let controls = super::chat_controls::install(
+            api,
+            chat,
+            projects,
+            Callback::new(move |objective: String| {
+                let prompt = openwebide_core::Goal {
+                    session_id: 0,
+                    objective: objective.clone(),
+                    status: openwebide_core::GoalStatus::Active,
+                    revision: 0,
+                    updated_at: 0,
+                }
+                .prompt();
+                start.run((None, None, Some(prompt), Some(objective)));
+            }),
+            send_prompt,
+            stop,
+        );
         let resume_run = Callback::new(move |()| {
             let Some(resume) = chat.interrupted_run.get_untracked() else {
                 return;
@@ -734,7 +814,7 @@ impl ChatActions {
             if !project_runs.can_resume(session_project) {
                 return;
             }
-            start.run((Some(resume), None, None));
+            start.run((Some(resume), None, None, None));
         });
 
         let on_select_session =
@@ -888,6 +968,8 @@ impl ChatActions {
         let slash_command = {
             Callback::new(move |command: SlashCommand| {
                 match dispatch_slash(command, &chat, &git, &workspace) {
+                    SlashAction::Compact => controls.compact.run(()),
+                    SlashAction::Goal(args) => controls.goal.run(args),
                     SlashAction::Context => ui.context_open.set(true),
                     SlashAction::Notify(text) => chat.notify(text),
                     SlashAction::SelectModel(name) => {

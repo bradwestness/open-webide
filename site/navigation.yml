@@ -8,6 +8,7 @@
 - Using Open WebIDE:
     - Overview: docs/using.md
     - Editor: docs/editor.md
+    - Chat commands and goals: docs/chat-controls.md
     - Files and context menus: docs/file-tree-menus.md
     - About and notices: docs/about.md
     - Reload and reconnect: docs/reload-recovery.md

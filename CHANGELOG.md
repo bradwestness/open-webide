@@ -15,6 +15,9 @@ for what's still ahead.
 
 - Share the parser’s exact source-change span with grammar paint when its retained source owns that base. Avoid repeated unchanged-byte comparisons; skipped paint versions fall back to comparing the retained source, and cancellation clears the span.
 
+- Add slash-command suggestions, argument hints and searchable `/help` to chat. Group consecutive tool and finished reasoning events into activity summaries, opening approvals and failures automatically. Animate running tool and activity headings with the thinking spinner.
+- Add explicit `/compact` with shared model fallback and budget checks, cancellation and stale-history rejection; retain original messages. Add session-scoped `/goal` objectives with persisted pause/continue/completion controls and shared local/remote run orchestration.
+
 - Add About to the account menu and command palette, with separate About and Open-source software tabs for the frontend build version, commit, shared dependency inventory and bundled license notices for crates, Monaspace and Lucide. Load license notices only when opening their tab, with a bounded scroll area and a centered, compact About view. Cache the same tabs, build details and notices for the offline PWA screen.
 
 - Keep the visible caret at the end of highlighted lines when clicking beyond the text. Measure the final token boundary instead of a standalone newline with an empty browser rectangle; verify painted caret position as well as insertion offsets.

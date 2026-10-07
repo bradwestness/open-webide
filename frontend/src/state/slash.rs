@@ -7,6 +7,8 @@ use super::{chat::ChatState, git::GitState, workspace::WorkspaceState};
 /// need network or terminal access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SlashAction {
+    Compact,
+    Goal(Option<String>),
     Context,
     Notify(String),
     SelectModel(String),
@@ -56,7 +58,30 @@ pub fn dispatch(
         .or_else(|| git.active_project.get_untracked());
 
     match cmd {
-        SlashCommand::Help => SlashAction::Notify(HELP_TEXT.into()),
+        SlashCommand::Help(query) => {
+            let commands = openwebide_core::tui::slash_search(query.as_deref().unwrap_or_default());
+            let help = commands
+                .iter()
+                .map(|info| {
+                    format!(
+                        "* `{} {}` — {}",
+                        info.command, info.arguments, info.description
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            SlashAction::Notify(format!(
+                "**Commands**\n\n{}{}",
+                if help.is_empty() {
+                    "No matching commands."
+                } else {
+                    &help
+                },
+                if query.is_none() { KEY_HELP } else { "" }
+            ))
+        }
+        SlashCommand::Compact => SlashAction::Compact,
+        SlashCommand::Goal(args) => SlashAction::Goal(args),
         SlashCommand::Model(Some(target)) if target.eq_ignore_ascii_case("default") => {
             SlashAction::DefaultModel
         }
@@ -169,20 +194,7 @@ pub fn dispatch(
     }
 }
 
-const HELP_TEXT: &str = "**Open WebIDE Terminal Execution & Slash Commands**\n\n\
-                        **Commands:**\n\
-                        * `/help` — Show this cheat sheet\n\
-                        * `/model [name]` — Switch model or list available models\n\
-                        * `/clear` — Clear the active chat stream\n\
-                        * `/diff [path]` — View uncommitted Git diff or pending edits\n\
-                        * `/commit <message>` — Stage and commit changes to host Git\n\
-                        * `/checkout <branch>` — Switch active Git branch\n\
-                        * `/branch [name]` — List branches, or create and switch to a new branch\n\
-                        * `/sync` — Synchronize upstream commits (pull & push)\n\
-                        * `/test [filter]` — run cargo test in the terminal\n\
-                        * `/tokens` — Show session token accounting\n\
-                        * `/context` — Show the latest model input breakdown\n\
-                        * `/stop` — Abort active execution\n\n\
+const KEY_HELP: &str = "\n\n\
                         **Keybindings:**\n\
                         * `Ctrl+Shift+P` / `Cmd+Shift+P` — Open command palette\n\
                         * `Ctrl+/` / `Cmd+/` — Show keyboard shortcuts\n\
@@ -275,7 +287,12 @@ mod tests {
                 &WorkspaceState::new(),
             );
 
-            assert_eq!(action, SlashAction::Notify(HELP_TEXT.into()));
+            let SlashAction::Notify(help) = action else {
+                panic!("Expected help text");
+            };
+            assert!(help.contains("/compact"));
+            assert!(help.contains("/goal"));
+            assert!(help.contains("Keybindings"));
         });
     }
 

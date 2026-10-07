@@ -3299,3 +3299,12 @@ button.browser-item {
 .about-overview .about-build div { display: block; margin-bottom: var(--space-3); }
 .about-modal .about-software { height: min(55dvh, 28rem); overflow-y: auto; overscroll-behavior: contain; }
 .about-modal .modal-header, .about-modal .modal-footer { flex-shrink: 0; }
+
+.slash-suggestions { max-height: 15rem; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); margin: var(--space-2) var(--space-3); }
+.slash-suggestions .ui-dropdown-item { display: flex; flex-wrap: wrap; gap: var(--space-2); width: 100%; text-align: left; }
+.slash-suggestions .ui-dropdown-item.active { background: var(--bg-hover); }
+.slash-suggestions .ui-dropdown-item span { color: var(--text-muted); }
+.slash-hint { margin: var(--space-2) var(--space-3); overflow-wrap: anywhere; }
+
+.tui-goal { margin: var(--space-2) var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: 6px; overflow-wrap: anywhere; }
+.tui-goal p { margin: var(--space-2) 0; }

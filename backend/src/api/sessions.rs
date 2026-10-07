@@ -947,3 +947,100 @@ pub(crate) async fn save_task(
         .await?;
     Ok(json_response(200, &json!({"ok":true})))
 }
+
+/// Explicit summaries are model-only operations shared by local and remote sessions.
+pub(crate) async fn compact_session(
+    req: Request,
+    state: AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    #[derive(Deserialize)]
+    struct Input {
+        model: Option<String>,
+    }
+    let started_ms = now_ms();
+    let session = session_id(path)?;
+    state.store.get_session(session, user.id).await?;
+    let input: Input = parse_json(read_body(req, CHAT_BODY_LIMIT).await?)?;
+    let through = state
+        .store
+        .list_messages(session)
+        .await?
+        .last()
+        .map(|message| message.id)
+        .ok_or_else(|| ApiError::bad_request("There is no saved conversation to compact."))?;
+    let plan = build_run_plan(
+        &state,
+        user.id,
+        session,
+        SendMessageBody {
+            content: String::new(),
+            model: input.model,
+            editor_context: None,
+            browser_preferences: None,
+            queued_prompt: None,
+        },
+    )
+    .await?;
+    let provider = Provider::for_connection(
+        &plan.connection,
+        SpinHttpClient::default().with_transport(plan.transport),
+    );
+    let mut request = plan.request;
+    let store = Arc::new(state.store);
+    let cancel = CancelFlag::new(store.clone(), session, started_ms);
+    let compaction = openwebide_agent::compaction::prepare_manual_cancelled(
+        &provider,
+        &super::model_operations::ModelSource {
+            store: store.clone(),
+            user: user.id,
+        },
+        &mut request,
+        &cancel,
+    )
+    .await
+    .map_err(ApiError::bad_request)?
+    .ok_or_else(|| ApiError::bad_request("There is no conversation to compact."))?;
+    let message = store
+        .save_manual_compaction(user.id, session, through, &compaction, started_ms, now())
+        .await?;
+    Ok(json_response(200, &message))
+}
+
+pub(crate) async fn get_goal(
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    Ok(json_response(
+        200,
+        &state.store.get_goal(user.id, session_id(path)?).await?,
+    ))
+}
+pub(crate) async fn update_goal(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    #[derive(Deserialize)]
+    struct Input {
+        expected_revision: u64,
+        command: openwebide_core::GoalCommand,
+    }
+    let input: Input = parse_json(read_body(req, 32_000).await?)?;
+    Ok(json_response(
+        200,
+        &state
+            .store
+            .update_goal(
+                user.id,
+                session_id(path)?,
+                input.expected_revision,
+                input.command,
+                now(),
+            )
+            .await?,
+    ))
+}

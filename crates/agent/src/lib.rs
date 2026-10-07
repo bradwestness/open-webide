@@ -3311,6 +3311,69 @@ mod tests {
     }
 
     #[test]
+    fn manual_compaction_cancelled_before_model_work_preserves_context() {
+        futures::executor::block_on(async {
+            struct Stopped;
+            impl CancelCheck for Stopped {
+                async fn check(&self) -> bool {
+                    true
+                }
+                async fn cancelled(&self) {}
+            }
+            let (provider, _) = FakeProvider::new(vec![]);
+            let source = summary_source(false, false);
+            let mut input = request();
+            let messages = input.messages.clone();
+            assert!(
+                compaction::prepare_manual_cancelled(&provider, &source, &mut input, &Stopped)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(input.messages, messages);
+            assert!(source.requests.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn manual_compaction_works_below_threshold_with_auto_disabled_and_retains_history_on_failure() {
+        futures::executor::block_on(async {
+            for fail in [false, true] {
+                let (provider, _) = FakeProvider::new(vec![]);
+                let source = summary_source(fail, true);
+                let mut input = request();
+                let mut old = input.messages[0].clone();
+                old.role = Role::Assistant;
+                old.content = "saved progress ".repeat(80);
+                input.messages.insert(0, old);
+                input.model_settings.context_limit = Some(8192);
+                input.model_settings.auto_compact_threshold = Some(0);
+                input.model_settings.fast = Some(openwebide_core::ModelSelection {
+                    server_id: 2,
+                    model: "fast".into(),
+                });
+                let originals = input.messages.clone();
+                let result = compaction::prepare_manual(&provider, &source, &mut input).await;
+                assert!(!source.requests.lock().unwrap().is_empty());
+                if fail {
+                    assert!(result.is_err());
+                    assert_eq!(input.messages, originals);
+                } else {
+                    let summary = result.unwrap().unwrap();
+                    assert_eq!(summary.retained, vec![originals[1].clone()]);
+                    assert!(
+                        source
+                            .requests
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|request| request.connection_id == 1)
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
     fn compaction_disable_failure_and_fast_fallback_preserve_the_task() {
         futures::executor::block_on(async {
             for scenario in ["disabled", "failure", "fast"] {

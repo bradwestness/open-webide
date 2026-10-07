@@ -899,6 +899,32 @@ impl BackendApi {
         self.get(&format!("/sessions/{session_id}/messages")).await
     }
 
+    pub async fn get_goal(&self, session: i64) -> Result<Option<openwebide_core::Goal>, String> {
+        self.get(&format!("/sessions/{session}/goal")).await
+    }
+    pub async fn update_goal(
+        &self,
+        session: i64,
+        revision: u64,
+        command: &openwebide_core::GoalCommand,
+    ) -> Result<openwebide_core::Goal, String> {
+        self.post(
+            &format!("/sessions/{session}/goal"),
+            &json!({"expected_revision":revision,"command":command}),
+        )
+        .await
+    }
+    pub async fn compact_session(
+        &self,
+        session: i64,
+        model: Option<&str>,
+    ) -> Result<ChatMessage, String> {
+        self.post(
+            &format!("/sessions/{session}/compact"),
+            &json!({"model":model}),
+        )
+        .await
+    }
     pub async fn get_todo_plan(
         &self,
         session: i64,

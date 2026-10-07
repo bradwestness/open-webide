@@ -21,7 +21,9 @@ fast model for automatic approval decisions. Server/model configuration is share
 your default model selections are personal preferences.
 
 You can rerun setup from Servers to discover models again or revise configuration.
-Use `/model` in Chat to change the model for your conversation.
+Use `/model` in Chat to change the model for your conversation. Type `/` for
+command suggestions; see [chat commands and goals](chat-controls.md) for
+activity summaries, manual compaction and saved objectives.
 
 The saved auto-compaction threshold defaults to 85% of the context window;
 0 disables it. Compaction summarizes older history before model requests while

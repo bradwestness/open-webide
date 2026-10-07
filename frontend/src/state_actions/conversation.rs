@@ -56,7 +56,9 @@ pub fn actions(
 ) -> ConversationActions {
     let auth = expect_context::<AuthState>();
     let begin = Callback::new(move |(message_id, fork): (i64, bool)| {
-        if chat.streaming.get_untracked()
+        if (chat.streaming.get_untracked()
+            || chat.compacting.get_untracked()
+            || chat.goal_busy.get_untracked())
             || chat.branching.get_untracked()
             || chat.rewinding.get_untracked()
             || chat.queue_busy.get_untracked()
@@ -93,7 +95,9 @@ pub fn actions(
         };
         let apply = Callback::new(move |()| {
             if !current()
-                || chat.streaming.get_untracked()
+                || (chat.streaming.get_untracked()
+                    || chat.compacting.get_untracked()
+                    || chat.goal_busy.get_untracked())
                 || chat.branching.get_untracked()
                 || chat.rewinding.get_untracked()
             {

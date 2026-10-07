@@ -69,6 +69,9 @@ enum Route {
     RemoveQueuedPrompt,
     ConsumeQueuedPrompt,
     ForkSession,
+    GetGoal,
+    UpdateGoal,
+    CompactSession,
     GetTodoPlan,
     WriteTodoPlan,
     UpsertToolStep,
@@ -184,6 +187,9 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("DELETE", ["sessions", _, "queue"]) => Some(Route::RemoveQueuedPrompt),
         ("POST", ["sessions", _, "queue", "send"]) => Some(Route::ConsumeQueuedPrompt),
         ("POST", ["sessions", _, "fork"]) => Some(Route::ForkSession),
+        ("GET", ["sessions", _, "goal"]) => Some(Route::GetGoal),
+        ("POST", ["sessions", _, "goal"]) => Some(Route::UpdateGoal),
+        ("POST", ["sessions", _, "compact"]) => Some(Route::CompactSession),
         ("GET", ["sessions", _, "todos"]) => Some(Route::GetTodoPlan),
         ("POST", ["sessions", _, "todos"]) => Some(Route::WriteTodoPlan),
         ("POST", ["sessions", _, "tool-steps", "upsert"]) => Some(Route::UpsertToolStep),
@@ -422,6 +428,13 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::PersistMessage), Some(user)) => {
             api::sessions::persist_message(req, &state, &path, user).await
+        }
+        (Some(Route::GetGoal), Some(user)) => api::sessions::get_goal(&state, &path, user).await,
+        (Some(Route::UpdateGoal), Some(user)) => {
+            api::sessions::update_goal(req, &state, &path, user).await
+        }
+        (Some(Route::CompactSession), Some(user)) => {
+            api::sessions::compact_session(req, state, &path, user).await
         }
         (Some(Route::GetTodoPlan), Some(user)) => {
             api::sessions::get_todo_plan(&state, &path, user).await
@@ -826,6 +839,9 @@ mod tests {
             ("GET", "sessions/5/messages", Route::ListMessages),
             ("POST", "sessions/5/messages", Route::SendSessionMessage),
             ("POST", "sessions/5/run-plan", Route::RunPlan),
+            ("POST", "sessions/5/compact", Route::CompactSession),
+            ("GET", "sessions/5/goal", Route::GetGoal),
+            ("POST", "sessions/5/goal", Route::UpdateGoal),
             ("POST", "sessions/5/cancel", Route::CancelSession),
             ("POST", "sessions/5/messages/persist", Route::PersistMessage),
             ("GET", "sessions/5/queue", Route::ListQueuedPrompts),

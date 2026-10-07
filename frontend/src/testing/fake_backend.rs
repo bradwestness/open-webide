@@ -56,6 +56,11 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub goals: RefCell<BTreeMap<i64, openwebide_core::Goal>>,
+    pub goal_load_results: RefCell<VecDeque<Deferred<Option<openwebide_core::Goal>>>>,
+    pub compact_results: RefCell<VecDeque<Deferred<ChatMessage>>>,
+    pub compact_error: RefCell<Option<String>>,
+
     pub editor_recovery_records:
         RefCell<BTreeMap<i64, openwebide_core::editor::EditorRecoveryRecord>>,
     pub recovery_load_results: RefCell<
@@ -1707,6 +1712,74 @@ impl Backend for FakeBackend {
                 .borrow_mut()
                 .pop_front()
                 .ok_or_else(|| "chat_tools has no scripted response".into())
+        })
+    }
+    fn get_goal(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<Option<openwebide_core::Goal>, String>> {
+        Box::pin(async move {
+            self.calls
+                .borrow_mut()
+                .push(Call::Request { method: "get_goal" });
+            let pending = self.goal_load_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            Ok(self.goals.borrow().get(&session).cloned())
+        })
+    }
+    fn update_goal<'a>(
+        &'a self,
+        session: i64,
+        revision: u64,
+        command: &'a openwebide_core::GoalCommand,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::Goal, String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "update_goal",
+            });
+            let existing = self.goals.borrow().get(&session).cloned();
+            if existing.as_ref().map_or(0, |goal| goal.revision) != revision {
+                return Err("Goal changed".into());
+            }
+            let goal =
+                openwebide_core::Goal::transition(existing.as_ref(), session, command.clone(), 1)?;
+            self.goals.borrow_mut().insert(session, goal.clone());
+            Ok(goal)
+        })
+    }
+    fn compact_session<'a>(
+        &'a self,
+        session: i64,
+        _model: Option<&'a str>,
+    ) -> LocalBoxFuture<'a, Result<ChatMessage, String>> {
+        Box::pin(async move {
+            self.calls.borrow_mut().push(Call::Request {
+                method: "compact_session",
+            });
+            let pending = self.compact_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            if let Some(error) = self.compact_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
+            let summary = openwebide_core::Compaction {
+                summary: "Saved progress".into(),
+                retained: Vec::new(),
+                through_message_id: 1,
+            };
+            self.persist_message(
+                session,
+                Role::System,
+                &summary
+                    .stored_content()
+                    .map_err(|error| error.to_string())?,
+                None,
+                None,
+            )
+            .await
         })
     }
     fn get_todo_plan(

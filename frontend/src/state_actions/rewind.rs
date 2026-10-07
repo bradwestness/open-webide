@@ -27,7 +27,11 @@ pub fn actions(
         let Some(session) = chat.active_session.get_untracked() else {
             return;
         };
-        if chat.streaming.get_untracked() || chat.rewinding.get_untracked() {
+        if (chat.streaming.get_untracked()
+            || chat.compacting.get_untracked()
+            || chat.goal_busy.get_untracked())
+            || chat.rewinding.get_untracked()
+        {
             return;
         }
         let project = projects.active_project.get_untracked();
@@ -64,7 +68,7 @@ pub fn actions(
             message: explanation,
             confirm_label: "Rewind".into(),
             action: Callback::new(move |()| {
-                if !current() || chat.streaming.get_untracked() || chat.rewinding.get_untracked() { return; }
+                if !current() || (chat.streaming.get_untracked() || chat.compacting.get_untracked() || chat.goal_busy.get_untracked()) || chat.rewinding.get_untracked() { return; }
                 if workspace.dirty.get_untracked() {
                     ui.notify("Save or discard the editor's unsaved changes before rewinding.");
                     return;

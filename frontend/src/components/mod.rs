@@ -88,3 +88,5 @@ pub mod context_menu;
 mod editor_recovery;
 
 mod tab_actions;
+
+pub mod goal;

@@ -115,6 +115,8 @@ pub fn actions(
             chat.queue_steering.set(None);
         }
         if streaming
+            || chat.compacting.get()
+            || chat.goal_busy.get()
             || chat.queue_busy.get()
             || chat.queue_loading.get()
             || chat.loading_history.get().is_some()

@@ -25,7 +25,60 @@ pub async fn prepare<P: LlmProvider, S: CompactionSource>(
     source: &S,
     request: &mut ChatRequest,
 ) -> Result<Option<Compaction>, String> {
-    let threshold = request.model_settings.auto_compact_threshold.unwrap_or(85);
+    prepare_with(provider, source, request, false).await
+}
+
+/// Explicit compaction uses the same summary, model fallback and validation policy.
+pub async fn prepare_manual<P: LlmProvider, S: CompactionSource>(
+    provider: &P,
+    source: &S,
+    request: &mut ChatRequest,
+) -> Result<Option<Compaction>, String> {
+    prepare_with(provider, source, request, true).await
+}
+
+/// Race model work against the host's cancellation primitive before persisting.
+pub async fn prepare_manual_cancelled<
+    P: LlmProvider,
+    S: CompactionSource,
+    C: crate::CancelCheck + Sync,
+>(
+    provider: &P,
+    source: &S,
+    request: &mut ChatRequest,
+    cancel: &C,
+) -> Result<Option<Compaction>, String> {
+    if cancel.check().await {
+        return Err("Compaction stopped. Original history has been retained.".into());
+    }
+    let result = match futures::future::select(
+        Box::pin(prepare_manual(provider, source, request)),
+        Box::pin(cancel.cancelled()),
+    )
+    .await
+    {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right(_) => {
+            Err("Compaction stopped. Original history has been retained.".into())
+        }
+    };
+    if cancel.check().await {
+        return Err("Compaction stopped. Original history has been retained.".into());
+    }
+    result
+}
+
+async fn prepare_with<P: LlmProvider, S: CompactionSource>(
+    provider: &P,
+    source: &S,
+    request: &mut ChatRequest,
+    manual: bool,
+) -> Result<Option<Compaction>, String> {
+    let threshold = if manual {
+        100
+    } else {
+        request.model_settings.auto_compact_threshold.unwrap_or(85)
+    };
     let limit = match request.model_settings.context_limit {
         Some(limit) => limit,
         None => {
@@ -39,7 +92,14 @@ pub async fn prepare<P: LlmProvider, S: CompactionSource>(
                     .flatten()
             };
             let Some(limit) = detected.filter(|limit| *limit > 0) else {
-                return Ok(None);
+                return if manual {
+                    Err(
+                        "Cannot compact until the model context limit is configured or detected."
+                            .into(),
+                    )
+                } else {
+                    Ok(None)
+                };
             };
             request.model_settings.context_limit = Some(limit);
             limit
@@ -62,7 +122,7 @@ pub async fn prepare<P: LlmProvider, S: CompactionSource>(
                 .saturating_sub(summary_reserve)
                 .saturating_sub(INSTRUCTIONS.len().div_ceil(3) + 64),
         );
-    if tokens < ceiling {
+    if !manual && tokens < ceiling {
         budget_reply(request, limit, tokens)?;
         return Ok(None);
     }

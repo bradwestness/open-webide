@@ -81,3 +81,6 @@ mod installation;
 
 #[path = "components/file_tree.rs"]
 mod file_tree;
+
+#[path = "components/chat_controls.rs"]
+mod chat_controls;

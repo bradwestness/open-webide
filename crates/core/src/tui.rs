@@ -337,8 +337,10 @@ impl SessionTelemetry {
 /// Built-in slash commands that can be invoked from the prompt composer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
-    Help,
+    Help(Option<String>),
     Model(Option<String>),
+    Compact,
+    Goal(Option<String>),
     Clear,
     Diff(Option<String>),
     Test(Option<String>),
@@ -359,7 +361,7 @@ impl SlashCommand {
             return None;
         }
 
-        let (cmd, args) = match trimmed.split_once(' ') {
+        let (cmd, args) = match trimmed.split_once(char::is_whitespace) {
             Some((c, a)) => {
                 let arg = a.trim();
                 let arg_opt = if arg.is_empty() {
@@ -373,8 +375,10 @@ impl SlashCommand {
         };
 
         match cmd {
-            "/help" => Some(SlashCommand::Help),
+            "/help" => Some(SlashCommand::Help(args)),
             "/model" => Some(SlashCommand::Model(args)),
+            "/compact" => Some(SlashCommand::Compact),
+            "/goal" => Some(SlashCommand::Goal(args)),
             "/clear" => Some(SlashCommand::Clear),
             "/diff" => Some(SlashCommand::Diff(args)),
             "/test" => Some(SlashCommand::Test(args)),
@@ -388,6 +392,112 @@ impl SlashCommand {
             _ => None,
         }
     }
+}
+
+/// Shared command discovery for chat clients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlashInfo {
+    pub command: &'static str,
+    pub arguments: &'static str,
+    pub description: &'static str,
+}
+
+pub const SLASH_COMMANDS: &[SlashInfo] = &[
+    SlashInfo {
+        command: "/help",
+        arguments: "[search]",
+        description: "Search commands and show keyboard shortcuts",
+    },
+    SlashInfo {
+        command: "/model",
+        arguments: "[name|default]",
+        description: "List or switch models",
+    },
+    SlashInfo {
+        command: "/clear",
+        arguments: "",
+        description: "Clear the visible chat stream",
+    },
+    SlashInfo {
+        command: "/compact",
+        arguments: "",
+        description: "Summarize saved conversation context",
+    },
+    SlashInfo {
+        command: "/goal",
+        arguments: "[objective|status|pause|resume|complete]",
+        description: "Start and manage a saved objective",
+    },
+    SlashInfo {
+        command: "/diff",
+        arguments: "[path]",
+        description: "View Git changes or pending edits",
+    },
+    SlashInfo {
+        command: "/commit",
+        arguments: "<message>",
+        description: "Stage and commit Git changes",
+    },
+    SlashInfo {
+        command: "/checkout",
+        arguments: "<branch>",
+        description: "Switch Git branch",
+    },
+    SlashInfo {
+        command: "/branch",
+        arguments: "[name]",
+        description: "List branches or create a branch",
+    },
+    SlashInfo {
+        command: "/sync",
+        arguments: "",
+        description: "Pull and push upstream commits",
+    },
+    SlashInfo {
+        command: "/test",
+        arguments: "[filter]",
+        description: "Run detected project tests",
+    },
+    SlashInfo {
+        command: "/tokens",
+        arguments: "",
+        description: "Show token accounting",
+    },
+    SlashInfo {
+        command: "/context",
+        arguments: "",
+        description: "Show the latest model input breakdown",
+    },
+    SlashInfo {
+        command: "/stop",
+        arguments: "",
+        description: "Stop the current run",
+    },
+];
+
+pub fn slash_search(query: &str) -> Vec<SlashInfo> {
+    let query = query.trim().to_ascii_lowercase();
+    SLASH_COMMANDS
+        .iter()
+        .copied()
+        .filter(|info| {
+            format!("{} {} {}", info.command, info.arguments, info.description)
+                .to_ascii_lowercase()
+                .contains(&query)
+        })
+        .collect()
+}
+
+/// Only complete a command name, never replace its arguments or an ordinary prompt.
+pub fn slash_suggestions(draft: &str) -> Vec<SlashInfo> {
+    if !draft.starts_with('/') || draft.chars().any(char::is_whitespace) {
+        return Vec::new();
+    }
+    SLASH_COMMANDS
+        .iter()
+        .copied()
+        .filter(|info| info.command.starts_with(draft))
+        .collect()
 }
 
 /// Parsed thinking / reasoning stream extraction.
@@ -619,6 +729,30 @@ pub fn calculate_conversation_telemetry(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn commands_share_search_completion_and_whitespace_parsing() {
+        assert_eq!(
+            SlashCommand::parse("/help compact"),
+            Some(SlashCommand::Help(Some("compact".into())))
+        );
+        assert_eq!(
+            SlashCommand::parse("/model\tfast"),
+            Some(SlashCommand::Model(Some("fast".into())))
+        );
+        assert_eq!(SlashCommand::parse("/compact"), Some(SlashCommand::Compact));
+        assert_eq!(
+            SlashCommand::parse("/goal fix tests"),
+            Some(SlashCommand::Goal(Some("fix tests".into())))
+        );
+        assert_eq!(slash_suggestions("/comp").len(), 1);
+        assert!(slash_suggestions("normal /comp").is_empty());
+        assert!(slash_suggestions("/goal fix tests").is_empty());
+        assert_eq!(slash_search("summarize")[0].command, "/compact");
+        for info in SLASH_COMMANDS {
+            assert!(SlashCommand::parse(info.command).is_some());
+        }
+    }
+
+    #[test]
     fn reasoning_timing_survives_chunks_and_freezes_on_completion() {
         let mut timing = super::ReasoningTiming::default();
         timing.observe(false, 100.0);
@@ -751,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_slash_commands_parse() {
-        assert_eq!(SlashCommand::parse("/help"), Some(SlashCommand::Help));
+        assert_eq!(SlashCommand::parse("/help"), Some(SlashCommand::Help(None)));
         assert_eq!(
             SlashCommand::parse("/model deepseek-r1:8b"),
             Some(SlashCommand::Model(Some("deepseek-r1:8b".into())))

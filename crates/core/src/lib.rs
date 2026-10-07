@@ -1,5 +1,7 @@
 //! Shared domain types used across the Open WebIDE frontend, backend, and crates.
 
+pub mod goal;
+pub use goal::{Goal, GoalCommand, GoalStatus};
 pub mod chat_queue;
 pub mod prompt;
 pub use chat_queue::{QueuedPrompt, QueuedPromptKey};
