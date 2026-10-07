@@ -154,14 +154,17 @@ def check():
                             ['Html', '<div>\r\n', '<section id="INDEX">\r\n<p>文😀</p>\r\n</section>\r\n', '</div>\r\n']
                         ]) {
                             const text = open + Array.from({length:200}, (_, i) => member.replace('INDEX', i)).join('') + close;
-                            await request('nested-' + language, language, text);
+                            const seed = await request('nested-' + language, language, text);
                             const changed = text.replace('文😀', '😀 changed文');
                             const warm = await request('nested-' + language, language, changed);
                             const cold = await request('fresh-' + language, language, changed);
+                            const colors = warm.analysis?.highlights?.flatMap(row => Array.isArray(row) ? [row] :
+                                seed.analysis.highlights.slice(row.reuse, row.reuse + row.count));
                             nested.push({language, incremental: warm.status?.Ready?.incremental === true,
                                 fresh: cold.status?.Ready?.incremental === false,
                                 source: warm.analysis?.source === changed && cold.analysis?.source === changed,
                                 folds: JSON.stringify(warm.analysis?.folds) === JSON.stringify(cold.analysis?.folds),
+                                colors: !!colors && JSON.stringify(colors) === JSON.stringify(cold.analysis?.highlights),
                                 structure: !!warm.analysis?.structure && ['language','scopes','selections','opaque_starts','protected','brackets'].every(key =>
                                     JSON.stringify(warm.analysis.structure[key]) === JSON.stringify(cold.analysis?.structure?.[key]))});
                         }
@@ -192,7 +195,7 @@ def check():
                     assert 'Ready' in lexical['updateStatus'] and lexical['updatePaint'] and lexical['updateSourceMatches'] and lexical['reusedRows'] > 0, lexical
                 assert 'Ready' in result['heavyStatus'] and result['heavySource'] and result['uiEvent'], result
                 for nested in result['nested']:
-                    assert all(nested[key] for key in ['incremental', 'fresh', 'source', 'folds', 'structure']), nested
+                    assert all(nested[key] for key in ['incremental', 'fresh', 'source', 'folds', 'structure', 'colors']), nested
                 assert result['oversizedStatus'] == 'TooLarge' and result['oversizedAnalysis'] is None, result
                 print(json.dumps({'providers': len(result['providers'])+1, 'lexical_languages': len(result['lexical']), 'nested_languages': len(result['nested']), 'incremental': True, 'structural_delta': result['structuralDelta'],
                                   'ui_event_during_worker': result['uiEvent'], 'oversize_fallback': True, 'changed_row_records': result['heavyRowRuns']}))

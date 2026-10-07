@@ -96,6 +96,7 @@ pub struct SyntaxDocument {
     publication: Option<(u32, Arc<SyntaxAnalysis>)>,
     folds: std::cell::RefCell<folds::ParsedFolds>,
     contexts: std::cell::RefCell<contexts::ParsedContexts>,
+    paint: std::cell::RefCell<highlighting::SyntaxPaint>,
 }
 
 impl SyntaxDocument {
@@ -121,6 +122,7 @@ impl SyntaxDocument {
             publication: None,
             folds: std::cell::RefCell::default(),
             contexts: std::cell::RefCell::default(),
+            paint: std::cell::RefCell::default(),
         })
     }
 
@@ -229,7 +231,7 @@ impl SyntaxDocument {
                 structure
                     .as_ref()
                     .and_then(|structure| self.highlight_with_structure(structure))
-                    .map(|rows| Arc::new(crate::highlight::share_token_rows(rows)))
+                    .map(Arc::new)
             };
             (structure, highlights)
         };
@@ -446,6 +448,7 @@ impl SyntaxDocument {
         self.publication = None;
         self.folds.borrow_mut().clear();
         self.contexts.borrow_mut().clear();
+        *self.paint.borrow_mut() = highlighting::SyntaxPaint::default();
     }
 
     pub fn folds(&self) -> Vec<FoldRange> {
