@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Make editor browser checks wait for styled token paint and verify repeated-row measurement bounds per probe, including font/layout retries on Linux.
+
 - Paint bounded unwrapped editor viewports before terminal lexical fallback finishes, borrowing projection rows. Bind native windows from complete native dimensions; restore complete native input for unsupported cold viewports and retain active composition mappings.
 
 - Keep rectangular cursor gestures on their source version without retaining file copies. Reuse indexed logical rows for column selection, preserve tab/Unicode/CRLF behavior, and reject stale project, account, reload, source, document and indentation state. Borrow source for fallback indentation rules and native selection/clipboard checks.

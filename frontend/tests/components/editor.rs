@@ -949,29 +949,18 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
                 state.workspace.content.set(fixture);
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:640px;height:280px">{editor_view(state)}</div> }
             });
-            for _ in 0..120 {
-                frame().await;
-                if mounted
-                    .element(".editor-code")
-                    .class_list()
-                    .contains("highlight-ready")
-                {
-                    break;
-                }
-            }
-            assert!(
+            wait_until("styled token frame before highlighted clicks", || {
                 mounted
                     .element(".editor-code")
                     .class_list()
                     .contains("highlight-ready")
-            );
-            assert!(
-                mounted
-                    .element(".editor-highlight-content")
-                    .query_selector(".tok-keyword")
-                    .unwrap()
-                    .is_some()
-            );
+                    && mounted
+                        .element(".editor-highlight-content")
+                        .query_selector(".tok-keyword")
+                        .unwrap()
+                        .is_some()
+            })
+            .await;
             let actions = EditorActions::new(mounted.state.workspace);
             let input: web_sys::HtmlTextAreaElement =
                 mounted.element(".editor-textarea").unchecked_into();
@@ -10520,15 +10509,15 @@ async fn cold_repeated_wrapped_rows_share_layout_and_preserve_far_edits_in_both_
     #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
     export function count_cold_repeated_layout() {
         const previous = window.__openwebideEditorProbeTiming;
-        let count = 0;
+        const counts = new Map();
         window.__openwebideEditorProbeTiming = (paint, phase, elapsed, units) => {
-            if (phase === 'layout') count += units;
+            if (phase === 'layout') counts.set(paint, (counts.get(paint) ?? 0) + units);
             previous?.(paint, phase, elapsed, units);
         };
         return () => {
             if (previous === undefined) delete window.__openwebideEditorProbeTiming;
             else window.__openwebideEditorProbeTiming = previous;
-            return count;
+            return [...counts.values()];
         };
     }
     "#)]
@@ -10566,15 +10555,18 @@ async fn cold_repeated_wrapped_rows_share_layout_and_preserve_far_edits_in_both_
             !actions.syntax_is_pending() && actions.measured_rows().is_some()
         })
         .await;
-        let count = observed
-            .call0(&wasm_bindgen::JsValue::NULL)
-            .unwrap()
-            .as_f64()
-            .unwrap();
-        assert!(
-            count > 0.0 && count <= 256.0,
-            "{mode:?}: measured {count} repeated rows"
-        );
+        // Font/layout invalidation can restart a cold probe. Verify each
+        // independent probe shares repeated rows rather than counting retries
+        // as if they were one source measurement.
+        let counts = js_sys::Array::from(&observed.call0(&wasm_bindgen::JsValue::NULL).unwrap());
+        assert!(counts.length() > 0);
+        for count in counts.iter() {
+            let count = count.as_f64().unwrap();
+            assert!(
+                count > 0.0 && count <= (openwebide_core::editor::MAX_MEASURE_ROWS + 1) as f64,
+                "{mode:?}: measured {count} repeated rows in one probe"
+            );
+        }
         let rows = actions.measured_rows().unwrap().rows;
         assert_eq!(rows.len(), 12_001);
         let height = rows.top(1).unwrap();
