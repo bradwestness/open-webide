@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain rebased folding indicators and the last styled editor frame while syntax analysis and repainting are pending in both workspace modes. Replace indicators with authoritative ranges, disable obsolete fold controls, and release retained paint when the document, read, project or account changes.
+
 - Scroll and extend prepared editor source selections when dragging near or beyond vertical and horizontal viewport edges, including stationary pointers, in both workspace modes. Share bounded speed rules in Rust, retry pending paint, and stop on release, blur or stale document/read/project/account/fold state. Cold and touch selection remain pending bounded input work.
 
 - Keep the editor folding column reserved while syntax updates, preventing horizontal jumps when pressing Enter or editing files without folds.

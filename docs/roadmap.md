@@ -173,7 +173,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   source/read/project/account/fold state. Finish cold/touch pointer selection,
   cold caret ownership and cold source extents before binding bounded values and
   validating IME and clipboard on devices. Bundled Monaspace families and
-  independent healing/ligature preferences now share editor font metrics.
+  independent healing/ligature preferences now share editor font metrics. Rebased
+  fold indicators and same-document styled frames now survive pending analysis
+  and repainting, with disabled obsolete controls and replacement/read/account
+  guards.
   Shared admission now bounds full-editor bytes, display breaks and long lines
   before allocating document metadata. Oversized files use bounded read-only
   pages, including before/after review sources; interactive transactions enforce

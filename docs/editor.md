@@ -359,7 +359,12 @@ These primitives and the folding view use the shared editor facade in both modes
 ## Folding
 
 Supported code files show fold controls beside the logical line numbers for declarations,
-blocks and multiline comments/literals. Click a control to collapse or expand;
+blocks and multiline comments/literals. Existing indicators follow line edits
+while analysis is pending; their controls remain disabled until fresh ranges
+arrive. The editor retains its last styled frame during same-document repaints
+and replaces it with the new paint, avoiding flashes of plain text. Replacing
+a file, project, read generation or account releases that retained frame.
+Click a control to collapse or expand;
 the editing menu also offers cursor, recursive and all-document commands.
 Ctrl/Cmd+Alt+[ folds at the cursor and Ctrl/Cmd+Alt+] unfolds; add Shift for
 recursive commands. Fold state belongs to the document, including across view

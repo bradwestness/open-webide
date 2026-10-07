@@ -1055,6 +1055,7 @@ fn HighlightOverlay(
     node_ref: NodeRef<leptos::html::Div>,
     textarea_ref: NodeRef<leptos::html::Textarea>,
     ready: RwSignal<bool>,
+    presentation: RwSignal<bool>,
     error: RwSignal<Option<String>>,
     visible: Memo<Vec<usize>>,
     viewport: Memo<openwebide_core::editor::EditorViewport>,
@@ -1065,6 +1066,11 @@ fn HighlightOverlay(
 ) -> impl IntoView {
     use wasm_bindgen::closure::Closure;
 
+    // A remounted view starts cold; only its own published frame may be retained.
+    presentation.set(false);
+    ready.set(false);
+    let presentation_scope = Memo::new(move |_| actions.presentation_scope());
+    let presented_scope = StoredValue::new(None);
     let painted_whitespace = StoredValue::new(false);
     let painted_syntax = StoredValue::new(
         None::<(
@@ -1426,6 +1432,8 @@ fn HighlightOverlay(
         painted_syntax.set_value(Some(tokens.get_untracked()));
         rendered_scope.set(actions.projection_revision());
         rendered.set(html);
+        presented_scope.set_value(presentation_scope.get_untracked());
+        presentation.set(!viewport.get_untracked().rows.is_empty());
         ready.set(!viewport.get_untracked().rows.is_empty());
         let published_generation = generation.get_value();
         // Re-align after the highlighted HTML reaches the DOM.
@@ -1515,6 +1523,9 @@ fn HighlightOverlay(
         visible.with(|_| ());
         fragment_windows.with(|_| ());
         ready.set(false);
+        if presented_scope.get_value() != presentation_scope.get() {
+            presentation.set(false);
+        }
         let current_path = open_file.get();
         let mounted = node_ref.get().is_some();
         if current_path != path.get_value() || !mounted {
@@ -2020,6 +2031,7 @@ pub fn Editor(
     let ta = NodeRef::<leptos::html::Textarea>::new();
     let hl = NodeRef::<leptos::html::Div>::new();
     let highlight_ready = RwSignal::new(false);
+    let highlight_visible = RwSignal::new(false);
     let layout_revision = RwSignal::new(0_u64);
     let source_extent = Memo::new(move |_| {
         layout_revision.track();
@@ -2929,7 +2941,7 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code" data-editor-view=move || editor_actions.view_revision().to_string() data-editor-account=editor_account_generation.to_string() style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 42px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_ready.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
+                                    <div class="editor-code" data-editor-view=move || editor_actions.view_revision().to_string() data-editor-account=editor_account_generation.to_string() style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 42px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_visible.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
                                         <div class="editor-scroll-surface" aria-hidden="true" on:scroll=move |event: web_sys::Event| {
                                             let Some(textarea) = ta.get_untracked() else { return; };
                                             let Some(target) = event.current_target().and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok()) else { return; };
@@ -2950,20 +2962,20 @@ pub fn Editor(
                                             data-editor-account=move || source_extent.get().map(|(_, _, account, _)| account.to_string())
                                             data-source-width=move || source_extent.get().map(|(_, _, _, extent)| extent.width.to_string())
                                             data-source-height=move || source_extent.get().map(|(_, _, _, extent)| extent.height.to_string()) /></div>
-                                        <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready error=action_error visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
+                                        <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready presentation=highlight_visible error=action_error visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision />
                                         <super::editor_selections::SelectionOverlay textarea=ta ready=highlight_ready layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>
                                         <div class="editor-fold-column"><div class="editor-fold-track" style=move || format!("padding-top:{}px", viewport.get().top)>{move || {
                                             let state = fold_state.get();
-                                            let headers: std::collections::HashSet<_> = state.ranges().iter().map(|range| range.start_line).collect();
+                                            let headers: std::collections::HashSet<_> = state.indicator_headers().collect();
                                             let project = workspace.active_project.get_untracked();
                                             let path = open_file.get_untracked();
                                             visible_rows.get().into_iter().map(|header| {
                                                 let control = headers.contains(&header);
-                                                let collapsed = state.collapsed_at(header).is_some();
+                                                let collapsed = state.indicator_collapsed(header);
                                                 let path = path.clone();
                                                 view! { <div class="editor-fold-row">{control.then(move || view! {
-                                                    <IconButton class="editor-fold-control" label=format!("{} block at line {}", if collapsed { "Expand" } else { "Collapse" }, header + 1) on_click=Callback::new(move |event: web_sys::MouseEvent| {
+                                                    <IconButton class="editor-fold-control" disabled=Signal::derive(move || !fold_state.with(|state| state.ranges().iter().any(|range| range.start_line == header))) label=format!("{} block at line {}", if collapsed { "Expand" } else { "Collapse" }, header + 1) on_click=Callback::new(move |event: web_sys::MouseEvent| {
                                                         if event.current_target().and_then(|target| target.dyn_into::<web_sys::Element>().ok()).is_none_or(|node| !node.is_connected()) { return; }
                                                         if let (Some(project), Some(path), Some(textarea)) = (project, path.as_ref(), ta.get_untracked())
                                                             && editor_actions.is_current(project, path) && current_editor_target(editor_actions, &textarea)

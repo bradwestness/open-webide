@@ -3858,6 +3858,20 @@ function editorGestureRect(target, line, column) {
     const range = document.createRange(); range.setStart(node, offset); range.collapse(true);
     return range.getBoundingClientRect();
 }
+export function editorWatchPresentation(target) {
+    const state = {lost:0};
+    const observer = new MutationObserver(records => {
+        for (const record of records) {
+            if (!(record.oldValue || '').split(/\s+/).includes('highlight-ready')) state.lost++;
+        }
+        if (!target.classList.contains('highlight-ready')) state.lost++;
+    });
+    observer.observe(target, {attributes:true, attributeFilter:['class'], attributeOldValue:true});
+    state.stop = () => observer.disconnect();
+    return state;
+}
+export function editorPresentationLosses(state) { return state.lost; }
+export function editorStopPresentationWatch(state) { state.stop(); }
 export function editorEdgeGesture(target, horizontal, end, type) {
     const bounds = target.getBoundingClientRect();
     const x = horizontal ? (end ? bounds.right + 30 : bounds.left - 30) : bounds.left + 70;
@@ -3895,6 +3909,9 @@ extern "C" {
         target: &web_sys::HtmlTextAreaElement,
         copied_event: &web_sys::Event,
     ) -> web_sys::Event;
+    fn editorWatchPresentation(target: &web_sys::HtmlElement) -> wasm_bindgen::JsValue;
+    fn editorPresentationLosses(watch: &wasm_bindgen::JsValue) -> u32;
+    fn editorStopPresentationWatch(watch: &wasm_bindgen::JsValue);
     fn editorEdgeGesture(
         target: &web_sys::HtmlTextAreaElement,
         horizontal: bool,
@@ -4453,13 +4470,16 @@ async fn fallback_and_region_folds_render_and_reveal_in_both_modes() {
                     .unwrap()
                     .is_some()
             );
+            let retained_folds = actions.fold_state().unwrap();
             assert_eq!(
                 actions.refresh_fold_ranges(|| false),
                 Some(SyntaxStatus::Cancelled)
             );
             settle().await;
-            assert_eq!(textarea.value(), source.replace("\r\n", "\n"));
-            assert!(actions.fold_state().unwrap().ranges().is_empty());
+            assert_eq!(textarea.value(), collapsed);
+            assert_eq!(actions.fold_state().unwrap(), retained_folds);
+            assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+            assert!(!mounted.state.workspace.dirty.get_untracked());
             actions.refresh_fold_ranges(|| true);
             actions.fold_command(FoldCommand::CollapseAll);
             settle().await;
@@ -7546,6 +7566,8 @@ async fn entering_newlines_keeps_fold_gutter_fixed_while_syntax_is_pending_in_bo
         );
         frame().await;
         let left = input.get_bounding_client_rect().left();
+        assert!(code.class_list().contains("highlight-ready"));
+        let presentation = editorWatchPresentation(&code);
         input.focus().unwrap();
         input.set_selection_range(12, 12).unwrap();
         assert!(editor_key(&input, "Enter", false, false).default_prevented());
@@ -7562,6 +7584,21 @@ async fn entering_newlines_keeps_fold_gutter_fixed_while_syntax_is_pending_in_bo
             gutter
         );
         assert!((input.get_bounding_client_rect().left() - left).abs() < 0.1);
+        for _ in 0..4 {
+            frame().await;
+        }
+        let indicator: web_sys::HtmlButtonElement =
+            mounted.element(".editor-fold-control").unchecked_into();
+        assert_eq!(
+            indicator.get_attribute("aria-label").as_deref(),
+            Some("Collapse block at line 1")
+        );
+        assert!(
+            indicator.disabled(),
+            "retained indicators must not apply obsolete ranges"
+        );
+        assert!(code.class_list().contains("highlight-ready"));
+        assert_eq!(editorPresentationLosses(&presentation), 0);
         transport.respond(true);
         wait_until("updated folding controls", || {
             actions.syntax_structure(|| true).is_some()
@@ -7575,8 +7612,89 @@ async fn entering_newlines_keeps_fold_gutter_fixed_while_syntax_is_pending_in_bo
             gutter
         );
         assert!((input.get_bounding_client_rect().left() - left).abs() < 0.1);
+        frame().await;
+        let indicator: web_sys::HtmlButtonElement =
+            mounted.element(".editor-fold-control").unchecked_into();
+        assert!(!indicator.disabled());
+        assert_eq!(editorPresentationLosses(&presentation), 0);
+        editorStopPresentationWatch(&presentation);
         drop(mounted);
         settle().await;
+    }
+}
+
+#[wasm_bindgen_test]
+async fn retained_paint_releases_document_and_account_scopes_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for boundary in 0..5 {
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let captured = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+            let capture = captured.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("retained.rs".into()));
+                state
+                    .workspace
+                    .content
+                    .set("fn old() {\n    call();\n}".into());
+                let actions = EditorActions::new(state.workspace);
+                actions.install_syntax_transport(installed);
+                capture.set(Some(actions));
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:700px;height:400px">{editor_view(state)}</div> }
+            });
+            wait_until("published retained frame", || {
+                if !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                mounted
+                    .root
+                    .query_selector(".editor-code.highlight-ready")
+                    .unwrap()
+                    .is_some()
+            })
+            .await;
+            frame().await;
+            let actions = captured.get().unwrap();
+            let original = untrack(|| actions.presentation_scope());
+            match boundary {
+                0 => mounted
+                    .state
+                    .workspace
+                    .open_file
+                    .set(Some("replacement.rs".into())),
+                1 => mounted.state.workspace.active_project.set(Some(2)),
+                2 => mounted
+                    .state
+                    .workspace
+                    .editor_read_revision
+                    .update(|value| *value += 1),
+                3 => mounted
+                    .state
+                    .workspace
+                    .pending_epoch
+                    .update(|value| *value += 1),
+                _ => mounted.state.auth.generation.update(|value| *value += 1),
+            }
+            settle().await;
+            assert_ne!(untrack(|| actions.presentation_scope()), original);
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".editor-code.highlight-ready")
+                    .unwrap()
+                    .is_none(),
+                "scope boundary {boundary} must release the retained frame in {mode:?}"
+            );
+            drop(mounted);
+            settle().await;
+        }
     }
 }
 

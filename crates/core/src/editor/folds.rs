@@ -50,15 +50,32 @@ pub struct FoldState {
     // Source anchors survive multiple edits while a provider refresh is pending.
     // These ranges are never exposed to the view before the provider validates them.
     pending: Vec<FoldRange>,
+    // Presentation survives pending analysis without making obsolete folds actionable.
+    indicators: Vec<usize>,
+}
+
+pub(super) struct FoldRebase {
+    collapsed: Vec<(usize, usize)>,
+    indicators: Vec<usize>,
 }
 
 impl FoldState {
     pub fn ranges(&self) -> &[FoldRange] {
         &self.ranges
     }
+    pub fn indicator_headers(&self) -> impl Iterator<Item = usize> + '_ {
+        self.ranges
+            .iter()
+            .map(|range| range.start_line)
+            .chain(self.indicators.iter().copied())
+    }
+    pub fn indicator_collapsed(&self, header: usize) -> bool {
+        self.collapsed.contains(&header)
+    }
     pub fn set_ranges(&mut self, ranges: Vec<FoldRange>, line_count: usize) {
         self.ranges = normalize_folds(ranges, line_count);
         self.pending.clear();
+        self.indicators.clear();
         self.collapsed.retain(|line| {
             self.ranges
                 .binary_search_by_key(line, |range| range.start_line)
@@ -185,7 +202,7 @@ impl FoldState {
         &self,
         lines: &[super::lines::Line],
         edits: &[super::Edit<&str>],
-    ) -> Vec<(usize, usize)> {
+    ) -> FoldRebase {
         let candidates = if self.ranges.is_empty() {
             &self.pending
         } else {
@@ -202,7 +219,8 @@ impl FoldState {
             }
             result
         };
-        self.collapsed
+        let collapsed = self
+            .collapsed
             .iter()
             .filter_map(|header| {
                 let range = candidates.get(
@@ -223,20 +241,40 @@ impl FoldState {
                 }
                 Some((mapped(first, false), mapped(last.body_end, true)))
             })
-            .collect()
+            .collect();
+        let indicators = self
+            .indicator_headers()
+            .filter_map(|header| {
+                let offset = lines.get(header)?.start;
+                let mut result = offset;
+                for edit in edits {
+                    if edit.range.end <= offset {
+                        result = result - edit.range.len() + edit.text.len();
+                    } else if edit.range.start <= offset {
+                        result = result - (offset - edit.range.start) + edit.text.len();
+                        break;
+                    }
+                }
+                Some(result)
+            })
+            .collect();
+        FoldRebase {
+            collapsed,
+            indicators,
+        }
     }
 
-    pub(super) fn finish_rebase(
-        &mut self,
-        boundaries: Vec<(usize, usize)>,
-        lines: &[super::lines::Line],
-    ) {
+    pub(super) fn finish_rebase(&mut self, boundaries: FoldRebase, lines: &[super::lines::Line]) {
         let row = |offset| {
             lines
                 .partition_point(|line| line.start <= offset)
                 .saturating_sub(1)
         };
+        self.indicators = boundaries.indicators.into_iter().map(row).collect();
+        self.indicators.sort_unstable();
+        self.indicators.dedup();
         self.pending = boundaries
+            .collapsed
             .into_iter()
             .map(|(first, last)| FoldRange {
                 start_line: row(first),
@@ -266,6 +304,31 @@ impl FoldState {
 mod tests {
     use super::*;
 
+    #[test]
+    fn indicators_rebase_while_ranges_wait_for_authoritative_analysis() {
+        let mut state = FoldState::default();
+        state.set_ranges(
+            vec![FoldRange {
+                start_line: 1,
+                end_line: 3,
+            }],
+            5,
+        );
+        state.rebase(
+            "prefix\nheader\nbody\nclose\nlast",
+            "prefix\n\nheader\nbody\nclose\nlast",
+        );
+        assert!(state.ranges().is_empty());
+        assert_eq!(state.indicator_headers().collect::<Vec<_>>(), [2]);
+        assert!(!state.toggle(2));
+        state.rebase(
+            "prefix\n\nheader\nbody\nclose\nlast",
+            "header\nbody\nclose\nlast",
+        );
+        assert_eq!(state.indicator_headers().collect::<Vec<_>>(), [0]);
+        state.set_ranges(vec![], 4);
+        assert!(state.indicator_headers().next().is_none());
+    }
     #[test]
     fn recursive_commands_and_navigation_preserve_unrelated_collapsed_ranges() {
         let ranges = vec![

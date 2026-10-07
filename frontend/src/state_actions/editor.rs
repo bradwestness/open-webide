@@ -27,6 +27,17 @@ mod preparation;
 mod rows;
 pub use rows::{EditorFragmentCache, EditorFragmentWindow, EditorRowSourceSlice};
 
+/// Identity of a retained editor presentation; source revisions can advance
+/// within it, while replacing a document or account releases the old frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorPresentationScope {
+    project: i64,
+    path: String,
+    epoch: u64,
+    read: u64,
+    account: u64,
+}
+
 /// Facts established by a guarded native insertion transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeTextCommit {
@@ -61,6 +72,16 @@ pub struct EditorActions {
 }
 
 impl EditorActions {
+    pub fn presentation_scope(self) -> Option<EditorPresentationScope> {
+        Some(EditorPresentationScope {
+            project: self.workspace.active_project.get()?,
+            path: self.workspace.open_file.get()?,
+            epoch: self.workspace.pending_epoch.get(),
+            read: self.workspace.editor_read_revision.get(),
+            account: self.auth.map_or(0, |auth| auth.generation.get()),
+        })
+    }
+
     pub fn account_generation(self) -> u64 {
         self.auth.map_or(0, |auth| auth.generation.get_untracked())
     }
@@ -889,6 +910,9 @@ impl EditorActions {
                 .with_untracked(|current| current != &text)
         {
             return None;
+        }
+        if result.0 == openwebide_core::editor::SyntaxStatus::Cancelled {
+            return Some(result.0);
         }
         let ranges = result.1;
         let changed = self
