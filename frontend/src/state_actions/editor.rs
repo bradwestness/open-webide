@@ -271,7 +271,7 @@ impl EditorActions {
         });
     }
 
-    pub fn end_composition(self) -> Result<Option<(String, Selection)>, EditError> {
+    pub fn end_composition(self) -> Result<Option<Selection>, EditError> {
         let Some(owner) = self.workspace.editor_composition.get_untracked() else {
             return Ok(None);
         };
@@ -300,9 +300,9 @@ impl EditorActions {
             })
             .flatten();
         if let Some((outcome, source, selection, dirty)) = result {
-            self.workspace.content.set(source.clone());
+            self.workspace.content.set(source);
             self.workspace.dirty.set(dirty);
-            return outcome.map(|_| Some((source, selection)));
+            return outcome.map(|_| Some(selection));
         }
         Ok(None)
     }
@@ -1062,11 +1062,7 @@ impl EditorActions {
                 )))
             })
             .unwrap_or(Ok(None));
-        if let Ok(Some((text, _))) = &result {
-            self.workspace.content.set(text.clone());
-            self.publish_dirty(key);
-        }
-        result.map(|result| result.map(|(_, selection)| selection))
+        self.publish_edit(key, result)
     }
 
     pub fn navigation_target(self, query: &str) -> Option<usize> {
@@ -1522,7 +1518,7 @@ impl EditorActions {
         command: EditorCommand,
         selection: Selection,
         indentation: Indentation,
-    ) -> Result<Option<(String, Selection)>, EditError> {
+    ) -> Result<Option<Selection>, EditError> {
         let Some(key) = self.key() else {
             return Ok(None);
         };
@@ -1645,11 +1641,7 @@ impl EditorActions {
                 )))
             })
             .unwrap_or(Ok(None));
-        if let Ok(Some((text, _))) = &result {
-            self.workspace.content.set(text.clone());
-            self.publish_dirty(key);
-        }
-        result
+        self.publish_edit(key, result)
     }
 
     pub fn clipboard_content(
@@ -1715,18 +1707,14 @@ impl EditorActions {
                 )))
             })
             .unwrap_or(Ok(None));
-        if let Ok(Some((text, _))) = &result {
-            self.workspace.content.set(text.clone());
-            self.publish_dirty(key);
-        }
-        result.map(|value| value.map(|(_, selection)| selection))
+        self.publish_edit(key, result)
     }
 
     pub fn paste_with_indentation(
         self,
         text: &str,
         selection: Selection,
-    ) -> Result<Option<(String, Selection)>, EditError> {
+    ) -> Result<Option<Selection>, EditError> {
         self.paste_clipboard_with_indentation(text, None, selection)
     }
 
@@ -1735,7 +1723,7 @@ impl EditorActions {
         text: &str,
         metadata: Option<&str>,
         selection: Selection,
-    ) -> Result<Option<(String, Selection)>, EditError> {
+    ) -> Result<Option<Selection>, EditError> {
         if self.is_composing() {
             return Err(EditError::CompositionActive);
         }
@@ -1764,11 +1752,22 @@ impl EditorActions {
                 )))
             })
             .unwrap_or(Ok(None));
-        if let Ok(Some((text, _))) = &result {
-            self.workspace.content.set(text.clone());
-            self.publish_dirty(key);
-        }
-        result
+        self.publish_edit(key, result)
+    }
+
+    /// Publish edited text once; callers only need the resulting caret selection.
+    fn publish_edit<E>(
+        self,
+        key: (i64, String),
+        result: Result<Option<(String, Selection)>, E>,
+    ) -> Result<Option<Selection>, E> {
+        result.map(|result| {
+            result.map(|(text, selection)| {
+                self.workspace.content.set(text);
+                self.publish_dirty(key);
+                selection
+            })
+        })
     }
 
     fn publish_dirty(self, key: (i64, String)) {

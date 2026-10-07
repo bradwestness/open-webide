@@ -420,7 +420,7 @@ async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_t
             );
         }
         assert_eq!(actions.selections(source).len(), 2);
-        let (paired, primary) = actions
+        let primary = actions
             .command(
                 EditorCommand::TypeCharacter('('),
                 selections[0],
@@ -428,24 +428,28 @@ async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_t
             )
             .unwrap()
             .unwrap();
+        let paired = mounted.state.workspace.content.get_untracked();
         assert_eq!(paired, "文 (foo)\r\n(foo)");
         assert_eq!(actions.selections(&paired).len(), 2);
-        let (pasted, primary) = actions
+        let primary = actions
             .paste_with_indentation("😀", primary)
             .unwrap()
             .unwrap();
+        let pasted = mounted.state.workspace.content.get_untracked();
         assert_eq!(pasted, "文 (😀)\r\n(😀)");
         assert_eq!(actions.selections(&pasted).len(), 2);
-        let (restored, primary) = actions
+        let primary = actions
             .command(EditorCommand::Undo, primary, Indentation::default())
             .unwrap()
             .unwrap();
+        let restored = mounted.state.workspace.content.get_untracked();
         assert_eq!(restored, paired);
         assert_eq!(actions.selections(&restored).len(), 2);
-        let (restored, _) = actions
+        actions
             .command(EditorCommand::Undo, primary, Indentation::default())
             .unwrap()
             .unwrap();
+        let restored = mounted.state.workspace.content.get_untracked();
         assert_eq!(restored, source);
         assert_eq!(actions.selections(&restored), selections);
         mounted

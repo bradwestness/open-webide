@@ -1923,7 +1923,7 @@ fn apply_editor_command(
     command: EditorCommand,
     textarea: &web_sys::HtmlTextAreaElement,
 ) -> bool {
-    if let Ok(Some((_text, selection))) = actions.command(
+    if let Ok(Some(selection)) = actions.command(
         command,
         projected_selection(actions, textarea),
         actions.rules_untracked().indentation,
@@ -3154,7 +3154,7 @@ pub fn Editor(
                                                 event.prevent_default();
                                                 let selection = projected_selection(editor_actions, &textarea);
                                                 let metadata = clipboard.get_data(openwebide_core::editor::CLIPBOARD_SELECTIONS_MIME).ok();
-                                                let result = if matching { editor_actions.paste_clipboard_with_indentation(&pasted, metadata.as_deref(), selection).map(|result| result.map(|(_, selection)| selection)) } else { editor_actions.paste_clipboard(&pasted, metadata.as_deref(), selection) };
+                                                let result = if matching { editor_actions.paste_clipboard_with_indentation(&pasted, metadata.as_deref(), selection) } else { editor_actions.paste_clipboard(&pasted, metadata.as_deref(), selection) };
                                                 match result {
                                                     Ok(Some(selection)) => { action_error.set(None); refresh_editor_folds(editor_actions); render_editor_selection(editor_actions, &textarea, selection, false); }
                                                     Err(error) => action_error.set(Some(error.to_string())),

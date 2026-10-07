@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Publish command, clipboard, search replacement and composition results directly into shared editor state, returning caret selections without another full-file text copy.
+
 - Keep highlighted editor clicks and drags at the intended column, including blank space after a line and padding above or below its glyphs. Validate browser hit results against measured text boundaries; cover trusted press/move/release plus insertion/undo in Rust, C# and JSON drafts in both project modes.
 
 - Share source text, line indexes and prepared projections across document and composition snapshots. Detach edited versions with insertion headroom, retain unchanged snapshot coordinates/history, and restore original allocations and prepared projection when composition is cancelled.

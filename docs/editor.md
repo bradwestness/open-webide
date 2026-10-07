@@ -420,9 +420,12 @@ owned text at the persistence boundary.
 Ownership checks, cursor counts, Select All and navigation queries borrow current
 source instead of cloning complete file values. Native selection mapping lives in
 the shared input facade; the DOM adapter supplies UTF-16 positions and reads its
-value only when an unbound folded view needs validation. Ordinary typing keys do not capture
-a source snapshot in selection dispatch. Command snapshots, composition snapshots
-and workspace publication still retain complete source Strings.
+value only when an unbound folded view needs validation. Ordinary typing keys do not
+capture a source snapshot in selection dispatch. Commands, clipboard edits and
+search replacements move their publication text into shared workspace state and
+return selections; composition completion likewise publishes its text without
+retaining another result copy. Document/composition snapshots share source storage,
+while workspace publication still retains an owned complete source String.
 Ordinary transactions validate borrowed proposed pieces before mutating the existing
 String, including grouped undo/redo. Growth reserves at most 64 KiB of headroom
 above the transaction's peak size, rather than doubling a large buffer. Affected row contexts are merged so multiple
@@ -437,7 +440,7 @@ prefixes. Publishing buffers,
 projections and IME paths still materialize full Strings. The native textarea still owns
 the complete projected source during initial cold preparation and on touch devices;
 prepared fine-pointer editors retain surrounding text instead. Full source
-publication and composition snapshots still prevent complete viewport memory bounds.
+publication and retained source versions still prevent complete viewport memory bounds.
 
 ## Document coordinates and caches
 

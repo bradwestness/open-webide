@@ -106,8 +106,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   bounded input in both modes. Click/drag hits share measured-boundary validation
   and row-padding normalization. Composition baselines share source text,
   line indexes and prepared projections; edits detach the changed version and
-  cancellation restores the original allocations. Reduce remaining buffer/projection
-  publication. History snapshots
+  cancellation restores the original allocations. Commands, clipboard edits,
+  search replacements and composition completion move their text into shared state
+  and return selections without retaining a second publication copy. Reduce remaining
+  buffer/projection publication. History snapshots
   share immutable steps and transaction payloads rather than copying retained edits,
   and document/composition snapshots share saved-text baselines. Cancellation now
   borrows preview/restored source and copies only matching UI destinations. Admission now skips
