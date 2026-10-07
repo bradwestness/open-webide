@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse editing contexts from unchanged parser subtrees, rebasing protected regions, interpolation holes and selection ranges. Share retained-tree identity and work limits with folding; document-dependent custom classifiers and external interpolation owners use fresh extraction.
+
 - Reuse parser fold descriptors from unchanged top-level subtrees across edits, rebasing shifted positions and checking closing-line text without another full tree walk. Keep analysis limits, embedded languages and parent-owned headers intact.
 - Mark pending editor recovery checks as busy for assistive technology and wait for them before production pointer verification, avoiding gesture coordinates measured across the disappearing recovery banner.
 

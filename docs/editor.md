@@ -234,6 +234,15 @@ tree keeps node IDs alive; reused positions rebase from the new subtree origin,
 closing-line text is checked again and reused nodes still count toward analysis
 limits. External parent-owned headers use fresh extraction. Each embedded parser
 retains its own bounded current-tree cache, cleared with parser cancellation.
+Editing contexts use the same retained-tree identity and visit budget, with
+source-relative protected regions, interpolation holes and selection ranges.
+Classifiers declare `SyntaxContextScope::Node` (kind, flags and descendants),
+`Parent` (also the immediate parent's kind) or `Document` (broader dependencies).
+Document-dependent classifiers and chunks whose interpolation owners lie outside
+the subtree use fresh extraction. Built-in PHP classification uses the parent
+scope; other built-ins use node scope. Context assembly and lexical fallbacks
+still scan the complete source, and edits inside a large top-level subtree still
+revisit that subtree.
 The frontend facade also rejects changed account, file-read, source and tab-width
 scopes before publishing results.
 

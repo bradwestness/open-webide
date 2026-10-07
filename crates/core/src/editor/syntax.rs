@@ -1,9 +1,11 @@
 //! Incremental syntax analysis shared by browser and native editor adapters.
 mod cache;
 pub use cache::{MAX_SYNTAX_DOCUMENTS, MAX_SYNTAX_SOURCE_BYTES, SyntaxPreparations};
+mod contexts;
 mod folds;
 mod highlighting;
 mod service;
+mod subtrees;
 pub use service::{MAX_SYNTAX_REQUEST_BYTES, SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxRequest};
 mod transfer;
 use super::{FoldRange, MAX_STRUCTURE_BYTES, SyntaxProvider, normalize_folds, syntax_provider};
@@ -77,6 +79,7 @@ struct EmbeddedSyntax {
     tree: Option<Tree>,
     range: Range,
     folds: std::cell::RefCell<folds::ParsedFolds>,
+    contexts: std::cell::RefCell<contexts::ParsedContexts>,
 }
 
 /// One outer parser plus independent embedded bodies. All positions are source coordinates.
@@ -92,6 +95,7 @@ pub struct SyntaxDocument {
     lexical: Option<Arc<crate::highlight::LexicalSnapshot>>,
     publication: Option<(u32, Arc<SyntaxAnalysis>)>,
     folds: std::cell::RefCell<folds::ParsedFolds>,
+    contexts: std::cell::RefCell<contexts::ParsedContexts>,
 }
 
 impl SyntaxDocument {
@@ -116,6 +120,7 @@ impl SyntaxDocument {
             lexical: None,
             publication: None,
             folds: std::cell::RefCell::default(),
+            contexts: std::cell::RefCell::default(),
         })
     }
 
@@ -265,6 +270,7 @@ impl SyntaxDocument {
                     parser: new_parser(provider)?,
                     tree: None,
                     folds: std::cell::RefCell::default(),
+                    contexts: std::cell::RefCell::default(),
                     range,
                 }
             };
@@ -339,13 +345,18 @@ impl SyntaxDocument {
             }));
         }
         let mut visited = 0;
-        let mut contexts = SyntaxContexts::default();
+        let mut contexts = contexts::SyntaxContexts::default();
         if let (Some(tree), Some(provider)) = (&self.tree, self.provider) {
-            collect_contexts(tree, provider, &self.text, &mut visited, &mut contexts).ok()?;
+            self.contexts
+                .borrow_mut()
+                .collect(tree, provider, &self.text, &mut visited, &mut contexts)
+                .ok()?;
         }
         for body in &self.embedded {
             if let Some(tree) = &body.tree {
-                collect_contexts(tree, body.provider, &self.text, &mut visited, &mut contexts)
+                body.contexts
+                    .borrow_mut()
+                    .collect(tree, body.provider, &self.text, &mut visited, &mut contexts)
                     .ok()?;
             }
         }
@@ -434,6 +445,7 @@ impl SyntaxDocument {
         self.lexical = None;
         self.publication = None;
         self.folds.borrow_mut().clear();
+        self.contexts.borrow_mut().clear();
     }
 
     pub fn folds(&self) -> Vec<FoldRange> {
@@ -482,89 +494,6 @@ impl SyntaxDocument {
 
 fn overlaps(left: &ByteRange<usize>, right: &ByteRange<usize>) -> bool {
     left.start < right.end && right.start < left.end
-}
-
-#[derive(Default)]
-struct SyntaxContexts {
-    protected: Vec<(ByteRange<usize>, bool, RegionKind)>,
-    holes: Vec<(ByteRange<usize>, ByteRange<usize>)>,
-    selections: Vec<ByteRange<usize>>,
-}
-
-fn collect_contexts(
-    tree: &Tree,
-    provider: SyntaxProvider,
-    text: &str,
-    visited: &mut usize,
-    contexts: &mut SyntaxContexts,
-) -> Result<(), SyntaxStatus> {
-    let mut ancestry = 0;
-    visit_tree(tree, visited, |node| {
-        let range = node.start_byte()..node.end_byte();
-        if range.start > range.end
-            || !text.is_char_boundary(range.start)
-            || !text.is_char_boundary(range.end)
-        {
-            return Err(SyntaxStatus::Cancelled);
-        }
-        if range.is_empty() {
-            return Ok(());
-        }
-        if node.is_named() && !node.is_error() && !node.is_missing() {
-            contexts.selections.push(range.clone());
-        }
-        let Some(class) = provider.context.and_then(|classify| classify(node)) else {
-            return Ok(());
-        };
-        if class == SyntaxContextKind::Interpolation {
-            let mut parent = node.parent();
-            while let Some(owner) = parent {
-                ancestry += 1;
-                if ancestry > MAX_FOLD_NODES {
-                    return Err(SyntaxStatus::TooLarge);
-                }
-                if matches!(
-                    provider.context.and_then(|classify| classify(owner)),
-                    Some(
-                        SyntaxContextKind::String
-                            | SyntaxContextKind::Template
-                            | SyntaxContextKind::Regex
-                    )
-                ) {
-                    contexts
-                        .holes
-                        .push((owner.start_byte()..owner.end_byte(), range.clone()));
-                    // Wrappers such as translated shell strings and PHP heredocs
-                    // may protect the same interpolation through multiple owners.
-                    // Remove it from every enclosing literal, retaining inner literals.
-                }
-                parent = owner.parent();
-            }
-            return Ok(());
-        }
-        let value = &text[range.clone()];
-        let (kind, closed) = match class {
-            SyntaxContextKind::String => (RegionKind::String, !node.has_error()),
-            SyntaxContextKind::Template => (RegionKind::Template, !node.has_error()),
-            SyntaxContextKind::Text => (RegionKind::Text, true),
-            SyntaxContextKind::Regex => (RegionKind::Regex, !node.has_error()),
-            SyntaxContextKind::Comment if value.starts_with("/*") => {
-                (RegionKind::BlockComment, value.ends_with("*/"))
-            }
-            SyntaxContextKind::Comment if value.starts_with("<!--") => {
-                (RegionKind::BlockComment, value.ends_with("-->"))
-            }
-            SyntaxContextKind::Comment => (RegionKind::LineComment, false),
-            SyntaxContextKind::Interpolation => unreachable!(),
-        };
-        contexts.protected.push((range, closed, kind));
-        Ok(())
-    })?;
-    *visited += ancestry;
-    if *visited > MAX_FOLD_NODES {
-        return Err(SyntaxStatus::TooLarge);
-    }
-    Ok(())
 }
 
 fn new_parser(provider: SyntaxProvider) -> Result<Parser, SyntaxStatus> {
@@ -617,10 +546,7 @@ fn visit_node<'tree>(
 ) -> Result<(), SyntaxStatus> {
     let mut cursor = node.walk();
     loop {
-        *visited += 1;
-        if *visited > MAX_FOLD_NODES {
-            return Err(SyntaxStatus::TooLarge);
-        }
+        subtrees::charge_visits(visited, 1)?;
         visitor(cursor.node())?;
         if cursor.goto_first_child() {
             continue;
@@ -816,6 +742,154 @@ mod tests {
         assert!(next.structure().unwrap().matches_source(&revised));
         assert_eq!(first.source(), source);
         assert_eq!(next.source(), revised);
+    }
+
+    #[test]
+    fn reused_contexts_match_fresh_structures_across_provider_edits() {
+        let sources = super::super::syntax_contracts::LANGUAGE_CASES
+            .iter()
+            .map(|&(path, source, _)| (crate::highlight::language_from_path(path), source))
+            .chain([
+                (
+                    Language::JavaScript,
+                    "function f() { return `text ${call(\"inner\")} tail`; }\r\n",
+                ),
+                (
+                    Language::CSharp,
+                    "class C { string s = $\"text {call(\"inner\")} tail\"; }\r\n",
+                ),
+                (
+                    Language::Php,
+                    "<?php function f() { return \"text {$items[\"inner\"]} tail\"; } ?>\r\n",
+                ),
+                (
+                    Language::Shell,
+                    "f() { echo \"text $(call 'inner') tail\"; }\r\n",
+                ),
+            ]);
+        for (language, source) in sources {
+            let original = source.repeat(3);
+            let mut syntax = SyntaxDocument::new(language).unwrap();
+            for text in [
+                original.clone(),
+                format!("\r\n{original}"),
+                original.replacen("文😀", "😀 changed", 1),
+                original.replacen("inner", "other", 1),
+                original.replacen("inner", "unterminated\"", 1),
+                original.replace('}', ""),
+                format!("文😀 {original}"),
+                original,
+            ] {
+                syntax.update(&text, || true);
+                let context = syntax.structure().unwrap();
+                let mut fresh = SyntaxDocument::new(language).unwrap();
+                fresh.update(&text, || true);
+                assert_eq!(
+                    serde_json::to_value(context.transfer_data()).unwrap(),
+                    serde_json::to_value(fresh.structure().unwrap().transfer_data()).unwrap(),
+                    "{language:?}: {text}"
+                );
+                assert!(context.matches_source(&text));
+            }
+        }
+    }
+
+    #[test]
+    fn contexts_skip_unchanged_subtrees_and_preserve_work_limits() {
+        let source = (0..200)
+            .map(|index| format!("fn f{index}() {{ call(\"文😀\"); }}\r\n"))
+            .collect::<String>();
+        let mut syntax = SyntaxDocument::new(Language::Rust).unwrap();
+        syntax.update(&source, || true);
+        let original = syntax.structure().unwrap();
+        let changed = format!("// before\r\n{source}");
+        syntax.update(&changed, || true);
+        let next = syntax.structure().unwrap();
+        let mut nodes = 0;
+        visit_tree(syntax.tree.as_ref().unwrap(), &mut nodes, |_| Ok(())).unwrap();
+        assert!(syntax.contexts.borrow().reused_nodes > nodes / 2);
+        assert!(original.matches_source(&source));
+        assert!(next.matches_source(&changed));
+        let mut visited = MAX_FOLD_NODES - 1;
+        let mut contexts = contexts::SyntaxContexts::default();
+        assert_eq!(
+            syntax.contexts.borrow_mut().collect(
+                syntax.tree.as_ref().unwrap(),
+                syntax.provider.unwrap(),
+                &changed,
+                &mut visited,
+                &mut contexts
+            ),
+            Err(SyntaxStatus::TooLarge)
+        );
+        syntax.update(&changed, || false);
+        assert_eq!(syntax.contexts.borrow().reused_nodes, 0);
+        assert!(syntax.structure().is_none());
+    }
+
+    #[test]
+    fn interpolation_owners_outside_a_subtree_are_recomputed() {
+        fn context(node: Node<'_>) -> Option<SyntaxContextKind> {
+            match node.kind() {
+                "source_file" => Some(SyntaxContextKind::String),
+                "identifier" => Some(SyntaxContextKind::Interpolation),
+                _ => None,
+            }
+        }
+        let provider = SyntaxProvider {
+            context: Some(context),
+            context_scope: super::super::SyntaxContextScope::Node,
+            ..syntax_provider(Language::Rust).unwrap()
+        };
+        // The root owner's byte range initially coincides with its only child.
+        let source = "fn first() { call(); }";
+        let mut syntax = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        syntax.update(source, || true);
+        syntax.structure().unwrap();
+        let changed = format!("fn before() {{}}\r\n{source}");
+        syntax.update(&changed, || true);
+        let next = syntax.structure().unwrap();
+        let mut fresh = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        fresh.update(&changed, || true);
+        assert_eq!(
+            serde_json::to_value(next.transfer_data()).unwrap(),
+            serde_json::to_value(fresh.structure().unwrap().transfer_data()).unwrap()
+        );
+        assert_eq!(syntax.contexts.borrow().reused_nodes, 0);
+    }
+
+    #[test]
+    fn document_dependent_classifiers_do_not_reuse_contexts() {
+        fn context(node: Node<'_>) -> Option<SyntaxContextKind> {
+            if node.kind() != "identifier" {
+                return None;
+            }
+            let mut root = node;
+            while let Some(parent) = root.parent() {
+                root = parent;
+            }
+            root.has_error().then_some(SyntaxContextKind::String)
+        }
+        let provider = SyntaxProvider {
+            context: Some(context),
+            context_scope: super::super::SyntaxContextScope::Document,
+            ..syntax_provider(Language::Rust).unwrap()
+        };
+        let source = "fn first() { call(); }\r\nfn second() { call(); }\r\n";
+        let mut syntax = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        syntax.update(source, || true);
+        let original = syntax.structure().unwrap();
+        let changed = format!("{source}fn broken(");
+        syntax.update(&changed, || true);
+        let next = syntax.structure().unwrap();
+        let mut fresh = SyntaxDocument::with_provider(Language::Rust, Some(provider)).unwrap();
+        fresh.update(&changed, || true);
+        assert_eq!(
+            serde_json::to_value(next.transfer_data()).unwrap(),
+            serde_json::to_value(fresh.structure().unwrap().transfer_data()).unwrap()
+        );
+        assert_ne!(original.protected, next.protected);
+        assert_eq!(syntax.contexts.borrow().reused_nodes, 0);
     }
 
     #[test]
@@ -1980,6 +2054,7 @@ mod tests {
         let provider = SyntaxProvider {
             language: Language::Rust,
             context: None,
+            context_scope: super::super::syntax_providers::SyntaxContextScope::Document,
             highlight: None,
             injection: None,
             grammar: || tree_sitter_rust::LANGUAGE.into(),
