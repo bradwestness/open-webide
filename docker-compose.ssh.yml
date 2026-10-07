@@ -1,0 +1,17 @@
+# Optional overlay for source, release or HTTPS Compose deployments.
+services:
+  openwebide:
+    environment:
+      SSH_AUTH_SOCK: /run/openwebide-ssh-agent.sock
+    volumes:
+      - type: bind
+        source: ${OPENWEBIDE_SSH_AUTH_SOCK:?Set the host SSH agent socket path}
+        target: /run/openwebide-ssh-agent.sock
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OPENWEBIDE_SSH_CONFIG_DIR:?Set a directory containing only public SSH configuration}
+        target: /run/openwebide-ssh
+        read_only: true
+        bind:
+          create_host_path: false

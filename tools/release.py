@@ -116,6 +116,7 @@ def prepare_install_files(root, output):
     for source, destination in [
         ("docker-compose.release.yml", "docker-compose.yml"),
         ("docker-compose.https.yml", "docker-compose.https.yml"),
+        ("docker-compose.ssh.yml", "docker-compose.ssh.yml"),
         ("deploy/openwebide.image", "openwebide.image"),
         ("deploy/openwebide.container", "openwebide.container"),
         ("docker/tailscale/serve-config.sh", "serve-config.sh"),

@@ -251,3 +251,9 @@ signing account or persistent publishing secret is required. macOS archives are
 unsigned; verify their checksums and assess signing/notarization if distribution
 requirements change. See [native multi-platform image builds](https://docs.docker.com/build/ci/github-actions/multi-platform/)
 and [draft-first GitHub Releases](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository).
+
+## Git SSH credentials
+
+Release assets include the optional `docker-compose.ssh.yml` overlay. Use it with
+the downloaded Compose file to forward a host agent and public SSH configuration;
+see [Git authentication](git-ssh.md). Quadlet includes matching opt-in examples.

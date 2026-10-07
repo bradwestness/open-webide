@@ -34,9 +34,14 @@ RUN cargo build -p openwebide-bridge --release --locked
 # --- runtime: Spin + prebuilt components ---
 FROM ghcr.io/spinframework/spin:v4.1.0
 
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends openssh-client && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=builder /src/target/release/openwebide-bridge /usr/local/bin/
 COPY --chmod=755 docker/entrypoint.sh ./entrypoint.sh
+COPY --chmod=755 docker/ssh-init.sh /usr/local/bin/openwebide-ssh-init
 COPY --chmod=755 docker/git.sh /usr/local/bin/git
 COPY --from=builder /src/spin.toml ./
 COPY --from=builder /src/target/wasm32-wasip2/release/openwebide_backend.wasm \

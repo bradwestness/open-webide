@@ -81,6 +81,13 @@ For Linux services, see the [Podman quadlet guide](docs/podman-quadlet.md).
 For private HTTPS access from phones and other devices, the recommended approach
 is [Tailscale Serve in a separate container](docs/tailscale.md).
 
+## Git authentication
+
+Native bridges use the host SSH agent and configuration. Docker can forward the
+host agent with the optional `docker-compose.ssh.yml` overlay, keeping private keys
+on the host. See [Git authentication](docs/git-ssh.md) for Docker Desktop, Linux,
+Podman, host-key verification and HTTPS credential helpers.
+
 ## Run from source
 
 Install [Rust](https://rustup.rs/), [Spin 4.x](https://spinframework.dev/docs/latest/installation/),

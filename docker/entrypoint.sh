@@ -1,6 +1,8 @@
 #!/bin/bash
 set -u
 
+openwebide-ssh-init || exit $?
+
 if [[ $# -gt 0 && $1 != -* ]]; then
     exec "$@"
 fi

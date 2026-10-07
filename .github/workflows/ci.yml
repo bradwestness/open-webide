@@ -34,6 +34,7 @@ jobs:
           python3 -m unittest discover -s tools -p 'test_release.py'
           python3 tools/release.py validate
           docker compose -f docker-compose.release.yml config --quiet
+          OPENWEBIDE_SSH_AUTH_SOCK=/tmp/agent.sock OPENWEBIDE_SSH_CONFIG_DIR=/tmp/public-ssh docker compose -f docker-compose.release.yml -f docker-compose.ssh.yml config --quiet
           OPENWEBIDE_TAILSCALE_HOST=openwebide.example.ts.net OPENWEBIDE_SERVE_CONFIG_DIR=/tmp/serve docker compose -f docker-compose.https.yml config --quiet
 
       - name: Clippy (native crates)
@@ -187,13 +188,18 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Test container supervisor
-        run: bash docker/entrypoint-test.sh
+        run: |
+          bash docker/entrypoint-test.sh
+          bash docker/ssh-init-test.sh
 
       - name: Build container image
         run: docker build -t openwebide:ci .
 
       - name: Check bundled bridge
         run: docker run --rm openwebide:ci openwebide-bridge --help
+
+      - name: Check SSH Git agent forwarding and strict host keys
+        run: bash docker/ssh-test/check.sh openwebide:ci
 
       - name: Check host-owned workspace Git access
         run: docker run --rm -v "$PWD/docker/git-ownership-test.sh:/git-ownership-test.sh:ro" openwebide:ci bash /git-ownership-test.sh

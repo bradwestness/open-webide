@@ -36,7 +36,10 @@ async fn exec_git_bytes(args: &[&str], cwd: &Path) -> Result<(Vec<u8>, String, b
     cmd.process_group(0);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
-        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        cmd.env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes",
+        );
     }
 
     let child = cmd
@@ -500,6 +503,17 @@ pub async fn checkout_branch(
     })
 }
 
+/// Keep Git's diagnostic and provide setup guidance without classifying stderr.
+fn sync_failure_detail(stderr: &str) -> String {
+    format!(
+        "{}\nSSH authentication: load the key with ssh-add on the bridge host and forward \
+         its agent socket to Docker. Host key verification: verify the fingerprint, update \
+         known_hosts and recreate the container with refreshed public configuration. \
+         HTTPS authentication: configure a credential helper/token on the bridge.",
+        stderr.trim()
+    )
+}
+
 /// Synchronize with remote (pull, push, or sync).
 pub async fn sync_repo(repo_dir: &Path, req: &GitSyncRequest) -> Result<GitSyncResult, GitError> {
     if req.action != "pull" && req.action != "push" && req.action != "sync" {
@@ -547,7 +561,7 @@ pub async fn sync_repo(repo_dir: &Path, req: &GitSyncRequest) -> Result<GitSyncR
         if !ok {
             return Err(GitError::Execution(format!(
                 "git pull failed: {}",
-                pull_err.trim()
+                sync_failure_detail(&pull_err)
             )));
         }
 
@@ -586,7 +600,7 @@ pub async fn sync_repo(repo_dir: &Path, req: &GitSyncRequest) -> Result<GitSyncR
         if !ok {
             return Err(GitError::Execution(format!(
                 "git push failed: {}",
-                push_err.trim()
+                sync_failure_detail(&push_err)
             )));
         }
 

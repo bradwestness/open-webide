@@ -57,6 +57,7 @@ class ReleaseTests(unittest.TestCase):
         sources = {
             'docker-compose.release.yml': 'image: ghcr.io/openwebide/openwebide:latest\n',
             'docker-compose.https.yml': 'image: ghcr.io/openwebide/openwebide:latest\n',
+            'docker-compose.ssh.yml': 'services: {}\n',
             'deploy/openwebide.image': '[Image]\nImage=ghcr.io/openwebide/openwebide:latest\n',
             'deploy/openwebide.container': '[Container]\nImage=openwebide.image\nPull=newer\nAutoUpdate=registry\n',
             'docker/tailscale/serve-config.sh': '#!/bin/sh\necho config\n',
@@ -73,6 +74,7 @@ class ReleaseTests(unittest.TestCase):
                 for name in ['docker-compose.yml', 'docker-compose.https.yml']:
                     self.assertIn(f'openwebide:v{value}', (output / name).read_text())
                 self.assertIn(f'openwebide:{channel}', (output / 'openwebide.image').read_text())
+                self.assertEqual((output / 'docker-compose.ssh.yml').read_text(), sources['docker-compose.ssh.yml'])
                 self.assertIn('AutoUpdate=registry', (output / 'openwebide.container').read_text())
                 with self.assertRaises(ValueError):
                     release.prepare_install_files(self.root, output)

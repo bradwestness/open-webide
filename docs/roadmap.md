@@ -8,28 +8,6 @@ welcome — moved to [CHANGELOG.md](../CHANGELOG.md).
 
 ## Next
 
-### Git over SSH in the Docker image
-
-Git (status, commit, pull, push, sync) runs through the bridge in both local and remote
-mode, with `GIT_TERMINAL_PROMPT=0` and `ssh -o BatchMode=yes`, so it uses whatever SSH
-setup the bridge's machine has. A natively run bridge already works with the host's
-`~/.ssh` and ssh-agent; the bridge in the Docker image has no `ssh` client, agent, or
-SSH config. Make it work there without private keys ever entering the container:
-
-- Install `openssh-client` in the image.
-- Opt-in ssh-agent forwarding in compose (Docker Desktop's
-  `/run/host-services/ssh-auth.sock`; the host's `$SSH_AUTH_SOCK` on Linux and podman,
-  with matching quadlet `Volume=`/`Environment=` lines).
-- Mount `~/.ssh/config`, `known_hosts` and the `*.pub` files read-only; the entrypoint
-  copies them into `/root/.ssh` with the permissions ssh requires, so host aliases and
-  `IdentitiesOnly` keys resolve through the agent.
-- First contact with an unknown host: `StrictHostKeyChecking=accept-new` in the
-  bridge's `GIT_SSH_COMMAND`, or stay strict and rely on the mounted `known_hosts`.
-- Plain-language errors for `Permission denied (publickey)` and
-  `Host key verification failed` (load the key into the agent / no agent forwarded).
-- README: git over SSH for native vs Docker, plus HTTPS with a credential helper or
-  token as the alternative.
-
 ### Remaining manual verification
 
 The model setup and code hardening follow-ups are implemented. Native and browser

@@ -88,6 +88,7 @@ jobs:
         run: |
           docker run --rm openwebide:release-test openwebide-bridge --help
           docker run --rm -v "$PWD/docker/git-ownership-test.sh:/git-ownership-test.sh:ro" openwebide:release-test bash /git-ownership-test.sh
+          bash docker/ssh-test/check.sh openwebide:release-test
           python3 docker/https-test/check.py docker --image openwebide:release-test
       - name: Package Linux bridge from tested image
         env:

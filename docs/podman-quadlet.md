@@ -5,6 +5,8 @@ project files persisted on the host. Use a recent Podman with Quadlet `.image`
 support and systemd. See [Podman's Quadlet reference](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html).
 This deployment is not available on macOS/Windows.
 
+For Git over SSH, see [agent forwarding and public SSH configuration](git-ssh.md#podman--quadlet).
+
 ## Install a published release
 
 After the first public release, download `openwebide.image` and

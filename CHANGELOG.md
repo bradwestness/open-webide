@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Support Git over SSH in Docker with an OpenSSH client, opt-in host-agent forwarding and read-only public configuration import. Keep strict host-key checks, add pull/push credential guidance, and document native, Docker, Quadlet and HTTPS setup.
+
 - Retain source-validated grammar paint pieces and immutable token rows across edits. Reuse unchanged token allocations when classification, embedded language and piece boundaries still match; repaint changed contexts and clear the cache on cancelled analysis.
 
 - Reuse unchanged syntax subtrees inside classes, implementation blocks and other nested containers. Extract multiline containers and rebuilt wrappers separately, validate retained parent kinds, and keep external fold headers and interpolation owners fresh.

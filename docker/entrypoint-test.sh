@@ -15,6 +15,7 @@ trap cleanup EXIT
 
 export TEST_DIR="$test_dir"
 export PATH="$test_dir:$PATH"
+ln -s "$root/docker/ssh-init.sh" "$test_dir/openwebide-ssh-init"
 cat > "$test_dir/child" <<'CHILD'
 #!/bin/bash
 set -eu
