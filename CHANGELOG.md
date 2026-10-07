@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Restore cancelled composition before publishing its borrowed preview and committed source. Avoid full-file cancellation copies for stale owners and allocate UI source only where the matching active view or project snapshot needs restoration, with shared local/remote guards.
+
 - Borrow editor source when scheduling cursor/page movement and remove the motion queue's full-file copy. Guard queued requests with document identity as well as revision, selection and projection, rejecting replacements with identical text without affecting shared local/remote movement behavior.
 
 - Add release-app Chromium composition and history checks to CI for local and remote drafts with LF and CRLF. Exercise pending syntax and bounded native windows, verify candidate updates/commit/cancel and one-step undo/redo against full recovered source, and retain physical PWA input/clipboard verification on the roadmap.

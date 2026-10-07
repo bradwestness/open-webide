@@ -390,6 +390,11 @@ validate eventual secondary edits against the same byte, line and long-line limi
 before publishing the primary change, and failed
 frames restore the pre-composition source, selections and redo history.
 
+Composition cancellation restores the committed document before publishing. Its
+discarded preview and restored source stay borrowed during ownership checks; only
+matching active views and retained project snapshots copy the restored source.
+The engine still retains a full committed baseline while composition is active.
+
 Ownership checks, cursor counts, Select All and navigation queries borrow current
 source instead of cloning complete file values. Native selection mapping lives in
 the shared input facade; the DOM adapter supplies UTF-16 positions and reads its

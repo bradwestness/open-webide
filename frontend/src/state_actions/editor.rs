@@ -238,41 +238,37 @@ impl EditorActions {
         };
         self.workspace.editor_composition.set(None);
         self.typing.set(None);
-        let result = self
-            .workspace
-            .editor_documents
-            .try_update(|documents| {
-                let document = documents.get_mut(&owner.key)?;
-                let preview = document.text().to_string();
-                document
-                    .cancel_composition()
-                    .then(|| (preview, document.text().to_string(), document.is_dirty()))
-            })
-            .flatten();
-        if let Some((preview, source, dirty)) = result
-            && self.workspace.pending_epoch.get_untracked() == owner.epoch
-            && self.account_generation() == owner.account_generation
-        {
-            let current_read =
-                self.workspace.editor_read_revision.get_untracked() == owner.read_revision;
-            self.workspace.snapshots.update(|snapshots| {
-                if let Some(snapshot) = snapshots.get_mut(&owner.key.0)
-                    && snapshot.open_file.as_deref() == Some(&owner.key.1)
-                    && snapshot.content == preview
-                    && (self.key().as_ref() != Some(&owner.key) || current_read)
+        let _ = self.workspace.editor_documents.try_update(|documents| {
+            let Some(document) = documents.get_mut(&owner.key) else {
+                return;
+            };
+            let _ = document.cancel_composition_with(|preview, restored| {
+                if self.workspace.pending_epoch.get_untracked() != owner.epoch
+                    || self.account_generation() != owner.account_generation
                 {
-                    snapshot.content.clone_from(&source);
-                    snapshot.dirty = dirty;
+                    return;
+                }
+                let current_read =
+                    self.workspace.editor_read_revision.get_untracked() == owner.read_revision;
+                self.workspace.snapshots.update(|snapshots| {
+                    if let Some(snapshot) = snapshots.get_mut(&owner.key.0)
+                        && snapshot.open_file.as_deref() == Some(&owner.key.1)
+                        && snapshot.content == preview
+                        && (self.key().as_ref() != Some(&owner.key) || current_read)
+                    {
+                        restored.text().clone_into(&mut snapshot.content);
+                        snapshot.dirty = restored.is_dirty();
+                    }
+                });
+                if current_read
+                    && self.key().as_ref() == Some(&owner.key)
+                    && self.source_matches(preview)
+                {
+                    self.workspace.content.set(restored.text().to_owned());
+                    self.workspace.dirty.set(restored.is_dirty());
                 }
             });
-            if current_read
-                && self.key().as_ref() == Some(&owner.key)
-                && self.source_matches(&preview)
-            {
-                self.workspace.content.set(source);
-                self.workspace.dirty.set(dirty);
-            }
-        }
+        });
     }
 
     pub fn end_composition(self) -> Result<Option<(String, Selection)>, EditError> {

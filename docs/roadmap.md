@@ -98,7 +98,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   full-source access in remaining input paths. Ownership checks, ordinary typing
   selection dispatch and motion scheduling now borrow source; motion queues retain
   document identity instead of another source copy. Reduce
-  full-source composition snapshots and buffer/projection publication. Admission now skips
+  full-source composition baselines and buffer/projection publication. Cancellation now
+  borrows preview/restored source and copies only matching UI destinations. Admission now skips
   untouched complete rows; long boundary rows still scan, and storage still shifts
   suffix bytes and coordinates.
   See [viewport preparation](editor.md#preparation-and-viewport-rendering).

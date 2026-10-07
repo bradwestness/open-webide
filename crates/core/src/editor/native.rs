@@ -250,11 +250,19 @@ impl Document {
         true
     }
     pub fn cancel_composition(&mut self) -> bool {
-        let Some(composition) = self.composition.take() else {
-            return false;
-        };
-        *self = *composition.before;
-        true
+        self.cancel_composition_with(|_, _| ()).is_some()
+    }
+
+    /// Restore committed state before publishing, borrowing the discarded preview
+    /// and restored document so adapters need not copy both complete sources.
+    /// The callback runs only when a composition was active.
+    pub fn cancel_composition_with<T>(
+        &mut self,
+        publish: impl FnOnce(&str, &Self) -> T,
+    ) -> Option<T> {
+        let composition = self.composition.take()?;
+        let preview = std::mem::replace(self, *composition.before);
+        Some(publish(preview.text(), self))
     }
     pub fn end_composition(&mut self) -> Result<bool, EditError> {
         let Some(composition) = self.composition.take() else {
@@ -397,6 +405,47 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cancellation_publishes_borrowed_preview_after_restoring_committed_history() {
+        let mut document = super::Document::new("文\r\n😀");
+        document.insert_native_text("a", None).unwrap();
+        let committed = document.clone();
+        assert!(document.begin_composition(Some(5)));
+        document
+            .native_edit(
+                Some(super::Edit::replace(1..1, "候補")),
+                super::Selection::caret(7),
+                super::NativeInputKind::Insert,
+                None,
+            )
+            .unwrap();
+        let preview_address = document.text().as_ptr();
+        let baseline_address = document
+            .composition
+            .as_ref()
+            .unwrap()
+            .before
+            .text()
+            .as_ptr();
+        let result = document.cancel_composition_with(|preview, restored| {
+            assert_eq!(preview.as_ptr(), preview_address);
+            assert_eq!(restored.text().as_ptr(), baseline_address);
+            assert_eq!(preview, "a候補文\r\n😀");
+            assert_eq!(restored, &committed);
+            assert!(!restored.is_composing());
+            restored.selections()[0]
+        });
+        assert_eq!(result, Some(committed.selections()[0]));
+        assert_eq!(document, committed);
+        assert!(
+            document
+                .cancel_composition_with(|_, _| panic!("no active composition"))
+                .is_none()
+        );
+        assert!(document.undo());
+        assert_eq!(document.text(), "文\r\n😀");
+    }
+
     #[test]
     fn composition_rejects_eventual_replica_admission_before_publishing_primary() {
         for (source, inserted, limit) in [
