@@ -793,7 +793,7 @@ cancellation. Published rows use immutable shared token slices, so lexical reuse
 retains existing token strings without copying their text or token arrays. Parser
 paint and validated worker replies use the same row representation; the painter
 reads those rows without materializing a second token table. Row metadata and
-handle tables still visit the complete source. Worker protocol v5 replies reference
+handle tables still visit the complete source. Worker protocol v6 replies reference
 unchanged token rows from the last published base ticket. Consecutive references
 transfer as runs, so one edit does not serialize a reference record for every
 unchanged row. The receiver checks the ticket, count, old row range, exact new row
@@ -823,3 +823,11 @@ have not installed browser preparation retain their synchronous API.
 This makes terminal lexical work cooperative; it does not make full-source
 snapshot ownership, parsing, geometry or long-row initial shaping incremental. Those
 remaining limits are tracked in the roadmap and performance guide.
+
+Worker structural publication compares retained record lists and sends their changed
+spans when that avoids a complete list copy. Source byte coordinates remain distinct
+from record indices. A patch requires the acknowledged ticket and matching language;
+small lists and language changes retain standalone data. Reconstruction checks every
+list range and the aggregate expanded record budget before allocating, then applies
+the existing source/coordinate/bracket validation. Structural extraction and receiver
+reconstruction/validation still visit the full lists.

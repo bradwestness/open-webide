@@ -697,6 +697,184 @@ pub(super) struct StructureData {
     brackets: Vec<(usize, char, Option<usize>)>,
 }
 
+/// Structural list patches use record indices, independently of source byte offsets.
+#[cfg(feature = "editor-parser")]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub(super) enum StructurePublication {
+    Full(StructureData),
+    Changes { changes: StructureChanges },
+}
+
+#[cfg(feature = "editor-parser")]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct StructureChanges {
+    language: Language,
+    scopes: StructuralRecords<(Range<usize>, Language)>,
+    selections: StructuralRecords<Range<usize>>,
+    opaque_starts: StructuralRecords<usize>,
+    protected: StructuralRecords<(Range<usize>, bool, RegionKind)>,
+    brackets: StructuralRecords<(usize, char, Option<usize>)>,
+}
+
+#[cfg(feature = "editor-parser")]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum StructuralRecords<T> {
+    Full(Vec<T>),
+    Replace {
+        start: usize,
+        end: usize,
+        items: Vec<T>,
+    },
+}
+
+#[cfg(feature = "editor-parser")]
+impl<T: Clone + PartialEq> StructuralRecords<T> {
+    fn publication(current: &[T], previous: &[T]) -> Self {
+        let prefix = current
+            .iter()
+            .zip(previous)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let suffix = current[prefix..]
+            .iter()
+            .rev()
+            .zip(previous[prefix..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        // Small lists remain standalone rather than paying patch-envelope overhead.
+        if prefix + suffix > 4 {
+            Self::Replace {
+                start: prefix,
+                end: previous.len() - suffix,
+                items: current[prefix..current.len() - suffix].to_vec(),
+            }
+        } else {
+            Self::Full(current.to_vec())
+        }
+    }
+    fn is_patch(&self) -> bool {
+        matches!(self, Self::Replace { .. })
+    }
+    fn transmitted_records(&self) -> usize {
+        match self {
+            Self::Full(items) | Self::Replace { items, .. } => items.len(),
+        }
+    }
+    fn resolved_len(&self, previous: &[T]) -> Option<usize> {
+        match self {
+            Self::Full(items) => Some(items.len()),
+            Self::Replace { start, end, items } => {
+                if start > end || *end > previous.len() {
+                    return None;
+                }
+                previous
+                    .len()
+                    .checked_sub(end - start)?
+                    .checked_add(items.len())
+            }
+        }
+    }
+    fn resolve(self, previous: &[T]) -> Vec<T> {
+        match self {
+            Self::Full(items) => items,
+            Self::Replace { start, end, items } => {
+                let mut result = Vec::with_capacity(previous.len() - (end - start) + items.len());
+                result.extend_from_slice(&previous[..start]);
+                result.extend(items);
+                result.extend_from_slice(&previous[end..]);
+                result
+            }
+        }
+    }
+}
+
+#[cfg(feature = "editor-parser")]
+impl StructurePublication {
+    pub(super) fn publication(current: &Structure, previous: Option<&Structure>) -> Self {
+        if let Some(previous) = previous.filter(|old| old.language == current.language) {
+            let changes = StructureChanges {
+                language: current.language,
+                scopes: StructuralRecords::publication(&current.scopes, &previous.scopes),
+                selections: StructuralRecords::publication(
+                    &current.selection_ranges,
+                    &previous.selection_ranges,
+                ),
+                opaque_starts: StructuralRecords::publication(
+                    &current.opaque_starts,
+                    &previous.opaque_starts,
+                ),
+                protected: StructuralRecords::publication(&current.protected, &previous.protected),
+                brackets: StructuralRecords::publication(&current.brackets, &previous.brackets),
+            };
+            if changes.scopes.is_patch()
+                || changes.selections.is_patch()
+                || changes.opaque_starts.is_patch()
+                || changes.protected.is_patch()
+                || changes.brackets.is_patch()
+            {
+                return Self::Changes { changes };
+            }
+        }
+        Self::Full(current.transfer_data())
+    }
+    pub(super) fn needs_base(&self) -> bool {
+        matches!(self, Self::Changes { .. })
+    }
+    pub(super) fn record_count(&self) -> usize {
+        match self {
+            Self::Full(data) => data.record_count(),
+            Self::Changes { changes } => changes
+                .scopes
+                .transmitted_records()
+                .saturating_add(changes.selections.transmitted_records())
+                .saturating_add(changes.opaque_starts.transmitted_records())
+                .saturating_add(changes.protected.transmitted_records())
+                .saturating_add(changes.brackets.transmitted_records()),
+        }
+    }
+    pub(super) fn validate(
+        self,
+        source: Arc<str>,
+        previous: Option<&Structure>,
+        budget: usize,
+    ) -> Option<Structure> {
+        let data = match self {
+            Self::Full(data) => {
+                if data.record_count() > budget {
+                    return None;
+                }
+                data
+            }
+            Self::Changes { changes } => {
+                let old = previous.filter(|old| old.language == changes.language)?;
+                // Validate every range and the expanded budget before allocating any list.
+                let count = changes
+                    .scopes
+                    .resolved_len(&old.scopes)?
+                    .checked_add(changes.selections.resolved_len(&old.selection_ranges)?)?
+                    .checked_add(changes.opaque_starts.resolved_len(&old.opaque_starts)?)?
+                    .checked_add(changes.protected.resolved_len(&old.protected)?)?
+                    .checked_add(changes.brackets.resolved_len(&old.brackets)?)?;
+                if count > budget {
+                    return None;
+                }
+                StructureData {
+                    language: changes.language,
+                    scopes: changes.scopes.resolve(&old.scopes),
+                    selections: changes.selections.resolve(&old.selection_ranges),
+                    opaque_starts: changes.opaque_starts.resolve(&old.opaque_starts),
+                    protected: changes.protected.resolve(&old.protected),
+                    brackets: changes.brackets.resolve(&old.brackets),
+                }
+            }
+        };
+        data.validate(source)
+    }
+}
+
 #[cfg(feature = "editor-parser")]
 impl Structure {
     pub(super) fn record_count(&self) -> usize {

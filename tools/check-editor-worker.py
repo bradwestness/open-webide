@@ -30,11 +30,11 @@ def check():
                 result = browser.call('POST', '/execute/async', {'script': r'''
                     const done = arguments[0];
                     const worker = new Worker('/editor-worker.js', {type: 'module'});
-                    const waiting = new Map(), bases = new Map(), sources = new Map(); let ticket = 0;
+                    const waiting = new Map(), bases = new Map(), sources = new Map(), structures = new Map(); let ticket = 0;
                     let wake; const ready = new Promise(resolve => {wake = resolve;});
                     worker.onerror = e => { worker.terminate(); done({error: e.message}); };
                     worker.onmessage = event => {
-                        if (event.data === 'openwebide-editor-ready:5') {wake(); return;}
+                        if (event.data === 'openwebide-editor-ready:6') {wake(); return;}
                         const reply = JSON.parse(event.data);
                         waiting.get(reply.ticket)?.(reply); waiting.delete(reply.ticket);
                     };
@@ -57,12 +57,29 @@ def check():
                                         reply.analysis.sourceDelta = true;
                                         reply.analysis.source = decoder.decode(combined);
                                     }
+                                    if (reply.analysis.structure) {
+                                        const publication = reply.analysis.structure;
+                                        reply.analysis.structureBytes = JSON.stringify(publication).length;
+                                        if (publication.changes) {
+                                            const old = structures.get(document), changes = publication.changes;
+                                            if (!old || old.language !== changes.language) throw new Error('invalid structural base');
+                                            const restored = {language: changes.language};
+                                            for (const key of ['scopes','selections','opaque_starts','protected','brackets']) {
+                                                const span = changes[key];
+                                                restored[key] = Array.isArray(span) ? span :
+                                                    [...old[key].slice(0,span.start), ...span.items, ...old[key].slice(span.end)];
+                                            }
+                                            reply.analysis.structure = restored;
+                                            reply.analysis.structureDelta = true;
+                                        }
+                                        structures.set(document, reply.analysis.structure);
+                                    } else { structures.delete(document); }
                                     sources.set(document, reply.analysis.source);
                                     bases.set(document, reply.ticket);
-                                } else { bases.delete(document); sources.delete(document); }
+                                } else { bases.delete(document); sources.delete(document); structures.delete(document); }
                                 resolve(reply);
                             });
-                            worker.postMessage(JSON.stringify({version:5,ticket:id,document,language,source:span || source,tab_width:4,base_ticket:bases.get(document)}));
+                            worker.postMessage(JSON.stringify({version:6,ticket:id,document,language,source:span || source,tab_width:4,base_ticket:bases.get(document)}));
                         });
                     }
                     (async () => {
@@ -116,6 +133,11 @@ def check():
                         const byteStart = new TextEncoder().encode(heavy.slice(0, heavy.indexOf('文😀'))).length;
                         const heavyUpdate = await request('large', 'Rust', heavy.replace('文😀', '🦀 changed'),
                             {start:byteStart,end:byteStart+new TextEncoder().encode('文😀').length,text:'🦀 changed'});
+                        const structuralText = heavy.replace('文😀', '🦀 changed').replace('fn call()', 'fn test()');
+                        const structuralUpdate = await request('large', 'Rust', structuralText);
+                        const structuralDelta = structuralUpdate.analysis?.structureDelta === true &&
+                            JSON.stringify(structuralUpdate.analysis.structure) === JSON.stringify(heavyUpdate.analysis.structure) &&
+                            structuralUpdate.analysis.structureBytes * 10 < JSON.stringify(heavyUpdate.analysis.structure).length;
                         // TypeScript's acknowledged base was evicted by the subsequent documents.
                         const resyncText = fixtures.TypeScript + '\n';
                         const resync = await request('TypeScript', 'TypeScript', resyncText,
@@ -124,7 +146,7 @@ def check():
                         const resynced = await request('TypeScript', 'TypeScript', resyncText);
                         const oversized = await request('large', 'Rust', 'x'.repeat(2*1024*1024+1));
                         worker.terminate();
-                        done({first, next, providers, lexical, heavyStatus: prepared.status,
+                        done({first, next, providers, lexical, structuralDelta, heavyStatus: prepared.status,
                             heavySource: prepared.analysis?.source === heavy, uiEvent,
                             heavyDelta: heavyUpdate.analysis?.sourceDelta === true,
                             heavyRowRuns: heavyUpdate.analysis?.highlights?.length,
@@ -135,6 +157,7 @@ def check():
                 ''', 'args': []})
                 assert 'error' not in result, result
                 assert result['heavyDelta'] and result['heavyUpdateSource'], result
+                assert result['structuralDelta'], 'Structural update did not preserve metadata with a compact patch'
                 assert result['heavyRowRuns'] == 3, result['heavyRowRuns']
                 assert result['resyncStatus'] == 'NeedsSource' and result['resyncedSource'], result
                 assert result['first']['status'] == {'Ready': {'incremental': False}}, result['first']['status']
@@ -148,7 +171,7 @@ def check():
                     assert 'Ready' in lexical['updateStatus'] and lexical['updatePaint'] and lexical['updateSourceMatches'] and lexical['reusedRows'] > 0, lexical
                 assert 'Ready' in result['heavyStatus'] and result['heavySource'] and result['uiEvent'], result
                 assert result['oversizedStatus'] == 'TooLarge' and result['oversizedAnalysis'] is None, result
-                print(json.dumps({'providers': len(result['providers'])+1, 'lexical_languages': len(result['lexical']), 'incremental': True,
+                print(json.dumps({'providers': len(result['providers'])+1, 'lexical_languages': len(result['lexical']), 'incremental': True, 'structural_delta': result['structuralDelta'],
                                   'ui_event_during_worker': result['uiEvent'], 'oversize_fallback': True, 'changed_row_records': result['heavyRowRuns']}))
             finally:
                 browser.stop()

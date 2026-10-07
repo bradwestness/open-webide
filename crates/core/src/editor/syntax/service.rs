@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{editor::MAX_STRUCTURE_BYTES, highlight::Language};
 
-pub const SYNTAX_PROTOCOL_VERSION: u32 = 5;
+pub const SYNTAX_PROTOCOL_VERSION: u32 = 6;
 pub const MAX_SYNTAX_REQUEST_BYTES: usize = MAX_STRUCTURE_BYTES * 6 + 8192;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

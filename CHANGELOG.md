@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Publish editor worker structural metadata as bounded list patches against the acknowledged analysis ticket. Retain standalone snapshots for small lists or language changes, reject stale/missing bases and invalid ranges, and check expanded record budgets before reconstructing and validating coordinates.
+
 - Share immutable saved-text baselines across document and composition snapshots. Save acknowledgements replace only the written baseline, reuse identical versions and propagate one allocation through active composition while preserving dirty-state and recovery behavior.
 
 - Share immutable undo transactions and retained history steps across document/composition snapshots. Appending a typing group detaches its metadata while reusing earlier edit payloads; undo, redo, divergent edits and per-document retention limits remain independent.

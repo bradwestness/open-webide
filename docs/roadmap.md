@@ -86,8 +86,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   source replacement spans in both directions, with a bounded full-snapshot resync
   when a worker base is unavailable. Consecutive unchanged token rows transfer as
   validated runs; replies and warm queries retain the facade's source snapshot.
-  Structural publication and row-table construction/validation still visit the
-  whole file. Finish those incremental paths and remaining source snapshot
+  Structural metadata now transfers changed list spans against a validated ticket,
+  avoiding complete wire copies for retained records. Structural extraction, list
+  reconstruction/validation and row-table construction still visit the whole file.
+  Finish those incremental paths and remaining source snapshot
   ownership,
   uncached initial/cold shaping, bidirectional visual-run windows, fine long-row paint
   and incremental measurement. Language formatting remains in Code intelligence.

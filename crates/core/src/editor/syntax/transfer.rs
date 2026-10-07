@@ -1,5 +1,5 @@
 //! Validated data crossing the worker boundary; parser allocations never cross it.
-use super::{super::structure::StructureData, SyntaxAnalysis};
+use super::{super::structure::StructurePublication, SyntaxAnalysis};
 use crate::{
     editor::*,
     highlight::{Token, TokenKind},
@@ -14,7 +14,7 @@ pub(super) const MAX_ANALYSIS_RECORDS: usize = 100_000;
 pub struct SyntaxAnalysisData {
     source: SyntaxSource,
     folds: Vec<FoldRange>,
-    structure: Option<StructureData>,
+    structure: Option<StructurePublication>,
     // Per-line UTF-8 end offsets, avoiding another copy of every token's text.
     highlights: Option<Vec<TokenRowData>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,8 +165,15 @@ impl SyntaxAnalysis {
         if self.record_count() > MAX_ANALYSIS_RECORDS {
             return None;
         }
-        let structure = self.structure.as_ref().map(|value| value.transfer_data());
-        let mut reused = false;
+        let structure = self.structure.as_ref().map(|value| {
+            StructurePublication::publication(
+                value,
+                previous.and_then(|(_, analysis)| analysis.structure.as_deref()),
+            )
+        });
+        let mut reused = structure
+            .as_ref()
+            .is_some_and(StructurePublication::needs_base);
         let highlights = self.highlights.as_ref().map(|lines| {
             let mut data = Vec::new();
             for (index, line) in lines.iter().enumerate() {
@@ -229,7 +236,7 @@ impl SyntaxAnalysisData {
             .saturating_add(
                 self.structure
                     .as_ref()
-                    .map_or(0, StructureData::record_count),
+                    .map_or(0, StructurePublication::record_count),
             )
             .saturating_add(self.highlights.as_ref().map_or(0, |lines| {
                 lines.iter().fold(lines.len(), |count, line| {
@@ -278,7 +285,17 @@ impl SyntaxAnalysisData {
             return None;
         }
         let structure = match self.structure {
-            Some(data) => Some(Arc::new(data.validate(source.clone())?)),
+            Some(data) => {
+                if data.needs_base() && self.base_ticket.is_none() {
+                    return None;
+                }
+                let budget = MAX_ANALYSIS_RECORDS.checked_sub(self.folds.len())?;
+                Some(Arc::new(data.validate(
+                    source.clone(),
+                    previous.and_then(|(_, old)| old.structure.as_deref()),
+                    budget,
+                )?))
+            }
             None => None,
         };
         let highlights = if let Some(lines) = self.highlights {
@@ -372,6 +389,115 @@ impl SyntaxAnalysisData {
 mod tests {
     use super::*;
     use crate::highlight::language_from_path;
+    #[test]
+    fn structural_patches_reconstruct_edits_and_reject_invalid_bases_ranges_and_budgets() {
+        let source: String = (0..100)
+            .map(|index| format!("fn f{index}() {{ let s = \"文😀\"; }}\r\n"))
+            .collect();
+        let mut document = SyntaxDocument::new(crate::highlight::Language::Rust).unwrap();
+        let old = document.prepare(&source, 4, || true).1.unwrap();
+        for revised in [
+            source.clone(),
+            source.replace("f50()", "g50()"),
+            source.replace("f50()", "longer50()"),
+            source.replacen("fn f50()", "// 文😀\r\nfn f50()", 1),
+            source.replace("fn f50() { let s = \"文😀\"; }\r\n", ""),
+        ] {
+            let next = document.prepare(&revised, 4, || true).1.unwrap();
+            let wire = next.transfer_data_reusing(Some((42, &old))).unwrap();
+            assert!(wire.structure.as_ref().unwrap().needs_base());
+            let restored = wire
+                .clone()
+                .validate_reusing(&revised, Some((42, &old)))
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(restored.structure().unwrap().transfer_data()).unwrap(),
+                serde_json::to_value(next.structure().unwrap().transfer_data()).unwrap(),
+            );
+            assert!(wire.clone().validate_reusing(&revised, None).is_none());
+            assert!(
+                wire.clone()
+                    .validate_reusing(&revised, Some((43, &old)))
+                    .is_none()
+            );
+            let mut invalid = wire.clone();
+            invalid.base_ticket = None;
+            invalid.source = SyntaxSource::Full(revised.clone());
+            invalid.highlights = None;
+            assert!(
+                invalid
+                    .validate_reusing(&revised, Some((42, &old)))
+                    .is_none()
+            );
+            assert!(
+                wire.structure
+                    .clone()
+                    .unwrap()
+                    .validate(
+                        Arc::from(revised.as_str()),
+                        old.structure().map(AsRef::as_ref),
+                        1,
+                    )
+                    .is_none()
+            );
+            let mut wrong_language = serde_json::to_value(&wire).unwrap();
+            wrong_language["structure"]["changes"]["language"] = serde_json::json!("Python");
+            let invalid: SyntaxAnalysisData = serde_json::from_value(wrong_language).unwrap();
+            assert!(
+                invalid
+                    .validate_reusing(&revised, Some((42, &old)))
+                    .is_none()
+            );
+            let mut wrong_coordinate = serde_json::to_value(&wire).unwrap();
+            wrong_coordinate["structure"]["changes"]["brackets"] =
+                serde_json::json!({"start":0,"end":1,"items":[[usize::MAX,"{",null]]});
+            let invalid: SyntaxAnalysisData = serde_json::from_value(wrong_coordinate).unwrap();
+            assert!(
+                invalid
+                    .validate_reusing(&revised, Some((42, &old)))
+                    .is_none()
+            );
+            for (start, end) in [(usize::MAX, usize::MAX), (1, 0), (0, usize::MAX)] {
+                let mut value = serde_json::to_value(&wire).unwrap();
+                value["structure"]["changes"]["brackets"] =
+                    serde_json::json!({"start":start,"end":end,"items":[]});
+                let invalid: SyntaxAnalysisData = serde_json::from_value(value).unwrap();
+                assert!(
+                    invalid
+                        .validate_reusing(&revised, Some((42, &old)))
+                        .is_none()
+                );
+            }
+            let mut value = serde_json::to_value(&wire).unwrap();
+            value["structure"]["changes"]["brackets"] =
+                serde_json::json!({"start":0,"end":0,"items":[],"extra":true});
+            assert!(serde_json::from_value::<SyntaxAnalysisData>(value).is_err());
+        }
+        let next = document.prepare(&source, 4, || true).1.unwrap();
+        let full_bytes = serde_json::to_vec(&next.transfer_data().unwrap())
+            .unwrap()
+            .len();
+        let patch_bytes =
+            serde_json::to_vec(&next.transfer_data_reusing(Some((42, &old))).unwrap())
+                .unwrap()
+                .len();
+        assert!(
+            patch_bytes * 10 < full_bytes,
+            "{patch_bytes} versus {full_bytes}"
+        );
+        let mut python = SyntaxDocument::new(crate::highlight::Language::Python).unwrap();
+        let other = python
+            .prepare("def f():\n    return 1\n", 4, || true)
+            .1
+            .unwrap();
+        let wire = other.transfer_data_reusing(Some((42, &old))).unwrap();
+        assert!(!wire.structure.as_ref().unwrap().needs_base());
+        assert!(
+            wire.validate_reusing(other.source(), Some((42, &old)))
+                .is_some()
+        );
+    }
+
     #[test]
     fn token_row_runs_preserve_insertions_deletions_disjoint_edits_and_source_ownership() {
         let source: String = (0..1000)
