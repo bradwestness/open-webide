@@ -6,10 +6,10 @@ const path = require('node:path');
 
 function worker(fetch) {
   const handlers = {};
-  const entries = new Map([['/', new Response('current build page')], ['/offline.html', new Response('Can’t reach the server')], ['/app.wasm', new Response('wasm')]]);
+  const entries = new Map([['/', new Response('current build page')], ['/offline.html', new Response('Can’t reach the server')], ['/about.html', new Response('About Open WebIDE · license notices')], ['/app.wasm', new Response('wasm')]]);
   const deleted = [];
   const cache = {match: async key => entries.get(key), addAll: async files => {cache.files = files;}};
-  const context = {BUILD_ID: 'test-build', SHELL_FILES: ['/', '/offline.html', '/app.wasm', '/app.js'], URL, Request, fetch,
+  const context = {BUILD_ID: 'test-build', SHELL_FILES: ['/', '/offline.html', '/about.html', '/app.wasm', '/app.js'], URL, Request, fetch,
     self: {location: {origin: 'https://ide.test'}, clients: {claim: async () => {}}, addEventListener: (name, action) => {handlers[name] = action;}},
     caches: {open: async name => {assert.equal(name, 'openwebide-shell-test-build'); return cache;}, keys: async () => ['other-app', 'openwebide-shell-old', 'openwebide-shell-test-build'], delete: async key => deleted.push(key)}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8'), context);
@@ -38,7 +38,7 @@ test('versioned app assets are served from shell cache and offline navigation ha
   let installed;
   host.handlers.install({waitUntil: task => {installed = task;}});
   await installed;
-  assert.deepEqual(Array.from(host.cache.files, request => new URL(request.url).pathname), ['/', '/offline.html', '/app.wasm', '/app.js']);
+  assert.deepEqual(Array.from(host.cache.files, request => new URL(request.url).pathname), ['/', '/offline.html', '/about.html', '/app.wasm', '/app.js']);
   assert.ok(host.cache.files.every(request => request.cache === 'reload'));
   let activated;
   host.handlers.activate({waitUntil: task => {activated = task;}});
@@ -122,7 +122,7 @@ test('bundled editor fonts are cached offline and font updates change the PWA bu
   const {execFileSync} = require('node:child_process');
   const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'openwebide-font-cache-'));
   try {
-    for (const file of ['index.html', 'openwebide-frontend-test.js', 'openwebide-frontend-test_bg.wasm']) fs.writeFileSync(path.join(dist, file), 'fixture');
+    for (const file of ['index.html', 'styles-test.css', 'openwebide-frontend-test.js', 'openwebide-frontend-test_bg.wasm']) fs.writeFileSync(path.join(dist, file), 'fixture');
     fs.cpSync(path.join(__dirname, '../fonts'), path.join(dist, 'fonts'), {recursive:true});
     const build = () => {
       execFileSync('sh', ['pwa/build.sh'], {cwd:path.join(__dirname, '..'), env:{...process.env, TRUNK_STAGING_DIR:dist}});
@@ -131,8 +131,19 @@ test('bundled editor fonts are cached offline and font updates change the PWA bu
       return context;
     };
     const before = build();
+    assert.ok(before.files.includes("/about.html"));
+    const about = fs.readFileSync(path.join(dist, "about.html"), "utf8");
+    assert.match(about, /SIL OPEN FONT LICENSE/);
+    assert.match(about, /styles-test.css/);
     for (const family of ['Neon', 'Argon', 'Xenon', 'Radon', 'Krypton']) assert.ok(before.files.includes(`/fonts/Monaspace${family}-v1.400.woff2`));
     fs.appendFileSync(path.join(dist, 'fonts/MonaspaceNeon-v1.400.woff2'), 'changed');
     assert.notEqual(build().build, before.build);
   } finally { fs.rmSync(dist, {recursive:true, force:true}); }
+});
+
+
+test('About and notices remain available on offline navigation without API requests', async () => {
+  const host = worker(async () => {throw Error('offline');});
+  assert.match(await (await host.request('https://ide.test/about.html', 'GET', 'navigate')).text(), /license notices/);
+  assert.match(fs.readFileSync(path.join(__dirname, 'offline.html'), 'utf8'), /href="\/about.html"/);
 });

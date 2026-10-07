@@ -9,6 +9,7 @@
     - Overview: docs/using.md
     - Editor: docs/editor.md
     - Files and context menus: docs/file-tree-menus.md
+    - About and notices: docs/about.md
     - Reload and reconnect: docs/reload-recovery.md
 - Hosting and administration:
     - Overview: docs/hosting.md

@@ -62,10 +62,12 @@ impl CommandActions {
                 ui.notify(reason);
                 return;
             }
+            ui.about_open.set(false);
             ui.palette_open.set(false);
             ui.shortcuts_open.set(false);
             match command {
                 Command::Palette => ui.palette_open.set(true),
+                Command::About => ui.about_open.set(true),
                 Command::Shortcuts => ui.shortcuts_open.set(true),
                 Command::NewSession => new_session.run(()),
                 Command::OpenLocal => open_local.run(()),

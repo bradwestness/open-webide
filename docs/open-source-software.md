@@ -11,11 +11,16 @@ Thank you to everyone who builds and maintains these projects.
 Open WebIDE's own code is [MIT licensed](https://github.com/openwebide/openwebide/blob/main/LICENSE).
 Third-party projects retain their own licenses. The inventory below links to
 upstream projects and reports license declarations from their package metadata.
-License texts and copyright notices are maintained in those projects' distributions.
+Open **About / Open-source software** from the app account menu or command
+palette to read the bundled license texts and copyright notices. The offline PWA
+screen links to the same build details and notices. Some upstream distributions
+provide only a declared license; those entries explicitly identify the missing text.
 
-The website generates the Rust inventory directly from the repository's manifests
-and `Cargo.lock`, including direct, transitive and vendored crates, whenever it
-builds. See the [project site guide](project-site.md) for the build command.
+The app and website share the Rust inventory generator in `tools/open_source.py`.
+It reads directly from the repository's manifests
+and `Cargo.lock`, including direct, transitive and vendored crates, whenever they
+build. Supplemental notices are pinned to upstream revisions under
+`third-party/notices/`. See the [project site guide](project-site.md) for the build command.
 
 <!-- dependency-inventory -->
 

@@ -7,6 +7,8 @@ Project tabs let you switch repositories; sessions keep separate conversations.
 - [Local and remote projects](workspaces.md): file access and execution capabilities.
 - [Editor](editor.md): editing, navigation, diffs and previews.
 - [Files and context menus](file-tree-menus.md): actions on files and folders.
+- [About and open-source software](about.md): build details and bundled notices,
+  including access from the offline PWA screen.
 - [Reload and reconnect](reload-recovery.md): what survives a page reload and how
   to recover an interrupted connection.
 

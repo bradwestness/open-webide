@@ -1,3 +1,5 @@
+mod about;
+pub use about::About;
 mod auth_gate;
 mod chat_pane;
 mod commands;

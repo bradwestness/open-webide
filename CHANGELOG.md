@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add About / Open-source software to the account menu and command palette, with the frontend build version, commit, shared dependency inventory and bundled license notices for crates, Monaspace and Lucide. Cache the same build details and notices for the offline PWA screen.
+
 - Support Git over SSH in Docker with an OpenSSH client, opt-in host-agent forwarding and read-only public configuration import. Keep strict host-key checks, add pull/push credential guidance, and document native, Docker, Quadlet and HTTPS setup.
 
 - Reuse color classifications from unchanged parser descendants while refreshing subtree roots that depend on external parent fields. Declare custom classifier dependencies and retain fresh extraction for document-dependent selectors, with shared limits and cancellation across worker and fallback preparation.

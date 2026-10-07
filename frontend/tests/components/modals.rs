@@ -234,3 +234,86 @@ async fn folder_navigation_has_live_keyboard_controls_and_safe_missing_opener() 
     let body: web_sys::HtmlElement = document().body().unwrap().unchecked_into();
     assert!(key(&body, "Escape", false, false));
 }
+
+#[wasm_bindgen_test]
+async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() {
+    use openwebide_core::{User, UserId, UserRole, WorkspaceMode};
+    use openwebide_frontend::{
+        commands::Command,
+        components::{CommandDialogs, TopBar},
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.auth.set_user(User {
+                id: UserId::new(1),
+                username: "test".into(),
+                role: UserRole::User,
+                created_at: 0,
+            });
+            super::support::command_actions(state);
+            let health = RwSignal::new(None);
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <TopBar health=health.read_only() on_open_settings=Callback::new(|()| ()) on_logout=Callback::new(|()| ()) />
+                <CommandDialogs />
+            }
+        });
+        settle().await;
+        mounted.click("[aria-label='Account menu']");
+        settle().await;
+        mounted
+            .element("[aria-label='About / Open-source software']")
+            .focus()
+            .unwrap();
+        mounted.click("[aria-label='About / Open-source software']");
+        settle().await;
+        let panel = mounted.element("[role='dialog']");
+        let text = panel.text_content().unwrap();
+        assert!(text.contains(env!("CARGO_PKG_VERSION")));
+        assert!(text.contains("Commit"));
+        assert!(text.contains("SIL OPEN FONT LICENSE"));
+        assert!(text.contains("Lucide icons"));
+        assert!(text.contains("leptos"));
+        assert!(text.contains("Copyright (c) 2022 Greg Johnston"));
+        let contents = mounted.element(".about-content").inner_html();
+        assert!(
+            mounted
+                .root
+                .query_selector(".ui-dropdown-menu")
+                .unwrap()
+                .is_none()
+        );
+        key(&panel, "Escape", false, false);
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector("[role='dialog']")
+                .unwrap()
+                .is_none()
+        );
+        assert!(active().is_same_node(Some(&mounted.element("[aria-label='Account menu']"))));
+        mounted.state.ui.palette_open.set(true);
+        settle().await;
+        let search: web_sys::HtmlInputElement = mounted.element(".command-search").unchecked_into();
+        search.set_value("licenses");
+        let input = web_sys::EventInit::new();
+        input.set_bubbles(true);
+        search
+            .dispatch_event(&web_sys::Event::new_with_event_init_dict("input", &input).unwrap())
+            .unwrap();
+        settle().await;
+        mounted.click("#command-about");
+        settle().await;
+        assert!(!mounted.state.ui.palette_open.get_untracked());
+        assert_eq!(mounted.element(".about-content").inner_html(), contents);
+        mounted.state.ui.about_open.set(false);
+        settle().await;
+        assert!(Command::About.unavailable(Default::default()).is_none());
+    }
+}

@@ -19,6 +19,9 @@ sessions, and preferences live in SQLite, so you can resume from another browser
   review pending edits with Accept/Reject controls.
 - Choose Manual, Auto-accept edits, Auto, or YOLO approval modes with `Shift+Tab`.
   Auto uses an optional fast model, falling back to the primary model.
+- View build details and bundled license notices through **About / Open-source
+  software** in the account menu or command palette, including from the offline PWA
+  screen. See [About](docs/about.md).
 - Choose personal primary/fast defaults in Settings. Configure shared servers,
   credentials and model settings through the Servers setup wizard. See
   [your first session](docs/first-session.md#connect-a-model) for setup and
@@ -97,7 +100,8 @@ The browser syntax parser also needs Clang (Xcode Command Line Tools on macOS;
 `sudo apt-get install clang` on Debian/Ubuntu). Rust's pinned `llvm-tools` component
 supplies the WASM archiver; the build selects it automatically, including on macOS
 where Apple's archiver does not retain WASM objects.
-Host Git operations require Git 2.23 or newer.
+Host Git operations require Git 2.23 or newer. Python 3 generates the bundled
+open-source notices during frontend builds.
 
 Build from the repository root:
 

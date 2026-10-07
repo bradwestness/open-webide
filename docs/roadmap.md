@@ -230,14 +230,6 @@ project/session navigation behind one searchable entry point, with keyboard and
 touch access, consistent focus behavior and context-aware action availability.
 Reuse shared actions in both modes.
 
-### In-app About and open-source software
-
-- Add an About page showing the running build version and commit.
-- Include an in-app open-source software inventory with license notices, including
-  the bundled Monaspace fonts. Reuse the project site's generated credits inventory
-  and extend it to cover bundled assets as well as dependencies.
-- Make build details and notices available in both modes and the offline PWA.
-
 ### Compact desktop layout and phone navigation
 
 Combine related bars and reveal occasional controls on demand, preserving control

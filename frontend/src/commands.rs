@@ -5,6 +5,7 @@ use crate::state::layout::Panel;
 pub enum Command {
     Palette,
     Shortcuts,
+    About,
     NewSession,
     OpenLocal,
     OpenRemote,
@@ -59,6 +60,13 @@ macro_rules! command {
     };
 }
 pub const COMMANDS: &[CommandDefinition] = &[
+    command!(
+        "about",
+        Command::About,
+        "About / Open-source software",
+        "version build commit licenses notices credits fonts",
+        ""
+    ),
     command!(
         "new-session",
         Command::NewSession,

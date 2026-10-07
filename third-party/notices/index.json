@@ -1,0 +1,278 @@
+{
+  "any_spawner@0.3.0": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/9b2e313d20c89603ddc0deb7b1133e60c877faed/LICENSE"
+    }
+  ],
+  "asset:Lucide": [
+    {
+      "file": "b495047bd93a9b06.txt",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/a7c781bd43dbf295a4c2ab07d25d544dd7879bf9/LICENSE"
+    }
+  ],
+  "const_str_slice_concat@0.1.0": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/4e23d2b6f1cb74ef7eb08b40ef7f14baa85a7285/LICENSE"
+    }
+  ],
+  "either_of@0.1.9": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/fbc9ed631ff8c19c5eed02a1d4459e202cff7043/LICENSE"
+    }
+  ],
+  "gloo-net@0.6.0": [
+    {
+      "file": "5a6f5443ea473f13.txt",
+      "source": "https://raw.githubusercontent.com/rustwasm/gloo/40c6daa612a90a138ba3e3d70804fcbc5ad4911e/LICENSE-MIT"
+    },
+    {
+      "file": "a60eea8175145316.txt",
+      "source": "https://raw.githubusercontent.com/rustwasm/gloo/40c6daa612a90a138ba3e3d70804fcbc5ad4911e/LICENSE-APACHE"
+    }
+  ],
+  "gloo-net@0.7.0": [
+    {
+      "file": "5a6f5443ea473f13.txt",
+      "source": "https://raw.githubusercontent.com/rustwasm/gloo/d69fcff62ee63f37076c4a0715a6f828b0036599/LICENSE-MIT"
+    },
+    {
+      "file": "a60eea8175145316.txt",
+      "source": "https://raw.githubusercontent.com/rustwasm/gloo/d69fcff62ee63f37076c4a0715a6f828b0036599/LICENSE-APACHE"
+    }
+  ],
+  "gloo-utils@0.2.0": [
+    {
+      "file": "5a6f5443ea473f13.txt",
+      "source": "https://raw.githubusercontent.com/rustwasm/gloo/f3bb1d1a1c33dbcccaf26446aca7d0cea8e9d574/LICENSE-MIT"
+    },
+    {
+      "file": "a60eea8175145316.txt",
+      "source": "https://raw.githubusercontent.com/rustwasm/gloo/f3bb1d1a1c33dbcccaf26446aca7d0cea8e9d574/LICENSE-APACHE"
+    }
+  ],
+  "gloo-utils@0.3.0": [
+    {
+      "file": "5a6f5443ea473f13.txt",
+      "source": "https://raw.githubusercontent.com/rustwasm/gloo/e6280d4b93c86a478a8f2f31af5f13d770b156b7/LICENSE-MIT"
+    },
+    {
+      "file": "a60eea8175145316.txt",
+      "source": "https://raw.githubusercontent.com/rustwasm/gloo/e6280d4b93c86a478a8f2f31af5f13d770b156b7/LICENSE-APACHE"
+    }
+  ],
+  "hydration_context@0.3.1": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/30fa4e039455bea69c9467e8ec45cad7fce0722f/LICENSE"
+    }
+  ],
+  "lepticons-data@0.1.1": [
+    {
+      "file": "cd103adc289ff944.txt",
+      "source": "https://raw.githubusercontent.com/eugener/lepticons/32d8475846c4055f66d3f57c79ee53b832ee5cce/LICENSE"
+    }
+  ],
+  "lepticons@0.13.1": [
+    {
+      "file": "cd103adc289ff944.txt",
+      "source": "https://raw.githubusercontent.com/eugener/lepticons/32d8475846c4055f66d3f57c79ee53b832ee5cce/LICENSE"
+    }
+  ],
+  "leptos@0.8.20": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/30fa4e039455bea69c9467e8ec45cad7fce0722f/LICENSE"
+    }
+  ],
+  "leptos_config@0.8.10": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/fbc9ed631ff8c19c5eed02a1d4459e202cff7043/LICENSE"
+    }
+  ],
+  "leptos_dom@0.8.8": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/da62c0cb9a1d814cf480c2f1dae5f67f4ea4773f/LICENSE"
+    }
+  ],
+  "leptos_hot_reload@0.8.6": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/da62c0cb9a1d814cf480c2f1dae5f67f4ea4773f/LICENSE"
+    }
+  ],
+  "leptos_macro@0.8.17": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/30fa4e039455bea69c9467e8ec45cad7fce0722f/LICENSE"
+    }
+  ],
+  "leptos_server@0.8.7": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/da62c0cb9a1d814cf480c2f1dae5f67f4ea4773f/LICENSE"
+    }
+  ],
+  "next_tuple@0.1.0": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/d665dd4b89151e5d797df3db5cd2260cbe1e8fae/LICENSE"
+    }
+  ],
+  "objc2-core-foundation@0.3.2": [
+    {
+      "file": "7f976f7e9cb2d87d.txt",
+      "source": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+    }
+  ],
+  "objc2-io-kit@0.3.2": [
+    {
+      "file": "7f976f7e9cb2d87d.txt",
+      "source": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+    }
+  ],
+  "oco_ref@0.2.1": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/5f2d5115537d08043bba0293c406c4f9b97a4dae/LICENSE"
+    }
+  ],
+  "or_poisoned@0.1.0": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/6865c1f951bfa0bc5b107aa69286a110cd6f45ca/LICENSE"
+    }
+  ],
+  "reactive_graph@0.2.14": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/fbc9ed631ff8c19c5eed02a1d4459e202cff7043/LICENSE"
+    }
+  ],
+  "reactive_stores@0.4.3": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/fbc9ed631ff8c19c5eed02a1d4459e202cff7043/LICENSE"
+    }
+  ],
+  "reactive_stores_macro@0.4.3": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/30fa4e039455bea69c9467e8ec45cad7fce0722f/LICENSE"
+    }
+  ],
+  "rsqlite-vfs@0.1.1": [
+    {
+      "file": "e1c1975c3474cce3.txt",
+      "source": "https://raw.githubusercontent.com/Spxg/sqlite-wasm-rs/1bb309784f25c401ddf95131dcde4c4cdad7aee7/LICENSE"
+    }
+  ],
+  "rstml@0.12.1": [
+    {
+      "file": "f99321bd5b3678fa.txt",
+      "source": "https://raw.githubusercontent.com/rs-tml/rstml/dfa36937d343340916cae8e13b9a9c4315acdc0e/LICENSE"
+    }
+  ],
+  "server_fn@0.8.13": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/30fa4e039455bea69c9467e8ec45cad7fce0722f/LICENSE"
+    }
+  ],
+  "server_fn_macro@0.8.10": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/4499420e3cec7338d3dab5ad3d58c8076d5b9b02/LICENSE"
+    }
+  ],
+  "spin-macro@7.0.0": [
+    {
+      "file": "67d63f8973b7c876.txt",
+      "source": "https://raw.githubusercontent.com/spinframework/spin-rust-sdk/2dfd93d2e76e89d7cf74ca43140be7730e0746eb/LICENSE"
+    }
+  ],
+  "spin-sdk@7.0.0": [
+    {
+      "file": "67d63f8973b7c876.txt",
+      "source": "https://raw.githubusercontent.com/spinframework/spin-rust-sdk/2dfd93d2e76e89d7cf74ca43140be7730e0746eb/LICENSE"
+    }
+  ],
+  "tachys@0.2.18": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/7c0d1c169b4353ed169006b1d4a1563ce2e6f3d5/LICENSE"
+    }
+  ],
+  "throw_error@0.3.1": [
+    {
+      "file": "76356e713a0d1ea0.txt",
+      "source": "https://raw.githubusercontent.com/leptos-rs/leptos/43359694b6596f88d911b9c8d8d92a121c27d0ce/LICENSE"
+    }
+  ],
+  "tree-sitter-cpp@0.23.4": [
+    {
+      "file": "2e0110e07abef7c2.txt",
+      "source": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-cpp/f41e1a044c8a84ea9fa8577fdd2eab92ec96de02/LICENSE"
+    }
+  ],
+  "tree-sitter-html@0.23.2": [
+    {
+      "file": "2e0110e07abef7c2.txt",
+      "source": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-html/5a5ca8551a179998360b4a4ca2c0f366a35acc03/LICENSE"
+    }
+  ],
+  "tree-sitter-java@0.23.5": [
+    {
+      "file": "52ed137b039cd9c4.txt",
+      "source": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-java/94703d5a6bed02b98e438d7cad1136c01a60ba2c/LICENSE"
+    }
+  ],
+  "tree-sitter-typescript@0.23.2": [
+    {
+      "file": "49bf33cf78ef5897.txt",
+      "source": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-typescript/f975a621f4e7f532fe322e13c4f79495e0a7b2e7/LICENSE"
+    }
+  ],
+  "valuable@0.1.1": [
+    {
+      "file": "ed60d479b8fd1f64.txt",
+      "source": "https://raw.githubusercontent.com/tokio-rs/valuable/9efc29b6e58cef28f6566a47aa7e142a55fead77/LICENSE"
+    }
+  ],
+  "wasm_split_helpers@0.2.3": [
+    {
+      "file": "a60eea8175145316.txt",
+      "source": "https://raw.githubusercontent.com/WorldSEnder/wasm-split-prototype/d8263b20578e8c49b02851009ae3bc7d43c567bd/LICENSE"
+    }
+  ],
+  "wasm_split_macros@0.2.2": [
+    {
+      "file": "a60eea8175145316.txt",
+      "source": "https://raw.githubusercontent.com/WorldSEnder/wasm-split-prototype/a3266fe9d998b3f8b0d2111500b7c4b8ec892506/LICENSE"
+    }
+  ],
+  "winapi-i686-pc-windows-gnu@0.4.0": [
+    {
+      "file": "ce7bc3499fee93d5.txt",
+      "source": "https://raw.githubusercontent.com/retep998/winapi-rs/0.3.9/LICENSE-MIT"
+    },
+    {
+      "file": "b40930bbcf80744c.txt",
+      "source": "https://raw.githubusercontent.com/retep998/winapi-rs/0.3.9/LICENSE-APACHE"
+    }
+  ],
+  "winapi-x86_64-pc-windows-gnu@0.4.0": [
+    {
+      "file": "ce7bc3499fee93d5.txt",
+      "source": "https://raw.githubusercontent.com/retep998/winapi-rs/0.3.9/LICENSE-MIT"
+    },
+    {
+      "file": "b40930bbcf80744c.txt",
+      "source": "https://raw.githubusercontent.com/retep998/winapi-rs/0.3.9/LICENSE-APACHE"
+    }
+  ]
+}

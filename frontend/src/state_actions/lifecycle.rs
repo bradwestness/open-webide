@@ -79,6 +79,7 @@ pub fn install_keyboard_shortcuts(chat: ChatState) {
     // action to another workspace, session or account.
     Effect::new(move |_| {
         let _ = commands.scope.get();
+        ui.about_open.set(false);
         ui.palette_open.set(false);
         ui.shortcuts_open.set(false);
     });

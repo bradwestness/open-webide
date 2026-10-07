@@ -74,6 +74,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          build-args: OPENWEBIDE_BUILD_COMMIT=${{ github.sha }}
           platforms: linux/${{ matrix.arch }}
           load: true
           tags: openwebide:release-test
@@ -109,6 +110,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          build-args: OPENWEBIDE_BUILD_COMMIT=${{ github.sha }}
           platforms: linux/${{ matrix.arch }}
           outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=release-${{ matrix.arch }}

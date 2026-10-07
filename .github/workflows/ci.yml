@@ -32,6 +32,7 @@ jobs:
       - name: Validate release tooling and install configuration
         run: |
           python3 -m unittest discover -s tools -p 'test_release.py'
+          python3 -m unittest discover -s tools -p 'test_open_source.py'
           python3 tools/release.py validate
           docker compose -f docker-compose.release.yml config --quiet
           OPENWEBIDE_SSH_AUTH_SOCK=/tmp/agent.sock OPENWEBIDE_SSH_CONFIG_DIR=/tmp/public-ssh docker compose -f docker-compose.release.yml -f docker-compose.ssh.yml config --quiet
@@ -115,7 +116,9 @@ jobs:
         env:
           CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
           CHROME: ${{ steps.chrome.outputs.chrome-path }}
-        run: python3 tools/check-editor-worker.py
+        run: |
+          python3 tools/check-editor-worker.py
+          python3 tools/check-about.py
 
       - name: Install Spin runtime for editor input verification
         run: |
@@ -193,7 +196,7 @@ jobs:
           bash docker/ssh-init-test.sh
 
       - name: Build container image
-        run: docker build -t openwebide:ci .
+        run: docker build --build-arg OPENWEBIDE_BUILD_COMMIT=${{ github.sha }} -t openwebide:ci .
 
       - name: Check bundled bridge
         run: docker run --rm openwebide:ci openwebide-bridge --help

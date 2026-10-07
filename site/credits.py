@@ -1,9 +1,12 @@
 """Generate acknowledgements from Cargo and installed site-build metadata."""
 
-import json
 import re
-import subprocess
+import sys
+from pathlib import Path
 from importlib.metadata import distribution
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tools.open_source import cargo_inventory, asset_inventory
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
@@ -43,24 +46,8 @@ def python_packages(requirements):
 
 
 def render(root):
-    result = subprocess.run(
-        ["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"],
-        cwd=root, check=True, stdout=subprocess.PIPE, text=True,
-    )
-    metadata = json.loads(result.stdout)
-    workspace = set(metadata["workspace_members"])
-    direct = {
-        dependency["pkg"]
-        for node in metadata["resolve"]["nodes"] if node["id"] in workspace
-        for dependency in node["deps"] if dependency["pkg"] not in workspace
-    }
-    packages = []
-    for package in metadata["packages"]:
-        if package["id"] in workspace:
-            continue
-        url = package["repository"] or package["homepage"] or f'https://crates.io/crates/{package["name"]}/{package["version"]}'
-        row = (package["name"], package["version"], package["license"], url)
-        packages.append((package["id"] in direct, row))
+    _, inventory = cargo_inventory(root)
+    packages = [(package["direct"], (package["name"], package["version"], package["license"], package["url"])) for package in inventory]
     direct_rows = [row for is_direct, row in packages if is_direct]
     transitive_rows = [row for is_direct, row in packages if not is_direct]
     diagrams = (root / "site/assets/diagrams.js").read_text()
@@ -75,7 +62,9 @@ def render(root):
         "Locally patched crates are included using their vendored manifest metadata.\n\n"
         "### Direct dependencies\n\n" + table(direct_rows) +
         f'\n\n<details markdown="1">\n<summary>Transitive dependencies ({len(transitive_rows)} crate versions)</summary>\n\n' +
-        table(transitive_rows) + "\n\n</details>\n\n## Website build libraries\n\n"
+        table(transitive_rows) + "\n\n</details>\n\n## Bundled assets\n\n" +
+        table([(asset["name"], asset["version"], asset["license"], asset["url"]) for asset in asset_inventory(root)]) +
+        "\n\n## Website build libraries\n\n"
         "These packages build the documentation site. Versions reflect the environment used for this build.\n\n" +
         python_packages(root / "site/requirements.txt") + "\n\n## Website browser library\n\n" +
         table([

@@ -4,7 +4,7 @@
 FROM ghcr.io/spinframework/spin:v4.1.0 AS builder
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates build-essential clang && \
+    apt-get install -y --no-install-recommends curl ca-certificates build-essential clang python3 && \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -22,6 +22,9 @@ RUN set -eux; \
     esac; \
     curl -sSL "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-${trunk_arch}.tar.gz" \
         | tar -xz -C /usr/local/bin trunk
+
+ARG OPENWEBIDE_BUILD_COMMIT=unknown
+ENV OPENWEBIDE_BUILD_COMMIT=${OPENWEBIDE_BUILD_COMMIT}
 
 WORKDIR /src
 COPY . .

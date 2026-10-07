@@ -17,7 +17,7 @@ self.addEventListener('fetch', event => {
     event.respondWith(fetch(request, {cache: 'no-store'}).then(async response => {
       if (!response.ok) return response;
       return (await (await caches.open(CACHE_NAME)).match('/')) || response;
-    }).catch(async () => (await caches.open(CACHE_NAME)).match('/offline.html')));
+    }).catch(async () => (await caches.open(CACHE_NAME)).match(url.pathname === '/about.html' ? '/about.html' : '/offline.html')));
     return;
   }
   if (!shell.has(url.pathname) || url.search) return;

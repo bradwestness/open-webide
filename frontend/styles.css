@@ -3271,3 +3271,20 @@ button.browser-item {
   font-variant-ligatures: var(--editor-font-ligatures);
 }
 .editor-code { font-size: 13px; }
+
+/* Shared About content is also bundled as a standalone offline page. */
+.about-content { color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
+.about-content h2, .about-content h3 { margin: var(--space-6) 0 var(--space-3); }
+.about-content a { color: var(--accent); }
+.about-content code, .about-content pre { font-family: var(--mono); }
+.about-build { margin: 0; }
+.about-build div { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: var(--space-2); }
+.about-build dt { color: var(--text-muted); }
+.about-build dd { margin: 0; }
+.about-package { border-top: 1px solid var(--border); padding: var(--space-3) 0; }
+.about-package summary { cursor: pointer; }
+.about-package summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.about-package pre { white-space: pre-wrap; font-size: var(--font-caption); background: var(--bg-panel); padding: var(--space-3); }
+.about-document { height: auto; min-height: 100%; overflow: auto; }
+.about-page { height: auto; min-height: 100vh; overflow: auto; background: var(--bg); color: var(--text); }
+.about-page main { max-width: var(--dialog-wide); margin: 0 auto; padding: var(--space-6); }
