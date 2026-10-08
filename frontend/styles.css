@@ -956,6 +956,8 @@ body {
 }
 
 .tab {
+  /* Keep absolute, screen-reader-only menu triggers inside the clipped strip. */
+  position: relative;
   display: flex;
   min-height: 35px;
   align-items: center;

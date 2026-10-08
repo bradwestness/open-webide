@@ -12,6 +12,9 @@ for what's still ahead.
 - Use compact file-tree rows automatically outside phone mode and larger touch rows in phone mode; remove the density menu option and ignore its legacy saved setting.
 - Keep pointer focus from scrolling file tabs, retain keyboard focus navigation, and skip redundant project-tab list and selection updates.
 
+- Keep temporary editor loading locks from flashing an encoding warning and shifting the file tabs; preserve the warning for files opened read-only.
+- Contain hidden file/project tab menu buttons within each tab so offscreen tabs cannot create a large empty horizontal scroll area in the workspace.
+
 - Reuse validated worker replacement spans during shared syntax parsing when the
   exact retained source base matches, preserving complete comparison fallback,
   cancellation, source limits and stale-base resynchronization.

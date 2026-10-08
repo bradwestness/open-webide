@@ -833,3 +833,107 @@ async fn pointer_file_tab_selection_preserves_overflow_scroll_and_focus_in_both_
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn loading_file_tabs_do_not_flash_encoding_warning_or_shift_in_both_modes() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|items| items[0].mode = mode);
+            state.workspace.register_editor_tab(1, "first.rs".into());
+            state.workspace.register_editor_tab(1, "second.md".into());
+            state.workspace.open_file.set(Some("first.rs".into()));
+            state.workspace.content.set("fn main() {}".into());
+            view! { <style>{include_str!("../../styles.css")}</style>{super::support::editor_view(state)} }
+        });
+        settle().await;
+        let editor = mounted.element(".editor");
+        editor.style().set_property("flex", "none").unwrap();
+        for width in [380, 760, 1000] {
+            editor
+                .style()
+                .set_property("width", &format!("{width}px"))
+                .unwrap();
+            settle().await;
+            let strip = mounted.element(".editor-file-tabs");
+            let before = strip.get_bounding_client_rect();
+            let header = mounted.element(".editor-header").get_bounding_client_rect();
+            mounted.state.workspace.editor_loading.set(true);
+            settle().await;
+            assert!(
+                !mounted
+                    .element(".editor-header")
+                    .text_content()
+                    .unwrap()
+                    .contains("Not valid UTF-8"),
+                "Loading a valid file must not show an encoding warning"
+            );
+            let after = strip.get_bounding_client_rect();
+            assert!((before.x() - after.x()).abs() < 0.1);
+            assert!((before.y() - after.y()).abs() < 0.1);
+            assert!((before.width() - after.width()).abs() < 0.1);
+            assert!(
+                (header.height()
+                    - mounted
+                        .element(".editor-header")
+                        .get_bounding_client_rect()
+                        .height())
+                .abs()
+                    < 0.1
+            );
+            let textarea: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            assert!(textarea.read_only(), "Loading must still prevent edits");
+            mounted.state.workspace.editor_loading.set(false);
+            settle().await;
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn workspace_scroll_area_ends_at_the_last_visible_panel_in_both_modes() {
+    use openwebide_frontend::{
+        components::{PanelRail, ToolPanel},
+        state::layout::{LayoutState, Panel},
+    };
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state.projects.projects.update(|items| items[0].mode = mode);
+            super::support::command_actions(state.clone());
+            let layout = expect_context::<LayoutState>();
+            layout.tree_width.set(380.0);
+            layout.chat_width.set(520.0);
+            layout.panels.update(|panels| panels.sessions = false);
+            for index in 0..17 {
+                state
+                    .workspace
+                    .register_editor_tab(1, format!("long-file-name-{index}.rs"));
+            }
+            state
+                .workspace
+                .open_file
+                .set(Some("long-file-name-0.rs".into()));
+            state.workspace.content.set("fn main() {}".into());
+            let editor = super::support::editor_view(state.clone());
+            let chat = super::support::chat_view(state);
+            view! { <style>{include_str!("../../styles.css")}</style><div class="app" style="width:1200px;height:700px"><div class="app-body"><div class="workspace-docks"><PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] /><ToolPanel panel=Panel::Files><div class="file-tree">"Files"</div></ToolPanel><ToolPanel panel=Panel::Editor><div class="center-pane">{editor}</div></ToolPanel><ToolPanel panel=Panel::Chat>{chat}</ToolPanel></div></div></div> }
+        });
+        settle().await;
+        let docks = mounted.element(".workspace-docks");
+        let last = mounted.element("#panel-chat").get_bounding_client_rect();
+        let expected = (last.right() - docks.get_bounding_client_rect().left()).ceil();
+        assert!(
+            f64::from(docks.scroll_width()) <= expected.max(f64::from(docks.client_width())) + 1.0,
+            "Workspace has empty overflow: scroll width {}, last panel ends at {expected}",
+            docks.scroll_width()
+        );
+    }
+}

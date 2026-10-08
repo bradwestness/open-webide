@@ -2178,6 +2178,9 @@ pub fn Editor(
         paste_matches_indentation.set(false);
     });
     let file_tree_actions = use_context::<crate::state_actions::file_tree::FileTreeActions>();
+    // Temporary edit locks (loading, reviews and file operations) are not
+    // encoding failures and must not insert a warning into the tab row.
+    let file_read_only = read_only;
     let read_only = Signal::derive(move || {
         read_only.get()
             || workspace.editor_loading.get()
@@ -3113,7 +3116,7 @@ pub fn Editor(
                                                     if (mode == ViewMode::InlineDiff || (mode == ViewMode::Preview && open_file.with(|path| path.as_ref().is_some_and(|path| FileKind::from_path(path) == FileKind::Markdown)))) && let Some(action) = on_load { action.run(()); }
                                                     view_mode.set(mode);
                                                 }) />
-                                                <Show when=move || read_only.get() fallback=|| ()>
+                                                <Show when=move || file_read_only.get() fallback=|| ()>
                                                     <span class="form-hint" style="margin-left: 12px; align-self: center;">
                                                         "Not valid UTF-8 — shown read-only"
                                                     </span>
