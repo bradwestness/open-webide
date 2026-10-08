@@ -803,13 +803,15 @@ impl WorkspaceActions {
                 ui.notify(issue.message());
                 return;
             }
-            if let Some(project) = projects.project(project_id)
-                && editor_roots.with_value(|roots| {
-                    roots.get(&project_id).is_some_and(|origin| {
-                        origin.changed(&EditorRoot::for_project(&project, projects, settings))
-                    })
-                })
-            {
+            let Some(project) = projects.project(project_id) else {
+                return;
+            };
+            let root = EditorRoot::for_project(&project, projects, settings);
+            if editor_roots.with_value(|roots| {
+                roots
+                    .get(&project_id)
+                    .is_some_and(|origin| origin.changed(&root))
+            }) {
                 workspace.editor_recovery_overwrites.update(|permits| {
                     permits.remove(&(project_id, path.clone()));
                 });
@@ -879,7 +881,13 @@ impl WorkspaceActions {
                 };
                 match ws.write(&path, &content).await {
                     Ok(()) => {
-                        if auth.generation.try_get_untracked() != Some(account) {
+                        // A background save may finish after changing tabs, but it must
+                        // still acknowledge the same account and workspace root.
+                        if auth.generation.try_get_untracked() != Some(account)
+                            || projects.project(project_id).is_none_or(|project| {
+                                root.changed(&EditorRoot::for_project(&project, projects, settings))
+                            })
+                        {
                             return;
                         }
                         workspace.editor_documents.update(|documents| {

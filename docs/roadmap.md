@@ -247,8 +247,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   initial-shaping samples remain unverified despite bounded steady-state paint.
   See [recorded measurements](editor-performance.md).
 - **Selections and files:** finish real-device input/IME/clipboard verification
-  for multiple cursors, permission/error regression coverage and native folder
-  permission/recovery checks. Shared selection, tab/buffer and database recovery
+  for multiple cursors, broader permission/error regression coverage and native folder
+  permission/recovery checks. Held-write contracts cover permission failures and
+  account/folder/bridge/project changes in both adapters, plus background tab saves
+  and newer-edit history. Native local permission revocation still needs device
+  verification. Shared selection, tab/buffer and database recovery
   behavior is documented in [editor controls](editor.md); the disposable recovery
   check covers both modes but uses no native local folder handle. Coordinate
   draft/reload recovery with Offline & error-state recovery below.

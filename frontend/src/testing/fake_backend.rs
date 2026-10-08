@@ -130,6 +130,7 @@ pub struct FakeBackend {
     pub completion_error: RefCell<Option<String>>,
     pub persisted_edits: RefCell<BTreeMap<(i64, String), PersistedEdit>>,
     pub resolution_error: RefCell<Option<String>>,
+    pub file_write_results: RefCell<VecDeque<Deferred<()>>>,
     pub file_list_results: RefCell<VecDeque<Deferred<Vec<FileEntry>>>>,
     pub pending_results: RefCell<VecDeque<Deferred<Vec<PersistedEdit>>>>,
     pub resolution_results: RefCell<VecDeque<Deferred<()>>>,
@@ -1196,6 +1197,10 @@ impl Backend for FakeBackend {
                 path: path.into(),
                 content: content.into(),
             });
+            let pending = self.file_write_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                pending.await.map_err(|error| error.to_string())??;
+            }
             self.files
                 .borrow_mut()
                 .insert((project_id, path.into()), content.into());

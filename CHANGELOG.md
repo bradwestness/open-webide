@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep editor save acknowledgements scoped to the original account and workspace root, preserving dirty drafts after folder/bridge changes or project removal. Verify background tab saves, permission failures and newer-edit history with held writes in both adapters.
+
 - Add a near-1-MiB styled-string release measurement that requires grammar color through cold paint, scrolling and input; record both-adapter Linux latency/PSS and reject ineffective DOM-call batching without changing production geometry.
 
 - Retain grammar colors on long prepared code lines; keep source/work admission and lexical fallback limits. Resume eligible styled viewport slices at retained original paint-run boundaries and preserve token wrappers when cropping, with exact geometry and source checks in both workspace modes.

@@ -3809,6 +3809,48 @@ export async function editorConfigFolder() {
     return {root, name, handle};
 }
 export function editorConfigHandle(folder) { return folder.handle; }
+export function editorHeldSave(folder) {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const fixture = {started:false, finished:false, release};
+    const bind = (target, key) => {
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+    };
+    fixture.handle = new Proxy(folder.handle, {get(target, key) {
+        if (key !== 'getFileHandle') return bind(target, key);
+        return async (name, options) => {
+            const file = await target.getFileHandle(name, options);
+            if (name !== 'guard.rs') return file;
+            return new Proxy(file, {get(file, key) {
+                if (key !== 'createWritable') return bind(file, key);
+                return async (...args) => {
+                    const writer = await file.createWritable(...args);
+                    return new Proxy(writer, {get(writer, key) {
+                        if (key !== 'close') return bind(writer, key);
+                        return async () => {
+                            fixture.started = true;
+                            const fail = await gate;
+                            if (fail) {
+                                await writer.abort();
+                                fixture.finished = true;
+                                throw new DOMException('Folder permission revoked', 'NotAllowedError');
+                            }
+                            await writer.close();
+                            fixture.finished = true;
+                        };
+                    }});
+                };
+            }});
+        };
+    }});
+    return fixture;
+}
+export function editorHeldSaveHandle(fixture) { return fixture.handle; }
+export function editorHeldSaveStarted(fixture) { return fixture.started; }
+export function editorHeldSaveFinished(fixture) { return fixture.finished; }
+export function editorHeldSaveRelease(fixture, fail) { fixture.release(fail); }
+
 export async function editorConfigCleanup(folder) {
     // Successful writes can precede a background reader releasing its OPFS lock.
     // Yield browser tasks during cleanup; permission and other failures stay errors.
@@ -3836,6 +3878,12 @@ extern "C" {
     #[wasm_bindgen(catch)]
     async fn editorConfigFolder() -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
     fn editorConfigHandle(folder: &wasm_bindgen::JsValue) -> wasm_bindgen::JsValue;
+    fn editorHeldSave(folder: &wasm_bindgen::JsValue) -> wasm_bindgen::JsValue;
+    fn editorHeldSaveHandle(fixture: &wasm_bindgen::JsValue) -> wasm_bindgen::JsValue;
+    fn editorHeldSaveStarted(fixture: &wasm_bindgen::JsValue) -> bool;
+    fn editorHeldSaveFinished(fixture: &wasm_bindgen::JsValue) -> bool;
+    fn editorHeldSaveRelease(fixture: &wasm_bindgen::JsValue, fail: bool);
+
     #[wasm_bindgen(catch)]
     async fn editorConfigCleanup(
         folder: &wasm_bindgen::JsValue,
@@ -15130,5 +15178,272 @@ async fn source_gutter_digits_and_native_restoration_use_current_index_and_proje
         )
         .await;
         assert_eq!(actions.source(), "a\r\n文😀\rb\r\n");
+    }
+}
+
+#[wasm_bindgen_test]
+async fn editor_save_completion_retains_root_and_account_ownership_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::{
+        state_actions::{editor::EditorActions, workspace::WorkspaceActions},
+        workspace::Workspace,
+    };
+    const BASE: &str = "base 😀\r\n";
+    const DRAFT: &str = "draft 😀\r\n";
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        // Root/file/account/bridge/project changes and write failure during a save.
+        for case in 0..8 {
+            let folder = if mode == WorkspaceMode::Local {
+                Some(editorConfigFolder().await.unwrap())
+            } else {
+                None
+            };
+            let replacement = if mode == WorkspaceMode::Local && case == 0 {
+                Some(editorConfigFolder().await.unwrap())
+            } else {
+                None
+            };
+            for folder in folder.iter().chain(replacement.iter()) {
+                Workspace::Local {
+                    handle: editorConfigHandle(folder).unchecked_into(),
+                }
+                .write("guard.rs", BASE)
+                .await
+                .unwrap();
+            }
+            let held = folder.as_ref().map(editorHeldSave);
+            let handle = held.as_ref().map(editorHeldSaveHandle);
+            let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+            let capture = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                if let Some(handle) = handle {
+                    state.projects.local_handles.update(|handles| {
+                        handles.insert(1, handle.unchecked_into());
+                    });
+                }
+                state
+                    .fake
+                    .files
+                    .borrow_mut()
+                    .insert((1, "guard.rs".into()), BASE.into());
+                state.workspace.open_file.set(Some("guard.rs".into()));
+                state.workspace.content.set(BASE.into());
+                let view = editor_view(state);
+                capture.set(Some(expect_context::<WorkspaceActions>()));
+                view
+            });
+            let editor = EditorActions::new(mounted.state.workspace);
+            editor
+                .native_input(
+                    DRAFT.replace("\r\n", "\n"),
+                    Selection::caret(DRAFT.replace("\r\n", "\n").len()),
+                    "insertText",
+                    1.0,
+                )
+                .unwrap();
+            assert!(mounted.state.workspace.dirty.get_untracked());
+            mounted.state.workspace.retain_editor_buffer(false);
+            mounted.state.workspace.save_active(1);
+            let sender = if mode == WorkspaceMode::Remote {
+                let (sender, receiver) = futures::channel::oneshot::channel();
+                mounted
+                    .state
+                    .fake
+                    .file_write_results
+                    .borrow_mut()
+                    .push_back(receiver);
+                Some(sender)
+            } else {
+                None
+            };
+            slot.get().unwrap().on_save.run(());
+            wait_until("held save reached adapter", || {
+                held.as_ref().map_or_else(
+                    || mounted.state.fake.calls.borrow().iter().any(|call| matches!(call,
+                        openwebide_frontend::testing::fake_backend::Call::WriteFile {path, ..} if path == "guard.rs")),
+                    editorHeldSaveStarted,
+                )
+            }).await;
+            match case {
+                0 => {
+                    if let Some(replacement) = replacement.as_ref() {
+                        mounted.state.projects.local_handles.update(|handles| {
+                            handles.insert(1, editorConfigHandle(replacement).unchecked_into());
+                        });
+                    } else {
+                        mounted.state.projects.projects.update(|projects| {
+                            projects[0].path = Some("replacement-root".into());
+                        });
+                    }
+                }
+                1 => {
+                    mounted
+                        .state
+                        .workspace
+                        .open_file
+                        .set(Some("other.rs".into()));
+                    mounted
+                        .state
+                        .workspace
+                        .content
+                        .set("unrelated draft".into());
+                    mounted.state.workspace.dirty.set(true);
+                }
+                2 => (),
+                3 => mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation += 1),
+                4 => mounted
+                    .state
+                    .settings
+                    .bridge_url
+                    .set("http://changed-bridge:3001".into()),
+                5 => mounted.state.projects.projects.update(Vec::clear),
+                6 => {
+                    let mut other = mounted.state.projects.project(1).unwrap();
+                    other.id = 2;
+                    mounted
+                        .state
+                        .projects
+                        .projects
+                        .update(|projects| projects.push(other));
+                    mounted.state.projects.active_project.set(Some(2));
+                    mounted
+                        .state
+                        .workspace
+                        .open_file
+                        .set(Some("other.rs".into()));
+                    mounted
+                        .state
+                        .workspace
+                        .content
+                        .set("unrelated draft".into());
+                    mounted.state.workspace.dirty.set(true);
+                }
+                7 => {
+                    editor
+                        .native_input(
+                            "newer 😀\n".into(),
+                            Selection::caret("newer 😀\n".len()),
+                            "insertText",
+                            2000.0,
+                        )
+                        .unwrap();
+                    mounted.state.workspace.retain_editor_buffer(false);
+                }
+                _ => unreachable!(),
+            }
+            if let Some(sender) = sender {
+                sender
+                    .send(if case == 2 {
+                        Err("Folder permission revoked".into())
+                    } else {
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            if let Some(held) = held.as_ref() {
+                editorHeldSaveRelease(held, case == 2);
+                wait_until("held filesystem write finished", || {
+                    editorHeldSaveFinished(held)
+                })
+                .await;
+            }
+            settle().await;
+            assert!(
+                mounted.state.workspace.dirty.get_untracked(),
+                "{mode:?} case {case}"
+            );
+            assert_eq!(
+                &*mounted.state.workspace.content.get_untracked(),
+                if matches!(case, 1 | 6) {
+                    "unrelated draft"
+                } else if case == 7 {
+                    "newer 😀\r\n"
+                } else {
+                    DRAFT
+                }
+            );
+            mounted
+                .state
+                .workspace
+                .editor_documents
+                .with_untracked(|documents| {
+                    assert_eq!(
+                        documents[&(1, "guard.rs".into())].is_dirty(),
+                        !matches!(case, 1 | 6),
+                        "saved baseline ownership: {mode:?} case {case}"
+                    );
+                });
+            mounted
+                .state
+                .workspace
+                .editor_buffers
+                .with_untracked(|buffers| {
+                    assert_eq!(
+                        buffers[&(1, "guard.rs".into())].dirty,
+                        !matches!(case, 1 | 6),
+                        "buffer ownership: {mode:?} case {case}"
+                    );
+                });
+            mounted
+                .state
+                .workspace
+                .snapshots
+                .with_untracked(|snapshots| {
+                    assert_eq!(
+                        snapshots[&1].dirty,
+                        !matches!(case, 1 | 6 | 7),
+                        "snapshot ownership: {mode:?} case {case}"
+                    );
+                });
+            if case == 7 {
+                editor
+                    .command(
+                        openwebide_frontend::state_actions::editor::EditorCommand::Undo,
+                        editor.current_selection().unwrap(),
+                        editor.rules_untracked().indentation,
+                    )
+                    .unwrap();
+                assert_eq!(&*mounted.state.workspace.content.get_untracked(), DRAFT);
+                assert!(!mounted.state.workspace.dirty.get_untracked());
+            }
+            let written = if let Some(folder) = folder.as_ref() {
+                Workspace::Local {
+                    handle: editorConfigHandle(folder).unchecked_into(),
+                }
+                .read("guard.rs")
+                .await
+                .unwrap()
+            } else {
+                mounted.state.fake.files.borrow()[&(1, "guard.rs".into())].clone()
+            };
+            assert_eq!(written, if case == 2 { BASE } else { DRAFT });
+            if let Some(replacement) = replacement.as_ref() {
+                assert_eq!(
+                    Workspace::Local {
+                        handle: editorConfigHandle(replacement).unchecked_into()
+                    }
+                    .read("guard.rs")
+                    .await
+                    .unwrap(),
+                    BASE
+                );
+            }
+            drop(mounted);
+            if let Some(folder) = folder {
+                editorConfigCleanup(&folder).await.unwrap();
+            }
+            if let Some(replacement) = replacement {
+                editorConfigCleanup(&replacement).await.unwrap();
+            }
+        }
     }
 }

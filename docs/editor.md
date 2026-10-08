@@ -162,6 +162,10 @@ Without explicit save rules, line endings, trailing whitespace and the presence
 or absence of a final newline are preserved. Configured cleanup is applied as one
 undoable command before writing. Empty documents never gain a final newline.
 Undoing cleanup after a successful save marks the buffer dirty again.
+An in-flight save can finish after switching file or project tabs. Its acknowledgement
+updates only the original account, project and folder; a changed folder/bridge,
+removed project or account change cannot mark a replacement draft saved. Edits made
+while writing remain dirty, and a failed write preserves the draft and saved baseline.
 
 Unreadable, invalid or oversized configuration files produce a notice and fall
 back to the remaining rules, detected indentation and defaults. Configuration
