@@ -14545,3 +14545,88 @@ async fn bound_editor_composition_keeps_native_ownership_across_provider_metadat
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn source_gutter_digits_and_native_restoration_use_current_index_and_projection_in_both_modes()
+ {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{FoldCommand, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorCommand};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = format!("fn main() {{\r\n{}}}\r\n", "    x();\r\n".repeat(6));
+        let fixture = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("rows.rs".into()));
+            state.workspace.content.set(fixture.clone().into());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:700px;height:400px">{editor_view(state)}</div> }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let code: web_sys::HtmlElement = mounted.element(".editor-code").unchecked_into();
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let gutter = || {
+            code.style()
+                .get_property_value("--editor-gutter-width")
+                .unwrap()
+        };
+        wait_until("nine source rows", || {
+            actions.source_line_count() == Some(9)
+                && gutter().contains("1ch")
+                && input.value() == source.replace("\r\n", "\n")
+        })
+        .await;
+        assert_eq!(input.value(), source.replace("\r\n", "\n"));
+        actions
+            .command(
+                EditorCommand::Newline,
+                Selection::caret(0),
+                actions.rules_untracked().indentation,
+            )
+            .unwrap();
+        wait_until("two digit source gutter", || {
+            actions.source_line_count() == Some(10) && gutter().contains("2ch")
+        })
+        .await;
+        actions.refresh_fold_ranges(|| true);
+        actions.fold_command(FoldCommand::CollapseAll).unwrap();
+        settle().await;
+        assert!(actions.projection().unwrap().lines().len() < 10);
+        assert_eq!(actions.source_line_count(), Some(10));
+        assert!(
+            gutter().contains("2ch"),
+            "hidden rows retain source-number width"
+        );
+        actions.fold_command(FoldCommand::ExpandAll).unwrap();
+        actions
+            .command(
+                EditorCommand::Undo,
+                actions.current_selection().unwrap(),
+                actions.rules_untracked().indentation,
+            )
+            .unwrap();
+        wait_until("undo restores one digit gutter and native source", || {
+            actions.source_line_count() == Some(9)
+                && gutter().contains("1ch")
+                && input.value() == source.replace("\r\n", "\n")
+        })
+        .await;
+        mounted
+            .state
+            .workspace
+            .content
+            .set("a\r\n文😀\rb\r\n".into());
+        wait_until(
+            "external mixed newline source restores normalized native value",
+            || input.value() == "a\n文😀\nb\n" && actions.source_line_count() == Some(3),
+        )
+        .await;
+        assert_eq!(actions.source(), "a\r\n文😀\rb\r\n");
+    }
+}

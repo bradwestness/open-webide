@@ -1221,6 +1221,20 @@ impl EditorActions {
             .try_update(|documents| self.document(documents, key).projection())
     }
 
+    /// Source rows include hidden folds and the terminal empty row. Query the
+    /// current document index instead of rescanning source for gutter digits.
+    pub fn source_line_count(self) -> Option<usize> {
+        let key = self.key()?;
+        self.workspace.content.with_untracked(|text| {
+            self.workspace.editor_documents.with_untracked(|documents| {
+                documents
+                    .get(&key)
+                    .filter(|document| document.matches_text(text))
+                    .map(Document::line_count)
+            })
+        })
+    }
+
     pub fn projection(self) -> Option<openwebide_core::editor::FoldProjection> {
         let key = self.key()?;
         self.workspace.content.with_untracked(|text| {

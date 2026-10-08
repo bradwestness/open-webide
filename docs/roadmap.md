@@ -152,7 +152,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   same revision. Rectangular gestures retain source-version identity and tab geometry;
   column queries reuse indexed logical rows instead of rebuilding the file's row table.
   Native selection restoration, composition completion, clipboard cursor checks and
-  fallback rule detection borrow source. Release-app Chromium checks cover highlighted token/line-end clicks,
+  fallback rule detection borrow source. Native value restoration uses the projection’s
+  normalized text directly; gutter digits query the source-row index without rescanning
+  source or shrinking for hidden folds. Release-app Chromium checks cover highlighted token/line-end clicks,
   far-right blank space and held pointer movement in Rust/C#/JSON and scrolled
   bounded input in both modes. Click/drag hits share measured-boundary validation
   and row-padding normalization. Expanded LF checks cover upper/lower row padding
@@ -204,8 +206,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   row-count and long-line boundary workloads in both modes, including Linux Chrome
   PSS and the unresponsive wrapped cases. Fresh Linux Chromium 154 runs complete
   all sixteen wrapped/unwrapped boundary cases with PSS observations, but long-line
-  cold paint/input and row-count input still take seconds; isolate those phases and
-  repeat after fixing them. Broader startup scroll latency and
+  cold paint/input still take seconds. Isolated traces attributed row-count input
+  to frame waits and repeated rules detection; twelve repeated samples after those
+  fixes show 230–250 ms input paint, with cold paint still around 2–3 seconds.
+  Continue profiling cold/long-line phases and repeat after fixing them. Broader startup scroll latency and
   initial-shaping samples remain unverified despite bounded steady-state paint.
   See [recorded measurements](editor-performance.md).
 - **Selections and files:** finish real-device input/IME/clipboard verification

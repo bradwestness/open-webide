@@ -1022,3 +1022,8 @@ Pointer gestures flush pending source paint when analysis has temporarily marked
 hit-testing unavailable. The current input target, source scope and glyph geometry
 are revalidated before translating to source coordinates; bounded native windows
 never supply whole-file pointer offsets.
+
+Gutter digits query the active document’s source-row index, including hidden fold
+rows and a trailing empty row; folds do not shrink source-number width. Native
+restoration compares the input against the projection’s already-normalized value
+without creating another normalized source copy.

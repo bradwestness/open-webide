@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Size the editor gutter from the current document’s source-row index, retaining hidden fold rows and the final empty row. Restore native input directly from the projection’s normalized value without making temporary whole-file newline replacements.
+
 - Flush pending source paint before an editor pointer gesture when background analysis has temporarily invalidated readiness. Keep source/account validation and exact glyph hit-testing for bounded native input.
 
 - Schedule cooperative lexical rendering by elapsed preparation time, with a hard batch cap and conservative clock fallback. Memoize shared editor rules so missing/failed config reads do not re-detect settings on every ownership check. Keep task yields, source/default/file invalidation and stale-source cancellation between batches.

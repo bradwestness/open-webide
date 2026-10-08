@@ -2089,6 +2089,10 @@ pub fn Editor(
             openwebide_core::editor::FoldProjection::new("", &Default::default())
         })
     });
+    let source_line_count = Memo::new(move |_| {
+        projection.with(|_| ());
+        editor_actions.source_line_count().unwrap_or(1)
+    });
     let fold_state = Memo::new(move |_| {
         workspace.editor_fold_revision.track();
         content.track();
@@ -2754,7 +2758,8 @@ pub fn Editor(
         }
         let mounted = restored_textarea
             .with_value(|previous| previous.as_ref() != Some(&(el.clone(), key.clone())));
-        let changed = el.value() != value.replace("\r\n", "\n").replace('\r', "\n");
+        // FoldProjection already owns the textarea-normalized value.
+        let changed = el.value() != value;
         if mounted || changed {
             let scroll = if mounted {
                 editor_actions.scroll()
@@ -3165,7 +3170,7 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code" data-editor-view=move || editor_actions.view_revision().to_string() data-editor-account=editor_account_generation.to_string() data-editor-pointer-ready=move || highlight_ready.get().to_string() style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 42px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_visible.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
+                                    <div class="editor-code" data-editor-view=move || editor_actions.view_revision().to_string() data-editor-account=editor_account_generation.to_string() data-editor-pointer-ready=move || highlight_ready.get().to_string() style=move || format!("--editor-gutter-width: calc({}ch + 42px); --editor-tab-width: {}", source_line_count.get().to_string().len(), editor_actions.rules().indentation.tab_width()) class:highlight-ready=move || highlight_visible.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
                                         <div class="editor-scroll-surface" aria-hidden="true" on:scroll=move |event: web_sys::Event| {
                                             let Some(textarea) = ta.get_untracked() else { return; };
                                             let Some(target) = event.current_target().and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok()) else { return; };
