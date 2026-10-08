@@ -96,7 +96,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   creating temporary source snapshots; owned contexts share their scan/query policy.
   Worker/fallback request scopes share one guarded source snapshot across repeated
   pending queries and tab-width changes, built directly from borrowed content.
-  Scope byte validation and transport serialization still visit complete source.
+  Retained scopes validate source revision and immutable allocation ownership
+  without scanning bytes. External scopes and changed-revision source reuse still
+  require byte comparisons; transport serialization still visits complete source.
   Finish those incremental paths, larger retained-container reuse and remaining source snapshot
   ownership,
   uncached initial/cold shaping, bidirectional visual-run windows, fine long-row paint
@@ -108,7 +110,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   extents and reject stale frames/native text, invalid dimensions, wrapping and active composition.
   Cold layout shares exact repeated paint dimensions after matching representative samples;
   distinct or conflicting rows still require fresh measurement. Browser contracts verify
-  each cold probe independently of font/layout retries and await styled tokens for token-click checks.
+  each cold probe independently of font/layout retries and await styled tokens plus
+  current source hit geometry for token-click checks.
   Initial bounded neutral unwrapped frames use the shared document index before lexical
   completion and browser frame callbacks. Held-frame contracts cover bounded native input,
   source columns and line-end clicks in both modes; identical frames revalidate without

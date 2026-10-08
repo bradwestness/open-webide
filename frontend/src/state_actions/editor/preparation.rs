@@ -31,6 +31,8 @@ mod tests {
             let first = actions.syntax_scope().unwrap();
             let second = actions.syntax_scope().unwrap();
             assert!(Arc::ptr_eq(&first.source, &second.source));
+            assert_eq!(first.source_revision, second.source_revision);
+            assert!(actions.syntax_source_retained(&second));
             let mut indentation = actions.rules_untracked().indentation;
             indentation.tab_width = first.tab_width + 4;
             actions.set_indentation(indentation);
@@ -39,11 +41,19 @@ mod tests {
             assert_ne!(first.tab_width, changed.tab_width);
             assert!(!actions.syntax_scope_current(&first));
             assert!(actions.syntax_scope_current(&changed));
+            assert_eq!(first.source_revision, changed.source_revision);
             workspace.content.set(first.source.to_string());
-            assert!(Arc::ptr_eq(
-                &first.source,
-                &actions.syntax_scope().unwrap().source
-            ));
+            assert!(!actions.syntax_scope_current(&changed));
+            let refreshed = actions.syntax_scope().unwrap();
+            assert!(Arc::ptr_eq(&first.source, &refreshed.source));
+            assert_ne!(refreshed.source_revision, changed.source_revision);
+            assert!(actions.syntax_source_retained(&refreshed));
+            let mut external = refreshed.clone();
+            external.source = Arc::from(refreshed.source.as_ref());
+            assert!(!actions.syntax_source_retained(&external));
+            assert!(actions.syntax_scope_current(&external));
+            external.source = Arc::from("forged source");
+            assert!(!actions.syntax_scope_current(&external));
             workspace.open_file.set(None);
             assert!(actions.syntax_scope().is_none());
             assert!(workspace.editor_syntax_scope.get_untracked().is_none());
@@ -97,6 +107,7 @@ impl EditorActions {
         let read_revision = self.workspace.editor_read_revision.get_untracked();
         let account_generation = self.auth.map_or(0, |auth| auth.generation.get_untracked());
         let tab_width = self.rules_untracked().indentation.tab_width();
+        let source_revision = self.workspace.editor_source_revision.get_untracked();
         let source = self.workspace.content.with_untracked(|source| {
             self.workspace.editor_syntax_scope.with_untracked(|cached| {
                 cached
@@ -106,7 +117,8 @@ impl EditorActions {
                             && cached.epoch == epoch
                             && cached.read_revision == read_revision
                             && cached.account_generation == account_generation
-                            && cached.source.as_ref() == source.as_str()
+                            && (cached.source_revision == source_revision
+                                || cached.source.as_ref() == source.as_str())
                     })
                     .map_or_else(
                         || std::sync::Arc::from(source.as_str()),
@@ -117,6 +129,7 @@ impl EditorActions {
         let scope = EditorSyntaxScope {
             key,
             source,
+            source_revision,
             epoch,
             read_revision,
             account_generation,
@@ -133,10 +146,26 @@ impl EditorActions {
             && self.auth.map_or(0, |auth| auth.generation.get_untracked())
                 == scope.account_generation
             && self.rules_untracked().indentation.tab_width() == scope.tab_width
-            && self
-                .workspace
-                .content
-                .with_untracked(|source| source.as_str() == scope.source.as_ref())
+            && self.workspace.editor_source_revision.get_untracked() == scope.source_revision
+            && (self.syntax_source_retained(scope)
+                || self
+                    .workspace
+                    .content
+                    .with_untracked(|source| source.as_str() == scope.source.as_ref()))
+    }
+
+    /// Only facade-minted immutable source allocations can skip byte validation.
+    fn syntax_source_retained(self, scope: &EditorSyntaxScope) -> bool {
+        self.workspace.editor_syntax_scope.with_untracked(|cached| {
+            cached.as_ref().is_some_and(|cached| {
+                cached.key == scope.key
+                    && cached.epoch == scope.epoch
+                    && cached.read_revision == scope.read_revision
+                    && cached.account_generation == scope.account_generation
+                    && cached.source_revision == scope.source_revision
+                    && std::sync::Arc::ptr_eq(&cached.source, &scope.source)
+            })
+        })
     }
 
     /// Pending worker results do not require a second full-file lexical pass.

@@ -886,8 +886,12 @@ current file, project, account, reload and review generation. Repeated requests 
 tab-width changes share that allocation, including while analysis is pending. New
 snapshots copy directly from borrowed editor content, without an intermediate full
 String. Source or ownership changes replace the snapshot; reset and requests
-without an open file clear it. Scope validation still compares complete source bytes, and worker
-transport still serializes the requested source.
+without an open file clear it. Facade-owned scopes use the shared source revision
+and retained immutable allocation to validate current source without scanning bytes.
+Content replacement invalidates older scopes even when the new bytes match; the
+new request may reuse the same source allocation after checking those bytes.
+External snapshots still require complete-byte validation, and worker transport
+still serializes the requested source.
 
 When a worker is unavailable or finishes without usable syntax paint, the editor
 facade prepares fallback rows through a resumable Rust lexical job. The same

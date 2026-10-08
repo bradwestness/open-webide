@@ -970,7 +970,25 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
                 (16, start + 16, false),
                 (24, start + 28, true),
             ] {
-                assert!(editorClickPosition(&input, 2, column, beyond));
+                wait_until("current source hit before highlighted click", || {
+                    let point = editorClickPoint(&input, 2, column, beyond);
+                    let (Some(x), Some(y)) = (point.get(0).as_f64(), point.get(1).as_f64()) else {
+                        return false;
+                    };
+                    openwebide_frontend::viewport::editor_caret_from_point(&input, x, y)
+                        .zip(actions.projection())
+                        .and_then(|(offset, projection)| {
+                            projection
+                                .source_offset(projection.textarea_to_byte(offset as usize))
+                                .ok()
+                        })
+                        == Some(expected)
+                })
+                .await;
+                assert!(
+                    editorClickPosition(&input, 2, column, beyond),
+                    "{mode:?}, repeat={repeat}, column={column}, beyond={beyond}: ready source hit must own the click"
+                );
                 frame().await;
                 assert_eq!(
                     actions.selection(&source),
@@ -4248,8 +4266,7 @@ export function editorDragFallback(target, line, column, container) {
     }
 }
 export function editorClickPosition(target, line, column, beyond) {
-    const rect = editorGestureRect(target, line, column);
-    const x = rect.left + (beyond ? 60 : .25), y = rect.top + rect.height / 2;
+    const [x,y] = editorClickPoint(target, line, column, beyond);
     let prevented;
     for (const type of ['mousedown', 'mouseup', 'click']) {
         const event = new MouseEvent(type, {bubbles:true,cancelable:true,detail:1,button:0,buttons:type === 'mousedown' ? 1 : 0,clientX:x,clientY:y});
@@ -4257,6 +4274,12 @@ export function editorClickPosition(target, line, column, beyond) {
         if (type === 'mousedown') prevented = event.defaultPrevented;
     }
     return prevented;
+}
+export function editorClickPoint(target, line, column, beyond) {
+    try {
+        const rect = editorGestureRect(target, line, column);
+        return [rect.left + (beyond ? 60 : .25), rect.top + rect.height / 2];
+    } catch { return []; }
 }
 export function editorPrimaryGesture(target, line, column, clicks, shift, type) {
     const rect = editorGestureRect(target, line, column), viewport = target.getBoundingClientRect();
@@ -4274,6 +4297,12 @@ export function editorGesture(target, line, column, shift, moving) {
 }
 "#)]
 extern "C" {
+    fn editorClickPoint(
+        target: &web_sys::HtmlTextAreaElement,
+        line: u32,
+        column: u32,
+        beyond: bool,
+    ) -> js_sys::Array;
     fn editorNativeInput(
         target: &web_sys::HtmlTextAreaElement,
         text: &str,
@@ -8080,6 +8109,10 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
                             openwebide_frontend::state::workspace::PreparedEditorSyntax {
                                 scope: openwebide_frontend::state::workspace::EditorSyntaxScope {
                                     key: (1, "fallback.rs".into()),
+                                    source_revision: state
+                                        .workspace
+                                        .editor_source_revision
+                                        .get_untracked(),
                                     source: source.into(),
                                     epoch: 0,
                                     read_revision: state

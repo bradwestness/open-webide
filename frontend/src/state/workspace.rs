@@ -39,6 +39,7 @@ pub struct EditorTextInsertion {
 pub struct EditorSyntaxScope {
     pub key: (i64, String),
     pub source: std::sync::Arc<str>,
+    pub source_revision: u64,
     pub epoch: u64,
     pub read_revision: u64,
     pub account_generation: u64,
