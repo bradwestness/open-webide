@@ -607,6 +607,7 @@ fn TuiStatusLine(
         }
     };
 
+    let ui = expect_context::<crate::state::ui::UiState>();
     let show_model_menu = RwSignal::new(false);
     let chat = expect_context::<ChatState>();
     let settings = expect_context::<SettingsState>();
@@ -663,15 +664,16 @@ fn TuiStatusLine(
                 />
             </super::dropdown::Dropdown>
             <span class="tui-sep">"│"</span>
-            <span class=move || format!("tui-ctx-gauge {}", gauge_color_class()) title="Context Window Utilization">
+            <button type="button" class=move || format!("btn ghost tui-ctx-gauge {}", gauge_color_class()) title="Context Window Utilization" aria-label="View context usage" on:click=move |_| ui.context_open.set(true)>
+                <span class="tui-context-detail">
                 "Ctx: "
                 {move || session_telemetry.with(SessionTelemetry::compact_context_tokens)}
                 "/"
                 {move || session_telemetry.with(SessionTelemetry::compact_context_limit)}
-                " ("
+                </span><span class="tui-context-percent">" ("
                 {move || format!("{:.0}%", session_telemetry.with(SessionTelemetry::context_percent))}
-                ")"
-            </span>
+                ")"</span>
+            </button>
             <span class="tui-sep">"│"</span>
             <span class="tui-speed" title="Generation Speed">
                 {move || session_telemetry.with(SessionTelemetry::speed_text)}

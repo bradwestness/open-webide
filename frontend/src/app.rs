@@ -406,8 +406,8 @@ pub fn App() -> impl IntoView {
                             />
                             </ToolPanel>
                             <ToolPanel panel=Panel::Files>
-    <SearchPane on_open=request_open on_search_input=on_search_input on_cancel_search=on_cancel_search on_search=on_search on_clear_search=on_clear_search include_ignored=include_ignored_search.read_only() on_toggle_include_ignored=Callback::new(move |()| include_ignored_search.update(|v| *v = !*v))>
     <crate::components::FilesPanel on_new_file=on_new_file on_new_dir=on_new_dir>
+    <SearchPane on_open=request_open on_search_input=on_search_input on_cancel_search=on_cancel_search on_search=on_search on_clear_search=on_clear_search include_ignored=include_ignored_search.read_only() on_toggle_include_ignored=Callback::new(move |()| include_ignored_search.update(|v| *v = !*v))>
                                 <div class="files-view" hidden=move || layout.preferences.with(|p| p.files_view == crate::state::responsive::FilesView::Changes)>
                             <FileTree
                                 on_toggle=on_toggle
@@ -419,8 +419,8 @@ pub fn App() -> impl IntoView {
             <GitPane on_load_branches=git_actions.on_load_branches on_select_branch=git_actions.on_select_branch on_new_branch=on_branch_click on_open=Callback::new(move |path| { request_open.run(path); }) on_load_git_diff=on_load_git_diff on_discard_git_diff=on_discard_git_diff />
                                 </div>
 
-                            </crate::components::FilesPanel>
     </SearchPane>
+                            </crate::components::FilesPanel>
                             </ToolPanel>
                             <ToolPanel panel=Panel::Editor>
                             <div class="center-pane">

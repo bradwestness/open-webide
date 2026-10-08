@@ -124,17 +124,28 @@ pub fn SearchPane(
             input.set_value("");
         }
     });
-    Effect::new(move |_| {
-        if layout
+    let searching = Signal::derive(move || {
+        layout
             .preferences
             .with(|prefs| prefs.files_view == crate::state::responsive::FilesView::Search)
-            && let Some(input) = search_input.get()
-        {
-            let _ = input.focus();
+    });
+    let actions = expect_context::<crate::state_actions::layout::LayoutActions>();
+    Effect::new(move |_| {
+        if searching.get() {
+            leptos::leptos_dom::helpers::queue_microtask(move || {
+                if searching.try_get_untracked() == Some(true)
+                    && let Some(Some(input)) = search_input.try_get_untracked()
+                {
+                    let _ = input.focus();
+                }
+            });
+        } else {
+            on_cancel_search.run(());
         }
     });
     view! { <div class="search-pane">
 
+            <div id="project-search" hidden=move || !searching.get()>
             <super::ui::PanelSearchRow class="file-tree-search">
                 <input
                     type="text"
@@ -142,6 +153,20 @@ pub fn SearchPane(
                     aria-label="Search project files"
                     placeholder="Search files…"
                     node_ref=search_input
+                    on:keydown=move |event: web_sys::KeyboardEvent| {
+                        if event.key() == "Escape" && !event.is_composing() {
+                            event.prevent_default();
+                            event.stop_propagation();
+                            on_clear_search.run(());
+                            query.set(String::new());
+                            if let Some(input) = search_input.get() { input.set_value(""); }
+                            actions.select_files_view.run(crate::state::responsive::FilesView::Explorer);
+                            leptos::leptos_dom::helpers::queue_microtask(move || {
+                                if searching.try_get_untracked() == Some(false)
+                                    && let Some(button) = document().query_selector("[data-file-search-toggle]").ok().flatten().and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok()) { let _ = button.focus(); }
+                            });
+                        }
+                    }
                     on:input=move |e: web_sys::Event| {
                         if let Some(target) = e.target()
                             && let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>()
@@ -183,8 +208,9 @@ pub fn SearchPane(
                     <crate::components::ui::Icon name=crate::components::ui::IconName::FolderSearch />
                 </button>
             </super::ui::PanelSearchRow>
-                <div class="search-file-views" hidden=move || !query.get().is_empty()>{children.map(|children| children())}</div>
-                <div class="tree-root search-results" hidden=move || query.get().is_empty()>
+            </div>
+                <div class="search-file-views" hidden=move || searching.get() && !query.get().is_empty()>{children.map(|children| children())}</div>
+                <div class="tree-root search-results" hidden=move || !searching.get() || query.get().is_empty()>
                     <For
                         each=move || search_results.get().unwrap_or_default()
                         key=|e| format!("{}:{}", e.path, e.line)

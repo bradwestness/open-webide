@@ -3308,3 +3308,21 @@ button.browser-item {
 
 .tui-goal { margin: var(--space-2) var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: 6px; overflow-wrap: anywhere; }
 .tui-goal p { margin: var(--space-2) 0; }
+
+/* On-demand controls share the same pane structure in local and remote projects. */
+.tool-panel-heading[hidden], #project-search[hidden], .terminal-input-bar[hidden] { display: none; }
+.files-panel > .search-pane { flex: 1; width: 100%; overflow: hidden; }
+.search-file-views > .files-view { width: 100%; }
+.panel-tab > .ui-icon-glyph { display: none; }
+.tui-context-percent { flex: none; }
+.tui-ctx-gauge { flex: none; font: inherit; white-space: nowrap; }
+.tui-model-name .ui-dropdown-label { min-width: 0; overflow: hidden; }
+.tui-model-name .ui-dropdown-label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@container (max-width: 420px) { .tui-context-detail { display: none; } }
+.phone-layout .tui-context-detail, .phone-layout .tui-speed, .phone-layout .tui-workspace-mode, .phone-layout .tui-tools-count, .phone-layout .tui-run-state { display: none; }
+.phone-layout .panel-rail { order: 254; gap: 0; padding: 2px 0 max(2px, env(safe-area-inset-bottom)); overflow: visible; border-top: 1px solid var(--border); background: var(--bg-panel); }
+.phone-layout .panel-tab-group { flex: 1; min-width: 0; }
+.phone-layout .panel-tab { width: 100%; display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 4px 2px; font-size: var(--font-caption); }
+.phone-layout .panel-tab > .ui-icon-glyph { display: inline-flex; }
+.phone-layout #panel-terminal.tool-panel { position: absolute; z-index: 30; inset: auto 0 0; height: min(65%, 480px); max-height: calc(100% - 44px); box-shadow: 0 -4px 16px var(--border); }
+.phone-layout .app-body { position: relative; }

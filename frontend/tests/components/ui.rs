@@ -221,6 +221,8 @@ async fn statusline_preserves_compact_telemetry_text() {
             .as_deref(),
         Some("7 tools")
     );
+    mounted.click(".tui-ctx-gauge");
+    assert!(mounted.state.ui.context_open.get_untracked());
     mounted.state.chat.session_telemetry.set(SessionTelemetry {
         context_limit: 0,
         context_limit_estimated: false,
@@ -897,5 +899,39 @@ async fn editor_defaults_restore_from_database_without_overwriting_a_newer_choic
             mounted.state.settings.editor_preferences.get_untracked(),
             if changed_during_load { chosen } else { saved }
         );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn narrow_chat_keeps_model_approval_and_context_controls_accessible_in_both_modes() {
+    use openwebide_core::{SessionTelemetry, WorkspaceMode};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            view! { <style>{include_str!("../../styles.css")}</style><div class="phone-layout" style="width:280px">{super::support::chat_view(state)}</div> }
+        });
+        mounted.state.chat.session_telemetry.set(SessionTelemetry {
+            model: "a very long model name with many parameters and versions".into(),
+            context_tokens: 12000,
+            context_limit: 32000,
+            ..SessionTelemetry::default()
+        });
+        settle().await;
+        let status = mounted.element(".tui-statusline");
+        assert!(
+            status.scroll_width() <= status.client_width(),
+            "status overflow in {mode:?}"
+        );
+        for selector in [".tui-mode-badge", ".tui-model-name", ".tui-ctx-gauge"] {
+            let bounds = mounted.element(selector).get_bounding_client_rect();
+            assert!(bounds.width() > 0.0 && bounds.height() >= 44.0);
+            assert!(bounds.right() <= status.get_bounding_client_rect().right() + 1.0);
+        }
+        mounted.click(".tui-ctx-gauge");
+        assert!(mounted.state.ui.context_open.get_untracked());
     }
 }

@@ -97,8 +97,13 @@ preserving validation and project/session/account guards.
 Chat uses compact labeled icon controls beside the composer. Enter sends or queues,
 Ctrl/⌘+Enter steers an active run, and Escape stops it. Attach images lives in the
 Chat menu; paste/drop use the same import path. Telemetry stays on one line, hiding
-secondary fields in narrow panes.
+secondary fields in narrow panes. The context gauge opens the context details;
+phones show the percentage while preserving model and approval controls.
 
 Terminal is a full-width bottom dock controlled from the status bar and available
 only with a project. Its top-edge separator resizes the database-backed height
-without consuming editor width. Account actions live in the username dropdown.
+without consuming editor width. Its Output header combines connection and actions;
+command input appears from its terminal icon or **New shell**. **Copy output**
+copies retained rendered lines. On phones, Output overlays the current pane as a
+sheet, and a full-width bottom bar provides equal icon-and-label destinations.
+Account actions live in the username dropdown.

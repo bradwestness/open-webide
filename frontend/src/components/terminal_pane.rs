@@ -57,6 +57,17 @@ pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) ->
     let following = RwSignal::new(true);
     let active_session = RwSignal::new(Option::<String>::None);
     let input_text = RwSignal::new(String::new());
+    let manual_input = RwSignal::new(false);
+    let input_ref = NodeRef::<leptos::html::Input>::new();
+    let ui = use_context::<crate::state::ui::UiState>();
+    let reveal_input = move || {
+        manual_input.set(true);
+        leptos::leptos_dom::helpers::queue_microtask(move || {
+            if let Some(Some(input)) = input_ref.try_get_untracked() {
+                let _ = input.focus();
+            }
+        });
+    };
     let history = RwSignal::new(Vec::<String>::new());
     let history_index = RwSignal::new(Option::<usize>::None);
     let last_seq = RwSignal::new(0u64);
@@ -530,13 +541,14 @@ pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) ->
         <div class="terminal-dock">
             <super::ui::PanelToolbar class="terminal-header">
                 <div class="terminal-title">
+                    <span>"Output"</span>
                     <span class=move || match status.get() {
                         BridgeStatus::Ready { .. } | BridgeStatus::Legacy => "term-status online",
                         BridgeStatus::Connecting => "term-status connecting",
                         BridgeStatus::Unavailable | BridgeStatus::Rejected => "term-status offline",
                     }>
                         {move || match status.get() {
-                            BridgeStatus::Ready { .. } | BridgeStatus::Legacy => "connected · ws:3001",
+                            BridgeStatus::Ready { .. } | BridgeStatus::Legacy => "connected",
                             BridgeStatus::Connecting => "connecting...",
                             BridgeStatus::Unavailable => "bridge offline",
                             BridgeStatus::Rejected => "sign-in rejected",
@@ -544,11 +556,21 @@ pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) ->
                     </span>
 
                 </div>
+                <button type="button" class="icon-btn ui-icon" title="Command input" aria-label="Command input" aria-expanded=move || manual_input.get().to_string() aria-controls="terminal-command-input" on:click=move |_| { if manual_input.get() { manual_input.set(false); } else { reveal_input(); } }><super::ui::Icon name=super::ui::IconName::Terminal /></button>
                 <super::dropdown::ActionMenu aria_label="Terminal actions">
+                    <button role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_| {
+                        let text = output_ref.get_untracked().map(|element| element.inner_text()).unwrap_or_default();
+                        let epoch = auth.generation.get_untracked();
+                        leptos::task::spawn_local(async move {
+                            if let Err(message) = crate::clipboard::copy_text(&text).await
+                                && auth.generation.try_get_untracked() == Some(epoch)
+                                && let Some(ui) = ui { ui.toast.try_set(Some(message)); }
+                        });
+                    }><super::ui::Icon name=super::ui::IconName::Copy />"Copy output"</button>
                     <button role="menuitem"
                         class="ui-dropdown-item recent-item term-btn"
                         title="New interactive shell"
-                        on:click=move |_| spawn_shell_btn()
+                        on:click=move |_| { reveal_input(); spawn_shell_btn(); }
                     >
                         <super::ui::Icon name=super::ui::IconName::Plus />"New shell"
                     </button>
@@ -589,11 +611,13 @@ pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) ->
                 <div class="terminal-line terminal-current" inner_html=move || current_html.get() />
             </div>
 
-            <div class="terminal-input-bar">
+            <div id="terminal-command-input" class="terminal-input-bar" hidden=move || !manual_input.get()>
                 <span class="terminal-prompt">"❯"</span>
                 <input
                     type="text"
                     class="terminal-input"
+                    aria-label="Command or shell input"
+                    node_ref=input_ref
                     placeholder="Command or shell input…"
                     prop:value=move || input_text.get()
                     on:input=move |ev| {

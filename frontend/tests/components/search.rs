@@ -18,13 +18,20 @@ fn mount_search() -> Mounted {
             RwSignal::new(false),
             Callback::new(|()| ()),
         );
+        let layout = expect_context::<openwebide_frontend::state::layout::LayoutState>();
+        let layout_actions = openwebide_frontend::state_actions::layout::LayoutActions::new(
+            state.api, layout, state.auth, state.ui,
+        );
+        provide_context(layout_actions);
         let ignored = RwSignal::new(false);
         view! {
+            <openwebide_frontend::components::FilesPanel on_new_file=Callback::new(|()| ()) on_new_dir=Callback::new(|()| ())>
             <SearchPane on_open=actions.request_open
                 on_search_input=actions.on_search_input on_cancel_search=actions.on_cancel_search
                 on_search=actions.on_search on_clear_search=actions.on_clear_search
                 include_ignored=ignored.read_only()
                 on_toggle_include_ignored=Callback::new(move |()| ignored.update(|v| *v = !*v))><input class="remembered-file-view" value="retained selection" /></SearchPane>
+            </openwebide_frontend::components::FilesPanel>
         }
     })
 }
@@ -100,7 +107,7 @@ async fn typing_waits_and_toggle_dispatches_latest_options_immediately() {
     input(&mounted, "   ");
     sleep_ms(100).await;
     assert!(mounted.state.fake.search_requests.borrow().is_empty());
-    mounted.element("button[aria-pressed]").click();
+    mounted.element("button[title^='Include ignored']").click();
     settle().await;
     assert_eq!(mounted.state.fake.search_requests.borrow().len(), 1);
     let request = mounted.state.fake.search_requests.borrow()[0].clone();
@@ -221,6 +228,8 @@ async fn persistent_search_replaces_file_view_and_clearing_restores_it_in_both_m
         let file_view = mounted.element(".remembered-file-view");
         let views = mounted.element(".search-file-views");
         assert!(!views.has_attribute("hidden"));
+        mounted.click("[data-file-search-toggle]");
+        settle().await;
         input(&mounted, "needle");
         settle().await;
         assert!(views.has_attribute("hidden"));
@@ -231,6 +240,67 @@ async fn persistent_search_replaces_file_view_and_clearing_restores_it_in_both_m
         assert!(mounted.element(".search-results").has_attribute("hidden"));
         assert!(file_view.is_same_node(Some(mounted.element(".remembered-file-view").as_ref())));
         openwebide_frontend::util::sleep_ms(300).await;
+        assert!(mounted.state.fake.search_requests.borrow().is_empty());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn files_search_is_on_demand_and_escape_cancels_and_restores_focus_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_search();
+        mounted
+            .state
+            .projects
+            .projects
+            .update(|projects| projects[0].mode = mode);
+        settle().await;
+        assert!(mounted.element("#project-search").has_attribute("hidden"));
+        mounted.click("[data-file-search-toggle]");
+        settle().await;
+        let field = mounted.element(".search-input");
+        assert!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .is_same_node(Some(&field))
+        );
+        input(&mounted, "pending");
+        settle().await;
+        assert!(
+            !mounted
+                .element(".files-panel-toolbar")
+                .has_attribute("hidden")
+        );
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Escape");
+        init.set_bubbles(true);
+        field
+            .dispatch_event(
+                &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+                    .unwrap(),
+            )
+            .unwrap();
+        settle().await;
+        assert!(mounted.element("#project-search").has_attribute("hidden"));
+        assert!(
+            !mounted
+                .element(".search-file-views")
+                .has_attribute("hidden")
+        );
+        assert!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .is_same_node(Some(&mounted.element("[data-file-search-toggle]")))
+        );
+        sleep_ms(350).await;
         assert!(mounted.state.fake.search_requests.borrow().is_empty());
     }
 }

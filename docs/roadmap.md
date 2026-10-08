@@ -319,30 +319,21 @@ footer, excluding the browser/PWA window title bar.
   as **Against last commit**, with `HEAD` available in a tooltip/advanced selector.
   Move the prominent red **Revert to HEAD** action into `⋯` and the command palette
   as **Discard changes…**, retaining confirmation and unsaved-buffer/review guards.
-- **Files controls:** keep Explorer/Changes visible. Put the search icon in the
-  pane header; clicking it reveals and focuses the search UI, and Escape dismisses
-  it. Move Include hidden files and folders, refresh and tree preferences into the
-  pane menu. Editor Find likewise appears only when invoked by icon or shortcut.
+- **Files controls:** move Include hidden files and folders, refresh and tree
+  preferences into the pane menu. Editor Find should appear only when invoked
+  by icon or shortcut.
 - **Status and occasional settings:** combine the editor and app footers. Show
   cursor position, one indentation control (**Spaces: 4** / **Tabs: 4**), connection,
   Git status and Output access. Put separate indent/tab widths and detection/default
   details behind the indentation control; move **Convert indentation** into `⋯`
-  and the command palette. Keep chat model and approval-mode state visible, while
-  detailed telemetry can open from the context gauge. Review duplicate pane-collapse
+  and the command palette. Review duplicate pane-collapse
   buttons where dock toggles already provide the same action. Use one app logo/menu
   and consistent `⋯` pane menus for app navigation versus pane options.
-- **Chat density and narrow layouts:** keep model and approval controls readable
-  without clipping or horizontal overflow. On phones, reduce telemetry to a compact
-  context indicator that opens details. Activity groups now summarize consecutive
-  tool and finished reasoning events;
-  verify their density and touch controls on real phones alongside the context
-  indicator.
-- **Phone navigation:** use a full-width bottom bar with four equal, justified
-  icon-and-label destinations: Sessions, Files, Editor and Chat. Selecting one
-  makes that pane the main view, with a clear active state. The logo opens the
-  Material-style offcanvas app/project drawer. Output can open as a sheet from
-  its status indicator. Respect safe-area insets and choose keyboard behavior that
-  preserves composer/editor space without obscuring controls.
+- **Chat density and narrow layouts:** verify density, model and approval controls,
+  activity-group touch controls and the compact context indicator on real phones.
+- **Phone navigation:** add the logo-driven offcanvas app/project drawer. Verify
+  keyboard behavior on real devices so composer/editor space and controls remain
+  accessible; check safe-area spacing and Output sheet behavior.
 - **Visual state consistency:** use shared selected-state styling across project/file
   tabs, pane navigation and segmented controls; distinguish keyboard focus from
   selection. Coordinate file-tree status with the Editor Git annotations and
@@ -363,14 +354,12 @@ and keep runs scoped to their project/session. Use shared output behavior with t
 runtime adapters; local output is available only for browser-supported execution,
 while host-native builds/tests initially run in remote mode.
 
-- Default an empty, idle output pane to collapsed. When a process starts, reveal
-  it at a modest desktop height while honoring explicit hide/resize choices.
-  On phones, show output in a sheet rather than stack it beneath the active pane
-  and squeeze the conversation/editor into the remaining space.
-- Combine the pane title, connection state and `⋯` actions into one header.
-  Show command input only when manual execution is requested; avoid reserving
-  separate connection/input bands around an empty output area. Keep running/failure
-  status visible through the shared footer's Output indicator when the pane is hidden.
+- When a process starts, reveal output at a modest desktop height while honoring
+  explicit hide/resize choices. Verify Output sheet focus/keyboard behavior on
+  real devices.
+- Keep running/failure status visible through the shared footer's Output indicator
+  when the pane is hidden. Add output search, separate run histories and file/line
+  links.
 
 Prioritize idle output behavior, phone control overflow and activity-group density
 on phones alongside the compact-layout work above. Verify both-mode output contracts and

@@ -35,3 +35,7 @@ Existing **…** menus on sessions, servers, system prompts, chat messages and p
 headers also support right-click, long press and the keyboard context-menu keys.
 The browser context menu is suppressed throughout the app, including blank areas
 and inputs; only elements with an app context menu show one.
+
+The Files header keeps **Explorer** and **Changes** available during search. Its
+search icon reveals and focuses project search; Escape cancels search and returns
+focus to the icon. Switching views retains the mounted file controls.

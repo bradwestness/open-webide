@@ -1281,3 +1281,76 @@ async fn settings_appearance_uses_compact_shared_segmented_controls() {
             .contains_key("workspace_layout")
     );
 }
+
+#[wasm_bindgen_test]
+async fn phone_navigation_is_equal_and_output_overlays_retained_pane_in_both_modes() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let read = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            let layout = expect_context::<LayoutState>();
+            let actions = LayoutActions::new(state.api, layout, state.auth, state.ui);
+            provide_context(actions);
+            read.set(Some((layout, actions)));
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div class="app phone-layout" style="width:320px;height:650px">
+                    <div class="app-body"><div class="workspace-docks">
+                        <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
+                        <ToolPanel panel=Panel::Sessions><span>"Sessions"</span></ToolPanel>
+                        <ToolPanel panel=Panel::Files><span>"Files"</span></ToolPanel>
+                        <ToolPanel panel=Panel::Editor><input value="retained draft" /></ToolPanel>
+                        <ToolPanel panel=Panel::Chat><span>"Chat"</span></ToolPanel>
+                    </div><ToolPanel panel=Panel::Terminal><span>"Output"</span></ToolPanel></div>
+                </div>
+            }
+        });
+        settle().await;
+        let (layout, actions) = slot.get().unwrap();
+        actions
+            .set_mode
+            .run(openwebide_frontend::state::responsive::LayoutMode::Phone);
+        actions.show.run(Panel::Editor);
+        settle().await;
+        let rail = mounted.element(".panel-rail");
+        let editor = mounted.element("#panel-editor");
+        let before = editor.get_bounding_client_rect();
+        let nav = rail.get_bounding_client_rect();
+        assert!(nav.top() >= before.bottom() - 1.0);
+        assert!(rail.scroll_width() <= rail.client_width());
+        for panel in ["sessions", "files", "editor", "chat"] {
+            let button = mounted.element(&format!(".panel-tab[aria-controls=panel-{panel}]"));
+            assert!((button.get_bounding_client_rect().width() - nav.width() / 4.0).abs() < 2.0);
+        }
+        mounted.click(".panel-tab[aria-controls=panel-editor]");
+        settle().await;
+        assert_eq!(
+            mounted
+                .element(".panel-tab[aria-controls=panel-editor]")
+                .get_attribute("aria-current")
+                .as_deref(),
+            Some("page")
+        );
+        actions.show.run(Panel::Terminal);
+        settle().await;
+        assert!((editor.get_bounding_client_rect().height() - before.height()).abs() < 1.0);
+        let output = mounted
+            .element("#panel-terminal")
+            .get_bounding_client_rect();
+        assert!(output.top() < nav.top());
+        assert!((output.width() - 320.0).abs() < 1.0);
+        assert!((output.bottom() - nav.bottom()).abs() < 1.0);
+        assert_eq!(
+            mounted
+                .element("#panel-editor input")
+                .unchecked_into::<web_sys::HtmlInputElement>()
+                .value(),
+            "retained draft"
+        );
+    }
+}

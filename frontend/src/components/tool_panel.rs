@@ -24,7 +24,7 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
             format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px; --tool-window-height: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 0.0 } else { layout.width(kind).get() }, layout.terminal_height.get())
         }
         aria-label=panel.label()>
-        <div class="tool-panel-heading" data-context-menu="">
+        <div class="tool-panel-heading" data-context-menu="" hidden=panel == Panel::Terminal>
             <span>{panel.label()}</span>
             <Show when=move || panel != Panel::Terminal>
             <super::dropdown::ActionMenu aria_label="Panel actions">
@@ -54,9 +54,10 @@ pub fn PanelRail(panels: Vec<Panel>) -> impl IntoView {
         {panels.into_iter().map(|panel| view! {
             <div class="panel-tab-group">
             <button class="btn panel-tab" class:is-open=move || layout.visible_panels.get().visible(panel)
+                aria-current=move || if layout.phone.get() && layout.visible_panels.get().visible(panel) { Some("page") } else { None }
                 aria-controls=format!("panel-{}", panel.id()) aria-expanded=move || layout.visible_panels.get().visible(panel).to_string()
                 disabled=move || !layout.available(panel)
-                title=move || if layout.available(panel) { format!("Show or collapse {}", panel.label()) } else { format!("Open a project to use {}", panel.label()) } on:click=move |_| actions.toggle.run(panel)>{panel.label()}</button>
+                title=move || if layout.available(panel) { format!("Show or collapse {}", panel.label()) } else { format!("Open a project to use {}", panel.label()) } on:click=move |_| { if layout.phone.get_untracked() { actions.show.run(panel); } else { actions.toggle.run(panel); } }><super::ui::Icon name=match panel { Panel::Sessions | Panel::Chat => super::ui::IconName::MessageCircle, Panel::Files | Panel::Search => super::ui::IconName::FolderSearch, Panel::Editor | Panel::Git => super::ui::IconName::File, Panel::Terminal => super::ui::IconName::Terminal } /><span>{panel.label()}</span></button>
 
             </div>
         }).collect_view()}
@@ -78,7 +79,9 @@ pub fn FilesPanel(
         <super::ui::PanelToolbar class="files-panel-toolbar">
         <SegmentedControl options=vec![SegmentOption::new("Explorer", FilesView::Explorer), SegmentOption::new("Changes", FilesView::Changes)]
             value=Signal::derive(move || layout.preferences.with(|p| if p.files_view == FilesView::Search { FilesView::Explorer } else { p.files_view })) on_change=actions.select_files_view />
-            <Show when=move || layout.preferences.with(|prefs| prefs.files_view == FilesView::Explorer)>
+            <button type="button" class="icon-btn ui-icon" data-file-search-toggle="" title="Search project files" aria-label="Search project files" aria-controls="project-search" aria-expanded=move || layout.preferences.with(|prefs| prefs.files_view == FilesView::Search).to_string()
+                on:click=move |_| actions.select_files_view.run(if layout.preferences.with(|prefs| prefs.files_view == FilesView::Search) { FilesView::Explorer } else { FilesView::Search })><super::ui::Icon name=super::ui::IconName::Search /></button>
+            <Show when=move || layout.preferences.with(|prefs| prefs.files_view != FilesView::Changes)>
                 <super::file_tree::FileActions on_new_file=on_new_file on_new_dir=on_new_dir />
             </Show>
         </super::ui::PanelToolbar>

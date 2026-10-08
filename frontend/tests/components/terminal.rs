@@ -1273,3 +1273,59 @@ async fn settle() {
     wasm_bindgen_futures::JsFuture::from(frame).await.unwrap();
     super::support::settle().await;
 }
+
+#[wasm_bindgen_test]
+async fn manual_input_is_on_demand_and_keeps_draft_when_hidden_in_both_modes() {
+    use wasm_bindgen::JsCast;
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let (mounted, _, _, slot) = mount_terminal();
+        mounted.state.seed_project();
+        mounted
+            .state
+            .projects
+            .projects
+            .update(|projects| projects[0].mode = mode);
+        settle().await;
+        assert!(
+            mounted
+                .element(".terminal-input-bar")
+                .has_attribute("hidden")
+        );
+        mounted.click("[aria-label='Command input']");
+        settle().await;
+        assert!(
+            !mounted
+                .element(".terminal-input-bar")
+                .has_attribute("hidden")
+        );
+        let input: web_sys::HtmlInputElement = mounted.element(".terminal-input").unchecked_into();
+        input.set_value("cargo test");
+        input
+            .dispatch_event(&web_sys::Event::new("input").unwrap())
+            .unwrap();
+        mounted.click("[aria-label='Command input']");
+        settle().await;
+        assert!(
+            mounted
+                .element(".terminal-input-bar")
+                .has_attribute("hidden")
+        );
+        mounted.click("[aria-label='Command input']");
+        settle().await;
+        assert_eq!(input.value(), "cargo test");
+        assert!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .unwrap()
+                .is_same_node(Some(&input))
+        );
+        drop(mounted);
+        slot.borrow_mut().take().unwrap().close();
+    }
+}
