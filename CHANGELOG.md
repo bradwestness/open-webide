@@ -14,6 +14,7 @@ for what's still ahead.
 
 - Keep temporary editor loading locks from flashing an encoding warning and shifting the file tabs; preserve the warning for files opened read-only.
 - Contain hidden file/project tab menu buttons within each tab so offscreen tabs cannot create a large empty horizontal scroll area in the workspace.
+- Keep modified file and folder icons yellow and reserve the full disclosure-button touch target in the phone file tree so it does not overlap the folder icon.
 
 - Reuse validated worker replacement spans during shared syntax parsing when the
   exact retained source base matches, preserving complete comparison fallback,

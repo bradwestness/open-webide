@@ -1726,3 +1726,117 @@ async fn close_menu_and_middle_click_keep_file_dirty_guards_in_both_modes() {
         assert!(mounted.state.workspace.editor_tabs.get_untracked()[&1].is_empty());
     }
 }
+
+#[wasm_bindgen_test]
+async fn git_tree_colors_counts_and_phone_disclosures_stay_visible_in_both_modes() {
+    use openwebide_core::{GitLineStats, GitRepoStatus, git::GitFileStatus};
+    use openwebide_frontend::state::layout::LayoutState;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+        let capture = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|items| items[0].mode = mode);
+            state.workspace.entries.update(|entries| {
+                entries.insert(
+                    String::new(),
+                    vec![
+                        file("a.txt"),
+                        FileEntry {
+                            path: "src".into(),
+                            name: "src".into(),
+                            is_dir: true,
+                            size: 0,
+                        },
+                    ],
+                );
+            });
+            state.git.status.set(Some(GitRepoStatus {
+                files: [
+                    ("a.txt".into(), GitFileStatus::Modified),
+                    ("src/b.txt".into(), GitFileStatus::Modified),
+                ]
+                .into(),
+                file_line_stats: [
+                    (
+                        "a.txt".into(),
+                        GitLineStats {
+                            insertions: 3,
+                            deletions: 1,
+                        },
+                    ),
+                    (
+                        "src/b.txt".into(),
+                        GitLineStats {
+                            insertions: 2,
+                            deletions: 1,
+                        },
+                    ),
+                ]
+                .into(),
+                ..Default::default()
+            }));
+            let actions = WorkspaceActions::new(
+                state.api,
+                state.projects,
+                state.workspace,
+                state.ui,
+                RwSignal::new(false),
+                Callback::new(|()| ()),
+            );
+            let layout = expect_context::<LayoutState>();
+            capture.set(Some(layout));
+            view! { <style>{include_str!("../../styles.css")}</style><div class="app" class:phone-layout=move || layout.phone.get() style="width:360px;height:600px"><span class="git-color-reference" style="color:var(--git-modified)"></span><FileTree on_toggle=actions.on_toggle on_open=actions.request_open /></div> }
+        });
+        settle().await;
+        for viewport in [1000.0, 390.0] {
+            slot.get().unwrap().viewport_width.set(viewport);
+            settle().await;
+            let folder = mounted.element("[data-tree-path='src']");
+            let button = folder
+                .query_selector(".tree-disclosure button")
+                .unwrap()
+                .unwrap();
+            let icon = folder.query_selector(".tree-icon").unwrap().unwrap();
+            assert!(
+                button.get_bounding_client_rect().right() <= icon.get_bounding_client_rect().left(),
+                "Disclosure touch target overlaps folder icon"
+            );
+            if viewport < 500.0 {
+                assert!(button.get_bounding_client_rect().width() >= 44.0);
+            }
+            let expected = window()
+                .get_computed_style(&mounted.element(".git-color-reference"))
+                .unwrap()
+                .unwrap()
+                .get_property_value("color")
+                .unwrap();
+            for path in ["a.txt", "src"] {
+                let icon = mounted.element(&format!("[data-tree-path='{path}'] .tree-icon"));
+                assert_eq!(
+                    window()
+                        .get_computed_style(&icon)
+                        .unwrap()
+                        .unwrap()
+                        .get_property_value("color")
+                        .unwrap(),
+                    expected
+                );
+            }
+            assert_eq!(
+                mounted
+                    .element("[data-tree-path='a.txt'] .tree-line-stats")
+                    .get_attribute("aria-label")
+                    .as_deref(),
+                Some("Modified: 3 added lines, 1 removed lines")
+            );
+            assert_eq!(
+                mounted
+                    .element("[data-tree-path='src'] .tree-line-stats")
+                    .get_attribute("aria-label")
+                    .as_deref(),
+                Some("Contains changed files: 2 added lines, 1 removed lines")
+            );
+        }
+    }
+}

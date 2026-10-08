@@ -1094,8 +1094,8 @@ body {
   flex-shrink: 0;
 }
 
-.tree-disclosure { display: inline-flex; width: 18px; flex: none; }
-.tree-disclosure .icon-btn { width: 18px; height: 18px; padding: 0; }
+.tree-disclosure { display: inline-flex; width: var(--control-height); flex: none; }
+.tree-disclosure .icon-btn { width: var(--control-height); height: var(--control-height); padding: 0; }
 
 .tree-name {
   overflow: hidden;
@@ -3431,6 +3431,7 @@ button.browser-item {
 .phone-layout .statusbar { padding-bottom: max(var(--space-2), env(safe-area-inset-bottom)); }
 
 .tree-line-stats { margin-left: auto; display: flex; gap: var(--space-1); font-family: var(--mono); font-size: var(--font-caption); }
+.tree-icon.git-badge-modified { color: var(--git-modified); }
 .tree-icon.git-badge-added, .tree-icon.git-badge-untracked { color: var(--online); }
 .tree-icon.git-badge-deleted { color: var(--offline); }
 .tree-icon.git-badge-renamed { color: var(--accent); }
