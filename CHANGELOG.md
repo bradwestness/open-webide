@@ -11,7 +11,7 @@ for what's still ahead.
 
 - Added project memories shared across sessions in both local and remote projects: editable entries and an enabled-by-default toggle in Sessions, bounded automatic run context, revision-safe agent memory tools, and database-backed opt-out.
 
-- Show a compact syntax-preparation spinner in a reserved final status-bar slot,
+- Show a compact syntax-preparation spinner in a reserved slot before Output,
   keeping the existing controls stable. Hide it when grammar colors or terminal
   plain fallback are ready in either workspace mode.
 - Preserve TypeScript primitive-type colors without overlapping spans or treating
