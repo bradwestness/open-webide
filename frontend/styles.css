@@ -3430,7 +3430,8 @@ button.browser-item {
 .phone-layout .editor-header .btn, .phone-layout .editor-header .icon-btn { min-height: 44px; }
 .phone-layout .statusbar { padding-bottom: max(var(--space-2), env(safe-area-inset-bottom)); }
 
-.tree-line-stats { margin-left: auto; display: flex; gap: var(--space-1); font-family: var(--mono); font-size: var(--font-caption); }
+.tree-line-stats { margin-left: auto; flex: none; display: flex; gap: var(--space-1); font-family: var(--mono); font-size: var(--font-caption); }
+.tree-line-stats + .ui-action-menu-context .tree-entry-menu { margin-left: 0; }
 .tree-icon.git-badge-modified { color: var(--git-modified); }
 .tree-icon.git-badge-added, .tree-icon.git-badge-untracked { color: var(--online); }
 .tree-icon.git-badge-deleted { color: var(--offline); }

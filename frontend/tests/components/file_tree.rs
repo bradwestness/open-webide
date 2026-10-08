@@ -1822,6 +1822,16 @@ async fn git_tree_colors_counts_and_phone_disclosures_stay_visible_in_both_modes
                         .unwrap(),
                     expected
                 );
+                let counts = mounted
+                    .element(&format!("[data-tree-path='{path}'] .tree-line-stats"))
+                    .get_bounding_client_rect();
+                let menu = mounted
+                    .element(&format!("[data-tree-path='{path}'] .tree-entry-menu"))
+                    .get_bounding_client_rect();
+                assert!(
+                    (menu.left() - counts.right() - 6.0).abs() < 0.1,
+                    "Git counts must sit immediately before the menu button"
+                );
             }
             assert_eq!(
                 mounted

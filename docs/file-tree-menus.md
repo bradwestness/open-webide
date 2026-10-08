@@ -9,7 +9,8 @@ files and folders. The hidden-file preference syncs through your account. Tree
 rows are compact outside phone mode; phone mode uses larger touch targets.
 
 Colored file/folder icons describe Git changes; tracked text changes show added
-and removed line counts. Hover or use a screen reader for the status description.
+and removed line counts aligned at the right edge before the **…** button.
+Hover or use a screen reader for the status description.
 Binary and untracked files have status icons without invented line counts.
 
 Rename, move, copy the project-relative path, or delete an entry. New file and
