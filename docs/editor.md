@@ -131,11 +131,13 @@ returns to the primary cursor in larger files.
 
 ## Indentation
 
-The editor footer shows Spaces/Tabs, the indentation width and the tab width.
+The app footer shows one **Spaces: 4** / **Tabs: 4** control. Open it for separate
+indentation and tab widths, plus detection/EditorConfig details.
 These are separate: an indentation step can be four columns while a hard tab
 occupies three. Tabs fill as many complete tab stops as possible, then spaces fill
 the remainder. Changing these controls affects the current document's commands and
-how tabs are displayed. **Convert indentation** explicitly rewrites leading
+how tabs are displayed. **Convert indentation**, in the editor **…** menu or
+Search, explicitly rewrites leading
 whitespace while retaining its displayed column width. Conversion is one undo step;
 it does not format the rest of the code. Widths are bounded to 1–16 columns.
 

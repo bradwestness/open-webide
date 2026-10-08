@@ -275,15 +275,14 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
                 created_at: 0,
             });
             super::support::command_actions(state);
-            let health = RwSignal::new(None);
             view! {
                 <style>{include_str!("../../styles.css")}</style>
-                <TopBar health=health.read_only() on_open_settings=Callback::new(|()| ()) on_logout=Callback::new(|()| ()) />
+                <TopBar on_open_settings=Callback::new(|()| ()) on_logout=Callback::new(|()| ()) />
                 <CommandDialogs />
             }
         });
         settle().await;
-        mounted.click("[aria-label='Account menu']");
+        mounted.click("[aria-label='App menu']");
         settle().await;
         mounted.element("[aria-label='About']").focus().unwrap();
         mounted.click("[aria-label='About']");
@@ -365,7 +364,7 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
                 .unwrap()
                 .is_none()
         );
-        assert!(active().is_same_node(Some(&mounted.element("[aria-label='Account menu']"))));
+        assert!(active().is_same_node(Some(&mounted.element("[aria-label='App menu']"))));
         mounted.state.ui.palette_open.set(true);
         settle().await;
         let search: web_sys::HtmlInputElement = mounted.element(".command-search").unchecked_into();

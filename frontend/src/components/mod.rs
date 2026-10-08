@@ -95,3 +95,8 @@ mod tab_actions;
 pub mod goal;
 
 pub mod tool_budget;
+
+mod configuration;
+pub use configuration::Configuration;
+
+pub mod editor_chrome;

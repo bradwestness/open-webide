@@ -3,6 +3,26 @@
 Open a project, select a session and work between Files, Editor and Chat.
 Project tabs let you switch repositories; sessions keep separate conversations.
 
+The logo and chevron open the app menu: local/remote folders, open and recent
+projects, Settings, Servers, System prompts, Keyboard shortcuts and About. On
+phones the same menu opens a side drawer. Sessions contains conversations.
+
+Use **Search…** or Ctrl/Cmd+Shift+P to find commands, filenames, projects and
+sessions. Prefix a query with `>` for commands, `/` for files, `#` for projects or
+`@` for sessions. Arrow keys choose a result; Enter opens it and Escape closes
+search. Commands remain available while filenames load. Grant access in Files
+when a local project's folder is unavailable in this browser.
+
+Editor tabs and actions share one row. **Edit / Changes / Preview** changes the
+view; Preview appears for supported files. Changes compares against the last
+commit, with Inline/Split display options. Save and Find remain beside the view
+selector. The **…** menu includes Copy path, Reveal in Files, Convert indentation
+and **Discard changes…**. Discard retains confirmation and pending-review guards.
+
+The app footer combines cursor position, indentation, connection, Git and Output.
+Click **Spaces: 4** or **Tabs: 4** for separate indentation/tab widths and the
+configuration source. Layout and tree preferences sync through your account.
+
 - [First session](first-session.md): connect a model and review agent changes.
 - [Local and remote projects](workspaces.md): file access and execution capabilities.
 - [Chat commands and goals](chat-controls.md): command discovery, activity,

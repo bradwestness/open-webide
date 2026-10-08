@@ -151,11 +151,6 @@ pub fn App() -> impl IntoView {
         ui,
     });
     let on_logout = auth_actions.on_logout;
-    Effect::new(move |_| {
-        if settings.show_conn_form.get() {
-            layout_actions.show.run(Panel::Sessions);
-        }
-    });
 
     let workspace_actions = WorkspaceActions::new(
         api,
@@ -197,6 +192,7 @@ pub fn App() -> impl IntoView {
     );
     provide_context(recovery_actions);
 
+    provide_context(crate::components::editor_chrome::EditorFooterMount::new());
     let git_actions = GitActions::new(GitActionContext {
         project_git,
         projects: projects_state,
@@ -207,6 +203,7 @@ pub fn App() -> impl IntoView {
         workspace_for,
         refresh: refresh_git,
     });
+    provide_context(git_actions);
     let on_branch_click = git_actions.on_branch_click;
     let on_sync_click = git_actions.on_sync_click;
     let on_load_git_diff = git_actions.on_load_diff;
@@ -233,24 +230,20 @@ pub fn App() -> impl IntoView {
         on_delete_project,
     } = project_actions;
 
+    let navigation = crate::state_actions::navigation::NavigationActions::new(
+        projects_state,
+        chat_state,
+        ui,
+        layout_actions,
+        on_open_project,
+        select_chat,
+    );
+    provide_context(navigation);
+    let on_open_project = navigation.open_project;
     let notifications = crate::notifications::RunNotifications::new(
         std::rc::Rc::new(crate::notifications::BrowserNotificationHost::default()),
         auth,
-        Callback::new(move |session_id: i64| {
-            if let Some(project) = chat_state.sessions.with_untracked(|sessions| {
-                sessions
-                    .iter()
-                    .find(|session| session.id == session_id)
-                    .map(|session| session.project_id)
-            }) {
-                match project {
-                    Some(project) => on_open_project.run(project),
-                    None => select_chat.run(()),
-                }
-                layout_actions.show.run(Panel::Chat);
-                chat_state.active_session.set(Some(session_id));
-            }
-        }),
+        navigation.open_session,
     );
     provide_context(notifications);
 
@@ -309,10 +302,7 @@ pub fn App() -> impl IntoView {
     let on_stop = chat_actions.stop;
     let on_permission = chat_actions.permission;
     let on_permission_always = chat_actions.permission_always;
-    let on_select_session = Callback::new(move |id| {
-        layout_actions.show.run(Panel::Chat);
-        chat_actions.on_select_session.run(id);
-    });
+    let on_select_session = navigation.open_session;
     let on_new_session = Callback::new(move |()| {
         layout_actions.show.run(Panel::Chat);
         chat_actions.on_new_session.run(());
@@ -320,7 +310,7 @@ pub fn App() -> impl IntoView {
     let on_rename_session = chat_actions.on_rename_session;
     let on_delete_session = chat_actions.on_delete_session;
     let on_slash_command = chat_actions.slash_command;
-    provide_context(crate::state_actions::commands::CommandActions::new(
+    let command_actions = crate::state_actions::commands::CommandActions::new(
         crate::state_actions::commands::CommandActionContext {
             workspace: workspace_state,
             chat: chat_state,
@@ -332,6 +322,18 @@ pub fn App() -> impl IntoView {
             open_remote: on_open_remote,
             open_settings: on_open_settings,
             slash: on_slash_command,
+        },
+    );
+    provide_context(command_actions);
+    provide_context(crate::state_actions::omnibar::OmnibarActions::new(
+        crate::state_actions::omnibar::OmnibarContext {
+            api,
+            projects: projects_state,
+            chat: chat_state,
+            ui,
+            commands: command_actions,
+            navigation,
+            open_file: request_open,
         },
     ));
     install_keyboard_shortcuts(chat_state);
@@ -370,40 +372,15 @@ pub fn App() -> impl IntoView {
                     >
                         <div class="app" class:phone-layout=move || layout.phone.get()>
                             <crate::components::CommandDialogs />
-                            <TopBar
-                                health=health.read_only()
-                                on_open_settings=on_open_settings
-                                on_logout=on_logout
-                            />
-                            <TabBar
-                                on_select_chat=Callback::new(move |()| { select_chat.run(()); layout_actions.show.run(Panel::Chat); })
-                                on_select=select_project
-                                on_tab_action=tab_action
-                                on_close=close_project
-                                on_open_local=on_open_local
-                                on_open_remote=on_open_remote
-                                on_open_project=on_open_project
-                                on_delete_project=on_delete_project
-                            />
+                            <TopBar on_open_settings=on_open_settings on_logout=on_logout on_open_local=on_open_local on_open_remote=on_open_remote on_open_project=on_open_project on_delete_project=on_delete_project>
+                                <TabBar on_select_chat=Callback::new(move |()| { select_chat.run(()); layout_actions.show.run(Panel::Chat); }) on_select=select_project on_tab_action=tab_action on_close=close_project />
+                            </TopBar>
+                            <crate::components::Configuration on_new_connection=on_new_connection on_edit_connection=on_edit_connection on_cancel_connection=on_cancel_connection on_delete_connection=on_delete_connection on_new_prompt=on_new_prompt on_edit_prompt=on_edit_prompt on_save_prompt=on_save_prompt on_cancel_prompt=on_cancel_prompt on_delete_prompt=on_delete_prompt />
                             <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.visible_panels.get().editor { "" } else { " editor-collapsed" })>
                             <div class="workspace-docks">
                             <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
                             <ToolPanel panel=Panel::Sessions>
-                            <Sidebar
-                                on_new_connection=on_new_connection
-                                on_edit_connection=on_edit_connection
-                                on_cancel_connection=on_cancel_connection
-                                on_delete_connection=on_delete_connection
-                                on_select_session=on_select_session
-                                on_new_session=on_new_session
-                                on_rename_session=on_rename_session
-                                on_delete_session=on_delete_session
-                                on_new_prompt=on_new_prompt
-                                on_edit_prompt=on_edit_prompt
-                                on_save_prompt=on_save_prompt
-                                on_cancel_prompt=on_cancel_prompt
-                                on_delete_prompt=on_delete_prompt
-                            />
+                            <Sidebar on_select_session=on_select_session on_new_session=on_new_session on_rename_session=on_rename_session on_delete_session=on_delete_session />
                             </ToolPanel>
                             <ToolPanel panel=Panel::Files>
     <crate::components::FilesPanel on_new_file=on_new_file on_new_dir=on_new_dir>

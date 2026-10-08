@@ -87,3 +87,6 @@ mod chat_controls;
 
 #[path = "components/tool_budgets.rs"]
 mod tool_budgets;
+
+#[path = "components/omnibar.rs"]
+mod omnibar;

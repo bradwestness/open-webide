@@ -20,6 +20,8 @@ pub fn FileTree(
     let projects = expect_context::<ProjectsState>();
     let layout = expect_context::<LayoutState>();
 
+    let root = NodeRef::<leptos::html::Div>::new();
+    let tree_actions = use_context::<crate::state_actions::file_tree::FileTreeActions>();
     let entries = workspace.entries.read_only();
     let expanded = workspace.expanded.read_only();
     let tree_width = layout.tree_width.read_only();
@@ -39,6 +41,16 @@ pub fn FileTree(
         let mut map = entries.get();
         for children in map.values_mut() {
             openwebide_core::vfs::sort_file_entries(children);
+            if !layout.preferences.get().include_hidden {
+                children.retain(|entry| {
+                    !entry.name.starts_with('.')
+                        || tree_actions.is_some_and(|actions| {
+                            actions.reveal_target.get().is_some_and(|path| {
+                                path == entry.path || path.starts_with(&format!("{}/", entry.path))
+                            })
+                        })
+                });
+            }
         }
         let exp = expanded.get();
         let mut result: Vec<(FileEntry, u32)> = Vec::new();
@@ -62,9 +74,46 @@ pub fn FileTree(
         flat.set(result);
     });
 
+    Effect::new(move |_| {
+        entries.track();
+        let Some(actions) = tree_actions else {
+            return;
+        };
+        let Some(path) = actions.reveal_target.get() else {
+            return;
+        };
+        let epoch = actions.epoch.get();
+        request_animation_frame(move || {
+            if actions.epoch.try_get_untracked() != Some(epoch)
+                || actions.reveal_target.try_get_untracked() != Some(Some(path.clone()))
+            {
+                return;
+            }
+            let Some(root) = root.get_untracked() else {
+                return;
+            };
+            let Ok(rows) = root.query_selector_all("[data-tree-path]") else {
+                return;
+            };
+            for index in 0..rows.length() {
+                if let Some(row) = rows
+                    .item(index)
+                    .and_then(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+                    && row.get_attribute("data-tree-path").as_deref() == Some(&path)
+                {
+                    row.scroll_into_view();
+                    let _ = row.focus();
+                    actions.reveal_target.set(None);
+                    break;
+                }
+            }
+        });
+    });
+
     view! {
         <div
-            class="file-tree"
+            class="file-tree" node_ref=root
+            class:compact-tree=move || layout.preferences.with(|prefs| prefs.compact_tree)
             style=move || format!("width: {}px; flex: none;", tree_width.get())
         >
             <Show when=move || needs_grant.get() fallback=|| ()>
@@ -245,6 +294,9 @@ pub fn SearchPane(
 /// Explorer creation actions can share a toolbar with the Files view switcher.
 #[component]
 pub fn FileActions(on_new_file: Callback<()>, on_new_dir: Callback<()>) -> impl IntoView {
+    let layout = expect_context::<LayoutState>();
+    let layout_actions = use_context::<crate::state_actions::layout::LayoutActions>();
+    let workspace_actions = use_context::<crate::state_actions::workspace::WorkspaceActions>();
     view! { <super::dropdown::ActionMenu aria_label="File actions">
         <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New file" on:click=move |_| on_new_file.run(())>
             <crate::components::ui::Icon name=crate::components::ui::IconName::File />
@@ -252,6 +304,13 @@ pub fn FileActions(on_new_file: Callback<()>, on_new_dir: Callback<()>) -> impl 
         <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New folder" on:click=move |_| on_new_dir.run(())>
             <crate::components::ui::Icon name=crate::components::ui::IconName::Folder />
         <span>"New folder"</span></button>
+        <Show when=move || layout_actions.is_some()>
+            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, false)); } }>"Move panel left"</button>
+            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, true)); } }>"Move panel right"</button>
+        </Show>
+        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=workspace_actions.is_none() on:click=move |_| { if let Some(actions) = workspace_actions { actions.refresh_tree.run(()); } }><crate::components::ui::Icon name=crate::components::ui::IconName::RefreshCw /><span>"Refresh files"</span></button>
+        <button role="menuitemcheckbox" type="button" class="ui-dropdown-item recent-item" aria-checked=move || layout.preferences.with(|prefs| prefs.include_hidden).to_string() disabled=layout_actions.is_none() on:click=move |_| { if let Some(actions) = layout_actions { actions.set_tree_preferences.run((!layout.preferences.get_untracked().include_hidden, layout.preferences.get_untracked().compact_tree)); } }><crate::components::ui::Icon name=crate::components::ui::IconName::Eye /><span>"Include hidden files and folders"</span></button>
+        <button role="menuitemcheckbox" type="button" class="ui-dropdown-item recent-item" aria-checked=move || layout.preferences.with(|prefs| prefs.compact_tree).to_string() disabled=layout_actions.is_none() on:click=move |_| { if let Some(actions) = layout_actions { actions.set_tree_preferences.run((layout.preferences.get_untracked().include_hidden, !layout.preferences.get_untracked().compact_tree)); } }><span>"Compact tree rows"</span></button>
     </super::dropdown::ActionMenu> }
 }
 
@@ -299,7 +358,7 @@ pub(super) fn FileTreeEntry(
     });
     view! {
         <div node_ref=root data-context-menu="" class=move || if workspace.open_file.get().as_deref() == Some(&entry.get_value().path) {"tree-item selected"} else {"tree-item"}
-            style=format!("padding-left: {}px", 8 + depth as usize * 14) tabindex="0" role="treeitem" aria-label=name.clone() data-tree-path=entry.get_value().path
+            style=format!("padding-left: {}px", 8 + depth as usize * 14) tabindex="0" role="treeitem" aria-label=move || git.status.with(|repo| { let value = entry.get_value(); let status = repo.as_ref().and_then(|repo| repo.files.get(&value.path)); status.map_or(value.name.clone(), |status| format!("{}, {}", value.name, status.description())) }) data-tree-path=entry.get_value().path
             aria-expanded=move || is_dir.then(|| workspace.expanded.with(|dirs| dirs.contains(&entry.get_value().path)).to_string())
             on:click=move |_| activate.run(())
             on:keydown=move |event: web_sys::KeyboardEvent| {
@@ -327,20 +386,26 @@ pub(super) fn FileTreeEntry(
                 if matches!(event.key().as_str(), "Enter" | " ") {event.prevent_default(); activate.run(());}
             }
             >
-            <span class="tree-icon"><Icon name=Signal::derive(move || if is_dir {
+            <span class=move || git.status.with(|repo| {
+                let path = entry.get_value().path;
+                let class = repo.as_ref().and_then(|repo| repo.files.get(&path).map(|status| status.css_class())).unwrap_or(if is_dir && repo.as_ref().is_some_and(|repo| repo.files.keys().any(|file| file.starts_with(&format!("{path}/")))) { "git-badge-modified" } else { "" });
+                format!("tree-icon {class}")
+            }) title=move || git.status.with(|repo| {
+                let path = entry.get_value().path;
+                repo.as_ref().and_then(|repo| repo.files.get(&path).map(|status| status.description())).unwrap_or(if is_dir && repo.as_ref().is_some_and(|repo| repo.files.keys().any(|file| file.starts_with(&format!("{path}/")))) { "Contains changed files" } else { "" })
+            })><Icon name=Signal::derive(move || if is_dir {
                 if workspace.expanded.with(|dirs| dirs.contains(&entry.get_value().path)) {IconName::FolderOpen} else {IconName::Folder}
             } else {IconName::File}) /></span>
             <span class="tree-name">{name.clone()}</span>
-            {move || git.status.with(|status| {
-                let status = status.as_ref()?; let path = entry.get_value().path;
-                if is_dir {
-                    status.files.keys().any(|file| file.starts_with(&format!("{path}/")))
-                        .then(|| view! {<span class="git-badge git-badge-dir" title="Contains modified files">"•"</span>}.into_any())
-                } else {
-                    status.files.get(&path).map(|status| view! {
-                        <span class=format!("git-badge {}", status.css_class()) title=status.css_class()>{status.badge()}</span>
-                    }.into_any())
-                }
+            {move || git.status.with(|repo| {
+                let repo = repo.as_ref()?;
+                let path = entry.get_value().path;
+                let counts = if is_dir {
+                    let prefix = format!("{path}/");
+                    repo.file_line_stats.iter().filter(|(file, _)| file.starts_with(&prefix)).fold(openwebide_core::GitLineStats::default(), |mut total, (_, changes)| { total.insertions += changes.insertions; total.deletions += changes.deletions; total })
+                } else { repo.file_line_stats.get(&path).copied().unwrap_or_default() };
+                let status = repo.files.get(&path).map(|status| status.description()).unwrap_or("Contains changed files");
+                (counts.insertions > 0 || counts.deletions > 0).then(|| view! { <span class="tree-line-stats" aria-label=format!("{status}: {} added lines, {} removed lines", counts.insertions, counts.deletions) title=status><span class="git-insertions">{format!("+{}", counts.insertions)}</span><span class="git-deletions">{format!("−{}", counts.deletions)}</span></span> }.into_any())
             })}
             <FileEntryMenu entry=entry.get_value() changes_only=changes_only />
         </div>
@@ -497,6 +562,7 @@ pub(super) fn FileEntryMenu(
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), true)>"Rename"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), false)>"Move"</button>
                         <button class="recent-item" role="menuitem" on:click=move |_| actions.copy_path(&entry.get_value().path)>"Copy path"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.reveal(&entry.get_value().path)>"Reveal in Files"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.delete(&entry.get_value())>"Delete"</button>
                         })}
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !stage.get()

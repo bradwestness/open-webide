@@ -28,3 +28,6 @@ pub mod file_tree;
 pub mod editor_recovery;
 
 pub mod chat_controls;
+
+pub mod navigation;
+pub mod omnibar;

@@ -527,7 +527,7 @@ async fn user_model_defaults_exclude_shared_model_configuration() {
 
 #[wasm_bindgen_test]
 async fn servers_open_shared_configuration_while_preferences_keep_model_defaults() {
-    use openwebide_frontend::components::{Settings, Sidebar};
+    use openwebide_frontend::components::{Configuration, Settings};
     use wasm_bindgen::JsCast;
     for mode in [
         openwebide_core::WorkspaceMode::Remote,
@@ -561,9 +561,11 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
             let unit = Callback::new(|()| ());
             let id = Callback::new(|_: i64| ());
             let edit = Callback::new(move |id: i64| state.settings.begin_model_setup(Some(id)));
+            state.settings.configuration.set(Some(
+                openwebide_frontend::state::settings::ConfigurationSection::Servers,
+            ));
             view! {
-                <Sidebar on_new_connection=unit on_edit_connection=edit on_cancel_connection=Callback::new(move |()| state.settings.show_conn_form.set(false)) on_delete_connection=id
-                    on_select_session=id on_new_session=unit on_rename_session=id on_delete_session=id
+                <Configuration on_new_connection=unit on_edit_connection=edit on_cancel_connection=Callback::new(move |()| state.settings.show_conn_form.set(false)) on_delete_connection=id
                     on_new_prompt=unit on_edit_prompt=id on_save_prompt=unit on_cancel_prompt=unit on_delete_prompt=id />
                 <Show when=move || state.settings.show_settings.get()><Settings on_set_notifications=Callback::new(|_| ()) on_set_theme=Callback::new(|_| ()) on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) /></Show>
             }
@@ -576,7 +578,7 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
         settle().await;
         mounted.click_text("Discover models");
         settle().await;
-        let modal = mounted.element(".modal");
+        let modal = mounted.element(".modal:has(.model-setup)");
         let text = modal.text_content().unwrap();
         assert!(text.contains("Detect settings") && text.contains("Context tokens"));
         assert!(!text.contains("Default model") && !text.contains("Fast model"));
@@ -600,7 +602,10 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
         );
         mounted.state.settings.show_settings.set(true);
         settle().await;
-        let text = mounted.element(".modal").text_content().unwrap();
+        let text = mounted
+            .element(".modal:has(.settings, .ui-form-grid)")
+            .text_content()
+            .unwrap();
         assert!(
             text.contains("Default model")
                 && text.contains("Fast model")

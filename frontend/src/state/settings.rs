@@ -37,10 +37,18 @@ impl Theme {
     }
 }
 
+/// App-level configuration destinations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigurationSection {
+    Servers,
+    SystemPrompts,
+}
+
 /// User preferences and editable connection and prompt configuration.
 #[derive(Clone, Copy)]
 pub struct SettingsState {
     pub show_settings: RwSignal<bool>,
+    pub configuration: RwSignal<Option<ConfigurationSection>>,
     pub model_setup: RwSignal<openwebide_core::ModelSetup>,
     pub theme: RwSignal<Theme>,
     pub editor_preferences: RwSignal<openwebide_core::editor::EditorPreferences>,
@@ -84,6 +92,7 @@ impl SettingsState {
     pub fn new(theme: Theme, bridge_url: String) -> Self {
         Self {
             show_settings: RwSignal::new(false),
+            configuration: RwSignal::new(None),
             model_setup: RwSignal::new(Default::default()),
             theme: RwSignal::new(theme),
             editor_preferences: RwSignal::new(Default::default()),

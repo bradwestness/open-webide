@@ -59,6 +59,7 @@ struct Scope {
 #[derive(Clone, Copy)]
 pub struct FileTreeActions {
     pub busy: RwSignal<bool>,
+    pub reveal_target: RwSignal<Option<String>>,
     pub epoch: Memo<u64>,
     pub send_prompt: RwSignal<Option<Callback<String>>>,
     projects: ProjectsState,
@@ -68,6 +69,7 @@ pub struct FileTreeActions {
     chat: Option<ChatState>,
     git: Option<ProjectGit>,
     layout: Option<super::layout::LayoutActions>,
+    layout_state: Option<crate::state::layout::LayoutState>,
     workspace_for: Callback<i64, Option<Workspace>>,
     load_dir: Callback<(i64, String)>,
     open: Callback<String>,
@@ -95,7 +97,13 @@ impl FileTreeActions {
             }
             previous.set_value(next);
         });
+        let reveal_target = RwSignal::new(None);
+        Effect::new(move |_| {
+            epoch.track();
+            reveal_target.set(None);
+        });
         Self {
+            reveal_target,
             busy,
             epoch,
             send_prompt: RwSignal::new(None),
@@ -106,11 +114,42 @@ impl FileTreeActions {
             git,
             chat: use_context::<ChatState>(),
             layout: use_context::<super::layout::LayoutActions>(),
+            layout_state: use_context::<crate::state::layout::LayoutState>(),
             workspace_for,
             load_dir,
             open,
             refresh_git,
         }
+    }
+    pub fn reveal(self, path: &str) {
+        let Some(scope) = self.scope() else {
+            return;
+        };
+        if path.split('/').any(|part| part.starts_with('.'))
+            && let Some((actions, state)) = self.layout.zip(self.layout_state)
+        {
+            actions
+                .set_tree_preferences
+                .run((true, state.preferences.get_untracked().compact_tree));
+        }
+        if let Some(layout) = self.layout {
+            layout
+                .select_files_view
+                .run(crate::state::responsive::FilesView::Explorer);
+        }
+        let mut dirs = vec![String::new()];
+        let mut parent = openwebide_core::workspace_entries::parent(path);
+        while !parent.is_empty() {
+            dirs.push(parent.to_string());
+            parent = openwebide_core::workspace_entries::parent(parent);
+        }
+        self.workspace
+            .expanded
+            .update(|expanded| expanded.extend(dirs.iter().cloned()));
+        for dir in dirs {
+            self.load_dir.run((scope.project, dir));
+        }
+        self.reveal_target.set(Some(path.to_string()));
     }
     fn scope(self) -> Option<Scope> {
         Some(Scope {

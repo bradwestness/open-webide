@@ -16,6 +16,8 @@ pub enum Command {
     FocusChat,
     CycleFocus,
     CaptureEditor,
+    ConvertIndentation,
+    DiscardChanges,
     Context,
     Stop,
 }
@@ -24,6 +26,8 @@ pub struct CommandContext {
     pub project: bool,
     pub editor: bool,
     pub running: bool,
+    pub can_convert: bool,
+    pub can_discard: bool,
 }
 impl Command {
     pub const fn unavailable(self, context: CommandContext) -> Option<&'static str> {
@@ -34,6 +38,10 @@ impl Command {
             Self::ToggleTerminal if !context.project => Some("Open a project first"),
             Self::CaptureEditor if !context.project || !context.editor => {
                 Some("Open a file in the editor first")
+            }
+            Self::ConvertIndentation if !context.can_convert => Some("Open an editable file first"),
+            Self::DiscardChanges if !context.can_discard => {
+                Some("Load changes against the last commit first")
             }
             Self::Stop if !context.running => Some("No run is active"),
             _ => None,
@@ -60,6 +68,20 @@ macro_rules! command {
     };
 }
 pub const COMMANDS: &[CommandDefinition] = &[
+    command!(
+        "convert-indentation",
+        Command::ConvertIndentation,
+        "Convert indentation",
+        "tabs spaces format",
+        ""
+    ),
+    command!(
+        "discard-changes",
+        Command::DiscardChanges,
+        "Discard changes…",
+        "git revert HEAD last commit undo",
+        ""
+    ),
     command!(
         "about",
         Command::About,
@@ -196,8 +218,8 @@ pub const COMMANDS: &[CommandDefinition] = &[
     command!(
         "palette",
         Command::Palette,
-        "Command palette",
-        "actions search",
+        "Search commands, files, projects and sessions",
+        "actions omnibar navigation search",
         "Ctrl/⌘+Shift+P"
     ),
 ];
@@ -263,7 +285,8 @@ mod tests {
                     .unavailable(CommandContext {
                         project: true,
                         editor: true,
-                        running: true
+                        running: true,
+                        ..Default::default()
                     })
                     .is_none()
             );

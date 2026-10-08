@@ -43,7 +43,21 @@ impl CommandActions {
             open_settings,
             slash,
         } = context;
+        let git = expect_context::<crate::state::git::GitState>();
+        let git_actions = use_context::<super::git::GitActions>();
         let context = Memo::new(move |_| CommandContext {
+            can_convert: ui.editor_can_convert.get(),
+            can_discard: !chat.streaming.get()
+                && !chat.rewinding.get()
+                && workspace
+                    .pending_edits
+                    .with(std::collections::HashMap::is_empty)
+                && git.head_content.get().is_some_and(|head| {
+                    head.project_id == workspace.active_project.get()
+                        && Some(head.path) == workspace.open_file.get()
+                        && head.content.is_ok()
+                })
+                && git_actions.is_some(),
             project: workspace.active_project.get().is_some(),
             editor: workspace.open_file.get().is_some(),
             running: chat.streaming.get()
@@ -66,6 +80,16 @@ impl CommandActions {
             ui.palette_open.set(false);
             ui.shortcuts_open.set(false);
             match command {
+                Command::ConvertIndentation => {
+                    if let Some(action) = ui.editor_convert.get_untracked() {
+                        after_close(auth, workspace, chat, move || action.run(()));
+                    }
+                }
+                Command::DiscardChanges => {
+                    if let Some(actions) = git_actions {
+                        actions.on_discard_diff.run(());
+                    }
+                }
                 Command::Palette => ui.palette_open.set(true),
                 Command::About => ui.about_open.set(true),
                 Command::Shortcuts => ui.shortcuts_open.set(true),

@@ -1504,7 +1504,7 @@ async fn multi_cursor_shortcuts_motion_and_paint_share_both_modes() {
                 .unwrap()
                 .contains("1 editor cursor")
         );
-        mounted.click("button[aria-label='Editing commands']");
+        mounted.click("button[aria-label='Editor actions']");
         settle().await;
         mounted.click_text("Select all occurrences");
         settle().await;
@@ -1515,7 +1515,7 @@ async fn multi_cursor_shortcuts_motion_and_paint_share_both_modes() {
                 .unwrap()
                 .is_same_node(Some(&textarea))
         );
-        mounted.click("button[aria-label='Editing commands']");
+        mounted.click("button[aria-label='Editor actions']");
         settle().await;
         mounted.click_text("Keep primary cursor");
         settle().await;
@@ -2619,7 +2619,7 @@ async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes(
                 content: Ok("old".into()),
             }));
         settle().await;
-        mounted.click_text("Diff HEAD");
+        mounted.click_text("Changes");
         settle().await;
         assert!(
             mounted
@@ -3124,7 +3124,7 @@ async fn inputs_coalesce_without_delaying_edits_or_save() {
     }
     textarea.set_selection_range(3, 8).unwrap();
     assert_eq!(highlight_count(), before);
-    mounted.click_text("Save");
+    mounted.click("button[aria-label='Save file (Ctrl/⌘S)']");
     settle().await;
     assert!(mounted.state.fake.calls.borrow().iter().any(|call| {
         matches!(call, Call::WriteFile { path, content }
@@ -3430,7 +3430,7 @@ async fn editor_numbers_full_diff_and_find_share_both_workspace_modes() {
                 .unwrap()
                 .contains("2 / 2")
         );
-        mounted.click_text("Diff HEAD");
+        mounted.click_text("Changes");
         settle().await;
         assert_eq!(
             mounted
@@ -3485,9 +3485,15 @@ async fn editor_numbers_full_diff_and_find_share_both_workspace_modes() {
                 .unwrap()
                 .is_none()
         );
-        let preview = mounted.element(".ui-seg-btn:last-child");
-        assert!(preview.has_attribute("disabled"));
-        mounted.click_text("Preview");
+        let choices = mounted
+            .root
+            .query_selector_all(".editor-view-selector .ui-seg-btn")
+            .unwrap();
+        assert!(
+            !(0..choices.length())
+                .filter_map(|index| choices.item(index))
+                .any(|choice| choice.text_content().as_deref() == Some("Preview"))
+        );
         settle().await;
         assert!(
             mounted
@@ -3634,7 +3640,7 @@ async fn numbered_views_scroll_horizontally_with_compact_gutters_and_linked_spli
                 .unwrap()
                 .contains("120")
         );
-        mounted.click_text("Diff HEAD");
+        mounted.click_text("Changes");
         settle().await;
         let inline = mounted.element(".editor-diff-inline");
         assert!(inline.scroll_width() > inline.client_width() * 2);
@@ -4030,7 +4036,11 @@ async fn editorconfig_indentation_conversion_and_save_use_both_real_workspace_ad
         textarea
             .dispatch_event(&web_sys::Event::new("input").unwrap())
             .unwrap();
+        mounted.click(".editor-footer button[aria-label='Indentation settings']");
+        settle().await;
         mounted.click(".editor-footer .ui-seg-btn:nth-child(2)");
+        mounted.click("button[aria-label='Editor actions']");
+        settle().await;
         mounted.click_text("Convert indentation");
         settle().await;
         assert_eq!(
@@ -4045,7 +4055,7 @@ async fn editorconfig_indentation_conversion_and_save_use_both_real_workspace_ad
             "    😀\r\n tail  "
         );
         editor_key(&textarea, "z", true, true);
-        mounted.click_text("Save");
+        mounted.click("button[aria-label='Save file (Ctrl/⌘S)']");
         wait_until("configured file save", || {
             !mounted.state.workspace.dirty.get_untracked()
         })
@@ -4511,7 +4521,7 @@ async fn line_comment_reindent_and_explicit_paste_commands_share_both_modes() {
             .element(".editor-textarea")
             .unchecked_into::<web_sys::HtmlTextAreaElement>();
         textarea.set_selection_range(0, 15).unwrap();
-        mounted.click("button[aria-label='Editing commands']");
+        mounted.click("button[aria-label='Editor actions']");
         settle().await;
         let items = mounted
             .root
@@ -4570,7 +4580,7 @@ async fn line_comment_reindent_and_explicit_paste_commands_share_both_modes() {
             .element(".editor-textarea")
             .unchecked_into::<web_sys::HtmlTextAreaElement>();
         assert!(!editorClipboardPaste(&textarea, "untouched").default_prevented());
-        mounted.click("button[aria-label='Editing commands']");
+        mounted.click("button[aria-label='Editor actions']");
         settle().await;
         let items = mounted
             .root
@@ -4584,6 +4594,7 @@ async fn line_comment_reindent_and_explicit_paste_commands_share_both_modes() {
                 .unwrap();
             assert!(button.disabled());
         }
+        mounted.click(".ui-dropdown-backdrop");
         mounted
             .state
             .workspace
@@ -4593,9 +4604,18 @@ async fn line_comment_reindent_and_explicit_paste_commands_share_both_modes() {
         assert!(
             mounted
                 .root
-                .query_selector("button[aria-label='Editing commands']")
+                .query_selector("button[aria-label='Editor actions']")
                 .unwrap()
-                .is_none()
+                .is_some()
+        );
+        mounted.click("button[aria-label='Editor actions']");
+        settle().await;
+        assert!(
+            !mounted
+                .element(".ui-dropdown-menu")
+                .text_content()
+                .unwrap()
+                .contains("Toggle line comment")
         );
         drop(mounted);
         if let Some(folder) = folder {
@@ -4687,7 +4707,7 @@ async fn fold_controls_preserve_scrolled_viewport_with_a_distant_caret_in_both_m
             assert!(!mounted.state.workspace.dirty.get_untracked());
         }
         for label in ["Fold all", "Unfold all"] {
-            mounted.click("button[aria-label='Editing commands']");
+            mounted.click("button[aria-label='Editor actions']");
             settle().await;
             let items = mounted
                 .root
@@ -7416,7 +7436,7 @@ async fn diff_syntax_paint_keeps_word_changes_and_embedded_context_in_both_modes
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:600px;height:400px">{editor_view(state)}</div> }
         });
         settle().await;
-        mounted.click_text("Diff HEAD");
+        mounted.click_text("Changes");
         settle().await;
         assert_eq!(
             mounted

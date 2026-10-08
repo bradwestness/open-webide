@@ -45,6 +45,8 @@ pub enum FilesView {
 pub struct LayoutPreferences {
     pub mode: LayoutMode,
     pub files_view: FilesView,
+    pub include_hidden: bool,
+    pub compact_tree: bool,
     sides: BTreeMap<String, PanelSide>,
     order: Vec<String>,
 }

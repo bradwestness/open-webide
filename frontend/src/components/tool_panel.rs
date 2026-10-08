@@ -24,7 +24,7 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
             format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px; --tool-window-height: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 0.0 } else { layout.width(kind).get() }, layout.terminal_height.get())
         }
         aria-label=panel.label()>
-        <div class="tool-panel-heading" data-context-menu="" hidden=panel == Panel::Terminal>
+        <div class="tool-panel-heading" data-context-menu="" hidden=panel == Panel::Terminal || panel == Panel::Editor || panel == Panel::Files>
             <span>{panel.label()}</span>
             <Show when=move || panel != Panel::Terminal>
             <super::dropdown::ActionMenu aria_label="Panel actions">
@@ -81,9 +81,7 @@ pub fn FilesPanel(
             value=Signal::derive(move || layout.preferences.with(|p| if p.files_view == FilesView::Search { FilesView::Explorer } else { p.files_view })) on_change=actions.select_files_view />
             <button type="button" class="icon-btn ui-icon" data-file-search-toggle="" title="Search project files" aria-label="Search project files" aria-controls="project-search" aria-expanded=move || layout.preferences.with(|prefs| prefs.files_view == FilesView::Search).to_string()
                 on:click=move |_| actions.select_files_view.run(if layout.preferences.with(|prefs| prefs.files_view == FilesView::Search) { FilesView::Explorer } else { FilesView::Search })><super::ui::Icon name=super::ui::IconName::Search /></button>
-            <Show when=move || layout.preferences.with(|prefs| prefs.files_view != FilesView::Changes)>
-                <super::file_tree::FileActions on_new_file=on_new_file on_new_dir=on_new_dir />
-            </Show>
+            <super::file_tree::FileActions on_new_file=on_new_file on_new_dir=on_new_dir />
         </super::ui::PanelToolbar>
         {children()}
     </div> }

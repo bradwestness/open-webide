@@ -95,6 +95,7 @@ pub async fn repo_status(
                         behind: 0,
                         is_clean: false,
                         line_stats: GitLineStats::default(),
+                        file_line_stats: Default::default(),
                         files: Default::default(),
                     })
                 }
@@ -140,6 +141,7 @@ fn passive_repo_status(project_full_path: &Path) -> Result<GitRepoStatus, String
         behind: 0,
         is_clean: true,
         line_stats: GitLineStats::default(),
+        file_line_stats: Default::default(),
         files: Default::default(),
     })
 }

@@ -7,7 +7,7 @@ use std::time::Duration;
 use base64::Engine;
 use openwebide_core::{
     GitBranchInfo, GitCheckoutRequest, GitCheckoutResult, GitCommitRequest, GitCommitResult,
-    GitRepoStatus, GitSyncRequest, GitSyncResult, parse_diff_stat, parse_porcelain_v1,
+    GitRepoStatus, GitSyncRequest, GitSyncResult, parse_porcelain_v1,
 };
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -242,13 +242,31 @@ pub async fn get_repo_status(repo_dir: &Path) -> Result<GitRepoStatus, GitError>
             _ => (String::new(), None),
         };
 
-    // 3. Line statistics for uncommitted changes
-    let line_stats = match exec_git(&["diff", "--shortstat", "HEAD"], repo_dir).await {
-        Ok((diff_out, _, true)) if !diff_out.trim().is_empty() => parse_diff_stat(diff_out.trim()),
-        _ => match exec_git(&["diff", "--shortstat"], repo_dir).await {
-            Ok((diff_out, _, true)) => parse_diff_stat(diff_out.trim()),
-            _ => Default::default(),
-        },
+    // Both browser-local and remote status transports use this one native primitive.
+    let file_line_stats = match exec_git(&["diff", "--numstat", "-z", "HEAD"], repo_dir).await {
+        Ok((output, _, true)) => openwebide_core::git::parse_numstat(&output),
+        _ => {
+            let mut stats = std::collections::HashMap::new();
+            for args in [
+                vec!["diff", "--numstat", "-z"],
+                vec!["diff", "--cached", "--numstat", "-z"],
+            ] {
+                if let Ok((output, _, true)) = exec_git(&args, repo_dir).await {
+                    for (path, changes) in openwebide_core::git::parse_numstat(&output) {
+                        let entry = stats
+                            .entry(path)
+                            .or_insert(openwebide_core::GitLineStats::default());
+                        entry.insertions += changes.insertions;
+                        entry.deletions += changes.deletions;
+                    }
+                }
+            }
+            stats
+        }
+    };
+    let line_stats = openwebide_core::GitLineStats {
+        insertions: file_line_stats.values().map(|stats| stats.insertions).sum(),
+        deletions: file_line_stats.values().map(|stats| stats.deletions).sum(),
     };
 
     Ok(GitRepoStatus {
@@ -260,6 +278,7 @@ pub async fn get_repo_status(repo_dir: &Path) -> Result<GitRepoStatus, GitError>
         behind,
         is_clean,
         line_stats,
+        file_line_stats,
         files,
     })
 }
@@ -678,6 +697,31 @@ mod tests {
         assert!(cmd.status().await.unwrap().success());
 
         td
+    }
+
+    #[tokio::test]
+    async fn status_line_counts_share_unusual_paths_and_unborn_fallback() {
+        let td = create_test_repo().await;
+        let path = "file\twith\nspace.txt";
+        std::fs::write(td.path.join(path), "first\nsecond\n").unwrap();
+        let (_, error, ok) = exec_git(&["add", "--", path], &td.path).await.unwrap();
+        assert!(ok, "{error}");
+        let unborn = get_repo_status(&td.path).await.unwrap();
+        assert_eq!(unborn.file_line_stats[path].insertions, 2);
+        let (_, error, ok) = exec_git(&["commit", "-m", "Initial"], &td.path)
+            .await
+            .unwrap();
+        assert!(ok, "{error}");
+        std::fs::write(td.path.join(path), "first\nreplacement\nthird\n").unwrap();
+        let status = get_repo_status(&td.path).await.unwrap();
+        assert_eq!(
+            status.file_line_stats[path],
+            openwebide_core::GitLineStats {
+                insertions: 2,
+                deletions: 1
+            }
+        );
+        assert_eq!(status.line_stats, status.file_line_stats[path]);
     }
 
     #[tokio::test]

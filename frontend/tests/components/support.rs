@@ -340,6 +340,41 @@ pub fn command_actions(
         slash: chat_actions.slash_command,
     });
     provide_context(actions);
+    let projects = state.projects;
+    let navigation = openwebide_frontend::state_actions::navigation::NavigationActions::new(
+        projects,
+        state.chat,
+        state.ui,
+        layout_actions,
+        Callback::new(move |id| {
+            projects.open_tab(id);
+            projects.select_project(id);
+        }),
+        Callback::new(move |()| projects.active_project.set(None)),
+    );
+    provide_context(navigation);
+    let workspace_actions = openwebide_frontend::state_actions::workspace::WorkspaceActions::new(
+        state.api,
+        state.projects,
+        state.workspace,
+        state.ui,
+        RwSignal::new(false),
+        Callback::new(|()| ()),
+    );
+    provide_context(workspace_actions);
+    provide_context(
+        openwebide_frontend::state_actions::omnibar::OmnibarActions::new(
+            openwebide_frontend::state_actions::omnibar::OmnibarContext {
+                api: state.api,
+                projects: state.projects,
+                chat: state.chat,
+                ui: state.ui,
+                commands: actions,
+                navigation,
+                open_file: workspace_actions.request_open,
+            },
+        ),
+    );
     actions
 }
 

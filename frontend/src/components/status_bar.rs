@@ -12,6 +12,7 @@ pub fn StatusBar(
     #[prop(default = Callback::new(|_: String| ()))] on_select_branch: Callback<String>,
     #[prop(default = Callback::new(|_| ()))] on_sync_click: Callback<()>,
 ) -> impl IntoView {
+    let chrome = use_context::<super::editor_chrome::EditorFooterMount>();
     let chat = expect_context::<ChatState>();
     let git = expect_context::<GitState>();
     let show_terminal = chat.show_terminal.read_only();
@@ -20,6 +21,7 @@ pub fn StatusBar(
         Signal::derive(move || git.status.get());
     view! {
         <footer class="statusbar">
+            {chrome.map(|chrome| view! { <div class="status-editor-slot" node_ref=chrome.0 /> })}
             <Show
                 when=move || health.get().is_some()
                 fallback=|| view! { <span class="status">"connecting…"</span> }
@@ -69,10 +71,10 @@ pub fn StatusBar(
             <button
                 class=move || if show_terminal.get() { "status-btn active" } else { "status-btn" }
                 disabled=move || !layout.available(crate::state::layout::Panel::Terminal)
-                title=move || if layout.available(crate::state::layout::Panel::Terminal) { "Toggle terminal dock (Ctrl+`)" } else { "Open a project to use Terminal" }
+                title=move || if layout.available(crate::state::layout::Panel::Terminal) { "Toggle Output and terminal dock (Ctrl+`)" } else { "Open a project to use Terminal" }
                 on:click=move |_| on_toggle_terminal()
             >
-                <super::ui::Icon name=super::ui::IconName::Terminal />"Terminal"
+                <super::ui::Icon name=super::ui::IconName::Terminal />"Output"
             </button>
         </footer>
     }

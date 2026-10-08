@@ -881,7 +881,7 @@ async fn overflow_actions_share_rows_with_labels_and_files_view_switcher_in_both
                 .root
                 .query_selector(".files-panel-toolbar .ui-action-menu")
                 .unwrap()
-                .is_none()
+                .is_some()
         );
         mounted.click(".files-panel-toolbar .ui-seg-btn:first-child");
         settle().await;
@@ -1156,41 +1156,43 @@ async fn bottom_terminal_spans_workspace_resizes_height_and_requires_project_in_
 }
 
 #[wasm_bindgen_test]
-async fn account_dropdown_groups_actions_and_collapses_to_user_icon() {
+async fn app_and_account_menus_group_destinations_and_collapse_to_user_icon() {
     use openwebide_frontend::components::TopBar;
     let opened = RwSignal::new(0);
     let logged_out = RwSignal::new(false);
     let mounted = mount_test(move |state| {
         state.auth.set_user(user(1));
-        let health = RwSignal::new(None);
         view! {
             <style>{include_str!("../../styles.css")}</style>
-            <div class="app"><TopBar health=health.read_only() on_open_settings=Callback::new(move |()| opened.update(|count| *count += 1)) on_logout=Callback::new(move |()| logged_out.set(true)) /></div>
+            <div class="app"><TopBar on_open_settings=Callback::new(move |()| opened.update(|count| *count += 1)) on_logout=Callback::new(move |()| logged_out.set(true)) /></div>
         }
     });
     settle().await;
-    for (action, label) in [
-        ("Settings", "Settings"),
-        ("Model setup", "Models"),
-        ("Log out", "Log out"),
-    ] {
-        mounted.click("[aria-label='Account menu']");
-        settle().await;
-        let button = mounted.element(&format!("button[aria-label='{action}']"));
-        assert!(button.text_content().unwrap().contains(label));
-        button.click();
-        settle().await;
-        assert!(
-            mounted
-                .root
-                .query_selector(".ui-dropdown-menu")
-                .unwrap()
-                .is_none()
-        );
-    }
+    mounted.click("[aria-label='App menu']");
+    settle().await;
+    mounted.click("button[aria-label='Settings']");
+    settle().await;
     assert_eq!(opened.get_untracked(), 1);
+    mounted.click("[aria-label='App menu']");
+    settle().await;
+    mounted.click_text("Servers");
+    settle().await;
+    assert_eq!(
+        mounted.state.settings.configuration.get_untracked(),
+        Some(openwebide_frontend::state::settings::ConfigurationSection::Servers)
+    );
+    mounted.click("[aria-label='Account menu']");
+    settle().await;
+    mounted.click("button[aria-label='Log out']");
+    settle().await;
     assert!(logged_out.get_untracked());
-    assert!(mounted.state.settings.show_conn_form.get_untracked());
+    assert!(
+        mounted
+            .root
+            .query_selector(".ui-dropdown-menu")
+            .unwrap()
+            .is_none()
+    );
     mounted
         .element(".app")
         .class_list()

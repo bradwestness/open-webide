@@ -89,7 +89,7 @@ async fn palette_search_keyboard_capabilities_and_actions_share_every_mode() {
                 .element(".command-results .empty")
                 .text_content()
                 .as_deref(),
-            Some("No matching commands")
+            Some("No matching results")
         );
         key(&search, "Enter", "Enter", false, false, false);
         settle().await;

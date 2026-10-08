@@ -114,3 +114,5 @@ pub mod viewport;
 
 #[cfg(target_arch = "wasm32")]
 pub mod clipboard;
+
+pub mod omnibar;

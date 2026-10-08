@@ -116,6 +116,25 @@ impl Workspace {
         openwebide_core::vfs::sort_file_entries(&mut entries);
         Ok(entries)
     }
+    /// Filename discovery has one bounded traversal policy above both list adapters.
+    pub async fn discover_files(
+        &self,
+        current: impl Fn() -> bool,
+    ) -> Result<crate::omnibar::FileDiscovery, WorkspaceError> {
+        let mut walk = crate::omnibar::FileWalk::default();
+        while let Some(directory) = walk.next_directory() {
+            if !current() {
+                break;
+            }
+            let entries = self.list(&directory).await?;
+            if !current() {
+                break;
+            }
+            walk.add(&directory, entries)?;
+        }
+        Ok(walk.finish())
+    }
+
     /// Read an existing project-relative file without treating a transport or
     /// permission failure as absence. Shared enumeration handles missing parents.
     pub async fn read_optional_bytes(&self, path: &str) -> Result<Option<Vec<u8>>, WorkspaceError> {

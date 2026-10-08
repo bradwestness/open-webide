@@ -9,7 +9,7 @@ in the app's database.
 
 ## Connect a model
 
-Open **Servers** and use the setup wizard to choose a provider, enter its URL and
+Open the logo app menu → **Servers** and use the setup wizard to choose a provider, enter its URL and
 authentication, and discover models. Open WebIDE supports Ollama and
 OpenAI-compatible servers such as llama.cpp and LM Studio. The server must be
 reachable from the runtime handling the request; `localhost` inside a container

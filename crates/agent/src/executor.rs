@@ -1643,6 +1643,7 @@ mod tests {
                     insertions: 5,
                     deletions: 2,
                 },
+                file_line_stats: Default::default(),
                 files,
             })
         }

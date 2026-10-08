@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use openwebide_core::{Project, WorkspaceMode};
-use openwebide_frontend::components::TabBar;
+use openwebide_frontend::components::{TabBar, TopBar};
 use wasm_bindgen_test::*;
 
 use super::support::{mount_test, settle};
@@ -28,53 +28,63 @@ async fn recent_list_and_empty_message_use_the_same_projects() {
         );
         state.projects.open_tab_ids.set(vec![1]);
         view! {
-            <TabBar on_select_chat=Callback::new(|()| ()) on_select=Callback::new(|_| ()) on_close=Callback::new(|_| ())
-                on_open_local=Callback::new(|()| ()) on_open_remote=Callback::new(|()| ())
-                on_open_project=Callback::new(move |id| { state.projects.open_tab(id); })
-                on_delete_project=Callback::new(|_| ()) />
+            <TopBar on_open_settings=Callback::new(|()| ()) on_logout=Callback::new(|()| ()) on_open_project=Callback::new(move |id| { state.projects.open_tab(id); }) />
         }
     });
-    mounted.click_text("Recent");
+    mounted.click("[aria-label='App menu']");
     settle().await;
-    assert_eq!(mounted.element(".recent-menu").child_element_count(), 1);
     assert_eq!(
-        mounted.element(".recent-name").text_content().as_deref(),
+        mounted
+            .element(".recent-menu .recent-project-row")
+            .child_element_count(),
+        2
+    );
+    assert_eq!(
+        mounted
+            .element(".recent-project-row .recent-name")
+            .text_content()
+            .as_deref(),
         Some("Newest")
     );
     assert!(
         mounted
             .root
-            .query_selector(".recent-menu .empty")
+            .query_selector(".recent-project-row")
             .unwrap()
-            .is_none()
+            .is_some()
     );
     mounted.click_text("Newest");
     settle().await;
-    mounted.click_text("Recent");
+    mounted.click("[aria-label='App menu']");
     settle().await;
     assert!(
         mounted
             .root
-            .query_selector(".recent-item")
+            .query_selector(".recent-project-row")
             .unwrap()
             .is_none()
     );
     assert_eq!(
         mounted
-            .element(".recent-menu .empty")
+            .element(".recent-menu p.form-hint")
             .text_content()
             .as_deref(),
         Some("No other saved projects.")
     );
     mounted.state.projects.open_tab_ids.set(vec![1]);
     settle().await;
-    assert_eq!(mounted.element(".recent-menu").child_element_count(), 1);
+    assert_eq!(
+        mounted
+            .element(".recent-menu .recent-project-row")
+            .child_element_count(),
+        2
+    );
     assert!(
         mounted
             .root
-            .query_selector(".recent-menu .empty")
+            .query_selector(".recent-project-row")
             .unwrap()
-            .is_none()
+            .is_some()
     );
 }
 
@@ -291,8 +301,7 @@ async fn project_tab_context_actions_preserve_chat_and_the_selected_anchor_in_bo
                 ensure_root: Callback::new(|_| ()),
                 refresh_git: Callback::new(|()| ()),
             });
-            view! { <TabBar on_select=actions.select_project on_select_chat=actions.select_chat on_close=actions.close_project on_tab_action=actions.tab_action
-            on_open_local=Callback::new(|()| ()) on_open_remote=Callback::new(|()| ()) on_open_project=actions.on_open_project on_delete_project=actions.on_delete_project /> }
+            view! { <TabBar on_select=actions.select_project on_select_chat=actions.select_chat on_close=actions.close_project on_tab_action=actions.tab_action /> }
         });
         settle().await;
         mounted

@@ -292,12 +292,10 @@ autocomplete) into the editor while keeping the core diagnostics engine
 - One diagnostics UI regardless of whether a diagnostic came from the
   in-browser linter or a remote host LSP.
 
-### Editor Git annotations and file-tree changes
+### Editor Git annotations
 
 - GitLens-style editor annotations showing line authorship, commit details and
   history, with navigation to the relevant commit or diff.
-- GitHub-style colored folder/file icons in the file tree instead of the `M`/`U`/`A`
-  Git indicators; show added/removed line counts for changed files.
 - Use shared Git orchestration and the existing bridge adapters in both modes;
   guard asynchronous results against file, project and account changes.
 
@@ -335,67 +333,18 @@ autocomplete) into the editor while keeping the core diagnostics engine
   pending-edit review; reject stale selections after document or project changes.
 - Offer the same actions through keyboard and touch controls in both modes.
 
-### Universal command palette omnibar
+### Phone device verification
 
-Extend the existing searchable command palette into a universal omnibar, replacing
-the **Commands** button and its current UI. Combine commands, file navigation and
-project/session navigation behind one searchable entry point, with keyboard and
-touch access, consistent focus behavior and context-aware action availability.
-Reuse shared actions in both modes.
+The compact app/editor rows, universal search, logo drawer, single status footer,
+on-demand pane controls, tree preferences and Git icons/counts are implemented in
+both modes, with browser coverage for narrow layouts, focus restoration, keyboard
+navigation and review safeguards. Remaining checks need physical devices:
 
-### Compact desktop layout and phone navigation
-
-Combine related bars and reveal occasional controls on demand, preserving control
-sizes and usable hit targets. Aim for two app rows above editor content and one
-footer, excluding the browser/PWA window title bar.
-
-- **App navigation:** combine branding and project tabs into one row. Make the logo
-  an app-menu dropdown with a discoverable chevron: Open local folder, Open remote
-  folder, Recent projects, Settings, Servers, Help/Keyboard shortcuts and
-  About. Remove the separate opening controls from the project
-  strip. Coordinate the searchable command entry point with the Universal command
-  palette omnibar item above. Keep Sessions focused on conversation navigation;
-  move server and system-prompt management into app-level configuration.
-- **Editor header:** replace the separate **Editor** heading with file tabs on the
-  left; right-align the view selector, Save, Find and finally the `⋯` pane menu.
-  Combine the current title, tabs and path/action bars rather than shrink them.
-  Align Files and Chat headers with the editor tab/action row. Show the full file
-  path through tab tooltips or a breadcrumb popover, with copy-path/reveal-in-tree
-  actions, rather than reserve a permanent path row. Save and Find can use icons
-  with tooltips and accessible labels; keep view choices readable on desktop and
-  collapse them to an active-view selector on narrow screens.
-- **Changes view:** replace the awkward **Diff HEAD** control with an **Edit /
-  Changes / Preview** view selector (Preview only for supported files). Keep file
-  tabs, navigation and toolbar positions consistent across views. Show **Inline /
-  Split** as a small display control when viewing Changes; describe the comparison
-  as **Against last commit**, with `HEAD` available in a tooltip/advanced selector.
-  Move the prominent red **Revert to HEAD** action into `⋯` and the command palette
-  as **Discard changes…**, retaining confirmation and unsaved-buffer/review guards.
-- **Files controls:** move Include hidden files and folders, refresh and tree
-  preferences into the pane menu. Editor Find should appear only when invoked
-  by icon or shortcut.
-- **Status and occasional settings:** combine the editor and app footers. Show
-  cursor position, one indentation control (**Spaces: 4** / **Tabs: 4**), connection,
-  Git status and Output access. Put separate indent/tab widths and detection/default
-  details behind the indentation control; move **Convert indentation** into `⋯`
-  and the command palette. Review duplicate pane-collapse
-  buttons where dock toggles already provide the same action. Use one app logo/menu
-  and consistent `⋯` pane menus for app navigation versus pane options.
-- **Chat density and narrow layouts:** verify density, model and approval controls,
-  activity-group touch controls and the compact context indicator on real phones.
-- **Phone navigation:** add the logo-driven offcanvas app/project drawer. Verify
-  keyboard behavior on real devices so composer/editor space and controls remain
-  accessible; check safe-area spacing and Output sheet behavior.
-- **Visual state consistency:** use shared selected-state styling across project/file
-  tabs, pane navigation and segmented controls; distinguish keyboard focus from
-  selection. Coordinate file-tree status with the Editor Git annotations and
-  file-tree changes item: replace cryptic change dots/letter indicators with colored
-  icons and added/removed counts, retaining accessible status descriptions.
-- **Shared behavior and verification:** use shared feature actions, components and
-  theme tokens in both modes. Keep frequent actions accessible outside menus;
-  retain keyboard shortcuts, focus restoration, touch targets and account-synced
-  layout preferences. Verify tab overflow, narrow layouts, keyboard/IME behavior,
-  accessibility, Changes/review safeguards and real phones in both modes.
+- Verify density, model/approval controls, activity-group touch controls and the
+  compact context indicator on real phones in both modes.
+- Check virtual-keyboard and IME behavior on iOS/Android so the composer/editor
+  space and controls remain accessible as the keyboard opens and closes.
+- Check safe-area spacing, the app drawer and Output sheet on real devices.
 
 ### Build, test and process output
 

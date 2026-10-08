@@ -100,20 +100,21 @@ pub(super) fn watch_tree(
     });
 }
 
-async fn refresh_tree(
+pub(super) async fn refresh_tree(
     ws: Workspace,
     projects: ProjectsState,
     workspace: WorkspaceState,
     project_id: i64,
     current: impl Fn() -> bool,
-) {
+) -> Result<(), String> {
+    let mut failure = None;
     let mut dirs = VecDeque::from([String::new()]);
     while let Some(dir) = dirs.pop_front() {
         if !current()
             || web_sys::window()
                 .is_none_or(|window| window.document().is_none_or(|document| document.hidden()))
         {
-            return;
+            return Ok(());
         }
         if !dir.is_empty()
             && !workspace
@@ -132,12 +133,12 @@ async fn refresh_tree(
         .await
         {
             Either::Left((result, _)) => result,
-            Either::Right(_) => return,
+            Either::Right(_) => return Err("Refreshing files timed out".into()),
         };
         match result {
             Ok(mut entries) => {
                 if !current() {
-                    return;
+                    return Ok(());
                 }
                 // Stable ordering avoids publishing changes caused only by enumeration order.
                 openwebide_core::vfs::sort_file_entries(&mut entries);
@@ -184,16 +185,18 @@ async fn refresh_tree(
             }
             Err(error) => {
                 if !current() {
-                    return;
+                    return Ok(());
                 }
                 if error.needs_folder_access() {
                     projects.needs_grant.update(|ids| {
                         ids.insert(project_id);
                     });
-                    return;
+                    return Err(error.to_string());
                 }
+                failure = Some(error.to_string());
                 // Transient failures keep the last known listing and retry next tick.
             }
         }
     }
+    failure.map_or(Ok(()), Err)
 }

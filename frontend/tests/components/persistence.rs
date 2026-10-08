@@ -1007,9 +1007,7 @@ async fn permanent_chat_tab_restores_and_preserves_both_workspace_modes() {
             view! {
                 <openwebide_frontend::components::TabBar
                     on_select=actions.select_project on_select_chat=actions.select_chat
-                    on_close=actions.close_project on_open_local=actions.on_open_local
-                    on_open_remote=Callback::new(|()| ()) on_open_project=actions.on_open_project
-                    on_delete_project=actions.on_delete_project />
+                    on_close=actions.close_project />
             }
         });
         wait_for_startup_reads(&mounted.state, 1).await;

@@ -4,7 +4,15 @@ Right-click a file or folder, hold it for half a second on touch devices, or foc
 it and press Shift+F10/the context-menu key. The inline **…** button opens the same
 menu. Escape or an outside click dismisses it; arrow keys navigate the menu.
 
-Create, rename, move, copy the project-relative path, or delete an entry. New folder
+The Files **…** menu contains New file/folder, Refresh files, Include hidden files
+and folders, and Compact tree rows. Hidden-file and row-density preferences sync
+through your account. Compact rows retain full touch targets on phones.
+
+Colored file/folder icons describe Git changes; tracked text changes show added
+and removed line counts. Hover or use a screen reader for the status description.
+Binary and untracked files have status icons without invented line counts.
+
+Create, rename, move, copy the project-relative path, reveal an entry in Files, or delete it. New folder
 is available on folders and the Explorer toolbar, not on files. Move
 accepts a destination relative to the project; its parent folder must exist.
 Delete requires confirmation. Save or discard affected unsaved editor changes

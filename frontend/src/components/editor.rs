@@ -2092,6 +2092,8 @@ pub fn Editor(
     on_reject: Callback<()>,
 ) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
+    let file_actions = use_context::<crate::state_actions::file_tree::FileTreeActions>();
+    let panel_actions = use_context::<crate::state_actions::layout::LayoutActions>();
     let editor_actions = EditorActions::new(workspace);
     editor_actions.install_syntax_worker();
     Effect::new(move || {
@@ -2871,6 +2873,45 @@ pub fn Editor(
         stamp_editor_input(editor_actions, &el);
     });
 
+    let convert_indentation = Callback::new(move |()| {
+        if read_only.get_untracked()
+            || pending_diff.get_untracked().is_some()
+            || view_mode.get_untracked() != ViewMode::Code
+            || editor_actions.is_composing()
+        {
+            return;
+        }
+        if let Some(textarea) = ta.get_untracked()
+            && current_editor_target(editor_actions, &textarea)
+        {
+            apply_editor_command(editor_actions, EditorCommand::ConvertIndentation, &textarea);
+            let _ = textarea.focus();
+        }
+    });
+    if let Some(ui) = use_context::<crate::state::ui::UiState>() {
+        ui.editor_convert.set(Some(convert_indentation));
+        Effect::new(move |_| {
+            ui.editor_can_convert.set(
+                !read_only.get()
+                    && pending_diff.get().is_none()
+                    && view_mode.get() == ViewMode::Code
+                    && open_file.with(|path| {
+                        path.as_ref()
+                            .is_some_and(|path| !FileKind::from_path(path).is_non_text())
+                    })
+                    && editor_actions.limit().is_none()
+                    && {
+                        workspace.editor_composition.track();
+                        !editor_actions.is_composing()
+                    },
+            );
+        });
+        on_cleanup(move || {
+            ui.editor_convert.set(None);
+            ui.editor_can_convert.set(false);
+        });
+    }
+
     view! {
         <div class="editor" node_ref=root style=move || format!("{}; --editor-tab-width: {}", editor_actions.preferences().font_style(), editor_actions.rules().indentation.tab_width()) on:keydown=move |event: web_sys::KeyboardEvent| {
             if event.is_composing() { return; }
@@ -2890,29 +2931,28 @@ pub fn Editor(
                 if let Some(textarea) = ta.get_untracked() { let _ = textarea.focus(); }
             }
         }>
-            <super::editor_tabs::EditorTabs />
             <div class="editor-header">
-                <span class="editor-path" title="Open file">
-                    {move || match open_file.get() {
-                        Some(p) => {
-                            if dirty.get() {
-                                format!("{p} ●")
-                            } else {
-                                p
-                            }
-                        }
-                        None => "No file open".to_string(),
-                    }}
-                </span>
+                <super::editor_tabs::EditorTabs />
                 <Show
                     when=move || pending_diff.get().is_some()
                     fallback=move || {
                         let on_load = on_load_git_diff;
-                        let on_discard = on_discard_git_diff;
+
                         view! {
                             <div class="editor-header-actions">
-                                <Show when=move || view_mode.get() == ViewMode::Code && open_file.with(|path| path.as_ref().is_some_and(|path| !FileKind::from_path(path).is_non_text()))>
-                                    <super::dropdown::ActionMenu aria_label="Editing commands">
+                                <Show when=move || open_file.get().is_some()>
+                                    <super::dropdown::ActionMenu aria_label="Editor actions">
+                                        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=file_actions.is_none() on:click=move |_| { if let Some((actions, path)) = file_actions.zip(open_file.get_untracked()) { actions.copy_path(&path); } }>"Copy path"</button>
+                                        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=file_actions.is_none() on:click=move |_| { if let Some((actions, path)) = file_actions.zip(open_file.get_untracked()) { actions.reveal(&path); } }>"Reveal in Files"</button>
+                                        <Show when=move || panel_actions.is_some()>
+                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, false)); } }>"Move panel left"</button>
+                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, true)); } }>"Move panel right"</button>
+                                        </Show>
+                                        <Show when=move || can_revert.get()><button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(action) = on_discard_git_diff { action.run(()); } }>"Discard changes…"</button></Show>
+                                        <Show when=move || view_mode.get() == ViewMode::Code && !read_only.get() && open_file.with(|path| path.as_ref().is_some_and(|path| !FileKind::from_path(path).is_non_text()))>
+
+                                        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=read_only on:click=move |_| convert_indentation.run(())>"Convert indentation"</button>
+
                                         <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+G" on:click=move |_| open_go.run(())>"Go to line/column"</button>
                                         <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+Shift+\\" on:click=move |_| jump_bracket.run(())>"Jump to matching bracket"</button>
 
@@ -2976,6 +3016,7 @@ pub fn Editor(
                                                 if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_fold_command(editor_actions, &textarea, command); }
                                             }>{label}</button>
                                         }).collect_view()}
+                                        </Show>
                                     </super::dropdown::ActionMenu>
                                 </Show>
                                 <Show
@@ -2984,75 +3025,25 @@ pub fn Editor(
                                         move || {
                                             let on_load = on_load;
                                             view! {
-                                                <SegmentedControl
-                                                    options=vec![
-                                                        SegmentOption::new("Edit", ViewMode::Code),
-                                                        SegmentOption::new("Diff HEAD", ViewMode::InlineDiff),
-                                                        SegmentOption::new("Preview", ViewMode::Preview).disabled_when(preview_disabled),
-                                                    ]
-                                                    value=view_mode.read_only().into()
-                                                    on_change=Callback::new(move |mode| {
-                                                        if (mode == ViewMode::InlineDiff || (mode == ViewMode::Preview && open_file.with(|path| path.as_ref().is_some_and(|path| FileKind::from_path(path) == FileKind::Markdown))))
-                                                            && let Some(cb) = &on_load {
-                                                                cb.run(());
-                                                            }
-                                                        view_mode.set(mode);
-                                                    })
-                                                />
+                                                <super::editor_chrome::EditorViewSelector value=view_mode.read_only().into() preview_supported=Signal::derive(move || !preview_disabled.get()) on_change=Callback::new(move |mode| {
+                                                    if (mode == ViewMode::InlineDiff || (mode == ViewMode::Preview && open_file.with(|path| path.as_ref().is_some_and(|path| FileKind::from_path(path) == FileKind::Markdown)))) && let Some(action) = on_load { action.run(()); }
+                                                    view_mode.set(mode);
+                                                }) />
                                                 <Show when=move || read_only.get() fallback=|| ()>
                                                     <span class="form-hint" style="margin-left: 12px; align-self: center;">
                                                         "Not valid UTF-8 — shown read-only"
                                                     </span>
                                                 </Show>
-                                                <Button
-                                                    variant=if dirty.get() { ButtonVariant::Primary } else { ButtonVariant::Default }
-                                                    size=ButtonSize::Sm
-                                                    disabled=Signal::derive(move || read_only.get() || !dirty.get() || recovery_blocks_save.get())
-                                                    on_click=Callback::new(move |_| on_save.run(()))
-                                                >
-                                                    "Save"
-                                                </Button>
+                                                <IconButton label="Save file (Ctrl/⌘S)" disabled=Signal::derive(move || read_only.get() || !dirty.get() || recovery_blocks_save.get()) on_click=Callback::new(move |_| on_save.run(()))><Icon name=IconName::Save /></IconButton>
                                             }
                                         }
                                     }
                                 >
-                                    <SegmentedControl
-                                        options=vec![
-                                            SegmentOption::new("Edit", ViewMode::Code),
-                                            SegmentOption::new("Inline", ViewMode::InlineDiff),
-                                            SegmentOption::new("Split", ViewMode::SideBySide),
-                                            SegmentOption::new("Preview", ViewMode::Preview).disabled_when(preview_disabled),
-                                        ]
-                                        value=view_mode.read_only().into()
-                                        on_change=Callback::new(move |mode| {
-                                            view_mode.set(mode);
-                                        })
-                                    />
-                                    <Show when=move || can_revert.get() fallback=|| ()>
-                                        <Button
-                                            variant=ButtonVariant::Danger
-                                            size=ButtonSize::Sm
-                                            on_click={
-                                                let on_discard = on_discard;
-                                                Callback::new(move |_| {
-                                                    if let Some(cb) = &on_discard {
-                                                        cb.run(());
-                                                    }
-                                                    view_mode.set(ViewMode::Code);
-                                                })
-                                            }
-                                        >
-                                            <super::ui::Icon name=super::ui::IconName::Undo2 />"Revert to HEAD"
-                                        </Button>
-                                    </Show>
-                                    <Button
-                                        variant=if dirty.get() { ButtonVariant::Primary } else { ButtonVariant::Default }
-                                        size=ButtonSize::Sm
-                                        disabled=Signal::derive(move || read_only.get() || !dirty.get() || recovery_blocks_save.get())
-                                        on_click=Callback::new(move |_| on_save.run(()))
-                                    >
-                                        "Save"
-                                    </Button>
+                                    <super::editor_chrome::EditorViewSelector value=view_mode.read_only().into() preview_supported=Signal::derive(move || !preview_disabled.get()) on_change=Callback::new(move |mode| view_mode.set(mode)) />
+                                    <span class="changes-baseline" title="Compared with HEAD">"Against last commit"</span>
+                                    <SegmentedControl class="changes-display" options=vec![SegmentOption::new("Inline", ViewMode::InlineDiff), SegmentOption::new("Split", ViewMode::SideBySide)] value=view_mode.read_only().into() on_change=Callback::new(move |mode| view_mode.set(mode)) />
+
+                                    <IconButton label="Save file (Ctrl/⌘S)" disabled=Signal::derive(move || read_only.get() || !dirty.get() || recovery_blocks_save.get()) on_click=Callback::new(move |_| on_save.run(()))><Icon name=IconName::Save /></IconButton>
                                 </Show>
                             </div>
                         }
@@ -3508,17 +3499,14 @@ pub fn Editor(
                 }}
             </Show>
             <Show when=move || open_file.get().is_some() && view_mode.get() == ViewMode::Code && open_file.with(|path| path.as_ref().is_some_and(|path| !FileKind::from_path(path).is_non_text()))>
-                <div class="editor-footer">
+                <super::editor_chrome::EditorFooter><div class="editor-footer">
                     <Button class="editor-cursor-status" size=ButtonSize::Sm variant=ButtonVariant::Ghost on_click=Callback::new(move |_| open_go.run(()))>{move || { let (line, column, count) = cursor_status.get(); format!("Ln {line}, Col {column}{}", if count == 0 { String::new() } else { format!(" · {count} selected") }) }}</Button>
 
-                    <super::editor_options::IndentationControls above=true value=Signal::derive(move || editor_actions.rules().indentation) disabled=read_only on_change=Callback::new(move |indentation| editor_actions.set_indentation(indentation)) />
-                    <Button size=ButtonSize::Sm variant=ButtonVariant::Ghost disabled=read_only on_click=Callback::new(move |_| {
-                        if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) {
-                            apply_editor_command(editor_actions, EditorCommand::ConvertIndentation, &textarea); let _ = textarea.focus();
-                        }
-                    })>"Convert indentation"</Button>
-                    <span class="editor-rules-source" title=move || editor_actions.rules().source.unwrap_or_else(|| "Detected from this file, with editor defaults as fallback".into())>{move || if editor_actions.rules().source.is_some() { "EditorConfig" } else { "Detected / defaults" }}</span>
-                </div>
+                    <super::dropdown::Dropdown aria_label="Indentation settings" menu_role="dialog" above=true trigger_class="btn ghost sm" label=move || { let indentation = editor_actions.rules().indentation; format!("{}: {}", if indentation.style == openwebide_core::editor::IndentStyle::Tabs { "Tabs" } else { "Spaces" }, indentation.width()) }>
+                        <super::editor_options::IndentationControls value=Signal::derive(move || editor_actions.rules().indentation) disabled=read_only on_change=Callback::new(move |indentation| editor_actions.set_indentation(indentation)) />
+                        <span class="editor-rules-source" title=move || editor_actions.rules().source.unwrap_or_else(|| "Detected from this file, with editor defaults as fallback".into())>{move || if editor_actions.rules().source.is_some() { "EditorConfig" } else { "Detected / defaults" }}</span>
+                    </super::dropdown::Dropdown>
+                </div></super::editor_chrome::EditorFooter>
             </Show>
         </div>
     }.into_any()

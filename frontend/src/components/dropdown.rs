@@ -6,7 +6,11 @@ use super::ui::{Icon, IconName};
 
 fn items(menu: &web_sys::HtmlElement) -> Vec<web_sys::HtmlElement> {
     let nodes = menu
-        .query_selector_all("[role=menuitem], [role=menuitemradio]")
+        .query_selector_all(if menu.get_attribute("role").as_deref() == Some("dialog") {
+            "button, input, select, textarea"
+        } else {
+            "[role=menuitem], [role=menuitemradio], [role=menuitemcheckbox]"
+        })
         .unwrap();
     (0..nodes.length())
         .filter_map(|index| nodes.item(index)?.dyn_into::<web_sys::HtmlElement>().ok())
@@ -18,6 +22,7 @@ fn items(menu: &web_sys::HtmlElement) -> Vec<web_sys::HtmlElement> {
 pub fn Dropdown(
     #[prop(into)] label: ViewFn,
     aria_label: &'static str,
+    #[prop(default = "menu")] menu_role: &'static str,
     #[prop(default = "")] class: &'static str,
     #[prop(default = "btn ghost")] trigger_class: &'static str,
     #[prop(default = "")] menu_class: &'static str,
@@ -152,6 +157,7 @@ pub fn Dropdown(
     view! {
         <span class=format!("ui-dropdown {class}") on:keydown=move |event: web_sys::KeyboardEvent| {
             if event.key() == "Escape" && open.get_untracked() { event.prevent_default(); event.stop_propagation(); close.run(()); return; }
+            if menu_role == "dialog" && open.get_untracked() { return; }
             if event.key() == "Tab" && open.get_untracked() { close.run(()); return; }
             if !open.get_untracked() && matches!(event.key().as_str(), "ArrowDown" | "ArrowUp") { event.prevent_default(); open.set(true); on_open.run(()); return; }
             let Some(menu) = menu.get_untracked() else { return; };
@@ -167,13 +173,13 @@ pub fn Dropdown(
             };
             if let Some(index) = index { event.prevent_default(); event.stop_propagation(); let _ = choices[index].focus(); }
         }>
-            <button type="button" class=format!("ui-dropdown-trigger {trigger_class}") node_ref=trigger aria-label=aria_label aria-haspopup="menu" aria-expanded=move || open.get().to_string() aria-controls=content_id.clone()
+            <button type="button" class=format!("ui-dropdown-trigger {trigger_class}") node_ref=trigger aria-label=aria_label aria-haspopup=menu_role aria-expanded=move || open.get().to_string() aria-controls=content_id.clone()
                 disabled=move || disabled.is_some_and(|disabled| disabled.get()) on:click=move |event| { event.prevent_default(); event.stop_propagation(); let next = !open.get_untracked(); open.set(next); if next { on_open.run(()); } }>
                 <span class="ui-dropdown-label">{label.run()}</span>{(!hide_caret).then(|| view! { <Icon name=IconName::ChevronDown /> })}
             </button>
             <Show when=move || open.get()>
                 <div class="ui-dropdown-backdrop recent-backdrop" on:click=move |event| { event.stop_propagation(); event.prevent_default(); close.run(()); } />
-                <div class=format!("ui-dropdown-menu recent-menu {menu_class}") role="menu" aria-label=aria_label id=content_id.clone() node_ref=menu on:click=move |event| { event.prevent_default(); event.stop_propagation(); }>{children()}</div>
+                <div class=format!("ui-dropdown-menu recent-menu {menu_class}") role=menu_role aria-label=aria_label id=content_id.clone() node_ref=menu on:click=move |event| { event.prevent_default(); event.stop_propagation(); }>{children()}</div>
             </Show>
         </span>
     }

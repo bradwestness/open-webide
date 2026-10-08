@@ -723,9 +723,30 @@ async fn changes_rows_share_git_and_chat_menus_and_review_uses_known_status() {
             behind: 0,
             is_clean: false,
             line_stats: Default::default(),
+            file_line_stats: [(
+                "a.txt".into(),
+                openwebide_core::GitLineStats {
+                    insertions: 3,
+                    deletions: 1,
+                },
+            )]
+            .into(),
             files: [("a.txt".into(), GitFileStatus::Modified)].into(),
         }));
         settle().await;
+        assert_eq!(
+            mounted
+                .element(".tree-root .tree-line-stats")
+                .get_attribute("aria-label")
+                .as_deref(),
+            Some("Modified: 3 added lines, 1 removed lines")
+        );
+        assert!(
+            mounted
+                .element(".tree-root .tree-icon")
+                .class_list()
+                .contains("git-badge-modified")
+        );
         treeContext(&mounted.element(".tree-root .tree-item"));
         settle().await;
         let button = |label: &str| {
@@ -903,39 +924,18 @@ async fn preview_availability_and_pdf_blob_contract_work_in_both_modes() {
                     .filter_map(|i| buttons.item(i))
                     .filter_map(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
                     .find(|node| node.text_content().as_deref() == Some("Preview"))
-                    .unwrap()
             };
             assert_eq!(
-                preview().has_attribute("disabled"),
-                !openwebide_core::FileKind::supports_preview(path),
+                preview().is_some(),
+                openwebide_core::FileKind::supports_preview(path),
                 "{path}"
             );
-            if !openwebide_core::FileKind::supports_preview(path) {
-                wait_until("Disabled style settled", || {
-                    web_sys::window()
-                        .unwrap()
-                        .get_computed_style(&preview())
-                        .unwrap()
-                        .unwrap()
-                        .get_property_value("opacity")
-                        .unwrap()
-                        == "0.4"
-                })
-                .await;
-                let style = web_sys::window()
-                    .unwrap()
-                    .get_computed_style(&preview())
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(style.get_property_value("opacity").unwrap(), "0.4");
-                assert_eq!(style.get_property_value("cursor").unwrap(), "default");
-            }
             if path == "LICENSE" || path == "notes.txt" {
                 wait_until("Document loaded", || {
                     mounted.state.workspace.content.get_untracked() == content
                 })
                 .await;
-                preview().click();
+                preview().unwrap().click();
                 settle().await;
                 let document = mounted.element(".editor-document-preview");
                 assert_eq!(document.text_content().as_deref(), Some(content));

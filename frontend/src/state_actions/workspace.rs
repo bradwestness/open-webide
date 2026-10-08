@@ -145,6 +145,7 @@ pub struct WorkspaceActions {
     pub workspace_for: Callback<i64, Option<Workspace>>,
     pub on_grant_access: Callback<()>,
     pub ensure_root: Callback<i64>,
+    pub refresh_tree: Callback<()>,
     pub on_open_lossy: Callback<()>,
     pub request_open: Callback<String>,
     pub close_file: Callback<String>,
@@ -182,6 +183,28 @@ impl WorkspaceActions {
         });
 
         super::tree::watch_tree(projects, workspace, auth, workspace_for, refresh_git);
+        let refresh_epoch = project_epoch(projects, auth);
+        let refresh_tree = Callback::new(move |()| {
+            let Some(project_id) = active_project.get_untracked() else {
+                return;
+            };
+            let Some(ws) = workspace_for.run(project_id) else {
+                ui.notify("Grant folder access in Files before refreshing");
+                return;
+            };
+            let token = refresh_epoch.get_untracked();
+            let current = move || refresh_epoch.try_get_untracked() == Some(token);
+            refresh_git.run(());
+            spawn_local(async move {
+                let result =
+                    super::tree::refresh_tree(ws, projects, workspace, project_id, current).await;
+                if current()
+                    && let Err(error) = result
+                {
+                    ui.notify(format!("Could not refresh files: {error}"));
+                }
+            });
+        });
 
         let tooling_generation = StoredValue::new(0_u64);
         Effect::new(move |_| {
@@ -1275,6 +1298,7 @@ impl WorkspaceActions {
             workspace_for,
             on_grant_access,
             ensure_root,
+            refresh_tree,
             on_open_lossy,
             request_open,
             close_file,

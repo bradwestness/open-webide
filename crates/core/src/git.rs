@@ -16,6 +16,17 @@ pub enum GitFileStatus {
 }
 
 impl GitFileStatus {
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Added => "Added",
+            Self::Modified => "Modified",
+            Self::Deleted => "Deleted",
+            Self::Untracked => "Untracked",
+            Self::Renamed => "Renamed",
+            Self::Conflict => "Conflict",
+        }
+    }
+
     /// Return a single-character status badge for the file explorer tree.
     pub fn badge(self) -> &'static str {
         match self {
@@ -65,6 +76,8 @@ pub struct GitRepoStatus {
     pub behind: usize,
     pub is_clean: bool,
     pub line_stats: GitLineStats,
+    #[serde(default)]
+    pub file_line_stats: HashMap<String, GitLineStats>,
     /// Map of workspace-relative paths to file status.
     pub files: HashMap<String, GitFileStatus>,
 }
@@ -80,6 +93,7 @@ impl Default for GitRepoStatus {
             behind: 0,
             is_clean: true,
             line_stats: GitLineStats::default(),
+            file_line_stats: HashMap::new(),
             files: HashMap::new(),
         }
     }
@@ -616,5 +630,51 @@ mod path_tests {
             );
         }
         assert!(changes.action_paths("../outside").is_err());
+    }
+}
+
+/// Parse NUL-delimited Git numstat output, including renamed and unusual paths.
+pub fn parse_numstat(output: &str) -> HashMap<String, GitLineStats> {
+    let mut stats = HashMap::new();
+    let mut records = output.split('\0');
+    while let Some(record) = records.next() {
+        let mut parts = record.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let path = if path.is_empty() {
+            let _old = records.next();
+            let Some(new) = records.next() else {
+                break;
+            };
+            new
+        } else {
+            path
+        };
+        let (Ok(insertions), Ok(deletions)) = (added.parse(), removed.parse()) else {
+            continue;
+        };
+        stats.insert(
+            path.to_string(),
+            GitLineStats {
+                insertions,
+                deletions,
+            },
+        );
+    }
+    stats
+}
+
+#[cfg(test)]
+mod numstat_tests {
+    #[test]
+    fn preserves_tabs_newlines_renames_and_binary_files() {
+        let stats = super::parse_numstat("2\t1\tfile\tname\n.rs\0");
+        assert_eq!(stats["file\tname\n.rs"].insertions, 2);
+        let stats = super::parse_numstat("3\t4\t\0old\0new\0-\t-\timage.png\0");
+        assert_eq!(stats["new"].deletions, 4);
+        assert!(!stats.contains_key("old"));
+        assert!(!stats.contains_key("image.png"));
     }
 }
