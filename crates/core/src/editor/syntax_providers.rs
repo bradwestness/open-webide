@@ -59,12 +59,24 @@ fn built_in_context(node: tree_sitter::Node<'_>) -> Option<SyntaxContextKind> {
         | "heredoc"
         | "heredoc_body"
         | "nowdoc" => Some(SyntaxContextKind::String),
+        "AttValue"
+        | "PseudoAttValue"
+        | "quoted_key"
+        | "double_quote_scalar"
+        | "single_quote_scalar"
+        | "block_scalar"
+        | "string_scalar"
+        | "code_span"
+        | "CDSect" => Some(SyntaxContextKind::String),
         "template_string" => Some(SyntaxContextKind::Template),
-        "jsx_text" | "text" | "html_character_reference" | "entity" => {
-            Some(SyntaxContextKind::Text)
-        }
+        "jsx_text"
+        | "text"
+        | "html_character_reference"
+        | "entity"
+        | "CharData"
+        | "setting_value" => Some(SyntaxContextKind::Text),
         "regex" => Some(SyntaxContextKind::Regex),
-        "comment" | "html_comment" | "line_comment" | "block_comment" => {
+        "comment" | "Comment" | "html_comment" | "line_comment" | "block_comment" => {
             Some(SyntaxContextKind::Comment)
         }
         "template_substitution"
@@ -410,6 +422,89 @@ pub const SYNTAX_PROVIDERS: &[SyntaxProvider] = &[
         parent_headers: &[],
         fold_nodes: &["block", "comment"],
     },
+    SyntaxProvider {
+        language: Language::Json,
+        context: Some(built_in_context),
+        context_scope: SyntaxContextScope::Node,
+        highlight: Some(config_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
+        injection: None,
+        grammar: || tree_sitter_json::LANGUAGE.into(),
+        parent_headers: &[],
+        fold_nodes: &["object", "array"],
+    },
+    SyntaxProvider {
+        language: Language::Yaml,
+        context: Some(built_in_context),
+        context_scope: SyntaxContextScope::Node,
+        highlight: Some(config_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
+        injection: None,
+        grammar: || tree_sitter_yaml::LANGUAGE.into(),
+        parent_headers: &[],
+        fold_nodes: &[
+            "block_mapping_pair",
+            "block_sequence_item",
+            "flow_mapping",
+            "flow_sequence",
+            "block_scalar",
+        ],
+    },
+    SyntaxProvider {
+        language: Language::Toml,
+        context: Some(built_in_context),
+        context_scope: SyntaxContextScope::Node,
+        highlight: Some(config_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
+        injection: None,
+        grammar: || tree_sitter_toml_ng::LANGUAGE.into(),
+        parent_headers: &[],
+        fold_nodes: &["table", "table_array_element", "array", "inline_table"],
+    },
+    SyntaxProvider {
+        language: Language::Markdown,
+        context: Some(built_in_context),
+        context_scope: SyntaxContextScope::Node,
+        highlight: Some(markdown_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
+        injection: Some(super::syntax_injections::markdown_injection),
+        grammar: || tree_sitter_md::LANGUAGE.into(),
+        parent_headers: &[],
+        fold_nodes: &["section", "fenced_code_block", "list", "block_quote"],
+    },
+    SyntaxProvider {
+        language: Language::MarkdownInline,
+        context: Some(built_in_context),
+        context_scope: SyntaxContextScope::Node,
+        highlight: Some(markdown_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
+        injection: None,
+        grammar: || tree_sitter_md::INLINE_LANGUAGE.into(),
+        parent_headers: &[],
+        fold_nodes: &[],
+    },
+    SyntaxProvider {
+        language: Language::Ini,
+        context: Some(built_in_context),
+        context_scope: SyntaxContextScope::Node,
+        highlight: Some(config_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
+        injection: None,
+        grammar: || tree_sitter_ini::LANGUAGE.into(),
+        parent_headers: &[],
+        fold_nodes: &["section"],
+    },
+    SyntaxProvider {
+        language: Language::Xml,
+        context: Some(built_in_context),
+        context_scope: SyntaxContextScope::Node,
+        highlight: Some(config_highlight),
+        highlight_scope: SyntaxHighlightScope::Parent,
+        injection: None,
+        grammar: || tree_sitter_xml::LANGUAGE_XML.into(),
+        parent_headers: &[],
+        fold_nodes: &["element", "Comment", "CDSect"],
+    },
 ];
 
 pub fn syntax_provider(language: Language) -> Option<SyntaxProvider> {
@@ -429,10 +524,52 @@ fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::T
         "tag_name" => return Some(TokenKind::Keyword),
         "attribute_name" | "property_name" => return Some(TokenKind::Attribute),
         "function_name" | "command_name" => return Some(TokenKind::Function),
+        "integer_literal"
+        | "float_literal"
+        | "number"
+        | "integer"
+        | "float"
+        | "decimal_integer_literal"
+        | "decimal_floating_point_literal"
+        | "hex_integer_literal"
+        | "hex_floating_point_literal"
+        | "real_literal" => {
+            return Some(TokenKind::Number);
+        }
+        "true" | "false" | "null" | "none" | "None" | "True" | "False" => {
+            return Some(TokenKind::Boolean);
+        }
+        "lifetime" => return Some(TokenKind::Lifetime),
         _ => {}
     }
     if node.child_count() != 0 {
         return None;
+    }
+    if node
+        .parent()
+        .is_some_and(|parent| parent.kind() == "lifetime")
+    {
+        return None;
+    }
+    // Anonymous leaves are grammar terminals, never guessed source identifiers.
+    // Their names distinguish keyword and punctuation tokens even in incomplete trees.
+    if !node.is_named() {
+        return Some(if node.kind() == "#" {
+            TokenKind::Attribute
+        } else if node
+            .kind()
+            .chars()
+            .all(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        {
+            TokenKind::Keyword
+        } else if matches!(
+            node.kind(),
+            "." | "," | ";" | ":" | "(" | ")" | "{" | "}" | "[" | "]"
+        ) {
+            TokenKind::Punct
+        } else {
+            TokenKind::Operator
+        });
     }
     let parent = node.parent()?;
     let same = |field| {
@@ -441,6 +578,9 @@ fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::T
             .is_some_and(|child| child.id() == node.id())
     };
     let kind = parent.kind();
+    if kind == "macro_invocation" && same("macro") {
+        return Some(TokenKind::Macro);
+    }
     if (kind.contains("function")
         || kind.contains("method")
         || kind == "call_expression"
@@ -458,4 +598,67 @@ fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::T
         return Some(TokenKind::Type);
     }
     None
+}
+
+fn config_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::TokenKind> {
+    if node
+        .parent()
+        .is_some_and(|parent| config_color(parent.kind()).is_some())
+    {
+        return None;
+    }
+    if node.kind() == "Name" {
+        return Some(
+            if node
+                .parent()
+                .is_some_and(|parent| parent.kind() == "Attribute")
+            {
+                crate::highlight::TokenKind::Attribute
+            } else {
+                crate::highlight::TokenKind::Keyword
+            },
+        );
+    }
+    config_color(node.kind()).or_else(|| built_in_highlight(node))
+}
+fn config_color(kind: &str) -> Option<crate::highlight::TokenKind> {
+    use crate::highlight::TokenKind;
+    match kind {
+        "string"
+        | "quoted_key"
+        | "double_quote_scalar"
+        | "single_quote_scalar"
+        | "block_scalar"
+        | "string_scalar"
+        | "code_span"
+        | "link_title"
+        | "AttValue"
+        | "PseudoAttValue"
+        | "SystemLiteral"
+        | "PubidLiteral"
+        | "CDSect" => Some(TokenKind::String),
+        "comment" | "Comment" => Some(TokenKind::Comment),
+        "boolean_scalar" | "null_scalar" | "boolean" => Some(TokenKind::Boolean),
+        "integer_scalar" | "float_scalar" => Some(TokenKind::Number),
+        "bare_key" | "setting_name" | "anchor_name" | "alias_name" => Some(TokenKind::Attribute),
+        "tag" | "section_name" => Some(TokenKind::Type),
+        "atx_h1_marker"
+        | "atx_h2_marker"
+        | "atx_h3_marker"
+        | "atx_h4_marker"
+        | "atx_h5_marker"
+        | "atx_h6_marker"
+        | "setext_h1_underline"
+        | "setext_h2_underline"
+        | "fenced_code_block_delimiter" => Some(TokenKind::Keyword),
+        "link_destination" | "uri_autolink" => Some(TokenKind::Function),
+        "emphasis_delimiter" | "code_span_delimiter" => Some(TokenKind::Operator),
+        _ => None,
+    }
+}
+
+fn markdown_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::TokenKind> {
+    // Prose punctuation and capitalized words remain plain. Only grammar-defined
+    // Markdown constructs receive color, including delimiters and inline code.
+    config_highlight(node).filter(|_| config_color(node.kind()).is_some())
 }

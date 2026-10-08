@@ -418,6 +418,21 @@ pub struct DocumentExtent {
     pub height: f64,
 }
 impl DocumentExtent {
+    /// Height of fixed-height, unwrapped source rows, independently of unknown
+    /// horizontal glyph geometry. The adapter must supply an explicit CSS row height.
+    pub fn uniform_height(rows: usize, row_height: f64, padding: f64) -> Option<f64> {
+        if rows == 0
+            || rows > super::MAX_EDITOR_LINES
+            || !row_height.is_finite()
+            || !(1.0..=4096.0).contains(&row_height)
+            || !valid_width(padding)
+        {
+            return None;
+        }
+        let height = f64::from(u32::try_from(rows).ok()?) * row_height + padding;
+        valid_width(height).then_some(height)
+    }
+
     /// Validate measured source dimensions independently of their browser adapter.
     pub fn new(width: f64, height: f64) -> Option<Self> {
         (valid_width(width) && valid_width(height)).then_some(Self { width, height })
@@ -564,6 +579,31 @@ impl EditorViewport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn uniform_height_matches_complete_rows_and_rejects_invalid_dimensions() {
+        use super::{DocumentExtent, MeasuredRows};
+        for rows in [1, 4000, crate::editor::MAX_EDITOR_LINES] {
+            for height in [1.0, 16.015625, 19.484375, 19.5, 4096.0] {
+                let complete = MeasuredRows::new(std::iter::repeat_n(height, rows)).unwrap();
+                assert_eq!(
+                    DocumentExtent::uniform_height(rows, height, 24.0)
+                        .unwrap()
+                        .to_bits(),
+                    (complete.height() + 24.0).to_bits()
+                );
+            }
+        }
+        for rows in [0, crate::editor::MAX_EDITOR_LINES + 1, usize::MAX] {
+            assert!(DocumentExtent::uniform_height(rows, 19.5, 24.0).is_none());
+        }
+        for height in [0.0, -1.0, 0.5, 4097.0, f64::NAN, f64::INFINITY] {
+            assert!(DocumentExtent::uniform_height(1, height, 24.0).is_none());
+        }
+        for padding in [-1.0, f64::NAN, f64::INFINITY, 1_000_000_000.0] {
+            assert!(DocumentExtent::uniform_height(1, 19.5, padding).is_none());
+        }
+    }
+
     #[test]
     fn repeated_paint_requires_two_matching_samples_and_preserves_distinct_rows() {
         let mut plan = RowMeasurementPlan::new(6).unwrap();

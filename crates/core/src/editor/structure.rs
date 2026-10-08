@@ -146,6 +146,7 @@ impl Structure {
                     | Language::Shell
                     | Language::Toml
                     | Language::Yaml
+                    | Language::Ini
                     | Language::Php
             );
             let slash_comments = super::line_comment(language) == Some("//");
@@ -162,8 +163,10 @@ impl Structure {
                 && rest.starts_with("/*")
             {
                 Some(("/*", "*/", language == Language::Rust))
-            } else if matches!(language, Language::Html | Language::Markdown)
-                && rest.starts_with("<!--")
+            } else if matches!(
+                language,
+                Language::Html | Language::Xml | Language::Markdown | Language::MarkdownInline
+            ) && rest.starts_with("<!--")
             {
                 Some(("<!--", "-->", false))
             } else {
@@ -649,7 +652,7 @@ fn regex_position(before: &str) -> bool {
 
 pub fn supports_quote(language: Language, ch: char) -> bool {
     match language {
-        Language::Plain | Language::Markdown => false,
+        Language::Plain | Language::Ini | Language::Markdown | Language::MarkdownInline => false,
         Language::Json => ch == '"',
         Language::JavaScript
         | Language::TypeScript

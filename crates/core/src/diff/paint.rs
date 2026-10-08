@@ -262,6 +262,11 @@ mod tests {
             backup_path: None,
         };
         let paint = DiffPaint::new(&diff);
+        let expected_kind = if cfg!(feature = "editor-parser") {
+            TokenKind::Comment
+        } else {
+            TokenKind::Plain
+        };
         let rows = super::super::diff_side_by_side_detailed(&diff);
         let mut old_number = 0;
         let mut new_number = 0;
@@ -281,16 +286,12 @@ mod tests {
                         line.content
                     );
                     if *number == 2 {
-                        assert!(
-                            tokens
-                                .iter()
-                                .all(|part| part.token.kind == TokenKind::Comment)
-                        );
+                        assert!(tokens.iter().all(|part| part.token.kind == expected_kind));
                     }
                 }
             }
         }
         let tokens = paint.line(false, 1, vec![DiffChunk::Unchanged("/*".into())]);
-        assert_eq!(tokens[0].token.kind, TokenKind::Comment);
+        assert_eq!(tokens[0].token.kind, expected_kind);
     }
 }

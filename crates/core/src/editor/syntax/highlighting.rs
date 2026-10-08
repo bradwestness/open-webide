@@ -192,7 +192,7 @@ impl SyntaxDocument {
     ) -> Option<TokenRows> {
         let mut semantic = Vec::new();
         let mut visited = 0;
-        for (tree, provider, cache) in self
+        for (index, (tree, provider, cache)) in self
             .tree
             .iter()
             .zip(self.provider)
@@ -202,13 +202,35 @@ impl SyntaxDocument {
                     .as_ref()
                     .map(|tree| (tree, body.provider, &body.highlights))
             }))
+            .enumerate()
         {
             cache
                 .borrow_mut()
                 .collect(tree, provider, &self.text, &mut visited, &mut semantic)
                 .ok()?;
+            if index == 0 {
+                // An injected grammar owns its source range. The outer grammar
+                // may also expose punctuation there (Markdown inline blocks).
+                semantic.retain(|(range, _)| {
+                    !self.embedded.iter().any(|body| {
+                        body.tree.is_some()
+                            && range.start < body.range.end_byte
+                            && range.end > body.range.start_byte
+                    })
+                });
+            }
         }
         semantic.sort_by_key(|(range, _)| (range.start, range.end));
+        // Opaque grammar contexts own their complete strings/comments. Tokens
+        // inside them cannot split their paint or override that classification.
+        semantic.retain(|(range, _)| {
+            context
+                .protected
+                .partition_point(|(protected, _, _)| protected.start <= range.start)
+                .checked_sub(1)
+                .and_then(|index| context.protected.get(index))
+                .is_none_or(|(protected, _, _)| range.end > protected.end)
+        });
         // A selector must classify leaves or disjoint spans. Overlap is a typed
         // analysis fallback, rather than a renderer-dependent priority rule.
         if semantic
@@ -839,5 +861,251 @@ mod tests {
         assert!(document.highlight_lines().is_none());
         document.update(&"x".repeat(crate::editor::MAX_STRUCTURE_BYTES + 1), || true);
         assert!(document.highlight_lines().is_none());
+    }
+}
+
+#[cfg(test)]
+mod parser_color_contracts {
+    use super::*;
+    fn highlight_lines(source: &str, language: Language) -> Vec<Vec<Token>> {
+        let mut document = SyntaxDocument::new(language).expect("registered grammar");
+        document.update(source, || true);
+        document.highlight_lines().expect("prepared grammar colors")
+    }
+    fn rejoins(source: &str, language: Language) {
+        assert_eq!(
+            highlight_lines(source, language)
+                .iter()
+                .map(|row| row
+                    .iter()
+                    .map(|token| token.text.as_str())
+                    .collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            source
+        );
+    }
+    fn kinds(source: &str, language: Language) -> Vec<TokenKind> {
+        highlight_lines(source, language)
+            .into_iter()
+            .flatten()
+            .map(|token| token.kind)
+            .collect()
+    }
+    #[test]
+    fn rust_keywords_and_types() {
+        let toks = highlight_lines("fn main() { let x = 5; }", Language::Rust);
+        let flat: Vec<TokenKind> = toks.into_iter().flatten().map(|t| t.kind).collect();
+        assert!(flat.contains(&TokenKind::Keyword)); // fn, let
+        assert!(flat.contains(&TokenKind::Function)); // main
+        assert!(flat.contains(&TokenKind::Number)); // 5
+    }
+
+    #[test]
+    fn rust_string_and_escape() {
+        let toks = highlight_lines(r#"let s = "a \"b\" c";"#, Language::Rust);
+        let flat: Vec<(TokenKind, String)> = toks
+            .into_iter()
+            .flatten()
+            .map(|t| (t.kind, t.text))
+            .collect();
+        assert!(flat.contains(&(TokenKind::String, r#""a \"b\" c""#.to_string())));
+    }
+
+    #[test]
+    fn rust_line_comment_to_eol() {
+        let toks = highlight_lines("let a = 1; // note", Language::Rust);
+        let line = &toks[0];
+        assert_eq!(line.last().unwrap().kind, TokenKind::Comment);
+        assert_eq!(line.last().unwrap().text, "// note");
+    }
+
+    #[test]
+    fn rust_block_comment_spans_lines() {
+        let source = "let a = 1; /* start\nstill comment */ let b = 2;";
+        let toks = highlight_lines(source, Language::Rust);
+        // Line 1 ends inside the block comment; line 2 finishes it.
+        assert_eq!(toks[0].last().unwrap().kind, TokenKind::Comment);
+        assert_eq!(toks[0].last().unwrap().text, "/* start");
+        assert_eq!(toks[1].first().unwrap().kind, TokenKind::Comment);
+        assert_eq!(toks[1].first().unwrap().text, "still comment */");
+        rejoins(source, Language::Rust);
+    }
+
+    #[test]
+    fn rust_char_and_lifetime() {
+        let toks = highlight_lines("fn f<'a>(c: char) -> &'a str { 'x' }", Language::Rust);
+        let flat: Vec<(TokenKind, String)> = toks
+            .into_iter()
+            .flatten()
+            .map(|t| (t.kind, t.text))
+            .collect();
+        assert!(flat.contains(&(TokenKind::Lifetime, "'a".to_string())));
+        assert!(flat.contains(&(TokenKind::Char, "'x'".to_string())));
+    }
+
+    #[test]
+    fn rust_macro_and_attribute() {
+        let toks = highlight_lines("#[derive(Debug)]\nprintln!(\"hi\");", Language::Rust);
+        let flat: Vec<(TokenKind, String)> = toks
+            .into_iter()
+            .flatten()
+            .map(|t| (t.kind, t.text))
+            .collect();
+        assert!(flat.contains(&(TokenKind::Attribute, "#".to_string())));
+        assert!(flat.contains(&(TokenKind::Macro, "println".to_string())));
+    }
+
+    #[test]
+    fn rust_numbers() {
+        let toks = highlight_lines("let a = 0x1F; let b = 3.14; let c = 1e3;", Language::Rust);
+        let nums: Vec<String> = toks
+            .into_iter()
+            .flatten()
+            .filter(|t| t.kind == TokenKind::Number)
+            .map(|t| t.text)
+            .collect();
+        assert_eq!(nums, vec!["0x1F", "3.14", "1e3"]);
+    }
+
+    #[test]
+    fn rust_range_is_not_a_float() {
+        let toks = highlight_lines("for i in 1..5 {}", Language::Rust);
+        let flat: Vec<(TokenKind, String)> = toks
+            .into_iter()
+            .flatten()
+            .map(|t| (t.kind, t.text))
+            .collect();
+        assert!(flat.contains(&(TokenKind::Number, "1".to_string())));
+        assert!(flat.contains(&(TokenKind::Number, "5".to_string())));
+        // The `..` must not be swallowed into a number.
+        assert!(
+            !flat
+                .iter()
+                .any(|(k, t)| *k == TokenKind::Number && t.contains('.'))
+        );
+    }
+
+    #[test]
+    fn python_comment_and_keywords() {
+        let k = kinds("def f():\n    return None  # done", Language::Python);
+        assert!(k.contains(&TokenKind::Keyword));
+        assert!(k.contains(&TokenKind::Boolean));
+        assert!(k.contains(&TokenKind::Comment));
+    }
+
+    #[test]
+    fn json_strings_numbers_booleans() {
+        let k = kinds(r#"{"a": 1, "b": true, "c": null}"#, Language::Json);
+        assert!(k.contains(&TokenKind::String));
+        assert!(k.contains(&TokenKind::Number));
+        assert!(k.contains(&TokenKind::Boolean));
+    }
+}
+
+#[cfg(test)]
+mod config_contracts {
+    use super::*;
+
+    #[test]
+    fn configuration_grammars_preserve_source_folds_transfer_and_incremental_colors() {
+        for &(path, fixture) in crate::editor::syntax_contracts::CONFIG_CASES {
+            let language = crate::highlight::language_from_path(path);
+            assert!(crate::editor::syntax_provider(language).is_some(), "{path}");
+            for source in [fixture.to_owned(), fixture.replace('\n', "\r\n")] {
+                let mut document = SyntaxDocument::new(language).unwrap();
+                let (_, first) = document.prepare(&source, 4, || true);
+                let first = first.expect(path);
+                let colors = first.highlights().expect(path);
+                assert!(
+                    colors
+                        .iter()
+                        .flat_map(|row| row.iter())
+                        .any(|token| token.kind != TokenKind::Plain),
+                    "{path}"
+                );
+                assert_eq!(
+                    colors
+                        .iter()
+                        .map(|row| row
+                            .iter()
+                            .map(|token| token.text.as_str())
+                            .collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    source,
+                    "{path}"
+                );
+                assert!(
+                    !first.folds().is_empty(),
+                    "{path}: expected structural folding"
+                );
+                let transferred = first.transfer_data().unwrap().validate(&source).unwrap();
+                assert_eq!(transferred.highlights(), first.highlights(), "{path}");
+                assert_eq!(transferred.folds(), first.folds(), "{path}");
+                for changed in [
+                    format!("\n{source}"),
+                    source.replace("文😀", "😀 changed"),
+                    source.replace('"', ""),
+                ] {
+                    let (_, warm) = document.prepare(&changed, 4, || true);
+                    let warm = warm.expect(path);
+                    let mut fresh = SyntaxDocument::new(language).unwrap();
+                    let cold = fresh.prepare(&changed, 4, || true).1.expect(path);
+                    assert_eq!(warm.highlights(), cold.highlights(), "{path}");
+                    assert_eq!(warm.folds(), cold.folds(), "{path}");
+                    assert!(first.matches_source(&source));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_fence_languages_do_not_cancel_markdown_preparation() {
+        for language in ["sql", "unknown", "markdown"] {
+            let source = format!("# Heading\n\n```{language}\nSELECT 'prose'; // text\n```\n");
+            let mut document = SyntaxDocument::new(Language::Markdown).unwrap();
+            let prepared = document.prepare(&source, 4, || true).1.unwrap();
+            let colors = prepared.highlights().unwrap();
+            assert!(colors[3].iter().all(|token| token.kind == TokenKind::Plain));
+            assert_eq!(
+                colors
+                    .iter()
+                    .map(|row| row
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                source
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_prose_stays_plain_and_fenced_code_uses_its_declared_grammar() {
+        let source = "# Heading\n\nCopyright (c) 2026 AS IS.\n\n```rust\nfn main() { let value = 42; }\n```\n";
+        let mut document = SyntaxDocument::new(Language::Markdown).unwrap();
+        let (status, prepared) = document.prepare(source, 4, || true);
+        let prepared = prepared.unwrap_or_else(|| panic!("markdown analysis: {status:?}"));
+        let colors = prepared
+            .highlights()
+            .unwrap_or_else(|| panic!("markdown colors: {status:?}"));
+        assert!(colors[2].iter().all(|token| token.kind == TokenKind::Plain));
+        assert!(
+            colors[5]
+                .iter()
+                .any(|token| token.text == "fn" && token.kind == TokenKind::Keyword)
+        );
+        assert!(
+            colors[5]
+                .iter()
+                .any(|token| token.text == "main" && token.kind == TokenKind::Function)
+        );
+        assert!(
+            colors[5]
+                .iter()
+                .any(|token| token.text == "42" && token.kind == TokenKind::Number)
+        );
     }
 }

@@ -1274,6 +1274,8 @@ body {
 
 /* Logical lines stay aligned; gutter paint compensates horizontal scrolling. */
 .editor-source-line { display: block; position: relative; min-height: 1.5em; }
+/* Fixed unwrapped row boxes match native line spacing without glyph-height drift. */
+.editor-uniform-rows:not(.editor-word-wrap) .editor-source-line { height: 1lh; min-height: 1lh; }
 .editor-source-line::before { content: attr(data-line); position: absolute; right: 100%; width: var(--editor-gutter-width, 40px); padding-right: 12px; height: 100%; text-align: right; color: var(--text-muted); background: var(--bg); z-index: 1; transform: translateX(calc(0px - var(--editor-scroll-x, 0px))); user-select: none; white-space: nowrap; }
 
 /* syntax highlight token colors (Tokyo Night palette) */

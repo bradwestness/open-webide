@@ -191,8 +191,9 @@ before whole-line fallbacks, with validated source ranges and reversible shrink
 history. Bracket navigation and its decorations use the same contexts, including
 interpolation code and separate embedded bodies.
 
-Both retain bounded lexical
-fallbacks when a parser is unavailable. Edit highlighting uses the same cached
+Editing retains bounded structural fallbacks when a parser is unavailable.
+Syntax colors stay plain until grammar preparation succeeds; unsupported files
+never receive guessed code colors. Edit highlighting uses the same cached
 providers, with extensible highlight selectors and parser-protected literal/comment
 spans, including interpolation code and HTML script/style bodies. Tokens preserve
 source bytes; the DOM adapter only normalizes CRLF for textarea alignment.
@@ -278,11 +279,15 @@ UTF-8 ranges, folds, token coverage and bracket links are validated without pars
 the document again on the UI thread. Transport/startup failures use the same
 preparation engine synchronously with a 12 ms parser budget; unavailable contexts
 retain ordinary lexical editing. Worker parsing has a 100 ms budget.
-Languages with lexical highlighting, including JSON, TOML, YAML, SQL and Markdown,
-use the same preparation cache and worker.
+JSON/JSONC, TOML, YAML/YML, INI/EditorConfig, XML build configuration and Markdown
+use registered Rust/WASM grammars through the same preparation cache and worker.
+Markdown has separate block/inline parsing and declared fenced-code languages;
+ordinary prose stays plain. File detection recognizes common manifest/settings
+names including MSBuild projects/solutions, NuGet.Config, pom.xml, setup.cfg,
+Cargo/Python lockfiles, Pipfile, Composer lockfiles, Git config, npmrc and env files. SQL and other unsupported grammars retain plain paint.
 
-Multiline lexical state stays intact;
-cancellation returns no partial rows. Plain text retains plain rendering.
+Cooperative plain-row fallback preserves source boundaries and cancellation
+publishes no partial rows. LICENSE, NOTICE and other extensionless prose stay plain.
 
 Unwrapped edit views render an overscanned row window for syntax, line-number
 gutters and fold controls. The shared row-window policy receives browser geometry;
@@ -391,10 +396,9 @@ thread. Requested rows and source slices feed the same paint and measurement pat
 An existing styled frame stays visible within its document/read/account scope;
 replacement batch measurements wait for syntax, and source pointer controls remain
 disabled while its paint is stale. Forced caret probes can still reconcile current
-source. Terminal and unavailable-worker lexical paint preserves context in
+source. Terminal and unavailable-worker fallback preserves plain source in
 cooperative whole-row batches, publishing only complete current-source tokens.
-Lexical updates reuse rows with matching source and incoming context in both the
-worker and fallback paths. Fallback preparation reuses a current published worker
+Plain-row updates reuse matching raw source in both the worker and fallback paths. Fallback preparation reuses a current published worker
 scope. Syntax queries still copy source in some paths.
 Cold source geometry, long-row shaping and touch input remain unfinished.
 
@@ -636,7 +640,7 @@ not a measurement of total editor memory or final large-file performance.
 Full viewport rendering and end-to-end latency/memory measurements remain roadmap
 work. Prepared grammar paint retains token styles on long rows within those
 source/work limits. Cancelled, oversized or unavailable analysis still uses the
-lexical renderer, whose 10,000-byte plain-line fallback remains unchanged.
+cooperative plain-source renderer; no heuristic color categories are generated.
 
 The shared document now owns fold state independently of undo history. Commands
 can collapse/expand at the caret, recursively or all, and reveal a navigation target.
@@ -922,7 +926,7 @@ changed values copy retained columns around the replacement, without rescanning
 unrelated source rows. Setting changes still rebuild the full table. Cached tables
 remain immutable across document clones and undo.
 
-### Cooperative lexical paint
+### Cooperative plain-source paint
 
 Worker and fallback requests share the facade's retained source snapshot for the
 current file, project, account, reload and review generation. Repeated requests and
@@ -937,11 +941,10 @@ External snapshots still require complete-byte validation, and worker transport
 still serializes the requested source.
 
 When a worker is unavailable or finishes without usable syntax paint, the editor
-facade prepares fallback rows through a resumable Rust lexical job. The same
-line tokenizer serves synchronous core callers and cooperative browser jobs.
-Multiline comment state survives batch boundaries. Each batch admits at most
-128 rows and 64 KiB of source, allowing one oversized row; the existing 10,000-byte
-plain-token rule bounds per-character lexing on that row. A first bounded batch
+facade prepares fallback rows through a resumable Rust plain-source job. The same
+lossless row preparation serves synchronous core callers and cooperative browser
+jobs. Each batch admits at most 128 rows and 64 KiB of source, allowing one
+oversized row. Rows receive one plain token rather than per-character code guesses. A first bounded batch
 can finish a small file without a pending frame. Larger jobs yield browser tasks
 between batches and request a frame after 4 ms of preparation or 64 batches,
 whichever comes first. Missing/nonfinite/backward clocks retain the conservative
@@ -972,19 +975,17 @@ The job owns immutable source and reuses a terminal worker's source Arc when
 available. CRLF normalization happens per row, preserving standalone CR and
 avoiding a normalized full-file copy. Source, read, pending-edit, account, path
 and tab-width changes cancel obsolete work; completed tokens are shared by
-subsequent paint consumers. Completed lexical snapshots retain raw row boundaries
-and incoming/outgoing lexer states. Identical source with matching language and
-newline normalization completes immediately and shares both context and token
+subsequent paint consumers. Completed plain-source snapshots retain raw row boundaries. Identical source with matching language and
+newline normalization completes immediately and shares both row and token
 tables. Shared source validates by allocation; external equal text validates bytes.
 A changed source computes one UTF-8 replacement span. Whole prefix/suffix rows
 reuse indexed raw boundaries without newline scans or repeated byte comparisons;
 terminal rows must still terminate the new source. Intersecting rows scan their
 boundaries and validate complete raw text against original/shifted offsets.
-Every reused token row still checks incoming lexer state. Changing a comment delimiter re-tokenizes following rows
-until their state converges; row insertions/deletions and disjoint edits cannot
-reuse mismatching text or context. Language and newline-normalization changes
+Comment delimiters do not affect fallback colors or following rows. Row
+insertions/deletions and disjoint edits cannot reuse mismatching raw text. Language and newline-normalization changes
 invalidate reuse. The shared worker preparation uses the same job with per-row
-cancellation. Published rows use immutable shared token slices, so lexical reuse
+cancellation. Published rows use immutable shared token slices, so plain-row reuse
 retains existing token strings without copying their text or token arrays. Parser
 paint streams the ordered protected/embedded/semantic span boundaries without
 building a complete boundary set or vector. Duplicate edges merge before paint.
@@ -1017,10 +1018,10 @@ source/read/account guards still run around callbacks. Initial preparation and
 changed rows still allocate token text.
 
 Parser fallback keeps its existing 12 ms budget and
-can supply ready paint before lexical preparation is needed. Core callers that
+can supply ready paint before plain-row preparation is needed. Core callers that
 have not installed browser preparation retain their synchronous API.
 
-This makes terminal lexical work cooperative; it does not make full-source
+This makes terminal plain-row work cooperative; it does not make full-source
 snapshot ownership, parsing, geometry or long-row initial shaping incremental. Those
 remaining limits are tracked in the roadmap and performance guide.
 

@@ -133,3 +133,44 @@ fn declared_attributes(opening: &str) -> DeclaredAttributes {
     tokenizer.end();
     tokenizer.sink.0.into_inner()
 }
+
+/// Block and inline Markdown use the existing source-coordinate injection contract.
+pub(super) fn markdown_injection(node: Node<'_>, text: &str) -> Option<(Language, Range)> {
+    match node.kind() {
+        "inline" => Some((Language::MarkdownInline, node.range())),
+        "fenced_code_block" => {
+            let mut cursor = node.walk();
+            let info = node
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "info_string")?;
+            let name = info
+                .utf8_text(text.as_bytes())
+                .ok()?
+                .split_whitespace()
+                .next()?;
+            let language = match name.to_ascii_lowercase().as_str() {
+                "rust" => Language::Rust,
+                "typescript" => Language::TypeScript,
+                "javascript" => Language::JavaScript,
+                "python" => Language::Python,
+                "csharp" | "c#" => Language::CSharp,
+                "c++" => Language::Cpp,
+                "bash" | "shell" => Language::Shell,
+                name => crate::highlight::language_from_path(&format!("code.{name}")),
+            };
+            if matches!(
+                language,
+                Language::Plain | Language::Markdown | Language::MarkdownInline
+            ) || super::syntax_provider(language).is_none()
+            {
+                return None;
+            }
+            let mut cursor = node.walk();
+            let content = node
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "code_fence_content")?;
+            Some((language, content.range()))
+        }
+        _ => None,
+    }
+}

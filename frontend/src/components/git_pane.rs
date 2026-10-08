@@ -26,7 +26,7 @@ pub fn GitPane(
             on_load_git_diff.run(());
         }
     });
-    view! { <div class="git-pane">
+    view! { <div class="git-pane" class:compact-tree=move || !layout.phone.get()>
             <super::ui::PanelToolbar class="file-tree-header"><super::BranchPicker on_load=on_load_branches on_select=on_select_branch on_new=on_new_branch /></super::ui::PanelToolbar>
             <div class="git-files" role="tree" aria-label="Changed files">
                 <For each=move || {

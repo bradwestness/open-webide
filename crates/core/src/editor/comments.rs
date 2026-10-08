@@ -18,7 +18,9 @@ pub fn line_comment(language: Language) -> Option<&'static str> {
         | Language::C
         | Language::Cpp
         | Language::Go => Some("//"),
-        Language::Python | Language::Shell | Language::Toml | Language::Yaml => Some("#"),
+        Language::Python | Language::Shell | Language::Toml | Language::Yaml | Language::Ini => {
+            Some("#")
+        }
         Language::Sql => Some("--"),
         _ => None,
     }
@@ -38,7 +40,9 @@ pub fn block_comment(language: Language) -> Option<(&'static str, &'static str)>
         | Language::Go
         | Language::Css
         | Language::Sql => Some(("/*", "*/")),
-        Language::Html | Language::Markdown => Some(("<!--", "-->")),
+        Language::Html | Language::Xml | Language::Markdown | Language::MarkdownInline => {
+            Some(("<!--", "-->"))
+        }
         _ => None,
     }
 }
@@ -270,6 +274,16 @@ impl CommentChanges {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn configuration_and_inline_markdown_use_their_own_comment_syntax() {
+        use crate::highlight::Language;
+        assert_eq!(super::line_comment(Language::Ini), Some("#"));
+        for language in [Language::Xml, Language::Markdown, Language::MarkdownInline] {
+            assert_eq!(super::line_comment(language), None);
+            assert_eq!(super::block_comment(language), Some(("<!--", "-->")));
+        }
+    }
+
     use super::*;
     #[test]
     fn line_comments_toggle_mixed_indentation_blank_lines_and_reversed_crlf_selection() {

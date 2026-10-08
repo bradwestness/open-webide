@@ -556,11 +556,62 @@ impl EditorActions {
 
     /// The browser adapter supplies measurements only for the currently mounted document.
     pub fn record_scroll(self, project: i64, path: &str, top: f64, left: f64) {
+        self.record_scroll_position(project, path, top, left, false);
+    }
+
+    /// Preserve user-requested source positions while native measurements are pending.
+    pub fn request_scroll(
+        self,
+        project: i64,
+        path: &str,
+        view: u64,
+        account: u64,
+        top: f64,
+        left: f64,
+    ) {
+        if view != self.view_revision()
+            || account != self.account_generation()
+            || openwebide_core::editor::DocumentExtent::new(left.max(0.0), top.max(0.0)).is_none()
+        {
+            return;
+        }
+        self.record_scroll_position(project, path, top, left, true);
+    }
+
+    /// A current source scroll surface can scroll while native geometry is pending.
+    pub fn record_source_scroll(
+        self,
+        project: i64,
+        path: &str,
+        top: f64,
+        left: f64,
+        complete: bool,
+    ) {
+        // A proven vertical extent does not authorize a clamped horizontal echo.
+        let left = if !complete && self.native_geometry_pending() {
+            self.scroll().left
+        } else {
+            left
+        };
+        self.record_scroll_position(project, path, top, left, true);
+    }
+
+    fn record_scroll_position(self, project: i64, path: &str, top: f64, left: f64, source: bool) {
         if !self.is_current(project, path)
-            || self.native_geometry_pending()
+            || (!source && self.native_geometry_pending())
             || !top.is_finite()
             || !left.is_finite()
         {
+            return;
+        }
+        if self.workspace.editor_scroll.with_untracked(|positions| {
+            positions
+                .get(&(project, path.to_owned()))
+                .is_some_and(|position| {
+                    position.top.to_bits() == top.max(0.0).to_bits()
+                        && position.left.to_bits() == left.max(0.0).to_bits()
+                })
+        }) {
             return;
         }
         self.workspace.editor_scroll.update(|positions| {

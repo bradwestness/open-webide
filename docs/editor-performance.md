@@ -1887,7 +1887,8 @@ core/all-feature and WASM frontend lint, formatting and Trunk/PWA release build.
 All 444 browser checks pass: 442 ordinary checks (component suite 141.37 seconds),
 the font matrix (15.26 seconds) and the near-limit plain-text contract (13.35
 seconds). Both-mode load/scroll/edit geometry, failed-proof and stale ownership
-assertions are unchanged. Linux CI and the broader responsiveness/device gates
+assertions are unchanged. Both Linux CI runs for this checkpoint, `37799023743`
+and `37799025459`, passed all five jobs. The broader responsiveness/device gates
 remain separate requirements.
 
 
@@ -1918,4 +1919,140 @@ build. All 444 browser checks pass: 442 ordinary checks (component suite 142.15
 seconds), the font matrix (15.69 seconds) and the near-limit plain-text contract
 (13.67 seconds). Existing worker cancellation/resync, both-mode complete geometry
 and fallback assertions remain intact. These correctness checks do not quantify
-parser scan savings or complete the remaining performance/device gates.
+parser scan savings or complete the remaining performance/device gates. CI
+`37800600841` subsequently passed all five jobs for that syntax-span checkpoint.
+
+
+### Bounded startup beyond long initial selections
+
+The shared input facade now permits its existing initial native window for every
+eligible unwrapped uniform projection. The initial caret and first source row
+no longer have to intersect a long row. Short tabbed/Unicode rows retain measured
+complete row geometry; unsupported long tabbed/bidirectional rows, wrapping and
+nonuniform projections still use the complete-native fallback. The same pending
+geometry, source ownership, scroll guard and composition-aware failure handling
+remain in place.
+
+The expanded runtime contract checks a restored long-row caret, a short initial
+caret before a later long row and 4,000 short Unicode/combining/tabbed CRLF rows
+in both modes, including a fractional CSS line height to exercise DOM quantization. Native value installation stays within 12 KiB through preparation.
+Long-row anchors/extents retain the complete-renderer comparison. The short-row
+case compares complete native dimensions with measured source dimensions; its
+rows fit the viewport, so the complete input's minimum width already includes
+trailing padding. The initial test incorrectly added trailing padding to that
+minimum a second time; the corrected comparison independently asserts that the
+complete short rows fit. The expanded four-case startup contract passes in 1.51 seconds.
+No admission-boundary percentile, wrapped startup or physical-input claim follows
+from this observation. Full-suite verification remains required.
+
+
+Broad regression verification found that installing a native window early removed
+cold whole-file native dimensions. A source-owned vertical extent now uses actual
+fixed unwrapped row boxes, with no complete horizontal-width claim before glyph
+measurement. Uniform unwrapped source/measurement rows have fixed line-height
+boxes; the adapter checks support, reads the DOM's quantized row height and CSS
+padding, and the shared facade validates row counts, finite bounds and current
+source ownership. Wrapped/nonuniform rows retain their existing layout path.
+The scroll adapter admits vertical and horizontal dimensions independently, and
+current source-surface scrolling can preserve user movement during preparation;
+clamped native scroll echoes remain guarded. A partial vertical extent preserves
+the saved horizontal position until complete glyph widths are known. Scrolling
+outside the installed window into a cold, unpaintable viewport restores complete
+native input; active composition retains its mapping.
+
+The original viewport and paused-preparation contracts pass (0.64 and 0.99
+seconds), as do source/failure ownership and prepared-input contracts (0.10 and
+0.47 seconds). All 456 all-feature core and 114 native frontend tests pass, with
+strict core and WASM frontend lint and formatting. Full browser-suite and
+release/PWA verification remain pending for this checkpoint.
+
+
+The broad startup regression run passed 420 component checks but failed five
+(144.22 seconds): fold-scroll and edit-scrollbar horizontal extents, cold
+unwrapped horizontal extents, repeated wrapped probe count, and Explorer/Changes
+row spacing. These failures keep the checkpoint unshipped. Diagnose each in a
+fresh browser before attributing later failures to leaked test state. The
+subsequent plain-fallback change also requires refreshed verification.
+
+
+### Parser-only colors and configuration grammars — development checks
+
+Removed the heuristic code tokenizer, including its use for gaps in prepared
+parser paint. Cooperative fallback retains immutable plain rows and exact source
+boundaries without comment-state guesses. The shared parser classifies grammar
+terminals, semantic roles and opaque contexts; embedded parsers own their source
+ranges. Markdown prose receives no code colors, while code spans, markers, links
+and declared fenced-code grammars supply prepared styles.
+
+The registry now includes JSON/JSONC, YAML/YML, TOML, INI/EditorConfig, XML build
+configuration and Markdown block/inline grammars. Common manifest/settings aliases
+include csproj/props/targets, NuGet.Config, pom.xml, setup.cfg, npmrc and env files.
+LICENSE/NOTICE/COPYING stay plain. Config selectors depend only on the immediate parent; opaque grammar contexts
+own complete strings/comments, including Markdown code spans. This avoids a
+whole-ancestor walk per token and permits existing subtree color reuse. Incremental
+semantic assembly and broader nested injection performance remain open.
+
+All 460 all-feature core tests and strict core lint pass. Migrated color regressions
+exercise actual parser results instead of the removed tokenizer. New fixture
+contracts check LF/CRLF, folds, source preservation, incremental/fresh equivalence
+and transfer validation; Markdown independently checks plain prose and Rust fence
+keyword/function/number colors. The shared configuration/prose browser contract passes in Chromium in both modes
+(0.50 seconds), and strict WASM frontend lint passes. The parser-disabled core
+build passes all 375 tests with plain diff fallback. Repeated current-source contracts pass: configuration/prose 0.52 seconds, plain
+fallback/ownership 1.05 seconds, embedded HTML 0.09 seconds, font/whitespace matrix
+15.77 seconds and near-limit plain geometry 13.71 seconds. All 114 native frontend
+tests, formatting and the Trunk release/PWA hook pass. The complete browser suite
+and startup extent regressions remain open; these targeted results do not establish
+whole-goal completion or reliably passing Linux CI.
+
+
+A later language-policy pass preserves XML's markup quote/comment behavior,
+uses INI line comments and keeps Markdown inline scopes from receiving code quote
+pairs. New marker/pair regressions bring the all-feature core suite to 462 passing
+tests. The independent Explorer/Changes density failure is fixed by reusing the
+same responsive `compact-tree` class; its both-mode browser contract passes in
+0.02 seconds. These follow-on edits require refreshed full-browser and release
+verification; the four startup/layout failures remain under investigation.
+
+
+The latest native runs pass 463 all-feature core tests, 378 parser-disabled core
+tests and 114 frontend tests. Strict core and WASM frontend lint pass. A broader
+browser run before the follow-on fixes passed 416 component contracts and failed
+10; several failures involved obsolete fallback-color expectations, YAML root
+fold boundaries and startup tests assuming complete horizontal measurements in
+the initial partial-height frame. These are being checked independently; no full
+browser or current Linux CI pass is claimed yet. Pending horizontal wheel input
+now records a scoped user request above the browser adapter, preserving it against
+clamped width echoes until complete measured extents become available. Source,
+view/account, finite-value and extent-limit rejection remain required.
+
+
+### Parser-only/configuration colors and eligible unwrapped startup checkpoint
+
+Final local verification on October 8 passes all 430 ordinary component
+contracts (142.40 seconds), all 18 WASM unit tests and four other WASM integration
+contracts. The separate font/feature/whitespace matrix passes in 15.79 seconds,
+and the near-limit plain geometry matrix passes in 17.24 seconds with the original
+0.25-pixel glyph comparison and 30-second readiness budget. Both workspace modes
+remain covered. The current branch also passes 464 all-feature core tests,
+114 native frontend tests, strict core/frontend WASM lint, formatting and diff
+checks. The release/PWA build passed for the production changes in this checkpoint.
+
+Focused fresh-browser contracts pass pending horizontal requests (0.75 seconds),
+cold source scrolling/pointers/edits (1.24), restored selection/scroll (0.32),
+wrapped/unwrapped wheel modes and stale ownership (0.97), repeated wrapped layout
+(0.96), localized wrapped reuse (0.50), fold-scroll retention (0.75), scrollbar
+layout, configuration/prose, worker cache/transfer ownership, plain terminal
+fallback and palette focus. Earlier layout/counter/focus failures no longer occur
+in the full passing run after correcting the initial width contracts.
+
+Eligible uniform rows prove height before width; user wheel requests survive
+clamped width echoes and apply when measured width is available. Prepared-view
+restoration and scrollbar tests require measured extents before setting native
+positions. Complete physical width is compared with an independent full DOM
+source paint using the production CSS: Chromium's overflowing textarea omits its
+16-pixel right padding from scrollWidth. This preserves the editor's end padding
+rather than loosening the oracle. Complete native height and exact glyph/source
+comparisons remain independent. No wrapped/bidirectional startup, physical IME,
+Linux memory percentile or whole-goal completion claim follows from these passes.
+CI still needs confirmation on the pushed checkpoint.

@@ -48,7 +48,7 @@ tracks the remaining work rather than every optimization already shipped.
 | Area | Available now |
 | --- | --- |
 | Editing and history | Tab/space and indent/outdent; block-aware Enter; paired typing/deletion; grouped undo/redo; line move/duplicate/delete; comments; selected-line reindent; indentation-matching paste; EditorConfig save policies. |
-| Structure and languages | Syntax highlighting, parser-backed folding, bracket matching and structural navigation; extensible Rust/WASM language support including Rust, TypeScript/TSX, Python, JavaScript/JSX, Java, C#, C++, PHP, Shell, C, Go, HTML and CSS. |
+| Structure and languages | Syntax highlighting, parser-backed folding, bracket matching and structural navigation; extensible Rust/WASM language support including Rust, TypeScript/TSX, Python, JavaScript/JSX, Java, C#, C++, PHP, Shell, C, Go, HTML, CSS, JSON/JSONC, YAML/YML, TOML, INI/EditorConfig, XML ecosystem configs and Markdown with inline/fenced code. Pending and unsupported source stays plain. |
 | Navigation and review | Find/Replace; line numbers; horizontal scrolling and linked split scrolling; Edit/Inline/Split diffs; supported previews and Markdown change gutters/word differences; pending-edit review and agent context. |
 | Tabs, appearance and recovery | Tab context actions; five Monaspace families; texture healing and ligature toggles enabled by default; retained caret/selection/scroll and database-backed editor recovery. Real folder-permission recovery still needs device verification. |
 | Selection and browser input | Multiple/rectangular selections and clipboard transactions; scoped native windows for eligible unwrapped views; automated Chromium composition and pointer checks. The recorded line-end caret bug is fixed and user-verified in the localhost PWA. |
@@ -56,9 +56,11 @@ tracks the remaining work rather than every optimization already shipped.
 
 **Remaining implementation**:
 
-- [ ] **Cold startup and native input:** extend initial bounded native windows
-  beyond eligible unwrapped large first rows or restored long-row carets, and remove remaining initial
-  full-source shaping. Finish cold wrapped input, touch pointer selection,
+- [ ] **Cold startup and native input:** finish bounded initial input for wrapped,
+  nonuniform and unsupported long tabbed/bidirectional rows, and remove remaining
+  initial full-source shaping. Eligible unwrapped uniform files now use bounded
+  startup input regardless of the initial caret or long-row position. Finish cold
+  wrapped input, touch pointer selection,
   source-owned caret/selection and complete document extents. Preserve composition
   mappings and complete-native fallback where a bounded view cannot be proved.
 - [ ] **Tabbed, wrapped and bidirectional layout:** finish bounded preparation,
@@ -75,11 +77,11 @@ tracks the remaining work rather than every optimization already shipped.
   capped metadata attempts now stop once their run budget is exceeded.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
-  lexical fallback/context assembly and changed-source lexical row-table
+  fallback context assembly, larger Markdown inline/injection workloads and changed-source plain row-table
   reconstruction/validation. Source-change comparison still traverses retained
   text; resolved worker parser replacements now reuse their validated spans only
-  for the exact retained base allocation. Intersecting lexical rows retain
-  raw-byte/incoming-state validation.
+  for the exact retained base allocation. Intersecting plain fallback rows retain
+  raw-byte boundary validation.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and
   native-text materialization. Folded/bounded projection tables still assemble

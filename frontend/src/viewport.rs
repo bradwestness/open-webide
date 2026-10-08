@@ -203,14 +203,15 @@ export function refresh_editor_scroll(input) {
     const source = extent.dataset.editorScope === input.dataset.editorScope && extent.dataset.editorView === input.parentElement.dataset.editorView && extent.dataset.editorAccount === input.parentElement.dataset.editorAccount;
     const width = source ? Number(extent.dataset.sourceWidth) : NaN;
     const height = source ? Number(extent.dataset.sourceHeight) : NaN;
-    const ready = Number.isFinite(width) && width >= 0 && Number.isFinite(height) && height >= 0;
+    const widthReady = Number.isFinite(width) && width >= 0;
+    const heightReady = Number.isFinite(height) && height >= 0;
     // Bound native surrounding text has local dimensions. Retain the last
     // source extents until replacement source measurements are ready.
     const bounded = input.dataset.editorNativeBound === 'true';
     const previousWidth = parseFloat(extent.style.width) || scroll.clientWidth;
     const previousHeight = parseFloat(extent.style.height) || scroll.clientHeight;
-    set(extent, 'width', `${Math.max(scroll.clientWidth, ready ? width : bounded ? previousWidth : input.scrollWidth)}px`);
-    set(extent, 'height', `${Math.max(scroll.clientHeight, ready ? height : bounded ? previousHeight : input.scrollHeight)}px`);
+    set(extent, 'width', `${Math.max(scroll.clientWidth, widthReady ? width : bounded ? previousWidth : input.scrollWidth)}px`);
+    set(extent, 'height', `${Math.max(scroll.clientHeight, heightReady ? height : bounded ? previousHeight : input.scrollHeight)}px`);
 }
 // Position the browser's composition caret using bounded surrounding text.
 // Paint supplies the source point; native scrolling remains local.
@@ -290,6 +291,12 @@ export function forward_editor_wheel(input, event) {
         x *= scroll.clientWidth; y *= scroll.clientHeight;
     }
     event.preventDefault();
+    const extent = input.parentElement.querySelector('.editor-scroll-extent');
+    const current = extent && extent.dataset.editorScope === input.dataset.editorScope && extent.dataset.editorView === input.parentElement.dataset.editorView && extent.dataset.editorAccount === input.parentElement.dataset.editorAccount;
+    const width = current ? Number(extent.dataset.sourceWidth) : NaN;
+    if (input.dataset.editorNativeBound === 'true' && !(Number.isFinite(width) && width >= 0)) {
+        input.dispatchEvent(new CustomEvent('editor-scroll-intent', {detail:{x, y}, bubbles:true}));
+    }
     scroll.scrollLeft += x; scroll.scrollTop += y;
     sync_editor_scroll(input, false);
 }

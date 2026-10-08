@@ -914,16 +914,10 @@ mod tests {
     fn lexical_languages_prepare_cache_and_transfer_the_same_lossless_paint() {
         for (language, source) in [
             (
-                Language::Json,
-                "{\r\n \"name\": \"文😀\", \"value\": 42\r\n}",
-            ),
-            (Language::Toml, "[section]\r\nname = \"文😀\"\r\n"),
-            (Language::Yaml, "section:\r\n  name: 文😀\r\n"),
-            (
                 Language::Sql,
                 "/* first\r\n still comment */\r\nSELECT '文😀';\r\n",
             ),
-            (Language::Markdown, "# Header\r\nText 文😀\r\n"),
+            (Language::Sql, "SELECT '文😀';\r\n"),
         ] {
             let mut document = SyntaxDocument::new(language).unwrap();
             let (_, first) = document.prepare(source, 4, || true);

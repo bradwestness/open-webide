@@ -2507,6 +2507,18 @@ async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes(
         });
         settle().await;
         frame().await;
+        let actions =
+            openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
+        let extent_ready = || {
+            !actions.native_geometry_pending()
+                && mounted
+                    .element(".editor-scroll-extent")
+                    .get_attribute("data-source-width")
+                    .is_some()
+        };
+        // Programmatic native scroll coordinates require proven source widths.
+        // Pending user wheel requests are covered by the separate queued-intent contract.
+        wait_until("initial restoration source extents", extent_ready).await;
         let first: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
         first
@@ -2525,8 +2537,6 @@ async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes(
             openwebide_frontend::viewport::editor_scroll(&first).scroll_left(),
         );
         assert!(expected.0 > 0.0 && expected.1 > 0.0);
-        let actions =
-            openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
         actions.record_scroll(1, "position.rs", f64::NAN, 50.0);
         actions.record_scroll(2, "position.rs", 900.0, 50.0);
         actions.record_scroll(1, "missing.rs", 900.0, 50.0);
@@ -2563,6 +2573,7 @@ async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes(
             .set(Some("position.rs".into()));
         settle().await;
         frame().await;
+        wait_until("restored document source extents", extent_ready).await;
         let restored: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
         assert_eq!(restored.selection_start().unwrap(), Some(2));
@@ -2598,6 +2609,7 @@ async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes(
         mounted.state.workspace.switch_project(Some(2), 1);
         settle().await;
         frame().await;
+        wait_until("restored document source extents", extent_ready).await;
         let restored: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
         assert_eq!(restored.selection_end().unwrap(), Some(320));
@@ -2639,6 +2651,7 @@ async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes(
         mounted.click_text("Edit");
         settle().await;
         frame().await;
+        wait_until("restored document source extents", extent_ready).await;
         let restored: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
         assert_eq!(restored.selection_end().unwrap(), Some(320));
@@ -3180,7 +3193,7 @@ async fn file_switch_reads_latest_path_and_mode_exit_cancels() {
         mounted
             .element(".editor-source-line[data-line='1'] > .editor-source-fragment")
             .inner_html(),
-        "fn plain <span class=\"tok-operator\">&lt;&gt;&amp;</span>\n"
+        "fn plain &lt;&gt;&amp;\n"
     );
     let before = highlight_count();
     input(&mounted, "new text");
@@ -3757,6 +3770,13 @@ async fn edit_scrollbars_stay_above_paint_and_outside_gutter_in_both_modes() {
                 .left();
         // The folding column stays reserved alongside the three-digit gutter.
         assert!(gutter_width > 48.0 && gutter_width < 78.0);
+        wait_until("measured scrollbar extents", || {
+            mounted
+                .element(".editor-scroll-extent")
+                .get_attribute("data-source-width")
+                .is_some()
+        })
+        .await;
         assert!(scroll.scroll_width() > scroll.client_width());
         assert!(scroll.scroll_height() > scroll.client_height());
         assert!(
@@ -3931,7 +3951,13 @@ async fn editor_scroll_surface_preserves_wheel_native_navigation_and_scope_in_bo
             let scroll = mounted.element(".editor-scroll-surface");
             let actions = EditorActions::new(mounted.state.workspace);
             assert!(editorWheel(&input, 25.0, 40.0, 0, false, false));
-            frame().await;
+            // Cold uniform views publish height before width. The request must
+            // survive that frame and apply once horizontal measurements finish.
+            wait_until("requested wheel position applies", || {
+                (scroll.scroll_top() - 40.0).abs() < 1.0
+                    && (scroll.scroll_left() - if word_wrap { 0.0 } else { 25.0 }).abs() < 1.0
+            })
+            .await;
             assert!((scroll.scroll_top() - 40.0).abs() < 1.0);
             assert!((scroll.scroll_left() - if word_wrap { 0.0 } else { 25.0 }).abs() < 1.0);
             assert!(editorWheel(&input, 0.0, 2.0, 1, false, false));
@@ -4701,6 +4727,10 @@ async fn fold_controls_preserve_scrolled_viewport_with_a_distant_caret_in_both_m
                 .query_selector(".editor-source-line")
                 .unwrap()
                 .is_some()
+                && mounted
+                    .element(".editor-scroll-extent")
+                    .get_attribute("data-source-width")
+                    .is_some()
         })
         .await;
         let textarea: web_sys::HtmlTextAreaElement =
@@ -8192,8 +8222,8 @@ extern "C" {
 }
 
 #[wasm_bindgen_test]
-async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_scopes_in_both_modes()
- {
+async fn cooperative_terminal_plain_paint_preserves_source_and_rejects_stale_scopes_in_both_modes()
+{
     use openwebide_core::{
         WorkspaceMode,
         highlight::{Language, TokenKind, highlight_lines},
@@ -8260,18 +8290,15 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
                 actions.syntax_paint().1.is_empty(),
                 "pending fallback borrows source instead of lexing synchronously"
             );
-            wait_until(
-                "cooperative lexical job publishes complete contextual rows",
-                || {
-                    !actions.syntax_is_pending()
-                        && mounted
-                            .state
-                            .workspace
-                            .editor_fallback_paint
-                            .get_untracked()
-                            .is_some()
-                },
-            )
+            wait_until("cooperative fallback publishes complete plain rows", || {
+                !actions.syntax_is_pending()
+                    && mounted
+                        .state
+                        .workspace
+                        .editor_fallback_paint
+                        .get_untracked()
+                        .is_some()
+            })
             .await;
             let painted = actions.syntax_paint();
             assert!(!painted.0);
@@ -8279,10 +8306,16 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
                 *painted.1,
                 openwebide_core::highlight::share_token_rows(highlight_lines(
                     &source.replace("\r\n", "\n"),
-                    Language::Rust
+                    Language::Plain
                 ))
             );
-            assert_eq!(painted.1[1][0].kind, TokenKind::Comment);
+            assert!(
+                painted
+                    .1
+                    .iter()
+                    .flat_map(|row| row.iter())
+                    .all(|token| token.kind == TokenKind::Plain)
+            );
             assert!(
                 std::sync::Arc::ptr_eq(&painted.1, &actions.syntax_paint().1),
                 "unchanged fallback consumers share completed paint"
@@ -8679,7 +8712,7 @@ async fn pending_worker_paints_requested_source_rows_without_full_file_lexical_t
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let transport = std::rc::Rc::new(DeferredSyntax::default());
         let installed = transport.clone();
-        let source = "fn hello() { call(\"文🦀\"); }\r\n".repeat(3000);
+        let source = "fn hello() { call(\"文🦀\"); }\r\n".repeat(1000);
         let mounted = mount_test(move |state| {
             state.seed_project();
             state
@@ -8741,8 +8774,8 @@ async fn pending_worker_paints_requested_source_rows_without_full_file_lexical_t
                     .is_some()
         })
         .await;
-        // This large response can exceed the analysis-record transfer limit.
-        // Both prepared syntax and the terminal lexical fallback must restore styles.
+        // Keep this publication inside transfer admission: retained styles require
+        // real parser results. Terminal failures have a separate plain-paint contract.
         assert!(!actions.syntax_paint().1.is_empty());
         wait_until("styled source measurements ready", || {
             if !transport.pending.borrow().is_empty() {
@@ -9211,7 +9244,7 @@ async fn worker_preparation_coalesces_edits_rejects_stale_scopes_and_falls_back_
 }
 
 #[wasm_bindgen_test]
-async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_modes() {
+async fn config_worker_paint_is_cached_lossless_and_source_guarded_in_both_modes() {
     use openwebide_core::WorkspaceMode;
     use openwebide_frontend::state_actions::editor::EditorActions;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
@@ -9243,7 +9276,7 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
         // Configuration can resolve before or after the first worker reply. Drive
         // the bounded replacement request, still checking exact source coverage.
         for _ in 0..2 {
-            wait_until("lexical paint or replacement scope", || {
+            wait_until("config paint or replacement scope", || {
                 actions.syntax_highlights().is_some() || !transport.pending.borrow().is_empty()
             })
             .await;
@@ -9279,16 +9312,13 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
             &first,
             &actions.syntax_highlights().unwrap()
         ));
-        assert_eq!(
-            first.as_ref(),
-            &openwebide_core::highlight::share_token_rows(
-                openwebide_core::highlight::highlight_lines(
-                    source,
-                    openwebide_core::highlight::Language::Json
-                )
-            )
-        );
-        assert!(actions.syntax_structure(|| true).is_none());
+        let mut reference = openwebide_core::editor::SyntaxDocument::new(
+            openwebide_core::highlight::Language::Json,
+        )
+        .unwrap();
+        let expected = reference.prepare(source, 4, || true).1.unwrap();
+        assert_eq!(first.as_ref(), expected.highlights().unwrap().as_ref());
+        assert!(actions.syntax_structure(|| true).is_some());
         assert!(
             mounted
                 .state
@@ -9299,7 +9329,7 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
         let revised = source.replace("42", "7");
         mounted.state.workspace.content.set(revised.clone().into());
         assert!(actions.syntax_highlights().is_none());
-        wait_until("revised lexical request", || {
+        wait_until("revised config request", || {
             !transport.pending.borrow().is_empty()
         })
         .await;
@@ -9318,7 +9348,7 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
             transport.source_delta.get(),
             "updates publish only the changed source span"
         );
-        wait_until("revised lexical paint", || {
+        wait_until("revised config paint", || {
             actions.syntax_highlights().is_some()
         })
         .await;
@@ -10371,7 +10401,8 @@ async fn cold_unwrapped_native_windows_preserve_extents_pointer_and_edits_in_bot
         assert_editor_native_source(&input, mounted.state.workspace, &source);
         let scroll = openwebide_frontend::viewport::editor_scroll(&input);
         assert!(scroll.scroll_height() > 100_000);
-        assert!(scroll.scroll_width() > input.scroll_width() + 1_000);
+        // Uniform rows prove the vertical extent before cold row widths are
+        // measured. Horizontal extent must come from the complete row table.
         let height = web_sys::window()
             .unwrap()
             .get_computed_style(&input)
@@ -10411,6 +10442,28 @@ async fn cold_unwrapped_native_windows_preserve_extents_pointer_and_edits_in_bot
         editorPrimaryGesture(&input, 6501, 4, 1, false, "mouseup");
         let offset = source.find("row 6500 ").unwrap() + 4;
         assert_eq!(actions.current_selection().unwrap().head, offset);
+        wait_until("complete cold source width", || {
+            mounted
+                .element(".editor-scroll-extent")
+                .get_attribute("data-source-width")
+                .is_some()
+        })
+        .await;
+        assert!(scroll.scroll_width() > input.scroll_width() + 1_000);
+        let complete = fullNativeDimensions(&input, &source);
+        let complete_width = fullSourcePaintWidth(&input, &source);
+        assert!(
+            (scroll.scroll_width() - complete_width).abs() <= 2,
+            "{mode:?}: measured width={} complete={}",
+            scroll.scroll_width(),
+            complete_width
+        );
+        assert!(
+            (scroll.scroll_height() - complete[1]).abs() <= 2,
+            "{mode:?}: measured height={} complete={}",
+            scroll.scroll_height(),
+            complete[1]
+        );
         editorNativeInput(&input, "X", "insertText", false);
         let mut expected = source.clone();
         expected.insert(offset, 'X');
@@ -10477,48 +10530,127 @@ async fn cold_unwrapped_native_windows_preserve_extents_pointer_and_edits_in_bot
 }
 
 #[wasm_bindgen_test]
-async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes() {
-    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
-    export function pause_initial_editor_frames() {
-        const raf = window.requestAnimationFrame;
-        const cancel = window.cancelAnimationFrame;
-        let next = 1000000;
-        const pending = new Map();
-        window.requestAnimationFrame = callback => { const id = next++; pending.set(id, callback); return id; };
-        window.cancelAnimationFrame = id => { if (!pending.delete(id)) cancel.call(window, id); };
-        return (resume = true) => {
-            const count = pending.size;
-            if (!resume) return count;
-            window.requestAnimationFrame = raf;
-            window.cancelAnimationFrame = cancel;
-            pending.forEach(callback => raf.call(window, callback));
-            pending.clear();
-            return count;
-        };
-    }
-    export function pause_initial_fallback_tasks() {
-        const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'scheduler');
-        const pending = [];
-        Object.defineProperty(globalThis, 'scheduler', {
-            value: {yield: () => new Promise(resolve => pending.push(resolve))}, configurable: true
+async fn pending_wheel_intent_reaches_complete_measured_width_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let source = "short 文😀\r\n".repeat(12_000) + &"wide ".repeat(200);
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let paused = ResumeTasks(pause_initial_fallback_tasks());
+        let mounted = mount_test({
+            let source = source.clone();
+            move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("pending-width.txt".into()));
+                state.workspace.content.set(source.into());
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:320px">{editor_view(state)}</div> }
+            }
         });
-        return () => {
-            if (descriptor) Object.defineProperty(globalThis, 'scheduler', descriptor);
-            else delete globalThis.scheduler;
-            pending.splice(0).forEach(resolve => resolve());
-        };
+        let actions = EditorActions::new(mounted.state.workspace);
+        wait_until("pending bounded source height", || {
+            actions.native_geometry_pending()
+                && mounted
+                    .element(".editor-scroll-extent")
+                    .get_attribute("data-source-height")
+                    .is_some()
+        })
+        .await;
+        assert!(actions.measured_rows().is_none());
+        assert!(
+            mounted
+                .element(".editor-scroll-extent")
+                .get_attribute("data-source-width")
+                .is_none()
+        );
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert!(editorWheel(&input, 300.0, 0.0, 0, false, false));
+        assert!(editorWheel(&input, 150.0, 0.0, 0, false, false));
+        let scroll = openwebide_frontend::viewport::editor_scroll(&input);
+        scroll
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        settle().await;
+        assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
+        drop(paused);
+        wait_until("queued wheel applies to measured source width", || {
+            !actions.native_geometry_pending()
+                && mounted
+                    .element(".editor-scroll-extent")
+                    .get_attribute("data-source-width")
+                    .is_some()
+                && (scroll.scroll_left() - 450.0).abs() <= 0.25
+        })
+        .await;
+        assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
+        let complete = fullNativeDimensions(&input, &source);
+        let complete_width = fullSourcePaintWidth(&input, &source);
+        assert!(
+            (scroll.scroll_width() - complete_width).abs() <= 2,
+            "{mode:?}: measured width={} complete={}",
+            scroll.scroll_width(),
+            complete_width
+        );
+        assert!(
+            (scroll.scroll_height() - complete[1]).abs() <= 2,
+            "{mode:?}: measured height={} complete={}",
+            scroll.scroll_height(),
+            complete[1]
+        );
+        assert_editor_native_source(&input, mounted.state.workspace, &source);
     }
-    "#)]
-    extern "C" {
-        fn pause_initial_fallback_tasks() -> js_sys::Function;
-        fn pause_initial_editor_frames() -> js_sys::Function;
+}
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function pause_initial_editor_frames() {
+    const raf = window.requestAnimationFrame;
+    const cancel = window.cancelAnimationFrame;
+    let next = 1000000;
+    const pending = new Map();
+    window.requestAnimationFrame = callback => { const id = next++; pending.set(id, callback); return id; };
+    window.cancelAnimationFrame = id => { if (!pending.delete(id)) cancel.call(window, id); };
+    return (resume = true) => {
+        const count = pending.size;
+        if (!resume) return count;
+        window.requestAnimationFrame = raf;
+        window.cancelAnimationFrame = cancel;
+        pending.forEach(callback => raf.call(window, callback));
+        pending.clear();
+        return count;
+    };
+}
+export function pause_initial_fallback_tasks() {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'scheduler');
+    const pending = [];
+    Object.defineProperty(globalThis, 'scheduler', {
+        value: {yield: () => new Promise(resolve => pending.push(resolve))}, configurable: true
+    });
+    return () => {
+        if (descriptor) Object.defineProperty(globalThis, 'scheduler', descriptor);
+        else delete globalThis.scheduler;
+        pending.splice(0).forEach(resolve => resolve());
+    };
+}
+"#)]
+extern "C" {
+    fn pause_initial_fallback_tasks() -> js_sys::Function;
+    fn pause_initial_editor_frames() -> js_sys::Function;
+}
+struct ResumeTasks(js_sys::Function);
+impl Drop for ResumeTasks {
+    fn drop(&mut self) {
+        self.0.call0(&wasm_bindgen::JsValue::NULL).unwrap();
     }
-    struct ResumeTasks(js_sys::Function);
-    impl Drop for ResumeTasks {
-        fn drop(&mut self) {
-            self.0.call0(&wasm_bindgen::JsValue::NULL).unwrap();
-        }
-    }
+}
+
+#[wasm_bindgen_test]
+async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
     let source = (0..12_000)
@@ -10609,6 +10741,75 @@ async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes(
         assert!(textarea.value().len() <= 16 * 1024);
         let scroll = openwebide_frontend::viewport::editor_scroll(&textarea);
         assert!(scroll.scroll_height() > 100_000);
+        let full = fullNativeDimensions(&textarea, &source);
+        assert!(
+            (scroll.scroll_height() - full[1]).abs() <= 2,
+            "{mode:?} initial source height={} complete={}",
+            scroll.scroll_height(),
+            full[1]
+        );
+        assert!(editorWheel(&textarea, 300.0, 0.0, 0, false, false));
+        assert_eq!(actions.scroll().left.to_bits(), 300.0_f64.to_bits());
+        assert!(editorWheel(&textarea, 150.0, 0.0, 0, false, false));
+        assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
+        scroll
+            .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+            .unwrap();
+        settle().await;
+        assert_eq!(
+            actions.scroll().left.to_bits(),
+            450.0_f64.to_bits(),
+            "pending widths cannot erase horizontal wheel intent"
+        );
+        for (path, view, account, left) in [
+            (
+                "other.rs",
+                actions.view_revision(),
+                actions.account_generation(),
+                10.0,
+            ),
+            (
+                "initial-fallback.rs",
+                actions.view_revision().wrapping_sub(1),
+                actions.account_generation(),
+                10.0,
+            ),
+            (
+                "initial-fallback.rs",
+                actions.view_revision(),
+                actions.account_generation().wrapping_add(1),
+                10.0,
+            ),
+            (
+                "initial-fallback.rs",
+                actions.view_revision(),
+                actions.account_generation(),
+                f64::NAN,
+            ),
+            (
+                "initial-fallback.rs",
+                actions.view_revision(),
+                actions.account_generation(),
+                f64::INFINITY,
+            ),
+            (
+                "initial-fallback.rs",
+                actions.view_revision(),
+                actions.account_generation(),
+                2_000_000_000.0,
+            ),
+        ] {
+            actions.request_scroll(1, path, view, account, 0.0, left);
+            assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
+        }
+        actions.request_scroll(
+            1,
+            "initial-fallback.rs",
+            actions.view_revision(),
+            actions.account_generation(),
+            0.0,
+            0.0,
+        );
         assert!(!actions.viewport_paint_ready(&[12_000]));
         mounted
             .state
@@ -10645,7 +10846,7 @@ async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes(
         actions.begin_composition();
         assert!(actions.is_composing());
         assert!(!actions.viewport_paint_ready(&[0]));
-        assert!(!actions.defer_viewport_paint());
+        assert!(!actions.defer_viewport_paint(&[12_000]));
         assert!(actions.bound_native_context().is_some());
         actions.cancel_composition();
         frame().await;
@@ -11758,14 +11959,26 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
 }
 
 #[wasm_bindgen_test]
-async fn restored_long_row_caret_uses_bounded_initial_input_in_both_modes() {
+async fn unwrapped_startup_uses_bounded_initial_input_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
     use std::{cell::Cell, rc::Rc};
     let unit = "文😀 words ";
-    let source = format!("header\r\n{}\r\ntail", unit.repeat(6000));
-    let selected = Selection::caret("header\r\n".len() + unit.len() * 1200);
-    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+    for (mode, case) in [WorkspaceMode::Local, WorkspaceMode::Remote]
+        .into_iter()
+        .flat_map(|mode| (0..4).map(move |case| (mode, case)))
+    {
+        let source = if case >= 2 {
+            "short\t文😀e\u{301} words\r\n".repeat(4000)
+        } else {
+            format!("header\r\n{}\r\ntail", unit.repeat(6000))
+        };
+        let selected = Selection::caret(if case == 0 {
+            "header\r\n".len() + unit.len() * 1200
+        } else {
+            0
+        });
+        let left = if case == 0 { 24_500.0 } else { 0.0 };
         let audit = js_sys::Function::new_no_args(r"
             const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
             const state = {maximum: 0};
@@ -11803,13 +12016,13 @@ async fn restored_long_row_caret_uses_bounded_initial_input_in_both_modes() {
             state.workspace.content.set(initial.into());
             let actions = EditorActions::new(state.workspace);
             actions.record_selection(selected).unwrap();
-            actions.record_scroll(1, "restored-long-row.txt", 0.0, 24_500.0);
+            actions.record_scroll(1, "restored-long-row.txt", 0.0, left);
             slot.set(Some(actions));
-            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+            view! { <style>{include_str!("../../styles.css")}</style><style>{if case == 3 { ".editor-textarea,.editor-highlight {line-height:19.49px}" } else { "" }}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
         });
         let actions = saved.get().unwrap();
         super::support::wait_until_with_timeout(
-            "restored long-row source geometry",
+            "bounded initial unwrapped source geometry",
             30_000,
             || {
                 actions.measured_rows().is_some()
@@ -11837,7 +12050,7 @@ async fn restored_long_row_caret_uses_bounded_initial_input_in_both_modes() {
         assert_editor_native_source(&input, mounted.state.workspace, &source);
         let scroll = openwebide_frontend::viewport::editor_scroll(&input);
         assert!(
-            (scroll.scroll_left() - 24_500.0).abs() <= 0.25,
+            (scroll.scroll_left() - left).abs() <= 0.25,
             "{mode:?} restored horizontal scroll: {}",
             scroll.scroll_left()
         );
@@ -11847,15 +12060,36 @@ async fn restored_long_row_caret_uses_bounded_initial_input_in_both_modes() {
             .editor_row_cache
             .get_untracked()
             .unwrap();
-        assert!(
-            openwebide_frontend::components::bounded_paragraph_matches_complete(
-                &input,
-                &cache.paint,
-                1
-            )
-            .await,
-            "{mode:?} restored long-row complete geometry"
-        );
+        if case >= 2 {
+            let full = fullNativeDimensions(&input, &source);
+            // These short rows fit the viewport. The complete native surface
+            // already includes its minimum viewport width and trailing padding.
+            assert_eq!(
+                full[0],
+                scroll.client_width(),
+                "{mode:?} complete short rows fit"
+            );
+            assert!(
+                (scroll.scroll_width() - full[0]).abs() <= 2,
+                "{mode:?} short-row width: source={} complete={}",
+                scroll.scroll_width(),
+                full[0]
+            );
+            assert!(
+                (scroll.scroll_height() - full[1]).abs() <= 2,
+                "{mode:?} short-row height"
+            );
+        } else {
+            assert!(
+                openwebide_frontend::components::bounded_paragraph_matches_complete(
+                    &input,
+                    &cache.paint,
+                    1
+                )
+                .await,
+                "{mode:?} restored long-row complete geometry"
+            );
+        }
     }
 }
 
@@ -11868,11 +12102,14 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
     use openwebide_frontend::state_actions::editor::EditorActions;
     use std::{cell::Cell, rc::Rc, sync::Arc};
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for case in 0..11 {
+        for case in 0..14 {
             let source = match case {
                 1 | 10 => "short\n".to_string() + &"a".repeat(70_000),
                 2 => "a\t".repeat(35_000),
                 3 => "אב".repeat(35_000),
+                11 => "short 文😀\r\n".repeat(4000),
+                12 => "short\t文😀e\u{301} words\n".repeat(4000),
+                13 => "short\n".to_owned() + &"אב".repeat(35_000),
                 _ => "a".repeat(70_000),
             };
             let slot = Rc::new(Cell::new(None::<EditorActions>));
@@ -11897,7 +12134,7 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
             let selected = Selection::caret(if case == 10 { 35_006 } else { 0 });
             actions.prepare_edit(selected).unwrap();
             actions.record_scroll(1, "startup.txt", 120.0, 450.0);
-            if (1..=4).contains(&case) {
+            if (2..=4).contains(&case) || case == 13 {
                 assert!(
                     !actions.begin_initial_native_context(),
                     "unsupported cold layout: {mode:?}, {case}"
@@ -11907,7 +12144,19 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
             }
             assert!(actions.begin_initial_native_context());
             assert!(actions.native_geometry_pending());
+            let rows = actions.projection().unwrap().lines().len();
+            assert_eq!(
+                actions.initial_native_height(19.5, 24.0).unwrap().to_bits(),
+                (f64::from(u32::try_from(rows).unwrap()) * 19.5 + 24.0).to_bits()
+            );
+            assert!(actions.initial_native_height(f64::NAN, 24.0).is_none());
+            assert!(actions.initial_native_height(19.5, -1.0).is_none());
             actions.record_scroll(1, "startup.txt", 0.0, 0.0);
+            assert_eq!(actions.scroll().top.to_bits(), 120.0_f64.to_bits());
+            assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
+            actions.record_source_scroll(1, "startup.txt", 120.0, 0.0, false);
+            assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
+            actions.record_source_scroll(1, "stale.txt", 0.0, 0.0, true);
             assert_eq!(actions.scroll().top.to_bits(), 120.0_f64.to_bits());
             assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
             assert!(actions.measured_rows().is_none());
@@ -12013,11 +12262,14 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 assert!(actions.bound_native_context().is_none());
                 continue;
             }
-            if case == 0 || case == 10 {
+            if matches!(case, 0 | 1 | 10..=12) {
                 assert!(message.is_some());
                 assert!(!actions.native_geometry_pending());
                 assert!(actions.bound_native_context().is_none());
-                assert_eq!(actions.input_projection().unwrap().textarea_text(), source);
+                assert_eq!(
+                    actions.input_projection().unwrap().textarea_text(),
+                    source.replace("\r\n", "\n"),
+                );
                 assert_eq!(actions.scroll().top.to_bits(), 120.0_f64.to_bits());
                 assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
             } else {
@@ -14726,6 +14978,31 @@ export function fullNativeDimensions(input, source) {
         return [probe.scrollWidth, probe.scrollHeight];
     } finally { probe.remove(); }
 }
+// Compare against complete production paint: overflowing Chromium textareas
+// omit their right padding from scrollWidth. Glyph oracles remain separate.
+export function fullSourcePaintWidth(input, source) {
+    const original = input.parentElement.querySelector('.editor-highlight');
+    const probe = original.cloneNode(false);
+    probe.style.cssText = `position:fixed;left:-10000px;top:0;right:auto;bottom:auto;width:${original.clientWidth}px;height:auto;visibility:hidden;pointer-events:none;`;
+    const content = document.createElement('div');
+    content.className = 'editor-highlight-content';
+    content.style.transform = 'none';
+    content.style.minHeight = '0';
+    const rows = source.replace(/\r\n/g, '\n').split('\n');
+    for (let index = 0; index < rows.length; index++) {
+        const row = document.createElement('span');
+        row.className = 'editor-source-line';
+        row.dataset.line = String(index + 1);
+        row.textContent = rows[index] + (index + 1 < rows.length ? '\n' : '');
+        content.append(row);
+    }
+    probe.append(content);
+    input.parentElement.append(probe);
+    try {
+        const gutter = content.firstElementChild.getBoundingClientRect().left - content.getBoundingClientRect().left;
+        return Math.round(content.scrollWidth - gutter);
+    } finally { probe.remove(); }
+}
 export function restoreNativeExtentReads(input) { delete input.scrollWidth; delete input.scrollHeight; }
 export async function editorFontsReady() { document.body.getBoundingClientRect(); await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(resolve)); }
 export async function loadEditorFont(name, bytes) {
@@ -14737,6 +15014,7 @@ export function removeEditorFont(font) { document.fonts.delete(font); }
 extern "C" {
     fn watchNativeExtentReads(input: &web_sys::HtmlTextAreaElement) -> js_sys::Function;
     fn fullNativeDimensions(input: &web_sys::HtmlTextAreaElement, source: &str) -> Vec<i32>;
+    fn fullSourcePaintWidth(input: &web_sys::HtmlTextAreaElement, source: &str) -> i32;
     fn restoreNativeExtentReads(input: &web_sys::HtmlTextAreaElement);
     #[wasm_bindgen(catch)]
     async fn editorFontsReady() -> Result<(), wasm_bindgen::JsValue>;
@@ -16404,6 +16682,96 @@ async fn paragraph_unchanged_suffix_reuses_exact_browser_geometry_in_both_modes(
             }
             assert_eq!(actions.source(), changed);
             assert!(mounted.state.workspace.dirty.get_untracked());
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn config_and_documentation_grammars_share_both_workspace_modes_without_prose_colors() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{SyntaxDocument, syntax_contracts::CONFIG_CASES},
+        highlight::language_from_path,
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:700px;height:400px">{editor_view(state)}</div> }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        for &(path, fixture) in CONFIG_CASES {
+            let source = fixture.replace('\n', "\r\n");
+            mounted.state.workspace.open_file.set(Some(path.into()));
+            mounted.state.workspace.content.set(source.clone().into());
+            let (_, folds) = with_syntax_clock(0.0, || actions.syntax_folds(|| true)).unwrap();
+            assert!(!folds.is_empty(), "{mode:?}: {path}");
+            wait_until("prepared config styles", || {
+                actions.syntax_highlights().is_some()
+            })
+            .await;
+            let colors = actions.syntax_highlights().unwrap();
+            assert!(
+                colors
+                    .iter()
+                    .flat_map(|row| row.iter())
+                    .any(|token| token.kind != openwebide_core::highlight::TokenKind::Plain),
+                "{path}"
+            );
+            wait_until("config overlay renders current source", || {
+                mounted
+                    .root
+                    .query_selector(".editor-highlight-content")
+                    .unwrap()
+                    .is_some_and(|overlay| {
+                        overlay.text_content().as_deref()
+                            == Some(source.replace("\r\n", "\n").as_str())
+                    })
+            })
+            .await;
+            assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+            let changed = source.replace("文😀", "😀 revised");
+            mounted.state.workspace.content.set(changed.clone().into());
+            let (_, folds) = with_syntax_clock(0.0, || actions.syntax_folds(|| true)).unwrap();
+            let mut fresh = SyntaxDocument::new(language_from_path(path)).unwrap();
+            let expected = fresh.prepare(&changed, 4, || true).1.unwrap();
+            assert_eq!(folds, expected.folds());
+            wait_until("changed config styles", || {
+                actions.syntax_highlights().is_some()
+            })
+            .await;
+            assert_eq!(
+                actions.syntax_highlights().unwrap(),
+                expected.highlights().unwrap().clone()
+            );
+        }
+        for path in ["LICENSE", "LICENSE.txt", "NOTICE"] {
+            let source = "Copyright (c) 2026 Example\nPermission is hereby granted, free of charge.\n\"AS IS\", WITHOUT WARRANTY; /* prose */";
+            mounted.state.workspace.open_file.set(Some(path.into()));
+            mounted.state.workspace.content.set(source.into());
+            settle().await;
+            wait_until("plain prose overlay", || {
+                mounted
+                    .root
+                    .query_selector(".editor-highlight-content")
+                    .unwrap()
+                    .is_some_and(|overlay| overlay.text_content().as_deref() == Some(source))
+            })
+            .await;
+            assert!(
+                mounted
+                    .root
+                    .query_selector(
+                        ".tok-keyword,.tok-string,.tok-type,.tok-function,.tok-number,.tok-comment"
+                    )
+                    .unwrap()
+                    .is_none(),
+                "{mode:?}: {path}"
+            );
         }
     }
 }

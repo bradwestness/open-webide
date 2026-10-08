@@ -181,3 +181,45 @@ pub const LITERAL_CASES: &[(&str, &str, &str, Option<&str>)] = &[
         Some("Call"),
     ),
 ];
+
+/// Configuration and documentation grammars share the same worker/adapter contracts.
+pub const CONFIG_CASES: &[(&str, &str)] = &[
+    (
+        "package.json",
+        "{\n  \"name\": \"文😀\",\n  \"enabled\": true\n}\n",
+    ),
+    (
+        "tsconfig.jsonc",
+        "{\n  // compiler settings\n  \"compilerOptions\": { \"strict\": true }\n}\n",
+    ),
+    (
+        "compose.yml",
+        "services:\n  app:\n    image: \"文😀\"\n    enabled: true\n",
+    ),
+    (
+        "config.yaml",
+        "message: |\n  text 文😀\n  # prose, not a comment\nenabled: true\n",
+    ),
+    ("Cargo.toml", "[package]\nname = \"文😀\"\nenabled = true\n"),
+    (
+        "pyproject.toml",
+        "[project]\nname = \"文😀\"\ndependencies = [\n  \"example\",\n]\n",
+    ),
+    (
+        ".editorconfig",
+        "root = true\n[*]\nindent_style = space\n# 文😀\nindent_size = 4\n",
+    ),
+    ("settings.ini", "[app]\nname = 文😀\nenabled = true\n"),
+    (
+        "NuGet.Config",
+        "<configuration>\n  <packageSources>\n    <add key=\"文😀\" value=\"https://example.test\" />\n  </packageSources>\n</configuration>\n",
+    ),
+    (
+        "App.csproj",
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n",
+    ),
+    (
+        "README.md",
+        "# Project 文😀\n\nPlain words with **emphasis** and `inline code`.\n\n```rust\nfn main() { let value = 42; }\n```\n\n[docs](https://example.test)\n",
+    ),
+];

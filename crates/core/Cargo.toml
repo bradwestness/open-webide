@@ -36,6 +36,12 @@ tree-sitter-c = { version = "0.24.2", optional = true }
 tree-sitter-go = { version = "0.25.0", optional = true }
 tree-sitter-html = { version = "0.23.2", optional = true }
 tree-sitter-css = { version = "0.25.0", optional = true }
+tree-sitter-json = { version = "0.24.8", optional = true }
+tree-sitter-yaml = { version = "0.7.2", optional = true }
+tree-sitter-toml-ng = { version = "0.7.0", optional = true }
+tree-sitter-md = { version = "0.5.3", optional = true }
+tree-sitter-ini = { version = "1.4.0", optional = true }
+tree-sitter-xml = { version = "0.7.0", optional = true }
 
 [features]
 test-support = []
@@ -53,6 +59,12 @@ editor-parser = [
     "dep:tree-sitter-go",
     "dep:tree-sitter-html",
     "dep:tree-sitter-css",
+    "dep:tree-sitter-json",
+    "dep:tree-sitter-yaml",
+    "dep:tree-sitter-toml-ng",
+    "dep:tree-sitter-md",
+    "dep:tree-sitter-ini",
+    "dep:tree-sitter-xml",
 ]
 
 [dev-dependencies]

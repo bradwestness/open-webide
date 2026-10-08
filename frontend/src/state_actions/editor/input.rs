@@ -75,34 +75,12 @@ impl EditorActions {
         if self.preferences().word_wrap || !projection.has_uniform_rows() {
             return false;
         }
-        // Preserve complete-native cold frames for short initial selections.
-        // A restored caret in a long row can start with the same bounded input
-        // as a long first row, while complete document geometry remains pending.
-        let first_large = projection
-            .lines()
-            .first()
-            .is_some_and(|line| line.source.len() > openwebide_core::editor::MAX_MEASURE_BYTES);
-        let selected_large = !first_large
-            && self
-                .current_selection()
-                .and_then(|selection| projection.visible_selection(selection).ok())
-                .and_then(|selection| {
-                    projection
-                        .lines()
-                        .partition_point(|line| line.visible_start <= selection.head)
-                        .checked_sub(1)
-                })
-                .and_then(|row| projection.lines().get(row))
-                .is_some_and(|line| line.source.len() > openwebide_core::editor::MAX_MEASURE_BYTES);
-        if !first_large && !selected_large {
-            return false;
-        }
-        let mut large = false;
+        // Short rows use the same measured source extents as long rows. The
+        // initial selection need not intersect a long row to install bounded input.
         for (row, line) in projection.lines().iter().enumerate() {
             if line.source.len() <= openwebide_core::editor::MAX_MEASURE_BYTES {
                 continue;
             }
-            large = true;
             if projection
                 .line_body(row)
                 .is_none_or(|body| body.as_bytes().contains(&b'\t'))
@@ -113,10 +91,10 @@ impl EditorActions {
                 return false;
             }
         }
-        large
+        true
     }
 
-    /// Install source-owned surrounding text before the first large-row layout.
+    /// Install source-owned surrounding text before initial unwrapped layout.
     /// Geometry remains explicitly pending; this does not publish source extents.
     pub fn begin_initial_native_context(self) -> bool {
         if self.is_composing() || self.bound_native_context().is_some() || self.limit().is_some() {
@@ -141,6 +119,22 @@ impl EditorActions {
                 .as_ref()
                 .is_some_and(|context| context.geometry_pending && context.current(self))
         })
+    }
+
+    /// Fixed CSS row boxes provide vertical source extent before glyph widths.
+    pub fn initial_native_height(self, row_height: f64, padding: f64) -> Option<f64> {
+        if self.preferences().word_wrap || !self.native_geometry_pending() {
+            return None;
+        }
+        let context = self.bound_native_context()?;
+        if context.geometry_failed || !context.original.has_uniform_rows() {
+            return None;
+        }
+        openwebide_core::editor::DocumentExtent::uniform_height(
+            context.original.lines().len(),
+            row_height,
+            padding,
+        )
     }
 
     /// The DOM adapter confirms the current measured extent and source paint.

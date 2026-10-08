@@ -13,6 +13,20 @@ for what's still ahead.
 
 - Add optional Web Push for finished remote and projectless runs and pending approvals, including child agents. Settings enables each browser subscription; notifications identify the project/session and open that chat. Persist server VAPID keys, account-owned subscriptions and a bounded retry queue, discard expired/resolved alerts, and suppress notifications for the attended chat. Local projects retain app-open notifications.
 
+- Match Git changes row density to the file explorer automatically on desktop
+  and phone layouts.
+
+- Use grammar-backed syntax colors in the editor and diffs; leave pending and
+  unsupported source plain, including extensionless LICENSE files. Add YAML/YML,
+  Markdown with inline/fenced-code parsing, JSON/JSONC, TOML, INI/EditorConfig and
+  XML ecosystem build configuration to the shared Rust/WASM language registry.
+
+- Start eligible unwrapped files with bounded native input even when their first
+  row and initial caret are short. Support files made entirely of short rows,
+  retaining complete source extents, selection, scroll and measurement-failure
+  fallback in local and remote projects. Preserve horizontal wheel requests made
+  before complete widths are measured.
+
 - Use compact file-tree rows automatically outside phone mode and larger touch rows in phone mode; remove the density menu option and ignore its legacy saved setting.
 - Keep pointer focus from scrolling file tabs, retain keyboard focus navigation, and skip redundant project-tab list and selection updates.
 

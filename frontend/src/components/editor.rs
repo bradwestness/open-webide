@@ -401,6 +401,9 @@ pub(super) fn reveal_editor_caret(
 }
 
 pub(super) fn editor_row_height(textarea: &web_sys::HtmlTextAreaElement) -> f64 {
+    if let Some((height, _)) = super::editor_rows::uniform_row_dimensions(textarea) {
+        return height;
+    }
     window()
         .get_computed_style(textarea)
         .ok()
@@ -1511,7 +1514,7 @@ fn HighlightOverlay(
             return;
         }
         if !immediate && !actions.viewport_paint_ready(&visible.get_untracked()) {
-            if actions.defer_viewport_paint() {
+            if actions.defer_viewport_paint(&visible.get_untracked()) {
                 presentation.set(false);
             }
             return;
@@ -2310,14 +2313,50 @@ pub fn Editor(
             extent,
         ))
     });
+    let source_height = Memo::new(move |_| {
+        layout_revision.track();
+        highlight_ready.track();
+        projection.track();
+        editor_actions.track_native_context();
+        if source_extent.get().is_some() {
+            return None;
+        }
+        let input = ta.get()?;
+        if !current_editor_target(editor_actions, &input) {
+            return None;
+        }
+        let (row_height, padding) = super::editor_rows::uniform_row_dimensions(&input)?;
+        let height = editor_actions.initial_native_height(row_height, padding)?;
+        if !crate::viewport::check_editor_extent(0.0, height) {
+            return None;
+        }
+        Some((
+            editor_actions.projection_revision(),
+            editor_actions.view_revision(),
+            editor_actions.account_generation(),
+            height,
+        ))
+    });
+    let extent_owner = Memo::new(move |_| {
+        source_extent
+            .get()
+            .map(|(scope, view, account, _)| (scope, view, account))
+            .or_else(|| {
+                source_height
+                    .get()
+                    .map(|(scope, view, account, _)| (scope, view, account))
+            })
+    });
     Effect::new(move || {
         source_extent.track();
+        source_height.track();
         if let Some(input) = ta.get() {
             crate::viewport::refresh_editor_scroll(&input);
         }
     });
     let viewport = Memo::new(move |_| {
         layout_revision.track();
+        highlight_ready.track();
         native_install_revision.track();
         let (rows, uniform) = projection.with(|view| (view.lines().len(), view.has_uniform_rows()));
         if editor_actions.preferences().word_wrap || !uniform {
@@ -3312,7 +3351,15 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code" data-editor-view=move || editor_actions.view_revision().to_string() data-editor-account=editor_account_generation.to_string() data-editor-pointer-ready=move || highlight_ready.get().to_string() style=move || format!("--editor-gutter-width: calc({}ch + 42px); --editor-tab-width: {}", source_line_count.get().to_string().len(), editor_actions.rules().indentation.tab_width()) class:highlight-ready=move || highlight_visible.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
+                                    <div class="editor-code" data-editor-view=move || editor_actions.view_revision().to_string() data-editor-account=editor_account_generation.to_string() data-editor-pointer-ready=move || highlight_ready.get().to_string() style=move || format!("--editor-gutter-width: calc({}ch + 42px); --editor-tab-width: {}", source_line_count.get().to_string().len(), editor_actions.rules().indentation.tab_width()) class:highlight-ready=move || highlight_visible.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap class:editor-uniform-rows=move || projection.with(openwebide_core::editor::FoldProjection::has_uniform_rows) on:editor-scroll-intent=move |event: web_sys::Event| {
+                                                let Some(input) = ta.get_untracked().filter(|input| current_editor_target(editor_actions, input)) else { return; };
+                                                let Some(event) = event.dyn_ref::<web_sys::CustomEvent>() else { return; };
+                                                let detail = event.detail();
+                                                let number = |name: &str| js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str(name)).ok().and_then(|value| value.as_f64());
+                                                let (Some(x), Some(y)) = (number("x"), number("y")) else { return; };
+                                                let scroll = editor_actions.scroll();
+                                                editor_actions.request_scroll(editor_project.unwrap_or_default(), &input.get_attribute("data-editor-path").unwrap_or_default(), editor_actions.view_revision(), editor_actions.account_generation(), scroll.top + y, scroll.left + x);
+                                            }>
                                         <div class="editor-scroll-surface" aria-hidden="true" on:scroll=move |event: web_sys::Event| {
                                             let Some(textarea) = ta.get_untracked() else { return; };
                                             let Some(target) = event.current_target().and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok()) else { return; };
@@ -3322,15 +3369,19 @@ pub fn Editor(
                                             crate::viewport::sync_editor_scroll(&textarea, false);
                                             let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea));
                                             let scroll = crate::viewport::editor_scroll(&textarea);
-                                            editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), scroll.scroll_top(), scroll.scroll_left());
+                                            if extent_owner.get_untracked().is_some() {
+                                                editor_actions.record_source_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), scroll.scroll_top(), scroll.scroll_left(), source_extent.get_untracked().is_some());
+                                            } else {
+                                                editor_actions.record_scroll(editor_project.unwrap_or_default(), &textarea.get_attribute("data-editor-path").unwrap_or_default(), scroll.scroll_top(), scroll.scroll_left());
+                                            }
                                             if let Some(overlay) = hl.get_untracked() { sync_highlight_scroll(&textarea, &overlay); }
                                             layout_revision.update(|revision| *revision = revision.wrapping_add(1));
                                         }><div class="editor-scroll-extent"
-                                            data-editor-scope=move || source_extent.get().map(|(scope, _, _, _)| scope.to_string())
-                                            data-editor-view=move || source_extent.get().map(|(_, view, _, _)| view.to_string())
-                                            data-editor-account=move || source_extent.get().map(|(_, _, account, _)| account.to_string())
+                                            data-editor-scope=move || extent_owner.get().map(|(scope, _, _)| scope.to_string())
+                                            data-editor-view=move || extent_owner.get().map(|(_, view, _)| view.to_string())
+                                            data-editor-account=move || extent_owner.get().map(|(_, _, account)| account.to_string())
                                             data-source-width=move || source_extent.get().map(|(_, _, _, extent)| extent.width.to_string())
-                                            data-source-height=move || source_extent.get().map(|(_, _, _, extent)| extent.height.to_string()) /></div>
+                                            data-source-height=move || source_extent.get().map(|(_, _, _, extent)| extent.height).or_else(|| source_height.get().map(|(_, _, _, height)| height)).map(|height| height.to_string()) /></div>
                                         <HighlightOverlay actions=editor_actions paint_request=paint_request paint_epoch=paint_epoch content=content open_file=open_file node_ref=hl textarea_ref=ta ready=highlight_ready presentation=highlight_visible error=action_error visible=visible_rows viewport=viewport textarea_start=textarea_start indentation=Signal::from(paint_indentation) show_whitespace=Signal::from(paint_whitespace) layout_revision=layout_revision native_install_revision=native_install_revision />
                                         <super::editor_selections::SelectionOverlay textarea=ta ready=highlight_ready layout_revision=layout_revision />
                                         <div class="editor-bracket-layer" aria-hidden="true">{move || bracket_marks.get().into_iter().map(|(left, top, width, height)| view! { <span class="editor-bracket-match" style=format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px")/> }).collect_view()}</div>

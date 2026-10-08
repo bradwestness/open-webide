@@ -1,9 +1,7 @@
-//! A small, dependency-free syntax highlighter.
+//! Shared paint tokens, file language detection and cooperative plain-source rows.
 //!
-//! It tokenizes source text into colored [`Token`]s for a handful of common
-//! languages so the in-browser editor can render a highlighted overlay behind a
-//! transparent textarea. The tokenizer is pure and natively unit-testable; the
-//! frontend turns the tokens into HTML spans.
+//! Grammar providers supply colors after preparation. Pending, unavailable and
+//! unsupported analysis renders plain text; it never guesses code categories.
 //!
 //! The guarantee that makes the overlay work: for each line, concatenating the
 //! token texts reproduces that line exactly. No character is dropped or
@@ -62,6 +60,9 @@ pub enum Language {
     Html,
     Css,
     Markdown,
+    MarkdownInline,
+    Ini,
+    Xml,
     Shell,
     Toml,
     Yaml,
@@ -74,6 +75,35 @@ pub enum Language {
 
 /// Pick a language from a file path's extension.
 pub fn language_from_path(path: &str) -> Language {
+    let name = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        ".editorconfig"
+            | ".npmrc"
+            | ".yarnrc"
+            | ".pypirc"
+            | "pip.conf"
+            | ".gitconfig"
+            | ".gitmodules"
+    ) {
+        return Language::Ini;
+    }
+    if matches!(
+        name.as_str(),
+        "cargo.lock" | "poetry.lock" | "pdm.lock" | "uv.lock" | "pipfile" | "rust-toolchain"
+    ) {
+        return Language::Toml;
+    }
+    if matches!(name.as_str(), "composer.lock" | "pipfile.lock") {
+        return Language::Json;
+    }
+    if name == ".env" || name.starts_with(".env.") {
+        return Language::Ini;
+    }
     let ext = crate::file_type::extension(path).unwrap_or_default();
     match ext.as_str() {
         "rs" => Language::Rust,
@@ -85,8 +115,11 @@ pub fn language_from_path(path: &str) -> Language {
         "java" => Language::Java,
         "cs" => Language::CSharp,
         "php" | "phtml" => Language::Php,
-        "json" => Language::Json,
-        "html" | "htm" | "xml" | "svg" => Language::Html,
+        "json" | "jsonc" => Language::Json,
+        "html" | "htm" => Language::Html,
+        "xml" | "svg" | "csproj" | "fsproj" | "vbproj" | "props" | "targets" | "config"
+        | "resx" | "slnx" | "nuspec" | "ruleset" | "runsettings" | "pubxml" => Language::Xml,
+        "ini" | "cfg" | "properties" => Language::Ini,
         "css" | "scss" => Language::Css,
         "md" | "markdown" => Language::Markdown,
         "sh" | "bash" | "zsh" => Language::Shell,
@@ -100,12 +133,10 @@ pub fn language_from_path(path: &str) -> Language {
     }
 }
 
-/// Lines longer than this are rendered as a single unhighlighted [`Token`]
-/// rather than tokenized, so minified files can't spend unbounded time in the
-/// per-character tokenizer loops.
+/// Long-row regression boundary; grammar admission uses its own source/work limits.
 pub const MAX_HIGHLIGHT_LINE_BYTES: usize = 10_000;
 
-/// Tokenize `source` line by line into colored tokens.
+/// Preserve plain source rows until grammar-backed colors are available.
 ///
 /// The returned lines line up with `source.split('\n')`, and concatenating a
 /// line's token texts reproduces that line exactly.
@@ -114,39 +145,27 @@ pub fn highlight_lines(source: &str, language: Language) -> Vec<Vec<Token>> {
         .expect("unconditional highlighting cannot cancel")
 }
 
-/// Preserve multiline lexical state, publishing no partial paint after cancellation.
+/// Preserve source rows, publishing no partial paint after cancellation.
 pub fn highlight_lines_while(
     source: &str,
     language: Language,
     mut should_continue: impl FnMut() -> bool,
 ) -> Option<Vec<Vec<Token>>> {
     let mut lines = Vec::new();
-    let mut state = State::Normal;
     for line in source.split('\n') {
         if !should_continue() {
             return None;
         }
-        let (tokens, next_state) = highlight_line(line, language, state);
-        state = next_state;
-        lines.push(tokens);
+        lines.push(highlight_line(line, language));
     }
     Some(lines)
 }
 
-fn highlight_line(line: &str, language: Language, state: State) -> (Vec<Token>, State) {
-    if line.len() > MAX_HIGHLIGHT_LINE_BYTES {
-        return (
-            vec![Token {
-                kind: TokenKind::Plain,
-                text: line.to_string(),
-            }],
-            state,
-        );
-    }
-    match language {
-        Language::Rust => highlight_rust_line(line, state),
-        _ => highlight_generic_line(line, language, state),
-    }
+fn highlight_line(line: &str, _language: Language) -> Vec<Token> {
+    vec![Token {
+        kind: TokenKind::Plain,
+        text: line.to_owned(),
+    }]
 }
 
 pub const LEXICAL_BATCH_ROWS: usize = 128;
@@ -163,7 +182,7 @@ pub fn lexical_frame_due(batches: usize, elapsed_ms: f64) -> bool {
     elapsed_ms >= 4.0 || batches >= 64
 }
 
-/// Complete contextual lexical paint and the row states needed for exact reuse.
+/// Complete plain-source paint and raw row boundaries needed for exact reuse.
 #[derive(Debug)]
 pub struct LexicalSnapshot {
     source: std::sync::Arc<String>,
@@ -186,11 +205,9 @@ impl LexicalSnapshot {
 struct LexicalRow {
     start: usize,
     end: usize,
-    before: State,
-    after: State,
 }
 
-/// A source-owned lexical job that preserves multiline state across cooperative
+/// A source-owned plain-row job that preserves source boundaries across cooperative
 /// batches. Callers can discard it on cancellation; unfinished paint is never
 /// returned by finish. Budgets count whole rows, allowing one oversized row.
 pub struct LexicalPreparation {
@@ -198,7 +215,6 @@ pub struct LexicalPreparation {
     language: Language,
     normalize_crlf: bool,
     next: usize,
-    state: State,
     rows: TokenRows,
     contexts: Vec<LexicalRow>,
     previous: Option<std::sync::Arc<LexicalSnapshot>>,
@@ -219,7 +235,6 @@ impl LexicalPreparation {
             language,
             normalize_crlf: false,
             next: 0,
-            state: State::Normal,
             rows: Vec::new(),
             contexts: Vec::new(),
             previous: None,
@@ -241,14 +256,13 @@ impl LexicalPreparation {
             ..Self::new(source, language)
         }
     }
-    /// Reuse only exact raw rows with the same incoming lexical state. Check both
+    /// Reuse only exact raw rows. Check both
     /// unchanged offsets and the total byte shift, validating every candidate;
     /// insertions, deletions and disjoint edits cannot reuse mismatching context.
     pub fn reuse(mut self, previous: std::sync::Arc<LexicalSnapshot>) -> Self {
         if previous.language == self.language && previous.normalize_crlf == self.normalize_crlf {
             self.next = 0;
             self.previous_row = 0;
-            self.state = State::Normal;
             self.rows.clear();
             self.contexts.clear();
             self.retokenized_rows = 0;
@@ -335,8 +349,7 @@ impl LexicalPreparation {
                     .binary_search_by_key(&start, |row| row.start)
                     .ok()?;
                 let row = &previous.rows[index];
-                (row.before == self.state
-                    && previous.source[row.start..row.end] == self.source[self.next..end])
+                (previous.source[row.start..row.end] == self.source[self.next..end])
                     .then_some(index)
             })
     }
@@ -374,36 +387,25 @@ impl LexicalPreparation {
             } else {
                 raw
             };
-            let reusable = indexed.map_or_else(
-                || self.reusable_row(next),
-                |(index, _, _)| {
-                    self.previous
-                        .as_ref()
-                        .filter(|previous| previous.rows[index].before == self.state)
-                        .map(|_| index)
-                },
-            );
-            let (tokens, state) = if let Some(index) = reusable {
+            let reusable =
+                indexed.map_or_else(|| self.reusable_row(next), |(index, _, _)| Some(index));
+            let tokens = if let Some(index) = reusable {
                 let previous = self.previous.as_ref().expect("matched previous row");
-                (previous.tokens[index].clone(), previous.rows[index].after)
+                previous.tokens[index].clone()
             } else {
                 self.retokenized_rows += 1;
-                let (tokens, state) = highlight_line(line, self.language, self.state);
-                (std::sync::Arc::from(tokens), state)
+                std::sync::Arc::from(highlight_line(line, self.language))
             };
-            // Exact source boundaries remain valid even when multiline state
-            // requires fresh tokens. Changed/new rows recover via indexed lookup.
+            // Exact source boundaries allow unchanged row reuse.
+            // Changed/new rows recover via indexed lookup.
             if let Some(index) = indexed.map(|(index, _, _)| index).or(reusable) {
                 self.previous_row = index + 1;
             }
             self.contexts.push(LexicalRow {
                 start: self.next,
                 end: next,
-                before: self.state,
-                after: state,
             });
             self.rows.push(tokens);
-            self.state = state;
             self.complete = !newline;
             self.next = next;
             count += 1;
@@ -447,1138 +449,6 @@ impl LexicalPreparation {
         })
     }
 }
-
-/// Tokenizer state carried across lines (a block comment may span lines).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum State {
-    Normal,
-    BlockComment,
-}
-
-fn is_operator(c: char) -> bool {
-    matches!(
-        c,
-        '+' | '-' | '*' | '/' | '=' | '<' | '>' | '!' | '&' | '|' | '^' | '~' | '?'
-    )
-}
-
-fn is_punct(c: char) -> bool {
-    matches!(c, '.' | ',' | ';' | ':' | '(' | ')' | '{' | '}' | '[' | ']')
-}
-
-/// A char that can join a plain (uncolored) run: whitespace, or anything that
-/// does not start a recognized token.
-fn is_plain_char(c: char) -> bool {
-    c.is_whitespace()
-        || !(c.is_alphanumeric()
-            || c == '_'
-            || c == '"'
-            || c == '\''
-            || c == '`'
-            || c == '#'
-            || is_operator(c)
-            || is_punct(c))
-}
-
-/// Read a string literal starting at `rest` (which begins with `quote`),
-/// honoring backslash escapes. Returns the literal text and the byte length
-/// consumed. An unterminated string runs to the end of the line.
-fn read_string(rest: &str, quote: char) -> (String, usize) {
-    let mut indices = rest.char_indices();
-    let mut end = match indices.next() {
-        Some((_, c)) => c.len_utf8(),
-        None => 0,
-    };
-    let mut escaped = false;
-    for (idx, c) in indices {
-        end = idx + c.len_utf8();
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if c == '\\' {
-            escaped = true;
-        } else if c == quote {
-            break;
-        }
-    }
-    (rest[..end].to_string(), end)
-}
-
-/// Read an identifier (letters, digits, underscores) starting at `rest`.
-fn read_ident(rest: &str) -> (String, usize) {
-    let mut text = String::new();
-    let mut consumed = 0usize;
-    for c in rest.chars() {
-        if c.is_alphanumeric() || c == '_' {
-            text.push(c);
-            consumed += c.len_utf8();
-        } else {
-            break;
-        }
-    }
-    (text, consumed)
-}
-
-/// Read a number literal starting at `rest` (which begins with a digit):
-/// optional `0x`/`0o`/`0b` prefix, integer part, optional fraction, optional
-/// exponent. Returns the literal text and the byte length consumed.
-fn read_number(rest: &str) -> (String, usize) {
-    let bytes = rest.as_bytes();
-    let len = bytes.len();
-    let mut i = 0usize;
-
-    // `0x` / `0o` / `0b` prefix.
-    if i < len && bytes[i] == b'0' {
-        i += 1;
-        if i < len && matches!(bytes[i], b'x' | b'X' | b'o' | b'O' | b'b' | b'B') {
-            i += 1;
-            while i < len && (bytes[i].is_ascii_hexdigit() || bytes[i] == b'_') {
-                i += 1;
-            }
-            return (rest[..i].to_string(), i);
-        }
-    }
-
-    // Integer part.
-    while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
-        i += 1;
-    }
-    // Fractional part (only if a digit follows the dot, so `1..2` stays a range).
-    if i + 1 < len && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
-        i += 1;
-        while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
-            i += 1;
-        }
-    }
-    // Exponent.
-    if i < len && (bytes[i] == b'e' || bytes[i] == b'E') {
-        i += 1;
-        if i < len && (bytes[i] == b'+' || bytes[i] == b'-') {
-            i += 1;
-        }
-        while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
-            i += 1;
-        }
-    }
-
-    (rest[..i].to_string(), i)
-}
-
-/// Classify a Rust identifier using the text that follows it.
-fn classify_rust_ident(word: &str, after: &str) -> TokenKind {
-    if word == "true" || word == "false" {
-        return TokenKind::Boolean;
-    }
-    if RUST_KEYWORDS.contains(&word) {
-        return TokenKind::Keyword;
-    }
-    if after.starts_with('!') {
-        return TokenKind::Macro;
-    }
-    if after.starts_with('(') {
-        return TokenKind::Function;
-    }
-    if word.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-        return TokenKind::Type;
-    }
-    TokenKind::Plain
-}
-
-/// Read a Rust char literal (`'a'`, `'\n'`) or lifetime (`'a`) starting at
-/// `rest` (which begins with `'`). Returns `None` when the quote does not begin
-/// either (a stray quote), in which case the caller treats it as plain text.
-fn read_char_or_lifetime(rest: &str) -> Option<(Token, usize)> {
-    let first = rest.chars().next()?;
-    if first != '\'' {
-        return None;
-    }
-
-    let sample: Vec<char> = rest.chars().take(4).collect();
-    if sample.len() < 2 {
-        return Some((
-            Token {
-                kind: TokenKind::Lifetime,
-                text: "'".to_string(),
-            },
-            first.len_utf8(),
-        ));
-    }
-
-    let second = sample[1];
-    if second == '\\' {
-        // Escaped char literal, e.g. `'\n'` or `'\''`.
-        if sample.len() >= 4 && sample[3] == '\'' {
-            let consumed: usize = sample.iter().take(4).map(|c| c.len_utf8()).sum();
-            return Some((
-                Token {
-                    kind: TokenKind::Char,
-                    text: rest[..consumed].to_string(),
-                },
-                consumed,
-            ));
-        }
-        return None;
-    }
-    if second == '\'' {
-        // `''` is not valid Rust; treat the lone quote as a lifetime.
-        return Some((
-            Token {
-                kind: TokenKind::Lifetime,
-                text: "'".to_string(),
-            },
-            first.len_utf8(),
-        ));
-    }
-    // A char literal when the third char is a closing quote.
-    if sample.len() >= 3 && sample[2] == '\'' {
-        let consumed: usize = sample.iter().take(3).map(|c| c.len_utf8()).sum();
-        return Some((
-            Token {
-                kind: TokenKind::Char,
-                text: rest[..consumed].to_string(),
-            },
-            consumed,
-        ));
-    }
-    // Otherwise a lifetime: `'ident`. Iterate lazily; identifiers are short,
-    // so this never collects the rest of the line.
-    let mut text = String::from("'");
-    let mut consumed = first.len_utf8();
-    for c in rest[first.len_utf8()..].chars() {
-        if c.is_alphanumeric() || c == '_' {
-            text.push(c);
-            consumed += c.len_utf8();
-        } else {
-            break;
-        }
-    }
-    Some((
-        Token {
-            kind: TokenKind::Lifetime,
-            text,
-        },
-        consumed,
-    ))
-}
-
-fn highlight_rust_line(line: &str, state: State) -> (Vec<Token>, State) {
-    let mut tokens = Vec::new();
-    let mut i = 0usize;
-    let len = line.len();
-    let mut state = state;
-
-    while i < len {
-        let rest = &line[i..];
-        let c = rest.chars().next().unwrap();
-
-        if state == State::BlockComment {
-            match rest.find("*/") {
-                Some(end) => {
-                    let seg = &rest[..end + "*/".len()];
-                    tokens.push(Token {
-                        kind: TokenKind::Comment,
-                        text: seg.to_string(),
-                    });
-                    i += seg.len();
-                    state = State::Normal;
-                }
-                None => {
-                    tokens.push(Token {
-                        kind: TokenKind::Comment,
-                        text: rest.to_string(),
-                    });
-                    i = len;
-                }
-            }
-            continue;
-        }
-
-        if rest.starts_with("//") {
-            tokens.push(Token {
-                kind: TokenKind::Comment,
-                text: rest.to_string(),
-            });
-            i = len;
-            continue;
-        }
-
-        if let Some(inner) = rest.strip_prefix("/*") {
-            match inner.find("*/") {
-                Some(end) => {
-                    let seg = &rest[..end + "/*".len() + "*/".len()];
-                    tokens.push(Token {
-                        kind: TokenKind::Comment,
-                        text: seg.to_string(),
-                    });
-                    i += seg.len();
-                }
-                None => {
-                    tokens.push(Token {
-                        kind: TokenKind::Comment,
-                        text: rest.to_string(),
-                    });
-                    i = len;
-                    state = State::BlockComment;
-                }
-            }
-            continue;
-        }
-
-        if c == '"' {
-            let (text, consumed) = read_string(rest, '"');
-            tokens.push(Token {
-                kind: TokenKind::String,
-                text,
-            });
-            i += consumed;
-            continue;
-        }
-
-        if c == '\''
-            && let Some((tok, consumed)) = read_char_or_lifetime(rest)
-        {
-            tokens.push(tok);
-            i += consumed;
-            continue;
-        }
-
-        if c.is_ascii_digit() {
-            let (text, consumed) = read_number(rest);
-            tokens.push(Token {
-                kind: TokenKind::Number,
-                text,
-            });
-            i += consumed;
-            continue;
-        }
-
-        if c.is_alphabetic() || c == '_' {
-            let (word, consumed) = read_ident(rest);
-            let after = &rest[consumed..];
-            let kind = classify_rust_ident(&word, after);
-            tokens.push(Token { kind, text: word });
-            i += consumed;
-            continue;
-        }
-
-        if c == '#' {
-            tokens.push(Token {
-                kind: TokenKind::Attribute,
-                text: "#".to_string(),
-            });
-            i += 1;
-            continue;
-        }
-
-        if is_operator(c) {
-            let mut j = i + c.len_utf8();
-            for ch in line[j..].chars() {
-                if !is_operator(ch) {
-                    break;
-                }
-                j += ch.len_utf8();
-            }
-            tokens.push(Token {
-                kind: TokenKind::Operator,
-                text: line[i..j].to_string(),
-            });
-            i = j;
-            continue;
-        }
-
-        if is_punct(c) {
-            tokens.push(Token {
-                kind: TokenKind::Punct,
-                text: c.to_string(),
-            });
-            i += 1;
-            continue;
-        }
-
-        let mut j = i + c.len_utf8();
-        for ch in line[j..].chars() {
-            if !is_plain_char(ch) {
-                break;
-            }
-            j += ch.len_utf8();
-        }
-        tokens.push(Token {
-            kind: TokenKind::Plain,
-            text: line[i..j].to_string(),
-        });
-        i = j;
-    }
-
-    (tokens, state)
-}
-
-/// Per-language parameters for the generic (non-Rust) highlighter: the line
-/// comment prefix, the block comment delimiters, and the keyword/boolean sets.
-type LangParams = (
-    Option<&'static str>,
-    Option<(&'static str, &'static str)>,
-    &'static [&'static str],
-    &'static [&'static str],
-);
-
-fn lang_params(language: Language) -> LangParams {
-    match language {
-        Language::JavaScript | Language::Jsx => {
-            (Some("//"), Some(("/*", "*/")), JS_KEYWORDS, JS_BOOLS)
-        }
-        Language::TypeScript | Language::Tsx => {
-            (Some("//"), Some(("/*", "*/")), TS_KEYWORDS, TS_BOOLS)
-        }
-        Language::Java => (Some("//"), Some(("/*", "*/")), JAVA_KEYWORDS, C_BOOLS),
-        Language::CSharp => (Some("//"), Some(("/*", "*/")), CSHARP_KEYWORDS, C_BOOLS),
-        Language::Php => (Some("//"), Some(("/*", "*/")), PHP_KEYWORDS, C_BOOLS),
-        Language::Python => (Some("#"), None, PY_KEYWORDS, PY_BOOLS),
-        Language::Json => (None, None, &[], JSON_BOOLS),
-        Language::C => (Some("//"), Some(("/*", "*/")), C_KEYWORDS, C_BOOLS),
-        Language::Cpp => (Some("//"), Some(("/*", "*/")), CPP_KEYWORDS, CPP_BOOLS),
-        Language::Go => (Some("//"), Some(("/*", "*/")), GO_KEYWORDS, GO_BOOLS),
-        Language::Shell => (Some("#"), None, SH_KEYWORDS, SH_BOOLS),
-        Language::Toml => (Some("#"), None, &[], TOML_BOOLS),
-        Language::Yaml => (Some("#"), None, &[], YAML_BOOLS),
-        Language::Sql => (Some("--"), Some(("/*", "*/")), SQL_KEYWORDS, SQL_BOOLS),
-        Language::Html => (None, Some(("<!--", "-->")), HTML_KEYWORDS, &[]),
-        Language::Css => (None, Some(("/*", "*/")), CSS_KEYWORDS, &[]),
-        Language::Markdown => (None, Some(("<!--", "-->")), &[], &[]),
-        _ => (None, None, &[], &[]),
-    }
-}
-
-/// Classify a generic-language identifier using the text that follows it.
-fn classify_generic_ident(
-    word: &str,
-    after: &str,
-    keywords: &[&str],
-    booleans: &[&str],
-    language: Language,
-) -> TokenKind {
-    if booleans.contains(&word) {
-        return TokenKind::Boolean;
-    }
-    if keywords.contains(&word) {
-        return TokenKind::Keyword;
-    }
-    if language == Language::Sql {
-        let upper = word.to_ascii_uppercase();
-        if booleans.contains(&upper.as_str()) {
-            return TokenKind::Boolean;
-        }
-        if keywords.contains(&upper.as_str()) {
-            return TokenKind::Keyword;
-        }
-    }
-    if after.starts_with('(') {
-        return TokenKind::Function;
-    }
-    if word.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-        return TokenKind::Type;
-    }
-    TokenKind::Plain
-}
-
-fn highlight_generic_line(line: &str, language: Language, state: State) -> (Vec<Token>, State) {
-    let (line_comment, block_comment, keywords, booleans) = lang_params(language);
-    let mut tokens = Vec::new();
-    let mut i = 0usize;
-    let len = line.len();
-    let mut state = state;
-
-    while i < len {
-        let rest = &line[i..];
-        let c = rest.chars().next().unwrap();
-
-        if state == State::BlockComment {
-            let close = block_comment.map(|(_, b)| b).unwrap_or("*/");
-            match rest.find(close) {
-                Some(end) => {
-                    let seg = &rest[..end + close.len()];
-                    tokens.push(Token {
-                        kind: TokenKind::Comment,
-                        text: seg.to_string(),
-                    });
-                    i += seg.len();
-                    state = State::Normal;
-                }
-                None => {
-                    tokens.push(Token {
-                        kind: TokenKind::Comment,
-                        text: rest.to_string(),
-                    });
-                    i = len;
-                }
-            }
-            continue;
-        }
-
-        if let Some(lc) = line_comment
-            && rest.starts_with(lc)
-        {
-            tokens.push(Token {
-                kind: TokenKind::Comment,
-                text: rest.to_string(),
-            });
-            i = len;
-            continue;
-        }
-
-        if let Some((open, close)) = block_comment
-            && rest.starts_with(open)
-        {
-            match rest[open.len()..].find(close) {
-                Some(end) => {
-                    let seg = &rest[..end + open.len() + close.len()];
-                    tokens.push(Token {
-                        kind: TokenKind::Comment,
-                        text: seg.to_string(),
-                    });
-                    i += seg.len();
-                }
-                None => {
-                    tokens.push(Token {
-                        kind: TokenKind::Comment,
-                        text: rest.to_string(),
-                    });
-                    i = len;
-                    state = State::BlockComment;
-                }
-            }
-            continue;
-        }
-
-        if c == '"' || c == '\'' || c == '`' {
-            let (text, consumed) = read_string(rest, c);
-            tokens.push(Token {
-                kind: TokenKind::String,
-                text,
-            });
-            i += consumed;
-            continue;
-        }
-
-        if c.is_ascii_digit() {
-            let (text, consumed) = read_number(rest);
-            tokens.push(Token {
-                kind: TokenKind::Number,
-                text,
-            });
-            i += consumed;
-            continue;
-        }
-
-        if c.is_alphabetic() || c == '_' {
-            let (word, consumed) = read_ident(rest);
-            let after = &rest[consumed..];
-            let kind = classify_generic_ident(&word, after, keywords, booleans, language);
-            tokens.push(Token { kind, text: word });
-            i += consumed;
-            continue;
-        }
-
-        if is_operator(c) {
-            let mut j = i + c.len_utf8();
-            for ch in line[j..].chars() {
-                if !is_operator(ch) {
-                    break;
-                }
-                j += ch.len_utf8();
-            }
-            tokens.push(Token {
-                kind: TokenKind::Operator,
-                text: line[i..j].to_string(),
-            });
-            i = j;
-            continue;
-        }
-
-        if is_punct(c) {
-            tokens.push(Token {
-                kind: TokenKind::Punct,
-                text: c.to_string(),
-            });
-            i += 1;
-            continue;
-        }
-
-        let mut j = i + c.len_utf8();
-        for ch in line[j..].chars() {
-            if !is_plain_char(ch) {
-                break;
-            }
-            j += ch.len_utf8();
-        }
-        tokens.push(Token {
-            kind: TokenKind::Plain,
-            text: line[i..j].to_string(),
-        });
-        i = j;
-    }
-
-    (tokens, state)
-}
-
-const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-    "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-    "return", "self", "static", "struct", "super", "trait", "type", "unsafe", "use", "where",
-    "while",
-];
-
-const JAVA_KEYWORDS: &[&str] = &[
-    "abstract",
-    "assert",
-    "boolean",
-    "break",
-    "byte",
-    "case",
-    "catch",
-    "char",
-    "class",
-    "const",
-    "continue",
-    "default",
-    "do",
-    "double",
-    "else",
-    "enum",
-    "extends",
-    "final",
-    "finally",
-    "float",
-    "for",
-    "if",
-    "implements",
-    "import",
-    "instanceof",
-    "int",
-    "interface",
-    "long",
-    "native",
-    "new",
-    "package",
-    "private",
-    "protected",
-    "public",
-    "record",
-    "return",
-    "sealed",
-    "short",
-    "static",
-    "strictfp",
-    "super",
-    "switch",
-    "synchronized",
-    "this",
-    "throw",
-    "throws",
-    "transient",
-    "try",
-    "var",
-    "void",
-    "volatile",
-    "while",
-    "yield",
-];
-const CSHARP_KEYWORDS: &[&str] = &[
-    "abstract",
-    "as",
-    "async",
-    "await",
-    "base",
-    "bool",
-    "break",
-    "byte",
-    "case",
-    "catch",
-    "char",
-    "checked",
-    "class",
-    "const",
-    "continue",
-    "decimal",
-    "default",
-    "delegate",
-    "do",
-    "double",
-    "else",
-    "enum",
-    "event",
-    "explicit",
-    "extern",
-    "finally",
-    "fixed",
-    "float",
-    "for",
-    "foreach",
-    "if",
-    "implicit",
-    "in",
-    "int",
-    "interface",
-    "internal",
-    "is",
-    "lock",
-    "long",
-    "namespace",
-    "new",
-    "object",
-    "operator",
-    "out",
-    "override",
-    "params",
-    "private",
-    "protected",
-    "public",
-    "readonly",
-    "record",
-    "ref",
-    "return",
-    "sbyte",
-    "sealed",
-    "short",
-    "sizeof",
-    "stackalloc",
-    "static",
-    "string",
-    "struct",
-    "switch",
-    "this",
-    "throw",
-    "try",
-    "typeof",
-    "uint",
-    "ulong",
-    "unchecked",
-    "unsafe",
-    "ushort",
-    "using",
-    "var",
-    "virtual",
-    "void",
-    "volatile",
-    "while",
-    "yield",
-];
-const PHP_KEYWORDS: &[&str] = &[
-    "abstract",
-    "and",
-    "array",
-    "as",
-    "break",
-    "callable",
-    "case",
-    "catch",
-    "class",
-    "clone",
-    "const",
-    "continue",
-    "declare",
-    "default",
-    "die",
-    "do",
-    "echo",
-    "else",
-    "elseif",
-    "empty",
-    "endfor",
-    "endforeach",
-    "endif",
-    "endswitch",
-    "endwhile",
-    "enum",
-    "eval",
-    "exit",
-    "extends",
-    "final",
-    "finally",
-    "fn",
-    "for",
-    "foreach",
-    "function",
-    "global",
-    "goto",
-    "if",
-    "implements",
-    "include",
-    "include_once",
-    "instanceof",
-    "interface",
-    "isset",
-    "list",
-    "match",
-    "namespace",
-    "new",
-    "or",
-    "print",
-    "private",
-    "protected",
-    "public",
-    "readonly",
-    "require",
-    "require_once",
-    "return",
-    "static",
-    "switch",
-    "throw",
-    "trait",
-    "try",
-    "unset",
-    "use",
-    "var",
-    "while",
-    "xor",
-    "yield",
-];
-
-const JS_KEYWORDS: &[&str] = &[
-    "async",
-    "await",
-    "break",
-    "case",
-    "catch",
-    "class",
-    "const",
-    "continue",
-    "debugger",
-    "default",
-    "delete",
-    "do",
-    "else",
-    "export",
-    "extends",
-    "finally",
-    "for",
-    "function",
-    "if",
-    "import",
-    "in",
-    "instanceof",
-    "let",
-    "new",
-    "of",
-    "return",
-    "static",
-    "super",
-    "switch",
-    "this",
-    "throw",
-    "try",
-    "typeof",
-    "var",
-    "void",
-    "while",
-    "with",
-    "yield",
-];
-const JS_BOOLS: &[&str] = &["true", "false", "null", "undefined"];
-
-const TS_KEYWORDS: &[&str] = &[
-    "abstract",
-    "as",
-    "asserts",
-    "async",
-    "await",
-    "break",
-    "case",
-    "catch",
-    "class",
-    "const",
-    "continue",
-    "declare",
-    "default",
-    "delete",
-    "do",
-    "else",
-    "enum",
-    "export",
-    "extends",
-    "finally",
-    "for",
-    "from",
-    "function",
-    "get",
-    "if",
-    "implements",
-    "import",
-    "in",
-    "infer",
-    "instanceof",
-    "interface",
-    "is",
-    "keyof",
-    "let",
-    "namespace",
-    "new",
-    "of",
-    "private",
-    "protected",
-    "public",
-    "readonly",
-    "return",
-    "set",
-    "static",
-    "super",
-    "switch",
-    "this",
-    "throw",
-    "try",
-    "type",
-    "typeof",
-    "var",
-    "void",
-    "while",
-];
-const TS_BOOLS: &[&str] = &["true", "false", "null", "undefined"];
-
-const PY_KEYWORDS: &[&str] = &[
-    "and", "as", "assert", "async", "await", "break", "case", "class", "continue", "def", "del",
-    "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is",
-    "lambda", "match", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with",
-    "yield",
-];
-const PY_BOOLS: &[&str] = &["True", "False", "None"];
-
-const JSON_BOOLS: &[&str] = &["true", "false", "null"];
-
-const C_KEYWORDS: &[&str] = &[
-    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
-    "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
-    "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
-    "union", "unsigned", "void", "volatile", "while",
-];
-const C_BOOLS: &[&str] = &["NULL", "true", "false", "bool"];
-
-const CPP_KEYWORDS: &[&str] = &[
-    "alignas",
-    "alignof",
-    "and",
-    "and_eq",
-    "asm",
-    "auto",
-    "bitand",
-    "bitor",
-    "bool",
-    "break",
-    "case",
-    "catch",
-    "char",
-    "class",
-    "concept",
-    "const",
-    "consteval",
-    "constexpr",
-    "constinit",
-    "const_cast",
-    "continue",
-    "co_await",
-    "co_return",
-    "co_yield",
-    "decltype",
-    "default",
-    "delete",
-    "do",
-    "double",
-    "dynamic_cast",
-    "else",
-    "enum",
-    "explicit",
-    "export",
-    "extern",
-    "float",
-    "for",
-    "friend",
-    "goto",
-    "if",
-    "inline",
-    "int",
-    "long",
-    "mutable",
-    "namespace",
-    "new",
-    "noexcept",
-    "not",
-    "not_eq",
-    "operator",
-    "or",
-    "or_eq",
-    "private",
-    "protected",
-    "public",
-    "register",
-    "reinterpret_cast",
-    "requires",
-    "return",
-    "short",
-    "signed",
-    "sizeof",
-    "static",
-    "static_assert",
-    "static_cast",
-    "struct",
-    "switch",
-    "template",
-    "this",
-    "thread_local",
-    "throw",
-    "try",
-    "typedef",
-    "typeid",
-    "typename",
-    "union",
-    "unsigned",
-    "using",
-    "virtual",
-    "void",
-    "volatile",
-    "while",
-];
-const CPP_BOOLS: &[&str] = &["nullptr", "true", "false", "NULL"];
-
-const GO_KEYWORDS: &[&str] = &[
-    "break",
-    "case",
-    "chan",
-    "const",
-    "continue",
-    "default",
-    "defer",
-    "else",
-    "fallthrough",
-    "for",
-    "func",
-    "go",
-    "goto",
-    "if",
-    "import",
-    "interface",
-    "map",
-    "package",
-    "range",
-    "return",
-    "select",
-    "struct",
-    "switch",
-    "type",
-    "var",
-];
-const GO_BOOLS: &[&str] = &["true", "false", "iota", "nil"];
-
-const SH_KEYWORDS: &[&str] = &[
-    "if", "then", "else", "elif", "fi", "case", "esac", "for", "select", "while", "until", "do",
-    "done", "in", "function", "time", "return", "exit", "export", "local", "readonly", "set",
-    "unset", "shift", "source",
-];
-const SH_BOOLS: &[&str] = &["true", "false"];
-
-const TOML_BOOLS: &[&str] = &["true", "false", "inf", "nan"];
-
-const YAML_BOOLS: &[&str] = &[
-    "true", "false", "yes", "no", "null", "on", "off", "True", "False", "None",
-];
-
-const SQL_KEYWORDS: &[&str] = &[
-    "SELECT",
-    "FROM",
-    "WHERE",
-    "INSERT",
-    "INTO",
-    "UPDATE",
-    "DELETE",
-    "JOIN",
-    "LEFT",
-    "RIGHT",
-    "INNER",
-    "OUTER",
-    "ON",
-    "GROUP",
-    "BY",
-    "ORDER",
-    "HAVING",
-    "LIMIT",
-    "OFFSET",
-    "CREATE",
-    "TABLE",
-    "INDEX",
-    "DROP",
-    "ALTER",
-    "ADD",
-    "COLUMN",
-    "PRIMARY",
-    "KEY",
-    "FOREIGN",
-    "REFERENCES",
-    "NOT",
-    "NULL",
-    "AND",
-    "OR",
-    "IN",
-    "AS",
-    "DISTINCT",
-    "UNION",
-    "ALL",
-    "EXISTS",
-    "BETWEEN",
-    "LIKE",
-    "CASE",
-    "WHEN",
-    "THEN",
-    "ELSE",
-    "END",
-    "CAST",
-    "VALUES",
-    "SET",
-    "DEFAULT",
-    "CHECK",
-    "UNIQUE",
-];
-const SQL_BOOLS: &[&str] = &["TRUE", "FALSE", "NULL", "true", "false", "null"];
-
-const HTML_KEYWORDS: &[&str] = &[
-    "html", "head", "body", "title", "meta", "link", "script", "style", "div", "span", "p", "a",
-    "button", "input", "form", "textarea", "select", "option", "h1", "h2", "h3", "h4", "h5", "h6",
-    "ul", "ol", "li", "table", "tr", "th", "td", "img", "svg", "path", "header", "footer", "main",
-    "nav", "section", "article", "aside",
-];
-
-const CSS_KEYWORDS: &[&str] = &[
-    "display",
-    "flex",
-    "grid",
-    "position",
-    "absolute",
-    "relative",
-    "fixed",
-    "sticky",
-    "width",
-    "height",
-    "min-width",
-    "max-width",
-    "margin",
-    "padding",
-    "border",
-    "background",
-    "color",
-    "font-family",
-    "font-size",
-    "font-weight",
-    "line-height",
-    "text-align",
-    "overflow",
-    "cursor",
-    "transition",
-    "transform",
-    "opacity",
-    "z-index",
-    "inherit",
-    "initial",
-    "none",
-    "auto",
-    "important",
-];
 
 #[cfg(test)]
 mod tests {
@@ -1737,7 +607,7 @@ mod tests {
         assert_eq!(job.boundary_scans, 1);
         assert_eq!(job.indexed_searches.get(), 1);
         let next = job.finish_snapshot().unwrap();
-        assert!(next.retokenized_rows() > 1);
+        assert_eq!(next.retokenized_rows(), 1);
         assert_eq!(
             next.tokens().as_ref(),
             &share_token_rows(highlight_lines(&changed, Language::Rust))
@@ -1931,10 +801,7 @@ mod tests {
             Some(old.clone()),
             Language::Rust,
         );
-        assert!(
-            changed_context.retokenized_rows() >= 3,
-            "comment state propagates until convergence"
-        );
+        assert_eq!(changed_context.retokenized_rows(), 1);
         let different_language = prepare(source, Some(old), Language::Plain);
         assert_eq!(
             different_language.retokenized_rows(),
@@ -1950,14 +817,6 @@ mod tests {
             let joined: String = tokens.iter().map(|t| t.text.as_str()).collect();
             assert_eq!(joined, line, "tokens must rejoin to the source line");
         }
-    }
-
-    fn kinds(source: &str, language: Language) -> Vec<TokenKind> {
-        highlight_lines(source, language)
-            .into_iter()
-            .flatten()
-            .map(|t| t.kind)
-            .collect()
     }
 
     #[test]
@@ -1983,99 +842,65 @@ mod tests {
         assert_eq!(language_from_path("server.go"), Language::Go);
         assert_eq!(language_from_path("Makefile"), Language::Plain);
         assert_eq!(language_from_path("src/lib.rs.bak"), Language::Plain);
+        for path in ["LICENSE", "LICENSE.txt", "NOTICE", "COPYING"] {
+            assert_eq!(language_from_path(path), Language::Plain);
+        }
+        for path in [
+            ".editorconfig",
+            ".npmrc",
+            ".gitconfig",
+            ".gitmodules",
+            ".env",
+            ".env.local",
+            "setup.cfg",
+            "gradle.properties",
+        ] {
+            assert_eq!(language_from_path(path), Language::Ini);
+        }
+        for path in [
+            "NuGet.Config",
+            "App.csproj",
+            "App.slnx",
+            "Package.nuspec",
+            "Directory.Build.props",
+            "pom.xml",
+            "build.targets",
+        ] {
+            assert_eq!(language_from_path(path), Language::Xml);
+        }
+        assert_eq!(language_from_path("tsconfig.jsonc"), Language::Json);
+        for path in [
+            "Cargo.lock",
+            "poetry.lock",
+            "pdm.lock",
+            "uv.lock",
+            "Pipfile",
+        ] {
+            assert_eq!(language_from_path(path), Language::Toml);
+        }
+        for path in ["composer.lock", "Pipfile.lock"] {
+            assert_eq!(language_from_path(path), Language::Json);
+        }
     }
 
     #[test]
-    fn rust_keywords_and_types() {
-        let toks = highlight_lines("fn main() { let x = 5; }", Language::Rust);
-        let flat: Vec<TokenKind> = toks.into_iter().flatten().map(|t| t.kind).collect();
-        assert!(flat.contains(&TokenKind::Keyword)); // fn, let
-        assert!(flat.contains(&TokenKind::Function)); // main
-        assert!(flat.contains(&TokenKind::Number)); // 5
-    }
-
-    #[test]
-    fn rust_string_and_escape() {
-        let toks = highlight_lines(r#"let s = "a \"b\" c";"#, Language::Rust);
-        let flat: Vec<(TokenKind, String)> = toks
-            .into_iter()
-            .flatten()
-            .map(|t| (t.kind, t.text))
-            .collect();
-        assert!(flat.contains(&(TokenKind::String, r#""a \"b\" c""#.to_string())));
-    }
-
-    #[test]
-    fn rust_line_comment_to_eol() {
-        let toks = highlight_lines("let a = 1; // note", Language::Rust);
-        let line = &toks[0];
-        assert_eq!(line.last().unwrap().kind, TokenKind::Comment);
-        assert_eq!(line.last().unwrap().text, "// note");
-    }
-
-    #[test]
-    fn rust_block_comment_spans_lines() {
-        let source = "let a = 1; /* start\nstill comment */ let b = 2;";
-        let toks = highlight_lines(source, Language::Rust);
-        // Line 1 ends inside the block comment; line 2 finishes it.
-        assert_eq!(toks[0].last().unwrap().kind, TokenKind::Comment);
-        assert_eq!(toks[0].last().unwrap().text, "/* start");
-        assert_eq!(toks[1].first().unwrap().kind, TokenKind::Comment);
-        assert_eq!(toks[1].first().unwrap().text, "still comment */");
-        rejoins(source, Language::Rust);
-    }
-
-    #[test]
-    fn rust_char_and_lifetime() {
-        let toks = highlight_lines("fn f<'a>(c: char) -> &'a str { 'x' }", Language::Rust);
-        let flat: Vec<(TokenKind, String)> = toks
-            .into_iter()
-            .flatten()
-            .map(|t| (t.kind, t.text))
-            .collect();
-        assert!(flat.contains(&(TokenKind::Lifetime, "'a".to_string())));
-        assert!(flat.contains(&(TokenKind::Char, "'x'".to_string())));
-    }
-
-    #[test]
-    fn rust_macro_and_attribute() {
-        let toks = highlight_lines("#[derive(Debug)]\nprintln!(\"hi\");", Language::Rust);
-        let flat: Vec<(TokenKind, String)> = toks
-            .into_iter()
-            .flatten()
-            .map(|t| (t.kind, t.text))
-            .collect();
-        assert!(flat.contains(&(TokenKind::Attribute, "#".to_string())));
-        assert!(flat.contains(&(TokenKind::Macro, "println".to_string())));
-    }
-
-    #[test]
-    fn rust_numbers() {
-        let toks = highlight_lines("let a = 0x1F; let b = 3.14; let c = 1e3;", Language::Rust);
-        let nums: Vec<String> = toks
-            .into_iter()
-            .flatten()
-            .filter(|t| t.kind == TokenKind::Number)
-            .map(|t| t.text)
-            .collect();
-        assert_eq!(nums, vec!["0x1F", "3.14", "1e3"]);
-    }
-
-    #[test]
-    fn rust_range_is_not_a_float() {
-        let toks = highlight_lines("for i in 1..5 {}", Language::Rust);
-        let flat: Vec<(TokenKind, String)> = toks
-            .into_iter()
-            .flatten()
-            .map(|t| (t.kind, t.text))
-            .collect();
-        assert!(flat.contains(&(TokenKind::Number, "1".to_string())));
-        assert!(flat.contains(&(TokenKind::Number, "5".to_string())));
-        // The `..` must not be swallowed into a number.
+    fn plain_documents_never_receive_code_colors() {
+        let source = "Copyright (c) 2026 Example\nPermission is hereby granted, free of charge,\n\"AS IS\", WITHOUT WARRANTY; /* prose */ # headings\n文😀";
+        let rows = highlight_lines(source, Language::Plain);
         assert!(
-            !flat
-                .iter()
-                .any(|(k, t)| *k == TokenKind::Number && t.contains('.'))
+            rows.iter()
+                .flatten()
+                .all(|token| token.kind == TokenKind::Plain)
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row
+                    .iter()
+                    .map(|token| token.text.as_str())
+                    .collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            source
         );
     }
 
@@ -2096,22 +921,6 @@ mod tests {
         ] {
             rejoins(src, lang);
         }
-    }
-
-    #[test]
-    fn python_comment_and_keywords() {
-        let k = kinds("def f():\n    return None  # done", Language::Python);
-        assert!(k.contains(&TokenKind::Keyword));
-        assert!(k.contains(&TokenKind::Boolean));
-        assert!(k.contains(&TokenKind::Comment));
-    }
-
-    #[test]
-    fn json_strings_numbers_booleans() {
-        let k = kinds(r#"{"a": 1, "b": true, "c": null}"#, Language::Json);
-        assert!(k.contains(&TokenKind::String));
-        assert!(k.contains(&TokenKind::Number));
-        assert!(k.contains(&TokenKind::Boolean));
     }
 
     #[test]
@@ -2164,14 +973,14 @@ mod tests {
         assert_eq!(toks[0][0].kind, TokenKind::Plain);
         assert_eq!(toks[0][0].text, long_line);
 
-        // A block comment spanning a capped line keeps its state across it.
+        // Fallback remains plain across comment-like prose and oversized rows.
         let source = format!("/* start\n{long_line}\nstill comment */ let a = 1;");
         let toks = highlight_lines(&source, Language::Rust);
         assert_eq!(toks[1].len(), 1);
         assert_eq!(toks[1][0].kind, TokenKind::Plain);
         assert_eq!(toks[1][0].text, long_line);
-        assert_eq!(toks[2].first().unwrap().kind, TokenKind::Comment);
-        assert_eq!(toks[2].first().unwrap().text, "still comment */");
+        assert_eq!(toks[2].first().unwrap().kind, TokenKind::Plain);
+        assert_eq!(toks[2].first().unwrap().text, "still comment */ let a = 1;");
         rejoins(&source, Language::Rust);
     }
 

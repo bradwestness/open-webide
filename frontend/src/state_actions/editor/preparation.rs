@@ -170,11 +170,24 @@ impl EditorActions {
 
     /// Restore complete native text when a cold viewport cannot be painted yet.
     /// Active composition retains its installed native mapping until commit/cancel.
-    pub fn defer_viewport_paint(self) -> bool {
+    pub fn defer_viewport_paint(self, source_rows: &[usize]) -> bool {
         if self.is_composing() {
             return false;
         }
-        if !self.native_geometry_pending() {
+        let retain_initial = self.native_geometry_pending()
+            && self.bound_native_context().is_some_and(|context| {
+                source_rows.is_empty()
+                    || source_rows.iter().any(|source| {
+                        context
+                            .projection()
+                            .lines()
+                            .binary_search_by_key(source, |line| line.source_line)
+                            .is_ok()
+                    })
+            });
+        // An initial pending window remains usable at its own source rows. Moving
+        // to a cold unpaintable viewport outside it requires complete native input.
+        if !retain_initial {
             self.release_native_context();
         }
         true
@@ -197,18 +210,13 @@ impl EditorActions {
         } else if self.syntax_is_pending() {
             (false, std::sync::Arc::new(Vec::new()))
         } else {
-            let language = self
-                .key()
-                .map_or(openwebide_core::highlight::Language::Plain, |key| {
-                    openwebide_core::highlight::language_from_path(&key.1)
-                });
             (
                 false,
                 std::sync::Arc::new(self.workspace.content.with_untracked(|source| {
                     openwebide_core::highlight::share_token_rows(
                         openwebide_core::highlight::highlight_lines(
                             &source.replace("\r\n", "\n"),
-                            language,
+                            openwebide_core::highlight::Language::Plain,
                         ),
                     )
                 })),
@@ -282,7 +290,7 @@ impl EditorActions {
             }
             let mut lexical = openwebide_core::highlight::LexicalPreparation::for_textarea(
                 scope.source.clone(),
-                openwebide_core::highlight::language_from_path(&scope.key.1),
+                openwebide_core::highlight::Language::Plain,
             );
             if let Some(previous) = self
                 .workspace

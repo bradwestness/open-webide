@@ -30,7 +30,8 @@ impl Document {
             let language = syntax.language_at(range.start);
             let interpolation = syntax.opens_interpolation(range.start, ch);
             let after = syntax.next_character(range.end);
-            let quote = language != Language::Html && supports_quote(language, ch);
+            let quote =
+                !matches!(language, Language::Html | Language::Xml) && supports_quote(language, ch);
             let close = supports_brackets(language)
                 .then(|| closing(ch))
                 .flatten()
@@ -163,6 +164,15 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn markup_and_plain_configuration_quotes_do_not_get_code_pairs() {
+        for language in [Language::Ini, Language::MarkdownInline, Language::Xml] {
+            let mut document = Document::new("");
+            document.type_character('"', language).unwrap();
+            assert_eq!(document.text(), "\"");
+        }
+    }
+
     use super::*;
     #[test]
     fn pairs_surround_directional_unicode_selection_skip_and_delete() {

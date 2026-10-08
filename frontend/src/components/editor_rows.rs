@@ -26,6 +26,13 @@ pub(super) fn styled_row_probe(
         .dyn_into::<web_sys::HtmlElement>()
         .map_err(|_| ())?;
     probe.set_class_name("editor-highlight editor-row-measure");
+    if let Some(parent) = input.parent_element() {
+        for class in ["editor-uniform-rows", "editor-word-wrap"] {
+            if parent.class_list().contains(class) {
+                probe.class_list().add_1(class).map_err(|_| ())?;
+            }
+        }
+    }
     let gutter = input.offset_left();
     let width = crate::viewport::editor_scroll(input).client_width() + gutter;
     probe
@@ -70,6 +77,36 @@ pub(super) fn styled_row_probe(
 }
 
 /// CSS padding is a DOM primitive; dimensions and validity come from shared rows.
+/// Explicit CSS dimensions only; no default metrics authorize source extents.
+pub(super) fn uniform_row_dimensions(input: &web_sys::HtmlTextAreaElement) -> Option<(f64, f64)> {
+    if !web_sys::css::supports_with_value("height", "1lh").ok()? {
+        return None;
+    }
+    let parent = input.parent_element()?;
+    if !parent.class_list().contains("editor-uniform-rows")
+        || parent.class_list().contains("editor-word-wrap")
+    {
+        return None;
+    }
+    let row = parent.query_selector(".editor-source-line").ok()??;
+    // DOM layout quantizes CSS dimensions. Reuse the actual fixed row box,
+    // rather than multiply an unquantized computed line-height.
+    let row_height = row.get_bounding_client_rect().height();
+    let style = window().get_computed_style(input).ok()??;
+    let pixels = |name| {
+        style
+            .get_property_value(name)
+            .ok()?
+            .strip_suffix("px")?
+            .parse::<f64>()
+            .ok()
+    };
+    Some((
+        row_height,
+        pixels("padding-top")? + pixels("padding-bottom")?,
+    ))
+}
+
 pub(super) fn document_extent(
     input: &web_sys::HtmlTextAreaElement,
     rows: &MeasuredRows,
