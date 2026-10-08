@@ -16,7 +16,8 @@ pub(super) struct LineIndex {
     pub coordinates: Arc<Vec<LineCoordinates>>,
     utf16_len: usize,
     textarea_len: usize,
-    guides: GuideCache,
+    guides: RowCache<CachedGuides>,
+    visible_rows: RowCache<Arc<Vec<super::VisibleLine>>>,
 }
 #[derive(Clone, Debug)]
 struct CachedGuides {
@@ -26,9 +27,14 @@ struct CachedGuides {
 }
 
 // Presentation caches are excluded from logical row identity and history.
-#[derive(Debug, Default)]
-struct GuideCache(std::sync::Mutex<Option<CachedGuides>>);
-impl Clone for GuideCache {
+#[derive(Debug)]
+struct RowCache<T>(std::sync::Mutex<Option<T>>);
+impl<T> Default for RowCache<T> {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+}
+impl<T: Clone> Clone for RowCache<T> {
     fn clone(&self) -> Self {
         Self(std::sync::Mutex::new(
             self.0
@@ -38,12 +44,12 @@ impl Clone for GuideCache {
         ))
     }
 }
-impl PartialEq for GuideCache {
+impl<T> PartialEq for RowCache<T> {
     fn eq(&self, _other: &Self) -> bool {
         true
     }
 }
-impl Eq for GuideCache {}
+impl<T> Eq for RowCache<T> {}
 
 impl LineIndex {
     pub fn new(source: &str) -> Self {
@@ -58,7 +64,8 @@ impl LineIndex {
             coordinates: Arc::new(Vec::new()),
             utf16_len: 0,
             textarea_len: 0,
-            guides: GuideCache::default(),
+            guides: RowCache::default(),
+            visible_rows: RowCache::default(),
         };
         for row in &index.rows {
             index
@@ -129,7 +136,67 @@ impl LineIndex {
             start_row..end_row,
             Arc::unwrap_or_clone(replacement.coordinates),
         );
+        self.update_visible_rows(
+            start_row..end_row,
+            replacement_rows,
+            old_len != new.len() || next_native != native_end,
+        );
         self.update_guides(old_len, new, start_row..end_row, replacement_rows, old_rows);
+    }
+
+    fn visible_line(&self, row: usize) -> super::VisibleLine {
+        let source = &self.rows[row];
+        super::VisibleLine {
+            source_line: row,
+            source: source.start..source.end,
+            visible_start: source.start,
+            textarea_start: self.offsets[row].1,
+        }
+    }
+
+    pub fn visible_rows(&self) -> Arc<Vec<super::VisibleLine>> {
+        self.visible_rows
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(|| {
+                Arc::new(
+                    (0..self.rows.len())
+                        .map(|row| self.visible_line(row))
+                        .collect(),
+                )
+            })
+            .clone()
+    }
+
+    fn update_visible_rows(&self, changed: Range<usize>, replacement_rows: usize, shifted: bool) {
+        let mut cached = self
+            .visible_rows
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(rows) = cached.as_mut() else {
+            return;
+        };
+        let rows = Arc::make_mut(rows);
+        // One inserted line must not double a multi-megabyte retained table.
+        const ROW_HEADROOM: usize = 256;
+        let required = rows.len() - changed.len() + replacement_rows;
+        if required > rows.capacity() {
+            rows.reserve_exact(required + ROW_HEADROOM - rows.len());
+        }
+        if shifted || replacement_rows != changed.len() {
+            for (offset, row) in rows[changed.end..].iter_mut().enumerate() {
+                *row = self.visible_line(changed.start + replacement_rows + offset);
+            }
+        }
+        rows.splice(
+            changed.clone(),
+            (changed.start..changed.start + replacement_rows).map(|row| self.visible_line(row)),
+        );
+        if rows.capacity() > rows.len().saturating_mul(2) + ROW_HEADROOM {
+            rows.shrink_to(rows.len() + ROW_HEADROOM);
+        }
     }
 
     fn guide_edit_rows(&self, source: &str, changed: Range<usize>) -> Range<usize> {
@@ -689,6 +756,45 @@ mod tests {
         verify(&document);
     }
 
+    #[test]
+    fn visible_row_growth_and_large_deletion_keep_capacity_near_current_rows() {
+        let source = "body\n".repeat(10_000);
+        let mut index = LineIndex::new(&source);
+        drop(index.visible_rows());
+        let expanded = format!("new\n{source}");
+        index.update(source.len(), &expanded, 0..0, 4);
+        let rows = index.visible_rows();
+        assert!(rows.capacity() <= rows.len() + 256);
+        assert_eq!(rows, LineIndex::new(&expanded).visible_rows());
+        let retained = rows.clone();
+        drop(rows);
+        index.update(expanded.len(), "tail", 0..expanded.len(), 4);
+        let rows = index.visible_rows();
+        assert_eq!(rows, LineIndex::new("tail").visible_rows());
+        assert!(rows.capacity() <= rows.len() + 256);
+        assert_eq!(retained, LineIndex::new(&expanded).visible_rows());
+    }
+
+    #[test]
+    fn visible_rows_stay_lazy_until_requested_and_rebase_unique_native_offsets() {
+        let mut index = LineIndex::new("head\n文\r\ntail\n");
+        assert!(index.visible_rows.0.lock().unwrap().is_none());
+        let changed = "HEAD\n文\r\ntail\n";
+        index.update(changed.len(), changed, 0..4, 4);
+        assert!(index.visible_rows.0.lock().unwrap().is_none());
+        let rows = index.visible_rows();
+        let address = Arc::as_ptr(&rows);
+        let prefix = rows[0].clone();
+        drop(rows);
+        let changed = "HEAD\nabc\r\ntail\n";
+        index.update(changed.len(), changed, 5..8, 8);
+        let rows = index.visible_rows();
+        assert_eq!(Arc::as_ptr(&rows), address);
+        assert_eq!(rows[0], prefix);
+        assert_eq!(rows, LineIndex::new(changed).visible_rows());
+        assert_eq!(rows[2].textarea_start, 9);
+    }
+
     proptest::proptest! {
         #[test]
         fn incremental_coordinates_equal_full_reconstruction(
@@ -703,8 +809,16 @@ mod tests {
             let changed = a.min(b)..a.max(b);
             let new = format!("{}{}{}", &old[..changed.start], inserted, &old[changed.end..]);
             let mut index = LineIndex::new(&old);
+            let retained_rows = index.visible_rows();
             index.update(old.len(), &new, changed.clone(), changed.start + inserted.len());
-            proptest::prop_assert_eq!(&index, &LineIndex::new(&new));
+            let rebuilt = LineIndex::new(&new);
+            proptest::prop_assert_eq!(&index, &rebuilt);
+            proptest::prop_assert_eq!(index.visible_rows(), rebuilt.visible_rows());
+            proptest::prop_assert_eq!(retained_rows, LineIndex::new(&old).visible_rows());
+            let mut unique = LineIndex::new(&old);
+            drop(unique.visible_rows());
+            unique.update(old.len(), &new, changed.clone(), changed.start + inserted.len());
+            proptest::prop_assert_eq!(unique.visible_rows(), rebuilt.visible_rows());
             for offset in new.char_indices().map(|(offset, _)| offset).chain(std::iter::once(new.len())) {
                 proptest::prop_assert_eq!(index.byte_to_textarea(&new, offset), super::super::byte_to_textarea(&new, offset));
                 proptest::prop_assert_eq!(index.line_column(&new, offset), super::super::line_column(&new, offset));

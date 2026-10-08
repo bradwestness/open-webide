@@ -34,7 +34,7 @@ pub struct FoldProjection {
     source_len: usize,
     source_range: Range<usize>,
     textarea_origin: usize,
-    lines: Arc<[VisibleLine]>,
+    lines: Arc<Vec<VisibleLine>>,
     hidden: Arc<[HiddenText]>,
     uniform_rows: bool,
     coordinates: Arc<Vec<super::coordinates::LineCoordinates>>,
@@ -47,6 +47,11 @@ fn shared_coordinates(
 ) -> Arc<Vec<super::coordinates::LineCoordinates>> {
     coordinates.shrink_to_fit();
     Arc::new(coordinates)
+}
+
+fn shared_visible_rows(mut rows: Vec<VisibleLine>) -> Arc<Vec<VisibleLine>> {
+    rows.shrink_to_fit();
+    Arc::new(rows)
 }
 
 impl FoldProjection {
@@ -81,6 +86,7 @@ impl FoldProjection {
         index: &super::index::LineIndex,
         shared: Option<Arc<String>>,
     ) -> Self {
+        let shared_lines = shared.as_ref().map(|_| index.visible_rows());
         let logical = &index.rows;
         let mut visible_len = 0;
         let mut visible = Vec::new();
@@ -88,7 +94,7 @@ impl FoldProjection {
         let mut hidden: Vec<HiddenText> = Vec::new();
         let mut row = 0;
         let mut textarea_start = 0;
-        while row < logical.len() {
+        while shared_lines.is_none() && row < logical.len() {
             let line = &logical[row];
             visible.push(VisibleLine {
                 source_line: row,
@@ -126,7 +132,8 @@ impl FoldProjection {
         });
         // A trailing newline always creates a logical empty input row. Keep its
         // source identity even when a provider included it in a fold's range.
-        if text.ends_with('\n')
+        if shared_lines.is_none()
+            && text.ends_with('\n')
             && visible
                 .last()
                 .is_some_and(|line| line.source.start != source.len())
@@ -159,7 +166,7 @@ impl FoldProjection {
             source_len: source.len(),
             source_range: 0..source.len(),
             textarea_origin: 0,
-            lines: visible.into(),
+            lines: shared_lines.unwrap_or_else(|| shared_visible_rows(visible)),
             hidden: hidden.into(),
         }
     }
@@ -279,7 +286,7 @@ impl FoldProjection {
             source_len: self.source_len,
             source_range,
             textarea_origin,
-            lines: lines.into(),
+            lines: shared_visible_rows(lines),
             hidden: hidden.into(),
             uniform_rows,
             coordinates: shared_coordinates(coordinates),
@@ -1277,6 +1284,11 @@ mod tests {
                 &first.coordinates
             ));
             let address = Arc::as_ptr(&first.coordinates);
+            let rows_address = Arc::as_ptr(&first.lines);
+            assert!(Arc::ptr_eq(
+                &document.line_index.visible_rows(),
+                &first.lines
+            ));
             drop(first);
             document
                 .apply(
@@ -1286,6 +1298,10 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(Arc::as_ptr(&document.line_index.coordinates), address);
+            assert_eq!(
+                Arc::as_ptr(&document.line_index.visible_rows()),
+                rows_address
+            );
             let retained = document.projection();
             let original = retained.clone();
             let snapshot = document.clone();
@@ -1303,6 +1319,10 @@ mod tests {
             assert!(!Arc::ptr_eq(
                 &document.line_index.coordinates,
                 &retained.coordinates
+            ));
+            assert!(!Arc::ptr_eq(
+                &document.line_index.visible_rows(),
+                &retained.lines
             ));
             for projection in [
                 document.projection(),
@@ -1337,6 +1357,10 @@ mod tests {
                 assert!(!Arc::ptr_eq(
                     &document.line_index.coordinates,
                     &folded.coordinates
+                ));
+                assert!(!Arc::ptr_eq(
+                    &document.line_index.visible_rows(),
+                    &folded.lines
                 ));
                 assert_eq!(
                     folded,

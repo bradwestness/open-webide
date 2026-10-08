@@ -97,10 +97,14 @@ not an isolated before/after performance comparison:
 | `document_1000_warm_projections` | 16,777,194 | 0.009 | 0.015 |
 
 Full records: [native CSV](editor-performance/native-shared-coordinates.csv),
-[browser CSV](editor-performance/browser-shared-coordinates.csv). Visible-row
-assembly, native CRLF normalization and retained-table detachment still visit
-large containers; these measurements do not establish memory bounds, input
-latency or completion of the editor performance roadmap.
+[browser CSV](editor-performance/browser-shared-coordinates.csv). These records
+precede the subsequent visible-row cache: unfolded row tables now prepare lazily,
+share the document index and update affected rows plus shifted suffixes after
+edits. Retained tables detach, growth reserves 256 rows of headroom, and major
+deletions release excess capacity. Cold/folded row assembly, native CRLF
+normalization and retained-table detachment still visit large containers; these
+measurements do not establish memory bounds, input latency or completion of the
+editor performance roadmap.
 
 ## Sparse glyph coordinates and cached eligibility
 

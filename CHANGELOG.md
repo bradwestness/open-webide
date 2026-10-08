@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share lazily prepared visible-row tables with unfolded editor projections. Edit batches update changed rows and shifted suffixes, retain unchanged prefixes and preserve immutable older views; row growth uses bounded headroom and large deletions release excess capacity; folded and bounded projections keep their own visible rows.
+
 - Share unfolded editor coordinate tables with the document index. Retained views detach on edits; folded and bounded views keep their own row coordinates, while unused projection caches allow in-place index updates.
 
 - Share unfolded editor projections with the document's immutable source; LF native input shares that allocation too. Folded views reserve only visible bytes and keep assembled strings without copying them into another storage type. Release unused projection caches before edits, preserve retained snapshots, and normalize native text in one pass.

@@ -150,7 +150,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   before edits, while retained views and composition baselines detach on change.
   Native normalization uses one pass. Unfolded projections share document
   coordinate tables; retained views detach on edits, and folded/bounded views own
-  their visible coordinates. Visible-row tables still rebuild, retained coordinate
+  their visible coordinates. Unfolded visible-row tables prepare lazily and share
+  the document index; changed batches update affected rows and shifted suffixes,
+  with bounded growth headroom and capacity release after major deletions.
+  Folded/bounded visible rows still assemble independently, retained row/coordinate
   tables still copy on edit, and active-buffer publication still copies source. Complete-native replacement compares borrowed,
   newline-normalized source characters and maps edit boundaries directly to source
   bytes; duplicate composition commits reuse that comparison. Complete-value
