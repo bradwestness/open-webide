@@ -23,9 +23,9 @@ for help, review its changes, and work with Git and a terminal—all in one plac
 
 <figure class="app-screenshot" markdown="1">
 
-[![Open WebIDE running as an installed PWA, with Git file-change counts, a syntax-highlighted editor, and model chat](docs/assets/openwebide-pwa.png)](docs/assets/openwebide-pwa.png)
+[![Open WebIDE running as an installed PWA, with Git file-change counts, a syntax-highlighted inline Git diff, and model chat](docs/assets/openwebide-pwa.png)](docs/assets/openwebide-pwa.png)
 
-<figcaption>Open WebIDE running as an installed PWA. Edit code and track Git changes alongside your model conversation.</figcaption>
+<figcaption>Open WebIDE running as an installed PWA. Review Git diffs alongside your model conversation.</figcaption>
 
 </figure>
 
