@@ -109,6 +109,7 @@ pub enum Tool {
     GitStatus,
     HostInfo,
     TodoWrite(openwebide_core::TodoPlan),
+    Memory(openwebide_core::MemoryCommand),
     GitDiff(GitDiffArgs),
     GitCommit(GitCommitArgs),
     GitBranch(GitBranchArgs),
@@ -133,6 +134,20 @@ impl Tool {
             Tool::RunCommand(args) => format!("run '{}'", args.command),
             Tool::GitStatus => "inspect git status".to_string(),
             Tool::HostInfo => "inspect bridge host hardware".into(),
+            Tool::Memory(command) => match command {
+                openwebide_core::MemoryCommand::Create { title, .. } => format!("remember {title}"),
+                openwebide_core::MemoryCommand::Search { query } => {
+                    format!("search project memories for '{query}'")
+                }
+                openwebide_core::MemoryCommand::Read { id } => format!("read project memory {id}"),
+                openwebide_core::MemoryCommand::Update { id, title, .. } => {
+                    format!("update project memory {id}: {title}")
+                }
+                openwebide_core::MemoryCommand::Delete { id, .. } => {
+                    format!("delete project memory {id}")
+                }
+                openwebide_core::MemoryCommand::SetEnabled { .. } => "toggle project memory".into(),
+            },
             Tool::TodoWrite(plan) => format!("update plan ({} items)", plan.todos.len()),
             Tool::GitDiff(args) => match args.path.as_deref() {
                 Some(p) => format!("inspect git diff for '{p}'"),
@@ -164,6 +179,12 @@ pub enum ToolName {
     GitStatus,
     HostInfo,
     TodoWrite,
+    MemoryCreate,
+    MemorySearch,
+    MemoryRead,
+    MemoryUpdate,
+    MemoryDelete,
+
     GitDiff,
     GitCommit,
     GitBranch,
@@ -182,8 +203,7 @@ impl ToolName {
         )
     }
 
-    /// Every built-in tool, in the order `vfs_tools()` advertises it to the
-    /// model.
+    /// Every built-in tool. Memory tools are advertised only for enabled projects.
     pub const ALL: &[ToolName] = &[
         ToolName::ReadFile,
         ToolName::WriteFile,
@@ -196,6 +216,11 @@ impl ToolName {
         ToolName::GitStatus,
         ToolName::HostInfo,
         ToolName::TodoWrite,
+        ToolName::MemoryCreate,
+        ToolName::MemorySearch,
+        ToolName::MemoryRead,
+        ToolName::MemoryUpdate,
+        ToolName::MemoryDelete,
         ToolName::GitDiff,
         ToolName::GitCommit,
         ToolName::GitBranch,
@@ -215,6 +240,12 @@ impl ToolName {
             ToolName::GitStatus => "git_status",
             ToolName::HostInfo => "host_info",
             ToolName::TodoWrite => "todo_write",
+            ToolName::MemoryCreate => "memory_create",
+            ToolName::MemorySearch => "memory_search",
+            ToolName::MemoryRead => "memory_read",
+            ToolName::MemoryUpdate => "memory_update",
+            ToolName::MemoryDelete => "memory_delete",
+
             ToolName::GitDiff => "git_diff",
             ToolName::GitCommit => "git_commit",
             ToolName::GitBranch => "git_branch",
@@ -224,6 +255,11 @@ impl ToolName {
     /// The tool's JSON-schema definition, as advertised to the model.
     pub fn definition(self) -> ToolDefinition {
         match self {
+            ToolName::MemoryCreate => ToolDefinition { name: self.as_str().into(), description: "Store a durable project fact or convention. Avoid credentials, secrets and transient task state.".into(), parameters: json!({"type":"object","properties":{"title":{"type":"string","maxLength":120},"content":{"type":"string","maxLength":4000}},"required":["title","content"],"additionalProperties":false}) },
+            ToolName::MemorySearch => ToolDefinition { name: self.as_str().into(), description: "Search project memories by text; empty query lists recent entries. Returns bounded excerpts.".into(), parameters: json!({"type":"object","properties":{"query":{"type":"string","maxLength":256}},"required":["query"],"additionalProperties":false}) },
+            ToolName::MemoryRead => ToolDefinition { name: self.as_str().into(), description: "Read a full project memory, including its current revision.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1}},"required":["id"],"additionalProperties":false}) },
+            ToolName::MemoryUpdate => ToolDefinition { name: self.as_str().into(), description: "Update a project memory using its current revision; read again after a conflict.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1},"title":{"type":"string","maxLength":120},"content":{"type":"string","maxLength":4000}},"required":["id","revision","title","content"],"additionalProperties":false}) },
+            ToolName::MemoryDelete => ToolDefinition { name: self.as_str().into(), description: "Delete a project memory using its current revision.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1}},"required":["id","revision"],"additionalProperties":false}) },
             ToolName::TodoWrite => ToolDefinition {
                 name: "todo_write".into(),
                 description: "Replace the checklist: stable IDs, at most one in_progress; [] clears it.".into(),
@@ -397,6 +433,8 @@ impl ToolName {
                 | ToolName::GrepSearch
                 | ToolName::HostInfo
                 | ToolName::TodoWrite
+                | ToolName::MemoryRead
+                | ToolName::MemorySearch
                 | ToolName::GitStatus
                 | ToolName::GitDiff
                 | ToolName::SearchWeb
@@ -442,6 +480,12 @@ impl FromStr for ToolName {
             "git_status" => Ok(ToolName::GitStatus),
             "host_info" => Ok(ToolName::HostInfo),
             "todo_write" => Ok(ToolName::TodoWrite),
+            "memory_create" => Ok(ToolName::MemoryCreate),
+            "memory_search" => Ok(ToolName::MemorySearch),
+            "memory_read" => Ok(ToolName::MemoryRead),
+            "memory_update" => Ok(ToolName::MemoryUpdate),
+            "memory_delete" => Ok(ToolName::MemoryDelete),
+
             "git_diff" => Ok(ToolName::GitDiff),
             "git_commit" => Ok(ToolName::GitCommit),
             "git_branch" => Ok(ToolName::GitBranch),
@@ -499,6 +543,32 @@ pub fn parse(call: &ToolCall) -> Result<Tool, ToolArgError> {
         };
     }
     match name {
+        ToolName::MemoryCreate
+        | ToolName::MemorySearch
+        | ToolName::MemoryRead
+        | ToolName::MemoryUpdate
+        | ToolName::MemoryDelete => {
+            let parsed = (|| {
+                let mut value: serde_json::Value = serde_json::from_str(raw)?;
+                let object = value
+                    .as_object_mut()
+                    .ok_or_else(|| serde::de::Error::custom("Expected an object"))?;
+                if object.contains_key("action") {
+                    return Err(serde::de::Error::custom("Unexpected action field"));
+                }
+                object.insert(
+                    "action".into(),
+                    serde_json::Value::String(name.as_str().trim_start_matches("memory_").into()),
+                );
+                serde_json::from_value::<openwebide_core::MemoryCommand>(value)
+            })();
+            parsed
+                .map(Tool::Memory)
+                .map_err(|error: serde_json::Error| ToolArgError::InvalidArguments {
+                    tool: name.as_str(),
+                    error: error.to_string(),
+                })
+        }
         ToolName::TodoWrite => parse_as!(TodoWrite, openwebide_core::TodoPlan),
         ToolName::ReadFile => parse_as!(ReadFile, ReadFileArgs),
         ToolName::WriteFile => parse_as!(WriteFile, WriteFileArgs),
@@ -610,6 +680,14 @@ mod tests {
             Tool::RunCommand(_) => ToolName::RunCommand,
             Tool::GitStatus => ToolName::GitStatus,
             Tool::HostInfo => ToolName::HostInfo,
+            Tool::Memory(command) => match command {
+                openwebide_core::MemoryCommand::Create { .. } => ToolName::MemoryCreate,
+                openwebide_core::MemoryCommand::Search { .. } => ToolName::MemorySearch,
+                openwebide_core::MemoryCommand::Read { .. } => ToolName::MemoryRead,
+                openwebide_core::MemoryCommand::Update { .. } => ToolName::MemoryUpdate,
+                openwebide_core::MemoryCommand::Delete { .. } => ToolName::MemoryDelete,
+                openwebide_core::MemoryCommand::SetEnabled { .. } => unreachable!(),
+            },
             Tool::TodoWrite(_) => ToolName::TodoWrite,
             Tool::GitDiff(_) => ToolName::GitDiff,
             Tool::GitCommit(_) => ToolName::GitCommit,
@@ -719,6 +797,8 @@ mod tests {
             ToolName::GitStatus,
             ToolName::HostInfo,
             ToolName::TodoWrite,
+            ToolName::MemorySearch,
+            ToolName::MemoryRead,
             ToolName::GitDiff,
             ToolName::SearchWeb,
         ];

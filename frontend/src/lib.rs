@@ -31,6 +31,7 @@ pub mod pending;
 pub mod project_git;
 #[cfg(target_arch = "wasm32")]
 pub mod project_host;
+pub mod project_memory;
 #[cfg(target_arch = "wasm32")]
 pub mod project_runs;
 pub mod project_setup;

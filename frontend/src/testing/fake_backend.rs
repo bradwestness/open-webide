@@ -56,6 +56,10 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub memories: RefCell<BTreeMap<i64, openwebide_core::ProjectMemories>>,
+    pub memory_load_results: RefCell<VecDeque<Deferred<openwebide_core::ProjectMemories>>>,
+    pub memory_command_results: RefCell<VecDeque<Deferred<openwebide_core::ProjectMemories>>>,
+    pub memory_commands: RefCell<Vec<(i64, openwebide_core::MemoryCommand, bool)>>,
     pub goals: RefCell<BTreeMap<i64, openwebide_core::Goal>>,
     pub goal_load_results: RefCell<VecDeque<Deferred<Option<openwebide_core::Goal>>>>,
     pub compact_results: RefCell<VecDeque<Deferred<ChatMessage>>>,
@@ -1817,6 +1821,146 @@ impl Backend for FakeBackend {
                 None,
             )
             .await
+        })
+    }
+    fn project_memories(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectMemories, String>> {
+        Box::pin(async move {
+            let pending = self.memory_load_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            Ok(self
+                .memories
+                .borrow()
+                .get(&project)
+                .cloned()
+                .unwrap_or_default())
+        })
+    }
+    fn session_memories(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectMemories, String>> {
+        Box::pin(async move {
+            let project = self
+                .sessions
+                .borrow()
+                .iter()
+                .find(|entry| entry.id == session)
+                .and_then(|entry| entry.project_id);
+            match project {
+                Some(project) => self.project_memories(project).await,
+                None => Ok(openwebide_core::ProjectMemories {
+                    enabled: false,
+                    entries: Vec::new(),
+                }),
+            }
+        })
+    }
+    fn memory_command<'a>(
+        &'a self,
+        id: i64,
+        command: &'a openwebide_core::MemoryCommand,
+        session: bool,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ProjectMemories, String>> {
+        Box::pin(async move {
+            use openwebide_core::{MemoryCommand, ProjectMemory};
+            command.validate()?;
+            self.memory_commands
+                .borrow_mut()
+                .push((id, command.clone(), session));
+            let pending = self.memory_command_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            let project = if session {
+                self.sessions
+                    .borrow()
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .and_then(|entry| entry.project_id)
+                    .ok_or("Project memory requires a project")?
+            } else {
+                id
+            };
+            let mut entries = self.memories.borrow_mut();
+            let data = entries.entry(project).or_default();
+            if session && !data.enabled {
+                return Err("Project memory disabled".into());
+            }
+            match command {
+                MemoryCommand::Create { title, content } => {
+                    let id = data.entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
+                    data.entries.insert(
+                        0,
+                        ProjectMemory {
+                            id,
+                            title: title.clone(),
+                            content: content.clone(),
+                            revision: 1,
+                            updated_at: 0,
+                        },
+                    );
+                }
+                MemoryCommand::Update {
+                    id,
+                    revision,
+                    title,
+                    content,
+                } => {
+                    let entry = data
+                        .entries
+                        .iter_mut()
+                        .find(|entry| entry.id == *id && entry.revision == *revision)
+                        .ok_or("Memory changed. Refresh before editing.")?;
+                    entry.title = title.clone();
+                    entry.content = content.clone();
+                    entry.revision += 1;
+                }
+                MemoryCommand::Delete { id, revision } => {
+                    let index = data
+                        .entries
+                        .iter()
+                        .position(|entry| entry.id == *id && entry.revision == *revision)
+                        .ok_or("Memory changed. Refresh before deleting.")?;
+                    data.entries.remove(index);
+                }
+                MemoryCommand::SetEnabled { enabled } => {
+                    if session {
+                        return Err("Agents cannot toggle memory".into());
+                    }
+                    data.enabled = *enabled;
+                }
+                MemoryCommand::Search { query } => {
+                    return Ok(openwebide_core::ProjectMemories {
+                        enabled: data.enabled,
+                        entries: data
+                            .entries
+                            .iter()
+                            .filter(|entry| {
+                                entry.title.contains(query) || entry.content.contains(query)
+                            })
+                            .cloned()
+                            .collect(),
+                    });
+                }
+                MemoryCommand::Read { id } => {
+                    return Ok(openwebide_core::ProjectMemories {
+                        enabled: data.enabled,
+                        entries: vec![
+                            data.entries
+                                .iter()
+                                .find(|entry| entry.id == *id)
+                                .ok_or("Memory missing")?
+                                .clone(),
+                        ],
+                    });
+                }
+            }
+            Ok(data.clone())
         })
     }
     fn get_todo_plan(

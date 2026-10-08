@@ -1158,17 +1158,37 @@ mod tests {
     }
 }
 
-type SpinTaskExecutor = openwebide_agent::todo::TodoTools<
-    openwebide_agent::vfs_executor::SessionToolExecutor<
-        VfsToolExecutor<
-            HostFsVfs,
+struct SpinMemoryPersistence {
+    store: Arc<Store<AppDb>>,
+    user: openwebide_core::UserId,
+    session: i64,
+}
+impl openwebide_agent::memory::MemoryStore for SpinMemoryPersistence {
+    async fn execute(
+        &self,
+        command: &openwebide_core::MemoryCommand,
+    ) -> Result<openwebide_core::ProjectMemories, String> {
+        self.store
+            .session_memory_command(self.user, self.session, command, now())
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+type SpinTaskExecutor = openwebide_agent::memory::MemoryTools<
+    openwebide_agent::todo::TodoTools<
+        openwebide_agent::vfs_executor::SessionToolExecutor<
+            VfsToolExecutor<
+                HostFsVfs,
+                crate::web::SpinWebClient,
+                crate::bridge_client::SpinBridgeClient,
+            >,
             crate::web::SpinWebClient,
             crate::bridge_client::SpinBridgeClient,
         >,
-        crate::web::SpinWebClient,
-        crate::bridge_client::SpinBridgeClient,
+        TodoPersistence,
     >,
-    TodoPersistence,
+    SpinMemoryPersistence,
 >;
 type SpinTaskGate =
     openwebide_agent::policy::PolicyGate<PermissionPoller, crate::api::approvals::ApprovalAdapter>;
@@ -1203,13 +1223,20 @@ impl SpinTaskFactory {
         .with_host(crate::bridge_client::SpinBridgeClient::for_host(
             self.store.clone(),
         ));
-        openwebide_agent::todo::TodoTools::new(
-            executor,
-            TodoPersistence {
+        openwebide_agent::memory::MemoryTools::new(
+            openwebide_agent::todo::TodoTools::new(
+                executor,
+                TodoPersistence {
+                    store: self.store.clone(),
+                    user: self.user,
+                    session: self.session,
+                    anchor: self.anchor,
+                },
+            ),
+            SpinMemoryPersistence {
                 store: self.store.clone(),
                 user: self.user,
                 session: self.session,
-                anchor: self.anchor,
             },
         )
     }
@@ -1256,5 +1283,162 @@ impl openwebide_agent::tasks::host::TaskFactory for SpinTaskFactory {
             SpinHttpClient::default().with_transport(runtime.transport),
         );
         Ok((provider, self.executor(), self.gate(request)))
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use openwebide_agent::ToolExecutor;
+    #[test]
+    fn memory_tools_use_owned_session_adapter_and_propagate_disabled_conflicts_and_failures() {
+        futures::executor::block_on(async {
+            for mode in [
+                openwebide_core::WorkspaceMode::Local,
+                openwebide_core::WorkspaceMode::Remote,
+            ] {
+                let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+                store.migrate().await.unwrap();
+                let user = store
+                    .insert_user("owner", "hash", openwebide_core::UserRole::Admin, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let project = store
+                    .create_project(
+                        &openwebide_core::NewProject {
+                            name: "project".into(),
+                            mode,
+                            path: Some("test".into()),
+                        },
+                        user,
+                        0,
+                    )
+                    .await
+                    .unwrap()
+                    .id;
+                let session = store
+                    .create_session("session", None, None, Some(project), user, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let executor = openwebide_agent::memory::MemoryTools::new(
+                    VfsToolExecutor::new(openwebide_core::MemoryVfs::new()),
+                    SpinMemoryPersistence {
+                        store: store.clone(),
+                        user,
+                        session,
+                    },
+                );
+                let mut call = ToolCall {
+                    id: "memory".into(),
+                    name: "memory_create".into(),
+                    arguments: r#"{"title":"Build","content":"Run cargo test"}"#.into(),
+                };
+                let preview = executor.preview(&call).await.unwrap();
+                assert!(preview.diff.is_none());
+                assert!(preview.note.unwrap().contains("Run cargo test"));
+                let outcome = executor.execute(&call).await;
+                assert!(outcome.ok, "{}", outcome.content);
+                let entry: openwebide_core::ProjectMemory =
+                    serde_json::from_str(&outcome.content).unwrap();
+                call.name = "memory_search".into();
+                call.arguments = r#"{"query":"cargo"}"#.into();
+                assert!(executor.execute(&call).await.ok);
+                call.name = "memory_read".into();
+                call.arguments = serde_json::json!({"id":entry.id}).to_string();
+                assert!(
+                    executor
+                        .execute(&call)
+                        .await
+                        .content
+                        .contains("Run cargo test")
+                );
+                call.name = "memory_update".into();
+                call.arguments=serde_json::json!({"id":entry.id,"revision":1,"title":"Build","content":"Run cargo test --offline"}).to_string();
+                assert!(executor.execute(&call).await.ok);
+                assert!(!executor.execute(&call).await.ok);
+                call.arguments=r#"{"id":1,"revision":2,"title":"Build","content":"new","action":"set_enabled"}"#.into();
+                assert!(!executor.execute(&call).await.ok);
+                let mut request = ChatRequest {
+                    connection_id: 1,
+                    model: None,
+                    system_prompt: None,
+                    messages: Vec::new(),
+                    tools: vfs_tools(),
+                    model_settings: Default::default(),
+                };
+                let data = store.session_memories(user, session).await.unwrap();
+                openwebide_agent::memory::configure(
+                    &mut request.tools,
+                    &mut request.system_prompt,
+                    &data,
+                    request.model_settings.context_limit,
+                );
+                assert!(
+                    request
+                        .tools
+                        .iter()
+                        .any(|tool| tool.name == "memory_create")
+                );
+                assert!(
+                    request
+                        .system_prompt
+                        .as_ref()
+                        .unwrap()
+                        .contains("--offline")
+                );
+                store
+                    .memory_command(
+                        user,
+                        project,
+                        &openwebide_core::MemoryCommand::SetEnabled { enabled: false },
+                        false,
+                        1,
+                    )
+                    .await
+                    .unwrap();
+                call.name = "memory_read".into();
+                call.arguments = serde_json::json!({"id":entry.id}).to_string();
+                assert!(!executor.execute(&call).await.ok);
+                let mut request = ChatRequest {
+                    connection_id: 1,
+                    model: None,
+                    system_prompt: None,
+                    messages: Vec::new(),
+                    tools: vfs_tools(),
+                    model_settings: Default::default(),
+                };
+                openwebide_agent::memory::configure(
+                    &mut request.tools,
+                    &mut request.system_prompt,
+                    &store.session_memories(user, session).await.unwrap(),
+                    request.model_settings.context_limit,
+                );
+                assert!(
+                    !request
+                        .tools
+                        .iter()
+                        .any(|tool| tool.name.starts_with("memory_"))
+                );
+                assert!(request.system_prompt.is_none());
+                store
+                    .memory_command(
+                        user,
+                        project,
+                        &openwebide_core::MemoryCommand::SetEnabled { enabled: true },
+                        false,
+                        2,
+                    )
+                    .await
+                    .unwrap();
+                call.name = "memory_delete".into();
+                call.arguments = serde_json::json!({"id":entry.id,"revision":2}).to_string();
+                assert!(executor.execute(&call).await.ok);
+                call.name = "list_dir".into();
+                call.arguments = "{}".into();
+                assert!(executor.execute(&call).await.ok);
+            }
+        });
     }
 }

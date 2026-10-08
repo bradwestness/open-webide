@@ -656,13 +656,32 @@ fn wall_time_ms() -> u64 {
     .unwrap_or(u64::MAX)
 }
 
-type BridgeTaskExecutor<B> = openwebide_agent::todo::TodoTools<
-    openwebide_agent::vfs_executor::SessionToolExecutor<
-        VfsToolExecutor<NativeFsVfs, BackendWebClient<B>, InProcessBridgeClient>,
-        BackendWebClient<B>,
-        crate::runs::agent_host::HostInfoClient,
+struct BridgeMemoryPersistence<B> {
+    backend: Arc<B>,
+    user: i64,
+    session: i64,
+}
+impl<B: RunBackend> openwebide_agent::memory::MemoryStore for BridgeMemoryPersistence<B> {
+    async fn execute(
+        &self,
+        command: &openwebide_core::MemoryCommand,
+    ) -> Result<openwebide_core::ProjectMemories, String> {
+        self.backend
+            .memory_command(self.user, self.session, command)
+            .await
+    }
+}
+
+type BridgeTaskExecutor<B> = openwebide_agent::memory::MemoryTools<
+    openwebide_agent::todo::TodoTools<
+        openwebide_agent::vfs_executor::SessionToolExecutor<
+            VfsToolExecutor<NativeFsVfs, BackendWebClient<B>, InProcessBridgeClient>,
+            BackendWebClient<B>,
+            crate::runs::agent_host::HostInfoClient,
+        >,
+        TodoPersistence<B>,
     >,
-    TodoPersistence<B>,
+    BridgeMemoryPersistence<B>,
 >;
 type BridgeTaskGate<B> =
     openwebide_agent::policy::PolicyGate<BridgeGate, super::backend_client::ApprovalAdapter<B>>;
@@ -716,13 +735,20 @@ impl<B: RunBackend> BridgeTaskFactory<B> {
         .with_host(crate::runs::agent_host::HostInfoClient(
             self.execution.clone(),
         ));
-        openwebide_agent::todo::TodoTools::new(
-            executor,
-            TodoPersistence {
+        openwebide_agent::memory::MemoryTools::new(
+            openwebide_agent::todo::TodoTools::new(
+                executor,
+                TodoPersistence {
+                    backend: self.backend.clone(),
+                    user: self.run.owner,
+                    session: self.run.session_id,
+                    anchor: self.anchor,
+                },
+            ),
+            BridgeMemoryPersistence {
                 backend: self.backend.clone(),
                 user: self.run.owner,
                 session: self.run.session_id,
-                anchor: self.anchor,
             },
         )
     }

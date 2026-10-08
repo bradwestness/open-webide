@@ -403,17 +403,22 @@ pub(super) async fn build_run_plan(
     } else {
         Vec::new()
     };
-    let plan = openwebide_agent::session::plan(
-        &runtime,
-        openwebide_agent::session::PlanInput {
-            environment,
-            system_prompt,
-            messages: history,
-            tools,
-            content: send.content,
-            editor: send.editor_context,
-        },
+    let memories = state.store.session_memories(user_id, session_id).await?;
+    let mut input = openwebide_agent::session::PlanInput {
+        environment,
+        system_prompt,
+        messages: history,
+        tools,
+        content: send.content,
+        editor: send.editor_context,
+    };
+    openwebide_agent::memory::configure(
+        &mut input.tools,
+        &mut input.system_prompt,
+        &memories,
+        runtime.settings.context_limit,
     );
+    let plan = openwebide_agent::session::plan(&runtime, input);
     plan.validate_prompt().map_err(ApiError::bad_request)?;
     Ok(plan)
 }

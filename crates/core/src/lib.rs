@@ -1,7 +1,9 @@
 //! Shared domain types used across the Open WebIDE frontend, backend, and crates.
 
 pub mod goal;
+pub mod memory;
 pub use goal::{Goal, GoalCommand, GoalStatus};
+pub use memory::{MemoryCommand, ProjectMemories, ProjectMemory};
 pub mod chat_queue;
 pub mod prompt;
 pub mod push;

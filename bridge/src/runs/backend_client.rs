@@ -22,6 +22,14 @@ pub trait RunBackend: Send + Sync {
         async { Ok(()) }
     }
 
+    fn memory_command(
+        &self,
+        _user: i64,
+        _session: i64,
+        _command: &openwebide_core::MemoryCommand,
+    ) -> impl Future<Output = Result<openwebide_core::ProjectMemories, String>> + Send {
+        async { Err("Project memory unavailable".into()) }
+    }
     fn get_todo_plan(
         &self,
         _user: i64,
@@ -272,6 +280,20 @@ impl RunBackend for BackendClient {
         Ok(())
     }
 
+    async fn memory_command(
+        &self,
+        user: i64,
+        session: i64,
+        command: &openwebide_core::MemoryCommand,
+    ) -> Result<openwebide_core::ProjectMemories, String> {
+        self.call(
+            user,
+            "POST",
+            &format!("/sessions/{session}/memories"),
+            serde_json::to_value(command).map_err(|error| error.to_string())?,
+        )
+        .await
+    }
     async fn get_todo_plan(
         &self,
         user: i64,
@@ -655,5 +677,46 @@ mod tests {
         assert!(request.starts_with("get /api/connections http/1.1\r\n"));
         assert!(request.contains("authorization: bearer shared-secret\r\n"));
         assert!(request.contains("x-openwebide-user: 42\r\n"));
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    #[tokio::test]
+    async fn memory_adapter_forwards_owned_session_and_reports_failed_persistence() {
+        for status in [200, 409] {
+            let body = if status == 200 {
+                r#"{"enabled":true,"entries":[]}"#
+            } else {
+                r#"{"error":"Memory changed"}"#
+            };
+            let response = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let (url, captured) =
+                crate::runs::http_client::tests::capture(Box::leak(response.into_boxed_str()))
+                    .await;
+            let client = BackendClient::new(
+                format!("{url}/api"),
+                "secret".into(),
+                ReqwestHttpClient::default(),
+            );
+            let result = client
+                .memory_command(
+                    42,
+                    7,
+                    &openwebide_core::MemoryCommand::Delete { id: 9, revision: 2 },
+                )
+                .await;
+            assert_eq!(result.is_ok(), status == 200);
+            let request = captured.await.unwrap().to_ascii_lowercase();
+            assert!(request.starts_with("post /api/sessions/7/memories http/1.1"));
+            assert!(request.contains("authorization: bearer secret\r\n"));
+            assert!(request.contains("x-openwebide-user: 42\r\n"));
+            assert!(request.contains(r#""revision":2"#));
+            assert!(request.contains(r#""action":"delete""#));
+        }
     }
 }

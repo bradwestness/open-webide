@@ -90,3 +90,6 @@ mod tool_budgets;
 
 #[path = "components/omnibar.rs"]
 mod omnibar;
+
+#[path = "components/memories.rs"]
+mod memories;

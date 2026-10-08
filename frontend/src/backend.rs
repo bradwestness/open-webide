@@ -412,6 +412,26 @@ pub trait Backend {
         session: i64,
         model: Option<&'a str>,
     ) -> LocalBoxFuture<'a, Result<ChatMessage, String>>;
+    fn project_memories(
+        &self,
+        _project: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectMemories, String>> {
+        Box::pin(async { Err("Project memory unavailable".into()) })
+    }
+    fn session_memories(
+        &self,
+        _session: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectMemories, String>> {
+        Box::pin(async { Err("Project memory unavailable".into()) })
+    }
+    fn memory_command<'a>(
+        &'a self,
+        _id: i64,
+        _command: &'a openwebide_core::MemoryCommand,
+        _session: bool,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ProjectMemories, String>> {
+        Box::pin(async { Err("Project memory unavailable".into()) })
+    }
     fn get_todo_plan(
         &self,
         session: i64,
@@ -1098,6 +1118,26 @@ impl Backend for BackendApi {
         model: Option<&'a str>,
     ) -> LocalBoxFuture<'a, Result<ChatMessage, String>> {
         Box::pin(BackendApi::compact_session(self, session, model))
+    }
+    fn project_memories(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectMemories, String>> {
+        Box::pin(BackendApi::memories(self, project, false))
+    }
+    fn session_memories(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectMemories, String>> {
+        Box::pin(BackendApi::memories(self, session, true))
+    }
+    fn memory_command<'a>(
+        &'a self,
+        id: i64,
+        command: &'a openwebide_core::MemoryCommand,
+        session: bool,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ProjectMemories, String>> {
+        Box::pin(BackendApi::memory_command(self, id, command, session))
     }
     fn get_todo_plan(
         &self,

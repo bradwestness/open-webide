@@ -319,6 +319,11 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                     }
                 );
                 let mut tools = workspace_tools();
+                tools.extend(openwebide_agent::memory::TOOL_NAMES.iter().map(|name| {
+                    name.parse::<openwebide_agent::tools::ToolName>()
+                        .unwrap()
+                        .definition()
+                }));
                 tools.push(openwebide_agent::tasks::executor::definition());
                 assert_eq!(plan.request.tools, tools);
             } else {
@@ -1270,5 +1275,194 @@ fn editor_recovery_routes_validate_owned_revisioned_snapshots_in_both_modes() {
                 persisted
             );
         }
+    });
+}
+
+#[test]
+fn project_memory_run_planning_includes_enabled_context_and_tools_and_omits_projectless_data() {
+    futures::executor::block_on(async {
+        let store = openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+        store.migrate().await.unwrap();
+        let user = store
+            .insert_user("owner", "hash", openwebide_core::UserRole::Admin, 0)
+            .await
+            .unwrap();
+        let connection = store
+            .insert_connection(&NewConnection {
+                name: "server".into(),
+                kind: openwebide_core::ProviderKind::LlamaCpp,
+                base_url: "http://server".into(),
+                model: None,
+                context_limit: Some(32768),
+            })
+            .await
+            .unwrap();
+        let project = store
+            .create_project(
+                &NewProject {
+                    name: "project".into(),
+                    mode: WorkspaceMode::Remote,
+                    path: Some("test".into()),
+                },
+                user.id,
+                0,
+            )
+            .await
+            .unwrap()
+            .id;
+        let session = store
+            .create_session(
+                "session",
+                Some(connection.id),
+                None,
+                Some(project),
+                user.id,
+                0,
+            )
+            .await
+            .unwrap()
+            .id;
+        store
+            .memory_command(
+                user.id,
+                project,
+                &openwebide_core::MemoryCommand::Create {
+                    title: "Build".into(),
+                    content: "Run cargo test".into(),
+                },
+                false,
+                1,
+            )
+            .await
+            .unwrap();
+        let state = AppState { store };
+        let body = || SendMessageBody {
+            content: "go".into(),
+            model: None,
+            editor_context: None,
+            browser_preferences: None,
+            queued_prompt: None,
+        };
+        let plan = build_run_plan(&state, user.id, session, body())
+            .await
+            .unwrap();
+        assert!(
+            plan.request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "memory_search")
+        );
+        assert!(
+            plan.request
+                .system_prompt
+                .unwrap()
+                .contains("Run cargo test")
+        );
+        let mut selected = state.store.get_connection(connection.id).await.unwrap();
+        selected.tool_selection =
+            openwebide_core::ToolSelection::Selected(vec!["memory_read".into()]);
+        state.store.update_connection(&selected).await.unwrap();
+        let plan = build_run_plan(&state, user.id, session, body())
+            .await
+            .unwrap();
+        assert_eq!(
+            plan.request
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["memory_read"]
+        );
+        assert!(matches!(plan.kind, RunKind::Agent { .. }));
+        selected.tool_selection = openwebide_core::ToolSelection::All;
+        state.store.update_connection(&selected).await.unwrap();
+        state
+            .store
+            .memory_command(
+                user.id,
+                project,
+                &openwebide_core::MemoryCommand::SetEnabled { enabled: false },
+                false,
+                2,
+            )
+            .await
+            .unwrap();
+        let plan = build_run_plan(&state, user.id, session, body())
+            .await
+            .unwrap();
+        assert!(
+            !plan
+                .request
+                .tools
+                .iter()
+                .any(|tool| tool.name.starts_with("memory_"))
+        );
+        assert!(
+            !plan
+                .request
+                .system_prompt
+                .unwrap()
+                .contains("Run cargo test")
+        );
+        let no_root = state
+            .store
+            .create_project(
+                &NewProject {
+                    name: "Named project".into(),
+                    mode: WorkspaceMode::Remote,
+                    path: None,
+                },
+                user.id,
+                0,
+            )
+            .await
+            .unwrap()
+            .id;
+        let named = state
+            .store
+            .create_session(
+                "named",
+                Some(connection.id),
+                None,
+                Some(no_root),
+                user.id,
+                0,
+            )
+            .await
+            .unwrap()
+            .id;
+        let plan = build_run_plan(&state, user.id, named, body())
+            .await
+            .unwrap();
+        assert_eq!(plan.kind, RunKind::WebChat);
+        assert!(
+            plan.request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "memory_create")
+        );
+        let empty = state
+            .store
+            .create_session("projectless", Some(connection.id), None, None, user.id, 0)
+            .await
+            .unwrap()
+            .id;
+        let plan = build_run_plan(&state, user.id, empty, body())
+            .await
+            .unwrap();
+        assert!(
+            !plan
+                .request
+                .tools
+                .iter()
+                .any(|tool| tool.name.starts_with("memory_"))
+        );
+        assert!(
+            !plan
+                .request
+                .system_prompt
+                .unwrap()
+                .contains("Run cargo test")
+        );
     });
 }
