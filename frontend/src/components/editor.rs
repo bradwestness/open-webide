@@ -816,22 +816,48 @@ pub async fn bounded_paragraph_matches_complete(
     scope: &crate::state::workspace::EditorRowPaint,
     row: usize,
 ) -> bool {
-    super::editor_rows::check_paragraph_geometry(input, scope, row, |rows, suffix, slices| {
-        highlight_html(
-            &scope.tokens,
-            scope.prepared_source,
-            &scope.guides,
-            PaintRows {
-                indices: rows,
-                projection: None,
-                source: Some(&scope.projection),
-                source_slices: slices,
-            },
-            scope.indentation,
-            scope.whitespace,
-            suffix,
-        )
-    })
+    paragraph_matches_complete(input, scope, row, None).await
+}
+
+#[cfg(feature = "test-support")]
+pub async fn retained_paragraph_matches_complete(
+    input: &web_sys::HtmlTextAreaElement,
+    scope: &crate::state::workspace::EditorRowPaint,
+    row: usize,
+    actions: EditorActions,
+) -> bool {
+    paragraph_matches_complete(input, scope, row, Some(actions)).await
+}
+
+#[cfg(feature = "test-support")]
+async fn paragraph_matches_complete(
+    input: &web_sys::HtmlTextAreaElement,
+    scope: &crate::state::workspace::EditorRowPaint,
+    row: usize,
+    actions: Option<EditorActions>,
+) -> bool {
+    super::editor_rows::check_paragraph_geometry(
+        input,
+        scope,
+        row,
+        actions,
+        |rows, suffix, slices| {
+            highlight_html(
+                &scope.tokens,
+                scope.prepared_source,
+                &scope.guides,
+                PaintRows {
+                    indices: rows,
+                    projection: None,
+                    source: Some(&scope.projection),
+                    source_slices: slices,
+                },
+                scope.indentation,
+                scope.whitespace,
+                suffix,
+            )
+        },
+    )
     .await
     .unwrap_or(false)
 }
@@ -1350,6 +1376,7 @@ fn HighlightOverlay(
             };
             let geometry_paint = paint.clone();
             let result = super::editor_rows::measure_batches(
+                actions,
                 input,
                 paint.clone(),
                 plan,

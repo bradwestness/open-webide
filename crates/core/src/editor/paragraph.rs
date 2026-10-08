@@ -1,6 +1,6 @@
 //! Source-owned continuation and overlap validation for bounded paragraph probes.
 use super::{GlyphRectangle, HorizontalGeometry, MAX_MEASURE_BYTES, VisualLineIndex};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 pub const MAX_PARAGRAPH_PROBE_BYTES: usize = 16 * 1024;
 const CONTEXT_BYTES: usize = 1024;
@@ -13,6 +13,22 @@ pub struct ParagraphProbe {
     pub glyph_start: usize,
     pub origin: f64,
 }
+
+/// Exact completed probes, retained with the facade's immutable source/style scope.
+#[derive(Clone, Debug)]
+pub struct ParagraphMeasurements {
+    runs: Arc<[usize]>,
+    records: Vec<ParagraphMeasurement>,
+}
+#[derive(Clone, Debug)]
+struct ParagraphMeasurement {
+    bytes: Range<usize>,
+    width: f64,
+    height: f64,
+    scroll_width: f64,
+    rectangles: Arc<[GlyphRectangle]>,
+}
+const MAX_RETAINED_RECTANGLES: usize = 128 * 1024;
 
 /// Adapters measure real styled text; this policy never estimates character
 /// widths. A failed overlap, unavailable paint boundary or stale source requires
@@ -31,6 +47,8 @@ pub struct ParagraphMeasurementPlan<'a> {
     local_origin: f64,
     retried: bool,
     runs: Vec<usize>,
+    records: Vec<ParagraphMeasurement>,
+    retained_rectangles: usize,
 }
 impl<'a> ParagraphMeasurementPlan<'a> {
     pub fn new(body: &'a str, index: VisualLineIndex) -> Option<Self> {
@@ -73,7 +91,49 @@ impl<'a> ParagraphMeasurementPlan<'a> {
             local_origin: 0.0,
             retried: false,
             runs,
+            records: Vec::new(),
+            retained_rectangles: 0,
         })
+    }
+    /// Replay only complete unchanged source/paint runs. The caller proves the
+    /// style/environment prefix; normal record validation still checks every
+    /// target and overlap. The first changed probe is always freshly measured.
+    pub fn reuse_prefix(
+        &mut self,
+        old_body: &str,
+        old: &ParagraphMeasurements,
+        style_end: usize,
+    ) -> usize {
+        let mut reused = 0;
+        for record in &old.records {
+            let end = record.bytes.end;
+            let Some(probe) = self.probe() else { break };
+            if record.bytes != probe.bytes
+                || end >= self.body.len()
+                || end > style_end
+                || old_body.get(record.bytes.clone()) != self.body.get(record.bytes.clone())
+            {
+                break;
+            }
+            let old_end = old.runs.partition_point(|byte| *byte <= end);
+            let new_end = self.runs.partition_point(|byte| *byte <= end);
+            if old.runs[..old_end] != self.runs[..new_end]
+                || !self.record(
+                    record.width,
+                    record.height,
+                    record.scroll_width,
+                    &record.rectangles,
+                )
+            {
+                break;
+            }
+            // Retained probes share their immutable rectangle allocations.
+            if let Some(last) = self.records.last_mut() {
+                last.rectangles = record.rectangles.clone();
+            }
+            reused += 1;
+        }
+        reused
     }
     fn boundary(
         body: &str,
@@ -311,6 +371,19 @@ impl<'a> ParagraphMeasurementPlan<'a> {
                 self.anchors.push(rect);
             }
         }
+        self.retained_rectangles = self.retained_rectangles.saturating_add(rectangles.len());
+        if self.retained_rectangles <= MAX_RETAINED_RECTANGLES {
+            self.records.push(ParagraphMeasurement {
+                bytes: self.probe.bytes.clone(),
+                width,
+                height,
+                scroll_width,
+                rectangles: rectangles.into(),
+            });
+        } else {
+            // Bound retention without changing measurement or fallback behavior.
+            self.records.clear();
+        }
         self.dimensions = Some((width, height));
         self.scroll_width = self.scroll_width.max(scroll_width);
         if let Some((probe, continuation, expected, _)) = next {
@@ -328,6 +401,12 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         true
     }
     pub fn finish(self) -> Option<(f64, HorizontalGeometry)> {
+        self.finish_with_measurements()
+            .map(|(width, geometry, _)| (width, geometry))
+    }
+    pub fn finish_with_measurements(
+        self,
+    ) -> Option<(f64, HorizontalGeometry, ParagraphMeasurements)> {
         if !self.finished {
             return None;
         }
@@ -335,6 +414,10 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         Some((
             self.scroll_width,
             HorizontalGeometry::new(self.index.len() - 1, width, height, self.anchors)?,
+            ParagraphMeasurements {
+                runs: self.runs.into(),
+                records: self.records,
+            },
         ))
     }
 }
@@ -355,6 +438,83 @@ mod tests {
                 height: 15.0,
             })
             .collect()
+    }
+
+    fn measured(source: &str) -> (f64, HorizontalGeometry, ParagraphMeasurements) {
+        let mut plan =
+            ParagraphMeasurementPlan::new(source, VisualLineIndex::new(source).unwrap()).unwrap();
+        while let Some(probe) = plan.probe().cloned() {
+            let end = plan.index.index_at_byte(source, probe.bytes.end).unwrap();
+            let rects = rectangles(&plan);
+            assert!(plan.record(
+                244.0,
+                15.0,
+                (f64::from(u32::try_from(end).unwrap()) * 7.0).max(244.0),
+                &rects
+            ));
+        }
+        plan.finish_with_measurements().unwrap()
+    }
+    #[test]
+    fn changed_paragraph_prefix_reuses_exact_probes_and_finishes_with_fresh_overlaps() {
+        let old = "文😀 words ".repeat(12000);
+        let (_, _, retained) = measured(&old);
+        let at = old.len() * 3 / 4;
+        let at = old.floor_char_boundary(at);
+        let changed = format!("{}fresh {}", &old[..at], &old[at..]);
+        let mut plan =
+            ParagraphMeasurementPlan::new(&changed, VisualLineIndex::new(&changed).unwrap())
+                .unwrap();
+        let reused = plan.reuse_prefix(&old, &retained, old.len());
+        assert!(reused > 1);
+        assert!(plan.probe().unwrap().bytes.start < at);
+        assert!(plan.probe().unwrap().bytes.end > at);
+        let before = plan.probe().unwrap().bytes.clone();
+        let mut wrong = rectangles(&plan);
+        wrong[0].left += 1.0;
+        assert!(!plan.record(244.0, 15.0, 1_000_000.0, &wrong));
+        assert_eq!(plan.probe().unwrap().bytes, before);
+        while let Some(probe) = plan.probe().cloned() {
+            let end = plan.index.index_at_byte(&changed, probe.bytes.end).unwrap();
+            let rects = rectangles(&plan);
+            assert!(plan.record(
+                244.0,
+                15.0,
+                (f64::from(u32::try_from(end).unwrap()) * 7.0).max(244.0),
+                &rects
+            ));
+        }
+        let (width, geometry, logs) = plan.finish_with_measurements().unwrap();
+        let (fresh_width, fresh, _) = measured(&changed);
+        assert_eq!(width.to_bits(), fresh_width.to_bits());
+        assert_eq!(geometry, fresh);
+        assert!(Arc::ptr_eq(
+            &logs.records[0].rectangles,
+            &retained.records[0].rectangles
+        ));
+    }
+    #[test]
+    fn paragraph_reuse_rejects_changed_style_runs_source_and_dimensions() {
+        let old = "word space ".repeat(10000);
+        let (_, _, retained) = measured(&old);
+        let index = VisualLineIndex::new(&old).unwrap();
+        let mut plan = ParagraphMeasurementPlan::new(&old, index.clone()).unwrap();
+        assert_eq!(plan.reuse_prefix(&old, &retained, 0), 0);
+        let mut runs = retained.runs.to_vec();
+        runs.insert(0, 1);
+        let mut plan =
+            ParagraphMeasurementPlan::with_run_boundaries(&old, index.clone(), runs).unwrap();
+        assert_eq!(plan.reuse_prefix(&old, &retained, old.len()), 0);
+        let changed = format!("changed{old}");
+        let mut plan =
+            ParagraphMeasurementPlan::new(&changed, VisualLineIndex::new(&changed).unwrap())
+                .unwrap();
+        assert_eq!(plan.reuse_prefix(&old, &retained, old.len()), 0);
+        let mut bad = retained.clone();
+        bad.records[0].width = f64::NAN;
+        let mut plan = ParagraphMeasurementPlan::new(&old, index).unwrap();
+        assert_eq!(plan.reuse_prefix(&old, &bad, old.len()), 0);
+        assert_eq!(plan.probe().unwrap().bytes.start, 0);
     }
 
     #[test]

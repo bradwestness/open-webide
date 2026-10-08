@@ -64,8 +64,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Unsupported boundaries and failed proofs
   use complete measurement. Continuation probes and indexed plain viewport
   slices resume segmentation at proven original run boundaries. Tabbed/wrapped/bidi
-  preparation, styled viewport prefix segmentation, initial native shaping and
-  incremental changed-paragraph reuse remain.
+  preparation, styled viewport prefix segmentation and initial native shaping remain.
+  Changed paragraphs now replay validated unchanged probe prefixes with matching
+  source, paint runs and styles; the first changed probe retains fresh overlap
+  checks. Incremental changed suffixes and remaining long-row latency remain.
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.

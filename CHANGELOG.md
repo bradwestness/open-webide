@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse validated unchanged probe prefixes within edited long paragraphs, preserving exact source/run/style ownership and fresh continuation checks. Bound retained measurements and reject stale account, project, font and layout scopes.
+
 - Build grapheme/native coordinates once per bounded paragraph probe instead of repeatedly segmenting sparse checkpoint prefixes for every overlap glyph. Retain every exact DOM glyph measurement, validation and fallback.
 
 - Make built-in language parser contracts independent of runner scheduling with a scoped test clock; verify deadline cancellation separately while retaining the production parser budget.

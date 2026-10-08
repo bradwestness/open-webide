@@ -101,6 +101,34 @@ fn paint_rows(paint: &EditorRowPaint) -> Option<Vec<PaintRow<'_>>> {
         .map(|index| paint_row(paint, index))
         .collect()
 }
+fn paint_prefix_end(old: &PaintRow<'_>, new: &PaintRow<'_>) -> usize {
+    if old.guide != new.guide || old.ending != new.ending {
+        return 0;
+    }
+    if let (Some(old), Some(new)) = (old.plain, new.plain) {
+        return old.len().min(new.len());
+    }
+    if old.plain.is_some() || new.plain.is_some() || old.normalize_cr != new.normalize_cr {
+        return 0;
+    }
+    let mut end = 0;
+    for (old, new) in old.tokens.iter().zip(new.tokens) {
+        if old.kind != new.kind || (old.text.len() > 512) != (new.text.len() > 512) {
+            break;
+        }
+        let same = old
+            .text
+            .bytes()
+            .zip(new.text.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        end += same;
+        if same != old.text.len() || same != new.text.len() {
+            break;
+        }
+    }
+    end
+}
 fn same_measurement_environment(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
     old.font_epoch == paint.font_epoch
         && old.key == paint.key
@@ -175,6 +203,72 @@ impl EditorActions {
         }
         runs.dedup();
         ParagraphMeasurementPlan::with_run_boundaries(body, index, runs)
+    }
+    pub fn resume_paragraph_measurements(
+        self,
+        paint: &EditorRowPaint,
+        row: usize,
+        plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
+    ) -> usize {
+        if !self.row_paint_current(paint) {
+            return 0;
+        }
+        self.workspace
+            .editor_paragraph_cache
+            .with_untracked(|cache| {
+                let Some(cache) = cache
+                    .as_ref()
+                    .filter(|cache| same_measurement_environment(&cache.paint, paint))
+                else {
+                    return 0;
+                };
+                let Some((_, measurements)) = cache.rows.iter().find(|(index, _)| *index == row)
+                else {
+                    return 0;
+                };
+                let Some((old, new)) = paint_row(&cache.paint, row).zip(paint_row(paint, row))
+                else {
+                    return 0;
+                };
+                let Some(body) = cache.paint.projection.line_body(row) else {
+                    return 0;
+                };
+                plan.reuse_prefix(body, measurements, paint_prefix_end(&old, &new))
+            })
+    }
+    pub fn retain_paragraph_measurements(
+        self,
+        paint: &EditorRowPaint,
+        row: usize,
+        measurements: openwebide_core::editor::ParagraphMeasurements,
+    ) {
+        if !self.row_paint_current(paint) {
+            return;
+        }
+        self.workspace.editor_paragraph_cache.update(|cache| {
+            let mut rows = cache
+                .take()
+                .filter(|old| same_measurement_environment(&old.paint, paint))
+                .map_or_else(Vec::new, |old| {
+                    old.rows
+                        .into_iter()
+                        .filter(|(index, _)| {
+                            paint_row(&old.paint, *index)
+                                .zip(paint_row(paint, *index))
+                                .is_some_and(|(a, b)| a == b)
+                        })
+                        .collect()
+                });
+            rows.retain(|(index, _)| *index != row);
+            if rows.len() == 8 {
+                rows.remove(0);
+            }
+            rows.push((row, Arc::new(measurements)));
+            *cache = Some(crate::state::workspace::EditorParagraphCache {
+                paint: paint.clone(),
+                rows,
+            });
+        });
     }
     pub fn paint_window(
         self,
@@ -323,6 +417,7 @@ impl EditorActions {
             .editor_font_epoch
             .update(|epoch| *epoch = epoch.wrapping_add(1));
         self.workspace.editor_row_cache.set(None);
+        self.workspace.editor_paragraph_cache.set(None);
         self.invalidate_measured_rows();
     }
 }
@@ -536,5 +631,72 @@ impl EditorActions {
         {
             cache.paint.insert(window, html);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openwebide_core::highlight::TokenKind;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn paragraph_prefix_stops_before_a_changed_token_style_or_span_topology() {
+        let plain = Token {
+            kind: TokenKind::Plain,
+            text: "let value = ".into(),
+        };
+        let comment = Token {
+            kind: TokenKind::Comment,
+            text: "word ".repeat(1000),
+        };
+        let old = [plain.clone(), comment.clone()];
+        let mut changed = old.clone();
+        changed[1].kind = TokenKind::Plain;
+        fn row(tokens: &[Token]) -> PaintRow<'_> {
+            PaintRow {
+                tokens,
+                plain: None,
+                guide: 0,
+                normalize_cr: false,
+                ending: false,
+            }
+        }
+        assert_eq!(
+            paint_prefix_end(&row(&old), &row(&changed)),
+            plain.text.len()
+        );
+        changed[1] = Token {
+            text: format!("{}fresh", comment.text),
+            ..comment.clone()
+        };
+        assert_eq!(
+            paint_prefix_end(&row(&old), &row(&changed)),
+            plain.text.len() + comment.text.len()
+        );
+        changed[1] = Token {
+            text: "word ".into(),
+            ..comment
+        };
+        assert_eq!(
+            paint_prefix_end(&row(&old), &row(&changed)),
+            plain.text.len()
+        );
+    }
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn paragraph_prefix_rejects_changed_guides_and_line_ending_paint() {
+        let old = PaintRow {
+            tokens: &[],
+            plain: Some("same words"),
+            guide: 1,
+            normalize_cr: false,
+            ending: false,
+        };
+        let changed = PaintRow { guide: 2, ..old };
+        assert_eq!(paint_prefix_end(&old, &changed), 0);
+        let changed = PaintRow {
+            ending: true,
+            ..old
+        };
+        assert_eq!(paint_prefix_end(&old, &changed), 0);
     }
 }

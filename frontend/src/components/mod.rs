@@ -34,8 +34,8 @@ pub use confirm_dialog::ConfirmDialog;
 pub use editor::Editor;
 #[cfg(feature = "test-support")]
 pub use editor::{
-    bounded_paragraph_matches_complete, highlight_count, take_highlight_source_bytes,
-    viewport_highlight_count,
+    bounded_paragraph_matches_complete, highlight_count, retained_paragraph_matches_complete,
+    take_highlight_source_bytes, viewport_highlight_count,
 };
 pub use file_browser::FileBrowser;
 pub use file_tree::{FileTree, SearchPane};

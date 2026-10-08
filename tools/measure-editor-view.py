@@ -129,7 +129,7 @@ READY = """
 """
 
 
-def measure(case, mode, wrapped, trace=False, repetition=1):
+def measure(case, mode, wrapped, trace=False, repetition=1, input_position="start"):
     source = source_for(case)
     native = source.replace("\r\n", "\n")
     # JS lengths are UTF-16, not Python's Unicode scalar count.
@@ -377,33 +377,55 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                 requestAnimationFrame(check);
             """, "args": ["\n" not in native]})
             assert "error" not in scroll, scroll
-            browser.script("const input=document.querySelector('textarea[data-editor-path]'); input.focus(); input.setSelectionRange(0,0);")
+            if input_position == "start":
+                browser.script("const input=document.querySelector('textarea[data-editor-path]'); input.focus(); input.setSelectionRange(0,0);")
+            else:
+                phase = "input navigation"
+                browser.script("editorViewMeasurement.phase = 'navigate'; document.querySelector('textarea[data-editor-path]').focus();")
+                for kind in ["keyDown", "keyUp"]:
+                    browser.call("POST", "/goog/cdp/execute", {"cmd": "Input.dispatchKeyEvent", "params": {
+                        "type": kind, "key": "End", "code": "End", "modifiers": 2,
+                        "windowsVirtualKeyCode": 35, "nativeVirtualKeyCode": 35,
+                    }})
+                deadline = time.monotonic() + 10
+                while True:
+                    recovered = runtime.request("GET", f"/api/projects/{project['id']}/editor-recovery")
+                    document = recovered["state"]["files"][0]["document"]
+                    if document["selections"][0]["head"] == len(source.encode()):
+                        assert document["text"] == encoded, "End navigation changed source"
+                        break
+                    assert time.monotonic() < deadline, "Source caret did not reach document end"
+                    time.sleep(0.1)
             phase = "input paint"
             browser.script("editorViewMeasurement.phase = 'input';")
             browser.call("POST", "/goog/cdp/execute", {"cmd": "Input.insertText", "params": {"text": "z"}})
             edited = browser.call("POST", "/execute/async", {"script": """
-                const done=arguments[0], deadline=performance.now()+10000;
+                const done=arguments[arguments.length-1], inputPosition=arguments[0], deadline=performance.now()+10000;
                 function check() {
                     const input=document.querySelector('textarea[data-editor-path]');
                     const paint=document.querySelector('.editor-highlight-content');
                     if (performance.now()>deadline) return done({error:'Input paint timed out'});
-                    if (input.value.startsWith('z') && paint.dataset.editorScope===input.dataset.editorScope &&
+                    if ((inputPosition === 'end' ? input.value.endsWith('z') : input.value.startsWith('z')) && paint.dataset.editorScope===input.dataset.editorScope &&
                         (getComputedStyle(input).whiteSpace !== 'pre-wrap' || Number(paint.dataset.documentHeight)>0) &&
                         input.parentElement.classList.contains('highlight-ready'))
                         return done({inputToPaintMs:performance.now()-editorViewMeasurement.inputAt});
                     requestAnimationFrame(check);
                 }
                 requestAnimationFrame(check);
-            """, "args": []})
+            """, "args": [input_position]})
             assert "error" not in edited, edited
             browser.script("editorViewMeasurement.phase = 'deferred';")
             # Include deferred syntax preparation and queued recovery saves.
             browser.call("POST", "/execute/async", {"script": "setTimeout(arguments[0], 1200);", "args": []})
+            if input_position == "end":
+                recovered = runtime.request("GET", f"/api/projects/{project['id']}/editor-recovery")
+                actual = base64.b64decode(recovered["state"]["files"][0]["document"]["text"]).decode()
+                assert actual == source + "z", "End input did not preserve complete source"
             sampled = samples.finish()
             samples = None
             tasks = browser.script("return {...window.editorViewMeasurement, wasmBytes: window.editorViewWasmMemory.buffer.byteLength};")
             return {"case": case, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
-                    "loadToPaintMs": load_ms, **snapshot, **scroll, **edited, **memory,
+                    "inputPosition": input_position, "loadToPaintMs": load_ms, **snapshot, **scroll, **edited, **memory,
                     "afterInputMemory": process_memory(browser.process.pid), **sampled,
                     "afterInputWasmCommittedBytes": tasks["wasmBytes"],
                     "longTasks": tasks["longTasks"], "longTaskMs": tasks["longTaskMs"],
@@ -433,6 +455,7 @@ if __name__ == "__main__":
     parser.add_argument("--modes", nargs="+", choices=["local", "remote"], default=["local", "remote"])
     parser.add_argument("--wrap", action="store_true")
     parser.add_argument("--trace", action="store_true", help="Record bounded probe/worker diagnostics; timings include instrumentation overhead")
+    parser.add_argument("--input-position", choices=["start", "end"], default="start", help="Use native-window start or verified complete-source End navigation before typing")
     parser.add_argument("--repeat", type=int, default=1, help="Fresh browser/runtime runs for each case and mode")
     parser.add_argument("--require-pss", action="store_true", help="Fail if apportioned Chrome process memory cannot be measured")
     args = parser.parse_args()
@@ -443,13 +466,13 @@ if __name__ == "__main__":
                       **host_constraints(),
                       "repetitions": args.repeat,
                       "measurementImage": os.environ.get("EDITOR_VIEW_IMAGE"),
-                      "inputTimingStart": "beforeinput",
+                      "inputTimingStart": "beforeinput", "inputPosition": args.input_position,
                       "checkoutHead": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                       "browser": subprocess.check_output([os.environ["CHROME"], "--version"], text=True).strip() if os.environ.get("CHROME") else "WebDriver default"}), flush=True)
     for case in args.cases:
         for mode in args.modes:
             for repetition in range(1, args.repeat + 1):
-                result = measure(case, mode, args.wrap, args.trace, repetition)
+                result = measure(case, mode, args.wrap, args.trace, repetition, args.input_position)
                 print(json.dumps(result), flush=True)
                 if args.require_pss:
                     assert result["peakChromePssKiB"] is not None, "Chrome peak PSS was unavailable"

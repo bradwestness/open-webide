@@ -11765,6 +11765,101 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn paragraph_changed_prefix_reuse_matches_complete_geometry_and_rejects_stale_scopes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let old = "文😀 words ".repeat(12000);
+        let source = old.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("reuse.txt".into()));
+            state.workspace.content.set(source.into());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        super::support::wait_until_with_timeout("retained paragraph probes", 30_000, || {
+            mounted
+                .state
+                .workspace
+                .editor_paragraph_cache
+                .with_untracked(|cache| cache.as_ref().is_some_and(|cache| !cache.rows.is_empty()))
+        })
+        .await;
+        let actions = EditorActions::new(mounted.state.workspace);
+        let old_paint = mounted
+            .state
+            .workspace
+            .editor_paragraph_cache
+            .get_untracked()
+            .unwrap()
+            .paint;
+        let at = old.floor_char_boundary(old.len() * 3 / 4);
+        let changed = format!("{}fresh {}", &old[..at], &old[at..]);
+        actions.record_selection(Selection::caret(at)).unwrap();
+        actions
+            .native_input(changed.clone(), Selection::caret(at + 6), "insertText", 1.0)
+            .unwrap();
+        // Capture the pending plain source without waiting for the terminal
+        // lexical job to publish a new cache over the preceding measurements.
+        let mut paint = old_paint;
+        paint.projection = actions.projection().unwrap();
+        paint.view_revision = actions.view_revision();
+        paint.layout_epoch = mounted.state.workspace.editor_layout_epoch.get_untracked();
+        paint.prepared_source = false;
+        paint.tokens = std::sync::Arc::new(Vec::new());
+        let mut plan = EditorActions::paragraph_measurements(&paint, 0).unwrap();
+        assert!(
+            actions.resume_paragraph_measurements(&paint, 0, &mut plan) > 1,
+            "{mode:?}"
+        );
+        assert!(plan.probe().unwrap().bytes.start < at);
+        assert!(plan.probe().unwrap().bytes.end > at);
+        for stale in [
+            {
+                let mut p = paint.clone();
+                p.account_generation += 1;
+                p
+            },
+            {
+                let mut p = paint.clone();
+                p.font_epoch += 1;
+                p
+            },
+            {
+                let mut p = paint.clone();
+                p.layout_epoch += 1;
+                p
+            },
+            {
+                let mut p = paint.clone();
+                p.key.0 += 1;
+                p
+            },
+        ] {
+            let mut plan = EditorActions::paragraph_measurements(&stale, 0).unwrap();
+            assert_eq!(
+                actions.resume_paragraph_measurements(&stale, 0, &mut plan),
+                0
+            );
+        }
+        assert!(
+            openwebide_frontend::components::retained_paragraph_matches_complete(
+                &input, &paint, 0, actions
+            )
+            .await,
+            "{mode:?} reused complete geometry"
+        );
+        assert_eq!(actions.source(), changed);
+    }
+}
+
+#[wasm_bindgen_test]
 async fn paragraph_overlap_failure_uses_complete_measurement_in_both_modes() {
     use openwebide_core::WorkspaceMode;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {

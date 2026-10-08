@@ -166,6 +166,12 @@ pub struct EditorRowPaint {
     pub whitespace: bool,
 }
 #[derive(Clone, Debug)]
+pub struct EditorParagraphCache {
+    pub paint: EditorRowPaint,
+    pub rows: Vec<(usize, Arc<openwebide_core::editor::ParagraphMeasurements>)>,
+}
+
+#[derive(Clone, Debug)]
 pub struct EditorRowCache {
     pub paint: EditorRowPaint,
     pub rows: openwebide_core::editor::MeasuredRows,
@@ -393,6 +399,7 @@ pub struct WorkspaceState {
     pub editor_view_revision: Memo<u64>,
     pub editor_rows: RwSignal<Option<EditorRowMeasurements>>,
     pub editor_row_cache: RwSignal<Option<EditorRowCache>>,
+    pub editor_paragraph_cache: RwSignal<Option<EditorParagraphCache>>,
     pub editor_row_preparation: RwSignal<Option<EditorRowPreparation>>,
     pub editor_row_ticket: RwSignal<u64>,
     pub editor_group: RwSignal<u64>,
@@ -493,6 +500,7 @@ impl WorkspaceState {
             editor_view_revision,
             editor_rows: RwSignal::new(None),
             editor_row_cache: RwSignal::new(None),
+            editor_paragraph_cache: RwSignal::new(None),
             editor_row_preparation: RwSignal::new(None),
             editor_row_ticket: RwSignal::new(0),
             editor_group: RwSignal::new(0),
@@ -894,6 +902,7 @@ impl WorkspaceState {
             .update(|epoch| *epoch = epoch.wrapping_add(1));
         self.editor_rows.set(None);
         self.editor_row_cache.set(None);
+        self.editor_paragraph_cache.set(None);
         self.editor_row_preparation.set(None);
         self.editor_row_ticket
             .update(|ticket| *ticket = ticket.wrapping_add(1));

@@ -99,10 +99,14 @@ async fn measure_paragraph(
     logical: usize,
     current: &impl Fn() -> bool,
     render: &impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
+    actions: Option<EditorActions>,
 ) -> Result<Option<(f64, openwebide_core::editor::HorizontalGeometry)>, ()> {
     let Some(mut plan) = EditorActions::paragraph_measurements(scope, logical) else {
         return Ok(None);
     };
+    if let Some(actions) = actions {
+        actions.resume_paragraph_measurements(scope, logical, &mut plan);
+    }
     let mut probes = 0_usize;
     while let Some(probe) = plan.probe().cloned() {
         let Some(targets) = plan.targets() else {
@@ -144,7 +148,15 @@ async fn measure_paragraph(
             crate::util::yield_task().await;
         }
     }
-    Ok(plan.finish())
+    let Some((width, geometry, measurements)) = plan.finish_with_measurements() else {
+        return Ok(None);
+    };
+    if current()
+        && let Some(actions) = actions
+    {
+        actions.retain_paragraph_measurements(scope, logical, measurements);
+    }
+    Ok(Some((width, geometry)))
 }
 
 struct ParagraphLayout {
@@ -300,7 +312,12 @@ impl ProbeTiming {
 /// Browser primitives only: styled HTML, exact rectangles and yielding. The
 /// shared core chooses batch sizes and validates the completed height table;
 /// the editor facade rechecks document/layout ownership before publication.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Measurement primitives accompany the source-owned facade and batch callbacks"
+)]
 pub(super) async fn measure_batches(
+    actions: EditorActions,
     input: web_sys::HtmlTextAreaElement,
     scope: crate::state::workspace::EditorRowPaint,
     mut plan: openwebide_core::editor::RowMeasurementPlan,
@@ -386,7 +403,8 @@ pub(super) async fn measure_batches(
             .parent_element()
             .is_some_and(|parent| parent.class_list().contains("editor-word-wrap"));
         if count == 1 && !wrapped && lengths[start] > openwebide_core::editor::MAX_MEASURE_BYTES {
-            let result = measure_paragraph(&paint, &scope, start, &current, &render).await?;
+            let result =
+                measure_paragraph(&paint, &scope, start, &current, &render, Some(actions)).await?;
             if !current()
                 || !input.is_connected()
                 || metrics_identity(&input).as_ref() != Some(metrics)
@@ -526,11 +544,12 @@ pub(super) async fn check_paragraph_geometry(
     input: &web_sys::HtmlTextAreaElement,
     scope: &crate::state::workspace::EditorRowPaint,
     logical: usize,
+    actions: Option<EditorActions>,
     render: impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
 ) -> Result<bool, ()> {
     let (_probe, paint) = styled_row_probe(input)?;
     let Some((width, bounded)) =
-        measure_paragraph(&paint, scope, logical, &|| true, &render).await?
+        measure_paragraph(&paint, scope, logical, &|| true, &render, actions).await?
     else {
         web_sys::console::error_1(&"bounded paragraph rejected".into());
         return Ok(false);

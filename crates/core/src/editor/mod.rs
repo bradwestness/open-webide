@@ -20,7 +20,9 @@ mod motion_queue;
 pub use motion_queue::{MotionQueue, MotionRequest};
 mod paragraph;
 mod visual_index;
-pub use paragraph::{MAX_PARAGRAPH_PROBE_BYTES, ParagraphMeasurementPlan, ParagraphProbe};
+pub use paragraph::{
+    MAX_PARAGRAPH_PROBE_BYTES, ParagraphMeasurementPlan, ParagraphMeasurements, ParagraphProbe,
+};
 mod visual_motion;
 pub use visual_index::VisualLineIndex;
 mod visual_neighbors;

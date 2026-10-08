@@ -1225,3 +1225,74 @@ identity, preserve the complete renderer's shaping boundaries, validate fresh
 continuation overlaps and reject stale font/layout/project/account ownership.
 This is still unimplemented; tabbed/wrapped/bidi preparation and physical-input
 verification remain requirements.
+
+
+## Reusing unchanged prefixes within edited paragraphs
+
+The shared paragraph plan retains exact completed probe records and original paint
+run boundaries. On a later source revision, the editor facade proves matching
+account/project/file/read/font/metrics/indentation/whitespace ownership and a
+source/style prefix. Core replay compares source bytes and run boundaries, then
+uses normal target, dimension and overlap validation for each retained record.
+The first changed probe is freshly measured with the preceding exact overlap;
+failed admission or validation retains complete-row fallback.
+
+Records share immutable rectangle allocations and the facade retains its existing
+source projection. Retention is capped at 128 Ki glyph rectangles per paragraph
+and eight rows per current environment. Crossing the cap disables retention rather
+than changing measurement or source admission. Source/style-identical rows survive
+scope updates; account/project/font changes reject reuse. Wrapped, tabbed and bidi
+preparation retains its previous path.
+
+All 445 native core tests pass, including changed-prefix equivalence, invalid
+records and fresh overlap rejection. Both-mode browser contracts compare reused
+geometry with the complete renderer and reject stale account, project, font and
+layout scopes. The ordinary suite passes 12 library, 400 component and 4 integration
+tests; the near-1-MiB and five-font matrices also pass separately. Two additional
+browser policy tests reject changed token styles/span topology, indentation guides
+and line-ending paint. All 114 native frontend tests pass. Strict core and frontend
+Clippy and the release build pass.
+
+The production harness now supports `--input-position end`. It navigates through
+the real Ctrl+End handler, verifies the persisted full-source selection and
+unchanged source before typing, and checks the recovered complete source equals
+the original plus the inserted character. Timing still begins at `beforeinput`;
+navigation and its persistence wait are excluded. The default beginning/native-window
+case remains available as a control.
+
+A separate instrumented EOF repetition per adapter recorded one fresh input
+preparation batch, 192.9/182.7 ms input paint (local/remote), no complete-row fallback
+and no trace truncation. These diagnostic timings are separate from repeated
+uninstrumented samples. [Raw EOF trace](editor-performance/paragraph-prefix-end-linux-trace.jsonl).
+
+Initial native shaping, beginning-of-line edits, incremental suffix reuse,
+tabbed/wrapped/bidi preparation and physical-input verification remain open.
+
+Three fresh release repetitions per adapter and input position, using the same
+near-1-MiB Unicode fixture and Linux/Chromium resource limits (2026-10-08):
+
+| Input | Mode | Cold paint median (ms) | Input median / range (ms) | Peak Chrome PSS median (KiB) | Largest task median (ms) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Start | Local | 9218 | 1825 / 1823–2267 | 838348 | 3367 |
+| Start | Remote | 9164 | 1828 / 1816–1843 | 838906 | 3389 |
+| End | Local | 9326 | 194 / 185–196 | 862510 | 6972 |
+| End | Remote | 9418 | 180 / 179–200 | 875106 | 7035 |
+
+The beginning-control medians remain close to the preceding 1810/1826 ms samples;
+one local repetition reaches 2267 ms. EOF edits preserve nearly the entire
+measured prefix, but their 180–194 ms medians still miss tighter interactive
+latency goals. Cold startup remains multi-second work. Input positions exercise
+different amounts of changed source; this table does not substitute EOF timings
+for beginning or arbitrary interior edits. EOF runs verify the persisted complete
+source after input. Their memory peaks include navigation and its recovery save.
+
+[Beginning control records](editor-performance/paragraph-prefix-start-linux.jsonl),
+[EOF records](editor-performance/paragraph-prefix-end-linux.jsonl). Header checkout
+`f4937a6` is the pre-commit base; `appModule` identifies the release including the
+uncommitted prefix implementation. To repeat:
+
+```bash
+bash tools/measure-editor-view-linux.sh --cases long-line --repeat 3
+bash tools/measure-editor-view-linux.sh --cases long-line --repeat 3 --input-position end
+bash tools/measure-editor-view-linux.sh --cases long-line --repeat 1 --input-position end --trace
+```
