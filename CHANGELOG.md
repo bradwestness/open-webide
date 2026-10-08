@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse indexed raw row boundaries outside a validated lexical source-change span. Preserve multiline state propagation, LF/CRLF normalization, terminal-row handling and cooperative batch budgets while scanning only intersecting rows for newline boundaries.
+
 - Keep the clickable chat context meter at the shared compact button size on desktop, preserving larger phone touch targets.
 
 - Reuse complete lexical row/context and token tables for unchanged source, preserving the current immutable source handle and rejecting language or newline-normalization mismatches.

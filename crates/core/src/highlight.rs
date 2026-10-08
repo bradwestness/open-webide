@@ -195,6 +195,9 @@ pub struct LexicalPreparation {
     retokenized_rows: usize,
     complete: bool,
     unchanged: bool,
+    source_change: Option<crate::editor::TextChange>,
+    #[cfg(test)]
+    boundary_scans: usize,
 }
 impl LexicalPreparation {
     pub fn new(source: std::sync::Arc<String>, language: Language) -> Self {
@@ -210,6 +213,9 @@ impl LexicalPreparation {
             retokenized_rows: 0,
             complete: false,
             unchanged: false,
+            source_change: None,
+            #[cfg(test)]
+            boundary_scans: 0,
         }
     }
     /// Match native textarea newline normalization without copying full source.
@@ -231,9 +237,12 @@ impl LexicalPreparation {
             self.retokenized_rows = 0;
             self.complete = false;
             self.unchanged = false;
-            if std::sync::Arc::ptr_eq(&self.source, &previous.source)
-                || self.source.as_str() == previous.source.as_str()
-            {
+            self.source_change = if std::sync::Arc::ptr_eq(&self.source, &previous.source) {
+                None
+            } else {
+                crate::editor::text_change(&previous.source, &self.source)
+            };
+            if self.source_change.is_none() {
                 self.unchanged = true;
                 self.complete = true;
             }
@@ -244,6 +253,43 @@ impl LexicalPreparation {
     pub const fn is_complete(&self) -> bool {
         self.complete
     }
+    /// Whole rows outside the validated replacement retain their raw boundaries.
+    /// Terminal rows may only be reused when they still terminate the new source.
+    fn indexed_row(&self) -> Option<(usize, usize, bool)> {
+        let previous = self.previous.as_ref()?;
+        let change = self.source_change.as_ref()?;
+        let prefix = self.next < change.range.start;
+        let old_start = if prefix {
+            self.next
+        } else if self.next >= change.new_end {
+            self.next
+                .checked_sub(change.new_end)?
+                .checked_add(change.range.end)?
+        } else {
+            return None;
+        };
+        let index = previous
+            .rows
+            .binary_search_by_key(&old_start, |row| row.start)
+            .ok()?;
+        let row = &previous.rows[index];
+        let end = if prefix {
+            if row.end > change.range.start {
+                return None;
+            }
+            row.end
+        } else {
+            row.end
+                .checked_sub(change.range.end)?
+                .checked_add(change.new_end)?
+        };
+        let newline = row.end > row.start && previous.source.as_bytes()[row.end - 1] == b'\n';
+        if !newline && end != self.source.len() {
+            return None;
+        }
+        Some((index, end, newline))
+    }
+
     fn reusable_row(&self, end: usize) -> Option<usize> {
         let previous = self.previous.as_ref()?;
         let shifted = if self.source.len() >= previous.source.len() {
@@ -274,21 +320,43 @@ impl LexicalPreparation {
             return 0;
         }
         while !self.complete && count < max_rows {
-            let tail = &self.source[self.next..];
-            let newline = tail.find('\n');
-            let end = self.next + newline.unwrap_or(tail.len());
+            let indexed = self.indexed_row();
+            let (next, newline) = indexed.map_or_else(
+                || {
+                    #[cfg(test)]
+                    {
+                        self.boundary_scans += 1;
+                    }
+                    let tail = &self.source[self.next..];
+                    let newline = tail.find('\n');
+                    (
+                        self.next + newline.map_or(tail.len(), |end| end + 1),
+                        newline.is_some(),
+                    )
+                },
+                |(_, next, newline)| (next, newline),
+            );
+            let end = next - usize::from(newline);
             let raw = &self.source[self.next..end];
-            let next = end + usize::from(newline.is_some());
             let cost = next - self.next;
             if count > 0 && cost > max_bytes.saturating_sub(bytes) {
                 break;
             }
-            let line = if self.normalize_crlf && newline.is_some() {
+            let line = if self.normalize_crlf && newline {
                 raw.strip_suffix('\r').unwrap_or(raw)
             } else {
                 raw
             };
-            let (tokens, state) = if let Some(index) = self.reusable_row(next) {
+            let reusable = indexed.map_or_else(
+                || self.reusable_row(next),
+                |(index, _, _)| {
+                    self.previous
+                        .as_ref()
+                        .filter(|previous| previous.rows[index].before == self.state)
+                        .map(|_| index)
+                },
+            );
+            let (tokens, state) = if let Some(index) = reusable {
                 let previous = self.previous.as_ref().expect("matched previous row");
                 (previous.tokens[index].clone(), previous.rows[index].after)
             } else {
@@ -304,7 +372,7 @@ impl LexicalPreparation {
             });
             self.rows.push(tokens);
             self.state = state;
-            self.complete = newline.is_none();
+            self.complete = !newline;
             self.next = next;
             count += 1;
             bytes += cost;
@@ -1554,6 +1622,101 @@ mod tests {
             cancelled.finish().is_none(),
             "partial lexical jobs cannot publish"
         );
+    }
+
+    #[test]
+    fn indexed_lexical_boundaries_limit_scans_and_keep_context_propagation() {
+        use std::sync::Arc;
+        for ending in ["\n", "\r\n"] {
+            let source =
+                Arc::new(format!("head{ending}body 文😀{ending}tail{ending}").repeat(1000));
+            let mut old = LexicalPreparation::for_textarea(source.clone(), Language::Rust);
+            while !old.is_complete() {
+                old.advance(128, usize::MAX);
+            }
+            let old = Arc::new(old.finish_snapshot().unwrap());
+            let changed = Arc::new(source.replacen("body", "updated", 1));
+            let mut job = LexicalPreparation::for_textarea(changed.clone(), Language::Rust)
+                .reuse(old.clone());
+            while !job.is_complete() {
+                job.advance(128, usize::MAX);
+            }
+            assert_eq!(job.boundary_scans, 1);
+            let next = job.finish_snapshot().unwrap();
+            assert_eq!(next.retokenized_rows(), 1);
+            assert_eq!(
+                next.tokens().as_ref(),
+                &share_token_rows(highlight_lines(
+                    &changed.replace("\r\n", "\n"),
+                    Language::Rust
+                ))
+            );
+            assert!(Arc::ptr_eq(&next.tokens()[2999], &old.tokens()[2999]));
+        }
+        let source = Arc::new("/*\ninside\n*/\ntail\n/*\ninside\n*/".to_owned());
+        let mut old = LexicalPreparation::new(source.clone(), Language::Rust);
+        old.advance(128, usize::MAX);
+        let old = Arc::new(old.finish_snapshot().unwrap());
+        let changed = Arc::new(source.replacen("*/", "--", 1));
+        let mut job = LexicalPreparation::new(changed.clone(), Language::Rust).reuse(old);
+        job.advance(128, usize::MAX);
+        assert_eq!(job.boundary_scans, 1);
+        let next = job.finish_snapshot().unwrap();
+        assert!(next.retokenized_rows() > 1);
+        assert_eq!(
+            next.tokens().as_ref(),
+            &share_token_rows(highlight_lines(&changed, Language::Rust))
+        );
+    }
+
+    #[test]
+    fn indexed_lexical_boundaries_match_fresh_rows_through_unicode_crlf_and_eof_edits() {
+        use std::sync::Arc;
+        for source in [
+            "",
+            "\n",
+            "\r\n",
+            "a",
+            "a\nb",
+            "a\nb\n",
+            "文😀\r\nx",
+            "/*\nx\n*/",
+        ] {
+            let mut old =
+                LexicalPreparation::for_textarea(Arc::new(source.to_owned()), Language::Rust);
+            old.advance(128, usize::MAX);
+            let old = Arc::new(old.finish_snapshot().unwrap());
+            let positions = source
+                .char_indices()
+                .map(|(offset, _)| offset)
+                .chain([source.len()])
+                .collect::<Vec<_>>();
+            for &start in &positions {
+                for &end in positions.iter().filter(|&&end| end >= start) {
+                    for replacement in ["", "x", "\n", "\r\n", "/*", "*/", "文😀"] {
+                        let changed = Arc::new(format!(
+                            "{}{replacement}{}",
+                            &source[..start],
+                            &source[end..]
+                        ));
+                        let mut job =
+                            LexicalPreparation::for_textarea(changed.clone(), Language::Rust)
+                                .reuse(old.clone());
+                        while !job.is_complete() {
+                            job.advance(2, 8);
+                        }
+                        assert_eq!(
+                            job.finish_snapshot().unwrap().tokens().as_ref(),
+                            &share_token_rows(highlight_lines(
+                                &changed.replace("\r\n", "\n"),
+                                Language::Rust
+                            )),
+                            "{source:?} {start}..{end} {replacement:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

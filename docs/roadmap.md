@@ -94,6 +94,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   reconstruction/validation and changed-source lexical row-table construction still visit the whole file.
   Identical lexical source with matching language and newline normalization now
   shares complete immutable context/token tables without advancing row batches.
+  Changed lexical source reuses indexed prefix/suffix row boundaries outside one
+  validated UTF-8 replacement span, preserving incoming-state checks and terminal
+  row handling. Source-change comparison and changed-source table assembly still
+  traverse the source; rows intersecting the span retain raw-byte validation.
   Parser fallback metadata and lexical folding now scan borrowed source without
   creating temporary source snapshots; owned contexts share their scan/query policy.
   Worker/fallback request scopes share the active editor source across repeated
