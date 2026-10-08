@@ -125,6 +125,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         style_end: usize,
     ) -> usize {
         let mut reused = 0;
+        let mut validated_runs = 0;
         for record in &old.records {
             let end = record.bytes.end;
             let Some(probe) = self.probe() else { break };
@@ -137,20 +138,24 @@ impl<'a> ParagraphMeasurementPlan<'a> {
             }
             let old_end = old.runs.partition_point(|byte| *byte <= end);
             let new_end = self.runs.partition_point(|byte| *byte <= end);
-            if old.runs[..old_end] != self.runs[..new_end]
-                || !self.record(
+            if old_end != new_end
+                || old
+                    .runs
+                    .get(validated_runs..old_end)
+                    .zip(self.runs.get(validated_runs..new_end))
+                    .is_none_or(|(old, new)| old != new)
+                || !self.record_measurement(
                     record.width,
                     record.height,
                     record.scroll_width,
                     &record.rectangles,
+                    Some(&record.rectangles),
                 )
             {
                 break;
             }
-            // Retained probes share their immutable rectangle allocations.
-            if let Some(last) = self.records.last_mut() {
-                last.rectangles = record.rectangles.clone();
-            }
+            // Immutable run tables keep the previously checked prefix valid.
+            validated_runs = old_end;
             reused += 1;
         }
         reused
@@ -204,17 +209,15 @@ impl<'a> ParagraphMeasurementPlan<'a> {
                 start..end
             };
             if old.runs[run_slice(&old.runs)] != self.runs[run_slice(&self.runs)]
-                || !self.record(
+                || !self.record_measurement(
                     record.width,
                     record.height,
                     record.scroll_width,
                     &record.rectangles,
+                    Some(&record.rectangles),
                 )
             {
                 break;
-            }
-            if let Some(last) = self.records.last_mut() {
-                last.rectangles = record.rectangles.clone();
             }
             reused += 1;
         }
@@ -369,6 +372,17 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         scroll_width: f64,
         rectangles: &[GlyphRectangle],
     ) -> bool {
+        self.record_measurement(width, height, scroll_width, rectangles, None)
+    }
+
+    fn record_measurement(
+        &mut self,
+        width: f64,
+        height: f64,
+        scroll_width: f64,
+        rectangles: &[GlyphRectangle],
+        retained: Option<&Arc<[GlyphRectangle]>>,
+    ) -> bool {
         if self.finished
             || !width.is_finite()
             || !height.is_finite()
@@ -463,7 +477,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
                 width,
                 height,
                 scroll_width,
-                rectangles: rectangles.into(),
+                rectangles: retained.map_or_else(|| rectangles.into(), Arc::clone),
             });
         } else {
             // Bound retention without changing measurement or fallback behavior.
@@ -620,6 +634,36 @@ mod tests {
             &retained.records[0].rectangles
         ));
     }
+    #[test]
+    fn retained_prefix_stops_at_a_later_changed_paint_boundary() {
+        let source = "word space ".repeat(10000);
+        let (_, _, retained) = measured(&source);
+        for insert in [true, false] {
+            let boundary = retained.records[1].bytes.end + 1;
+            let mut runs = retained.runs.to_vec();
+            let at = runs.binary_search(&boundary).unwrap_err();
+            let changed = if insert {
+                runs.insert(at, boundary);
+                boundary
+            } else {
+                runs[at] += 1;
+                runs[at]
+            };
+            let mut plan = ParagraphMeasurementPlan::with_run_boundaries(
+                &source,
+                VisualLineIndex::new(&source).unwrap(),
+                runs,
+            )
+            .unwrap();
+            assert_eq!(plan.reuse_prefix(&source, &retained, source.len()), 2);
+            assert!(plan.probe().unwrap().bytes.contains(&changed));
+            assert_eq!(plan.records.len(), 2);
+            for (current, old) in plan.records.iter().zip(&retained.records) {
+                assert!(Arc::ptr_eq(&current.rectangles, &old.rectangles));
+            }
+        }
+    }
+
     #[test]
     fn paragraph_reuse_rejects_changed_style_runs_source_and_dimensions() {
         let old = "word space ".repeat(10000);

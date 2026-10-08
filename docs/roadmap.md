@@ -67,7 +67,9 @@ tracks the remaining work rather than every optimization already shipped.
   retained DOM nodes, canvas widths and approximate Rust advances do not establish
   exact browser geometry.
 - [ ] **Incremental paragraph updates:** finish shifted suffix reuse and avoid
-  repeated prefix segmentation for over-limit styled run tables. Initial run-table
+  repeated prefix segmentation for over-limit styled run tables. Validated retained
+  probes now share rectangle allocations directly and compare each prefix
+  run-boundary interval once. Initial run-table
   construction and unsupported-boundary fallbacks still scan complete rows;
   capped metadata attempts now stop once their run budget is exceeded.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,

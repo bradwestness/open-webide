@@ -1835,4 +1835,31 @@ contract (13.10 seconds). Both-mode load/scroll/edit geometry and ownership
 contracts remain unchanged. The 114 native frontend tests, strict WASM frontend
 lint, formatting and Trunk/PWA release build pass. The UI-only run-budget tests
 execute in WASM; the native frontend test set remains 114. Linux CI for this
-metadata checkpoint is still pending.
+metadata checkpoint `37795367204` passed all five CI jobs, including Linux browser and release checks. Repeated responsiveness and physical-device gates remain open.
+
+
+### Retained paragraph replay allocations and boundary validation
+
+Warm prefix and exact-offset suffix replay now share each retained immutable
+rectangle allocation directly after the existing measurement validation. Previously,
+replay allocated a temporary rectangle array and then replaced it with the retained
+one. Target, overlap, finite-dimension, source and retention-budget checks remain
+unchanged; target and next-overlap collections still allocate.
+
+Prefix replay checks each newly extended run-boundary interval once. Earlier
+intervals remain proven because the original and replacement run tables are
+immutable during the plan. Regression coverage changes a later boundary both by
+inserting a boundary and by moving one without changing the boundary count: each
+case stops replay at the first affected probe, after preserving two valid records.
+Existing fresh-layout equality, exact suffix reconnection and failed-proof tests
+remain required. This does not implement shifted suffix reuse or improve cold
+startup; no new latency or memory percentile is claimed.
+
+Verification passes 452 all-feature core tests and 114 native frontend tests,
+strict core/all-feature and WASM frontend lint, formatting and the Trunk/PWA
+release build. All 444 browser checks pass: 442 ordinary checks (18 unit,
+420 component and four integration), the font matrix (15.77 seconds) and the
+near-limit plain-text contract (13.22 seconds). The component suite took 140.92
+seconds. Both-mode complete-renderer and fallback comparisons remain unchanged.
+These local checks do not establish Linux PSS or physical input readiness; CI
+for this paragraph replay checkpoint will run after push.

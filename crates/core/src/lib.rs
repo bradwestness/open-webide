@@ -544,5 +544,5 @@ pub use tasks::{
     TaskUpdate,
 };
 
-pub mod workspace_entries;
 pub mod file_nesting;
+pub mod workspace_entries;

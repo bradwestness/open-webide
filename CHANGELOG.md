@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share retained editor paragraph rectangles directly during validated layout
+  replay and check each prefix run-boundary interval once. Preserve exact geometry,
+  retention limits and fallback when later paint boundaries change.
+
 - Show the app logo and a clickable openwebide.com link in About, opening in a new browser tab. Use “project” in the app’s Open local/remote actions.
 
 - Nest sibling filename variants (such as docker-compose.ssh.yml) beneath their base files with expandable groups, keyboard navigation and reveal support in local and remote projects. Show creation actions only for folders and keep Reveal in Files on editor tabs.
